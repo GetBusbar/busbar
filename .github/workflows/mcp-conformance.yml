@@ -92,6 +92,15 @@ jobs:
       - name: Prove the fixture-absence gate bites
         run: ./scripts/mcp-fixture-absence-gate.sh --selftest
 
+      # ONE LEVEL FURTHER IN. The steps above prove the GATE SCRIPT cannot be lied to; this proves
+      # the BATTERY'S SCORING cannot. It drives, in both directions: the vacuity gate that stops a
+      # client scenario passing on a subject's silence (`/usr/bin/true` scored 9 PASS of 14 before
+      # it existed), the differential's treatment of a scenario that ran on one side only, and the
+      # agreement between the fake peer's dispatch table and the modes its header documents -- which
+      # is the list scripts/negative-control.sh derives its rows from.
+      - name: Prove the battery's scoring machinery bites
+        run: node testing/mcp-conformance/bin/mcp-battery.mjs selftest
+
   official-control:
     name: official suite · CONTROL (pinned reference SDK)
     needs: gate-selftest
@@ -271,7 +280,10 @@ jobs:
     name: in-house battery · NEGATIVE control (a broken peer MUST be red)
     needs: gate-selftest
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Raised with the row count: the negative control now drives all 24 of the peer's modes rather
+    # than 7, and four of them (`stall`, `truncate`, `half-answer`, `giant`) answer nothing or
+    # nearly nothing by design, so each spends its per-mode ceiling before being reported.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -281,38 +293,16 @@ jobs:
       # sensitivity. This drives deliberately broken fake peers and requires the battery to catch
       # each one. Without it, "the control leg is green" is equally consistent with a battery that
       # cannot fail.
+      # THE ASSERTION MOVED INTO THE SCRIPT, and that is the point of this edit rather than a
+      # tidy-up. It used to live here, and it read the printed table with a regex — so the ROW SET
+      # it judged was whatever the script happened to print, and the script printed seven of the
+      # peer's twenty-four modes. Both halves now come from ONE place: the script derives its rows
+      # from the peer's own mode table (`fake-server.mjs --list-modes`), and it decides, per row,
+      # whether the peer was caught, wedged, or blessed. A run of this job can no longer be green
+      # over a mode nobody exercised, and a local run of the script gets the identical verdict.
       - name: Deliberately broken peers must be caught
         working-directory: testing/mcp-conformance
-        run: |
-          set -euo pipefail
-          out="$(./scripts/negative-control.sh)"
-          printf '%s\n' "$out"
-          # The `honest` row must have zero failures and every broken row must have at least one.
-          # Asserted on the OUTPUT, per row, rather than on an exit code the script does not set.
-          # Piped rather than heredoc'd: `python3 - <<'PY' <<<"$out"` has TWO stdin redirections and
-          # the last one wins, so the script would never be read at all and the step would pass
-          # having asserted nothing.
-          printf '%s\n' "$out" | python3 -c '
-          import re, sys
-          rows = [l for l in sys.stdin.read().splitlines() if l.strip()][1:]
-          if len(rows) < 7:
-              sys.exit("negative control produced %d rows; it did not run." % len(rows))
-          bad = []
-          for row in rows:
-              mode = row.split()[0]
-              m = re.search(r"(\d+) fail", row)
-              if m is None:
-                  bad.append("unreadable row (no fail count): %s" % row)
-                  continue
-              caught = int(m.group(1)) > 0
-              if mode == "honest" and caught:
-                  bad.append("the HONEST peer was rejected: %s" % row)
-              if mode != "honest" and not caught:
-                  bad.append("a BROKEN peer (%s) was blessed: %s" % (mode, row))
-          if bad:
-              sys.exit("\n".join(bad))
-          print("negative control behaved: %d rows, every broken peer caught." % len(rows))
-          '
+        run: ./scripts/negative-control.sh
 
   battery-subject:
     name: in-house battery · SUBJECT (busbar — ARMED OR RED)

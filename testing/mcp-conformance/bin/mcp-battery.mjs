@@ -10,7 +10,8 @@
 
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { runAll, allTests, VERDICT } from '../src/core/runner.mjs';
+import { fileURLToPath } from 'node:url';
+import { runAll, runOne, allTests, VERDICT } from '../src/core/runner.mjs';
 import { Target } from '../src/core/target.mjs';
 import { compare, renderDifferential } from '../src/core/differential.mjs';
 import { REVISION } from '../src/core/spec.mjs';
@@ -348,13 +349,19 @@ function cmdCompare(args) {
   const report = compare(c.results, s.results, {
     controlName: c.target.name,
     subjectName: s.target.name,
+    // Each side's own record of which roles it measured, so an absence can be EXPLAINED by the run
+    // that has it rather than assumed away by the comparison. See differential.mjs.
+    controlRoleAudit: c.roleAudit,
+    subjectRoleAudit: s.roleAudit,
   });
   console.log(renderDifferential(report));
   if (args.out) {
     mkdirSync(dirname(resolve(args.out)), { recursive: true });
     writeFileSync(resolve(args.out), JSON.stringify(report, null, 2));
   }
-  const blocking = report.counts.failures + report.counts.regressions
+  // `missing` IS BLOCKING. It used to be counted, printed, and then dropped from this sum, so a
+  // 63-scenario control against a 15-scenario subject exited 0 with `missing tests : 48` on screen.
+  const blocking = report.counts.failures + report.counts.regressions + report.counts.missing
     + (args['fail-on-divergence'] ? report.counts.divergences : 0);
   process.exit(blocking > 0 ? 1 : 0);
 }
@@ -372,9 +379,108 @@ function cmdList(args) {
   console.log(`\n${rows.length} tests`);
 }
 
+// ── THE BATTERY'S OWN SELF-TEST ────────────────────────────────────────────────────────────────
+//
+// Same discipline as scripts/negative-control.sh, one level in: the negative control proves the
+// SCENARIOS catch a broken peer, and this proves the MACHINERY the scenarios are scored by cannot
+// be lied to. Every fixture has a red half and a green half, because a rule that refuses everything
+// proves as little as one that refuses nothing.
+async function cmdSelftest() {
+  const failures = [];
+  const ok = (name, condition, detail) => {
+    if (condition) console.log(`  ok    ${name}`);
+    else { console.log(`  MISS  ${name} — ${detail}`); failures.push(name); }
+  };
+  console.log('== mcp-battery SELF-TEST (the scoring machinery cannot be lied to) ==');
+
+  // 1. THE VACUITY GATE. A client-role scenario that records no satisfied evidence must FAIL.
+  //    This is the rule that turned `/usr/bin/true` from 9 PASS of 14 into 0.
+  const fakeTarget = { hasClientRole: true, hasServerRole: true };
+  const silent = await runOne({
+    id: 'SELFTEST.SILENT', title: 'records no evidence', role: 'client', area: 'conformance',
+    tier: 'push', peer: 'fake', transports: ['stdio'], requiresEvidence: true,
+    catches: 'A scenario that can be passed by a subject which did nothing at all.',
+    run: async (ctx) => { ctx.assert('STDIO.CLIENT-NO-RESPONSES', true); },
+  }, fakeTarget);
+  ok('a_client_scenario_with_no_evidence_fails', silent.verdict === VERDICT.FAIL,
+    `verdict was ${silent.verdict}`);
+
+  const unmet = await runOne({
+    id: 'SELFTEST.UNMET', title: 'evidence declared but not satisfied', role: 'client',
+    area: 'conformance', tier: 'push', peer: 'fake', transports: ['stdio'], requiresEvidence: true,
+    catches: 'A scenario whose stimulus never reached the subject scoring as a pass.',
+    run: async (ctx) => {
+      ctx.evidence('stimulus.example', false, 'the peer never sent the attack');
+      ctx.assert('STDIO.CLIENT-NO-RESPONSES', true);
+    },
+  }, fakeTarget);
+  ok('unsatisfied_evidence_fails', unmet.verdict === VERDICT.FAIL, `verdict was ${unmet.verdict}`);
+
+  const witnessed = await runOne({
+    id: 'SELFTEST.WITNESSED', title: 'evidence satisfied', role: 'client', area: 'conformance',
+    tier: 'push', peer: 'fake', transports: ['stdio'], requiresEvidence: true,
+    catches: 'The vacuity gate refusing scenarios that did observe the subject.',
+    run: async (ctx) => {
+      ctx.evidence('stimulus.example', true);
+      ctx.evidence('subject.acted', true);
+      ctx.assert('STDIO.CLIENT-NO-RESPONSES', true);
+    },
+  }, fakeTarget);
+  ok('satisfied_evidence_passes', witnessed.verdict === VERDICT.PASS,
+    `verdict was ${witnessed.verdict}: ${witnessed.error}`);
+
+  // 2. EVERY REGISTERED CLIENT SCENARIO DECLARES EVIDENCE. The gate above only bites on scenarios
+  //    that reach it; this is the standing check that none of them stops declaring any.
+  const clientScenarios = allTests().filter((t) => t.role === 'client');
+  ok('every_client_scenario_requires_evidence',
+    clientScenarios.length > 0 && clientScenarios.every((t) => t.requiresEvidence),
+    `${clientScenarios.filter((t) => !t.requiresEvidence).map((t) => t.id).join(', ')}`);
+
+  // 3. `missing` IS BLOCKING, and a role a side did not measure is EXPLAINED rather than blocking.
+  const row = (id, role) => ({ id, title: id, role, area: 'conformance', tier: 'push',
+    verdict: 'PASS', assertions: [], variance: [], recommendations: [], notes: [],
+    evidence: [], catches: 'x', error: null });
+  const bothAudit = { selected: ['server', 'client'], unarmed: [] };
+  const serverOnly = { selected: ['server'], unarmed: ['client'] };
+  const unexplained = compare([row('A', 'server'), row('B', 'server')], [row('A', 'server')],
+    { controlRoleAudit: bothAudit, subjectRoleAudit: bothAudit });
+  ok('a_scenario_the_subject_never_ran_is_blocking',
+    unexplained.counts.missing === 1 && unexplained.counts.explainedMissing === 0,
+    JSON.stringify(unexplained.counts));
+  const explained = compare([row('A', 'server'), row('C', 'client')], [row('A', 'server')],
+    { controlRoleAudit: bothAudit, subjectRoleAudit: serverOnly });
+  ok('a_role_the_subject_did_not_measure_is_explained_not_blocking',
+    explained.counts.missing === 0 && explained.counts.explainedMissing === 1,
+    JSON.stringify(explained.counts));
+  const noAudit = compare([row('A', 'server'), row('C', 'client')], [row('A', 'server')], {});
+  ok('an_absence_with_no_role_audit_explains_nothing', noAudit.counts.missing === 1,
+    JSON.stringify(noAudit.counts));
+
+  // 4. THE FAKE PEER'S MODE TABLE IS THE ONE THE HEADER DOCUMENTS. The negative control derives its
+  //    rows from `--list-modes`, so a mode present in one and absent from the other is a mode
+  //    nothing exercises.
+  const { execFileSync } = await import('node:child_process');
+  const fake = resolve(dirname(fileURLToPath(import.meta.url)), '../fakepeer/fake-server.mjs');
+  const listed = execFileSync(process.execPath, [fake, '--list-modes'], { encoding: 'utf8' })
+    .split('\n').map((s) => s.trim()).filter(Boolean);
+  const header = readFileSync(fake, 'utf8').split('\n')
+    .filter((l) => /^\/\/ {3}[a-z][a-z0-9-]+ {2,}/.test(l))
+    .map((l) => l.replace(/^\/\/ {3}/, '').split(/\s{2,}/)[0]);
+  const undocumented = listed.filter((m) => !header.includes(m));
+  const unimplemented = header.filter((m) => !listed.includes(m));
+  ok('every_fake_peer_mode_is_documented_and_dispatched',
+    listed.length >= 20 && undocumented.length === 0 && unimplemented.length === 0,
+    `listed-but-undocumented=${undocumented} documented-but-not-in-the-table=${unimplemented}`);
+
+  console.log(`\n  self-test: ${failures.length === 0
+    ? `${8} fixture(s) passed` : `${failures.length} FAILED: ${failures.join(', ')}`}`);
+  process.exit(failures.length ? 1 : 0);
+}
+
 const args = parseArgs(process.argv.slice(2));
 const cmd = args._[0];
 if (cmd === 'run') await cmdRun(args);
 else if (cmd === 'compare') cmdCompare(args);
+else if (cmd === 'selftest') await cmdSelftest();
 else if (cmd === 'list') cmdList(args);
 else { usage(); process.exit(args._.length ? 2 : 0); }
