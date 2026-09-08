@@ -293,6 +293,127 @@ pub fn provision_dial(
     provision_client(sink, token, slot, cfg)
 }
 
+// ── the seam a mounted leg reaches its own surface through ──────────────────────────────────────
+
+/// WHAT ONE OPERATION ANSWERED: a status, its headers, and its body.
+///
+/// The three together, because a caller reads all three and this root may not re-derive any of them.
+/// It is the plane's own answer travelling back OUT of the loop, and it is a record of BYTES rather
+/// than of anything this file could reconstruct.
+///
+/// **One type, for every plane with a mount.** It was the A2A plane's `A2aAnswer` while A2A was the
+/// only leg that had a dispatch seam. A second plane's leg wanting the same three fields is not a
+/// reason for a second struct with the same three fields: two copies are two things that can drift,
+/// and the whole content of this value is "the bytes are the surface's" — which is a statement about
+/// the SEAM and not about any protocol. So the A2A leg's own type moved here and became this one,
+/// rather than the MCP leg gaining a twin of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlaneAnswer {
+    /// The status the surface answered with.
+    pub status: u16,
+    /// The headers it emitted, in emission order.
+    pub headers: Vec<(String, String)>,
+    /// The body it wrote. For a streamed operation this is the run of events, exactly as framed.
+    pub body: Vec<u8>,
+}
+
+/// THE ONE SEAM between a plane's units and the surface that already answers its operations.
+///
+/// ## Why there is exactly one, and why it takes no request
+///
+/// The units are the GATE and the surface is the ANSWER. Everything the loop decides — who is
+/// calling, where the unit may go, whether the caller may ask, whether it is paid for — happens
+/// before this seam is touched, and a unit refused at any of those steps never reaches it. What is on
+/// the far side is the operation's own body, which this root does not hold and may not reimplement:
+/// the whole value of the seam is that the answer a caller reads is the one the surface wrote.
+///
+/// It takes no request because the seam is BOUND to one. A unit of a mounted plane is assembled per
+/// arrival, so the thing that carries the arrival across is per-arrival too, and a request passed
+/// through the call would be the same request travelling twice. The administrative plane's seam is
+/// long-lived and takes its request as an argument because ITS units are long-lived; the shape
+/// follows the lifetime rather than the other way round.
+///
+/// The operation class IS passed, because it is the one thing the seam's far side may legitimately
+/// branch on and the one thing the leg has already decided: the plane read the bytes and named the
+/// class, and handing it over is what makes "the loop chose the path" checkable from the seam.
+///
+/// **One trait, for every plane with a mount**, and this is where the kinds stay siblings. The
+/// argument is an `OpClassId`, which every plane declares, and the answer is bytes, which every
+/// surface writes — so there is nothing protocol-shaped left in the signature and nothing for a
+/// second copy of it to specialise. A per-plane dispatch trait would have been one trait per plane
+/// carrying one identical method, and the first thing to differ between two of them would have been
+/// a difference nobody meant.
+pub trait PlaneDispatch: Send + Sync {
+    /// Hand one operation to the surface it is mounted on, and take back its whole answer.
+    fn execute(&self, op: busbar_contract::ids::OpClassId) -> PlaneAnswer;
+}
+
+// ── the leg a driver walks an arrival against ───────────────────────────────────────────────────
+
+/// WHAT ONE ARRIVAL IS WALKED AGAINST: a plane's units, for that arrival.
+///
+/// ## Why this is a seam and not a field of the driver
+///
+/// The driver held `&ProductionUnits` for as long as there was one shape of leg. There are two, and
+/// the difference between them is not cosmetic:
+///
+/// - A leg whose units are the SAME for every arrival — the node's own `ProductionUnits`, assembled
+///   once at boot and shared by every connection. Nothing about the arrival changes what it is, so
+///   the walk is `run_unit` against the value the driver already holds. Every `Units` gets this for
+///   free through the blanket implementation below, which is what makes the change a widening
+///   rather than a swap: the shape that worked before still works, unaltered, and the call site
+///   that passed a `&ProductionUnits` still passes one.
+/// - A leg whose units are ASSEMBLED PER ARRIVAL, because the bindings they run over carry facts the
+///   arrival decided — what the plane made of the bytes, when they landed, which pool the agent
+///   they name is reached on. Such a leg cannot exist before the arrival does, so it cannot be a
+///   field of anything built at boot; what IS a field at boot is the thing that knows how to build
+///   one, which is exactly what an implementor of this trait is.
+///
+/// ## What the driver learns from it: an ending, and nothing else
+///
+/// One method, one return value. The driver hands over the arrival and the four things the loop is
+/// run under, and receives the `Ended` the loop reached. It learns no plane name, no operation, no
+/// principal and no money — a leg that wanted to tell the driver any of those would have to widen
+/// this signature, and the widening is the review.
+///
+/// The arrival is passed BY REFERENCE and the leg may read it; the driver still does not. Reading
+/// the body is the plane's job on both sides of this seam, and a leg that reads it does so by
+/// asking its own plane, in its own file, where the plane is named.
+#[cfg(feature = "root-admin")]
+pub trait PlaneLeg: Send + Sync {
+    /// Walk one arrival through the kernel's ten steps and its one exit, and hand back the ending.
+    ///
+    /// The kernel, the hold cell, the leases, the gauge, the canary and the meter are the DRIVER'S:
+    /// there is one of each per node and one of the first per unit, and a leg that made its own
+    /// would be balancing its own books beside the node's. What the leg supplies is the `Units`.
+    fn walk(
+        &self,
+        arrival: &busbar_contract::transport::Arrival<'_>,
+        kernel: &busbar_kernel::teller::Kernel,
+        ctx: &busbar_kernel::teller::UnitCtx,
+        run: busbar_kernel::teller::Run<'_>,
+    ) -> busbar_kernel::teller::Ended;
+}
+
+/// A leg whose units do not depend on the arrival is the units themselves.
+///
+/// The blanket implementation is what makes [`PlaneLeg`] a widening of the driver rather than a
+/// replacement for it: every `Units` the root already had is already a leg, so no existing
+/// composition changed and no existing byte moved. The arrival goes unread here on purpose — that
+/// is the whole content of "these units do not depend on it".
+#[cfg(feature = "root-admin")]
+impl<U: busbar_kernel::teller::Units + Send + Sync> PlaneLeg for U {
+    fn walk(
+        &self,
+        _arrival: &busbar_contract::transport::Arrival<'_>,
+        kernel: &busbar_kernel::teller::Kernel,
+        ctx: &busbar_kernel::teller::UnitCtx,
+        run: busbar_kernel::teller::Run<'_>,
+    ) -> busbar_kernel::teller::Ended {
+        busbar_kernel::teller::run_unit(kernel, self, ctx, run)
+    }
+}
+
 // ── the driver a listener is handed ─────────────────────────────────────────────────────────────
 
 /// WHAT RUNS A UNIT, on the root's side of the transport seam.

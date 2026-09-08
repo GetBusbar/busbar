@@ -516,10 +516,13 @@ const SURFACE_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the su
 /// The status it answers with, deliberately not one the loop's own narrowing would produce.
 const SURFACE_STATUS: u16 = 207;
 
-impl crate::root::units_a2a::A2aDispatch for CountingSurface {
-    fn execute(&self, _op: busbar_contract::ids::OpClassId) -> crate::root::units_a2a::A2aAnswer {
+impl crate::root::transports::PlaneDispatch for CountingSurface {
+    fn execute(
+        &self,
+        _op: busbar_contract::ids::OpClassId,
+    ) -> crate::root::transports::PlaneAnswer {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        crate::root::units_a2a::A2aAnswer {
+        crate::root::transports::PlaneAnswer {
             status: SURFACE_STATUS,
             headers: vec![("content-type".to_string(), "application/json".to_string())],
             body: SURFACE_BODY.to_vec(),
@@ -973,8 +976,8 @@ fn serve_one(
     leg: &A2aLeg,
     kernel: &Kernel,
     body: &[u8],
-    dispatch: Option<&dyn crate::root::units_a2a::A2aDispatch>,
-) -> (Ended, Option<crate::root::units_a2a::A2aAnswer>) {
+    dispatch: Option<&dyn crate::root::units_a2a::PlaneDispatch>,
+) -> (Ended, Option<crate::root::units_a2a::PlaneAnswer>) {
     serve_presenting(leg, kernel, body, None, dispatch)
 }
 
@@ -988,8 +991,8 @@ fn serve_presenting(
     kernel: &Kernel,
     body: &[u8],
     credential: Option<&str>,
-    dispatch: Option<&dyn crate::root::units_a2a::A2aDispatch>,
-) -> (Ended, Option<crate::root::units_a2a::A2aAnswer>) {
+    dispatch: Option<&dyn crate::root::units_a2a::PlaneDispatch>,
+) -> (Ended, Option<crate::root::units_a2a::PlaneAnswer>) {
     let mut facts: Vec<(&str, &str)> = vec![
         ("path", "/a2a"),
         ("method", "POST"),
