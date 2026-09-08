@@ -56,6 +56,21 @@ pub fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
 ///
 /// The paths go in NUL-separated (`-z`) because a filename may legally contain a newline, and a
 /// line-oriented protocol would silently split one into two paths, neither of which exists.
+///
+/// THE WRITE HAPPENS ON ITS OWN THREAD, and that is not a refinement — it is what stops this
+/// function from HANGING FOREVER. `git check-ignore --stdin` is a STREAM: it reads a path, decides,
+/// writes the matches out, and keeps going. Both pipes are OS pipes with a fixed buffer (64 KiB on
+/// Linux, less on macOS). A caller that writes the WHOLE path list before reading a single byte of
+/// stdout deadlocks the moment the answers outgrow that buffer: git blocks writing to a stdout
+/// nobody is draining, so it stops reading stdin, so the parent blocks writing to a stdin nobody is
+/// draining, and neither side can move. Nothing times out — the job simply never ends, which is the
+/// worst shape a gate can fail in, because a hang is not red and a scan set only has to grow.
+///
+/// The size at which it bites is a property of the TREE, not of this code, so it cannot be reasoned
+/// away: the scan sets here are whole-repository walks, and one gate whose set is mostly ignored
+/// paths (a populated `target/`, a restored build cache) is enough. So the writer thread owns
+/// `stdin` and drops it — which is also what sends git EOF — while this thread sits in
+/// `wait_with_output`, draining stdout and stderr concurrently.
 pub fn check_ignore(root: &Path, paths: &[String]) -> Result<Vec<String>, String> {
     use std::io::Write;
 
@@ -71,22 +86,25 @@ pub fn check_ignore(root: &Path, paths: &[String]) -> Result<Vec<String>, String
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("git check-ignore: {e}"))?;
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or("git check-ignore: no stdin pipe".to_string())?;
-        let mut buf = Vec::new();
-        for p in paths {
-            buf.extend_from_slice(p.as_bytes());
-            buf.push(0);
-        }
-        // A closed pipe is git having exited early, which the status below reports properly.
-        let _ = stdin.write_all(&buf);
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or("git check-ignore: no stdin pipe".to_string())?;
+    let mut buf = Vec::new();
+    for p in paths {
+        buf.extend_from_slice(p.as_bytes());
+        buf.push(0);
     }
+    // A closed pipe is git having exited early, which the status below reports properly.
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&buf);
+        // Dropping `stdin` here is the EOF git waits for before it exits.
+    });
     let out = child
         .wait_with_output()
         .map_err(|e| format!("git check-ignore: {e}"))?;
+    // git has exited, so the writer is either done or holding a broken pipe it already ignores.
+    let _ = writer.join();
     match out.status.code() {
         Some(0) | Some(1) => Ok(String::from_utf8_lossy(&out.stdout)
             .split('\0')
