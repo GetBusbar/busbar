@@ -339,8 +339,9 @@ fn bench_sample() -> (Vec<u8>, u64, u64, u64, u32, u32) {
 /// alloc arms below must run alone in this thread the same way `stub_vtable_populates_every_slot`'s
 /// sibling gates do.
 ///
-/// The estimator is the MINIMUM over several rounds, not the mean: scheduler noise can only ever add
-/// time, so the smallest observation is closest to the real cost and least able to flake this test.
+/// The estimator is the MINIMUM over several timed samples, not the mean: scheduler noise can only
+/// ever add time, so the smallest observation is closest to the real cost and least able to flake
+/// this test.
 /// The budget is a CEILING on the DIFFERENCE, not a pin on either measurement.
 #[test]
 #[ignore = "measures wall clock and uses the per-thread counting allocator; run alone via the qa \
@@ -352,7 +353,10 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
     /// verbatim (`git show 527bdbf96:crates/plane-abi-spike/src/tests/lib_tests.rs`).
     const BUDGET_NS: f64 = 1000.0;
     const N: u64 = 200_000;
-    const ROUNDS: usize = 5;
+    // `SAMPLES`, not the obvious spelling for a repeated pass: `round` is a banned protocol/role
+    // noun for this crate's hot lane (plane-abi-neutrality's test-path ratchet is 0 and only ever
+    // goes down), and a benchmark helper is exactly the "one helper at a time" the ratchet refuses.
+    const SAMPLES: usize = 5;
 
     let (name, tokens, budget, tenant, prio, flags) = bench_sample();
     let g = Facts::new(tokens, budget, tenant, prio, flags, &name);
@@ -363,12 +367,12 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
     let facts_ptr = &*g as *const Facts;
 
     let per_call = |f: &dyn Fn()| -> f64 {
-        // A warm round, discarded: the first pass pays for cold branch predictors and cold icache,
+        // A warm pass, discarded: the first pass pays for cold branch predictors and cold icache,
         // which is not what the budget is about.
         for _ in 0..N {
             f();
         }
-        (0..ROUNDS)
+        (0..SAMPLES)
             .map(|_| {
                 let t = std::time::Instant::now();
                 for _ in 0..N {
@@ -394,7 +398,7 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
         overhead_ns < BUDGET_NS,
         "the vtable fn-pointer hop cost {overhead_ns:+.3} ns/call over the direct call, which is \
          OVER the {BUDGET_NS} ns budget this test exists to prove (direct {direct_ns:.3} ns, \
-         vtable {vtable_ns:.3} ns, min of {ROUNDS} rounds of {N})"
+         vtable {vtable_ns:.3} ns, min of {SAMPLES} samples of {N})"
     );
 
     // A positive control on the measurement itself: a per-call figure of zero would satisfy any
