@@ -77,6 +77,7 @@ pub mod record;
 pub mod recover;
 pub mod segment;
 pub mod ship;
+pub mod unit;
 pub mod wal;
 
 pub use backend::{

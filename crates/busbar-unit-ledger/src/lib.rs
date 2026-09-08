@@ -54,6 +54,7 @@ pub mod migration;
 pub mod recompute;
 pub mod settle;
 pub mod totals;
+pub mod unit;
 pub mod verify;
 
 pub use checkpoint::{

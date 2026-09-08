@@ -41,6 +41,7 @@
 mod posting;
 mod project;
 mod rate;
+pub mod unit;
 
 pub use posting::{apply_tier, price, Posting, PricedLine, FEE_CLASS, STANDARD_TIER_BP};
 pub use project::{cents_of, derive_spend_cents, derive_spend_micros, micros_of};

@@ -37,6 +37,7 @@ mod meter;
 mod series;
 mod settlement;
 mod source;
+pub mod unit;
 
 pub use evidence::{
     KernelCounts, KernelLine, LocatedValue, MeterPolicy, RetainedLocatorValues,

@@ -36,6 +36,7 @@
 #![deny(missing_docs)]
 
 pub mod sigv4;
+pub mod unit;
 
 use busbar_caps::{AuthDecoration, EgressAuthToken, SecretSlot, VerifiedDestination};
 

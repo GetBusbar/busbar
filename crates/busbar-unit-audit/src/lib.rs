@@ -55,6 +55,7 @@
 pub mod amend;
 pub mod legacy;
 pub mod record;
+pub mod unit;
 
 pub use amend::{
     amends, content_access, correction, Access, Adjust, AmendBody, AmendChain, AmendClass,

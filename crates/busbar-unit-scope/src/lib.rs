@@ -49,6 +49,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod unit;
+
 use busbar_contract::{ClaimKey, OpClassId};
 
 /// The built-in authorization scopes — a strict two-rung chain: `ReadOnly` at the bottom, `Full` at
