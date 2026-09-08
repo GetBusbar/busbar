@@ -1028,9 +1028,19 @@ jobs:
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
           python3 scripts/executable-config-lint.py --busbar target/debug/busbar --selftest
       - name: Executable-config gate
-        # --min-docs: the gate is vacuously green over an empty extraction set. 50 documents are
-        # found today; the floor is 40 so genuine churn passes and a collapsed extractor cannot.
-        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root . --min-docs 40
+        # --min-docs: the gate is vacuously green over an empty judgement set.
+        #
+        # THE NUMBER IS OVER DOCUMENTS THE BINARY JUDGED, NOT DOCUMENTS THE SCANNER EXTRACTED. It
+        # used to be the latter, which counted the documents the gate had DECLINED to have an
+        # opinion about (waived, carved out, skipped) toward "this gate validated enough to mean
+        # something" — so a corpus that drifted entirely into skips cleared the floor while judging
+        # nothing, which is the state the floor exists to make impossible.
+        #
+        # 152 documents are extracted today and 106 are judged, against 50/50 before the discovery
+        # widening (composite actions under .github/actions, printf-written configs) and the
+        # root-key mirror fix that stopped 1.6.0 plane configs being silently unclassifiable. The
+        # floor is 90: below today with room for genuine churn, far above a collapsed extractor.
+        run: python3 scripts/executable-config-lint.py --busbar target/debug/busbar --root . --min-docs 90
 
   # Compliance-by-compilation gate: busbar must build + lint clean with the built-in auth plugin
   # COMPILED OUT (`--no-default-features`), so a regulated deployment can ship a binary that provably

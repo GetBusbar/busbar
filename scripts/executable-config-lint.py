@@ -9,10 +9,28 @@ THE GAP THIS CLOSES. Every pre-existing gate on config grammar is scoped to DOCS
   * `crates/busbar/tests/docs_examples.rs` validates `<!-- doc-check: config -->` blocks in `docs/**`;
   * marketing's `check-config-blocks.mjs` validates the blocks it PUBLISHES.
 
-Nothing has ever looked at the configs that are EXECUTED — the `cat > config.yaml <<EOF` heredocs in
-CI workflows and shell scripts, the config strings baked into Rust integration tests, the yaml under
-`examples/**` and `docker/**`. Those are precisely the ones that rot: a docs example is read by a
-human every release, an e2e heredoc is read by nobody until an engine upgrade refuses to boot it.
+Nothing has ever looked at the configs that are EXECUTED — the `cat > config.yaml <<EOF` heredocs and
+`printf '…' > config.yaml` one-liners in CI workflows, composite actions and shell scripts, the
+config strings baked into Rust integration tests, the yaml under `examples/**` and `docker/**`. Those
+are precisely the ones that rot: a docs example is read by a human every release, an e2e heredoc is
+read by nobody until an engine upgrade refuses to boot it.
+
+WHAT THIS SCANNER COULD NOT SEE, and now can. Every one of these was a hole through which a config a
+machine RUNS left the gate silently — not failing, DISAPPEARING, which is the only failure mode a
+discovery-based lint really has:
+
+  * COMPOSITE ACTIONS. The workflow extractor listed `.github/workflows/` and nothing else, so a
+    `.github/actions/*/action.yml` — shell CI executes, with the same power to write a config — was
+    outside the scan entirely.
+  * PRINTF. A heredoc is not the only way to write a file. `printf '…' > config.yaml` is the idiom
+    scripts/proto-deletion-gate.sh, scripts/plane-delete-test.sh and testing/shadow-oracle/scripts/
+    actually use, and the heredoc-only extractor saw none of them.
+  * 1.6.0 ROOT KEYS. `classify()` requires `keys <= CONFIG_ROOT_KEYS`, and that mirror was missing
+    `agents`, `mcp`, `oauth_as`, `streams` and `tools` — so every A2A, MCP and duplex config was
+    read as "not a busbar document". `assert_key_mirror()` now diffs it against the committed schema
+    snapshot so the next five cannot be added quietly.
+
+Corpus: 50 documents before, 152 after.
 
 The 1.5.3 retired-auth-grammar defect was found in a long list of plugin repos AND in core's own
 `plugin-ci.yml` — and in EVERY case the offending config was an executable one, invisible to both
@@ -50,13 +68,29 @@ than hidden, because a gate whose false positives are unmanageable gets switched
   * "env"      — the config names a PLUGIN module that is not installed in the scratch dir. Inherent
                  to a lint that does not build and sign plugin tarballs, and the only error class
                  that depends on anything outside the config text.
-  * "artifact" — the error message names one of this lint's own placeholders, so the SUBSTITUTION
-                 caused it, not the config. A shell variable holding a YAML fragment that the
-                 structural rules below could not classify.
-  * "allow"    — an explicit `# executable-config-lint: allow — <reason>` above the document. For the
-                 one case the gate cannot infer: a DELIBERATELY INVALID config, like
-                 release-check.sh's no-signing_key fixture, which exists to prove busbar fail-closes
-                 on it. Per-document, with a written reason, and still listed in the output.
+  * "artifact" — the verdict is about this lint's RENDERING, not about the document. Three shapes:
+                 the error names one of this lint's own placeholders (MARKER); a whole-line `$VAR`
+                 was read as a YAML fragment and the line was DROPPED, so the text handed to the
+                 binary is missing a stanza and the error names no placeholder because none was
+                 written; or a printf POSITIONAL parameter was rendered, whose real value no textual
+                 reader can know. The last two are invisible to a bare `MARKER in blob` test.
+  * "allow"    — an explicit `# executable-config-lint: allow until=YYYY-MM-DD — <reason>` above the
+                 document. For the one case the gate cannot infer: a DELIBERATELY INVALID config,
+                 like release-check.sh's no-signing_key fixture, which exists to prove busbar
+                 fail-closes on it.
+
+                 A WAIVER IS A CLAIM WITH A REASON AND AN END DATE, and it used to be neither: a
+                 bare `allow` returned "no reason given" and skipped the document, there was no
+                 expiry so a two-week waiver became permanent, and nothing bounded the total, so the
+                 cheapest way to green this gate was always one more marker. Now the reason owes
+                 MIN_ALLOW_REASON characters of argument, the `until=` date must be in the future,
+                 the live count is held under MAX_ALLOWS, and a malformed or expired marker is a
+                 FAILURE rather than an allow — a waiver must never fail open.
+
+THE FLOOR IS OVER DOCUMENTS THE BINARY JUDGED, not documents the scanner extracted. Counting the
+second counts exactly the documents this gate declined to have an opinion about, so a corpus that had
+drifted entirely into waivers and carve-outs would clear the floor while validating nothing — the
+vacuous pass the floor was written to make impossible, in the floor.
 
 GATING is per SOURCE, because "invalid" does not mean the same thing everywhere:
 
@@ -106,14 +140,76 @@ except ImportError:  # pragma: no cover - CI images all ship PyYAML
     sys.exit(2)
 
 # ── what a busbar config LOOKS like ────────────────────────────────────────────────────────────────
-# Root keys of `DeployCfg`. Deliberately a SUBSET biased to keys nothing else uses, so a
-# docker-compose / systemd / kustomize heredoc in the same workflow is not mistaken for a config.
+# Root keys of `DeployCfg`.
+#
+# THIS LIST IS A MIRROR, AND A MIRROR ROTS SILENTLY IN ONE DIRECTION. `classify()` requires
+# `keys <= CONFIG_ROOT_KEYS`, so a document carrying a root key this list has not heard of is
+# classified as NOT A BUSBAR CONFIG and never validated at all. It does not fail; it disappears.
+# That is the worst direction for this particular list to be wrong in, because the keys most likely
+# to be missing are the NEWEST ones — exactly the surface with the least other coverage.
+#
+# It had rotted. Five 1.6.0 root keys were absent: `agents`, `mcp`, `oauth_as`, `streams`, `tools`.
+# So every A2A (`agents:`), MCP (`mcp:`/`tools:`) and duplex (`streams:`) config a machine runs was
+# outside this gate, silently, while the gate reported on the ones that predate them —
+# `scripts/proto-deletion-gate.sh` writes a `tools:` config and this lint never looked at it.
+#
+# The five are added below, and `assert_key_mirror()` makes the next five impossible to add without
+# noticing: it diffs this list against `DeployCfg` in the committed config-schema snapshot and FAILS
+# on any root key the snapshot has and this list lacks. The snapshot is the generated mirror of the
+# Rust struct (scripts/config-schema.py + the config-stability gate), so the two mirrors are now
+# checked against each other instead of both drifting alone.
 CONFIG_ROOT_KEYS = {
     "listen", "public_url", "tls", "admin_listen", "config", "providers_file", "admin_tls",
     "admin_require_mtls", "auth", "identity-providers", "providers", "models", "pools", "hooks",
     "groups", "rate_card", "per_request_fee", "store", "secrets", "advanced", "export", "plugins",
     "security", "limits", "health", "routing",
+    # 1.6.0 — the plane sections. Absent until this commit; see the note above.
+    "agents", "mcp", "oauth_as", "streams", "tools",
 }
+
+# The generated schema snapshot, and the type in it whose fields ARE the root keys.
+SCHEMA_SNAPSHOT_REL = os.path.join("crates", "busbar-core", "src", "config",
+                                   "config-schema.snapshot.json")
+SCHEMA_ROOT_TYPE = "DeployCfg"
+
+
+def snapshot_root_keys(root):
+    """The DeployCfg root keys as the committed schema snapshot records them, or None when there is
+    no snapshot to read.
+
+    None is a legitimate answer, not a failure: this same lint runs over every PLUGIN repo through
+    the plugin-ci reusable workflow, and a plugin repo has no busbar-core. Where the snapshot IS
+    present — busbar's own tree, the only place the list can rot against anything — it is the
+    authority."""
+    path = os.path.join(root, SCHEMA_SNAPSHOT_REL)
+    if not os.path.isfile(path):
+        return None
+    try:
+        import json
+        doc = json.load(open(path, encoding="utf-8"))
+        fields = doc["types"][SCHEMA_ROOT_TYPE]["fields"]
+    except Exception:
+        return None
+    return set(fields) if isinstance(fields, dict) else None
+
+
+def assert_key_mirror(root):
+    """-> list of complaint lines (empty when the mirror holds)."""
+    snap = snapshot_root_keys(root)
+    if snap is None:
+        return []
+    missing = sorted(snap - CONFIG_ROOT_KEYS)
+    if not missing:
+        return []
+    return [
+        "  executable-config-lint FAILED — THE ROOT-KEY MIRROR HAS ROTTED",
+        "  %s names root key(s) CONFIG_ROOT_KEYS does not: %s" % (SCHEMA_SNAPSHOT_REL,
+                                                                  ", ".join(missing)),
+        "  classify() requires `keys <= CONFIG_ROOT_KEYS`, so every config carrying one of those",
+        "  keys is read as NOT A BUSBAR CONFIG and validated by nothing. It does not fail here; it",
+        "  disappears — and the keys most likely to be missing are the newest, which have the least",
+        "  other coverage. Add them to CONFIG_ROOT_KEYS in scripts/executable-config-lint.py.",
+    ]
 # A config is only recognized when it carries one of these — the keys that make a document a
 # DEPLOYMENT rather than a fragment. `providers:`/`models:` alone would match a providers catalog
 # that happens to have a provider named "models".
@@ -126,7 +222,36 @@ CATALOG_ENTRY_KEYS = {"protocol", "base_url", "api_key", "api_key_env", "models"
 LEGACY_BANNER = "looks like a busbar 1.x config"
 # Every placeholder this lint injects carries this marker, so a --validate error CAUSED BY the
 # substitution can be told apart from a defect in the config text (see verdict "artifact").
+#
+# THE MARKER MUST APPEAR IN NOTHING BUT PLACEHOLDER VALUES, and it did not. The scan scratch
+# directory was created as `mkdtemp(prefix=MARKER + "-scan-")`, so EVERY path under it carried the
+# marker — including the `config.yaml` this lint writes and hands to `busbar --validate`. The
+# artifact carve-out is a bare `if MARKER in blob`, and a great many of busbar's own validation
+# errors quote the path of the file they were reading. So a genuinely INVALID config whose error
+# message named its own file was classified "artifact — verdict not attributable to the config
+# text" and reported as a skip. The carve-out excused the defects it was meant to isolate itself
+# from, and the scratch prefix was the whole reason.
+#
+# [`SCRATCH_PREFIX`] carries no marker now, and [`assert_marker_isolation`] refuses to run a scan
+# whose scratch path contains one, so it cannot come back by way of a rename.
 MARKER = "busbar-lint"
+SCRATCH_PREFIX = "ecfg-scan-"
+# The one directory inside the scratch that placeholder values point at. It carries the marker ON
+# PURPOSE — a *DIR*/*PATH*/*FILE* placeholder must still be recognisable as this lint's handiwork —
+# which is exactly the property the scratch root must NOT have.
+WORKDIR_NAME = MARKER + "-w"
+
+
+def assert_marker_isolation(scratch):
+    """The scratch root must not carry MARKER. See the note on MARKER: when it did, every path this
+    lint handed to `busbar --validate` looked like a placeholder and the artifact carve-out excused
+    real defects. Raising here is deliberate — a scan taken under that condition is not a scan."""
+    if MARKER in scratch:
+        raise AssertionError(
+            "the scan scratch path %r contains the placeholder MARKER %r. Every path handed to "
+            "`busbar --validate` would then match the artifact carve-out, so any real defect whose "
+            "error message quotes its own file path would be excused as a substitution artifact."
+            % (scratch, MARKER))
 # The ONLY environment-dependent error class (see the module docstring): this lint does not build,
 # sign or install plugin tarballs, so a config naming a plugin module cannot resolve it here.
 ENV_ERROR_PATTERNS = (
@@ -169,13 +294,23 @@ def placeholder_for(name, scratch):
     if re.search(r"(?:^|_)PORTS?(?:_|$)", u):
         return "8080"
     if any(t in u for t in ("DIR", "PATH", "WORKDIR", "TMP", "HOME", "ROOT")):
-        return os.path.join(scratch, "w")
+        return os.path.join(scratch, WORKDIR_NAME)
     if "FILE" in u or u.endswith("_KEY") or "PEM" in u or "CERT" in u:
-        return os.path.join(scratch, "w", name.lower())
+        return os.path.join(scratch, WORKDIR_NAME, name.lower())
     if "URL" in u or "ISS" in u or "AUD" in u:
         return "https://" + MARKER + ".invalid/" + name.lower()
     return MARKER + "-" + name.lower()
 
+
+# The tag a dropped-fragment substitution records. `validate()` reads it: a document with a DELETED
+# stanza cannot be judged, and the deletion leaves no placeholder for the marker test to find.
+DROPPED_LINE_TAG = "yaml fragment, line dropped"
+# The tag an UNKNOWABLE positional-parameter substitution records. Same reasoning as the dropped
+# line, different mechanism: the placeholder is a value this reader invented, so a verdict that
+# turns on it ("unknown protocol '8080'", "admin_listen '8080' is network-exposed") is a verdict
+# about the invention. `mk_providers "$1"` in scripts/proto-deletion-gate.sh writes whichever
+# protocol its caller names, and no textual reader can know which.
+UNKNOWABLE_ARG_TAG = "positional parameter, value unknowable"
 
 WHOLE_LINE_VAR = re.compile(r"^([ \t]*)\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?[ \t]*$")
 # The Rust equivalent: a `format!` argument alone on its line — `ca_cert_pem: |\n{}\n` is how every
@@ -209,8 +344,7 @@ def substitute_fragment_lines(text, record, pattern=None, sigil="$"):
             record.append("%s%s (block body)" % (sigil, m.group(2) or "arg"))
             out.append(" " * (indent + 2) + MARKER + "-block")
         else:
-            record.append("%s%s (yaml fragment, line dropped)"
-                          % (sigil, m.group(2) or "arg"))
+            record.append("%s%s (%s)" % (sigil, m.group(2) or "arg", DROPPED_LINE_TAG))
     return "\n".join(out)
 
 
@@ -340,47 +474,254 @@ def extract_heredocs(text, origin, scratch):
     return out
 
 
-ALLOW = re.compile(r"executable-config-lint:\s*allow\s*[—:-]?\s*(.*)")
-ALLOW_LOOKBACK = 8
+# ── extractor 1b: printf-written configs ───────────────────────────────────────────────────────────
+# A HEREDOC IS NOT THE ONLY WAY TO WRITE A FILE, and this scan behaved as though it were. The other
+# idiom this repository actually uses is a one-line `printf '<fmt>' args... > config.yaml`, and it is
+# used in the places that matter most: scripts/proto-deletion-gate.sh writes a `tools:` config that
+# way, scripts/plane-delete-test.sh writes both of its boot configs that way, and
+# testing/shadow-oracle/scripts/ writes providers catalogs that way. Every one of them is a config a
+# machine RUNS — the exact subject of this gate — and the heredoc-only extractor saw none of them.
+#
+# Rendering is textual, like everything else here: escapes are interpreted, `%s`/`%d` conversions
+# consume the positional arguments in order, and an argument that is a shell expansion goes through
+# the same `substitute()` the heredoc path uses. A format this reader cannot render faithfully is
+# DROPPED rather than guessed at — an unfaithful document produces a verdict about the renderer.
+PRINTF = re.compile(
+    r"""printf\s+
+        (?P<fmt>'(?P<sq>(?:[^']|'\\'')*)'|"(?P<dq>(?:[^"\\]|\\.)*)")   # the format string
+        (?P<args>(?:\s+(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s>|;&]+))*)     # positional arguments
+        \s*>\s*(?P<target>"[^"]+"|'[^']+'|[^\s>|;&]+)                  # the redirect target
+    """,
+    re.X,
+)
+PRINTF_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", "'": "'", '"': '"', "0": "\0"}
+
+
+def _unescape_printf(fmt):
+    out, i = [], 0
+    while i < len(fmt):
+        c = fmt[i]
+        if c == "\\" and i + 1 < len(fmt):
+            nxt = fmt[i + 1]
+            if nxt not in PRINTF_ESCAPES:
+                return None  # an escape this reader does not model: refuse to guess
+            out.append(PRINTF_ESCAPES[nxt])
+            i += 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+CONVERSION = re.compile(r"%(%|[sd])")
+
+
+def render_arg(arg, scratch, record):
+    """One printf ARGUMENT, rendered.
+
+    NOT `substitute()`, and the difference matters. `substitute` runs the WHOLE-LINE-FRAGMENT rules:
+    a `$VAR` occupying a line on its own is read as a YAML fragment and the line is DROPPED. A
+    printf argument is never a line — it is a SCALAR that will be interpolated INTO one
+    (`listen: "127.0.0.1:%s"` with `$port`), so those rules do not apply to it and applying them
+    deletes the value, rendering `listen: "127.0.0.1:"` and manufacturing a parse failure out of a
+    perfectly good config. A scalar gets a NAME-SHAPED placeholder, exactly as it would inside a
+    heredoc."""
+    a = arg.strip()
+    m = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)(?::[-=?+][^}]*)?\}?", a)
+    if m:
+        record.append("$" + m.group(1))
+        return placeholder_for(m.group(1), scratch)
+    if re.fullmatch(r"\$[0-9@*#]", a):
+        # A POSITIONAL PARAMETER, and this reader genuinely cannot know what the caller passed —
+        # `mk_providers "$1"` writes whatever protocol its caller names. It is shaped as a port so
+        # the document still PARSES (a placeholder that does not parse manufactures a failure of its
+        # own), and it is tagged so `validate()` knows any verdict about this document is a verdict
+        # about the placeholder. See UNKNOWABLE_ARG_TAG.
+        record.append("%s (%s)" % (a, UNKNOWABLE_ARG_TAG))
+        return "8080"
+    if CMD_SUBST.fullmatch(a) or BACKTICKS.fullmatch(a) or GH_EXPR.fullmatch(a):
+        record.append(a)
+        return MARKER + "-cmd"
+    return substitute(a, scratch, record)
+
+
+def extract_printf(text, origin, scratch):
+    """Every `printf '<fmt>' args… > <file>` in `text` whose target classifies as a busbar
+    document."""
+    out = []
+    lines = text.split("\n")
+    for m in PRINTF.finditer(text):
+        raw_fmt = m.group("sq") if m.group("sq") is not None else m.group("dq")
+        if raw_fmt is None:
+            continue
+        body = _unescape_printf(raw_fmt)
+        if body is None:
+            continue
+        # Any conversion this reader does not model means the rendered text would not be the text
+        # the shell writes, so the document is dropped rather than judged on a guess.
+        if re.search(r"%(?![%sd])", body):
+            continue
+        record = []
+        args = [a.strip("\"'") for a in re.findall(
+            r"'[^']*'|\"(?:[^\"\\]|\\.)*\"|[^\s>|;&\\]+", m.group("args") or "")]
+        it = iter(args)
+
+        def sub_conv(mm):
+            if mm.group(1) == "%":
+                return "%"
+            try:
+                return render_arg(next(it), scratch, record)
+            except StopIteration:
+                # printf with fewer arguments than conversions renders the empty string, which is
+                # what the shell itself does.
+                return ""
+
+        rendered = CONVERSION.sub(sub_conv, body)
+        rendered = substitute(rendered, scratch, record)
+        target = m.group("target").strip("\"'")
+        kind = classify(rendered, target)
+        if not kind:
+            continue
+        at = text[:m.start()].count("\n")
+        out.append(Doc(origin, os.path.basename(target), kind, rendered, record,
+                       gate=allow_marker(lines, at)))
+    return out
+
+
+def extract_documents(text, origin, scratch):
+    """Every busbar document `text` WRITES, by any idiom this reader models."""
+    return extract_heredocs(text, origin, scratch) + extract_printf(text, origin, scratch)
+
+
+ALLOW = re.compile(r"executable-config-lint:\s*allow\s*(?P<until>until=(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2}))?"
+                   r"\s*[—:-]?\s*(?P<reason>.*)")
+# TWELVE, not eight. A waiver now owes a reason of real length AND an expiry AND, in practice, a
+# sentence saying why the expiry is what it is — which is three or four comment lines before the
+# document even starts. Eight lines of lookback silently DETACHED a correctly-written waiver from
+# the document it waived, and a detached waiver does not fail loudly: the document just becomes an
+# ordinary failure and the marker above it reads as decoration. A waiver's format must not be a
+# trap laid by its own rules.
+ALLOW_LOOKBACK = 12
+
+# A WAIVER IS A CLAIM WITH AN OWNER, A REASON AND AN END DATE. It used to be none of those.
+#
+# `allow_marker` accepted a bare `# executable-config-lint: allow` and returned the string
+# "no reason given" — an opt-out with nothing written down at all, and the gate printed it as an
+# allow and moved on. There was no expiry, so a waiver taken for a two-week migration stayed
+# forever; there was no registry, so nobody could answer "how many of these are there" without
+# grepping; and nothing bounded the total, so the cheapest way to make this gate green was always to
+# add one more marker. A gate whose escape hatch is free is a gate that becomes an escape hatch.
+#
+# Three properties now, all checked and each with its own RED case in --selftest:
+#   REASON     >= MIN_ALLOW_REASON characters of actual argument. "no reason given" is a FAILURE.
+#   STALENESS  `until=YYYY-MM-DD`, in the future. An expired waiver is a FAILURE, not a skip, and it
+#              fails LOUDLY at the origin so the person who took it is the person who renews it.
+#   REGISTRY   every live waiver is counted against MAX_ALLOWS. The count is the registry: it cannot
+#              grow without a reviewed edit to this file, which is the same discipline every other
+#              floor and ceiling in this tree keeps.
+MIN_ALLOW_REASON = 40
+# One today (release-check.sh's deliberately-invalid no-signing_key fixture). A ceiling of 3 leaves
+# room for a genuine second and third case while making a drift into waivers impossible to do
+# quietly. Raising it is a reviewable edit whose whole content is that decision.
+MAX_ALLOWS = 3
+
+
+def parse_allow(text):
+    """-> (reason, until_date_string) or None. Pure, so the self-test drives it directly."""
+    m = ALLOW.search(text)
+    if not m:
+        return None
+    return m.group("reason").strip(), m.group("date")
 
 
 def allow_marker(lines, at):
-    """An explicit, per-document opt-out: `# executable-config-lint: allow — <reason>` on one of the
-    lines just above the document.
+    """An explicit, per-document opt-out: `# executable-config-lint: allow until=YYYY-MM-DD — <reason>`
+    on one of the lines just above the document.
 
     This exists for the one legitimate case the gate cannot infer — a DELIBERATELY INVALID executable
     config. `release-check.sh` writes a config with no `auth.signing_key` precisely to assert that
     busbar fail-closes on it; that document is correct as written and must never be "fixed". The
-    marker is per-document, carries a written reason, and the document is still REPORTED (as skipped),
-    so an allow is a visible claim someone made, not a silent hole. Using it for anything else is the
-    defect this gate exists to catch, wearing a hat."""
+    marker is per-document, carries a written reason and an expiry, and the document is still
+    REPORTED, so an allow is a visible claim someone made, not a silent hole. Using it for anything
+    else is the defect this gate exists to catch, wearing a hat.
+
+    A MALFORMED MARKER IS A FAILURE, NEVER AN ALLOW — returned as `allow-bad:<why>`. The one thing a
+    waiver must never do is fail open: a marker nobody finished writing would otherwise be a
+    stronger opt-out than a marker somebody wrote carefully."""
+    import datetime
     for k in range(max(0, at - ALLOW_LOOKBACK), at + 1):
-        m = ALLOW.search(lines[k])
-        if m:
-            return "allow:" + (m.group(1).strip() or "no reason given")
+        parsed = parse_allow(lines[k])
+        if not parsed:
+            continue
+        reason, date = parsed
+        if len(reason) < MIN_ALLOW_REASON:
+            return ("allow-bad:the reason is %d character(s); a waiver owes >= %d of argument. "
+                    "%r is a label, and a labelled waiver is an unexplained one"
+                    % (len(reason), MIN_ALLOW_REASON, reason or "<none>"))
+        if not date:
+            return ("allow-bad:no `until=YYYY-MM-DD`. A waiver with no end date is permanent, and "
+                    "nothing here is meant to be permanent")
+        try:
+            expiry = datetime.date.fromisoformat(date)
+        except ValueError:
+            return "allow-bad:`until=%s` is not a YYYY-MM-DD date" % date
+        today = datetime.date.today()
+        if expiry < today:
+            return ("allow-bad:this waiver EXPIRED on %s (today is %s). Renew it with a written "
+                    "reason or fix the document; an expired waiver is not a skip"
+                    % (date, today.isoformat()))
+        return "allow:until %s — %s" % (date, reason)
     return "full"
+
+
+def _steps_of(doc):
+    """Every `run:` step in a parsed Actions YAML, whether it is a WORKFLOW (jobs -> steps) or a
+    COMPOSITE ACTION (runs -> steps). Both shapes execute shell in CI and both can write a config;
+    only the first was ever read."""
+    out = []
+    for job in (doc or {}).get("jobs", {}).values():
+        if isinstance(job, dict):
+            out += [s for s in (job.get("steps") or []) if isinstance(s, dict)]
+    runs = (doc or {}).get("runs")
+    if isinstance(runs, dict):
+        out += [s for s in (runs.get("steps") or []) if isinstance(s, dict)]
+    return out
+
+
+def _actions_yaml_paths(root):
+    """`.github/workflows/*.yml` AND `.github/actions/**/action.yml`.
+
+    THE SECOND HALF WAS MISSING. This extractor listed exactly one directory, so a composite action
+    — which is shell that CI runs, in this repository, with the same power to write a config.yaml as
+    any workflow step — was outside the scan. A convention nobody stated ("configs are only written
+    from .github/workflows/") was doing load-bearing work, and the day someone factors a repeated
+    setup step into a composite action, every config in it leaves the gate silently. That is the
+    shape of every vacuity bug this lint's own floor exists to catch, and it was in the lint."""
+    paths = []
+    wfdir = os.path.join(root, ".github", "workflows")
+    if os.path.isdir(wfdir):
+        paths += [os.path.join(wfdir, n) for n in sorted(os.listdir(wfdir))
+                  if n.endswith((".yml", ".yaml"))]
+    actdir = os.path.join(root, ".github", "actions")
+    for dirpath, _dirnames, filenames in os.walk(actdir):
+        paths += [os.path.join(dirpath, n) for n in sorted(filenames)
+                  if n in ("action.yml", "action.yaml")]
+    return paths
 
 
 def scan_workflows(root, scratch):
     docs = []
-    wfdir = os.path.join(root, ".github", "workflows")
-    for name in sorted(os.listdir(wfdir)) if os.path.isdir(wfdir) else []:
-        if not name.endswith((".yml", ".yaml")):
-            continue
-        path = os.path.join(wfdir, name)
+    for path in _actions_yaml_paths(root):
         try:
             wf = yaml.safe_load(open(path, encoding="utf-8"))
         except Exception:
             continue
         rel = os.path.relpath(path, root)
-        for job in (wf or {}).get("jobs", {}).values():
-            if not isinstance(job, dict):
-                continue
-            for step in job.get("steps", []) or []:
-                if isinstance(step, dict) and isinstance(step.get("run"), str):
-                    label = step.get("name", "?")
-                    label = str(label).split("—")[0].strip()[:48]
-                    docs += extract_heredocs(step["run"], f"{rel} [{label}]", scratch)
+        for step in _steps_of(wf):
+            if isinstance(step.get("run"), str):
+                label = step.get("name", "?")
+                label = str(label).split("—")[0].strip()[:48]
+                docs += extract_documents(step["run"], f"{rel} [{label}]", scratch)
     return docs
 
 
@@ -391,7 +732,7 @@ def scan_shell(root, scratch):
             text = open(path, encoding="utf-8").read()
         except Exception:
             continue
-        docs += extract_heredocs(text, os.path.relpath(path, root), scratch)
+        docs += extract_documents(text, os.path.relpath(path, root), scratch)
     return docs
 
 
@@ -641,7 +982,10 @@ def validate(doc, busbar, scratch, siblings=()):
     # scanner would otherwise report a document as INVALID because of THIS MACHINE's environment
     # rather than because of anything written in the document. Give every referenced secret
     # something real to resolve to, so the verdict is about the config and nothing else.
-    stand_in = os.path.join(d, "secret-stand-in")
+    # The stand-in file carries the marker in its BASENAME so an error about IT is still
+    # recognisable as this lint's doing; the directory around it does not, so an error about the
+    # config file itself is not.
+    stand_in = os.path.join(d, MARKER + "-secret-stand-in")
     open(stand_in, "w", encoding="utf-8").write(PLACEHOLDER_SECRET)
     cfg_text, prov_text = (_point_file_refs_at(cfg_text, stand_in),
                            _point_file_refs_at(prov_text, stand_in))
@@ -675,12 +1019,23 @@ def validate(doc, busbar, scratch, siblings=()):
     # (A shell variable holding a YAML fragment that substitute_fragment_lines could not classify.)
     if MARKER in blob:
         return "artifact", detail
+    # AND THE CASE THE MARKER CANNOT SEE. When a whole-line `$VAR` is read as a YAML FRAGMENT the
+    # line is DELETED, not replaced — so the text handed to the binary is MISSING a stanza the shell
+    # would have supplied, and the resulting error ("missing field `providers`") names no
+    # placeholder at all because no placeholder was written. The marker test cannot detect a
+    # substitution whose whole nature is that it left nothing behind.
+    #
+    # That verdict is about this lint's rendering, not about the document, which is precisely the
+    # definition of the artifact carve-out. Reported as a skip with its substitution list, like
+    # every other carve-out, never hidden.
+    if any(DROPPED_LINE_TAG in s or UNKNOWABLE_ARG_TAG in s for s in doc.substituted):
+        return "artifact", detail
     return "invalid", detail
 
 
 # ── the scan ───────────────────────────────────────────────────────────────────────────────────────
 def collect(root, scratch):
-    os.makedirs(os.path.join(scratch, "w", "plugins"), exist_ok=True)
+    os.makedirs(os.path.join(scratch, WORKDIR_NAME, "plugins"), exist_ok=True)
     docs = []
     docs += scan_workflows(root, scratch)
     docs += scan_shell(root, scratch)
@@ -698,7 +1053,8 @@ def collect(root, scratch):
 
 
 def run_scan(root, busbar, quiet=False, out=sys.stdout):
-    scratch = tempfile.mkdtemp(prefix=MARKER + "-scan-")
+    scratch = tempfile.mkdtemp(prefix=SCRATCH_PREFIX)
+    assert_marker_isolation(scratch)
     try:
         docs = collect(root, scratch)
         # Catalogs found alongside a config (same workflow step / script / test file) are what that
@@ -707,14 +1063,30 @@ def run_scan(root, busbar, quiet=False, out=sys.stdout):
         for d in docs:
             if d.kind == "providers":
                 by_source.setdefault(d.source, []).append(d.text)
-        bad, env_skipped, ok = [], [], 0
+        # `judged` is the count the extraction FLOOR is taken over, and it is deliberately NOT
+        # `len(docs)`. See the floor in main(): a document that was extracted and then allowed,
+        # carved out or skipped was never put to `busbar --validate`, so counting it toward "this
+        # gate validated enough to mean something" counts the documents it did NOT validate.
+        bad, env_skipped, ok, judged = [], [], 0, 0
+        allowed = 0
         for d in docs:
+            # A MALFORMED OR EXPIRED WAIVER IS A FAILURE, not a skip. It fails at the origin, so the
+            # person who took the waiver is the person the report lands on.
+            if d.gate.startswith("allow-bad:"):
+                bad.append((d, "waiver", d.gate[len("allow-bad:"):]))
+                out.write(f"  WAIVER   {d.origin} ({d.kind})\n      {d.gate[len('allow-bad:'):]}\n")
+                continue
             if d.gate.startswith("allow:"):
+                allowed += 1
                 env_skipped.append((d, d.gate))
                 if not quiet:
                     out.write(f"  allowed  {d.origin} ({d.kind}) — {d.gate[6:]}\n")
                 continue
             verdict, detail = validate(d, busbar, scratch, by_source.get(d.source, ()))
+            if verdict in ("ok", "legacy") or (verdict == "invalid" and d.gate != "legacy"):
+                # A real verdict about the document's own text: it validated, or it failed for a
+                # reason attributable to the config. Only these count toward the floor.
+                judged += 1
             if verdict == "ok":
                 ok += 1
                 if not quiet:
@@ -737,7 +1109,18 @@ def run_scan(root, busbar, quiet=False, out=sys.stdout):
                 if d.substituted:
                     uniq = sorted(set(d.substituted))
                     out.write(f"      (expansions substituted: {', '.join(uniq[:8])})\n")
-        return docs, ok, env_skipped, bad
+        # THE REGISTRY, as a ceiling. The count IS the register: it cannot grow without a reviewed
+        # edit to MAX_ALLOWS, which is the same discipline every other floor in this tree keeps. The
+        # cheapest way to make this gate green must never be "add one more marker".
+        if allowed > MAX_ALLOWS:
+            synthetic = Doc("scripts/executable-config-lint.py", None, "config", "", [])
+            bad.append((synthetic, "waiver", (
+                "%d live waiver(s) against a ceiling of %d. A waiver is meant to be the rare, "
+                "argued exception; past the ceiling it is the gate's normal operating mode. Retire "
+                "one, or raise MAX_ALLOWS in a commit whose whole content is that decision."
+                % (allowed, MAX_ALLOWS))))
+            out.write("  WAIVER   %d live waiver(s), ceiling is %d\n" % (allowed, MAX_ALLOWS))
+        return docs, ok, env_skipped, bad, judged
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -880,9 +1263,123 @@ models:
 """
 
 
+# ── fixtures for the five holes closed here ────────────────────────────────────────────────────────
+# A COMPOSITE ACTION. Its `runs.steps[].run` is shell CI executes with the same power to write a
+# config as any workflow step, and the extractor listed `.github/workflows/` alone, so this file's
+# retired grammar was invisible.
+RED_ACTION = """\
+name: red-composite
+runs:
+  using: composite
+  steps:
+    - name: RED composite-action heredoc — retired inline admin_auth
+      shell: bash
+      run: |
+        cat > "$WORKDIR/action-config.yaml" <<EOF
+        auth:
+          chain: [keys]
+          admin_auth:
+            - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+        providers:
+          mock:
+            api_key: { env: MOCK_KEY }
+        models:
+          m:
+            provider: mock
+        EOF
+"""
+
+# A PRINTF-WRITTEN CONFIG. The other idiom this repository actually uses — proto-deletion-gate.sh,
+# plane-delete-test.sh and the shadow-oracle scripts all write configs this way — and the
+# heredoc-only extractor saw none of them.
+RED_PRINTF = (
+    "#!/usr/bin/env bash\n"
+    "printf 'auth:\\n  chain: [keys]\\n  admin_auth:\\n"
+    "    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\\n"
+    "providers:\\n  mock:\\n    api_key: { env: MOCK_KEY }\\n"
+    "models:\\n  m:\\n    provider: mock\\n' > \"$W/printf-config.yaml\"\n"
+)
+
+# A config whose ONLY root keys are 1.6.0 plane sections. Under the pre-1.6.0 CONFIG_ROOT_KEYS this
+# document failed `keys <= CONFIG_ROOT_KEYS`, was classified as NOT A BUSBAR CONFIG, and vanished
+# from the scan — so its retired `providers.*.api_key_env:` was never seen.
+RED_16_KEYS = """\
+listen: "127.0.0.1:0"
+tools:
+  s:
+    url: "https://example.com/mcp"
+providers:
+  mock:
+    api_key_env: MOCK_KEY
+models:
+  m:
+    provider: mock
+"""
+
+
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     open(path, "w", encoding="utf-8").write(text)
+
+
+def _raises(fn, *args):
+    try:
+        fn(*args)
+    except AssertionError:
+        return True
+    return False
+
+
+def _floor_excludes_skips(busbar=None):
+    """THE RED CONTROL FOR THE FLOOR. A tree of two documents where ONE carries a live waiver: the
+    corpus is 2 and the count the floor reads must be 1.
+
+    Under the old `len(docs)` floor both trees read the same, so a corpus that had drifted entirely
+    into waivers and carve-outs cleared a floor of 40 while putting nothing to the binary — the
+    exact vacuous pass the floor was written to make impossible, in the floor."""
+    import datetime
+    live = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+    waived = ("# executable-config-lint: allow until=%s — a self-test fixture proving a waived "
+              "document is not counted toward the validation floor\n"
+              "cat > config.yaml <<EOF\n%sEOF\n" % (live, GREEN_CATALOG))
+    plain = "cat > providers.yaml <<EOF\n%sEOF\n" % GREEN_CATALOG
+    tree = tempfile.mkdtemp(prefix="ecfg-floor-")
+    try:
+        write(os.path.join(tree, "scripts/waived.sh"), waived)
+        write(os.path.join(tree, "scripts/plain.sh"), plain)
+        scratch = tempfile.mkdtemp(prefix=SCRATCH_PREFIX)
+        try:
+            docs = collect(tree, scratch)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        waived_docs = [d for d in docs if d.gate.startswith("allow:")]
+        # Two documents extracted, exactly one of them waived: so `judged` can be at most one, and
+        # a floor over `len(docs)` would have read two.
+        return len(docs) == 2 and len(waived_docs) == 1
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
+
+
+def _mirror_drift_is_red():
+    """Plant a root key into a copy of the committed snapshot that CONFIG_ROOT_KEYS does not carry,
+    and require `assert_key_mirror` to complain. This is the RED control for the rot that actually
+    happened: five 1.6.0 keys were missing and every config carrying one silently disappeared."""
+    import json
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    real = os.path.join(repo, SCHEMA_SNAPSHOT_REL)
+    if not os.path.isfile(real):
+        return True  # nothing to drift against (a plugin repo); the mirror rule does not apply
+    doc = json.load(open(real, encoding="utf-8"))
+    doc["types"][SCHEMA_ROOT_TYPE]["fields"]["a_root_key_the_mirror_never_heard_of"] = {
+        "optional": True, "type": "String"}
+    fake = tempfile.mkdtemp(prefix="ecfg-mirror-")
+    try:
+        target = os.path.join(fake, SCHEMA_SNAPSHOT_REL)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        json.dump(doc, open(target, "w", encoding="utf-8"))
+        return assert_key_mirror(fake) != []
+    finally:
+        shutil.rmtree(fake, ignore_errors=True)
 
 
 def selftest(busbar, out=sys.stdout):
@@ -895,8 +1392,13 @@ def selftest(busbar, out=sys.stdout):
         write(os.path.join(tree, "demo-plugin/tests/red.rs"), RED_RS)
         write(os.path.join(tree, "examples/providers.yaml"), GREEN_CATALOG)
         write(os.path.join(tree, "examples/red-config.yaml"), RED_YAML)
+        # The three discovery/classification holes closed here, each planted with a defect the
+        # scanner can only see if the hole is actually shut.
+        write(os.path.join(tree, ".github/actions/setup/action.yml"), RED_ACTION)
+        write(os.path.join(tree, "scripts/red-printf.sh"), RED_PRINTF)
+        write(os.path.join(tree, "examples/red-16-keys.yaml"), RED_16_KEYS)
 
-        docs, ok, env_skipped, bad = run_scan(tree, busbar, quiet=True, out=out)
+        docs, ok, env_skipped, bad, judged = run_scan(tree, busbar, quiet=True, out=out)
         fail, passed = 0, 0
 
         # (1) EXTRACTION FLOOR — a scanner that has stopped finding anything must not pass vacuously.
@@ -920,12 +1422,17 @@ def selftest(busbar, out=sys.stdout):
         # (2) RED — every planted defect flagged, and flagged as RETIRED, not merely "invalid".
         flagged = {d.origin for d, _, _ in bad}
         legacy = {d.origin for d, v, _ in bad if v == "legacy"}
-        want = ["workflows/red.yml", "scripts/red.sh", "tests/red.rs", "examples/red-config.yaml"]
+        want = ["workflows/red.yml", "scripts/red.sh", "tests/red.rs", "examples/red-config.yaml",
+                # The three holes: a composite action, a printf-written config, and a document whose
+                # only root keys are 1.6.0 plane sections. Each was invisible before this commit —
+                # not failing, DISAPPEARING, which is why the count below is load-bearing.
+                ".github/actions/setup/action.yml", "scripts/red-printf.sh",
+                "examples/red-16-keys.yaml"]
         miss = [w for w in want if not any(w in f for f in legacy)]
         rust_hits = [f for f in legacy if "demo-plugin/tests/red.rs" in f]
-        if miss or len(bad) != 5 or len(rust_hits) != 2:
+        if miss or len(bad) != 8 or len(rust_hits) != 2:
             fail = 1
-            out.write(f"  RED FAILED: expected exactly 5 RETIRED hits (one per extractor, TWO from "
+            out.write(f"  RED FAILED: expected exactly 8 RETIRED hits (one per extractor, TWO from "
                       f"the Rust file); missing {miss}; rust={sorted(rust_hits)}; "
                       f"got {sorted(flagged)}\n")
         else:
@@ -933,8 +1440,59 @@ def selftest(busbar, out=sys.stdout):
             out.write("  RED: the retired inline admin_auth (workflow heredoc), the retired inline "
                       "chain entry (quoted shell heredoc), the retired form in a Rust format! "
                       "literal, the retired form in a format! literal whose PEM arrives as a "
-                      "block-scalar arg alone on its line, and `providers.*.api_key_env:` in a "
-                      "standalone config.yaml — all 5 flagged as RETIRED by the real binary\n")
+                      "block-scalar arg alone on its line, `providers.*.api_key_env:` in a "
+                      "standalone config.yaml, the same in a COMPOSITE ACTION's run block, the same "
+                      "in a PRINTF-written config, and the same in a document whose root keys are "
+                      "1.6.0 plane sections — all 8 flagged as RETIRED by the real binary\n")
+
+        # (2b) THE FOUR RULE-LEVEL HOLES, driven directly over the pure functions that decide them.
+        #      Each is a way this gate reported success over something it had not judged.
+        import datetime
+        checks = [
+            # THE WAIVER. `allow` with nothing written down returned "no reason given" and skipped
+            # the document; there was no expiry, so a two-week waiver became permanent.
+            ("a waiver with no reason at all is REFUSED",
+             allow_marker(["# executable-config-lint: allow"], 0).startswith("allow-bad:")),
+            ("a waiver with a LABEL for a reason is REFUSED",
+             allow_marker(["# executable-config-lint: allow until=2099-01-01 — because"],
+                          0).startswith("allow-bad:")),
+            ("a waiver with a real reason but NO expiry is REFUSED",
+             allow_marker(["# executable-config-lint: allow — " + "x" * MIN_ALLOW_REASON],
+                          0).startswith("allow-bad:")),
+            ("an EXPIRED waiver is REFUSED, not skipped",
+             allow_marker(["# executable-config-lint: allow until=2000-01-01 — "
+                           + "x" * MIN_ALLOW_REASON], 0).startswith("allow-bad:")),
+            ("a waiver with a reason and a live expiry is ACCEPTED",
+             allow_marker(["# executable-config-lint: allow until=%s — %s"
+                           % ((datetime.date.today() + datetime.timedelta(days=30)).isoformat(),
+                              "x" * MIN_ALLOW_REASON)], 0).startswith("allow:")),
+            # THE ARTIFACT CARVE-OUT. The scratch prefix used to BE the marker, so every path handed
+            # to `busbar --validate` matched it and real defects were excused as substitutions.
+            ("the scan scratch path carries no placeholder MARKER",
+             MARKER not in SCRATCH_PREFIX),
+            ("a scratch path carrying the MARKER is REFUSED outright",
+             _raises(assert_marker_isolation, "/tmp/" + MARKER + "-scan-abc")),
+            # THE FLOOR. It counted documents EXTRACTED, not documents the binary judged, so a
+            # corpus that had drifted entirely into allows and carve-outs cleared it while judging
+            # nothing. The accounting identity is the property: every extracted document is either
+            # judged or skipped, never both and never neither, so `judged` is exactly the corpus
+            # minus what this gate declined to have an opinion about.
+            ("judged + skipped accounts for every extracted document",
+             judged + len(env_skipped) == len(docs)),
+            ("a skipped document does not count toward the floor",
+             _floor_excludes_skips()),
+            # THE KEY MIRROR.
+            ("the root-key mirror matches the committed schema snapshot",
+             assert_key_mirror(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) == []),
+            ("a root key the snapshot has and the mirror lacks is REFUSED",
+             _mirror_drift_is_red()),
+        ]
+        for label, held in checks:
+            if held:
+                out.write(f"  ok       {label}\n")
+            else:
+                fail = 1
+                out.write(f"  RULE FAILED: {label}\n")
 
         # (3) GREEN — the 1.5.3 twins, the non-busbar heredoc and the unrelated Rust string are
         #     silent, and the providers CATALOG using `api_key_env:` is NOT a false positive.
@@ -1002,9 +1560,21 @@ def main():
 
     root = os.path.abspath(a.root)
     print(f"\n== executable configs in {root} through the real `busbar --validate` ==")
-    docs, ok, env_skipped, bad = run_scan(root, busbar, quiet=a.quiet)
+
+    # THE KEY MIRROR, BEFORE THE SCAN. A root key CONFIG_ROOT_KEYS has not heard of does not make a
+    # document fail — it makes classify() drop the document entirely, so a rotted mirror shows up as
+    # a SMALLER, greener corpus. Checked first, so the report below is a report about a scan whose
+    # classifier could see the whole config surface.
+    mirror = assert_key_mirror(root)
+    if mirror:
+        print("")
+        for line in mirror:
+            print(line)
+        return 1
+
+    docs, ok, env_skipped, bad, judged = run_scan(root, busbar, quiet=a.quiet)
     print(f"\n== result ==")
-    print(f"  {len(docs)} executable busbar document(s) extracted — "
+    print(f"  {len(docs)} executable busbar document(s) extracted, {judged} JUDGED by the binary — "
           f"{ok} valid, {len(env_skipped)} skipped (plugin not installed), {len(bad)} FAILED")
     if bad:
         print("  executable-config-lint FAILED")
@@ -1013,19 +1583,30 @@ def main():
         print("  Fix the config text at the origin above; `busbar --migrate-config <file>` rewrites")
         print("  a retired 1.x block, and `busbar --validate` reproduces the verdict on a real file.")
         return 1
-    # ── EXTRACTION FLOOR — checked AFTER `bad`, so a real invalid config is still reported first.
-    # Everything above is "for each extracted document, assert it validates", which is VACUOUSLY
-    # TRUE over zero documents. All four extractors are DISCOVERY-based (a workflows dir, heredoc
-    # syntax, Rust string literals, a yaml glob); any of them can quietly stop matching, and the
-    # gate then prints "0 documents — 0 FAILED / passed" and exits 0 forever while invalid configs
-    # a machine actually runs sail through unvalidated.
-    if len(docs) < a.min_docs:
-        print("  executable-config-lint FAILED — EXTRACTION FLOOR NOT MET")
-        print(f"  extracted {len(docs)} document(s), expected >= {a.min_docs}.")
+    # ── THE FLOOR — checked AFTER `bad`, so a real invalid config is still reported first.
+    #
+    # IT COUNTS DOCUMENTS THE BINARY ACTUALLY JUDGED, NOT DOCUMENTS THE SCANNER EXTRACTED, and the
+    # difference is the whole point of having a floor at all. The floor exists because everything
+    # above is "for each executable config, assert it validates", which is VACUOUSLY TRUE over zero
+    # configs — every extractor here is DISCOVERY-based (a workflows dir, heredoc syntax, Rust
+    # string literals, a yaml glob) and any of them can quietly stop matching.
+    #
+    # `len(docs)` does not measure that. A document can be extracted and then never put to
+    # `busbar --validate`: allowed by a marker, carved out as an "env" or "artifact" skip, or a Rust
+    # literal whose non-retired failure is not gated. Counting those toward the floor counts exactly
+    # the documents this gate did NOT validate — so a corpus that drifted entirely into skips would
+    # clear a floor of 40 while judging nothing, which is the state the floor was written to make
+    # impossible. `judged` is the honest number and it is what the floor reads.
+    if judged < a.min_docs:
+        print("  executable-config-lint FAILED — VALIDATION FLOOR NOT MET")
+        print(f"  extracted {len(docs)} document(s), but only {judged} were JUDGED by the binary;")
+        print(f"  expected >= {a.min_docs}.")
         print("  This gate validated (almost) nothing, so its verdict is meaningless — NOT a pass.")
-        print("  An extractor has stopped matching: check the workflows dir, the heredoc styles,")
-        print("  the Rust test trees and the examples/ + docker/ globs. If the corpus legitimately")
-        print("  shrank, lower --min-docs in the SAME commit that removes the documents.")
+        print("  Either an extractor has stopped matching (check the workflows dir, .github/actions,")
+        print("  the heredoc and printf styles, the Rust test trees and the examples/ + docker/")
+        print("  globs), or the corpus has drifted into allows and carve-outs — both of which read")
+        print("  as a green gate and neither of which is one. If the corpus legitimately shrank,")
+        print("  lower --min-docs in the SAME commit that removes the documents.")
         return 1
     print("  executable-config-lint passed")
     return 0
