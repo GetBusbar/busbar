@@ -19,7 +19,11 @@ pub(crate) const REVOCATION_DURABLE_MARKER: &str = "REVOCATION APPLIED (cache re
 pub(crate) const ROTATION_DURABLE_MARKER: &str = "ROTATION APPLIED (new secret not returned)";
 
 impl GovState {
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Production never constructs a `GovState` this way -- `appbuild` always resolves a signer and
+    /// calls [`GovState::new_with_signer`]. The compiler already agreed (`allow(dead_code)` outside
+    /// `test`); the gate below says the same thing in the surface instead of in an attribute, so a
+    /// future production caller is a build error rather than a silently-revived door.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(store: Arc<dyn Store>, admin_token: Option<String>) -> StoreResult<Self> {
         Self::new_with_signer(store, admin_token, None)
     }
@@ -1116,7 +1120,10 @@ impl GovState {
 
     /// Mint a new virtual key, persist it, refresh the cache, and return `(key, plaintext
     /// secret)`. The secret is shown to the caller ONCE here and never stored (only its hash is).
-    #[cfg_attr(not(test), allow(dead_code))]
+    ///
+    /// No production path mints through here (the admin handler goes through `mint_signed`); the
+    /// compiler already agreed via `allow(dead_code)`. The gate says it in the surface instead.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_key(&self, spec: NewKeySpec, now: u64) -> StoreResult<(VirtualKey, String)> {
         // `?` converts a getrandom failure into a StoreError (see `From<getrandom::Error>`), so the
         // admin handler returns a 500 via its existing error_response path instead of panicking.
@@ -1170,7 +1177,10 @@ impl GovState {
     /// columns on `VirtualKey` — this ties the credential to the key without changing the `VirtualKey`
     /// row shape. The bearer key row is persisted first, then the AWS credential; both then refresh
     /// the in-memory caches so the AccessKeyId resolves on the next request.
-    #[cfg_attr(not(test), allow(dead_code))]
+    ///
+    /// No production path mints through here; the compiler already agreed via `allow(dead_code)`.
+    /// The gate says it in the surface instead.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn create_key_with_aws(
         &self,
         spec: NewKeySpec,
@@ -2302,7 +2312,11 @@ impl GovState {
     /// store after a management-API mutation. Rebuild `by_credential` from the SAME fresh `by_id`
     /// snapshot so the two indices can never drift (a key disabled/deleted/re-minted, or a
     /// credential revoked/rotated, is reflected in both).
-    pub fn refresh(&self) -> StoreResult<()> {
+    ///
+    /// `pub(crate)`: every caller is inside this crate -- `revoke`/`create_key`/`update_key`/
+    /// `delete_key`/`rotate_key` below, and this crate's own tests. Nothing outside busbar-core
+    /// names it, so the cache-reload door is not part of the engine's public surface.
+    pub(crate) fn refresh(&self) -> StoreResult<()> {
         // Serialize the whole load→swap so a slow refresh can't clobber a newer one's cache with
         // strictly-older store state (lost-update guard; see `refresh_lock`). A later refresh's
         // `load` cannot begin until an earlier refresh has swapped, so its snapshot is never older.

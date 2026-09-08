@@ -107,7 +107,7 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
 
     // The accepted config that is already serving traffic.
     let previous = distinctive(1_111, 5 * 1024 * 1024, 17);
-    install(&previous);
+    busbar_substrate::config::limits::install(&previous);
 
     {
         // The candidate config whose build is about to fail. Its limits ARE installed while the
@@ -183,7 +183,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     let _restore = RestoreOnDrop(get());
 
     let previous = distinctive(1_234, 9 * 1024 * 1024, 23);
-    install(&previous);
+    busbar_substrate::config::limits::install(&previous);
 
     // A request-shaped read, off-thread, WHILE the candidate is installed: proves the read path this
     // test uses actually observes an install (so the post-drop read below is a real observation and

@@ -953,17 +953,13 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-// `Store` is re-exported `pub` (the extracted A2A plane's own tests name `busbar_core::governance::Store`
-// for their in-test store doubles); the rest stay crate-internal. All are already public in `busbar_api`,
-// so this widens no NEW type — it only makes the existing path nameable from a test-support dependent.
-pub use busbar_api::Store;
-// `VirtualKey` is re-exported `pub` (the relocated LLM engine names `busbar_core::governance::
-// VirtualKey` in its pool-credential lowering); already `pub` in `busbar_api`, so this widens no
-// NEW type — it only makes the existing path nameable from the plane crate.
-pub use busbar_api::VirtualKey;
+// `Store` and `VirtualKey` were re-exported `pub` for the extracted A2A plane's in-test store
+// doubles and the relocated LLM engine's pool-credential lowering. Neither reaches this path any
+// more — every caller outside busbar-core names `busbar_api::{Store, VirtualKey}` directly — so the
+// two join the crate-internal list below rather than standing as a second public name for one type.
 pub(crate) use busbar_api::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, StoreError,
-    StoreResult, UsageDelta,
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
+    StoreResult, UsageDelta, VirtualKey,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.

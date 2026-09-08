@@ -33,8 +33,11 @@ use crate::config::{
 // `pub(crate)`: the canonical public spelling is the substrate's own, and nothing outside
 // busbar-core reaches this path.
 pub(crate) use busbar_substrate::config::limits::InstallGuard;
-#[cfg(any(test, feature = "test-support"))]
-pub use busbar_substrate::config::limits::{install, LIMITS_TEST_LOCK};
+// `install` is dropped: nothing in the workspace names `busbar_core::limits::install` -- every real
+// caller spells `busbar_substrate::config::limits::install`, its home. `LIMITS_TEST_LOCK` stays,
+// `pub(crate)`, for this crate's own serialized limit tests.
+#[cfg(test)]
+pub(crate) use busbar_substrate::config::limits::LIMITS_TEST_LOCK;
 
 /// Read the installed value (or `None` when uninstalled — tests / pre-install).
 fn get() -> Option<LimitsResolved> {
