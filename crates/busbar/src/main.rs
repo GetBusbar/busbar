@@ -1475,6 +1475,23 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
 
+    // THE ROOT-DRIVEN A2A PLANE, wrapped around the data router so every unit of that protocol on it
+    // travels through the kernel's loop before reaching the surface that already answers it. The
+    // router below the wrap is unchanged and every byte it writes reaches the wire unchanged; what
+    // this line adds is the path a request takes to get there. A deployment with no `public_url:`
+    // fronts no inbound A2A surface, and the wrap hands the router straight back. Off, this line
+    // does not exist and the surface is the one it was.
+    #[cfg(feature = "root-a2a-serve")]
+    let data_router = root::units_a2a_boot::mount(
+        data_router,
+        a2a_configured,
+        root::kernel::new_kernel(),
+        app_handle.load().governance.clone(),
+        std::sync::Arc::clone(&book.durability),
+        req_body_max,
+    )
+    .unwrap_or_else(|e| die(e));
+
     // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
     // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
     // same configured `rate_card:` and `per_request_fee:` the usage projection derives its spend
