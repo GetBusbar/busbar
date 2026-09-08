@@ -268,6 +268,16 @@ def check_auth_scope_002(target: Target) -> Result:
             evidence,
         )
 
+    # THE POSITIVE CONTROL FOR PRINCIPAL B, and without it this check cannot fail for the commonest
+    # reason a run of it is wrong. B's half of the evidence is "B did NOT see A's task", and that
+    # sentence is equally true of a perfectly-scoping agent and of a B whose credential is rejected,
+    # expired, or was never wired up -- in which case B sees NOTHING, of anybody's, and the check
+    # awards a PASS to a run that established only that B is not logged in. So B opens a task of its
+    # own first: B's list must contain B's task before B's list not containing A's task means
+    # anything at all. This mirrors the control already present for A below.
+    task_b, reply_b_open = _open_a_task(binding, target.token_b, "b-control")
+    evidence.append(f"{name} principal B send_message -> {reply_b_open!r} task={task_b}")
+
     visible_to_b, reply_b = _task_ids_visible(binding, target.token_b)
     evidence.append(f"{name} principal B list_tasks -> {reply_b!r}")
     evidence.append(f"{name} principal B sees task ids {short(sorted(visible_to_b))}")
@@ -301,11 +311,33 @@ def check_auth_scope_002(target: Target) -> Result:
             f"anybody would pass otherwise. The control half of this check failed.",
             evidence,
         )
+    if not task_b:
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            "principal B could not open a task of its own, so B's credential was never shown to "
+            "work. B seeing none of A's tasks is then equally explained by perfect scoping and by "
+            "B not being authenticated at all, and this check cannot tell those apart. The "
+            "positive control for B failed.",
+            evidence,
+        )
+    if task_b not in visible_to_b:
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            f"principal B's own List Tasks did NOT return B's own task {task_b!r}. B is therefore "
+            f"not seeing tasks it IS authorized for, so B not seeing A's task {task_a!r} is not "
+            f"evidence of scoping -- it is evidence that B sees nothing. The positive control for "
+            f"B failed.",
+            evidence,
+        )
     return Result(
         req.id,
         Verdict.PASS,
         f"principal A's task {task_a!r} is returned to A by an unfiltered List Tasks and is NOT "
-        f"returned to a second, distinct authenticated principal B.",
+        f"returned to a second, distinct authenticated principal B, whose own task {task_b!r} IS "
+        f"returned to B on the same call -- so B's blindness to A's task is scoping and not a "
+        f"credential that does not work.",
         evidence,
     )
 
@@ -336,6 +368,29 @@ def check_auth_scope_003(target: Target) -> Result:
             Verdict.FAIL,
             "principal A could not open a task, so there is no existing-but-unauthorized resource "
             "to ask about.",
+            evidence,
+        )
+
+    # THE POSITIVE CONTROL FOR PRINCIPAL B. What this check concludes from is that B's read of A's
+    # task is INDISTINGUISHABLE from B's read of an id that exists for nobody. An agent that
+    # refuses every get_task from B -- because B's credential is wrong, expired, never wired up, or
+    # because the agent's get_task is broken outright -- satisfies that sentence perfectly and is
+    # awarded a PASS for a property it was never shown to have. So B must first read a task of its
+    # OWN and succeed: the two refusals only mean non-disclosure once B has been seen to be a
+    # principal whose reads can succeed.
+    task_b, reply_b_open = _open_a_task(binding, target.token_b, "b-control")
+    evidence.append(f"{name} principal B send_message -> {reply_b_open!r} task={task_b}")
+    own = binding.call("get_task", {"id": task_b}, token=target.token_b) if task_b else None
+    evidence.append(f"B get_task(B's own task {task_b}) -> {own!r}")
+    if not task_b or own is None or not own.ok:
+        return Result(
+            req.id,
+            Verdict.FAIL,
+            "principal B could not read a task of its OWN "
+            f"({reply_b_open!r} on open, {own!r} on read), so B has not been shown to be a "
+            "principal whose reads succeed. Two identical refusals would then be equally explained "
+            "by non-disclosure and by an agent that refuses B everything, and this check cannot "
+            "tell those apart. The positive control for B failed.",
             evidence,
         )
 
@@ -377,7 +432,9 @@ def check_auth_scope_003(target: Target) -> Result:
         req.id,
         Verdict.PASS,
         f"principal B's read of an existing-but-unauthorized task is INDISTINGUISHABLE from its "
-        f"read of an id that exists for nobody: both {others.code!r}, both {others.message!r}.",
+        f"read of an id that exists for nobody: both {others.code!r}, both {others.message!r} -- "
+        f"and B's read of its OWN task {task_b!r} succeeded on the same connection, so the two "
+        f"refusals are non-disclosure and not an agent that refuses B everything.",
         evidence,
     )
 
