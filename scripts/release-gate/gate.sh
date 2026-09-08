@@ -55,16 +55,10 @@ selftest() {
     ok "expected-ids refuses an unparseable contract instead of printing a short list"
   fi
 
-  # ── CASE 2: a contract that lost platforms trips the target floor ─────────────────────────────
-  # The v1.5.3 defect in contract form: five assets where seven were owed. A count of targets that
-  # quietly shrinks makes the gate owe fewer rows and go green having checked fewer platforms.
-  jq '.targets = [(.targets[] | select(.published == true))][0:1]' .github/release-targets.json \
-    > "$tmp/thin.json" 2>/dev/null || printf '{"targets":[]}\n' > "$tmp/thin.json"
-  if CONTRACT="$tmp/thin.json" scripts/release-gate/expected-ids.sh >"$tmp/thin.out" 2>/dev/null; then
-    nope "expected-ids accepted a contract with ONE published target — the other platforms are owed by nobody"
-  else
-    ok "expected-ids refuses a contract that collapsed to one published target"
-  fi
+  # CASE 2 (the target floor) and CASE 4 (the gate's own short-list floor) are not here:
+  # both floors are introduced by 4a6fef385, which is not landing. The property they
+  # guard -- a contract that quietly loses platforms must not make the gate owe fewer
+  # rows -- is still worth having; it comes back with the commit that defines it.
 
   # ── CASE 3: the real contract still clears both floors and names every target ─────────────────
   # The floors must not be tripwires that only ever fire; this is the other half.
@@ -78,69 +72,6 @@ selftest() {
     fi
   else
     nope "expected-ids FAILED on the real contract"
-  fi
-
-  # ── CASE 4: gate.sh floors the expected list on its own side ──────────────────────────────────
-  # Staged with a stub expected-ids that exits 0 and prints three ids, which is precisely what a
-  # jq failure used to look like from here. Before the floor, three passing ledger rows against a
-  # three-id list printed "GREEN. Every one of the 3 contracted checks ran and passed."
-  mkdir -p "$tmp/fake/scripts/release-gate" "$tmp/fake/ledgers"
-  cp "$repo/scripts/release-gate/gate.sh" "$repo/scripts/release-gate/lib.sh" "$tmp/fake/scripts/release-gate/"
-  cat > "$tmp/fake/scripts/release-gate/expected-ids.sh" <<'STUB'
-#!/usr/bin/env bash
-printf 'release:exists\tthe release exists\n'
-printf 'meta:openapi\tthe openapi asset is there\n'
-printf 'docker:label\tthe label matches\n'
-exit 0
-STUB
-  chmod +x "$tmp/fake/scripts/release-gate/expected-ids.sh"
-  {
-    printf 'release:exists\tPASS\tok\t\t9.9.9\tdeadbee\n'
-    printf 'meta:openapi\tPASS\tok\t\t9.9.9\tdeadbee\n'
-    printf 'docker:label\tPASS\tok\t\t9.9.9\tdeadbee\n'
-  } > "$tmp/fake/ledgers/leg.tsv"
-  if LEDGER_DIR="$tmp/fake/ledgers" RUNNER_TEMP="$tmp/fake" GITHUB_STEP_SUMMARY=/dev/null \
-     "$tmp/fake/scripts/release-gate/gate.sh" 9.9.9 >"$tmp/fake/out" 2>&1; then
-    nope "gate.sh printed GREEN against a three-id expected list — a collapsed contract passes the gate"
-  else
-    if grep -q 'expected-check list came back with only 3' "$tmp/fake/out"; then
-      ok "gate.sh goes RED, by name, when the expected-check list collapses"
-    else
-      nope "gate.sh went red against a three-id list but not for the short-list reason: $(tr '\n' ' ' < "$tmp/fake/out" | cut -c1-200)"
-    fi
-  fi
-
-  # ── CASE 5: an EMPTY plugin expectation is refused, not matched ───────────────────────────────
-  # `grep -qw ""` matches any non-empty line, so a contract that lost expect_signature turned the
-  # one functional #52 row into "the alias appeared at all" and recorded PASS on a binary that
-  # refuses every signed plugin. This is the only case in the file whose old behaviour was PASS on
-  # a genuinely broken artifact.
-  local refusing_row="sqlite  1.0.4  sqlite  unsigned  refused  this build embeds no busbar release key"
-  if probe_row_matches "$refusing_row" "" ""; then
-    nope "an EMPTY signature/status expectation still MATCHED a row that says 'unsigned refused' — #52 would ship green"
-  else
-    ok "an empty signature/status expectation is refused rather than matching everything"
-  fi
-  if probe_row_matches "$refusing_row" "null" "null"; then
-    nope "a 'null' expectation (the shape jq -er prints for a key that is GONE) was treated as a real expectation"
-  else
-    ok "a 'null' expectation is refused rather than blamed on the artifact"
-  fi
-  local good_row="sqlite  1.0.4  sqlite  first-party  ready"
-  if probe_row_matches "$good_row" "first-party" "ready"; then
-    ok "a genuinely first-party/ready row still matches its real expectations"
-  else
-    nope "the matcher no longer accepts a real first-party/ready row — the fix broke the pass path"
-  fi
-  if probe_row_matches "$refusing_row" "first-party" "ready"; then
-    nope "an 'unsigned/refused' row matched first-party/ready"
-  else
-    ok "an unsigned/refused row does not match first-party/ready"
-  fi
-  if [ -n "$(probe_expectations_absent sqlite first-party '')" ]; then
-    ok "probe_expectations_absent names the field that went missing"
-  else
-    nope "probe_expectations_absent did not name an empty expect_status"
   fi
 
   # ── CASE 5b: the published archive is bound to the STAGED record, or the row is red ───────────
@@ -290,44 +221,11 @@ STUB
     nope "version_re_after rejected a genuine busbar:1.5.2 — the left anchor was wrongly added"
   fi
 
-  # ── CASE 7: a `docker run` that never started is not a boot ───────────────────────────────────
-  # docker-checks' two boot rows were `docker run -d ... >/dev/null 2>&1` with the status thrown
-  # away, and the verdict was a curl at the HOST port. So a `docker run` that failed — "port is
-  # already allocated" being the everyday cause — left the check curling 127.0.0.1:18080 and
-  # PASSING on whatever answered. Driven here against a stubbed docker on PATH: one that refuses to
-  # start, plus a foreign listener already answering `ok` on the port, which is the exact shape.
-  mkdir -p "$tmp/dockerstub"
-  cat > "$tmp/dockerstub/docker" <<'DOCKERSTUB'
-#!/usr/bin/env bash
-case "$1" in
-  rm) exit 0 ;;
-  run) echo 'docker: Error response from daemon: Bind for 0.0.0.0:18080 failed: port is already allocated.' >&2; exit 125 ;;
-  inspect) echo "false" ;;   # nothing of ours is running
-  logs) exit 0 ;;
-esac
-exit 0
-DOCKERSTUB
-  chmod +x "$tmp/dockerstub/docker"
-  # The functions under test, sourced out of docker-checks.sh without running the file (which needs
-  # a real registry). Extracted by name so the selftest drives THE code, never a copy of it.
-  eval "$(awk '/^start_container\(\)/,/^}/' scripts/release-gate/docker-checks.sh)"
-  eval "$(awk '/^is_running\(\)/,/^}/' scripts/release-gate/docker-checks.sh)"
-  ( export PATH="$tmp/dockerstub:$PATH" ANTHROPIC_KEY=x BUSBAR_ADMIN_TOKEN=y
-    if start_container busbar-gate-selftest 18080 "getbusbar/busbar:9.9.9"; then exit 0; fi
-    exit 1 )
-  if [ $? -eq 0 ]; then
-    nope "start_container reported success on a \`docker run\` that exited 125 — a container that never started would read as booted"
-  else
-    ok "a \`docker run\` that failed to start is a failure, not a curl at whatever holds the port"
-  fi
-  if PATH="$tmp/dockerstub:$PATH" is_running busbar-gate-selftest; then
-    nope "is_running said true for a container that was never created"
-  else
-    ok "and the boot rows only believe a healthz probe once OUR container is confirmed running"
-  fi
+  # CASE 7 (the container boot rows) is not here, for the same reason as CASE 5:
+  # `start_container` and `is_running` are defined in 4a6fef385, which is not landing.
 
   echo
-  if [ "$rc_bad" = 0 ]; then echo "release-gate selftest: the gate's floors and the plugin matcher all hold"; return 0; fi
+  if [ "$rc_bad" = 0 ]; then echo "release-gate selftest: the short-list refusal, the staged-record digests and the version anchors all hold"; return 0; fi
   echo "release-gate selftest: FAILED"; return 1
 }
 
