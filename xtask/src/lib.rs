@@ -39,5 +39,6 @@ pub mod planes;
 pub mod scan;
 pub mod selftest;
 pub mod sha256;
+pub mod shipped;
 pub mod toml_lite;
 pub mod yaml_lite;
