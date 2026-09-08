@@ -243,11 +243,6 @@ static KINDS: &[KindDef] = &[
         matchers: &["busbar-export-"],
     },
     KindDef {
-        kind: "spike",
-        family: Family::Neutral,
-        matchers: &["=plane-abi-spike", "=plane-abi-spike-plugin"],
-    },
-    KindDef {
         kind: "legacy",
         family: Family::Plane,
         matchers: &[
@@ -399,7 +394,6 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     ("store", "contract"),
     ("store", "api"),
     ("store", "plugin-tooling"),
-    ("store", "store"),
     ("substrate", "api"),
     ("substrate", "plugin-abi"),
     ("substrate", "substrate"),
