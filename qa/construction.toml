@@ -878,8 +878,14 @@ entry_verbs = ["cost_price_usage"]
 # The cost unit's own pricing entry points, named as paths.
 entry_path_patterns = ['busbar_unit_cost::[A-Za-z0-9_:]*price', 'busbar_unit_cost::apply_tier']
 max_extra_sites = 0
-# The fee fields, and the two crates that may read them.
-fee_fields = ["per_request_fee_cents", "fee_cents"]
+# The fee fields, and the two crates that may read them. `per_request_fee` is the card's OWN
+# spelling since the cost unit re-labelled `per_request_fee_cents` to it (the fee is carried in the
+# currency's minor units, so `_cents` was a lie on any non-USD deployment). Without it on this list
+# the rule went blind to exactly the thing it was written for: it would still have counted two
+# offenders, but both name `fee_cents`, the config/substrate spelling, and NOT ONE read of the
+# card's own fee anywhere in the workspace. The old spelling stays so a re-introduction of it is
+# still caught.
+fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 fee_reader_crates = ["busbar-unit-cost", "busbar-core"]
 max_fee_readers = 0
 
