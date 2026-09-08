@@ -61,7 +61,7 @@ pub use chain::{
     BucketChain, ChainBucket, ChainError, ChainGroup, GroupBucket, GroupRuntime, GroupTable,
     MissingGroup, STANDARD_TIER_BP,
 };
-pub use decide::{AdmitGrant, Blocked, Door, Gauges, Metric};
+pub use decide::{AdmitGrant, Blocked, CarriedSpend, Door, Gauges, Metric};
 pub use estimate::{ClassEstimate, Estimate};
 pub use price::{Pricer, RateNanos};
 pub use window::{budget_window, window_end};

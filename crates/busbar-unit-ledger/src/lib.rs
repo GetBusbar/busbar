@@ -48,6 +48,13 @@
 //! tells the two cases apart, because a cache going stale behind a head that moved is an amendment
 //! and a cache going stale behind a head that did not is somebody's hand.
 //!
+//! [`mod@hydrate`] — the same books, restored at boot from what was settled. It is here rather than at
+//! the door because a settled posting is money delivered at the card that was in force when it was
+//! delivered, and the door's cells hold tokens rather than money: restoring the tokens and pricing
+//! them again is how a window that was already billed gets repriced by a rate correction. What the
+//! door is handed instead is one figure per balance — what that balance already carried — which it
+//! adds to its own accrual and compares, repricing nothing.
+//!
 //! ## What this crate does not do
 //!
 //! It does not admit, and it does not write bytes to a disk. It never asks whether a deployment has
@@ -66,6 +73,7 @@
 
 pub mod checkpoint;
 pub mod digest;
+pub mod hydrate;
 pub mod identity;
 pub mod legacy;
 pub mod migration;
@@ -78,6 +86,7 @@ pub use checkpoint::{
     AnchorError, AnchorState, AnchoredHead, ChainHead, Checkpoint, CheckpointAnchor,
     CheckpointSecret, SelfAttestingAnchor, SignError, Signature,
 };
+pub use hydrate::{Carried, HydratedPosting, Hydration, HydrationError, SpendSource};
 pub use identity::{
     attribution_holds, closed_window_is_settled, holds, residual, ClosedWindowMoved, Imbalance,
     Residual,

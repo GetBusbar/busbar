@@ -19,6 +19,7 @@ use crate::price::{Pricer, RateNanos};
 use crate::window::{WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH, WINDOW_TOTAL};
 use crate::{BucketChain, InMemoryCells};
 
+mod carried;
 mod cells;
 mod hold;
 mod leases;
