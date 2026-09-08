@@ -1454,7 +1454,7 @@ pub fn transform_over_over(
     for (timeout, hook) in chain {
         // Re-read the InvokeReq facts from the CURRENT arguments so a later hook sees the earlier
         // rewrite — a true transform chain.
-        let facts = crate::ir::invoke::InvokeReq {
+        let facts = busbar_substrate::ir::invoke::InvokeReq {
             tool: tool.to_string(),
             arguments: arguments.clone(),
             extra: Default::default(),
