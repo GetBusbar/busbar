@@ -799,7 +799,7 @@ pub struct TestApp {
     /// The built authorization server (`oauth_as:`). `None` (the default) = this deployment is not
     /// one, which is what every pre-existing test expects and what the gating proof in
     /// `oauth_as::tests::mount_tests` asserts costs nothing.
-    oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
+    oauth_as: Option<std::sync::Arc<crate::oauth_as::surface::OAuth2Control>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
@@ -1274,16 +1274,37 @@ impl TestApp {
     /// an operator writes.
     ///
     /// Takes the CONFIG and runs the real `AsIdentity::from_cfg` validation and the real
-    /// `AsPlane::build`, for the same reason [`TestApp::mcp`] does: a test that hand-assembled the
-    /// plane could mount a combination boot refuses, and would then be asserting against a
-    /// deployment that cannot exist. The signing key is left unset, so the plane generates the
+    /// `OAuth2Control::build`, for the same reason [`TestApp::mcp`] does: a test that hand-assembled
+    /// the surface could mount a combination boot refuses, and would then be asserting against a
+    /// deployment that cannot exist. The signing key is left unset, so the surface generates the
     /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
     /// surface does not depend on which key signs.
+    ///
+    /// The document fetch is the REAL guarded one, exactly as boot installs it. A stub here would
+    /// make `TestApp` a deployment production cannot produce, and the tests that need a controlled
+    /// document swap it afterwards through `CimdStore::set_fetcher`.
     pub fn oauth_as(mut self, cfg: &busbar_substrate::config::oauth_as::OauthAsCfg) -> Self {
+        // THE CONTROL AXIS, installed the way the composition root installs it — with the SAME
+        // declaration, not a copy written for the tests. In production `main::register_control_surfaces`
+        // makes this write; a `cargo test -p busbar-core` binary has no `main`, so the first builder
+        // that asks for an authorization server makes it instead. A second copy of the decl here
+        // would be exactly the drift `oauth_as::control`'s own tests exist to catch: the mount proof
+        // would go green against a translation nothing serves.
+        static CONTROL_AXIS: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        static INSTALLED: &[&busbar_substrate::control_routes::ControlDecl] =
+            &[&crate::oauth_as::CONTROL_DECL];
+        CONTROL_AXIS.get_or_init(|| {
+            busbar_substrate::control_routes::install_control_surfaces(INSTALLED);
+        });
         let identity = busbar_substrate::config::oauth_as::AsIdentity::from_cfg(cfg)
             .expect("test oauth_as config must be valid");
-        let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
-            .expect("test oauth_as plane must build");
+        let plane = crate::oauth_as::surface::OAuth2Control::build(
+            identity,
+            None,
+            Vec::new(),
+            std::sync::Arc::new(crate::oauth_as::fetch::GuardedFetch),
+        )
+        .expect("test oauth_as surface must build");
         self.oauth_as = Some(std::sync::Arc::new(plane));
         self
     }
@@ -1808,10 +1829,20 @@ impl TestApp {
             m
         };
         let app = std::sync::Arc::new(crate::state::App {
-            // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
-            // the production default and is what keeps every existing test's route table unchanged
-            // by this plane's arrival.
-            oauth_as: self.oauth_as.clone(),
+            // No CONTROL SURFACE unless a test asked for one — with `TestApp::oauth_as` today,
+            // which is the production default and is what keeps every existing test's route table
+            // unchanged by this surface's arrival. An empty map is "this deployment is not an
+            // authorization server", which is the same fact an absent `oauth_as:` block is.
+            control_slots: {
+                let mut slots = crate::state::ControlSlots::new();
+                if let Some(surface) = self.oauth_as.clone() {
+                    slots.insert(
+                        busbar_control_oauth2::meta::KEY,
+                        surface as std::sync::Arc<dyn std::any::Any + Send + Sync>,
+                    );
+                }
+                slots
+            },
             // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
             // it via `set_plane_defs_any` KEYED by its plane; `build()` reads it under the decl key of
             // the plane that owns the `agents:` section (resolved from the registry, never a literal),

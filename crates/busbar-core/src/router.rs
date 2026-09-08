@@ -10,9 +10,9 @@ use axum::Router;
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
-    handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
-    telemetry, tls, transport, trust,
+    handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, observability,
+    operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store, telemetry, tls,
+    transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -301,13 +301,16 @@ pub fn build_router_with_limits(
     // plugin route table is: the mount is decided ONCE, from this generation's config, and a route
     // set is not something a later hot-swap can rewrite. Each plane's `mount` reads its own slot.
     let plane_slots = app.plane_slots.clone();
-    let oauth_as = app.oauth_as.clone();
+    // The CONTROL-surface slots, captured for the same reason the plane slots are: the mount is
+    // decided ONCE, from this generation's config, and a route set is not something a later hot-swap
+    // can rewrite.
+    let control_slots = app.control_slots.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
+    let (router, core_routes) = base_data_router(&plugin_routes, &plane_slots, &control_slots);
     let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -333,7 +336,7 @@ pub(crate) fn base_data_router(
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
-    oauth_as: Option<&std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
+    control_slots: &crate::state::ControlSlots,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -450,10 +453,25 @@ pub(crate) fn base_data_router(
     // `plane_slots` the non-WS loop reads, so an unconfigured plane mounts nothing.
     #[cfg(feature = "duplex-ws")]
     let router = mount_ws_arrivals(router, plane_slots);
-    // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
-    // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
-    // metadata document and nothing in the route table.
-    let router = crate::oauth_as::routes::mount(router, oauth_as);
+    // THE CONTROL SURFACES' ROUTES, contributed through the registry rather than named here — the
+    // unmetered sibling of the plane loop above. For every registered control surface with a runtime
+    // object this generation (its slot), the surface's DECLARED route table is mounted verbatim; a
+    // surface the operator did not configure has no slot and is skipped, so a deployment that is not
+    // an authorization server carries no `/authorize`, no `/token`, no metadata document and nothing
+    // in the route table.
+    //
+    // Core names no control surface, no control path and no control handler. `oauth_as::routes::mount`
+    // — the one line that used to name all three — is gone, and this loop is its ONE replacement.
+    let mut router = router;
+    for decl in busbar_substrate::control_routes::control_decls() {
+        let Some(surface) = control_slots.get(decl.key) else {
+            continue;
+        };
+        for spec in (decl.routes)(surface.as_ref()) {
+            router = mount_control_route(router, surface.clone(), spec);
+        }
+    }
+    let router = router;
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
@@ -479,6 +497,51 @@ pub(crate) fn base_data_router(
                 .method_not_allowed_fallback(method_not_allowed_handler)
         })
         .into_parts()
+}
+
+/// Mount ONE neutral [`busbar_substrate::control_routes::ControlRouteSpec`] onto the core router —
+/// the CONTROL-surface sibling of [`mount_plane_route`], and deliberately its smaller twin.
+///
+/// It calls the SAME [`crate::core_routes::CoreRouter::route`] with the spec's own
+/// `(path, method, auth)`, so the `CoreRouteTable` row a control route records is byte-identical to
+/// the one a hand-written mount recorded — which is what lets the OAuth 2.1 issuer move out of core
+/// without any of its admission bars moving with it. In particular the consent screen keeps
+/// `RouteAuth::Admin`, enforced by the node's auth middleware BEFORE the handler runs, exactly as it
+/// was when the mount lived in `oauth_as/routes.rs`.
+///
+/// What it does NOT assemble is the difference between the two families: no `gov`, no `principal`,
+/// no `caller_principal`, no `host`, no type-erased engine. A control surface is unmetered and
+/// reaches node state through contracts, so handing it the resolved governance context would be
+/// handing it the vocabulary it is defined by not having. It gets the request and its own surface.
+fn mount_control_route(
+    router: crate::core_routes::CoreRouter,
+    surface: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    spec: busbar_substrate::control_routes::ControlRouteSpec,
+) -> crate::core_routes::CoreRouter {
+    let busbar_substrate::control_routes::ControlRouteSpec {
+        path,
+        method,
+        auth,
+        handler,
+    } = spec;
+    router.route(
+        path,
+        method,
+        auth,
+        move |uri: axum::http::Uri, headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+            let handler = handler.clone();
+            let surface = surface.clone();
+            async move {
+                handler(busbar_substrate::control_routes::ControlReqCtx {
+                    uri,
+                    headers,
+                    body,
+                    surface,
+                })
+                .await
+            }
+        },
+    )
 }
 
 /// Mount ONE neutral [`busbar_substrate::plane_routes::PlaneRouteSpec`] onto the core router (S4a
@@ -750,12 +813,14 @@ pub fn build_split_routers_with_limits(
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
-    let oauth_as = app.oauth_as.clone();
+    // The CONTROL-surface slots, captured for the same reason the plane slots are: the mount is
+    // decided ONCE, from this generation's config, and a route set is not something a later hot-swap
+    // can rewrite.
+    let control_slots = app.control_slots.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) =
-        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
+    let (data, data_core_routes) = base_data_router(&plugin_routes, &plane_slots, &control_slots);
     let data = apply_common_layers(
         data,
         data_core_routes,

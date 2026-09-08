@@ -685,6 +685,28 @@ fn register_protocols() {
 // `plane-mcp`, and with every plane compiled out (`--no-default-features`) nothing pushes — the same
 // shape `register_protocols` has, minus its unconditional `extend`.
 #[allow(clippy::vec_init_then_push)]
+/// INSTALL THE CONTROL SURFACES — the composition root's one write into the UNMETERED axis.
+///
+/// The sibling of [`register_planes`], and deliberately a separate call rather than another push
+/// into the same list. A control surface is not a plane: it has no meter class, no scope kind, no
+/// audience binding and no claim ladder, so registering it as one would declare vocabulary it is
+/// defined by not having, and the boot seal would either refuse it or admit it as a plane whose
+/// meter is silently vacuous. Two families, two registries, one root.
+///
+/// UNCONDITIONAL, and that is the posture being preserved rather than an omission: `oauth_as:` has
+/// never had a feature gate. The surface was a normal dependency of `busbar-core` and its module
+/// carried no `#[cfg]`, so the shipped binary could always honour an `oauth_as:` block. What decides
+/// whether anything is built and served is the CONFIG — an absent block means no slot, and the
+/// mount loop then mounts nothing.
+fn register_control_surfaces() {
+    /// The installed set, `'static` because the registry hands it out for the process's life. A
+    /// named static rather than a temporary, for exactly the reason `register_planes` leaks its
+    /// vector: a registration outlives the function that made it.
+    static INSTALLED: &[&busbar_substrate::control_routes::ControlDecl] =
+        &[&busbar_core::oauth_as::CONTROL_DECL];
+    busbar_substrate::control_routes::install_control_surfaces(INSTALLED);
+}
+
 fn register_planes() {
     #[allow(unused_mut)]
     let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
@@ -892,6 +914,10 @@ fn main() {
     // list through `plane::config::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
+    // CONTROL-SURFACE REGISTRATION — the UNMETERED axis, registered in the same slot and for the
+    // same reason as the two above: the node's router mounts a control surface's DECLARED routes at
+    // build time, so the axis must be installed before anything reads it.
+    register_control_surfaces();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
     // lookup must see every linked plane's owned codes, so the diagnostics axis is installed before
     // any reader. Each plane contributes its `DIAGNOSTICS` under its feature; a no-planes build

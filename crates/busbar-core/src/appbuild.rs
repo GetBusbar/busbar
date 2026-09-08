@@ -1541,7 +1541,8 @@ pub fn build_app_from_config(
 
     // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
     // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
-    // `None`, `oauth_as::routes::mount` returns the router untouched, and no sweeper exists.
+    // `None`, this generation contributes no control slot, the mount loop skips it, and no sweeper
+    // exists.
     //
     // The RFC 8707 `allowed_resources` list is busbar's OWN protected resources and nothing else.
     // Left unset, `oauth-as` would mint a token carrying whatever `resource` a client asked for in
@@ -1584,22 +1585,59 @@ pub fn build_app_from_config(
                 .map(|adm| adm.audience)
                 .into_iter()
                 .collect();
-            let plane = crate::oauth_as::plane::AsPlane::build(
+            // The Client ID Metadata Document fetch is the NODE'S, installed here: the surface
+            // declares the seam and its own bounds, and `oauth_as::fetch::GuardedFetch` is the
+            // resolve-then-pin mechanism that honours them. See `crate::oauth_as::fetch`.
+            let plane = crate::oauth_as::surface::OAuth2Control::build(
                 identity.clone(),
                 key_material.as_deref(),
                 protected_resources,
+                Arc::new(crate::oauth_as::fetch::GuardedFetch),
             )
             .map_err(|e| e.to_string())?;
             let plane = Arc::new(plane);
             // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and
             // it runs when it is called and never otherwise. Spawned here, once per generation.
-            crate::oauth_as::plane::spawn_sweeper(
+            //
+            // The FAULT SINK is the node's, for the same reason the fetch is: `OAUTH_AS_SWEEP_FAILED`
+            // is a registered diagnostic code an operator greps for, and a control surface stamping
+            // one would be minting node vocabulary from outside the node. The surface reports what
+            // happened and whether it is the transition into the failing state; the words, the code
+            // and the level are this line's.
+            crate::oauth_as::surface::spawn_sweeper(
                 Arc::clone(plane.server()),
                 std::time::Duration::from_secs(60),
+                Arc::new(|fault: crate::oauth_as::surface::SweepFault| {
+                    // Warn-once on the TRANSITION into the failing state; every subsequent tick at
+                    // debug, so a persistent store fault does not warn once per minute forever.
+                    let error = fault.error;
+                    if fault.first {
+                        diag_warn!(
+                            OAUTH_AS_SWEEP_FAILED,
+                            error = %error,
+                            "oauth_as: sweeping expired records failed; retrying on the next tick"
+                        );
+                    } else {
+                        diag_debug!(
+                            OAUTH_AS_SWEEP_FAILED,
+                            error = %error,
+                            "oauth_as: sweeping expired records failed; retrying on the next tick"
+                        );
+                    }
+                }),
             );
             Some(plane)
         }
     };
+    // THE CONTROL-SURFACE SLOTS for this generation. One entry per CONFIGURED surface, keyed by the
+    // surface's registry key — absent is absent, which is what the mount loop reads to serve nothing.
+    let mut control_slots = crate::state::ControlSlots::new();
+    if let Some(plane) = oauth_as_plane.clone() {
+        control_slots.insert(
+            busbar_control_oauth2::meta::KEY,
+            plane as Arc<dyn std::any::Any + Send + Sync>,
+        );
+    }
 
     // The generation's hook CONTENT ceiling, installed once here and read on the hook seam with a
     // single relaxed load — never recomputed per request, and never consulted at all on a
@@ -1818,7 +1856,7 @@ pub fn build_app_from_config(
         // is moved into `App` on the line just above; the MCP plane reads its runtime back through
         // `crate::mcp::runtime`, which downcasts that slot inside the plane.
         plane_slots,
-        oauth_as: oauth_as_plane.clone(),
+        control_slots,
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.

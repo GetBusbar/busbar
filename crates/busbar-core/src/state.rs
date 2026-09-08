@@ -390,12 +390,16 @@ pub struct App {
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
     /// any `browser_login` method is configured). Rebuilt on every apply/reload.
     pub(crate) public_url: Option<String>,
-    /// THE AUTHORIZATION SERVER (`oauth_as:`), or `None` when this deployment is not one.
+    /// THE CONTROL SURFACES' PER-GENERATION RUNTIME OBJECTS, one per configured surface, keyed by
+    /// the surface's registry key and type-erased.
     ///
-    /// `None` is the whole zero-cost-when-off property: nothing is constructed, nothing is
-    /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
-    /// `crate::oauth_as`.
-    pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
+    /// The unmetered sibling of [`Self::plane_slots`], and the same shape for the same reason: core
+    /// holds the object, the SURFACE knows what it is. An absent key is the whole
+    /// zero-cost-when-off property — nothing is constructed, nothing is allocated, no signing key
+    /// exists, no sweeper runs and no route is mounted — and it is why this is a map rather than a
+    /// typed `Option` per surface: a typed field would be core naming a control surface, which is
+    /// exactly the edge the control-kind ruling removes.
+    pub(crate) control_slots: ControlSlots,
     // THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (`crate::mcp::McpRuntime`, which now also
     // carries the verify-on-call coalescer that was the former flat `mcp_verify` field) is no longer a
     // flat `App` field: it lives in `plane_slots` under `runtime_slot_key(<mcp decl key>)`, reached by the plane
@@ -439,6 +443,7 @@ pub struct App {
     /// configure contributes no slot (see [`crate::plane::registry::PlaneDecl::build`]).
     pub(crate) plane_slots:
         std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>,
+    // (`ControlSlots` — the unmetered sibling of the map above — is declared beside `App` below.)
     /// The credential cache — Arc-shared ACROSS config swaps (like the
     /// mutation limiter): an apply/reload must not silently re-open every cached-allow window.
     pub(crate) credential_cache: Arc<crate::auth_cache::CredentialCache>,
@@ -550,6 +555,17 @@ pub struct App {
     /// ([`crate::plugin_routes::paths_awaiting_restart`]).
     pub(crate) boot_route_paths: Arc<std::collections::HashSet<String>>,
 }
+
+/// THE CONTROL-SURFACE SLOT TABLE for one config generation: registry key → type-erased runtime
+/// object.
+///
+/// A named alias rather than the bare `BTreeMap`, because this type appears in
+/// [`crate::router::base_data_router`]'s signature and in [`App`], and a two-line generic spelled
+/// twice is two places to get the key type wrong. `BTreeMap` rather than `HashMap` for the same
+/// reason `plane_slots` is one: iteration order is mount order, and a route table an operator read
+/// in one boot must not reorder itself in the next.
+pub(crate) type ControlSlots =
+    std::collections::BTreeMap<&'static str, Arc<dyn std::any::Any + Send + Sync>>;
 
 impl App {
     /// Borrow this snapshot's data-plane routing tables through the NEUTRAL [`EngineTablesView`]
