@@ -27,6 +27,9 @@
 //!   that carries a slot number and a fingerprint and no bytes at all.
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
+//! - [`plane_ctx`] — the per-unit `busbar_contract::Ctx` a plane call is given, over the kernel's
+//!   own per-unit arena. The contract says the kernel builds every one of these; this is where the
+//!   serving path's are built.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
 //! - [`units_voice`] — one plane, switched over: a live voice session as a sequence of ordinary
 //!   units. The handshake that opens it, the per-frame turns the pump dispatches, the hold that is
@@ -62,6 +65,7 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+pub mod plane_ctx;
 pub mod policy;
 pub mod registry;
 pub mod transports;
