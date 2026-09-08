@@ -109,6 +109,13 @@ pub const SOURCES: &[(&str, &str)] = &[
         "origin",
         "kernel: `Kernel::origin(OriginKind::Client)`; sealed, for the audit record",
     ),
+    // ── the one seam the answer comes back through ───────────────────────────────────────────────
+    (
+        "dispatch",
+        "root: the mount's per-arrival seam onto the surface the operation is already \
+                mounted on — `None` on a build with no mount, which is a posture and not a \
+                missing source",
+    ),
     // ── where a unit may go ──────────────────────────────────────────────────────────────────────
     (
         "pools",
@@ -572,6 +579,7 @@ impl A2aLeg {
         chain: Option<&'r BucketChain>,
         now: u64,
         mono: u64,
+        dispatch: Option<&'r dyn crate::root::units_a2a::A2aDispatch>,
     ) -> A2aBindings<'r, InMemoryCells> {
         A2aBindings {
             auth: &self.auth,
@@ -596,6 +604,7 @@ impl A2aLeg {
             now,
             task_ttl_secs: TASK_TTL_SECS,
             mono,
+            dispatch,
             origin: self.origin,
         }
     }
@@ -670,6 +679,35 @@ impl crate::root::transports::PlaneLeg for A2aLeg {
         ctx: &UnitCtx,
         run: Run<'_>,
     ) -> Ended {
+        // NO SEAM ON THIS PATH. A driver that walks a leg learns an ending and nothing else, and a
+        // leg walked without a mount behind it has no surface to reach — so the units run the ten
+        // steps and report zero bytes, which is exactly the posture this leg had before a mount
+        // existed. The mount's own path is [`A2aLeg::serve`], which supplies the seam and reads the
+        // answer back out.
+        self.serve(arrival, kernel, ctx, run, None).0
+    }
+}
+
+impl A2aLeg {
+    /// Walk one arrival WITH the seam the mount composes, and hand back the ending AND the answer.
+    ///
+    /// The one method a mount needs and the driver does not. `PlaneLeg::walk` above is the same walk
+    /// with no seam and the answer dropped, which is what makes the two paths one body rather than
+    /// two: a second assembly of the bindings would be a second chance for a mounted unit and a
+    /// driven one to be judged differently.
+    ///
+    /// The answer is `None` for a unit that ended before Route. That is the GATE working: a refusal
+    /// at Verify, Approve or Admit ends the unit before the seam is touched, so there is nothing to
+    /// report, and the caller renders the loop's own refusal instead of asking the surface a second
+    /// time.
+    pub fn serve(
+        &self,
+        arrival: &busbar_contract::transport::Arrival<'_>,
+        kernel: &Kernel,
+        ctx: &UnitCtx,
+        run: Run<'_>,
+        dispatch: Option<&dyn crate::root::units_a2a::A2aDispatch>,
+    ) -> (Ended, Option<crate::root::units_a2a::A2aAnswer>) {
         // THE TWO CLOCKS, PINNED ONCE, HERE. Two readings and not one number written twice: the wall
         // epoch dates the unit and the monotonic reading orders it. Read at the top of the walk so
         // every step of this unit is judged against the same moment — a check in one window and a
@@ -703,12 +741,16 @@ impl crate::root::transports::PlaneLeg for A2aLeg {
         // the caller's own attribution bucket, and a caller bound to no group has one uncapped one.
         let chain = self.chain_for(&busbar_caps::PrincipalId::new(""), None);
 
-        let bindings = self.bindings(&pools, &kinds, &pinned, chain.as_ref(), now, mono);
+        let bindings = self.bindings(&pools, &kinds, &pinned, chain.as_ref(), now, mono, dispatch);
         // THE GRANTS ARE THE CALLER'S, and this arrival presented no credential, so they are the
         // anonymous set. Read-only is what an unidentified caller holds; the approve step compares
         // it against the policy's own entry for the class and refuses what it does not cover.
         let units = A2aUnits::new(bindings, draft, Grants::of(Scope::ReadOnly));
-        busbar_kernel::teller::run_unit(kernel, &units, ctx, run)
+        let ended = busbar_kernel::teller::run_unit(kernel, &units, ctx, run);
+        // READ AFTER THE WALK and off the units the walk ran against, which is the only place it
+        // exists: the loop's ending carries a frame and a frame carries no status and no headers.
+        let answer = units.answer();
+        (ended, answer)
     }
 }
 
