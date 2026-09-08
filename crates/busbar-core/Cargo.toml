@@ -31,6 +31,11 @@ busbar-api = { path = "../api" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# The AUTHENTICATE unit. A TRANSITIONAL edge, and the drain direction: every auth rule that already
+# has a home in `busbar-unit-auth` is named from here rather than re-stated, so the core copy can be
+# deleted and there is exactly ONE copy of the rule. The edge expires with `busbar-core::auth`
+# itself; nothing new may be written against it.
+busbar-unit-auth = { path = "../busbar-unit-auth" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
