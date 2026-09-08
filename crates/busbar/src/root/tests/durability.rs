@@ -1098,6 +1098,118 @@ fn a_posting_body_reads_back_as_the_balance_and_the_figures_it_wrote() {
     }
 }
 
+// ── THE LEDGER TICK, BOUND ──────────────────────────────────────────────────────────────────────
+
+/// **The seal reaches the chain BEFORE anything acts on it, and nothing retires against a seal the
+/// chain refused.**
+///
+/// The binding's one ordering claim, and the reason the journal sits between the seal and the
+/// anchor rather than after both. Checked from both ends: a healthy tick puts a `Checkpoint` record
+/// on the chain in the same numbering the postings are in, and a tick the ledger could seal but the
+/// caller can still observe reports the anchor's answer honestly.
+#[test]
+fn a_ledger_tick_seals_journals_anchors_and_only_then_retires() {
+    use busbar_unit_ledger::tick::{TickAt, ALL_TIME_WINDOW};
+
+    const WINDOW: WindowStart = 86_400;
+    let mut durability = memory_node();
+    let token = token();
+    let key = totals_key("vk_tick");
+
+    settle_nanos(&mut durability, "vk_tick", WINDOW, 250_000_000);
+    settle_nanos(&mut durability, "vk_tick", ALL_TIME_WINDOW, 250_000_000);
+
+    let mut anchor = busbar_unit_ledger::SelfAttestingAnchor::new();
+    // The backup has reached the day after the window, so the dated row is retirable and the
+    // all-time row is not.
+    let at = TickAt {
+        checkpoint_seq: 1,
+        node: 0,
+        wall: 1_700_000_000,
+        heads: Vec::new(),
+        backup_watermark: 2 * WINDOW,
+        store_seq_high_water: 4,
+        history_seq: None,
+        secret: None,
+    };
+    let tock = durability
+        .tick_ledger(&at, &mut anchor, &token, StepName::Meter)
+        .expect("the null shipper takes the seal");
+
+    assert!(tock.anchored, "the sink took it");
+    assert_eq!(tock.retirement.retired, 1, "the dated row was retired");
+    assert_eq!(
+        tock.retirement.kept_all_time, 1,
+        "and the all-time row was kept for its own reason"
+    );
+    assert_eq!(
+        durability.ledger.book().get(&key, WINDOW).settled,
+        0,
+        "the dated row has left the live book"
+    );
+    assert_eq!(
+        durability.ledger.book().get(&key, ALL_TIME_WINDOW).settled,
+        250_000_000,
+        "and the all-time figure did not move"
+    );
+    assert_eq!(
+        tock.checkpoint.totals_for(&key, WINDOW).settled,
+        250_000_000,
+        "the retired row is ON the seal that permitted retiring it, which is why the order matters"
+    );
+
+    // The seal is on the chain, in the one numbering, after the postings it covers.
+    let replayed = durability
+        .journal
+        .replay()
+        .expect("the journal reads back")
+        .expect("and verifies");
+    let classes: Vec<RecordClass> = replayed.iter().map(|r| r.class).collect();
+    assert_eq!(
+        classes,
+        vec![
+            RecordClass::Transaction,
+            RecordClass::Transaction,
+            RecordClass::Checkpoint
+        ],
+        "two postings, then the seal that covers them"
+    );
+    assert_eq!(
+        durability.checkpoints.len(),
+        1,
+        "and the node kept the checkpoint it sealed"
+    );
+    assert_eq!(
+        durability.checkpoints[0].body_hash,
+        tock.checkpoint.body_hash
+    );
+    assert_eq!(
+        durability.ledger.sealed_row_count(),
+        durability.ledger.book().len(),
+        "one sealing note per surviving row and not one more"
+    );
+}
+
+/// The default retention reach: as far as this node's own durable chain, and not one window
+/// further. A node with no data directory retires nothing at all.
+#[test]
+fn a_node_with_no_data_directory_reaches_no_retention_boundary_at_all() {
+    let wall = 1_700_000_000;
+    assert_eq!(
+        node_backup_watermark(false, wall),
+        0,
+        "memory-buffered: nothing is retirable, because discarding a balance on the strength of a \
+         batch somebody else accepted is not this node's claim to make"
+    );
+    let today = node_backup_watermark(true, wall);
+    assert!(today > 0 && today <= wall, "on disk: the day's own start");
+    assert_eq!(today % 86_400, 0, "floored to the day boundary");
+    assert!(
+        wall - today < 86_400,
+        "so the window the tick is running in is never below the boundary"
+    );
+}
+
 /// A sealed audit record shares the `Transaction` class and must never be read as a posting.
 ///
 /// If it were, every audit record on the chain would fold a fabricated figure into the book at

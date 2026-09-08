@@ -286,6 +286,32 @@ impl Book {
         before - self.totals.len()
     }
 
+    /// **Retire the rows a predicate names, and say how many went.**
+    ///
+    /// The per-balance replacement for [`Book::retain_from`], whose single global cutoff could not
+    /// express the one rule that matters most: the all-time window's row lives at
+    /// [`crate::tick::ALL_TIME_WINDOW`], which is below every cutoff there is, so every call to
+    /// `retain_from` deleted the one balance that must never go. A predicate is handed each row's
+    /// key, window and figures and decides for that row alone.
+    ///
+    /// A retired row reads back as zeros through [`Book::get`], exactly like one never touched, and
+    /// the survivors keep the order [`Book::iter`] and [`Book::snapshot`] already gave them — the
+    /// order a checkpoint body is hashed in.
+    ///
+    /// **The boundary is not this function's business.** What may be retired is
+    /// [`crate::settle::Ledger::tick`]'s judgement, because it is the thing that knows what has been
+    /// sealed and anchored; a book that decided for itself would be a book that could discard a
+    /// balance nobody else holds.
+    pub fn retire(
+        &mut self,
+        mut retire: impl FnMut(&TotalsKey, WindowStart, &Totals) -> bool,
+    ) -> usize {
+        let before = self.totals.len();
+        self.totals
+            .retain(|(key, window), figures| !retire(key, *window, figures));
+        before - self.totals.len()
+    }
+
     /// The book as a plain map, for a checkpoint to seal.
     pub fn snapshot(&self) -> BTreeMap<(TotalsKey, WindowStart), Totals> {
         self.totals.clone()

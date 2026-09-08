@@ -210,11 +210,13 @@ impl Durability {
         token: &DurabilityToken,
         at: StepName,
     ) -> Result<JournalAck, DurabilityLost> {
-        let entry =
-            Entry::new(RecordClass::Checkpoint, checkpoint_body(checkpoint)).at(checkpoint.wall, 0);
-        let ack = self.journal.append(token, at, &[entry])?;
-        self.checkpoints.push(checkpoint.clone());
-        Ok(ack)
+        put_checkpoint_on(
+            &mut self.journal,
+            &mut self.checkpoints,
+            checkpoint,
+            token,
+            at,
+        )
     }
 
     /// The newest migration marker on the chain, if this deployment has migrated.
@@ -387,6 +389,50 @@ impl Durability {
         self.ledger.hydrate(&source)
     }
 
+    /// **The node's ledger tick: seal, journal, anchor, retire — in that one order.**
+    ///
+    /// The binding the checkpoint was built for, and the reason it had no production caller until
+    /// now. Three units are in scope here and nowhere else: the ledger owns the figures and the
+    /// retention boundary, the journal owns the position, and the anchor sink is the deployment's.
+    /// Joining them in ONE function is what makes "every seal is on the chain and nothing is retired
+    /// against a seal that is not" a fact about the code rather than a convention.
+    ///
+    /// The journal append sits between the seal and the anchor deliberately. A seal that reached the
+    /// anchor sink but not the chain would be a figure with no position — the one thing the journal
+    /// exists to prevent — and the ledger's own tick already refuses to retire anything the anchor
+    /// did not take, so a failed anchor here costs the node nothing but growth it can see.
+    ///
+    /// # Errors
+    ///
+    /// The checkpoint could not be signed, or the journal lost the record. Nothing has been retired
+    /// in either case: the ledger retires only inside its own tick, which this has not reached.
+    pub fn tick_ledger(
+        &mut self,
+        at: &busbar_unit_ledger::tick::TickAt<'_>,
+        anchor: &mut dyn busbar_unit_ledger::checkpoint::CheckpointAnchor,
+        token: &DurabilityToken,
+        step: StepName,
+    ) -> Result<busbar_unit_ledger::tick::Tock, TickLost> {
+        // The seal, WITHOUT the anchor and without the retirement, so the chain takes it before
+        // anything acts on it. `JournalledAnchor` below is what puts the journal in the middle.
+        let mut journalled = JournalledAnchor {
+            journal: &mut self.journal,
+            checkpoints: &mut self.checkpoints,
+            token,
+            step,
+            anchor,
+            lost: None,
+        };
+        let tock = self
+            .ledger
+            .tick(at, &mut journalled)
+            .map_err(TickLost::Sign)?;
+        match journalled.lost {
+            Some(lost) => Err(TickLost::Journal(lost)),
+            None => Ok(tock),
+        }
+    }
+
     /// The ledger's own records, on the journal.
     ///
     /// This is what the migration step binds its marker to. It replaces the store adapter's
@@ -524,6 +570,106 @@ impl JournalSpend {
 impl SpendSource for JournalSpend {
     fn postings(&self) -> Result<Vec<HydratedPosting>, HydrationError> {
         Ok(self.postings.clone())
+    }
+}
+
+/// Put a sealed checkpoint on a journal and keep it, in that order.
+///
+/// One implementation, two callers: [`Durability::journal_checkpoint`] and the anchor the tick wraps
+/// the deployment's sink in. A second copy of these four lines is a second answer to "is a seal this
+/// node kept always on the chain", and the answer has to be yes on both paths.
+fn put_checkpoint_on(
+    journal: &mut Journal,
+    kept: &mut Vec<Checkpoint>,
+    checkpoint: &Checkpoint,
+    token: &DurabilityToken,
+    at: StepName,
+) -> Result<JournalAck, DurabilityLost> {
+    let entry =
+        Entry::new(RecordClass::Checkpoint, checkpoint_body(checkpoint)).at(checkpoint.wall, 0);
+    let ack = journal.append(token, at, &[entry])?;
+    kept.push(checkpoint.clone());
+    Ok(ack)
+}
+
+/// Why a ledger tick did not finish.
+#[derive(Debug)]
+pub enum TickLost {
+    /// The checkpoint could not be signed.
+    Sign(busbar_unit_ledger::checkpoint::SignError),
+    /// The journal could not make the seal durable.
+    Journal(DurabilityLost),
+}
+
+impl std::fmt::Display for TickLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TickLost::Sign(why) => write!(f, "the checkpoint could not be signed: {why}"),
+            TickLost::Journal(lost) => write!(
+                f,
+                "the journal lost the checkpoint at {}",
+                lost.step().as_str()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TickLost {}
+
+/// **The journal, wedged between the seal and the anchor.**
+///
+/// The ledger's tick takes an anchor and calls it with the sealed checkpoint. That call is the one
+/// moment at which the seal exists and nothing has acted on it yet, which is exactly where the
+/// chain has to take it — so this stands in front of the deployment's real sink, puts the record on
+/// the journal, and only then hands the checkpoint on.
+///
+/// A journal that will not take it means the sink is not called at all and the anchor answer is a
+/// failure, which is the right shape: the ledger then retires nothing, and the node grows rather
+/// than discarding figures against a seal that has no position.
+struct JournalledAnchor<'a> {
+    journal: &'a mut Journal,
+    checkpoints: &'a mut Vec<Checkpoint>,
+    token: &'a DurabilityToken,
+    step: StepName,
+    anchor: &'a mut dyn busbar_unit_ledger::checkpoint::CheckpointAnchor,
+    lost: Option<DurabilityLost>,
+}
+
+impl busbar_unit_ledger::checkpoint::CheckpointAnchor for JournalledAnchor<'_> {
+    fn anchor(
+        &mut self,
+        checkpoint: &Checkpoint,
+    ) -> Result<(), busbar_unit_ledger::checkpoint::AnchorError> {
+        match put_checkpoint_on(
+            self.journal,
+            self.checkpoints,
+            checkpoint,
+            self.token,
+            self.step,
+        ) {
+            Ok(_) => {}
+            Err(lost) => {
+                let at = lost.step().as_str().to_string();
+                self.lost = Some(lost);
+                return Err(busbar_unit_ledger::checkpoint::AnchorError::Unavailable(
+                    format!("the journal would not take the seal at {at}"),
+                ));
+            }
+        }
+        self.anchor.anchor(checkpoint)
+    }
+
+    fn head(
+        &self,
+    ) -> Result<
+        Option<busbar_unit_ledger::checkpoint::AnchoredHead>,
+        busbar_unit_ledger::checkpoint::AnchorError,
+    > {
+        self.anchor.head()
+    }
+
+    fn is_self_attesting(&self) -> bool {
+        self.anchor.is_self_attesting()
     }
 }
 
@@ -834,6 +980,36 @@ pub fn node_book() -> NodeBook {
     }
 }
 
+/// How often the node ticks its ledger, in seconds.
+///
+/// Hourly, and the number is a trade rather than a taste. A tick digests every row in the book and
+/// reaches the anchor sink, so it is not free; and the thing it buys — a sealed, anchored, journalled
+/// position the retention boundary can act on — is measured in windows, and the shortest window a
+/// deployment configures is a day. Hourly is twenty-four seals a day against a bound that moves once
+/// a day, which leaves room for a stalled anchor to recover without the book growing a day's worth
+/// of rows in the meantime.
+pub const LEDGER_TICK_INTERVAL_SECS: u64 = 3_600;
+
+/// **How far the node's own retention may reach, in the absence of a configured backup.**
+///
+/// The start of the day the tick is running in, so windows that have CLOSED may be retired and the
+/// live one may not. A node without a data directory gets zero, which retires nothing at all: its
+/// journal is memory-buffered and shipped, and discarding a balance because a batch was accepted
+/// somewhere is not a claim this node is in a position to make.
+///
+/// It is deliberately conservative and deliberately not configurable here. The checkpoint's
+/// `backup_watermark` field is where a deployment with a real backup states how far IT has got, and
+/// when that seam exists this function is what it replaces. Until then the honest default is "as far
+/// as this node's own durable chain, and not one window further".
+#[must_use]
+pub fn node_backup_watermark(on_disk: bool, wall: u64) -> u64 {
+    if on_disk {
+        busbar_unit_admission::budget_window(busbar_unit_admission::window::WINDOW_DAY, wall)
+    } else {
+        0
+    }
+}
+
 /// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this
 /// path spells it: a clock that reads before the epoch gives zero rather than panicking.
 ///
@@ -891,6 +1067,94 @@ pub fn build_for_node(
         legacy: AuditLog::with(Box::new(RootWallClock), Box::new(NoSeam)),
         checkpoints: Vec::new(),
     })
+}
+
+/// **The node's ledger tick, running for the life of the process.**
+///
+/// THE DRIVER, and the reason there is one. Sealing digests every row in the book and anchoring
+/// reaches a sink outside the node; doing either on the path that admits a request would put an
+/// unbounded fold and a network call inside the decision that says yes or no. So it is a background
+/// task on the root's own clock, spawned once at boot beside the write-behind flusher, and the
+/// request path never reaches it.
+///
+/// It runs one FINAL tick when the shutdown signal fires, for the same reason the flusher does: a
+/// graceful stop should leave the book sealed at where it actually got to, so the next boot's
+/// hydration and the next node's audit both start from a position rather than from the last hour's.
+///
+/// The anchor is [`busbar_unit_ledger::SelfAttestingAnchor`] and the label goes with it: a node that
+/// files its own seals where it can rewrite them has proved nothing to anybody, and
+/// [`busbar_unit_ledger::AnchorState::self_attesting`] carries that onward to whatever reports the
+/// node's health. Binding a real sink is a deployment's decision and this is where it will arrive.
+pub fn spawn_ledger_tick(
+    durability: std::sync::Arc<std::sync::Mutex<Durability>>,
+    token: DurabilityToken,
+    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut anchor = busbar_unit_ledger::SelfAttestingAnchor::new();
+        let mut checkpoint_seq: u64 = 0;
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(LEDGER_TICK_INTERVAL_SECS));
+        // The first tick of a tokio interval fires immediately; the node has just booted and its
+        // book is whatever the hydration restored, which is a position worth sealing.
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = shutdown.recv() => {
+                    checkpoint_seq += 1;
+                    tick_once(&durability, &token, &mut anchor, checkpoint_seq);
+                    return;
+                }
+            }
+            checkpoint_seq += 1;
+            tick_once(&durability, &token, &mut anchor, checkpoint_seq);
+        }
+    })
+}
+
+/// One tick, with the lock held for exactly as long as it takes.
+///
+/// Split out so the loop above reads as the schedule and this reads as the act, and so the guard's
+/// scope is a function body rather than something a future holds across an await.
+fn tick_once(
+    durability: &std::sync::Mutex<Durability>,
+    token: &DurabilityToken,
+    anchor: &mut dyn busbar_unit_ledger::checkpoint::CheckpointAnchor,
+    checkpoint_seq: u64,
+) {
+    let wall = RootWallClock.now();
+    let mut book = durability.lock().unwrap_or_else(|p| p.into_inner());
+    let on_disk = book.on_disk();
+    let node = book.journal.node();
+    let at = busbar_unit_ledger::tick::TickAt {
+        checkpoint_seq,
+        node,
+        wall,
+        // This node's own chain head, cross-linked into the seal. One node, one head: a fleet's
+        // other heads arrive through whatever collects them, and inventing a peer's is worse than
+        // sealing without it.
+        heads: vec![busbar_unit_ledger::checkpoint::ChainHead {
+            node,
+            node_seq: book.journal.next_seq().saturating_sub(1),
+            hash: book.journal.head(),
+        }],
+        backup_watermark: node_backup_watermark(on_disk, wall),
+        // The chain's own high-water, which for a node whose journal IS its durable record is the
+        // figure this field names: the last sequence anything durable knows about.
+        store_seq_high_water: book.journal.next_seq().saturating_sub(1),
+        history_seq: None,
+        // No signer bound. A checkpoint with no signature is honest about what it is — the figures
+        // digested and positioned, with nobody's name on them — and is exactly what
+        // `Checkpoint::seal`'s `None` arm exists for. Binding the deployment's key is the same
+        // decision as binding a real anchor sink and arrives with it.
+        secret: None,
+    };
+    if let Err(why) = book.tick_ledger(&at, anchor, token, StepName::Meter) {
+        // A tick that could not finish is reported and the loop keeps its schedule. It has retired
+        // nothing — the ledger retires only inside its own tick, which this did not reach — so the
+        // cost of a failed tick is a book that did not shrink, which the next one will.
+        eprintln!("busbar: the ledger tick did not finish: {why}");
+    }
 }
 
 /// Every path this node may write to, given its configuration.
