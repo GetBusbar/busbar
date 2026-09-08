@@ -2693,6 +2693,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             CoreGovernance::new(
                 Arc::new(CountingDispatch(Arc::clone(&calls))),
                 Arc::new(SeededLedger),
+                Arc::new(UnboundTopology),
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
@@ -2734,6 +2735,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
         CoreGovernance::new(
             Arc::new(CountingDispatch(Arc::clone(&calls))),
             Arc::new(SeededLedger),
+            Arc::new(UnboundTopology),
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
@@ -2863,14 +2865,14 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
 
-/// `answered_by` is the same eight the integration pin measures against a running surface.
+/// `answered_by` is the same nine the integration pin measures against a running surface.
 ///
 /// The two halves of one claim, deliberately kept apart. `crates/busbar/tests/admin_verb_ownership.rs`
 /// serves the administrative surface and asks it which of the eighty-eight it has a route for; it
 /// cannot reach this function, because this crate mounts no library. This one can reach the function
-/// and cannot serve a router. So the integration pin measures the WORLD and names the eight it found,
-/// and this one checks that the production predicate — the one a future crossing will edit — names the
-/// same eight.
+/// and cannot serve a router. So the integration pin measures the WORLD and names the nine it found,
+/// and this one checks that the production predicate — the one each crossing edits — names the same
+/// nine.
 ///
 /// Written as the set rather than as a count for the reason the pin beside it gives: a count lets one
 /// verb leave the loop as another arrives.
@@ -2896,13 +2898,212 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
             "get_ledger_openapi_json",
             "get_ledger_reconciliation",
             "get_ledger_totals",
+            "get_providers",
             "reseal_epoch_floor",
             "store_restore",
         ],
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: eighty of the eighty-eight are still
-    // produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 80);
+    // The complement is not empty and is not the whole table: seventy-nine of the eighty-eight are
+    // still produced by the surface underneath, which is the fact the migration exists to change.
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 79);
+}
+
+// ── the crossed operations, asked of the composition ────────────────────────────────────────────
+
+/// A composition with a real administrative surface underneath and the loop in front of it, over a
+/// fixture whose two lanes reach two different providers.
+///
+/// The whole point of the fixture is the provider aggregation: one lane each, so a count that walked
+/// the wrong table (or the same lane twice) is visible rather than plausible. The handle is what the
+/// crossed reads answer THROUGH — see [`HandleTopology`].
+#[cfg(feature = "root-admin")]
+fn a_composition_over_two_providers() -> axum::Router {
+    use busbar_core::test_support::{LaneSpec, TestApp};
+
+    busbar_core::metrics::init();
+    // THE PLANE THE TABLES BELONG TO. A node's lanes are a plane's runtime slot, projected to the
+    // neutral view through that plane's declaration — so a process with no plane registered has no
+    // lanes to read, and the fixture below would build two and the composition would answer zero.
+    // This is the composition root's own `register_planes` write, in its test-support form.
+    busbar_llm::testkit::install_test_seams();
+    let app = TestApp::new()
+        // An OPEN admin posture: this fixture is about which half ANSWERS, and a door in front of it
+        // would make every assertion below a statement about the door instead.
+        .admin_chain(vec![])
+        .lane(LaneSpec::new("model-a", "anthropic", "http://127.0.0.1:1/").provider("prov-x"))
+        .lane(LaneSpec::new("model-b", "anthropic", "http://127.0.0.1:1/").provider("prov-y"))
+        .build();
+    let (_data, admin, handle) =
+        busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    mount(
+        admin,
+        busbar_kernel::teller::Kernel::new(),
+        1 << 20,
+        move |dispatch| {
+            crate::root::kernel::ProductionUnits::admin_only(dispatch)
+                .with_admin_topology(Arc::new(HandleTopology::new(Arc::clone(&handle))))
+        },
+    )
+}
+
+/// One GET through the composition, as the status, the content type and the body bytes.
+#[cfg(feature = "root-admin")]
+async fn get_through_the_composition(
+    router: &axum::Router,
+    path: &str,
+) -> (u16, Option<String>, String) {
+    use tower::ServiceExt;
+
+    let request = axum::http::Request::builder()
+        .method("GET")
+        .uri(path)
+        .body(axum::body::Body::empty())
+        .expect("the request builds");
+    let response = router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("the composition answers");
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(ToString::to_string);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("a body");
+    (
+        status,
+        content_type,
+        String::from_utf8(bytes.to_vec()).expect("the body is text"),
+    )
+}
+
+/// The crossed `GET /providers` is answered by the loop, in the bytes the retired handler produced.
+///
+/// This is the half the integration pin cannot make. The pin proves the SURFACE has no route left;
+/// only a composition can prove that something still answers, and answers the same thing. The body
+/// is compared as BYTES rather than as parsed JSON because that is what a client pinned: the field
+/// order, the null and the absence of whitespace are all part of an answer the oracle compares cell
+/// for cell.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_crossed_providers_read_is_answered_by_the_loop_in_the_retired_handlers_bytes() {
+    let router = a_composition_over_two_providers();
+    let (status, content_type, body) =
+        get_through_the_composition(&router, "/api/v1/admin/providers").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        body,
+        "{\"items\":[{\"provider\":\"prov-x\",\"model_count\":1},\
+         {\"provider\":\"prov-y\",\"model_count\":1}],\"next_cursor\":null}"
+    );
+}
+
+/// THE SCHEMA-ONLY MIRROR RULE, written once for every operation that crosses.
+///
+/// An operation that crosses stops being rendered by the crate that owns its OpenAPI schema, and the
+/// document's bytes are pinned — so the schema stays behind, as a mirror of a body the crate no
+/// longer produces. A mirror is a copy, and a copy of a shape is exactly the thing that drifts
+/// silently: nothing in the type system relates `Page_ProviderView` to the bytes the composition
+/// root now writes.
+///
+/// So the relation is a test, and it is stated once over the closed set rather than per verb: for
+/// every crossed operation, the KEYS of the body the composition serves are the properties the
+/// served document declares for it — at the envelope and at the item. Values are not compared and
+/// must not be: the document describes a shape, and a fixture's figures are not part of it.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys() {
+    let router = a_composition_over_two_providers();
+    let (status, _, document) =
+        get_through_the_composition(&router, "/api/v1/admin/openapi.json").await;
+    assert_eq!(status, 200, "the composition serves its own document");
+    let document: serde_json::Value =
+        serde_json::from_str(&document).expect("the served document parses");
+
+    // Resolve one `$ref` into the schema it names. A document that referenced a schema it does not
+    // carry would be a broken document, which is why this is an expectation and not an option.
+    let resolve = |schema: &serde_json::Value| -> serde_json::Value {
+        let reference = schema["$ref"]
+            .as_str()
+            .expect("the declared response schema is a reference");
+        let name = reference
+            .rsplit('/')
+            .next()
+            .expect("a reference names a schema");
+        document["components"]["schemas"][name].clone()
+    };
+    // The property names one schema declares, sorted.
+    let properties = |schema: &serde_json::Value| -> Vec<String> {
+        let mut names: Vec<String> = schema["properties"]
+            .as_object()
+            .expect("the schema declares properties")
+            .keys()
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    };
+    // The key names one JSON object carries, sorted.
+    let keys = |value: &serde_json::Value| -> Vec<String> {
+        let mut names: Vec<String> = value
+            .as_object()
+            .expect("the served body is an object")
+            .keys()
+            .cloned()
+            .collect();
+        names.sort();
+        names
+    };
+
+    assert!(
+        !CROSSED_TOPOLOGY_VERBS.is_empty(),
+        "the rule would assert nothing over an empty set"
+    );
+    for verb in CROSSED_TOPOLOGY_VERBS {
+        let row = busbar_plane_admin::verbs::table()
+            .into_iter()
+            .find(|row| kernel_verb(row) == Some(*verb))
+            .expect("a crossed verb is a row of the plane's table");
+        let (status, _, body) = get_through_the_composition(&router, row.template).await;
+        assert_eq!(status, 200, "{} answers the composition", row.template);
+        let body: serde_json::Value =
+            serde_json::from_str(&body).expect("the crossed body is JSON");
+
+        let declared = resolve(
+            &document["paths"][row.template]["get"]["responses"]["200"]["content"]
+                ["application/json"]["schema"],
+        );
+        assert_eq!(
+            keys(&body),
+            properties(&declared),
+            "{}: the body the loop serves and the schema the document declares carry different keys",
+            row.template
+        );
+
+        // The envelope is a page, so the shape claim is only half made until the ITEM is compared
+        // too — an envelope whose items were the wrong shape would pass the line above.
+        let item_schema = resolve(&declared["properties"]["items"]["items"]);
+        let items = body["items"].as_array().expect("the page carries items");
+        assert!(
+            !items.is_empty(),
+            "{}: the fixture serves no item, so the item shape is unasserted",
+            row.template
+        );
+        for item in items {
+            assert_eq!(
+                keys(item),
+                properties(&item_schema),
+                "{}: an item the loop serves and the item schema the document declares carry \
+                 different keys",
+                row.template
+            );
+        }
+    }
 }

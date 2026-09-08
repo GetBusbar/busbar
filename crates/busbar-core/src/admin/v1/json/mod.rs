@@ -73,7 +73,11 @@ impl AdminTransport for JsonV1 {
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
             .route("/models", get(list_models))
-            .route("/providers", get(list_providers))
+            // NO `/providers` ROUTE. `get_providers` CROSSED to the loop in 1.6.0's admin Cut 1:
+            // the composition root reads the node's routing tables through its own neutral seam and
+            // renders the answer, so this surface has nothing left to mount for it. The document
+            // still declares the operation — it is still answered, by the other half — and the
+            // ownership pin in the root's test suite is what holds the two halves to exactly one.
             .route(PATH_HOOKS, get(list_hooks).post(register_hook))
             .route(
                 "/hooks/{name}",

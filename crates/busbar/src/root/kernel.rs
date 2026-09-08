@@ -722,6 +722,23 @@ impl ProductionUnits {
         self
     }
 
+    /// Bind the admin leg's CROSSED topology reads to the node's live tables.
+    ///
+    /// Separate from the constructors above for the same reason the ledger views' binding is set
+    /// after assembly rather than passed through it: what these reads answer from is the running
+    /// node's handle, which the composition holds and the assembly does not. An admin-only
+    /// composition that never calls this answers off `UnboundTopology`, which routes nothing and
+    /// says so.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn with_admin_topology(
+        mut self,
+        topology: Arc<dyn crate::root::units_admin::NodeTopology>,
+    ) -> Self {
+        self.admin.topology = topology;
+        self
+    }
+
     /// Whether this node's front door is open — no module and no keys arm.
     ///
     /// Read by the grant, because "no principal was resolved" and "the door is open" are the same

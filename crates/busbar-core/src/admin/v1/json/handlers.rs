@@ -45,11 +45,6 @@ pub(crate) async fn list_models(State(handle): State<Arc<AppHandle>>) -> Respons
     respond(StatusCode::OK, service(&handle).list_models().await)
 }
 
-/// `GET /api/v1/admin/providers` — distinct providers + lane counts.
-pub(crate) async fn list_providers(State(handle): State<Arc<AppHandle>>) -> Response {
-    respond(StatusCode::OK, service(&handle).list_providers().await)
-}
-
 /// `GET /api/v1/admin/hooks` — the hook registry read (+ config-plane `ETag` for `If-Match` chaining).
 pub(crate) async fn list_hooks(State(handle): State<Arc<AppHandle>>) -> Response {
     let version = handle.load().config_version;
@@ -3670,8 +3665,16 @@ pub(crate) async fn hook_status(
     ok_json(StatusCode::OK, &body)
 }
 
-/// The stable v1 GET endpoints (RELATIVE path, summary), the single source for both the
-/// router-mount drift test and the OpenAPI `paths`. Paths are relative to `contract::ADMIN_PREFIX`
+/// The stable v1 GET endpoints (RELATIVE path, summary), the single source for the OpenAPI `paths`.
+///
+/// It used to be the source for a router-mount drift test as well, and it deliberately is not any
+/// more: from 1.6.0's admin Cut 1 a documented operation may be answered by the composition root's
+/// loop rather than by this crate's router (`GET /providers` is the first), so "documented" and
+/// "mounted here" are no longer the same claim. Which of the two halves answers each documented GET
+/// — and that it is exactly one of them — is measured against the COMPOSITION, by the ownership pin
+/// in the root's test suite.
+///
+/// Paths are relative to `contract::ADMIN_PREFIX`
 /// (no absolute path is hand-written anywhere — the `ap` helper derives them). Templated/POST
 /// routes are documented separately in `openapi_doc`. Adding a GET endpoint means adding it here so
 /// the doc + the drift guard both see it.
