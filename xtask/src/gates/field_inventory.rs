@@ -33,13 +33,23 @@
 //! | `:schema-identity` | `dialect` agrees with the filename, and no dialect appears twice |
 //! | `:no-duplicate-fields` | a direction lists no field twice |
 //! | `:registration` | the registered dialect set and the schema set are EQUAL, both ways |
-//! | `:id-uniqueness` | no two rows share an id — a collision lets one claim stand for another |
 //! | `:both-directions` | every dialect enumerates BOTH directions; an empty one reports full |
 //! | `:audited-fields` | the eleven fields the audit found BY HAND are all in the enumeration |
 //! | `:artifact-drift` | the committed `qa/field-inventory.json` IS the fresh derivation |
 //!
-//! The last four were assertions only `--selftest` made, and the self-test is not the mode CI
+//! The last three were assertions only `--selftest` made, and the self-test is not the mode CI
 //! blocks on. They are on the run path here, which is the same fix the discovery floor got.
+//!
+//! ## The row that was removed: `:id-uniqueness`
+//!
+//! It asserted that no two derived rows share an id. An id is `{dialect}/{direction}/{field}`, so a
+//! collision needs the same field listed twice in one direction of one dialect — and
+//! `:no-duplicate-fields` REFUSES the schema set on exactly that, before a single id is built. The
+//! FAIL arm was unreachable on every input: no tree could make it red, its selftest coverage came
+//! from the whole-tree green, and it was deletable with `cargo xtask selftest` still passing. A row
+//! that cannot fail is not a rule; it is a row a reader counts as a proof and receives nothing for.
+//! The property it named is still enforced — one row earlier, where the input can actually carry
+//! the defect.
 //!
 //! ## Byte parity with the Python's `json.dumps(indent=2)`
 //!
@@ -61,7 +71,6 @@ pub const ROW_PROVENANCE: &str = "field-inventory:provenance";
 pub const ROW_SCHEMA_IDENTITY: &str = "field-inventory:schema-identity";
 pub const ROW_NO_DUPLICATE_FIELDS: &str = "field-inventory:no-duplicate-fields";
 pub const ROW_REGISTRATION: &str = "field-inventory:registration";
-pub const ROW_ID_UNIQUENESS: &str = "field-inventory:id-uniqueness";
 pub const ROW_BOTH_DIRECTIONS: &str = "field-inventory:both-directions";
 pub const ROW_AUDITED_FIELDS: &str = "field-inventory:audited-fields";
 pub const ROW_ARTIFACT_DRIFT: &str = "field-inventory:artifact-drift";
@@ -466,25 +475,6 @@ fn row_registration() -> Row {
     )
 }
 
-fn row_id_uniqueness(dupes: &[String]) -> Row {
-    if dupes.is_empty() {
-        row_ok(
-            ROW_ID_UNIQUENESS,
-            "every enumerated field has its own id",
-            "no id collision, so no field's coverage claim can stand in for another's".to_string(),
-        )
-    } else {
-        Row::fail(
-            ROW_ID_UNIQUENESS,
-            "two fields share one id",
-            format!(
-                "duplicate field ids {dupes:?} — a collision lets one field's coverage claim stand \
-                 in for another's, which is the shape of a fake green"
-            ),
-        )
-    }
-}
-
 fn row_both_directions(empty: &[String]) -> Row {
     if empty.is_empty() {
         row_ok(
@@ -555,7 +545,6 @@ impl Gate for FieldInventoryGate {
             ROW_SCHEMA_IDENTITY,
             ROW_NO_DUPLICATE_FIELDS,
             ROW_REGISTRATION,
-            ROW_ID_UNIQUENESS,
             ROW_BOTH_DIRECTIONS,
             ROW_AUDITED_FIELDS,
             ROW_ARTIFACT_DRIFT,
@@ -590,15 +579,6 @@ impl Gate for FieldInventoryGate {
         };
 
         let fields = derive(&schemas);
-
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
-        let mut dupes: Vec<String> = Vec::new();
-        for f in &fields {
-            if !seen.insert(f.id.as_str()) && !dupes.contains(&f.id) {
-                dupes.push(f.id.clone());
-            }
-        }
-        dupes.sort();
 
         let mut empty: Vec<String> = Vec::new();
         for dialect in DIALECTS {
@@ -652,7 +632,6 @@ impl Gate for FieldInventoryGate {
             row_schema_identity(),
             row_no_duplicate_fields(),
             row_registration(),
-            row_id_uniqueness(&dupes),
             row_both_directions(&empty),
             row_audited(&missing),
             artifact,
@@ -861,7 +840,6 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
             ROW_SCHEMA_IDENTITY,
             ROW_NO_DUPLICATE_FIELDS,
             ROW_REGISTRATION,
-            ROW_ID_UNIQUENESS,
             ROW_BOTH_DIRECTIONS,
             ROW_AUDITED_FIELDS,
             ROW_ARTIFACT_DRIFT,
@@ -896,13 +874,6 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
     rows.push(row_schema_identity());
     rows.push(row_no_duplicate_fields());
     rows.push(row_registration());
-
-    let dupes: Vec<String> = lines
-        .iter()
-        .filter(|l| l.contains("duplicate field ids"))
-        .map(|l| (*l).to_string())
-        .collect();
-    rows.push(row_id_uniqueness(&dupes));
 
     let empty: Vec<String> = lines
         .iter()
