@@ -97,17 +97,163 @@ impl A2aPlane {
                 address: busbar_contract::UpstreamAddress::socket(agent.host),
                 lane: agent.lane,
             },
-            None => DestinationFacts::Upstream {
-                transport: crate::claims::TRANSPORT_HTTP,
-                address: busbar_contract::UpstreamAddress::socket(""),
-                lane: LaneId::new(""),
-            },
+            None => Self::unreachable_destination(),
+        }
+    }
+
+    /// Where a unit this plane named no agent for goes: nowhere reachable.
+    ///
+    /// The empty host, which the trust unit refuses against the allow-list. That is the honest answer
+    /// for both of the cases that reach it — a deployment with no agent configured, and a body this
+    /// plane could not read an operation out of — and it is a refusal at the place refusals belong
+    /// rather than a panic here or a fabricated host that would be dialled.
+    #[must_use]
+    pub fn unreachable_destination() -> DestinationFacts {
+        DestinationFacts::Upstream {
+            transport: crate::claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket(""),
+            lane: LaneId::new(""),
         }
     }
 
     /// Which method row a unit's operation class came from, where the class names one.
     fn row_for_op(op: busbar_contract::ids::OpClassId) -> Option<&'static ops::MethodRow> {
         ops::METHODS.iter().find(|r| r.op == op)
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+    //   THE OP-KEYED DECISIONS, SAYABLE WITHOUT A UNIT
+    // ═════════════════════════════════════════════════════════════════════════════════════════════
+    //
+    // The three steps below — where a unit goes, what it reaches on the way, and what resource it is
+    // approved against — are functions of the operation class and the configured agent set, and of
+    // NOTHING else. The trait methods that answer the kernel read them off a `Unit`, because that is
+    // the kernel's calling convention; but a `Unit` may only be minted with the kernel's seal, and
+    // the composition root may not name that seal. So the decision and the calling convention are
+    // separated here: the table is stated once, as a function of the class, and the trait method is
+    // the one-line adapter that reads the class off the unit and calls it.
+    //
+    // That is what lets the root PRODUCE its own record of these answers for an arrival it has
+    // decoded, without minting a unit and without a second copy of the table. A second copy is the
+    // failure this shape exists to make impossible: the root's producer and the kernel's steps
+    // answer from the same `match`, so they cannot drift.
+
+    /// Where a unit of this operation class goes.
+    ///
+    /// The operations this node answers out of its own records reach a record and no agent;
+    /// everything else is a hop to the configured agent.
+    #[must_use]
+    pub fn destination_for(&self, op: busbar_contract::ids::OpClassId) -> DestinationFacts {
+        match op {
+            ops::OP_TASK_LIST => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_TASK,
+                op: rec::OP_SCAN,
+            },
+            ops::OP_PUSH_CONFIG_GET => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_PUSH_CONFIG,
+                op: rec::OP_GET,
+            },
+            ops::OP_PUSH_CONFIG_LIST => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_PUSH_CONFIG,
+                op: rec::OP_SCAN,
+            },
+            ops::OP_AGENT_CARD => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_PIN,
+                op: rec::OP_GET,
+            },
+            // A push the agent sent reaches this node's own record of the task it is about.
+            ops::OP_PUSH_EVENT => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_TASK,
+                op: rec::OP_PUT,
+            },
+            // Everything else is a hop to the agent.
+            _ => self.upstream_destination(),
+        }
+    }
+
+    /// The resource this plane's approvals are written over, where one is configured.
+    ///
+    /// The plane says WHAT is being asked for; which scope that requires, and whether this principal
+    /// holds it, is the scope unit's answer and never this plane's.
+    #[must_use]
+    pub fn resource_for(&self) -> Option<ResourceLocator> {
+        self.agents().first().map(|agent| ResourceLocator {
+            kind: "agent",
+            name: agent.id,
+        })
+    }
+
+    /// Whether a unit of this operation class is answered by a run of events rather than one reply.
+    #[must_use]
+    pub fn streaming_for(&self, op: busbar_contract::ids::OpClassId) -> bool {
+        Self::row_for_op(op).is_some_and(|r| r.streaming)
+    }
+
+    /// The legs a unit of this operation class walks, in the plan's order.
+    #[must_use]
+    pub fn route_plan_for(&self, op: busbar_contract::ids::OpClassId) -> RoutePlan {
+        let mut plan = RoutePlan::default();
+        let mut leg = |l: Leg| {
+            let _ = plan.legs.push(l);
+        };
+        match op {
+            ops::OP_MESSAGE_SEND | ops::OP_MESSAGE_STREAM => {
+                // Open the task, record that it opened, then hop.
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
+                leg(self.upstream_leg());
+            }
+            ops::OP_TASK_GET | ops::OP_TASK_SUBSCRIBE => {
+                // Read the row first: it is what says whether this caller may see the task at all,
+                // and what the agent's own name for it is.
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(self.upstream_leg());
+            }
+            ops::OP_TASK_CANCEL => {
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(self.upstream_leg());
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
+            }
+            ops::OP_TASK_LIST => leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_SCAN)),
+            ops::OP_PUSH_CONFIG_CREATE => {
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_PUT));
+                leg(self.upstream_leg());
+            }
+            ops::OP_PUSH_CONFIG_GET => leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_GET)),
+            ops::OP_PUSH_CONFIG_LIST => {
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_SCAN))
+            }
+            ops::OP_PUSH_CONFIG_DELETE => {
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_DELETE));
+                leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_DELETE));
+                leg(self.upstream_leg());
+            }
+            ops::OP_AGENT_CARD => leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_GET)),
+            ops::OP_PUSH_EVENT => {
+                // FIRST, and it is first so that nothing below it runs for a token that is dead: the
+                // token the agent presented must still be LIVE — its configuration present, its task
+                // not yet terminal, its deadline not yet passed. A backend reports one task several
+                // times, so this asks and spends nothing; what ends the token is the task finishing,
+                // which the last leg records.
+                leg(Self::record_leg(
+                    rec::SCHEMA_PUSH_CONFIG,
+                    rec::OP_VERIFY_LIVE,
+                ));
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
+                // LAST, and only bites when the write above made the task terminal: a token outlives
+                // no task it was minted for. On any other update this leg is inert, which is what
+                // lets the same token carry the next callback.
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_REVOKE));
+            }
+            // An operation class this plane does not carry gets no legs, which is an empty plan and
+            // a refusal at the routing step. Not a panic, and not a guess.
+            _ => {}
+        }
+        plan
     }
 }
 
@@ -674,45 +820,19 @@ impl Plane for A2aPlane {
         }
     }
 
+    // The three steps below read the operation class off the unit and answer from the op-keyed
+    // tables above. The table is the decision; this is the kernel's calling convention. Keeping them
+    // apart is what lets the composition root ask the same question about an arrival it has decoded,
+    // without minting a unit it has no seal for and without a second copy of the answer.
     fn verify<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> DestinationFacts {
-        match u.op() {
-            // The operations this node answers out of its own records reach a record and no agent.
-            ops::OP_TASK_LIST => DestinationFacts::PlaneRecord {
-                schema: rec::SCHEMA_TASK,
-                op: rec::OP_SCAN,
-            },
-            ops::OP_PUSH_CONFIG_GET => DestinationFacts::PlaneRecord {
-                schema: rec::SCHEMA_PUSH_CONFIG,
-                op: rec::OP_GET,
-            },
-            ops::OP_PUSH_CONFIG_LIST => DestinationFacts::PlaneRecord {
-                schema: rec::SCHEMA_PUSH_CONFIG,
-                op: rec::OP_SCAN,
-            },
-            ops::OP_AGENT_CARD => DestinationFacts::PlaneRecord {
-                schema: rec::SCHEMA_PIN,
-                op: rec::OP_GET,
-            },
-            // A push the agent sent reaches this node's own record of the task it is about.
-            ops::OP_PUSH_EVENT => DestinationFacts::PlaneRecord {
-                schema: rec::SCHEMA_TASK,
-                op: rec::OP_PUT,
-            },
-            // Everything else is a hop to the agent.
-            _ => self.upstream_destination(),
-        }
+        self.destination_for(u.op())
     }
 
     fn approve<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> ScopeFacts {
         let mut facts = ScopeFacts::default();
-        // The resource is the agent, under the kind the codec already names it by. The plane says
-        // WHAT is being asked for; which scope that requires, and whether this principal holds it,
-        // is the scope unit's answer and never this plane's.
-        if let Some(agent) = self.agents().first() {
-            let _ = facts.resources.push(ResourceLocator {
-                kind: "agent",
-                name: agent.id,
-            });
+        // The resource is the agent, under the kind the codec already names it by.
+        if let Some(resource) = self.resource_for() {
+            let _ = facts.resources.push(resource);
         }
         facts
     }
@@ -734,68 +854,7 @@ impl Plane for A2aPlane {
     }
 
     fn route<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
-        let mut plan = RoutePlan::default();
-        let mut leg = |l: Leg| {
-            let _ = plan.legs.push(l);
-        };
-        match u.op() {
-            ops::OP_MESSAGE_SEND | ops::OP_MESSAGE_STREAM => {
-                // Open the task, record that it opened, then hop.
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
-                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
-                leg(self.upstream_leg());
-            }
-            ops::OP_TASK_GET | ops::OP_TASK_SUBSCRIBE => {
-                // Read the row first: it is what says whether this caller may see the task at all,
-                // and what the agent's own name for it is.
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
-                leg(self.upstream_leg());
-            }
-            ops::OP_TASK_CANCEL => {
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
-                leg(self.upstream_leg());
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
-                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
-            }
-            ops::OP_TASK_LIST => leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_SCAN)),
-            ops::OP_PUSH_CONFIG_CREATE => {
-                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_PUT));
-                leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_PUT));
-                leg(self.upstream_leg());
-            }
-            ops::OP_PUSH_CONFIG_GET => leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_GET)),
-            ops::OP_PUSH_CONFIG_LIST => {
-                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_SCAN))
-            }
-            ops::OP_PUSH_CONFIG_DELETE => {
-                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_DELETE));
-                leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_DELETE));
-                leg(self.upstream_leg());
-            }
-            ops::OP_AGENT_CARD => leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_GET)),
-            ops::OP_PUSH_EVENT => {
-                // FIRST, and it is first so that nothing below it runs for a token that is dead: the
-                // token the agent presented must still be LIVE — its configuration present, its task
-                // not yet terminal, its deadline not yet passed. A backend reports one task several
-                // times, so this asks and spends nothing; what ends the token is the task finishing,
-                // which the last leg records.
-                leg(Self::record_leg(
-                    rec::SCHEMA_PUSH_CONFIG,
-                    rec::OP_VERIFY_LIVE,
-                ));
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
-                leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
-                // LAST, and only bites when the write above made the task terminal: a token outlives
-                // no task it was minted for. On any other update this leg is inert, which is what
-                // lets the same token carry the next callback.
-                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_REVOKE));
-            }
-            // An operation class this plane does not carry gets no legs, which is an empty plan and
-            // a refusal at the routing step. Not a panic, and not a guess.
-            _ => {}
-        }
-        plan
+        self.route_plan_for(u.op())
     }
 
     fn meter<'u>(&self, _u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
