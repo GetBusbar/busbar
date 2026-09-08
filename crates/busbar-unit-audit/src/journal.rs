@@ -1,25 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GENERIC SCOPE-KEYED JOURNAL — the durable seq-authority state machine, in core, naming no
-//! plane.
+//! THE GENERIC SCOPE-KEYED JOURNAL — the durable seq-authority state machine, in the audit unit,
+//! naming no plane.
 //!
 //! ## What this is, and why it is here and not in a plane
 //!
 //! Two of busbar's evidence streams — the MCP per-call log and the A2A per-task provenance chain —
-//! each grew their OWN copy of the same durable-log machinery around [`crate::audit::Chain`]: an
-//! in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume of an evicted tail, a
+//! each grew their OWN copy of the same durable-log machinery around [`crate::legacy::chain::Chain`]:
+//! an in-RAM per-scope POSITION CACHE, a bounded LRU over it, a store-resume of an evicted tail, a
 //! write-through SINK, and the WRITE-ORDERING invariant that a position is committed only after the
 //! durable append succeeds. That machinery is not MCP's and it is not A2A's — it is the same answer
-//! to "make a hash-chained stream survive a restart" that [`crate::admin::audit`] gives for admin
-//! mutations, and by the owner's ruling (see [`crate::audit`]) auditing is CORE. So it lives here,
+//! to "make a hash-chained stream survive a restart" that the admin mutation log gives for admin
+//! mutations, and by the owner's ruling auditing is one mechanism, in one place. So it lives here,
 //! once, generic over the record type, and a plane supplies only its RECORD (which fields, which
-//! framing — [`crate::audit::ChainedRecord`]) plus the neutral store envelope its rows cross the seam
-//! in ([`JournalRecord::to_plane_record`]).
+//! framing — [`crate::legacy::chain::ChainedRecord`]) plus the neutral store envelope its rows cross
+//! the seam in ([`JournalRecord::to_plane_record`]).
+//!
+//! ## WHY THE AUDIT UNIT AND NOT CORE, since the owner's 2026-09-08 ruling
+//!
+//! The header above was written when this sat in `busbar_core::audit::journal`, and every sentence of
+//! it is still true — one position cache, one write-ordering, one restore that reports rather than
+//! judges, generic over `R`, naming no plane. The only thing that changed is which crate the one copy
+//! sits in. Core held it because core held the chain; the chain is in [`crate::legacy::chain`] now,
+//! and a durable seq-authority built on that chain that lived a crate away from it would be exactly
+//! the "machinery re-derived beside the mechanism" this module was written to stop. `busbar-unit-wal`
+//! is not its home either: that is a BYTE write-ahead log with no `Journal<R>` and no chain in it.
 //!
 //! It names no plane noun: the type parameter is `R`, the scope is a `&str`, and the store is the
 //! narrow [`PlaneStore`] seam. A plane's record type implements [`JournalRecord`] plane-side, so the
-//! coupling points AT core, never out of it.
+//! coupling points AT the unit, never out of it.
 //!
 //! ## The write-ordering invariant, stated once
 //!
@@ -36,26 +46,18 @@
 //! [`Journal::restore_from_store`] resumes every scope's position from its persisted tail and returns
 //! a [`Restored`] naming what it found — the empty scopes and the chain breaks — WITHOUT logging.
 //! The plane-facing wrapper owns the operator-facing words (its own diagnostic codes name which log
-//! to go and look at), so the generic core stays free of any plane's vocabulary. A broken chain is
+//! to go and look at), so the generic mechanism stays free of any plane's vocabulary. A broken chain is
 //! REPORTED and still resumed from its tail (via [`Chain::from_persisted_unverified`]): refusing to
 //! restore a tamper-detected chain would convert a detection control into a deletion primitive.
-
-// The MCP call log (`calllog`, `plane-mcp`) and the A2A task store (`plane::taskstore`,
-// `plane-a2a`) both wire this in production. But with BOTH planes compiled out
-// (`--no-default-features`) nothing instantiates a `Journal`, so every method here is dead on that
-// configuration — exactly as the plane modules themselves are, which carry the same blanket. Hence
-// the module-wide allow rather than per-item: the "dead" set is the whole module under one cfg and
-// fully live under another, so a per-item list would be noise that says nothing a reader can act on.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use indexmap::IndexMap;
 
-use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord};
-use crate::plane::store::{decode, encode, PlaneStore};
+use crate::legacy::chain::{verify_chain, Chain, ChainBreak, ChainedRecord};
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_substrate::plane::store::{decode, encode, PlaneStore};
 
 /// A RECORD A JOURNAL CAN PERSIST. A plane's chained record type implements this to say TWO things
 /// the generic journal cannot know: which neutral store `kind` its rows are tagged with, and how one
@@ -63,7 +65,7 @@ use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, Store
 ///
 /// Implemented PLANE-SIDE (`impl JournalRecord for McpCallRecord` in `calllog`, and likewise
 /// for the A2A event row), so the plane→core coupling points at core and the journal names no plane.
-pub(crate) trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOwned {
+pub trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOwned {
     /// The neutral store kind these rows are tagged with (`call`, `task_event`, …) — the tag
     /// [`PlaneStore::list_plane_records`] and friends branch on. Its VALUE is a plane's business;
     /// the journal only threads it through.
@@ -79,7 +81,7 @@ pub(crate) trait JournalRecord: ChainedRecord + Clone + serde::de::DeserializeOw
 /// SURFACED rather than swallowed — an evidence record that is not durable is one a restart will lose,
 /// and the caller has to be able to decide whether that is acceptable for what it is recording.
 #[derive(Debug)]
-pub(crate) enum JournalError {
+pub enum JournalError {
     /// The durable write failed.
     Store(StoreError),
 }
@@ -96,32 +98,32 @@ impl std::fmt::Display for JournalError {
 /// renames these into its own operator vocabulary (`principals`, `active`, …) and emits its own
 /// diagnostics from the two that are bad news.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Restored {
+pub struct Restored {
     /// Scopes whose chain position was resumed.
-    pub(crate) scopes: usize,
+    pub scopes: usize,
     /// Records read back across every scope. THE DURABILITY SIGNAL: zero here on a deployment that
     /// has been serving traffic means the configured backend is keeping none of them.
-    pub(crate) records: usize,
+    pub records: usize,
     /// Scopes the store ENUMERATED but returned no records for — the one shape the verifier cannot
     /// judge on its own, and what a wholesale deletion of one scope's evidence looks like. Named (not
     /// merely counted) so the wrapper can log WHICH.
-    pub(crate) empty_scopes: Vec<String>,
+    pub empty_scopes: Vec<String>,
     /// Records the reframe callback could NOT decode — a body the store held but this build cannot
     /// read back (a format from a store no released build wrote, or a corrupt row). Counted and
     /// SKIPPED per-record rather than allowed to abort the whole rehydrate: dropping every other
     /// scope's working set because one row would not decode is strictly worse than losing the one row,
     /// exactly as a chain break is tolerated per-scope rather than refused wholesale.
-    pub(crate) unreadable: usize,
+    pub unreadable: usize,
     /// Chains that FAILED to verify. Tamper evidence. The records are still restored and the chain
     /// still resumes from the broken tail; the break is reported, never silently re-based onto.
-    pub(crate) chain_breaks: Vec<ChainBreak>,
+    pub chain_breaks: Vec<ChainBreak>,
 }
 
 /// THE GENERIC SCOPE-KEYED DURABLE JOURNAL. Holds chain POSITIONS only (a tail hash and a next
 /// sequence per scope), never the records — the store owns those. No `Debug`: it holds a
 /// `dyn PlaneStore`, which is deliberately not `Debug` (a backend must not be obliged to render
 /// itself, where a credential could surface in a log).
-pub(crate) struct Journal<R> {
+pub struct Journal<R> {
     /// Chain POSITIONS, keyed by scope. An [`IndexMap`] so it doubles as a bounded LRU: insertion
     /// order is recency order (most-recently-used at the back), the coldest is evicted from the front
     /// once [`Journal::cap`] is exceeded, and an evicted scope is resumed from the store on its next
@@ -146,7 +148,7 @@ pub(crate) struct Journal<R> {
 
 impl<R: ChainedRecord> Journal<R> {
     /// A journal with an LRU bound of `cap` scope positions. `cap == usize::MAX` disables eviction.
-    pub(crate) fn new(cap: usize) -> Self {
+    pub fn new(cap: usize) -> Self {
         Journal {
             positions: Mutex::new(IndexMap::new()),
             overflowed: AtomicBool::new(false),
@@ -162,11 +164,11 @@ impl<R: ChainedRecord> Journal<R> {
         self.positions.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The attached durable sink, if any. `pub(crate)` because a stream may persist OTHER durable
+    /// The attached durable sink, if any. Reachable because a stream may persist OTHER durable
     /// state beside its journaled chain (the A2A task table upserts a `task` row next to its
     /// `task_event` chain) and must reach the same backend — the journal owns the one sink handle so
     /// there is not a second to keep in sync.
-    pub(crate) fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
+    pub fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
         self.sink
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -175,15 +177,18 @@ impl<R: ChainedRecord> Journal<R> {
     }
 
     /// Attach the configured durable store as the write-through SINK. Called once at boot.
-    pub(crate) fn set_sink(&self, store: Arc<dyn PlaneStore>) {
+    pub fn set_sink(&self, store: Arc<dyn PlaneStore>) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(store);
     }
 
     /// TEST ONLY: drop the sink again, so a test that attached one to a process-wide journal leaves it
     /// as it found it. No production caller: detaching a live deployment's sink mid-run would silently
     /// stop persisting evidence, the exact failure this module exists to prevent.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn clear_sink_for_test(&self) {
+    ///
+    /// Not test-gated, on the precedent of `busbar_substrate::plane::handle_engine`'s method of the
+    /// same name and for the identical reason: the caller's OWN test build depends on this crate as a
+    /// non-test library, so a `#[cfg(test)]` here would not exist for it. It is inert in production.
+    pub fn clear_sink_for_test(&self) {
         *self.sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -264,7 +269,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// This is the ONLY place durability is learned. A write's `Ok(())` proves nothing (the store
     /// trait default accepts and keeps nothing), so the engine finds out what its backend actually
     /// kept by reading it back.
-    pub(crate) fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored>
+    pub fn restore_from_store(&self, store: &dyn PlaneStore) -> StoreResult<Restored>
     where
         R: JournalRecord,
     {
@@ -310,7 +315,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// task's chain too. Verifies and REPORTS a break exactly as `restore_from_store` does (the broken
     /// chain still resumes from its tail via [`Chain::from_persisted_unverified`]); returns the break
     /// for the caller to log in its own vocabulary, or `None` when the chain verifies.
-    pub(crate) fn seed_position(&self, scope: &str, records: &[R]) -> Option<ChainBreak> {
+    pub fn seed_position(&self, scope: &str, records: &[R]) -> Option<ChainBreak> {
         let (chain, brk) = match Chain::from_persisted(records) {
             Ok(c) => (c, None),
             Err(b) => (Chain::from_persisted_unverified(records), Some(b)),
@@ -326,14 +331,14 @@ impl<R: ChainedRecord> Journal<R> {
     /// cache does not grow one entry per scope ever seen. Never call it on a scope that may still be
     /// appended to — reopening it would resume from the store tail (with a sink) or FORK at seq 1
     /// (without one).
-    pub(crate) fn forget(&self, scope: &str) {
+    pub fn forget(&self, scope: &str) {
         self.positions().shift_remove(scope);
     }
 
     /// RECORD one entry: chain it to MINT the sequence and link, write it through, and advance the
     /// position only once the durable write has succeeded. See the module header for why the order is
     /// load-bearing. A cache MISS is resolved by [`Journal::resume_missing`].
-    pub(crate) fn record(&self, scope: &str, input: R::Input) -> Result<R, JournalError>
+    pub fn record(&self, scope: &str, input: R::Input) -> Result<R, JournalError>
     where
         R: JournalRecord,
     {
@@ -355,7 +360,7 @@ impl<R: ChainedRecord> Journal<R> {
 
     /// The sequence the next record for `scope` will carry. 1 for a scope with no cached position.
     /// A diagnostic on the position — the one piece of state the store does not own.
-    pub(crate) fn next_seq(&self, scope: &str) -> u64 {
+    pub fn next_seq(&self, scope: &str) -> u64 {
         self.positions()
             .get(scope)
             .map(Chain::next_seq)
@@ -363,7 +368,14 @@ impl<R: ChainedRecord> Journal<R> {
     }
 
     /// How many scope positions this process is holding.
-    pub(crate) fn len(&self) -> usize {
+    ///
+    /// No `is_empty` twin, and clippy's rule is waived rather than satisfied: this is a GAUGE on the
+    /// position cache (what the working-set tests assert the LRU bound against), not a container
+    /// emptiness question anybody asks. An `is_empty` would be a public method with no caller, and
+    /// "empty" would be the wrong word for it anyway — a journal with no cached positions still has
+    /// every one of its records in the store.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
         self.positions().len()
     }
 
@@ -377,7 +389,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// `NeutralRecord`, not a `JournalRecord`), so this typed twin has no caller until a typed stream
     /// wants it. Kept as the typed mirror of `compact_scoped`, alongside the other typed-path methods.
     #[allow(dead_code)]
-    pub(crate) fn compact(&self, before: u64) -> StoreResult<u64>
+    pub fn compact(&self, before: u64) -> StoreResult<u64>
     where
         R: JournalRecord,
     {
@@ -419,7 +431,7 @@ pub struct NeutralBody {
 /// journal persists and resumes it WITHOUT naming any plane type: `content` is the plane's opaque
 /// pre-framed suffix, carried through verbatim, and `scope` is supplied by the caller (the store
 /// parent), never read from the body.
-pub(crate) trait NeutralRecord: ChainedRecord + Clone {
+pub trait NeutralRecord: ChainedRecord + Clone {
     /// The opaque pre-framed content suffix this record carries (the bytes the digest appends RAW).
     fn content(&self) -> &[u8];
 }
@@ -428,7 +440,7 @@ pub(crate) trait NeutralRecord: ChainedRecord + Clone {
 /// this journal's own [`NeutralBody`] OR a legacy serde row from before the cleave — the callback owns
 /// which, so core never decodes a plane type. Boxed as a trait object so the neutral methods take one
 /// uniform argument regardless of the closure's captures (the per-scope framing/digests_scope).
-pub(crate) type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> StoreResult<R> + 'a;
+pub type Reframe<'a, R> = dyn Fn(&str, &[u8]) -> StoreResult<R> + 'a;
 
 impl<R: NeutralRecord> Journal<R> {
     /// Resolve a NOT-cached scope's position on the neutral path (the [`Journal::resume_missing`]
@@ -466,7 +478,7 @@ impl<R: NeutralRecord> Journal<R> {
     /// persist the neutral `{seq, prev_hash, hash, content}` envelope under `kind`/`scope`, and advance
     /// the position only once the durable write succeeded — the SAME write-ordering the typed
     /// [`Journal::record`] holds, so a failed write does not burn a sequence.
-    pub(crate) fn append_scoped(
+    pub fn append_scoped(
         &self,
         kind: &str,
         scope: &str,
@@ -510,7 +522,7 @@ impl<R: NeutralRecord> Journal<R> {
     /// ONE thing this method logs directly is an UNDECODABLE row, at the skip site with a coded
     /// diagnostic: a silently lost evidence row must never be invisible, so it is surfaced loudly here
     /// rather than left to ride only on the `unreadable` aggregate a wrapper might not log.
-    pub(crate) fn restore_scoped(
+    pub fn restore_scoped(
         &self,
         kind: &str,
         store: &dyn PlaneStore,
@@ -539,8 +551,8 @@ impl<R: NeutralRecord> Journal<R> {
                     Ok(r) => records.push(r),
                     Err(e) => {
                         out.unreadable += 1;
-                        crate::diagnostics::diag_error!(
-                            crate::diagnostics::PLANE_JOURNAL_ROW_UNREADABLE,
+                        busbar_substrate_values::diag_error!(
+                            busbar_substrate_values::diagnostics::PLANE_JOURNAL_ROW_UNREADABLE,
                             scope = %scope,
                             error = %e,
                             "a persisted journal record could NOT be reframed on restore; it is being \
@@ -581,7 +593,7 @@ impl<R: NeutralRecord> Journal<R> {
 
     /// Read one scope's rows back from the store (reframed), oldest-first — the cold read the neutral
     /// `journal_read` window scans. Returns every stored row for the scope; the caller windows it.
-    pub(crate) fn read_scoped(
+    pub fn read_scoped(
         &self,
         kind: &str,
         scope: &str,
@@ -597,7 +609,7 @@ impl<R: NeutralRecord> Journal<R> {
 
     /// VERIFY one scope's persisted chain (reframed), returning the break if any and `None` when it
     /// verifies — the neutral analogue of the boot-verify walk, for a `verify_task_chain`-style seam.
-    pub(crate) fn verify_scoped(
+    pub fn verify_scoped(
         &self,
         kind: &str,
         scope: &str,
@@ -611,14 +623,10 @@ impl<R: NeutralRecord> Journal<R> {
     /// RETENTION on the neutral path (the [`Journal::compact`] analogue): ask the sink to drop `kind`
     /// records older than `before`. Positions are NOT reset, exactly as the typed path — reopening a
     /// scope at seq 1 after a purge would collide with a sequence the store may still hold.
-    pub(crate) fn compact_scoped(&self, kind: &str, before: u64) -> StoreResult<u64> {
+    pub fn compact_scoped(&self, kind: &str, before: u64) -> StoreResult<u64> {
         match self.sink() {
             Some(store) => store.purge_plane_records_before(kind, before),
             None => Ok(0),
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tests/journal_tests.rs"]
-mod journal_tests;

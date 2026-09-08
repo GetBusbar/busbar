@@ -12,6 +12,19 @@
 #   serde        the previous release's record is serialised onto a wire with eight fields and one
 #                skipped provenance flag. That is part of what "unchanged" means, so the derives
 #                travel with the record rather than being reimplemented at the boundary.
+#   indexmap     the scope-keyed journal's position cache IS an IndexMap: insertion order is recency
+#                order, so one map is both the cache and its bounded LRU. Swapping it for a HashMap
+#                plus a side list would be two structures to keep in step where there is one.
+#   busbar-api   the neutral durable envelope the journal persists (`PlaneRecord`/`PlaneSelector`/
+#                `StoreError`). Leaf types, no engine.
+#   busbar-substrate        the narrow `PlaneStore` sink the journal writes through, and the
+#                `encode`/`decode` body bridge beside it. The journal holds an `Arc<dyn PlaneStore>`
+#                and nothing wider: it cannot reach `Store::append_audit` because the method is not
+#                on the trait.
+#   busbar-substrate-values the diagnostic catalog. The journal speaks exactly ONE coded word
+#                (`PLANE_JOURNAL_ROW_UNREADABLE`, at the per-row skip site), and it must be the SAME
+#                code an operator already greps for — a second catalog would be a second code.
+#   tracing      what `diag_error!` expands to.
 [package]
 name = "busbar-unit-audit"
 version = "1.6.0"
@@ -28,10 +41,18 @@ path = "src/lib.rs"
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
+busbar-api = { path = "../api" }
+busbar-substrate = { path = "../busbar-substrate" }
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 sha2 = { workspace = true }
 serde = { workspace = true }
+indexmap = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 # The wire shape of the previous release's record — eight fields, one of them skipped — is a claim
 # about what an encoder produces, so the test encodes it rather than reading the derive attributes.
 serde_json = { workspace = true }
+# The journal's ONE coded diagnostic is a behaviour, not a comment: the undecodable-row test installs
+# a capturing subscriber and requires the code to actually be emitted at ERROR at the skip site.
+tracing-subscriber = { workspace = true }

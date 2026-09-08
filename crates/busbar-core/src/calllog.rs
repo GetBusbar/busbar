@@ -113,13 +113,13 @@ use std::sync::Arc;
 use crate::plane::store::{decode, PlaneStore, KIND_CALL};
 use busbar_api::{PlaneSelector, StoreError, StoreResult};
 
-use crate::audit::journal::NeutralBody;
 use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
     Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, StatusClass, POD_VERSION,
 };
+use busbar_unit_audit::journal::NeutralBody;
 use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the MCP `call` durable stream is registered under and addressed by on
@@ -510,7 +510,7 @@ const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 
 /// THE PER-CALL LOG. A thin MCP-facing wrapper over the generic core [`Journal`]: the principal-keyed
 /// position cache, the LRU bound, the store-resume of an evicted tail, the write-through sink and the
-/// write-ordering invariant all live in [`crate::audit::journal`] now — this file keeps only the
+/// write-ordering invariant all live in [`busbar_unit_audit::journal`] now — this file keeps only the
 /// MCP RECORD (the call record), the MCP operator vocabulary (the diagnostics its restore emits), and
 /// the read surface. No `Debug`: the journal holds a `dyn PlaneStore`, which is deliberately not
 /// `Debug` (a backend must not be obliged to render itself, where a credential could surface in a log).

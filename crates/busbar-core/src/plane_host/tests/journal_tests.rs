@@ -180,8 +180,8 @@ fn journal_read_returns_ok_and_writes_bytes() {
 
 // ── THE DURABLE SEAM — register + append_scoped + verify/read/restore over a real store ────────
 
-use crate::audit::journal::NeutralBody;
 use busbar_plugin::hot::{JournalStreamDesc, ReframeOut, RestoredHdr, VerifyChainHdr};
+use busbar_unit_audit::journal::NeutralBody;
 use std::sync::Arc;
 
 // Base 10_000 so these unit streams never collide in the process-global registry with the

@@ -80,7 +80,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         pipe_read: Some(super::pipe::pipe_read),
         pipe_write: Some(super::pipe::pipe_write),
         // ── The DURABLE journal seam (minor-9): each slot wired over the store-backed
-        //    `audit::journal::Journal<PlaneJournalRecord>` in `super::journal`. ───────────────────────
+        //    `busbar_unit_audit::journal::Journal<PlaneJournalRecord>` in `super::journal`. ───────────────────────
         journal_register: Some(super::journal::journal_register),
         journal_append_scoped: Some(super::journal::journal_append_scoped),
         journal_read_scoped: Some(super::journal::journal_read_scoped),

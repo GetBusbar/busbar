@@ -41,7 +41,6 @@
 //! markers below flag where it would attach to the durable store.
 
 use super::recover;
-use crate::audit::journal::{Journal, NeutralRecord};
 use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::PlaneStoreView;
 use busbar_plugin::hot::host::{HostCtx, JournalReframeFn};
@@ -49,6 +48,7 @@ use busbar_plugin::hot::{
     ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,
     ReframeOut, RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
 };
+use busbar_unit_audit::journal::{Journal, NeutralRecord};
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -172,7 +172,7 @@ impl NeutralRecord for PlaneJournalRecord {
 //
 // A plane REGISTERS a stream (its neutral `kind`, framing, digests_scope + a plane-provided REFRAME
 // callback) and thereafter addresses append/read/restore/seed/forget/compact/verify by the integer
-// `kind_id`. Each stream owns ONE store-backed [`crate::audit::journal::Journal<PlaneJournalRecord>`]
+// `kind_id`. Each stream owns ONE store-backed [`busbar_unit_audit::journal::Journal<PlaneJournalRecord>`]
 // — the SAME seq-authority + position-cache + write-ordering machinery the three shipped streams use,
 // naming no plane type. The host mints seq/prev_hash/hash through the ONE core chain and persists the
 // neutral `{seq, prev_hash, hash, content}` body; the plane's reframe is the decode bridge that turns
@@ -555,7 +555,7 @@ pub(crate) fn journal_append_scoped_full(
                 record.prev_hash().to_string(),
                 record.hash().to_string(),
             )),
-            Err(crate::audit::journal::JournalError::Store(e)) => Err(e),
+            Err(busbar_unit_audit::journal::JournalError::Store(e)) => Err(e),
         }
     }))
     .unwrap_or_else(|_| {
@@ -607,7 +607,7 @@ pub(crate) fn journal_append_scoped_full_hostless(
                 record.prev_hash().to_string(),
                 record.hash().to_string(),
             )),
-            Err(crate::audit::journal::JournalError::Store(e)) => Err(e),
+            Err(busbar_unit_audit::journal::JournalError::Store(e)) => Err(e),
         }
     }))
     .unwrap_or_else(|_| {
@@ -752,7 +752,7 @@ pub(crate) extern "C-unwind" fn journal_restore(
                 Ok(r) => r,
                 Err(_) => return StatusClass::Fault,
             },
-            None => crate::audit::journal::Restored::default(),
+            None => busbar_unit_audit::journal::Restored::default(),
         };
         let hdr = RestoredHdr {
             size: core::mem::size_of::<RestoredHdr>() as u32,
