@@ -492,16 +492,15 @@ fn path_overlaps(left: &Selector, right: &Selector) -> bool {
     left.overlaps(right)
 }
 
-/// Transport forms: same form compares its value, different forms coincide.
+/// Transport forms, as the contract decides them.
+///
+/// Read here for the same reason the path family is, and the reading it replaces is why the rule
+/// matters: the transcription compared a handshake name with `==` while the contract compares it
+/// with `eq_ignore_ascii_case`, so two planes claiming one name in two capitalisations sealed as
+/// disjoint and a connection presenting either matched both. Which one served it fell to the
+/// precedence order rather than to a decision an operator was ever shown.
 fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
-    match (left, right) {
-        (Selector::Sni(a), Selector::Sni(b))
-        | (Selector::ClientCertSubject(a), Selector::ClientCertSubject(b))
-        | (Selector::StreamName(a), Selector::StreamName(b))
-        | (Selector::Alpn(a), Selector::Alpn(b)) => a == b,
-        (Selector::Port(a), Selector::Port(b)) => a == b,
-        _ => true,
-    }
+    left.overlaps(right)
 }
 
 /// Whether this deployment has already been bootstrapped.
