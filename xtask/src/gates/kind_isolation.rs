@@ -477,6 +477,37 @@ const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
     ("abi", "contract"),
 ];
 
+/// THE CONTRACT'S OWN CLOSED KIND SET, and the file it is declared in.
+///
+/// `Plugin::kind()` returns one of these, and this table is where the two vocabularies meet: the
+/// contract says what a plugin may CALL ITSELF, and [`KINDS`] says what a crate IS. They were
+/// allowed to drift, and the drift had a shape — the contract's set had no member for the dialect
+/// kind at all, so the only kind a dialect crate could declare was `Plane`, the kind it is
+/// explicitly not, and every row here would then have checked it against the plane skeleton.
+///
+/// So the mapping is READ, in both directions, and a variant this table cannot place is refused:
+/// adding a kind to the contract without teaching this gate leaves a kind nothing is held to, and
+/// striking one here without striking the variant leaves a declaration nothing reads.
+///
+/// `egress-auth` maps onto `auth` because the NAME rule does: the tree has one `busbar-auth-*`
+/// prefix and both scheme kinds live under it, exactly as `CONSTRUCTION_KIND_KEYS` already reads
+/// them.
+const CONTRACT_KIND_FILE: &str = "crates/busbar-contract/src/plugin.rs";
+
+/// `Kind::<variant>` -> the kind of [`KINDS`] it names.
+const CONTRACT_KIND_VARIANTS: &[(&str, &str)] = &[
+    ("Plane", "plane"),
+    ("Dialect", "dialect"),
+    ("Control", "control"),
+    ("Transport", "transport"),
+    ("Auth", "auth"),
+    ("EgressAuth", "auth"),
+    ("Store", "store"),
+    ("Secret", "secret"),
+    ("Hook", "hooks"),
+    ("Export", "export"),
+];
+
 /// The three crate names whose remainder trips a naming rule for a reason the owner has read.
 ///
 /// Every one is a REVIEWED sentence, not a shrug, and every one EXPIRES: a waiver whose crate is
@@ -3346,6 +3377,94 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         )),
     }
 
+    // THE CONTRACT'S CLOSED KIND SET IS THE THIRD VOCABULARY, and it is the one a plugin actually
+    // returns. Read it, map it both ways, and refuse a variant this table cannot place — see
+    // [`CONTRACT_KIND_VARIANTS`] for why the drift is worth a rule of its own.
+    match cx.read(CONTRACT_KIND_FILE) {
+        Ok(text) => {
+            let variants = contract_kind_variants(&text);
+            if variants.is_empty() {
+                offenders.push(format!(
+                    "no-contract-kinds\t{CONTRACT_KIND_FILE}\t`pub enum Kind` declares no variant \
+                     or was moved; the set a plugin declares itself out of is now being read as \
+                     empty, and an empty set agrees with every declaration"
+                ));
+            }
+            let mapped: BTreeMap<&str, &str> = CONTRACT_KIND_VARIANTS.iter().copied().collect();
+            for v in &variants {
+                match mapped.get(v.as_str()) {
+                    Some(kind) if KINDS.iter().any(|d| d.kind == *kind) => {}
+                    Some(kind) => offenders.push(format!(
+                        "unmapped-variant\t{CONTRACT_KIND_FILE}\t`Kind::{v}` maps onto `{kind}`, \
+                         which is not in this table — strike one or add the other, but a plugin \
+                         may not declare a kind no rule here is written for"
+                    )),
+                    None => offenders.push(format!(
+                        "unmapped-variant\t{CONTRACT_KIND_FILE}\tthe contract declares `Kind::{v}` \
+                         and this gate has no kind for it. A crate of it would be checked against \
+                         whatever its NAME resolved to instead — {MAKE_A_NEW_KIND}"
+                    )),
+                }
+            }
+            for (v, _) in CONTRACT_KIND_VARIANTS {
+                if !variants.iter().any(|have| have == v) {
+                    offenders.push(format!(
+                        "dead-variant\tCONTRACT_KIND_VARIANTS\t`Kind::{v}` is mapped here and the \
+                         contract no longer declares it; strike the mapping so this table cannot \
+                         say yes to a declaration that has stopped existing"
+                    ));
+                }
+            }
+        }
+        Err(e) => offenders.push(format!(
+            "unreadable\t{CONTRACT_KIND_FILE}\t{e} — the contract's own kind set is this rule's \
+             input, and a set that did not read is not a set that agrees"
+        )),
+    }
+
+    // A CRATE DECLARES THE KIND ITS NAME SAYS. This is the half of the Appendix G registry row that
+    // reads the DECLARATION, and it is checked against the NAME here and against the REGISTRATION
+    // on the ship twin. The split is not a softening: `busbar-plane-admin` is kind `control` by
+    // registration and still declares `Kind::Plane`, because it still implements the plane trait —
+    // that is the R7 rename's work, owed by the ship SHA on exactly the terms `:control-path` is,
+    // and a per-push gate red for it would be red for something nobody can fix this week.
+    match declared_kinds(cx) {
+        Ok(declared) => {
+            let mapped: BTreeMap<&str, &str> = CONTRACT_KIND_VARIANTS.iter().copied().collect();
+            for c in crates {
+                let (by_name, remainder, _) = resolve_kind(&c.name);
+                let by_name = refine(by_name, &remainder);
+                let want = if ship { c.kind } else { by_name };
+                for (variant, at) in declared.get(&c.dir).into_iter().flatten() {
+                    let Some(says) = mapped.get(variant.as_str()) else {
+                        offenders.push(format!(
+                            "undeclarable-kind\t{at}\t`{}` declares `Kind::{variant}`, which is \
+                             not a kind this table knows",
+                            c.name
+                        ));
+                        continue;
+                    };
+                    let Some(want) = want else { continue };
+                    if *says != want {
+                        let how = if ship { "is registered as" } else { "is named" };
+                        offenders.push(format!(
+                            "declared-kind-mismatch\t{at}\t`{}` declares `Kind::{variant}` \
+                             (`{says}`) and {how} a `{want}` crate. A crate's kind is one answer: \
+                             the registry seals it under what it DECLARES and every rule here is \
+                             written on what its name says, so two answers means the rules are \
+                             about a different crate than the boot seal is",
+                            c.name
+                        ));
+                    }
+                }
+            }
+        }
+        Err(e) => offenders.push(format!(
+            "unreadable\tcrates/\t{e} — the declared-kind walk is this rule's input, and a walk \
+             that read nothing found every declaration in agreement"
+        )),
+    }
+
     offenders.sort();
     if offenders.is_empty() {
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
@@ -3402,6 +3521,85 @@ fn control_routes(cx: &Ctx, dir: &str) -> Vec<String> {
     } else {
         vec![format!("/{}", segs.join("/"))]
     }
+}
+
+/// The variants of the contract's `pub enum Kind`, in declaration order.
+///
+/// Read off the source rather than tabled here, because a table of the variants beside a table of
+/// the kinds is two lists to keep in step and the whole point of this rule is that there is one.
+fn contract_kind_variants(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for (_, code) in scan::production_lines(text) {
+        let t = code.trim();
+        if !inside {
+            inside = t.starts_with("pub enum Kind ");
+            continue;
+        }
+        if t == "}" {
+            break;
+        }
+        // A variant line is a bare identifier followed by a comma: the enum is fieldless by
+        // design, so anything else in this body is a shape this reader must not guess at.
+        if let Some(name) = t.strip_suffix(',') {
+            if !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && name.starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// THE KIND A CRATE DECLARES ITSELF, read out of its `Plugin::kind()` body.
+///
+/// `crate dir -> (variant, where)`. A crate that implements the base trait answers this question in
+/// source, as a constant, so it is readable without running anything — and it has to be read,
+/// because the name rule and the edge rule are both written on the kind a crate's NAME says, and a
+/// crate whose declaration disagrees is being checked against a skeleton it never claimed.
+///
+/// Fixtures are skipped on the same terms every other rule here skips them: a test's fake plugin
+/// declares whatever the test needs it to.
+fn declared_kinds(cx: &Ctx) -> Result<BTreeMap<String, Vec<(String, String)>>, String> {
+    let files = cx
+        .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(MIN_SOURCES))
+        .map_err(|e| e.to_string())?;
+    let mut out: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    for f in &files {
+        let rel = f.rel_str();
+        if rel.contains("/tests/") || rel.ends_with("_test.rs") || rel.ends_with("_tests.rs") {
+            continue;
+        }
+        let Some(dir) = owning_dir(&rel) else {
+            continue;
+        };
+        let lines: Vec<(usize, String)> = scan::production_lines(&f.text).into_iter().collect();
+        for (i, (lineno, code)) in lines.iter().enumerate() {
+            if !code.contains("fn kind(&self) -> Kind") {
+                continue;
+            }
+            // The body is a constant, so the variant is on this line or within the next few; a
+            // declaration that needs more than that is not the constant this rule can read, and is
+            // reported as absent rather than guessed at.
+            for (_, body) in lines.iter().skip(i).take(4) {
+                if let Some(at) = body.find("Kind::") {
+                    let rest = &body[at + 6..];
+                    let end = rest
+                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .unwrap_or(rest.len());
+                    if end > 0 {
+                        out.entry(dir.clone())
+                            .or_default()
+                            .push((rest[..end].to_string(), format!("{rel}:{lineno}")));
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The keys of `qa/construction.toml`'s `[gate.plugin_kinds]` table.
@@ -5091,12 +5289,34 @@ impl Gate for KindIsolationGate {
             // row is red here BY DESIGN, and asserting the row green would be asserting that the
             // drain has finished. The row's ship behaviour is proven by the two planted cases
             // below instead — one for the drain unfinished, one for a scratch tree where it is.
+            //
+            // `:registry` leaves it on the ship twin for the same class of reason, and the reason
+            // is one crate: `busbar-plane-admin` is kind `control` by registration and declares
+            // `Kind::Plane`, because it still implements the plane trait. That is the R7 rename's
+            // work — the same work `:control-path` is owed by the ship SHA for — so the ship twin
+            // is RED here BY DESIGN, and asserting it green would be asserting the rename has
+            // landed. The per-push gate checks the declaration against the crate's NAME and is
+            // green, and both directions are proven by planted cases below.
             report.push(prove_rows_green(
                 cx,
                 self,
                 "the real tree keeps its plugin kinds apart (the enforceable rows)",
-                &[ROW_NAME, ROW_VOCAB, ROW_REGISTRY, ROW_STEPS, ROW_WIRES],
+                &[ROW_NAME, ROW_VOCAB, ROW_STEPS, ROW_WIRES],
                 Overlay::new(),
+            ));
+
+            // THE R7 RESIDUE, NAMED. The ship twin holds a crate to the kind it is REGISTERED as,
+            // and the one crate whose registration and declaration disagree is named with the file
+            // and line its declaration is on — so the rename cut has a finding to close rather
+            // than a memory to rely on.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a crate registered as `control` that still declares `Kind::Plane` is named by the \
+                 ship twin",
+                &[ROW_REGISTRY],
+                Overlay::new(),
+                &["declared-kind-mismatch", "busbar-plane-admin", "control"],
             ));
         } else {
             report.push(prove_green(
@@ -6836,6 +7056,74 @@ impl Gate for KindIsolationGate {
 
         // THE THREE TRUTHS, each planted in the file that carries it.
         truths::selftest(cx, self, &mut report);
+        // ── THE KIND A CRATE DECLARES ITSELF ─────────────────────────────────────────────────────
+
+        // THE RULING'S OWN RED. A control surface is a kind, not a quiet plane, and the moment the
+        // contract could name it a crate could declare it — including a crate whose name says
+        // plane. Every rule in this gate is written on the kind the NAME resolves to, so a crate
+        // that declares another one is being checked against a skeleton it never claimed, and the
+        // boot seal registers it under the one nothing here read.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-mcp/src/planted_declaration.rs",
+            "impl Plugin for Planted {\n    fn kind(&self) -> Kind {\n        Kind::Control\n    \
+             }\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a crate declaring `Kind::Control` while its name says plane",
+            &[ROW_REGISTRY],
+            ov,
+            &["declared-kind-mismatch", "busbar-plane-mcp", "control"],
+        ));
+
+        // A KIND THE CONTRACT CAN NAME AND THIS GATE CANNOT. The two vocabularies were allowed to
+        // drift once already, and the drift is what left the dialect kind with no variant to
+        // return; this is the ratchet that stops the next one, from the contract's side.
+        let mut ov = Overlay::new();
+        ov.set(
+            CONTRACT_KIND_FILE,
+            "pub enum Kind {\n    Plane,\n    Dialect,\n    Control,\n    Transport,\n    Auth,\n \
+             EgressAuth,\n    Store,\n    Secret,\n    Hook,\n    Export,\n    Frobnicate,\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plugin kind the contract declares and this gate has no rule for",
+            &[ROW_REGISTRY],
+            ov,
+            &["unmapped-variant", "Frobnicate"],
+        ));
+
+        // …AND THE SAME RATCHET FROM THIS SIDE. A mapping whose variant the contract has stopped
+        // declaring is a table saying yes to a declaration that no longer exists.
+        let mut ov = Overlay::new();
+        ov.set(
+            CONTRACT_KIND_FILE,
+            "pub enum Kind {\n    Plane,\n    Transport,\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind mapping whose contract variant has been struck",
+            &[ROW_REGISTRY],
+            ov,
+            &["dead-variant", "Dialect"],
+        ));
+
+        // THE CONTRACT'S KIND SET IS AN INPUT. A set that did not read is not a set every
+        // declaration agrees with.
+        let mut ov = Overlay::new();
+        ov.remove(CONTRACT_KIND_FILE);
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the contract's own kind set being unreadable is refused, not read as agreement",
+            &[ROW_REGISTRY],
+            ov,
+            &[CONTRACT_KIND_FILE],
+        ));
 
         // ── THE LEGACY DRAIN, NAMED ──────────────────────────────────────────────────────────────
 

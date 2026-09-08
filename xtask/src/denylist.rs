@@ -193,7 +193,19 @@ pub fn pure_crates(cx: &Ctx, doc: &Document) -> Result<Vec<PureCrate>, String> {
         let globs = plugin_kinds.get_list(kind);
         for (name, manifest) in &entries {
             let candidate = format!("crates/{name}");
-            if globs.iter().any(|g| glob_match(g, &candidate)) {
+            // A `!`-prefixed glob EXCLUDES, the same reading `dirs_for_globs` gives the same list:
+            // `plane` is `crates/busbar-plane-*` minus `crates/busbar-plane-*-*`, because the
+            // four-segment form is the DIALECT kind and this rule must scope itself to the kind it
+            // names. Applied after the positives, so order in the table does not change the answer.
+            let matched = globs
+                .iter()
+                .filter(|g| !g.starts_with('!'))
+                .any(|g| glob_match(g, &candidate));
+            let excluded = globs
+                .iter()
+                .filter_map(|g| g.strip_prefix('!'))
+                .any(|g| glob_match(g, &candidate));
+            if matched && !excluded {
                 out.push(PureCrate {
                     name: crate_manifest_name(manifest, name),
                     dir: cx.abs(&candidate),
