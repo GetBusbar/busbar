@@ -280,6 +280,19 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
         ),
     ),
     (
+        "inventory-coverage",
+        "the Appendix B parity scoreboard. Its `qa/segments.toml` segment (`inventory-coverage`) is \
+         `reserved`, not `active` — the Python it replaces was never wired into ci.yml either, only \
+         into the release-time DONE oracle. `scripts/verify-1.6.0-done.sh` runs it there (`cargo \
+         xtask gate inventory-coverage --selftest`, then the plain check); arming the segment to \
+         `active` is a decision about the underlying coverage finding, left to whoever owns that \
+         call, not something this entry should presume.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate inventory-coverage --selftest",
+        ),
+    ),
+    (
         "no-deferral-strict-done",
         "the strict twin of no-deferral. It certifies that nothing is deferred at all, which is the \
          DONE claim scripts/verify-1.6.0-done.sh makes at release time (`cargo xtask gate \
