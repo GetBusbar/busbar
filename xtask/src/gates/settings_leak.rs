@@ -32,6 +32,7 @@
 //! other reason is the bug this gate exists to catch, in a costume.
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::population;
 use crate::gates::{
     prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
 };
@@ -56,9 +57,9 @@ const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The aggregate floor. Not `> 0` — one file is as vacuous as none; it tracks the real tree (123
-/// files when written) with slack for genuine consolidation.
-const SCAN_FLOOR: usize = 100;
+// THE AGGREGATE FLOOR MOVED TO `gates::population`. It was 100 against a scan set of 280 — 180
+// files of slack, enough to lose `busbar-core`'s 151 and still print `ok`. The floor that replaces
+// it is measured against the whole tree, because the scan set now IS the whole tree.
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 
@@ -302,19 +303,39 @@ impl Gate for SettingsLeakGate {
             }
         };
 
-        // EACH ROOT ON ITS OWN, before the total means anything.
-        let mut unusable = Vec::new();
-        let mut files = Vec::new();
+        // THE POPULATION IS DERIVED FROM THE TREE, not from `roots`: every non-test `.rs` under
+        // `crates/`. `roots` is still resolved above, because a plane that cannot be located is its
+        // own refusal — but it no longer decides what gets opened.
+        let population = match population::source_population(cx) {
+            Ok(p) => p,
+            Err(why) => {
+                return Verdict::of(vec![
+                    Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
+                    Row::fail(ROW_SCAN_ROOTS, "the tree would not list", why),
+                    Row::fail(
+                        ROW_SCAN_FLOOR,
+                        "the scan set is unknown",
+                        DID_NOT_RUN.to_string(),
+                    ),
+                    Row::fail(
+                        ROW_NO_RAW_BAG,
+                        "the scan did not run",
+                        DID_NOT_RUN.to_string(),
+                    ),
+                ]);
+            }
+        };
+        let mut unusable: Vec<String> = population
+            .drained
+            .iter()
+            .map(|c| format!("crates/{c}: has a src/ and contributed no file to the scan"))
+            .collect();
         for root in &roots {
-            let spec = WalkSpec::new([root.clone()])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR])
-                .min_files(1);
-            match cx.walk(&spec) {
-                Ok(f) => files.extend(f),
-                Err(e) => unusable.push(format!("{root}: {e}")),
+            if !cx.exists(root) {
+                unusable.push(format!("{root}: not on disk"));
             }
         }
+        let files = population.files.clone();
         if !unusable.is_empty() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
@@ -341,25 +362,21 @@ impl Gate for SettingsLeakGate {
             ]);
         }
 
-        files.sort_by_key(crate::ctx::SourceFile::rel_str);
-        files.dedup_by_key(|f| f.rel_str());
-
-        if files.len() < SCAN_FLOOR {
+        if population.below_floor() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
                 Row::pass(
                     ROW_SCAN_ROOTS,
                     "every scan root holds production source",
-                    CLEAN,
+                    population.census(),
                 ),
                 Row::fail(
                     ROW_SCAN_FLOOR,
                     "the scan set is below its floor",
                     format!(
-                        "found {} non-test .rs file(s) across the scan roots, expected >= \
-                         {SCAN_FLOOR}. This gate scanned (almost) nothing, so its verdict is \
-                         meaningless — it is NOT a pass.",
-                        files.len()
+                        "{}. This gate scanned (almost) nothing, so its verdict is meaningless — \
+                         it is NOT a pass.",
+                        population.census()
                     ),
                 ),
                 Row::fail(
@@ -380,10 +397,14 @@ impl Gate for SettingsLeakGate {
             Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
             Row::pass(
                 ROW_SCAN_ROOTS,
-                "every scan root holds production source",
-                CLEAN,
+                "every crate under crates/ contributed its source",
+                population.census(),
             ),
-            Row::pass(ROW_SCAN_FLOOR, "the scan set cleared its floor", CLEAN),
+            Row::pass(
+                ROW_SCAN_FLOOR,
+                "the scan set cleared its floor",
+                population.census(),
+            ),
             row_no_raw_bag(&offenders),
         ])
     }

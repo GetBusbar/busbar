@@ -26,6 +26,7 @@
 //! * one row per rule, so a rule cannot be deleted without an owed row going missing.
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::population;
 use crate::gates::{
     prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
 };
@@ -46,7 +47,7 @@ const LLM: &str = "crates/busbar-llm/src";
 const FIXED_ROOTS: &[&str] = &[CORE, BIN, LLM];
 const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
-const SCAN_FLOOR: usize = 100;
+// THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
 /// The `x-busbar-route-*` NAME literals and their `HDR_ROUTE_*` consts live in the neutral
 /// substrate; the ONE emission call lives in the LLM plane's wire; `server-timing` stayed in core's
@@ -201,18 +202,35 @@ impl Gate for ResponseHeaderGate {
             }
         };
 
-        let mut unusable = Vec::new();
-        let mut files = Vec::new();
+        // THE POPULATION IS DERIVED FROM THE TREE (see `gates::population`): every non-test `.rs`
+        // under `crates/`, not the three fixed roots plus two plane homes that opened 280 of 725.
+        // `roots` is still resolved, because a plane that cannot be located is its own refusal.
+        let population = match population::source_population(cx) {
+            Ok(p) => p,
+            Err(why) => {
+                let mut v = refused(
+                    Row::fail(ROW_SCAN_ROOTS, "the tree would not list", why),
+                    "the scan set is unknown",
+                );
+                v.rows.retain(|r| r.id != ROW_PLANE_ROOTS);
+                v.rows.insert(
+                    0,
+                    Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
+                );
+                return Verdict::of(v.rows);
+            }
+        };
+        let mut unusable: Vec<String> = population
+            .drained
+            .iter()
+            .map(|c| format!("crates/{c}: has a src/ and contributed no file to the scan"))
+            .collect();
         for root in &roots {
-            let spec = WalkSpec::new([root.clone()])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR])
-                .min_files(1);
-            match cx.walk(&spec) {
-                Ok(f) => files.extend(f),
-                Err(e) => unusable.push(format!("{root}: {e}")),
+            if !cx.exists(root) {
+                unusable.push(format!("{root}: not on disk"));
             }
         }
+        let files = population.files.clone();
         if !unusable.is_empty() {
             let mut v = refused(
                 Row::fail(
@@ -235,26 +253,23 @@ impl Gate for ResponseHeaderGate {
             return Verdict::of(v.rows);
         }
 
-        files.sort_by_key(crate::ctx::SourceFile::rel_str);
-        files.dedup_by_key(|f| f.rel_str());
-
         let mut head = vec![
             Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
             Row::pass(
                 ROW_SCAN_ROOTS,
-                "every scan root holds production source",
-                CLEAN,
+                "every crate under crates/ contributed its source",
+                population.census(),
             ),
         ];
 
-        if files.len() < SCAN_FLOOR {
+        if population.below_floor() {
             head.push(Row::fail(
                 ROW_SCAN_FLOOR,
                 "the scan set is below its floor",
                 format!(
-                    "found {} non-test .rs file(s), expected >= {SCAN_FLOOR}. This gate scanned \
-                     (almost) nothing, so its verdict is meaningless — it is NOT a pass.",
-                    files.len()
+                    "{}. This gate scanned (almost) nothing, so its verdict is meaningless — it is \
+                     NOT a pass.",
+                    population.census()
                 ),
             ));
             head.push(Row::fail(
@@ -274,7 +289,7 @@ impl Gate for ResponseHeaderGate {
         head.push(Row::pass(
             ROW_SCAN_FLOOR,
             "the scan set cleared its floor",
-            CLEAN,
+            population.census(),
         ));
 
         // THE ALLOWLIST MUST DESCRIBE REALITY. A sanctioned site that no longer exists is an
