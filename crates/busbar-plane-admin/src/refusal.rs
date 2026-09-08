@@ -195,11 +195,22 @@ pub(crate) fn envelope(reason: RefusalReason) -> String {
 /// chance for the surface a client pinned to change in one place and not the other. So the callers
 /// bring the code and the message, and this brings the envelope.
 ///
-/// Hand-formatted rather than serialized for the reason the module doc gives: two fixed keys and
-/// two closed, quote-free string values.
+/// SERIALIZED, not hand-formatted. It was hand-formatted while the only callers brought closed,
+/// quote-free prose, and for those callers the two are the same bytes. They stop being the same
+/// bytes the moment a message carries text a CALLER wrote — a resource name in a `not_found`, the
+/// human half of a validation complaint — because a `"` in one of those closes the string early and
+/// hands the reader a different document from the one this rendered, with a `code` its parser never
+/// reaches. The escape set is JSON's, not this module's, so the honest way to apply it is to ask the
+/// serializer, which is also what `busbar-core`'s administrative surface has always asked: the two
+/// renderings are byte-identical by construction rather than by a comparison somebody has to keep
+/// re-running.
+///
+/// The key order is `code` then `message` whichever way the map is built — the serializer orders a
+/// map's keys, and `code` sorts before `message` — so the frozen shape does not depend on the order
+/// this function happens to insert them in.
 #[must_use]
 pub fn envelope_of(code: &str, message: &str) -> String {
-    format!(r#"{{"error":{{"code":"{code}","message":"{message}"}}}}"#)
+    serde_json::json!({ "error": { "code": code, "message": message } }).to_string()
 }
 
 #[cfg(test)]
