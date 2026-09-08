@@ -431,7 +431,7 @@
         },
         "oauth_as": {
           "optional": true,
-          "type": "crate::oauth_as::config::OauthAsCfg"
+          "type": "busbar_substrate::config::oauth_as::OauthAsCfg"
         },
         "per_request_fee": {
           "optional": true,

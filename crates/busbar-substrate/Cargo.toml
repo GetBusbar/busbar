@@ -187,7 +187,10 @@ rcgen = { workspace = true }
 # The egress fixture servers (`egress::fixtures`, compiled under `cfg(test)` for this crate's own
 # suite) mint certificates; a dev edge so no feature is needed for `cargo test -p`. (`rustls` and
 # `rustls-pki-types` are full dependencies above — the engine owns them now.)
-tokio = { workspace = true, features = ["rt", "macros", "time", "io-util"] }
+# `rt-multi-thread` is DEV-ONLY and is what the relocated verify-on-call gate's tests need: the
+# single-flight pin (`trust::verify`) asserts that N concurrent callers produce ONE refresh, and a
+# current-thread runtime cannot express "concurrent" — it would prove the property vacuously.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
 # The owned-pool battery's ALPN-switch fixture (a TLS server that offers h2 to one connection and
 # h1-only to the next — the KnownProto transition pin) serves hyper conns over async TLS; the
 # crate is already in the shipped binary's graph via busbar-core, so this is a test-only edge to

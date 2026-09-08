@@ -189,7 +189,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // number, and none of them can ever carry a credential — but each is named here so that
     // ADDING one is a compile error somebody has to answer.
     if let Some(identity) = oauth_as {
-        let crate::oauth_as::config::AsIdentity {
+        let busbar_substrate::config::oauth_as::AsIdentity {
             signing_key,
             // The issuer and the eight paths derived from it. Public by construction: every one of
             // them is published in the RFC 8414 metadata document.

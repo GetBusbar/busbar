@@ -4,21 +4,26 @@
 //! THE `oauth_as:` BLOCK, and the boot-time refusals that make it either whole or absent.
 //!
 //! Every derivation happens here, once, so nothing downstream re-parses an issuer or re-decides a
-//! path. A config that cannot produce an [`AsPlane`] does not boot: an authorization server that is
-//! half-configured is worse than one that is absent, because it ANSWERS — and what it answers with
-//! is tokens.
+//! path. A config that cannot produce a validated [`AsIdentity`] does not boot: an authorization
+//! server that is half-configured is worse than one that is absent, because it ANSWERS — and what
+//! it answers with is tokens.
+//!
+//! PURE VALUE GRAMMAR. Nothing here names the server that runs on it: no store, no signing key, no
+//! sweeper, no route, no session. The `oauth_as:` block is deserialized and DERIVED here — issuer
+//! validated, every endpoint path computed, every refusal already taken — and the runtime half
+//! reads the finished identity.
 
 use serde::{Deserialize, Serialize};
 
-use busbar_secret_ref::SecretRef;
+use busbar_api::SecretRef;
 
 /// `oauth_as:` — busbar as an OAuth 2.1 authorization server. ABSENT BY DEFAULT.
 ///
 /// Absent means absent: no server object, no store, no signing key, no sweeper, no route. See the
-/// module docs on [`super`] for what "costs nothing when off" is measured against.
+/// module docs on `busbar_core::oauth_as` for what "costs nothing when off" is measured against.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct OauthAsCfg {
+pub struct OauthAsCfg {
     /// RFC 8414 `issuer`: the canonical absolute URL that names THIS authorization server, and the
     /// value every endpoint below is derived from.
     ///
@@ -27,7 +32,7 @@ pub(crate) struct OauthAsCfg {
     /// It is also what RFC 9207 puts in the `iss` of every authorization response, so a client
     /// comparing it byte-for-byte against what it discovered is doing the mix-up defence — which
     /// only works if this value never moves.
-    pub(crate) issuer: String,
+    pub issuer: String,
 
     /// The ES256 signing key, as a base64 PKCS#8 v1 DER document.
     ///
@@ -38,12 +43,12 @@ pub(crate) struct OauthAsCfg {
     /// the process restarts. What must NOT happen is a DEFAULT key, which would be a published
     /// private key that signs valid tokens for every deployment that never set this field.
     #[serde(default)]
-    pub(crate) signing_key: Option<SecretRef>,
+    pub signing_key: Option<SecretRef>,
 
     /// The `kid` published in the JWKS and carried in every token header. Advisory; it exists so an
     /// operator rotating keys can tell two of them apart in a log.
     #[serde(default)]
-    pub(crate) key_id: Option<String>,
+    pub key_id: Option<String>,
 
     /// THE CEILING. What a client that registered itself — by any mechanism — is allowed to ask
     /// for, and it is the whole of what it gets.
@@ -52,18 +57,18 @@ pub(crate) struct OauthAsCfg {
     /// `scope` member on its registration is refused `invalid_client_metadata`. An operator widens
     /// this deliberately; nothing widens it on their behalf, and no request widens it at runtime.
     #[serde(default)]
-    pub(crate) default_grant: Vec<String>,
+    pub default_grant: Vec<String>,
 
     /// Access token lifetime in seconds. Short on purpose (RFC 9728 §7 / the MCP revision's token
     /// theft note both ask for it); a client that wants continuity refreshes.
     #[serde(default)]
-    pub(crate) access_token_ttl_secs: Option<u64>,
+    pub access_token_ttl_secs: Option<u64>,
 }
 
 /// Why an `oauth_as:` block was refused at boot. Every arm names the field and what a correct value
 /// looks like, because an operator reading "invalid oauth_as config" cannot act on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AsCfgError {
+pub enum AsCfgError {
     /// `issuer` is empty.
     MissingIssuer,
     /// `issuer` is not an absolute `http(s)` URL.
@@ -115,39 +120,39 @@ impl std::fmt::Display for AsCfgError {
 
 /// The VALIDATED authorization server: every endpoint derived, every refusal already taken.
 ///
-/// Holds no key and no server object — those are runtime state and live on [`super::plane::AsPlane`].
-/// This is the config half, so it can be compared, logged and swapped without touching a secret.
-/// The fields are `pub(crate)` for ONE reason, and it is not convenience: every value in this struct
-/// is still read through the accessors below, but `config_validate::secret_refs` must be able to
-/// DESTRUCTURE it exhaustively. That walker's whole design is that a newly added secret-bearing
+/// Holds no key and no server object — those are runtime state and live on the authorization
+/// server's own plane. This is the config half, so it can be compared, logged and swapped without
+/// touching a secret. The fields are PUBLIC for ONE reason, and it is not convenience: every value
+/// in this struct is still read through the accessors below, but the config layer's secret-ref
+/// walker must be able to DESTRUCTURE it exhaustively. That walker's whole design is that a newly added secret-bearing
 /// field is a COMPILE error rather than an oversight, and a walk through an accessor cannot deliver
 /// that — `identity.signing_key()` keeps compiling on the day somebody adds a second `SecretRef`
 /// here, and the new secret is then one `--validate` reports as fine and the process fails on at
 /// runtime. The destructure is the enforcement; the visibility is what the destructure costs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AsIdentity {
-    pub(crate) issuer: String,
+    pub issuer: String,
     /// The path component of `issuer`, normalised, so a tenant-prefixed issuer
     /// (`https://host/tenant`) mounts its endpoints under that prefix rather than at the root.
-    pub(crate) issuer_path: String,
-    pub(crate) metadata_path: String,
-    pub(crate) authorize_path: String,
-    pub(crate) token_path: String,
+    pub issuer_path: String,
+    pub metadata_path: String,
+    pub authorize_path: String,
+    pub token_path: String,
     /// The RFC 7591 registration endpoint's path. Always derived, never optional: registration is
     /// one of the three always-on ways a client obtains a `client_id` on this plane.
-    pub(crate) register_path: String,
-    pub(crate) jwks_path: String,
-    pub(crate) consent_path: String,
-    pub(crate) default_grant: Vec<String>,
-    pub(crate) access_token_ttl: std::time::Duration,
-    pub(crate) key_id: String,
+    pub register_path: String,
+    pub jwks_path: String,
+    pub consent_path: String,
+    pub default_grant: Vec<String>,
+    pub access_token_ttl: std::time::Duration,
+    pub key_id: String,
     /// The operator's `signing_key:` reference, carried VERBATIM and unresolved.
     ///
     /// It lives on the validated identity rather than being consumed at `resolve` time because
-    /// `config_validate::secret_refs` walks `RootCfg` and must be able to SEE it: a secret the
+    /// `busbar_core::config_validate::secret_refs` walks `RootCfg` and must be able to SEE it: a secret the
     /// walker cannot reach is a secret nothing checks, and that walker's whole design is that
     /// omission is a compile error rather than an oversight.
-    pub(crate) signing_key: Option<SecretRef>,
+    pub signing_key: Option<SecretRef>,
 }
 
 /// RFC 8414 §3.1: the well-known segment goes BEFORE the issuer's path, not after it. This is the
@@ -163,7 +168,7 @@ const DEFAULT_ACCESS_TOKEN_TTL: std::time::Duration = std::time::Duration::from_
 impl AsIdentity {
     /// Validate and derive. Every refusal is at BOOT rather than at first request: an operator finds
     /// out from a process that will not start, not from an agent that cannot log in.
-    pub(crate) fn from_cfg(cfg: &OauthAsCfg) -> Result<Self, AsCfgError> {
+    pub fn from_cfg(cfg: &OauthAsCfg) -> Result<Self, AsCfgError> {
         let issuer = cfg.issuer.trim();
         if issuer.is_empty() {
             return Err(AsCfgError::MissingIssuer);
@@ -205,49 +210,49 @@ impl AsIdentity {
         })
     }
 
-    pub(crate) fn issuer(&self) -> &str {
+    pub fn issuer(&self) -> &str {
         &self.issuer
     }
-    pub(crate) fn metadata_path(&self) -> &str {
+    pub fn metadata_path(&self) -> &str {
         &self.metadata_path
     }
-    pub(crate) fn authorize_path(&self) -> &str {
+    pub fn authorize_path(&self) -> &str {
         &self.authorize_path
     }
-    pub(crate) fn token_path(&self) -> &str {
+    pub fn token_path(&self) -> &str {
         &self.token_path
     }
-    pub(crate) fn register_path(&self) -> &str {
+    pub fn register_path(&self) -> &str {
         &self.register_path
     }
-    pub(crate) fn jwks_path(&self) -> &str {
+    pub fn jwks_path(&self) -> &str {
         &self.jwks_path
     }
-    pub(crate) fn consent_path(&self) -> &str {
+    pub fn consent_path(&self) -> &str {
         &self.consent_path
     }
     /// The absolute URL of the consent screen, which is what the authorize endpoint redirects a
     /// browser to. Absolute because the user agent is following it from wherever it started.
-    pub(crate) fn consent_url(&self) -> String {
+    pub fn consent_url(&self) -> String {
         format!("{}{}", self.origin(), self.consent_path)
     }
-    pub(crate) fn jwks_uri(&self) -> String {
+    pub fn jwks_uri(&self) -> String {
         format!("{}{}", self.origin(), self.jwks_path)
     }
     /// The issuer's `scheme://authority`, with its path removed.
     fn origin(&self) -> &str {
         &self.issuer[..self.issuer.len() - self.issuer_path.len()]
     }
-    pub(crate) fn default_grant(&self) -> &[String] {
+    pub fn default_grant(&self) -> &[String] {
         &self.default_grant
     }
-    pub(crate) fn access_token_ttl(&self) -> std::time::Duration {
+    pub fn access_token_ttl(&self) -> std::time::Duration {
         self.access_token_ttl
     }
-    pub(crate) fn key_id(&self) -> &str {
+    pub fn key_id(&self) -> &str {
         &self.key_id
     }
-    pub(crate) fn signing_key(&self) -> Option<&SecretRef> {
+    pub fn signing_key(&self) -> Option<&SecretRef> {
         self.signing_key.as_ref()
     }
 }
@@ -279,5 +284,5 @@ fn is_scope_token(s: &str) -> bool {
 }
 
 #[cfg(test)]
-#[path = "tests/config_tests.rs"]
-mod config_tests;
+#[path = "tests/oauth_as.rs"]
+mod oauth_as_tests;

@@ -419,9 +419,9 @@ pub struct RootCfg {
     pub endpoint_resources:
         std::collections::HashMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// The VALIDATED authorization server (`oauth_as:`), or `None` when this deployment is not one.
-    /// Derived and refused at boot by `crate::oauth_as::config::AsIdentity::from_cfg`, so nothing
+    /// Derived and refused at boot by `busbar_substrate::config::oauth_as::AsIdentity::from_cfg`, so nothing
     /// downstream re-parses the issuer or re-derives an endpoint path.
-    pub oauth_as: Option<crate::oauth_as::config::AsIdentity>,
+    pub oauth_as: Option<busbar_substrate::config::oauth_as::AsIdentity>,
     /// The `tools:` MCP server registry, carried through `resolve` VERBATIM.
     ///
     /// Verbatim on purpose: this is operator INTENT (owner ruling 3), and the only derivation that
@@ -1171,7 +1171,7 @@ pub struct DeployCfg {
     ///
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
-    pub(crate) oauth_as: Option<crate::oauth_as::config::OauthAsCfg>,
+    pub(crate) oauth_as: Option<busbar_substrate::config::oauth_as::OauthAsCfg>,
     /// The top-level `tools:` NAMED-DEFINITION map (1.6.0) — THE MCP PLANE's registry: server name →
     /// `{url, pin, tools_allow, …}`. Sibling of `pools:` and `agents:` with the same shape and the
     /// same two reserved section keys; there is no `plane:`/`bind:`/`target:` selector, because the
@@ -2631,7 +2631,7 @@ pub fn resolve(
     let oauth_as = match deploy
         .oauth_as
         .as_ref()
-        .map(crate::oauth_as::config::AsIdentity::from_cfg)
+        .map(busbar_substrate::config::oauth_as::AsIdentity::from_cfg)
     {
         None => None,
         Some(Ok(identity)) => Some(identity),

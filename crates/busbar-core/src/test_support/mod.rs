@@ -1279,8 +1279,8 @@ impl TestApp {
     /// deployment that cannot exist. The signing key is left unset, so the plane generates the
     /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
     /// surface does not depend on which key signs.
-    pub fn oauth_as(mut self, cfg: &crate::oauth_as::config::OauthAsCfg) -> Self {
-        let identity = crate::oauth_as::config::AsIdentity::from_cfg(cfg)
+    pub fn oauth_as(mut self, cfg: &busbar_substrate::config::oauth_as::OauthAsCfg) -> Self {
+        let identity = busbar_substrate::config::oauth_as::AsIdentity::from_cfg(cfg)
             .expect("test oauth_as config must be valid");
         let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
             .expect("test oauth_as plane must build");
