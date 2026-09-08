@@ -1091,6 +1091,8 @@ fn a_key_already_in_the_table_is_refused_rather_than_displacing_the_unit_holding
             .map(|_| ())
             .expect("three more fit under a cap of four");
     }
+}
+
 /// A session slot that leaves the table is CLOSED on the way out, whichever way it leaves.
 ///
 /// `remove` pairs its eviction with `close()`; the displacing insert in `open` gave the budget slot

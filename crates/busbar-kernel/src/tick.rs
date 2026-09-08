@@ -22,13 +22,13 @@
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
 use busbar_caps::{
-    Abort, Canary, ExitToken, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
-    ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
+    Abort, Canary, ExitToken, LedgerToken, Outcome, Posted, PostingFlags, ReasonCode, StepName,
+    UnitEnd, Usage, UsageToken,
 };
 
 use crate::inflight::UnitSlot;
 use crate::slice::ConcurrencyGauge;
-use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
+use crate::teller::{accrual_line, settle_amount, Evidence, Kernel};
 use crate::Millis;
 
 /// How long a session may go without a non-tick unit before it is closed.
@@ -300,12 +300,11 @@ pub fn sweep_settle(
                 // whose locator DID arrive before its task disappeared is settled at the figure
                 // the destination reported, unflagged, exactly as the table says.
                 let estimated = flags.contains(PostingFlags::ESTIMATED);
-                let lines = vec![UsageLine {
-                    class: KERNEL_ACCRUAL_CLASS,
-                    quantity: amount,
-                    source: QuantitySource::Count,
-                    estimated,
-                }];
+                // The class the evidence names, exactly as the exit path reads it. The sweep used
+                // to spell the fallback outright, so a unit whose evidence named a class landed on
+                // that class if its own end won the race for the cell and on the fallback if the
+                // sweep won: one unit, two meters, two price rows, nothing flagged.
+                let lines = vec![accrual_line(evidence, amount, estimated)];
                 let token = UsageToken::mint(kernel.seal());
                 let usage = if estimated {
                     Usage::estimate(&token, lines)

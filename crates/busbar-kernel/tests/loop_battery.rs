@@ -1024,6 +1024,9 @@ fn exactly_two_callers_can_take_a_hold_out_of_its_cell() {
         vec!["teller.rs".to_owned(), "tick.rs".to_owned()],
         "a hold leaves its cell in the exit path and in the sweep, once each. Anything else \
          settling a unit reaches the exit path rather than opening the cell itself"
+    );
+}
+
 /// THE DOOR ANSWERED AFTER THE SWEEP TOOK THE CELL.
 ///
 /// The sweep exists to take a slow or stalled unit's cell, and it can win that race against a door
