@@ -375,8 +375,7 @@ jobs:
 
           deadline=$(( SECONDS + 75 * 60 ))
           while :; do
-            runs="$(api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100")"
-            if [ $? -ne 0 ]; then
+            if ! runs="$(api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&per_page=100")"; then
               echo "::error::REFUSING TO STAGE: the GitHub Actions API could not be read after 5 attempts, so the CI status of ${SHA} is UNKNOWN. Unknown is not green. Nothing has been built, no tag exists and nothing is public. Re-run this workflow when the API is answering." >&2
               exit 1
             fi
@@ -427,8 +426,7 @@ jobs:
 
           # External commit statuses (anything reporting through the statuses API rather than as a
           # workflow run) get the same treatment, including the same unknown-is-red rule.
-          st="$(api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status")"
-          if [ $? -ne 0 ]; then
+          if ! st="$(api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/status")"; then
             echo "::error::REFUSING TO STAGE: the commit-status API could not be read after 5 attempts, so external check state on ${SHA} is UNKNOWN. Unknown is not green."
             fail=1
           else
@@ -1537,7 +1535,7 @@ jobs:
             exit 1
           fi
           if [ -z "${COMPAT_DIGEST:-}" ]; then
-            echo "::error::stage-image reported no armv8.0 compat image digest. The compat arm64"                  "image is a first-class release artifact; a record without it would promote the"                  "default image and silently drop the compat one. Re-run this workflow." >&2
+            echo "::error::stage-image reported no armv8.0 compat image digest. The compat arm64 image is a first-class release artifact; a record without it would promote the default image and silently drop the compat one. Re-run this workflow." >&2
             exit 1
           fi
           # THE RECORD MUST MATCH THE REGISTRY BEFORE IT IS WRITTEN, not only when it is consumed.
