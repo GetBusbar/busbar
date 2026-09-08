@@ -139,15 +139,19 @@ pub const SOURCES: &[(&str, &str)] = &[
     ),
     (
         "pricer",
-        "LIVE: `kernel::ROOT_CARD.pin()` → `RateCard::per_request_fee_cents()` → `Pricer::flat`, \
-         read at the top of every walk and never captured at boot",
+        "config `per_request_fee` → `Pricer::flat`, the same value every other plane prices its \
+         flat fee from and resolved by the SAME caller that resolves the sibling plane's. The flat \
+         fee is the one figure this leg does not read for itself: the deployment's fee lives behind \
+         the cost unit's own field, and the construction gate's `one-pricing-site` rule says which \
+         two crates may read it — so the root hands the pricer down rather than deriving one here",
     ),
     (
         "prices",
         "LIVE: `kernel::ROOT_CARD.pin()` → `lane_rates(<the registration's own lane>)` → \
-         `nanos_per_unit` for this plane's two declared classes. The lane is the registration's, \
-         which is the key the rate card already hangs a price on and the key the breaker already \
-         uses; no class-keyed table is invented, and no reading is taken at boot",
+         `nanos_per_unit` for this plane's two declared classes, pinned once per unit at the top of \
+         every walk. The lane is the registration's, which is the key the rate card already hangs a \
+         price on and the key the breaker already uses; no class-keyed table is invented, and no \
+         reading is taken at boot",
     ),
     // ── the durable half ─────────────────────────────────────────────────────────────────────────
     (
@@ -312,6 +316,11 @@ pub struct McpLegSources<'k> {
     pub door: Option<Door<InMemoryCells>>,
     /// The configured group table the caller's bucket chain is walked out of.
     pub groups: Option<GroupTable>,
+    /// What the door prices a unit against.
+    ///
+    /// Resolved by the caller and not derived here, for the reason [`SOURCES`]' own row gives: the
+    /// flat fee lives behind the cost unit's field and only two crates may read it.
+    pub pricer: Option<Pricer>,
     /// The node's one store, for this plane's durable records.
     pub store: Option<Arc<dyn busbar_api::Store>>,
     /// What the usage unit folds against.
@@ -353,6 +362,9 @@ pub struct McpLeg {
     denylist: Denylist,
     door: Door<InMemoryCells>,
     groups: GroupTable,
+    /// The flat per-request fee, as the door reads it. The ONE money figure this leg holds rather
+    /// than reads live — see [`McpLeg::prices`] for why, and [`SOURCES`] for where it came from.
+    pricer: Pricer,
     records: Records,
     meter_policy: MeterPolicyHandle,
     scope_policy: ScopePolicy,
@@ -404,6 +416,7 @@ impl McpLeg {
             denylist: sources.denylist.ok_or_else(|| missing("kinds"))?,
             door: sources.door.ok_or_else(|| missing("door"))?,
             groups: sources.groups.ok_or_else(|| missing("chain"))?,
+            pricer: sources.pricer.ok_or_else(|| missing("pricer"))?,
             records: Records::over(sources.store.ok_or_else(|| missing("records"))?),
             meter_policy: sources
                 .meter_policy
@@ -563,33 +576,50 @@ impl McpLeg {
         self.groups.chain_for(who.as_str(), group).ok()
     }
 
-    /// **THE MONEY, PINNED ONCE PER UNIT, off the process's live card.**
+    /// **THE TWO CLASS PRICES, PINNED ONCE PER UNIT, off the process's live card.**
     ///
-    /// Two readings out of one pinned `Arc`: what a unit of this plane costs per completed call and
-    /// per priced byte, and what the flat per-request fee is. Both come from the card the engine's
-    /// rate-apply seam last swapped in — at boot and on every apply or reload — so a fee the
-    /// operator changed moves this node's ledger and the usage projection together.
+    /// One reading out of one pinned `Arc`: what a unit of this plane costs per completed call and
+    /// per priced byte. It comes from the card the engine's rate-apply seam last swapped in — at
+    /// boot AND on every apply or reload — so a rate the operator changed moves this node's ledger
+    /// and the usage projection together. A leg that captured this at boot would go on pricing
+    /// against rates that had already been replaced.
     ///
     /// The classes are looked up on the REGISTRATION'S OWN LANE, which is the key the rate card
     /// already hangs a price on and the key the breaker already uses. No class-keyed table is
     /// invented and no configuration key is added: `lane_rates(lane).nanos_per_unit(class)` is the
     /// card's own published reading.
     ///
+    /// **THE FLAT FEE IS NOT READ HERE, and that is a rule rather than an omission.** The fee lives
+    /// behind the cost unit's own field and the construction gate names the two crates entitled to
+    /// read it; a composition root that derived a pricer from it would be a third. So the pricer is
+    /// a SOURCE — resolved by the same caller that resolves the sibling plane's, from the same
+    /// configured figure — and the residual is stated in [`SOURCES`] rather than worked around: the
+    /// fee this leg prices with is the one that was resolved when the leg was assembled, exactly as
+    /// the A2A leg's is.
+    ///
     /// A node that has read no configuration yet holds no card, and the honest answer for that is
-    /// nothing priced and no fee — which is exactly what the card holder's own documentation says a
-    /// report arriving that early should be priced at.
-    fn money(&self) -> (ClassPrices, Pricer) {
-        let Some(card) = crate::root::kernel::ROOT_CARD.pin() else {
-            return (ClassPrices::default(), Pricer::flat(0));
+    /// nothing priced — which is exactly what the card holder's own documentation says a report
+    /// arriving that early should be priced at.
+    ///
+    /// A SNAPSHOT, NOT A CARD, on the integration line: the root holds a dated history and the
+    /// reading is the entry in force at the instant the unit ARRIVED — under a single-entry history
+    /// the same card the previous release would have used, under a longer one the card the request
+    /// was actually earned under. A hole in the history prices nothing, which is the history's own
+    /// rule: a gap is a refusal and never a zero.
+    fn prices(&self, arrived_ms: u64) -> ClassPrices {
+        let Some(history) = crate::root::kernel::ROOT_CARD.pin() else {
+            return ClassPrices::default();
+        };
+        let view = history.view();
+        let Some((_, card)) = view.card_at(arrived_ms) else {
+            return ClassPrices::default();
         };
         let lane = self.plane.servers().first().map_or("", |s| s.lane.as_str());
-        let prices = card
-            .lane_rates(lane)
+        card.lane_rates(lane, crate::root::kernel::node_currency())
             .map_or_else(ClassPrices::default, |r| ClassPrices {
                 tool_calls: r.nanos_per_unit(busbar_plane_mcp::meta::CLASS_TOOL_CALLS.as_str()),
                 bytes: r.nanos_per_unit(busbar_plane_mcp::meta::CLASS_BYTES.as_str()),
-            });
-        (prices, Pricer::flat(card.per_request_fee_cents()))
+            })
     }
 
     /// What the plane made of one arrival, read ONCE.
@@ -704,12 +734,16 @@ impl McpLeg {
         // epoch dates the unit and the monotonic reading orders it. Read at the top of the walk so
         // every step of this unit is judged against the same moment — a check in one window and a
         // charge in another is exactly what a per-step clock read produces.
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
         let at = Clocks {
-            wall: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs()),
+            wall: wall.as_secs(),
             mono: u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX),
         };
+        // The same reading in the units the rate-card history is dated in, so the entry this unit
+        // is priced against is the one in force at the instant it arrived and not a second later.
+        let arrived_ms = u64::try_from(wall.as_millis()).unwrap_or(u64::MAX);
 
         let draft = self.decode(arrival, at.wall);
 
@@ -721,8 +755,8 @@ impl McpLeg {
         // the authenticate step says otherwise, which is what the chain is keyed on: the door reads
         // the caller's own attribution bucket, and a caller bound to no group has one uncapped one.
         let chain = self.chain_for(&busbar_caps::PrincipalId::new(""), None);
-        // AND THE CARD, pinned once for this unit's whole life — see [`McpLeg::money`].
-        let (prices, pricer) = self.money();
+        // AND THE CARD, pinned once for this unit's whole life — see [`McpLeg::prices`].
+        let prices = self.prices(arrived_ms);
 
         let units = McpUnits::new(
             McpBindings {
@@ -734,7 +768,7 @@ impl McpLeg {
                 breaker: self.breaker.as_ref(),
                 door: &self.door,
                 chain: chain.as_ref(),
-                pricer: &pricer,
+                pricer: &self.pricer,
                 prices,
                 records: &self.records,
                 meter_policy: &self.meter_policy,
