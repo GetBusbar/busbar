@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "2ef756c92bffc940613591c8e7b2831952fecfb8f35a2d1547dc6d8e8e122ba7",
+  "harness_rev": "e0b1655965ef36214193e9c3e758103fbfcf95b1bb7df3d540ba35610c71422b",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "merged_from": [
@@ -23,8 +23,10 @@
     }
   ],
   "harness_rev_history": [
-    "f2094498a34de8d8ba7b8e002dd0ac0988705e3f1c20b8d765d51039088480a4"
+    "f2094498a34de8d8ba7b8e002dd0ac0988705e3f1c20b8d765d51039088480a4",
+    "2ef756c92bffc940613591c8e7b2831952fecfb8f35a2d1547dc6d8e8e122ba7"
   ],
   "harness_rev_note": "2026-09-07: GOLDEN RE-RECORDED on EC2 x86_64-unknown-linux-gnu from the published 1.5.5 (sha256 84bde0a0\u2026), busbar-oracle v0.2.2; recorded at harness 3fea00879, stamped to the settled tree 5862dd13d. Prior darwin golden's stamp history: re-stamped to the tree after the record.sh fixture-gate landing moved the harness revision; no cell was re-recorded and no cell byte changed. Earlier note: RE-STAMPED 2026-09-06 (CI reads the committed golden): NO cell was re-recorded and no cell's bytes changed \u2014 every cells/*.json, the ledger, `recorded`, `binary_sha256` and `at` are exactly as the full re-record below left them. The rev moved b | re-stamped 5862dd13d -> 6e5219e9e: tool v0.2.3 (host-capability rule covers the 1.6.0 jemalloc spelling) and hygiene rewording of cell prose; no cell re-recorded. | re-stamped 6e5219e9e -> 2ef756c92: the durable-precondition driver clears the first boot's staging dir, and F-016 widened to BOOT-P31; no cell re-recorded.",
-  "harness_rev_recorded": "3fea008790b3df6340d6c6f5e9cd73ebc8a013a9b1be0c088790d1f7a596c74d"
+  "harness_rev_recorded": "3fea008790b3df6340d6c6f5e9cd73ebc8a013a9b1be0c088790d1f7a596c74d",
+  "note": "2026-09-07 re-stamp (documentation only, no cell re-recorded): cells.json gained the gemini tool-use cell and the register the G-1 improvement; harness_rev 2ef756c9 -> e0b16559"
 }
