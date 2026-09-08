@@ -1091,4 +1091,28 @@ fn a_key_already_in_the_table_is_refused_rather_than_displacing_the_unit_holding
             .map(|_| ())
             .expect("three more fit under a cap of four");
     }
+/// A session slot that leaves the table is CLOSED on the way out, whichever way it leaves.
+///
+/// `remove` pairs its eviction with `close()`; the displacing insert in `open` gave the budget slot
+/// back and left the flag alone. A slot whose `closed` flag never flips is one identity with two
+/// live slots, and the invisible one is never reachable from `get` or `snapshot` again — so the
+/// tick can never sweep it for idleness, while anything still holding an `Arc` to it keeps reading
+/// `is_closed() == false` and keeps succeeding at `claim_open` and `touch_non_tick`.
+#[test]
+fn a_session_slot_displaced_by_a_second_open_is_closed() {
+    let kernel = Kernel::new();
+    let sessions = Sessions::new(4);
+    let id = kernel.session_id(21);
+
+    let first = sessions.open(id, Binding::Bound, 0).expect("under budget");
+    let second = sessions
+        .open(id, Binding::Bound, 0)
+        .expect("the displacing open takes no new slot");
+
+    assert_eq!(sessions.len(), 1, "the budget slot came back");
+    assert!(
+        first.is_closed(),
+        "the displaced slot is still open and no longer reachable from the table"
+    );
+    assert!(!second.is_closed(), "the live slot was closed instead");
 }
