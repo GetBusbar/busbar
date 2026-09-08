@@ -111,6 +111,23 @@ fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
     v
 }
 
+/// An empty `installed_decls()` is vacuous ONLY under `--no-default-features`, where none of the
+/// plane features below are compiled in. Every other build carries at least one, so on those
+/// builds an empty reflection means the reflection saw nothing — not that no plane is linked — and
+/// that must fail loudly rather than let the caller return having asserted nothing at all.
+fn assert_emptiness_is_the_no_default_features_build() {
+    assert!(
+        cfg!(not(any(
+            feature = "proto-llm",
+            feature = "plane-mcp",
+            feature = "plane-a2a",
+            feature = "plane-voice"
+        ))),
+        "installed_decls() is empty, but a plane feature is compiled into this build — the \
+         reflection saw no planes even though it should have"
+    );
+}
+
 /// The Some/None matrix: `field -> (plane -> is_some)`. Computed from the live decls.
 type Matrix = BTreeMap<String, BTreeMap<String, bool>>;
 
@@ -317,6 +334,7 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
     let decls = installed_decls();
     if decls.is_empty() {
         // No plane linked (e.g. --no-default-features): cross-plane isomorphism is vacuous.
+        assert_emptiness_is_the_no_default_features_build();
         return;
     }
     let root = repo_root();
@@ -387,6 +405,7 @@ fn compiled_legs() -> BTreeSet<&'static str> {
 fn every_installed_plane_is_answered_by_a_root_leg() {
     let decls = installed_decls();
     if decls.is_empty() {
+        assert_emptiness_is_the_no_default_features_build();
         return;
     }
     let ledger = read_json(&repo_root().join("qa/capability-equality.json"));
