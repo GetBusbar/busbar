@@ -509,6 +509,11 @@ note "mcp-b kept dialect: anthropic config validates clean with plane-mcp off"
 # plane token in a neutral crate is exactly what the plane-purity gate forbids, so the refusal is
 # actionable by section, not by plane name. This is the leg that went RED before D3: the plane was an
 # unconditional core built-in, so a `tools:` config validated clean with `plane-mcp` off.
+# executable-config-lint: allow until=2027-12-31 — DELIBERATELY INVALID under a FULL build: this
+# `tools:` entry carries no `pin:` because the assertion below proves the mcp-DELETED binary refuses
+# the section outright. Completing the config would make the leg pass for the wrong reason (accepted,
+# then rejected on a different ground). The expiry is far out because this is a permanent negative
+# fixture, not a migration; the date is there so the claim is re-read rather than inherited.
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\ntools:\n  s:\n    url: "https://example.com/mcp"\n' > "$FIX/config.yaml"
 mk_no_providers
 if run_busbar "$MCP_DELETED_BIN" --validate >"$FIX/tools-validate.out" 2>&1; then
@@ -636,6 +641,11 @@ note "a2a-b MCP-survives: a tools: config validates clean with plane-a2a off"
 # protocol registry refusing a deleted dialect, and the symmetric twin of mcp-c. The neutral core
 # cannot name the plane itself: a plane token in a neutral crate is what the plane-purity gate
 # forbids, so the refusal is actionable by section, not by plane name.
+# executable-config-lint: allow until=2027-12-31 — DELIBERATELY INVALID under a FULL build: this
+# `agents:` entry carries no `pin:` because the assertion below proves the a2a-DELETED binary refuses
+# the section outright. Completing the config would make the leg pass for the wrong reason (accepted,
+# then rejected on a different ground). The expiry is far out because this is a permanent negative
+# fixture, not a migration; the date is there so the claim is re-read rather than inherited.
 printf 'listen: "127.0.0.1:0"\nadmin_listen: "127.0.0.1:0"\nproviders: {}\nmodels: {}\nagents:\n  a:\n    url: "https://example.com/a2a"\n' > "$FIX/config.yaml"
 mk_no_providers
 if run_busbar "$A2A_DELETED_BIN" --validate >"$FIX/agents-validate.out" 2>&1; then

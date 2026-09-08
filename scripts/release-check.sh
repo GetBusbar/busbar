@@ -931,8 +931,10 @@ mock:
   base_url: "http://127.0.0.1:9"
 EOF
 # (1) NO signing_key — must fail-closed at --validate with the actionable error.
-# executable-config-lint: allow — DELIBERATELY INVALID: this config omits auth.signing_key precisely
-# so the assertion below can prove busbar fail-closes on it. It must never be "fixed".
+# executable-config-lint: allow until=2027-12-31 — DELIBERATELY INVALID: this config omits auth.signing_key so the assertion below can prove busbar fail-closes on it.
+# It must never be "fixed". The expiry is far out because this is a PERMANENT fixture, not a
+# migration: the date is there so the claim is re-read rather than inherited, which is what an
+# undated waiver becomes.
 # NOTE on the auth shape used by every generated config in this script: 1.5.3 retired the INLINE
 # chain/admin_auth entry, so a provider is DEFINED once under `identity-providers:` and REFERENCED by
 # bare name. The old `admin_auth: [- admin-tokens: { token: … }]` is now a detect_legacy_markers hit
