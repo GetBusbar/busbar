@@ -35,6 +35,19 @@
 //! itself would agree with any code; this one is checked against a running router, which is the only
 //! thing that can say what a router answers.
 //!
+//! ## The phantom-endpoint guard lives here now
+//!
+//! `busbar-core` used to hold one of its own: a loop over `V1_GET_PATHS` — the const its OpenAPI
+//! document is emitted from — asking its own router whether each documented GET resolves. That is a
+//! crate checking itself, and it has exactly one failure mode the admin leg's migration guarantees:
+//! a verb that crosses leaves that router, so a document the COMPOSITION serves correctly is called
+//! a phantom by a crate that is no longer the thing answering.
+//!
+//! The claim is the same claim this pin already makes, so it is made here instead, over the served
+//! document rather than over a const: every GET the composition DOCUMENTS is answered by the loop or
+//! by the surface underneath, and never by both. Both directions are live — a documented path
+//! nobody serves is red, and a documented path both serve is red.
+//!
 //! ## What has to change here when a verb crosses
 //!
 //! Exactly two things, and they are the point of the file. The verb moves out of the surface's row
@@ -45,6 +58,13 @@
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
+
+/// The path the composition serves its own discovery document at.
+///
+/// Named rather than spelled at the two call sites, because it is the one row of the table this
+/// file both ASKS and READS: the answer to this request is the list of every other request the
+/// composition claims to answer.
+const OPENAPI_PATH: &str = "/api/v1/admin/openapi.json";
 
 /// The three of the eighty-eight whose effect lands on `Store` through the executing unit's own
 /// per-verb entry points, so the governance seam — and therefore the surface underneath — is never
@@ -159,6 +179,61 @@ fn concrete(template: &str) -> String {
     out
 }
 
+/// The documented GET paths that belong to a DIFFERENT plane's surface, named in full.
+///
+/// The admin surface carries one named-definition map per plane that declares one, mounted from the
+/// plane REGISTRY rather than from this plane's closed table: `tools:` is the MCP plane's and
+/// `agents:` is the A2A plane's. They are documented in the same discovery document because there is
+/// one document, and they are not rows of the eighty-eight because the eighty-eight are the admin
+/// plane's own.
+///
+/// Named rather than skipped by a pattern, for the reason every other set in this file is named: a
+/// pattern would let a genuinely phantom path join them by being spelled the right way, and the
+/// count is small enough to write down.
+const ANOTHER_PLANES_SURFACE: &[&str] = &[
+    "/api/v1/admin/agents",
+    "/api/v1/admin/agents/{name}",
+    "/api/v1/admin/tools",
+    "/api/v1/admin/tools/{name}",
+    "/api/v1/admin/tools/{name}/changes",
+    "/api/v1/admin/tools/{name}/health",
+];
+
+/// Every GET path the SERVED discovery document claims the composition answers.
+///
+/// Read off the document the composition actually serves rather than off a table in a source file,
+/// which is the whole reason this guard could move here: `busbar-core` used to hold the same claim
+/// as a loop over its own `V1_GET_PATHS` const against its own router, and that pairing can only
+/// ever say whether one crate is self-consistent. A verb that CROSSES leaves that router, and the
+/// core-side guard would then call the composition's own document a phantom.
+///
+/// Only GETs, and that is a rule rather than an omission: this asks the composition every path it
+/// collects, and asking a mutating operation whether it is mounted is performing it. The retired
+/// core-side guard drew the line in the same place and for the same reason.
+async fn documented_gets() -> Vec<String> {
+    let (status, body) = ask_a_fresh_surface("GET", OPENAPI_PATH).await;
+    assert_eq!(
+        status, 200,
+        "the composition does not serve its own discovery document: {body}"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&body).expect("the served discovery document parses");
+    let paths = doc["paths"]
+        .as_object()
+        .expect("the served discovery document has a paths object");
+    let mut documented: Vec<String> = paths
+        .iter()
+        .filter(|(_, item)| item["get"].is_object())
+        .map(|(path, _)| path.clone())
+        .collect();
+    documented.sort();
+    assert!(
+        !documented.is_empty(),
+        "the served discovery document claims no GET at all, so this guard would assert nothing"
+    );
+    documented
+}
+
 /// The whole partition, derived from the two crates and then measured against a running surface.
 #[tokio::test]
 async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
@@ -258,5 +333,39 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
             "store_restore",
         ],
         "the set of operations the loop produces the answer for has changed"
+    );
+
+    // THE PHANTOM-ENDPOINT GUARD, RETIRED INTO THIS PIN. It used to live in `busbar-core` as a loop
+    // over that crate's own `V1_GET_PATHS` against that crate's own router — a claim one crate made
+    // about itself, which stops being true the moment a verb crosses and the composition, not the
+    // crate, is what answers. Here it is the same claim against the composition: a path the served
+    // document CLAIMS is answered must be answered by one of the two halves, and by exactly one.
+    let mut elsewhere: Vec<String> = Vec::new();
+    for template in documented_gets().await {
+        let path = concrete(&template);
+        let Some(row) = busbar_plane_admin::verbs::resolve("GET", &path) else {
+            // Not a row of the eighty-eight. The only documented GETs that can be true of are the
+            // named-definition maps another plane owns, and the assertion after the loop says the
+            // set collected here is exactly those and nothing else.
+            elsewhere.push(template);
+            continue;
+        };
+        let by_the_loop = loop_answers(row.verb);
+        let mounted = ask_a_fresh_surface("GET", &path).await != absent;
+        assert!(
+            by_the_loop || mounted,
+            "the composition documents GET {template} and neither the loop nor the surface \
+             underneath answers it (a phantom endpoint in the discovery contract)"
+        );
+        assert!(
+            !(by_the_loop && mounted),
+            "the composition documents GET {template} and BOTH halves answer it: one request, two \
+             answers"
+        );
+    }
+    assert_eq!(
+        elsewhere, ANOTHER_PLANES_SURFACE,
+        "the document claims a GET the admin plane's closed table does not declare and that is not \
+         one of the named-definition maps another plane owns"
     );
 }
