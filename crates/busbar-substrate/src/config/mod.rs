@@ -19,6 +19,7 @@ pub mod groups;
 pub mod hooks;
 pub mod limits;
 pub mod pools;
+pub mod projection;
 pub mod providers;
 pub mod sections;
 

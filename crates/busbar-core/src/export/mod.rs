@@ -20,9 +20,23 @@
 //! - [`file`] — PUSH per-request. The `request-log-file` sink appends the line as JSONL.
 
 pub(crate) mod file;
-pub(crate) mod projection;
 pub mod prometheus;
 pub(crate) mod webhook;
+
+/// RETIRING re-export shim (D33 wave 5). The EXPORT PROJECTION GRAMMAR — the per-instance
+/// `streams:`/`fields:` resolution, the `Projection` bitmasks and the `ProjectedRecord` disclosure
+/// gate — is CONFIG-KEY RESOLUTION over the frozen `busbar_plugin::cold::export` vocabulary, with
+/// no reach into any core type, so it lives in the neutral config leaf
+/// [`busbar_substrate::config::projection`] and travels with the rest of the config grammar. Core's
+/// PRODUCERS (`build_request_log`, `prometheus`, `webhook`, `file`) name it through this path
+/// unchanged.
+pub(crate) mod projection {
+    pub(crate) use busbar_substrate::config::projection::*;
+}
+
+#[cfg(test)]
+#[path = "tests/projection_tests.rs"]
+mod projection_tests;
 
 use crate::config::ExportCfg;
 use crate::export::projection::ProjectedRecord;
