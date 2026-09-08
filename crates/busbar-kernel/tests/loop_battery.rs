@@ -118,6 +118,28 @@ fn the_verify_step_seals_the_destinations_the_later_steps_read() {
     );
 }
 
+/// THE SAME SEAL, LENT TO A LEG THAT IS ASSEMBLED BEFORE THE LOOP STARTS.
+///
+/// A plane whose bindings carry facts the arrival decided is assembled OUTSIDE the loop, and one of
+/// the fields those bindings carry is the trust token its Verify step seals with. The loop cannot
+/// lend it there — the loop has not started — so the kernel lends it the same way it already lends
+/// the door's, the transport key's and the verbs unit's: as a named mint on `Kernel`, so the source
+/// scan that accounts for every mint sees this one too.
+///
+/// What is pinned here is that the token a leg is lent seals exactly what the loop's own does, and
+/// nothing more: a `VerifiedDestination`, and no second capability rides along with it.
+#[test]
+fn a_leg_assembled_before_the_loop_is_lent_the_same_trust_token_the_verify_step_gets() {
+    let kernel = Kernel::new();
+    let lent = kernel.trust_token();
+    let sealed = busbar_caps::VerifiedDestination::seal(&lent, busbar_caps::LaneId::new("a:lane"));
+    assert_eq!(
+        sealed.lane().as_str(),
+        "a:lane",
+        "a leg lent the trust token seals a destination exactly as the Verify step does"
+    );
+}
+
 /// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
 /// than an identity, so verify, approve and admit are never asked and no reservation is opened.
 /// The design says the step's decision may yield a challenge; this is what the loop does with one.
