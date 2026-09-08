@@ -47,7 +47,19 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
 #     correct by construction and is the cheap first half of kind-by-declaration.
 [gate.plugin_kinds]
-plane = ["crates/busbar-plane-*"]
+# `busbar-plane-<plane>` and NOT `busbar-plane-<plane>-<dialect>`: the four-segment form is the
+# DIALECT kind, and the glob that used to end at `*` swallowed it, so the first dialect crate to
+# land would have been scored against the plane rows — purity, neutrality, the plane skeleton — for
+# a kind whose whole definition is that it carries the vendor vocabulary a plane may not. The two
+# globs are written as one pair on purpose: narrowing the plane row without adding the dialect row
+# would leave a dialect crate of no kind at all, which the isolation gate refuses at census.
+plane = ["crates/busbar-plane-*", "!crates/busbar-plane-*-*"]
+dialect = ["crates/busbar-plane-*-*"]
+# The CONTROL kind, whose first crates are `busbar-control-admin` (today `busbar-plane-admin`,
+# registered as control until R7 renames it) and `busbar-control-oauth2`. Without the row a
+# `busbar-control-*` crate matches nothing here and is unclassified — which reads as a crate no
+# kind rule is written for, rather than as the kind it says it is in its own name.
+control = ["crates/busbar-control-*"]
 hook = ["crates/hook*"]
 pure_auth = ["crates/auth-*"]
 egress_auth = ["crates/egress-auth-*"]
@@ -88,7 +100,12 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3500
+# 3500 -> 3650 with `[rules.loc-ceilings].caps_contract_ceiling`, and in the same commit, because
+# the two rows are ONE owner decision measured two ways. Raising one and not the other would leave
+# the pair's ceiling at whichever number is smaller while the larger one reads as the ruling — a
+# ceiling that has been raised in name only. The measurement that spent it is written down beside
+# the other number rather than twice; see `[rules.loc-ceilings]`.
+contract_caps = 3650
 grammar = 500
 contract_transport = 1000
 
@@ -439,7 +456,13 @@ patterns = [
 ]
 # kinds scanned: plane, hook, pure_auth, egress_auth (gate.plugin_kinds); store/secret/export are
 # I/O kinds and are out of scope for this rule by design (section 1.2 exempts them).
-kinds = ["plane", "hook", "pure_auth", "egress_auth"]
+#
+# `dialect` joins them because the kind's own definition says it is PURE — it translates bytes and
+# does nothing else — and a kind declares that axis on the commit that names it, not on the commit
+# that lands its first crate. The glob matches no directory today, which this rule reads as "the
+# kind has no crate yet" and not as a pass; the day the first dialect lands it is scanned from its
+# first line rather than from whenever somebody remembered to add the word.
+kinds = ["plane", "dialect", "hook", "pure_auth", "egress_auth"]
 # Reviewed exceptions: crate -> list of patterns from above accepted for that crate, with the reason
 # living in the commit that added it. Empty at hour 0.
 [rules.source-denylist.allowlist]

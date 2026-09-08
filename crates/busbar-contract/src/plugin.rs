@@ -16,10 +16,33 @@ mod sealed {
 /// This is structure, not vocabulary, so it is closed: the open-vocabulary section of the design
 /// allows a plugin to invent claims, classes and schemes, but never a new kind of plugin. A new
 /// kind is a kernel change and is meant to look like one.
+///
+/// The set is the kind table of `docs/design/PLUGIN-TREE.md`, which is normative for it, and the
+/// order below is that table's. Two of the variants name kinds whose crates have not landed yet,
+/// and they are here rather than owed for one reason: `Plugin::kind()` returns a member of THIS
+/// set, so a kind the set cannot name is a kind whose crates must declare themselves something
+/// they are not — and the isolation gate would then check them against the wrong skeleton, which
+/// is the one guarantee those two kinds most need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum Kind {
     /// Says what bytes mean. Pure, no input or output of its own.
     Plane,
+    /// A plane's WIRE DIALECT: translates bytes to and from its own plane's IR, and nothing else.
+    ///
+    /// Pure, and the narrowest kind in the tree — a dialect declares its plane, its claims and its
+    /// locations, and the only cross-crate edge the whole plugin tree carves out by hand is this
+    /// kind's edge to the plane whose IR it names. A dialect registers INTO its plane by claim; the
+    /// plane never names a dialect back.
+    Dialect,
+    /// A CONTROL SURFACE: an unmetered served surface that answers on the control path.
+    ///
+    /// The metering is the whole of the split from [`Kind::Plane`]. A control surface declares its
+    /// routes as data, owns its own request and response bodies, and is verified, admitted, audited
+    /// and answered — it reads node state through contract traits, changes it only through the
+    /// verbs unit, and mints credentials only through the auth unit's signer. It names no money
+    /// vocabulary, reaches no upstream, appears in no plane's step list and calls no plane, holds
+    /// no key material and no process-global state.
+    Control,
     /// Moves bytes. In-tree only, inside the trusted computing base.
     Transport,
     /// Turns an arriving credential into facts about a principal.
@@ -56,6 +79,8 @@ impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Self::Plane => "plane",
+            Self::Dialect => "dialect",
+            Self::Control => "control",
             Self::Transport => "transport",
             Self::Auth => "auth",
             Self::EgressAuth => "egress-auth",
@@ -82,8 +107,13 @@ pub trait KindMarker: sealed::KindSeal {
 pub mod markers {
     use super::{sealed::KindSeal, Kind, KindMarker};
 
+    // ONE INVOCATION OVER THE WHOLE SET, not one per kind. The markers are the same three lines of
+    // generated code each, so writing them as a list rather than as N calls means adding a kind
+    // costs the line that NAMES it and nothing else — which is the shape a closed set that is meant
+    // to be extended by an owner ruling should have, and is what let the dialect and control
+    // markers land inside the contract pair's LOC ceiling without it moving.
     macro_rules! marker {
-        ($(#[$meta:meta])* $name:ident => $kind:ident) => {
+        ($($(#[$meta:meta])* $name:ident => $kind:ident;)*) => {$(
             $(#[$meta])*
             #[derive(Clone, Copy, Debug, PartialEq, Eq)]
             pub struct $name;
@@ -91,33 +121,31 @@ pub mod markers {
             impl KindMarker for $name {
                 const KIND: Kind = Kind::$kind;
             }
-        };
+        )*};
     }
 
-    marker!(
+    marker! {
         /// Marker for the plane kind.
-        PlaneKind => Plane);
-    marker!(
+        PlaneKind => Plane;
+        /// Marker for the dialect kind.
+        DialectKind => Dialect;
+        /// Marker for the control-surface kind.
+        ControlKind => Control;
         /// Marker for the transport kind.
-        TransportKind => Transport);
-    marker!(
+        TransportKind => Transport;
         /// Marker for the ingress auth kind.
-        AuthKind => Auth);
-    marker!(
+        AuthKind => Auth;
         /// Marker for the egress auth-scheme kind.
-        EgressAuthKind => EgressAuth);
-    marker!(
+        EgressAuthKind => EgressAuth;
         /// Marker for the store kind.
-        StoreKind => Store);
-    marker!(
+        StoreKind => Store;
         /// Marker for the secret kind.
-        SecretKind => Secret);
-    marker!(
+        SecretKind => Secret;
         /// Marker for the hook kind.
-        HookKind => Hook);
-    marker!(
+        HookKind => Hook;
         /// Marker for the export kind.
-        ExportKind => Export);
+        ExportKind => Export;
+    }
 }
 
 /// The native plugin interface generation a plugin was built against.
@@ -133,6 +161,21 @@ pub use busbar_contract_transport::AbiVersion;
 /// through an in-tree adapter rather than being refused, so a configuration written for the
 /// previous release boots unchanged.
 pub const STORE_ABI: AbiVersion = AbiVersion(5);
+
+/// The dialect kind's native interface generation.
+///
+/// Generation 1, because the kind is new and no dialect has ever been loaded against an earlier
+/// one: there is nothing for an adapter to adapt, and starting anywhere else would imply a history
+/// this kind does not have.
+pub const DIALECT_ABI: AbiVersion = AbiVersion(1);
+
+/// The control kind's native interface generation.
+///
+/// Generation 1, for the reason [`DIALECT_ABI`] is. A control surface is in-tree and served by the
+/// node's own mount, so unlike a store there is no out-of-tree population to keep compatible: the
+/// floor exists so the registry has the same thing to compare for this kind that it compares for
+/// every other, not because a second generation is anticipated.
+pub const CONTROL_ABI: AbiVersion = AbiVersion(1);
 
 /// The base trait every plugin implements.
 ///
