@@ -539,6 +539,21 @@ jobs:
       # Applying the same, PROVEN mechanism to both architectures is the safer choice: it does not
       # depend on an assumption about x86_64-musl's default-linking cdylib support that was never
       # cleanly confirmed either way.
+      # PINNED BY DIGEST, LIKE EVERY OTHER IMAGE AND ACTION ON THE RELEASE PATH. `rust:alpine` is a
+      # floating tag on Docker Hub: it moves on every Rust release and on every Alpine rebuild, so
+      # the plugin cdylib that ships INSIDE the published container image — and the musl libc,
+      # libgcc_s and libstdc++ extracted from this same container and copied into a FROM-scratch
+      # image — were built by whatever bytes that name resolved to at the moment of the run. That is
+      # a build input to a release artifact with no pin at all, in a file where every `uses:` is a
+      # sha and release-stage.yml pins even its postgres and valkey service containers by digest.
+      #
+      # The tag is kept alongside the digest deliberately: `rust:alpine@sha256:...` is what the
+      # digest MEANT, so a human reading the line knows what it is without a registry round trip,
+      # while the daemon resolves the digest and ignores the tag.
+      #
+      # RE-PINNING: `docker buildx imagetools inspect rust:alpine` prints the current index digest.
+      # Bump it deliberately, in its own commit, when a newer Rust is wanted here — not implicitly,
+      # on a Tuesday, inside a release.
       - name: Build headroom-hook cdylib + extract matching runtime libs (musl-native container)
         if: ${{ matrix.headroom }}
         run: |
@@ -548,7 +563,7 @@ jobs:
             -v "$PWD/headroom-hook":/src/headroom-hook \
             -v "$PWD":/src/busbarAI:ro \
             -v "$PWD/headroom-libs":/out \
-            rust:alpine sh -exc '
+            rust:alpine@sha256:a10e64dd139b7387337c7fbe8aca31b959b57b2fd4c8ae20a02cf1d6ea424dce sh -exc '
               apk add --no-cache musl-dev sqlite-dev pkgconfig gcc g++ git perl make
               export CARGO_HOME=/tmp/cargo-home
               cd /src/headroom-hook
