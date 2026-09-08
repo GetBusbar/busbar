@@ -413,7 +413,7 @@ impl<V> Sharded<V> {
     /// which is irrelevant to correctness (the maps are ephemeral) but keeps behaviour deterministic.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &MapShard<V> {
-        let h = crate::store::fnv1a_u64(key_id) as usize;
+        let h = busbar_substrate::store::fnv1a_u64(key_id) as usize;
         &self.shards[h & (GOV_SHARDS - 1)]
     }
 
@@ -422,7 +422,7 @@ impl<V> Sharded<V> {
     /// section deadlock-free).
     #[inline]
     fn shard_index(&self, key_id: &str) -> usize {
-        (crate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
+        (busbar_substrate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
     }
 
     /// The shard at a known index (see [`Sharded::shard_index`]).
@@ -1110,7 +1110,7 @@ impl PendingMetering {
     /// process-stable hash the budget map uses.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &std::sync::Mutex<HashMap<MeterKey, MeterCounts>> {
-        &self.shards[(crate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)]
+        &self.shards[(busbar_substrate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)]
     }
 
     /// Accrue on the hot path: lock ONLY the shard owning `key.0`, bounded to that shard's slice of

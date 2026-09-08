@@ -3588,7 +3588,7 @@ pub(crate) async fn hook_status(
     let desired_version = current.config_version;
     let reported =
         crate::hooks::fetch_status(&name, hook, desired_version, &current.hook_env).await;
-    let as_of = crate::store::now();
+    let as_of = busbar_substrate::store::now();
     let body = match reported {
         Some(r) => {
             // Drift: the hook runs a different settings version, or a DESIRED key is missing/

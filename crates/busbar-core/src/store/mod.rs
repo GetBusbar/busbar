@@ -79,11 +79,14 @@ fn write_recover<T>(m: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_,
 }
 
 // The production wall clock (`now`, `now_ms`) moved to the neutral substrate so the plane crates
-// name it without reaching into busbar-core; re-exported here so every crate::store::{now, now_ms}
-// caller is unchanged. The #[cfg(test)] test-clock below (TEST_NOW / now_for_test) stays in core —
-// it owns the thread-local injection the in-core breaker/store tests drive, and now_for_test falls
-// back to this re-exported now().
-pub use busbar_substrate::store::{now, now_ms};
+// name it without reaching into busbar-core.
+//
+// R5-store: the `crate::store::{now, now_ms}` re-export is DELETED and its ~110 call sites across
+// twelve core modules name `busbar_substrate::store::{now, now_ms}` — the crate that defines it —
+// instead. Core keeps a PRIVATE import, not a re-export: `now()` is still the fallback the
+// #[cfg(test)] test-clock below (TEST_NOW / now_for_test) reads through, and that clock stays in
+// core because it owns the thread-local injection the in-core breaker/store tests drive.
+use busbar_substrate::store::now;
 
 // Test-clock storage, THREAD-LOCAL.
 //
@@ -126,33 +129,29 @@ fn now_for_test() -> u64 {
     }
 }
 
-// The neutral breaker-state taxonomy (`BreakerState`) moved to `busbar-substrate` so a plane crate
-// names it without reaching into busbar-core; re-exported here so every `crate::store::BreakerState`
-// caller is unchanged.
+// ── THE NEUTRAL STORE VOCABULARY — the substrate's, and named from the substrate ─────────────────
 //
-// ── Lane availability taxonomy ── relocated to `busbar-substrate` in Phase-B B1 (it travels with
-// `failover::walk_with`, the neutral walk that carries it). Core re-exports the taxonomy so every
-// `crate::store::…` name resolves unchanged; `PROBE_RETRY_FLOOR_MS` moved with its only reader
-// (`recovery_hint_ms`) and stays substrate-private.
+// The breaker-state taxonomy (`BreakerState`), the lane-availability taxonomy (`Unavailable`), the
+// `LaneRuntime` trait and the carriers its signatures name (`Admit`, `LaneSnapshot`, `Permit`) all
+// relocated DOWN to `busbar_substrate::store` — Phase-B B1 for the taxonomies (they travel with
+// `failover::walk_with`, the neutral walk that carries them), 1.6.0 App-retype WEDGE 1 for the
+// lane-runtime seam — so a plane crate names them via the ABI without reaching into `busbar-core`.
 //
-// R5-store: the two consumer-facing recovery floors (`AT_CAPACITY_RECOVERY_FLOOR_MS`,
-// `SHED_RETRY_FLOOR_MS`) had NO consumer at either the `crate::store::…` or the
-// `busbar_core::store::…` path — the readers that used to name them moved down with the taxonomy —
-// so the two re-exports are deleted rather than repointed. Every remaining reader names
-// `busbar_substrate::store::…` directly.
-pub use busbar_substrate::store::{BreakerState, Unavailable};
-
-// App-retype WEDGE 1 (1.6.0): the `LaneRuntime` TRAIT and the carriers its signatures name (`Admit`,
-// `LaneSnapshot`, plus `Permit`, the RAII concurrency token) relocated DOWN to
-// `busbar_substrate::store` so the LLM plane names the lane-runtime seam via the ABI instead of
-// reaching into `busbar_core::store`. Re-exported here by-identity so the in-memory breaker engine's
-// `impl LaneRuntime for HealthState`, `/stats`, the `/metrics` scrape, and the config-apply
-// export/restore path resolve `crate::store::…` unchanged.
+// R5-store: none of them is RE-exported by core any more. The imports below are PRIVATE — they exist
+// only so the in-memory breaker engine in `in_memory/` keeps its bare-name use through `use super::*`
+// (`impl LaneRuntime for HealthState`, the FSM, the `/stats` and `/metrics` snapshot shapes). Every
+// reader outside this module — `endpoints`, `metrics`, `failover`, `appbuild`, `plane_host`, and the
+// one `busbar-llm` test — names `busbar_substrate::store::…`, the crate that defines them.
 //
-// R5-store: `LaneHealthSnapshot` and `PoolCellHealthSnapshot` are NOT re-exported — the only readers
-// left (`in_memory/availability.rs`, `in_memory/mod.rs`) name `busbar_substrate::store::…` directly,
-// so the shim carried no caller.
-pub use busbar_substrate::store::{Admit, LaneRuntime, LaneSnapshot, Permit};
+// Four names were dropped outright rather than repointed, having no reader at either the
+// `crate::store::…` or the `busbar_core::store::…` path: `AT_CAPACITY_RECOVERY_FLOOR_MS` and
+// `SHED_RETRY_FLOOR_MS` (their readers moved down with the taxonomy), and `LaneHealthSnapshot` and
+// `PoolCellHealthSnapshot` (read only by `in_memory/`, which now imports them directly).
+// `PROBE_RETRY_FLOOR_MS` moved earlier with its only reader, `recovery_hint_ms`, and is
+// substrate-private.
+use busbar_substrate::store::{
+    Admit, BreakerState, LaneRuntime, LaneSnapshot, Permit, Unavailable,
+};
 
 mod in_memory;
 pub use in_memory::*;

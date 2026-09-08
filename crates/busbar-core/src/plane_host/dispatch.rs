@@ -165,7 +165,7 @@ pub(crate) extern "C-unwind" fn workhandle_open(
                 scope: d.scope,
                 ttl_secs: d.ttl_secs,
                 correlation_id: d.correlation_id,
-                opened_at_ms: crate::store::now_ms(),
+                opened_at_ms: busbar_substrate::store::now_ms(),
             },
         );
         WorkHandleId(raw)
@@ -200,7 +200,7 @@ pub(crate) extern "C-unwind" fn workhandle_resume(
             let expires_at = entry
                 .opened_at_ms
                 .saturating_add(u64::from(entry.ttl_secs).saturating_mul(1_000));
-            if crate::store::now_ms() >= expires_at {
+            if busbar_substrate::store::now_ms() >= expires_at {
                 reg.handles.remove(&handle.0);
                 return StatusClass::Gone;
             }
@@ -504,7 +504,7 @@ pub(crate) extern "C-unwind" fn gate_decide(
                         principal_id,
                         app.config_version,
                     ),
-                    now_ms: crate::store::now_ms(),
+                    now_ms: busbar_substrate::store::now_ms(),
                 }
             });
         let subject = crate::hooks::gate::GateSubject {

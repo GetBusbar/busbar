@@ -5,8 +5,8 @@
 
 use super::*;
 use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
-use crate::store::LaneRuntime;
 use crate::test_support::{LaneSpec, TestApp};
+use busbar_substrate::store::LaneRuntime;
 use std::sync::Arc;
 // Named directly now that the recorder-install half (which imported it) lives in the substrate.
 use std::time::Duration;
@@ -514,7 +514,7 @@ fn test_scrape_gauges_breaker_open_lane_unavailable() {
         .build();
 
     // Trip the pool cell Open with a cooldown 30s out.
-    let t = crate::state::now();
+    let t = busbar_substrate::store::now();
     app.store.force_open_in("brk-pool", 0, t + 30);
 
     refresh_scrape_gauges(&app);
@@ -731,7 +731,7 @@ fn test_lane_state_half_open_via_sibling_pool_cell() {
         .pool("pool-sibling", &[(0, 1)])
         .build_with_store();
 
-    let now = crate::state::now();
+    let now = busbar_substrate::store::now();
     // Materialize the sibling pool's cell fresh (Closed, cooldown=0, ready) BEFORE tripping the
     // other pool — `lane_usable_any_cell` only sees cells that have been touched at least once.
     let _ = store.cell("pool-sibling", 0);
@@ -792,7 +792,7 @@ fn test_lane_state_half_open_by_model_via_sibling_pool_cell() {
         .pool("some-pool", &[(0, 1)])
         .build_with_store();
 
-    let now = crate::state::now();
+    let now = busbar_substrate::store::now();
     // Materialize a per-pool cell fresh/Closed so `lane_usable_any_cell` has a ready cell to
     // find (without this, it would fall back to the default cell itself, which we're about to
     // trip — making usable/cooldown check the SAME cell and state 1 unreachable).
@@ -842,7 +842,7 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
         .pool("poolY", &[(0, 1)])
         .build_with_store();
 
-    let now = crate::state::now();
+    let now = busbar_substrate::store::now();
     // Trip EVERY per-pool cell Open (unexpired cooldown) — the lane is unusable via any pool.
     // The DEFAULT ("") cell is deliberately never touched: cooldown_remaining_in("", 0, now)
     // reads exactly 0 (its pristine untouched state), which is the boundary value that

@@ -1526,7 +1526,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         labels: Default::default(),
         ..Default::default()
     };
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
     assert!(
         gov.verify_token(&old_token, now, None).is_some(),
@@ -2512,7 +2512,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
     assert!(
         matches!(
             app.plane_breakers.try_admit("tool:x", 0),
-            Err(crate::store::Unavailable::Shedding)
+            Err(busbar_substrate::store::Unavailable::Shedding)
         ),
         "inert admit must refuse, not panic"
     );

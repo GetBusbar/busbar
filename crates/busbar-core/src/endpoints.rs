@@ -11,7 +11,9 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::governance::{pool_allowed, GovCtx};
-use crate::state::{now, App};
+use busbar_substrate::store::now;
+
+use crate::state::App;
 
 /// `/stats` reports the pool/lane topology. It is governance-scoped: a virtual key with a
 /// non-empty `allowed_pools` must NOT learn the full topology of pools and lanes it can never
@@ -98,9 +100,9 @@ pub(crate) async fn stats(
                 ),
             };
             let breaker_state = match snap.breaker_state {
-                crate::store::BreakerState::Closed => "closed",
-                crate::store::BreakerState::Open { .. } => "open",
-                crate::store::BreakerState::HalfOpen => "half_open",
+                busbar_substrate::store::BreakerState::Closed => "closed",
+                busbar_substrate::store::BreakerState::Open { .. } => "open",
+                busbar_substrate::store::BreakerState::HalfOpen => "half_open",
             };
             json!({
                 "model": snap.model,

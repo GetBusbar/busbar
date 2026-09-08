@@ -4,7 +4,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub use crate::store::now;
+// R5-store: `crate::state::now` DELETED — it was a re-export of a re-export (`crate::store::now`,
+// itself `busbar_substrate::store::now`, itself `busbar_substrate_values::store::now`). Its nine
+// readers (metrics, endpoints, plane/quarantine and the metrics tests) name
+// `busbar_substrate::store::now` directly, which is where the production wall clock lives.
+//
 // R5-store: `LaneRuntime` is named from its defining crate. It relocated to
 // `busbar_substrate::store` with the rest of the lane-runtime seam; the `crate::state::LaneRuntime`
 // spelling had no reader anywhere — `state.rs` itself was the only one — so the shim is deleted, not

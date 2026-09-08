@@ -2198,7 +2198,7 @@ fn gov_with_aws_key() -> (std::sync::Arc<crate::governance::GovState>, String, S
                 labels: Default::default(),
                 ..Default::default()
             },
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap();
     (gov, akid, secret)
@@ -2210,7 +2210,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_admits_with_govctx() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
         a
     };
     let path = "/model/anthropic.claude/converse";
@@ -2240,7 +2240,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
         a
     };
     let datestamp = &amzdate[0..8];
@@ -2286,7 +2286,7 @@ fn test_verify_sigv4_ingress_credential_roundtrip_with_escaped_query_param_admit
 fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
     crate::metrics::init();
     let (gov, akid, _secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+    let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
     let path = "/model/anthropic.claude/converse";
     // Sign with a DIFFERENT secret than the key's.
     let (auth, headers) = sign_bedrock_request(
@@ -2315,7 +2315,7 @@ fn test_verify_sigv4_ingress_credential_wrong_secret_rejected() {
 fn test_verify_sigv4_ingress_credential_unknown_access_key_id_rejected() {
     crate::metrics::init();
     let (gov, _akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+    let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
     let path = "/model/anthropic.claude/converse";
     // A well-formed signature under an AccessKeyId that does not exist in the store.
     let (auth, headers) = sign_bedrock_request(
@@ -2343,7 +2343,7 @@ fn test_verify_sigv4_ingress_credential_expired_date_rejected() {
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
     // Sign with a timestamp 10 minutes in the past — outside the ±5min skew window.
-    let stale = crate::store::now().saturating_sub(crate::sigv4::CLOCK_SKEW_SECS + 60);
+    let stale = busbar_substrate::store::now().saturating_sub(crate::sigv4::CLOCK_SKEW_SECS + 60);
     let (a, _d) = crate::sigv4::format_amz_time(stale);
     let path = "/model/anthropic.claude/converse";
     let (auth, headers) =
@@ -2383,12 +2383,12 @@ fn test_verify_sigv4_ingress_credential_disabled_key_rejected() {
                 labels: Default::default(),
                 ..Default::default()
             },
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap();
     // Disable the key.
     gov.update_key(&key.id, Some(false), None).unwrap();
-    let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+    let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
     let path = "/model/anthropic.claude/converse";
     let (auth, headers) =
         sign_bedrock_request(&secret, &akid, "us-east-1", "bedrock", path, b"", &a);
@@ -2422,12 +2422,12 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
                 labels: Default::default(),
                 ..Default::default()
             },
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap();
 
     let amzdate = {
-        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
         a
     };
     let path = "/model/anthropic.claude/converse";
@@ -2448,7 +2448,7 @@ fn test_verify_sigv4_ingress_credential_revoked_key_rejected() {
     // Re-sign a fresh request (same secret/akid) and assert the SigV4 path now REJECTS — the revoked
     // subject's SigV4 credential must be rejected exactly like its signed token would be.
     let amzdate2 = {
-        let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+        let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
         a
     };
     let (auth2, headers2) =
@@ -2468,7 +2468,7 @@ fn test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits() {
     // body): the verifier must re-hash THESE bytes and find they match the signed digest.
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+    let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
     let path = "/model/anthropic.claude/converse";
     let body = br#"{"messages":[{"role":"user","content":"hi"}]}"#;
     let (auth, headers) =
@@ -2488,7 +2488,7 @@ fn test_verify_sigv4_ingress_credential_tampered_body_rejected() {
     // failure (no oracle distinguishing "body tampered" from "bad signature").
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+    let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
     let path = "/model/anthropic.claude/converse";
     let signed_body = br#"{"max_tokens":16}"#;
     let tampered_body = br#"{"max_tokens":999999}"#;
@@ -2519,7 +2519,7 @@ fn test_verify_sigv4_ingress_credential_unsigned_payload_rejected() {
     // rejects it independently of any signature check, with the same opaque `Err(())`.
     crate::metrics::init();
     let (gov, akid, secret) = gov_with_aws_key();
-    let (a, _d) = crate::sigv4::format_amz_time(crate::store::now());
+    let (a, _d) = crate::sigv4::format_amz_time(busbar_substrate::store::now());
     let path = "/model/anthropic.claude/converse";
     let body = b"some-body";
     let (auth, mut headers) =
@@ -2985,7 +2985,7 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
     let secret = secret.as_str();
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
     let cache = crate::auth_cache::CredentialCache::new();
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let verdict = mw.run_chain_cached(Some(secret), Some(&cache), Some(&gov), None);
     assert!(
         matches!(

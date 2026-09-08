@@ -632,7 +632,7 @@ fn finish_inner(
     // audit reqlog record below — the same instant, observed once. In 1.5.5 the only finish-time
     // read was the gated export one; the 1.6.0 audit record's ungated second read is what this
     // collapses away.
-    let finished_ts = crate::store::now();
+    let finished_ts = busbar_substrate::store::now();
     if app
         .export_projections
         .wants_stream(busbar_plugin_loader::ExportStream::Logs)

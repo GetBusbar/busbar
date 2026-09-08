@@ -71,7 +71,7 @@ impl VersionLog {
         }
         q.push_back(ConfigVersion {
             version,
-            ts: crate::store::now(),
+            ts: busbar_substrate::store::now(),
             principal: principal.to_string(),
             summary: summary.to_string(),
             hook_registry: hook_registry.clone(),
