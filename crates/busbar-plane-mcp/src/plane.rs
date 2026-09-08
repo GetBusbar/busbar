@@ -118,6 +118,100 @@ impl McpPlane {
     fn row_for_op(op: busbar_contract::ids::OpClassId) -> Option<&'static ops::MethodRow> {
         ops::METHODS.iter().find(|r| r.op == op)
     }
+
+    /// The legs a unit of this operation class walks, in the plan's order.
+    ///
+    /// **A TABLE, and a live unit is one way to ask it.** `Plane::route` needs a `Unit<'u>`, whose
+    /// borrows do not outlive the call they were taken in — so a composition root that has to know
+    /// this plane's plan in order to drive its own steps could not ask at all, and the only thing
+    /// left to it was a second copy of this table beside the loop. The copy that drifts is the one
+    /// nobody re-derived.
+    ///
+    /// This is the same widening the sibling plane already carries as `A2aPlane::route_plan_for`,
+    /// with the same shape and for the same reason: the plan is a function of the operation class
+    /// and of this deployment's registrations, and of nothing else a unit carries. The body is byte
+    /// for byte the one `route` had, and `route` is now the one caller that starts from a unit.
+    #[must_use]
+    pub fn route_plan_for(&self, op: busbar_contract::ids::OpClassId) -> RoutePlan {
+        let mut plan = RoutePlan::default();
+        let mut leg = |l: Leg| {
+            let _ = plan.legs.push(l);
+        };
+        match op {
+            // A call is the whole point, and it is the only operation with an approval to spend.
+            ops::OP_TOOL_CALL => {
+                // Resolve the tool, spend the grant that says this caller may use it, hop, then
+                // record what happened. The grant is spent BEFORE the hop, because a grant spent
+                // after a hop is a grant a failed hop leaves unspent for a retry to spend again.
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_DEMOTION, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
+                leg(self.upstream_leg());
+                leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
+            }
+            // The two console-era verbs are answered out of this build's own declarations: no
+            // record, no registration, no caller. The plan is the one leg that says where the answer
+            // GOES — back to whoever opened the unit — because a plan with no legs at all is a
+            // refusal at the routing step, and "there is nothing to read" is not the same statement
+            // as "there is nowhere to go".
+            ops::OP_INITIALIZE | ops::OP_PING => leg(Leg {
+                destination: DestinationFacts::Client {
+                    selector: "opener",
+                    mode: busbar_contract::dest::ClientMode::Deliver,
+                },
+            }),
+            ops::OP_DISCOVER
+            | ops::OP_TOOLS_LIST
+            | ops::OP_PROMPTS_LIST
+            | ops::OP_RESOURCES_LIST
+            | ops::OP_RESOURCE_TEMPLATES_LIST => {
+                // A listing is answered from what was approved, minus what is quarantined.
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_SCAN));
+                leg(Self::record_leg(rec::SCHEMA_DEMOTION, rec::OP_SCAN));
+            }
+            ops::OP_PROMPT_GET | ops::OP_RESOURCE_READ => {
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET));
+                leg(self.upstream_leg());
+                leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
+            }
+            ops::OP_COMPLETION => leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET)),
+            ops::OP_TASK_GET => leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET)),
+            ops::OP_TASK_UPDATE | ops::OP_TASK_CANCEL => {
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
+                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
+            }
+            ops::OP_SUBSCRIPTIONS_LISTEN => {
+                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_SCAN));
+                leg(Leg {
+                    destination: DestinationFacts::Client {
+                        selector: "opener",
+                        mode: busbar_contract::dest::ClientMode::Deliver,
+                    },
+                });
+            }
+            // A server asking for a completion opens a child unit of the other plane, with its own
+            // hold drawn from this node's own budget.
+            ops::OP_SAMPLING => {
+                leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
+                leg(Leg {
+                    destination: sampling_destination(),
+                });
+            }
+            ops::OP_ROOTS_LIST => leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET)),
+            ops::OP_ELICITATION => leg(Leg {
+                destination: DestinationFacts::Client {
+                    selector: "opener",
+                    mode: busbar_contract::dest::ClientMode::Deliver,
+                },
+            }),
+            // A notice is recorded and answered with nothing.
+            ops::OP_NOTIFICATION => leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_PUT)),
+            // An operation class this plane does not carry gets no legs, which is an empty plan and
+            // a refusal at the routing step. Not a panic, and not a guess.
+            _ => {}
+        }
+        plan
+    }
 }
 
 /// The span view of a body, built from the pointers this plane declared.
@@ -866,84 +960,7 @@ impl Plane for McpPlane {
     }
 
     fn route<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
-        let mut plan = RoutePlan::default();
-        let mut leg = |l: Leg| {
-            let _ = plan.legs.push(l);
-        };
-        match u.op() {
-            // A call is the whole point, and it is the only operation with an approval to spend.
-            ops::OP_TOOL_CALL => {
-                // Resolve the tool, spend the grant that says this caller may use it, hop, then
-                // record what happened. The grant is spent BEFORE the hop, because a grant spent
-                // after a hop is a grant a failed hop leaves unspent for a retry to spend again.
-                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET));
-                leg(Self::record_leg(rec::SCHEMA_DEMOTION, rec::OP_GET));
-                leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
-                leg(self.upstream_leg());
-                leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
-            }
-            // The two console-era verbs are answered out of this build's own declarations: no
-            // record, no registration, no caller. The plan is the one leg that says where the answer
-            // GOES — back to whoever opened the unit — because a plan with no legs at all is a
-            // refusal at the routing step, and "there is nothing to read" is not the same statement
-            // as "there is nowhere to go".
-            ops::OP_INITIALIZE | ops::OP_PING => leg(Leg {
-                destination: DestinationFacts::Client {
-                    selector: "opener",
-                    mode: busbar_contract::dest::ClientMode::Deliver,
-                },
-            }),
-            ops::OP_DISCOVER
-            | ops::OP_TOOLS_LIST
-            | ops::OP_PROMPTS_LIST
-            | ops::OP_RESOURCES_LIST
-            | ops::OP_RESOURCE_TEMPLATES_LIST => {
-                // A listing is answered from what was approved, minus what is quarantined.
-                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_SCAN));
-                leg(Self::record_leg(rec::SCHEMA_DEMOTION, rec::OP_SCAN));
-            }
-            ops::OP_PROMPT_GET | ops::OP_RESOURCE_READ => {
-                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET));
-                leg(self.upstream_leg());
-                leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
-            }
-            ops::OP_COMPLETION => leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_GET)),
-            ops::OP_TASK_GET => leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET)),
-            ops::OP_TASK_UPDATE | ops::OP_TASK_CANCEL => {
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
-                leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
-            }
-            ops::OP_SUBSCRIPTIONS_LISTEN => {
-                leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_SCAN));
-                leg(Leg {
-                    destination: DestinationFacts::Client {
-                        selector: "opener",
-                        mode: busbar_contract::dest::ClientMode::Deliver,
-                    },
-                });
-            }
-            // A server asking for a completion opens a child unit of the other plane, with its own
-            // hold drawn from this node's own budget.
-            ops::OP_SAMPLING => {
-                leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
-                leg(Leg {
-                    destination: sampling_destination(),
-                });
-            }
-            ops::OP_ROOTS_LIST => leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET)),
-            ops::OP_ELICITATION => leg(Leg {
-                destination: DestinationFacts::Client {
-                    selector: "opener",
-                    mode: busbar_contract::dest::ClientMode::Deliver,
-                },
-            }),
-            // A notice is recorded and answered with nothing.
-            ops::OP_NOTIFICATION => leg(Self::record_leg(rec::SCHEMA_CATALOGUE, rec::OP_PUT)),
-            // An operation class this plane does not carry gets no legs, which is an empty plan and
-            // a refusal at the routing step. Not a panic, and not a guess.
-            _ => {}
-        }
-        plan
+        self.route_plan_for(u.op())
     }
 
     fn meter<'u>(&self, u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
