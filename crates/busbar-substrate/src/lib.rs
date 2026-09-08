@@ -143,6 +143,12 @@ pub mod plane_host;
 // S4a: the NEUTRAL ROUTE-MOUNT SEAM — the `PlaneRouteSpec` / `PlaneReqCtx` vocabulary a plane uses to
 // declare its data routes without naming `CoreRouter` / `Arc<AppHandle>`, so `PlaneDecl`'s route
 // field can be typed `fn(&dyn Any) -> Vec<PlaneRouteSpec>` and eventually travel to this crate.
+// THE CONTROL-ROUTE SEAM — the `ControlRouteSpec` / `ControlReqCtx` / `ControlDecl` vocabulary an
+// UNMETERED control surface (the OAuth 2.1 issuer; the admin API in R7) declares its routes through.
+// A sibling of `plane_routes` rather than a reuse of it: a control surface has no meter class, no
+// scope kind and no audience binding, so registering it as a plane would declare vocabulary it is
+// defined by not having. See that module's header for why the root's admin wrapper is not this seam.
+pub mod control_routes;
 pub mod plane_routes;
 // ADMIN-2/3: the NEUTRAL PLANE TRUST-VERB SEAM — `PlaneTrust`/`PlaneVerbError`/`registered` (resolve +
 // look) and `AdminRouteSpec`/`AdminReqCtx`/`AdminReply` (route mount), so a plane declares its admin
