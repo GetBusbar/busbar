@@ -389,10 +389,17 @@ impl AuthMiddleware {
         self.chain.iter().map(|(_, m)| m.name()).collect()
     }
 
-    /// Whether the front door is OPEN — an empty auth chain admits every request unconditionally
-    /// (the old `none`/`passthrough`). Governance, when enabled, supersedes this.
+    /// Whether the front door is OPEN — no boxed chain module AND no built-in `keys` ENGINE ARM,
+    /// which together are what admit every request unconditionally (the old `none`/`passthrough`).
+    /// Governance, when enabled, supersedes this.
+    ///
+    /// Both halves, because `keys_in_chain` is an engine arm rather than a boxed module and so
+    /// leaves `self.chain` EMPTY: asking only `chain.is_empty()` described a `chain: [keys]`
+    /// deployment — which denies every unsigned request — as an open relay. This is the same
+    /// question `run_chain_cached` asks before short-circuiting to [`ChainVerdict::Open`], and it
+    /// has to have the same answer.
     pub(crate) fn is_open(&self) -> bool {
-        self.chain.is_empty()
+        self.chain.is_empty() && !self.keys_in_chain
     }
 
     /// Run the auth chain over the presented candidate credential. Empty chain -> admit with NO
