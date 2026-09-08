@@ -77,7 +77,31 @@ pub enum TwilioError {
     UnknownEvent(String),
     /// A `media` payload was not valid base64.
     BadPayload,
+    /// A `start` negotiated a media format this carrier's arithmetic is not written for.
+    FormatMismatch {
+        /// The encoding the `start` named.
+        encoding: String,
+        /// The sample rate the `start` named, in Hz.
+        sample_rate: u64,
+        /// The channel count the `start` named.
+        channels: u64,
+    },
 }
+
+/// THE ONE CARRIER FORMAT this dialect's arithmetic is written for.
+///
+/// Every millisecond figure on this dialect — the uplink meter, the barge-in truncate math, the
+/// downlink pacing — is `AudioFormat::G711Ulaw`'s eight bytes per millisecond, hardcoded at each
+/// site. The `start` event's negotiated `mediaFormat` was parsed and then never looked at, so a
+/// `start` negotiating 16 kHz metered at HALF the duration the caller actually spoke and transcoded
+/// as though it were 8 kHz. Checked rather than assumed, which is also what the implementation this
+/// module reproduces does (`busbar_voice_codec::topology::twilio::assert_g711_ulaw`): refused
+/// outright, because a silently reformatted carrier is a silently mispriced call.
+const CARRIER_ENCODING: &str = "audio/x-mulaw";
+/// See [`CARRIER_ENCODING`].
+const CARRIER_SAMPLE_RATE: u64 = 8000;
+/// See [`CARRIER_ENCODING`].
+const CARRIER_CHANNELS: u64 = 1;
 
 /// Decode one inbound Twilio Media Streams WS frame.
 ///
@@ -105,18 +129,35 @@ pub fn decode(frame: &[u8]) -> Result<TwilioEvent, TwilioError> {
                 .ok_or(TwilioError::Malformed)?;
             let call_sid = str_field(start, "callSid").unwrap_or_default();
             let mf = start.get("mediaFormat").ok_or(TwilioError::Malformed)?;
+            let encoding = str_field(mf, "encoding").unwrap_or_default();
+            let sample_rate = mf
+                .get("sampleRate")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            let channels = mf
+                .get("channels")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_default();
+            // The negotiated format was read into these three fields and never looked at again. See
+            // [`CARRIER_ENCODING`]: every millisecond figure on this dialect assumes the one carrier
+            // format, so a `start` that negotiated another one is refused rather than metered at a
+            // duration it does not have.
+            if encoding != CARRIER_ENCODING
+                || sample_rate != CARRIER_SAMPLE_RATE
+                || channels != CARRIER_CHANNELS
+            {
+                return Err(TwilioError::FormatMismatch {
+                    encoding,
+                    sample_rate,
+                    channels,
+                });
+            }
             Ok(TwilioEvent::Start {
                 stream_sid,
                 call_sid,
-                encoding: str_field(mf, "encoding").unwrap_or_default(),
-                sample_rate: mf
-                    .get("sampleRate")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_default(),
-                channels: mf
-                    .get("channels")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_default(),
+                encoding,
+                sample_rate,
+                channels,
             })
         }
         "media" => {

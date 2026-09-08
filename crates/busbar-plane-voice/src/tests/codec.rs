@@ -701,6 +701,140 @@ fn a_twilio_start_naming_an_empty_stream_sid_binds_nothing() {
     );
 }
 
+/// A `start` that negotiates a format other than the carrier's is refused, not silently reformatted.
+///
+/// `encoding`, `sampleRate` and `channels` were read off the `start` into the event and then never
+/// looked at again, while every millisecond figure on this dialect assumes 8 kHz mono µ-law. A start
+/// negotiating 16 kHz therefore metered at HALF the duration the caller spoke and transcoded as
+/// though it were 8 kHz — and the implementation this module reproduces refuses exactly this.
+#[test]
+fn a_twilio_start_negotiating_another_format_is_refused() {
+    for format in [
+        json!({ "encoding": "audio/l16", "sampleRate": 16000, "channels": 1 }),
+        json!({ "encoding": "audio/x-mulaw", "sampleRate": 16000, "channels": 1 }),
+        json!({ "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 2 }),
+    ] {
+        let start = serde_json::to_vec(&json!({
+            "event": "start",
+            "start": { "streamSid": "MZ-bound", "callSid": "CA123", "mediaFormat": format },
+        }))
+        .unwrap();
+        let decoded = crate::twilio::decode(&start);
+        assert!(
+            matches!(decoded, Err(crate::twilio::TwilioError::FormatMismatch { .. })),
+            "{format} was admitted onto a carrier whose arithmetic is 8 kHz mono mu-law: {decoded:?}"
+        );
+    }
+    // And the carrier's own format still opens the stream.
+    let ok = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ-bound",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    assert!(crate::twilio::decode(&ok).is_ok());
+}
+
+/// The three telephony states nothing in either crate exercised: media before start, stop without
+/// start, and a zero-length payload.
+///
+/// Every media and lifecycle test in both crates bound a `start` first. These are exactly the states
+/// the forgery guard and the turn-close path live in, and neither was ever entered from an
+/// unbound session.
+#[test]
+fn twilio_frames_arriving_before_any_start_change_nothing() {
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("realtime"),
+        host: "api.openai.com",
+        dialect: Dialect::OpenaiRealtime,
+    }];
+    let plane = VoicePlane::new(UPSTREAMS);
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/twilio/call-123");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+
+    // MEDIA BEFORE START. Nothing is bound, so nothing this frame names can match.
+    let media = serde_json::to_vec(&json!({
+        "event": "media",
+        "streamSid": "MZ-unbound",
+        "media": { "payload": base64_of(&[0xFFu8; 4]) },
+    }))
+    .unwrap();
+    let frames = [frame(&media)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("media decodes");
+    assert!(
+        matches!(
+            ingress,
+            Ingress::Discard {
+                reason: busbar_contract::wire::DiscardCode::ForgedSource
+            }
+        ),
+        "audio on a session no start has bound must open no turn: {ingress:?}"
+    );
+
+    // STOP WITHOUT START. It ends the call it was sent for; there is no turn to close.
+    let stop = serde_json::to_vec(&json!({ "event": "stop", "streamSid": "MZ-unbound" })).unwrap();
+    let frames = [frame(&stop)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("stop decodes");
+    let Ingress::Close { for_, .. } = ingress else {
+        panic!("a stop ends the call, got {ingress:?}");
+    };
+    assert_eq!(
+        for_, None,
+        "there is no open turn for a stop on a session that never started one"
+    );
+
+    // A ZERO-LENGTH PAYLOAD, on a properly bound stream: zero bytes of audio, no unit, no panic.
+    let start = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ-bound",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    let frames = [frame(&start)];
+    let mut cursor = FrameCursor::new(&frames);
+    let _ = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("start decodes");
+
+    let empty = serde_json::to_vec(&json!({
+        "event": "media",
+        "streamSid": "MZ-bound",
+        "media": { "payload": "" },
+    }))
+    .unwrap();
+    let frames = [frame(&empty)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("a zero-length payload decodes rather than refusing the call");
+    let Ingress::Open(draft) = ingress else {
+        panic!("the first media frame of a bound stream opens the turn, got {ingress:?}");
+    };
+    assert_eq!(
+        draft.facts.get(crate::meta::FACT_AUDIO_MS_IN),
+        Some(FactValue::Int(0)),
+        "zero bytes of carrier audio is zero milliseconds, stated rather than guessed"
+    );
+}
+
 #[test]
 fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
