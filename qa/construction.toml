@@ -578,11 +578,9 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
-  "secret-example-plugin", "secret-ref", "busbar-plane-a2a", "busbar-plane-mcp",
+  "secret-example-plugin", "secret-ref",
 ]
-known_missing_deny = [
-  "busbar-transport-grpc", "busbar-transport-http", "busbar-transport-sse",
-  "busbar-transport-tls", "busbar-transport-ws", "plugin-loader",
+known_missing_deny = [ "plugin-loader",
   "store-memory", "store-example-plugin", "export-example-plugin",
 ]
 
