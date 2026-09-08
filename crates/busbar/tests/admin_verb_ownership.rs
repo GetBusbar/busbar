@@ -18,9 +18,9 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | the operation is a ledger view or a recovery verb | 8 |
+//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or a landed 1.6.0 verb | 9 |
 //! | the surface answers, and the loop hands it back | everything else that is mounted | 66 |
-//! | nobody answers | scope-checked, then `404` — the shipped defect the sibling pin names | 10 |
+//! | nobody answers | scope-checked, then `404` — the shipped defect the sibling pin names | 9 |
 //!
 //! ## Why it is derived and then measured, rather than written down
 //!
@@ -66,6 +66,16 @@ use std::net::SocketAddr;
 /// Named rather than counted, for the reason the sibling pin gives: every OTHER verb's path must
 /// reach the surface, and a verb that stopped being loop-served would silently join them.
 const RECOVERY_VERBS: &[&str] = &["chain_break", "store_restore", "reseal_epoch_floor"];
+
+/// The 1.6.0 verbs the composition root now produces the answer for ITSELF, through
+/// `CoreGovernance::execute_new_verb`, rather than handing back to the surface underneath.
+///
+/// This list grows by one per landed verb, and it is the thing that makes the migration visible:
+/// a verb whose answer moved into the root but that was not added here would be measured as
+/// "answered by nobody" while actually being answered, which is the false green this pin exists to
+/// refuse. Named rather than derived from the root's own match, for the reason the file's header
+/// gives: a table checked only against itself agrees with any code.
+const ROOT_ANSWERED_NEW_VERBS: &[&str] = &["verify"];
 
 /// A path the administrative surface has never mounted and never will — the control the two other
 /// admin pins use, and for the same reason: "the surface has no route for this" is only a claim if
@@ -114,11 +124,18 @@ fn squashed(name: &str) -> String {
 ///
 /// The three closed sets the composition root branches on: the executing unit's ledger views, read
 /// from where they are defined, and the recovery and crossed verbs named above.
+/// The closed sets the composition root branches on, read from where each is defined: the
+/// executing unit's ledger views, the three recovery verbs above, and the new verbs the root has
+/// taken over one at a time.
 fn loop_answers(verb: &str) -> bool {
     if RECOVERY_VERBS.iter().any(|v| v.eq_ignore_ascii_case(verb)) {
         return true;
     }
     if CROSSED_VERBS.iter().any(|v| v.eq_ignore_ascii_case(verb)) {
+    if ROOT_ANSWERED_NEW_VERBS
+        .iter()
+        .any(|v| v.eq_ignore_ascii_case(verb))
+    {
         return true;
     }
     busbar_unit_verbs::LEDGER_VERBS
@@ -338,6 +355,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
     assert_eq!(
         loop_owned.len(),
         15,
+        9,
         "the loop answers a different number of operations than it did: {loop_owned:?}"
     );
     assert_eq!(
@@ -347,7 +365,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
     );
     assert_eq!(
         nobody_answers.len(),
-        10,
+        9,
         "the number of operations gated by every gate and then answered by nobody has changed: \
          {nobody_answers:?}"
     );
@@ -358,6 +376,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
     );
 
     // The fifteen, named. A count would let one verb leave the loop as another arrived.
+    // The nine, named. A count would let one verb leave the loop as another arrived.
     let mut owned: Vec<&str> = loop_owned.clone();
     owned.sort_unstable();
     assert_eq!(
@@ -378,6 +397,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
             "get_providers",
             "reseal_epoch_floor",
             "store_restore",
+            "verify",
         ],
         "the set of operations the loop produces the answer for has changed"
     );

@@ -300,6 +300,22 @@ pub trait LedgerView: Send + Sync {
     /// deployment at nothing.
     fn rates_in_force(&self) -> Option<std::sync::Arc<busbar_unit_cost::RateCard>> {
         None
+    /// The node's CURRENT balances, per key and window — the `now` side of the identity.
+    ///
+    /// `verify` is the one operation that needs both sides of a delta, and the checkpoints above
+    /// only carry the `since` side. The default is an empty book, which is the honest answer for a
+    /// binding with no ledger behind it and is what keeps this addition additive: an existing
+    /// implementor compiles unchanged and answers "this node has no balances", which is true of it.
+    fn current_totals(
+        &self,
+    ) -> std::collections::BTreeMap<
+        (
+            busbar_unit_ledger::totals::TotalsKey,
+            busbar_unit_ledger::totals::WindowStart,
+        ),
+        busbar_unit_ledger::totals::Totals,
+    > {
+        std::collections::BTreeMap::new()
     }
 }
 
@@ -538,6 +554,22 @@ impl LedgerView for NodeLedger {
     /// the second half on another.
     fn rates_in_force(&self) -> Option<std::sync::Arc<busbar_unit_cost::RateCard>> {
         crate::root::kernel::ROOT_CARD.pin()
+    /// The live book, copied under the same lock every other read here takes.
+    fn current_totals(
+        &self,
+    ) -> std::collections::BTreeMap<
+        (
+            busbar_unit_ledger::totals::TotalsKey,
+            busbar_unit_ledger::totals::WindowStart,
+        ),
+        busbar_unit_ledger::totals::Totals,
+    > {
+        self.lock()
+            .ledger
+            .book()
+            .iter()
+            .map(|(key, totals)| (key.clone(), *totals))
+            .collect()
     }
 }
 
@@ -706,10 +738,17 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
 
     fn execute_new_verb(
         &self,
-        _verb: KernelVerb,
+        verb: KernelVerb,
         _admin: &busbar_caps::AdminToken,
         _request: &[u8],
     ) -> Result<Vec<u8>, busbar_unit_verbs::GovernanceError> {
+        // A verb this root answers itself is answered here and never handed on. The fall-through
+        // below is the surface underneath, which has no route for any of the 1.6.0 verbs and
+        // answers 404 — so a verb that reaches it has passed every gate and then been told it does
+        // not exist, which is the shipped defect these arms close one at a time.
+        if let Some(body) = render_new_verb(verb, self.ledger.as_ref()) {
+            return Ok(ledger_answer(body).pack());
+        }
         Ok(self.run())
     }
 
@@ -740,6 +779,158 @@ fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
         status: 200,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
         body,
+    }
+}
+
+/// The bytes one of the new 1.6.0 verbs answers with, or `None` for a verb this root does not yet
+/// answer itself.
+///
+/// `None` is not an error and not a refusal: it means the verb is still handed to the surface
+/// underneath, which is where every one of them was before this arm existed. The arms land one per
+/// commit, so this function shrinking the `None` set IS the migration, and a verb that moved has to
+/// move here and in the partition pin together.
+fn render_new_verb(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>> {
+    match verb {
+        KernelVerb::Verify => Some(render_verify(view).into_bytes()),
+        _ => None,
+    }
+}
+
+/// `verify` — the reconciliation identity, per balance, as a change since the last sealed
+/// checkpoint.
+///
+/// ## Why a failing verify is still a 200
+///
+/// The verb answers the question it was asked. An operator runs it to find out whether the books
+/// close, and "the books do not close" is an answer, not a failure to answer — refusing here would
+/// mean the one tool for finding an imbalance stops working exactly when there is one. `ok` carries
+/// the verdict and the status carries whether the question was understood.
+///
+/// ## Where every figure comes from
+///
+/// Not from here. The per-balance deltas are `busbar_unit_cost::IdentityDeltaView::between`, which
+/// is checked against `busbar_unit_ledger::identity::residual` by an agreement test in this crate's
+/// own test directory. This function reads two maps, pairs them by key, and renders. It does no
+/// arithmetic on money at all — the only sums below are counts of nodes and balances.
+fn render_verify(view: &dyn LedgerView) -> String {
+    let checkpoints = view.checkpoints();
+    let now = view.current_totals();
+    // The `since` side. The last sealed checkpoint is the anchor the identity is measured from; a
+    // node with none has never sealed, so every balance is measured from zero, which is what it
+    // was.
+    let since = checkpoints.last();
+
+    let mut out = String::from("{\"since\":");
+    match since {
+        Some(cp) => {
+            out.push_str("{\"checkpoint_seq\":");
+            out.push_str(&cp.checkpoint_seq.to_string());
+            out.push_str(",\"node\":");
+            out.push_str(&cp.node.to_string());
+            out.push_str(",\"anchored_at\":");
+            out.push_str(&cp.wall.to_string());
+            out.push('}');
+        }
+        None => out.push_str("null"),
+    }
+
+    // The chains, as the anchor sealed them. A head is a claim about one node's log, and the three
+    // fields are what an auditor needs to go and check it against that node.
+    out.push_str(",\"chains\":[");
+    if let Some(cp) = since {
+        for (i, head) in cp.heads.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"node\":");
+            out.push_str(&head.node.to_string());
+            out.push_str(",\"node_seq\":");
+            out.push_str(&head.node_seq.to_string());
+            out.push_str(",\"head_hash\":");
+            json_string(&hex32(&head.hash), &mut out);
+            out.push('}');
+        }
+    }
+    out.push(']');
+
+    // Whether the sealed checkpoints form a sequence. Two checkpoints sharing a sequence number, or
+    // going backwards, mean the anchor cannot be used to measure from — which is a different
+    // failure from an imbalance and is reported as its own field rather than folded into `ok`'s
+    // reason.
+    let checkpoints_resolve = checkpoints
+        .windows(2)
+        .all(|pair| pair[0].checkpoint_seq < pair[1].checkpoint_seq);
+    out.push_str(",\"checkpoints_resolve\":");
+    out.push_str(if checkpoints_resolve { "true" } else { "false" });
+
+    // The identity, per balance, over the UNION of the two sides. Iterating `now` alone would step
+    // straight past a balance the checkpoint sealed and the book has since lost, which is precisely
+    // the shape of a lost posting.
+    let mut keys: Vec<&(
+        busbar_unit_ledger::totals::TotalsKey,
+        busbar_unit_ledger::totals::WindowStart,
+    )> = now.keys().collect();
+    if let Some(cp) = since {
+        for key in cp.totals.keys() {
+            if !now.contains_key(key) {
+                keys.push(key);
+            }
+        }
+    }
+    keys.sort_unstable();
+
+    let mut all_close = true;
+    out.push_str(",\"identity\":[");
+    for (i, key) in keys.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        let (totals_key, window) = *key;
+        let since_terms = since
+            .and_then(|cp| cp.totals.get(*key))
+            .map(terms_of)
+            .unwrap_or_default();
+        let now_terms = now.get(*key).map(terms_of).unwrap_or_default();
+        let delta = busbar_unit_cost::IdentityDeltaView::between(
+            totals_key.bucket.to_string(),
+            totals_key.dimension.to_string(),
+            totals_key.scope.to_string(),
+            *window,
+            &since_terms,
+            &now_terms,
+        );
+        all_close &= delta.closes;
+        out.push_str(&delta.to_json());
+    }
+    out.push(']');
+
+    // `ok` is the conjunction of every verdict this document carries, so a reader that branches on
+    // one field branches on all of them.
+    out.push_str(",\"ok\":");
+    out.push_str(if checkpoints_resolve && all_close {
+        "true"
+    } else {
+        "false"
+    });
+    out.push('}');
+    out
+}
+
+/// One balance's figures in the cost unit's carrier shape.
+///
+/// A field copy and one call to the ledger unit's own `overdraft_carried()`. Deliberately not a
+/// place where a term is combined, reordered or renamed: the whole value of the view is that the
+/// numbers in it are the books' numbers.
+fn terms_of(totals: &busbar_unit_ledger::totals::Totals) -> busbar_unit_cost::IdentityTerms {
+    busbar_unit_cost::IdentityTerms {
+        settled: totals.settled,
+        open_holds: totals.open_holds,
+        open_slice_remainders: totals.open_slice_remainders,
+        unreconciled: totals.unreconciled,
+        adjustments: totals.adjustments,
+        overdraft_carried: totals.overdraft_carried(),
+        cross_window_transfers: totals.cross_window_transfers,
+        drawn: totals.drawn,
     }
 }
 
