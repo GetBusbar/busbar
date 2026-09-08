@@ -174,6 +174,55 @@ impl PinnedHistory {
     }
 }
 
+/// WHAT ONE ENTRY PRICES A DATA PLANE'S DOOR AT: the pinned history, the instant it was asked for, and
+/// the flat price the entry in force then admits an arriving unit against.
+///
+/// The card is what a REPORTED unit is priced at when it settles; the price is what an ARRIVING unit
+/// is admitted against before anything is known about it. A plane's leg needs the second and a
+/// plane's exit needs the first, and neither may be the boot's answer forever — a leg that captured
+/// its pricer at boot would go on admitting against a fee the operator had already replaced, while
+/// the engine's own spend projection reprices on every apply.
+///
+/// ONE READING, NOT TWO HOLDERS. The fee is a field of the entry the history resolves to, so the door
+/// price is spelled out of the SAME entry the settlement will price against: an apply moves both
+/// together, and there is no second atomic store beside the history for a unit to read this apply's
+/// card next to the previous apply's price. A per-model table here would be the root inventing a
+/// rate the operator never wrote; a data plane's admission has no per-model rate to read, so flat is
+/// what this price IS.
+#[derive(Clone, Debug)]
+pub struct RootRates {
+    pinned: PinnedHistory,
+    at_ms: u64,
+    pricer: busbar_unit_admission::Pricer,
+}
+
+impl RootRates {
+    /// The card the entry in force at this reading names, LENT for one read.
+    ///
+    /// Lent rather than handed out because the card is borrowed out of the pinned history's own
+    /// slice: a caller that wants a figure asks for it here and keeps the figure, never the card.
+    /// `None` only when no entry covers the instant — which [`RootHistory::pin_rates`] already
+    /// refused, so a reading that exists always answers.
+    pub fn with_card<R>(&self, read: impl FnOnce(&busbar_unit_cost::RateCard) -> R) -> Option<R> {
+        self.pinned
+            .view()
+            .card_at(self.at_ms)
+            .map(|(_, card)| read(card))
+    }
+
+    /// What the admission door prices an ARRIVING unit against, from the same entry.
+    #[must_use]
+    pub fn pricer(&self) -> &busbar_unit_admission::Pricer {
+        &self.pricer
+    }
+
+    /// The snapshot this reading was taken from, for the exit that settles what the door admitted.
+    #[must_use]
+    pub fn pinned(&self) -> &PinnedHistory {
+        &self.pinned
+    }
+}
+
 /// THE PROCESS'S ONE RATE-CARD HISTORY, and it lives in the root because a rate is a statement about
 /// a deployment rather than about a plane. A plane reports what a unit consumed; what those
 /// quantities are worth is read here, off the same configured figures the engine's own spend
@@ -225,6 +274,26 @@ impl RootHistory {
         let history = self.history.load_full()?;
         let at = history.head()?;
         Some(PinnedHistory { history, at })
+    }
+
+    /// THE RATES A DATA PLANE'S LEG READS ON EVERY WALK: the entry in force at `at_ms`, on the
+    /// snapshot as it stands now, with the door price spelled out of that same entry.
+    ///
+    /// `None` when no configuration has been resolved yet or no entry covers the instant — a hole is
+    /// a refusal and never a zero, and the leg that asked falls back to what it was assembled with
+    /// and says so.
+    #[must_use]
+    pub fn pin_rates(&self, at_ms: u64) -> Option<Arc<RootRates>> {
+        let pinned = self.pin()?;
+        let fee = pinned
+            .view()
+            .card_at(at_ms)
+            .map(|(_, card)| card.per_request_fee(node_currency()))?;
+        Some(Arc::new(RootRates {
+            pinned,
+            at_ms,
+            pricer: busbar_unit_admission::Pricer::flat(fee),
+        }))
     }
 
     /// **THE ONLY MUTATOR: APPEND.** Put `card` on the history effective from `now_ms`, and return

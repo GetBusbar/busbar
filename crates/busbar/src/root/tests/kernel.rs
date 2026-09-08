@@ -478,3 +478,85 @@ fn the_interner_leaks_a_repeated_key_once() {
     assert!(std::ptr::eq(first, second));
     assert_eq!(registration.len(), 1);
 }
+
+/// An apply moves the price a data plane's unit is admitted against, and a reading taken before
+/// the apply keeps the price it was taken under — the door half of the append, asserted the way the
+/// settlement half is above.
+#[test]
+fn an_apply_moves_the_price_a_data_plane_unit_is_admitted_against() {
+    let holder = RootHistory::default();
+    assert!(
+        holder.pin_rates(1_000).is_none(),
+        "a holder that has heard no apply prices nothing, on either half"
+    );
+
+    holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
+    let admitted = holder
+        .pin_rates(1_500)
+        .expect("the first apply put an entry in place");
+    assert_eq!(admitted.pricer().price_per_request_cents(), 3);
+
+    holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
+    assert_eq!(
+        admitted.pricer().price_per_request_cents(),
+        3,
+        "a unit admitted before the apply was repriced by it"
+    );
+    assert_eq!(
+        holder
+            .pin_rates(2_500)
+            .expect("the second apply put an entry in place")
+            .pricer()
+            .price_per_request_cents(),
+        11,
+        "the apply did not reach the next admission's price"
+    );
+}
+
+/// The card a reading lends and the price it carries come from ONE entry: the door price is the
+/// entry's own fee, so the settlement's card and the admission's price cannot come from two applies.
+#[test]
+fn the_card_and_the_price_a_reader_pins_come_from_one_apply() {
+    let holder = RootHistory::default();
+    holder.apply(busbar_unit_cost::RateCard::absent(7), 1_000);
+    let rates = holder
+        .pin_rates(1_000)
+        .expect("the apply put an entry in place");
+    assert_eq!(
+        rates.with_card(|card| card.fee_unit_price_nanos(node_currency())),
+        Some(70_000_000)
+    );
+    assert_eq!(rates.pricer().price_per_request_cents(), 7);
+    assert_eq!(
+        fee_at(rates.pinned(), 1_000),
+        fee_at(
+            &holder.pin().expect("the same apply put an entry in place"),
+            1_000
+        ),
+        "the card read through the older accessor and the card read beside the price are one card"
+    );
+}
+
+/// Both halves derive from ONE configured figure: a deployment that configured no rate card gets
+/// an ABSENT card, prices its classes at nothing, and still admits and charges its flat fee.
+#[test]
+fn the_door_price_derives_from_the_one_configured_figure() {
+    let holder = RootHistory::default();
+    holder.apply(
+        card_from_config(std::iter::empty(), 5, false, node_currency()),
+        1_000,
+    );
+    let rates = holder
+        .pin_rates(1_000)
+        .expect("the apply put an entry in place");
+    assert_eq!(rates.pricer().price_per_request_cents(), 5);
+    assert_eq!(
+        rates.with_card(|card| card.fee_unit_price_nanos(node_currency())),
+        Some(50_000_000)
+    );
+    assert_eq!(
+        rates.with_card(busbar_unit_cost::RateCard::pricing_enabled),
+        Some(false),
+        "a deployment that configured no rate card gets an ABSENT card and still charges its fee"
+    );
+}

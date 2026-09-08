@@ -1077,6 +1077,12 @@ symbol = "without_directory("
 verdict = "double"
 because = "the same node's unbound key authorities, where the sealed root has the governance directory"
 
+[rules.no-test-doubles-in-production.known_sites.root-card-pricer]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "Pricer::flat("
+verdict = "real"
+because = "the deployment's OWN per-request figure, rebuilt beside the card on every rate apply; a data plane's door has no per-model rate to read, so flat is what this price is"
+
 [rules.no-test-doubles-in-production.known_sites.bindings-constructor]
 file = "crates/busbar/src/root/auth_bindings.rs"
 symbol = "without_directory("
