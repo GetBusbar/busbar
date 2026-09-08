@@ -308,6 +308,128 @@ fn after() {}
     assert!(joined.contains("fn after"));
 }
 
+// ── LITERALS ARE NOT STRUCTURE ───────────────────────────────────────────────────────────────────
+//
+// Every delimiter count in this crate reads `scan::blank_code` output. These are the shapes that
+// were really in the tree, or really reachable, when it did not: each one drove a counter off a
+// brace that the compiler reads as text, and each failure direction is a SILENT PASS — a region
+// latched open hides the production code after it from every ban built on the scanner.
+
+#[test]
+fn a_char_literal_holding_a_brace_is_text_and_does_not_open_a_region() {
+    // The live instance: crates/busbar-core/src/admin/v1/contract/taxonomy.rs:610, inside a
+    // `#[cfg(any(test, …))]` item. The line has no `"`, so the whole of it was counted, both `{`
+    // included — depth went up by two where the compiler goes up by one, and the region opened at
+    // the attribute never closed, reporting the rest of the file gated to EOF.
+    let src = "#[cfg(any(test, feature = \"openapi-schema\"))]\n\
+               fn declared_errors(rel: &str) -> u8 {\n\
+               \x20   if rel.contains('{') {\n\
+               \x20       1\n\
+               \x20   } else {\n\
+               \x20       0\n\
+               \x20   }\n\
+               }\n\
+               pub fn production() {\n\
+               \x20   std::fs::rename(a, b);\n\
+               }\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn a_brace_in_a_test_assertion_message_does_not_hold_the_test_module_open() {
+    let src = "#[cfg(test)]\n\
+               mod tests {\n\
+               \x20   #[test]\n\
+               \x20   fn t() {\n\
+               \x20       assert_eq!(x, \"a{b\");\n\
+               \x20   }\n\
+               }\n\
+               pub fn production() {\n\
+               \x20   std::fs::rename(a, b);\n\
+               }\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4, 5, 6, 7]);
+    // The same file read the other way: the production tail must survive the filter.
+    let joined: String = scan::production_lines(src)
+        .iter()
+        .map(|(_, l)| l.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined.contains("fn production"),
+        "the test module's brace-bearing message swallowed the file: {joined:?}"
+    );
+    assert!(!joined.contains("assert_eq"));
+}
+
+#[test]
+fn a_raw_string_full_of_braces_is_text_in_both_scanners() {
+    // An UNBALANCED run of braces: a raw string is the one place a `{` can appear without a `}`
+    // anywhere near it, so this is the cheapest way to latch the module open for the rest of a file.
+    let src = "#[cfg(test)]\n\
+               mod tests {\n\
+               \x20   const OPENERS: &str = r#\"{{{\"#;\n\
+               }\n\
+               pub fn production() {\n\
+               \x20   std::fs::rename(a, b);\n\
+               }\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4]);
+
+    // There is NO escape processing inside `r#"…"#`, so the `\` before the closing quote is a
+    // backslash and the literal ends where the compiler says it does. Reading `\"` as an escape
+    // ran the string state past the end of the literal and blanked the real code after it.
+    let blanked = scan::blank_literals("let j = r#\"a\\\"#; if x {");
+    assert_eq!(
+        scan::delta(&blanked, '{', '}'),
+        1,
+        "the literal ate the code after it: {blanked:?}"
+    );
+}
+
+#[test]
+fn the_blanker_reads_byte_strings_escaped_char_quotes_and_nested_block_comments() {
+    // A char literal whose ESCAPE carries a brace, a byte char, a byte string, and the escaped
+    // quote that used to make `blank_literals` treat the rest of the line as string body.
+    for line in [
+        r"let c = '\u{7f}'; if x {",
+        r"let b = b'{'; if x {",
+        r#"let s = b"{{{"; if x {"#,
+        r#"let q = '"'; if x {"#,
+    ] {
+        let blanked = scan::blank_literals(line);
+        assert_eq!(
+            scan::delta(&blanked, '{', '}'),
+            1,
+            "literal contents leaked into the count: {line:?} -> {blanked:?}"
+        );
+        assert_eq!(blanked.chars().count(), line.chars().count());
+    }
+    // A `'"'` no longer blanks what follows it, which is what a needle search reads.
+    assert!(scan::blank_literals(r#"let q = '"'; use banned::thing;"#).contains("use banned"));
+
+    // Rust block comments NEST; a flag reopens code as comment at the first `*/`.
+    let mut st = scan::LexState::default();
+    let first = scan::blank_code("/* outer /* inner */ still comment {", &mut st);
+    assert_eq!(scan::delta(&first, '{', '}'), 0, "{first:?}");
+    let second = scan::blank_code("*/ fn f() {", &mut st);
+    assert_eq!(scan::delta(&second, '{', '}'), 1, "{second:?}");
+
+    // A `"…"` left open at end of line carries; its body is not code.
+    let mut st = scan::LexState::default();
+    let a = scan::blank_code("let s = \"opened", &mut st);
+    let b = scan::blank_code("still string {{{\" ; fn g() {", &mut st);
+    assert_eq!(scan::delta(&a, '{', '}') + scan::delta(&b, '{', '}'), 1);
+}
+
+#[test]
+fn a_lifetime_is_not_a_char_literal() {
+    // `'a` has no closing quote on the line; a blanker that guessed it did would eat the braces
+    // after it and under-count every generic function in the tree.
+    let line = "fn f<'a>(x: &'a str) -> &'a str { x }";
+    let blanked = scan::blank_literals(line);
+    assert_eq!(blanked, line, "a lifetime must survive blanking untouched");
+    assert_eq!(scan::delta(&blanked, '{', '}'), 0);
+}
+
 #[test]
 fn strip_comment_line_keeps_string_literals_intact() {
     let mut in_block = false;
