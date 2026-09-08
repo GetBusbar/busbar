@@ -95,7 +95,11 @@ fn every_kill_point_has_an_answer_and_none_of_them_guesses_upward() {
             KillPoint::MidWrite => (Owed::TruncateThenDecide, false),
         };
         assert_eq!(owed_after(point), owed, "what {point:?} owes");
-        assert_eq!(voids_claim(point), voids, "whether {point:?} voids the claim");
+        assert_eq!(
+            voids_claim(point),
+            voids,
+            "whether {point:?} voids the claim"
+        );
     }
 }
 
