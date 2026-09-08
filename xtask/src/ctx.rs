@@ -684,6 +684,23 @@ impl Ctx {
 
     /// `cargo metadata` for one manifest, overlay-overridable so a self-test can plant a dependency
     /// closure without a fixture workspace.
+    ///
+    /// OFFLINE FIRST, BUT NEVER OFFLINE-ONLY, and neither half is a preference.
+    ///
+    /// The lockfile is already resolved and checked in, so an ordinary run has no reason to touch
+    /// the network, and a flaky registry must not turn a source audit into a network-dependent step.
+    /// It cannot be the ONLY attempt either: `cargo metadata` with no `--filter-platform` resolves
+    /// for EVERY target platform, so it wants the `.crate` files of packages this workspace never
+    /// builds on any host — the android and windows shims a transitive dependency declares. `cargo
+    /// build` and `cargo test` never download those, so a machine's registry cache is missing them
+    /// until something asks for the whole graph, and `--offline` then fails hard. On a runner that
+    /// installs a toolchain but has no warm registry this is DETERMINISTIC: it was reported as "the
+    /// tool did not answer", and all nine source-denylist rows read UNPROVEN — an audit reporting
+    /// silence as an absence of findings, which is the one outcome a gate must never produce.
+    ///
+    /// `--filter-platform` would silence the download by narrowing the audit to one platform, which
+    /// changes what "the transitive closure" means. So the closure stays whole and the fetch is
+    /// allowed exactly when the cache cannot answer.
     pub fn cargo_metadata(&self, manifest_rel: &str) -> Result<String, String> {
         let key = format!("cargo-metadata:{manifest_rel}");
         if let Some(ov) = self.overlay() {
@@ -692,16 +709,19 @@ impl Ctx {
             }
         }
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-        self.run_checked(
-            &cargo,
-            &[
-                "metadata".to_string(),
-                "--format-version".to_string(),
-                "1".to_string(),
-                "--manifest-path".to_string(),
-                self.abs(manifest_rel).display().to_string(),
-            ],
-        )
+        let args = |offline: bool| {
+            let mut a = vec!["metadata".to_string(), "--format-version=1".to_string()];
+            if offline {
+                a.push("--offline".to_string());
+            }
+            a.push("--manifest-path".to_string());
+            a.push(self.abs(manifest_rel).display().to_string());
+            a
+        };
+        match self.run_checked(&cargo, &args(true)) {
+            Ok(out) => Ok(out),
+            Err(_) => self.run_checked(&cargo, &args(false)),
+        }
     }
 }
 
