@@ -59,7 +59,12 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
+use busbar_core::{admin, export, metrics, observability, tls};
+// THE CONFIG LAYER at its own crate, not through busbar-core's re-export. The composition root reads
+// the config document on every path it has — boot, `--validate`, `--migrate-config`, the admin apply
+// — and naming the layer where it LIVES is what lets the engine retire out from under it without a
+// single line here moving again.
+use busbar_core_config::{config, config_validate};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
@@ -1726,7 +1731,7 @@ fn serve_thread_per_core(
     addr: String,
     data_router: Router,
     tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    secret_resolver: Arc<busbar_core_config::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> Vec<std::thread::JoinHandle<()>> {
@@ -1882,7 +1887,7 @@ async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
     tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
-    secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
+    secret_resolver: Arc<busbar_core_config::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     // The data workers' connection-placement balancer (`None` for the admin listener and

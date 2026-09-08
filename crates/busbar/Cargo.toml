@@ -20,6 +20,12 @@ path = "src/main.rs"
 # The engine. `default-features = false` so the binary's OWN feature list is the single decision
 # point: each busbar feature forwards to the core feature of the same name below.
 busbar-core = { path = "../busbar-core", default-features = false }
+# THE CONFIG LAYER, named directly. The document grammar, the loader, the migrator, the overlay, the
+# named-map, the prepass, the `SecretResolver` and the validator split out of `busbar-core` into this
+# crate and are only RE-EXPORTED from their historical `busbar_core::config` paths. The composition
+# root names the definition site rather than the re-export, so the reach it still has into the
+# retiring engine is the part that genuinely lives there and not a name that already moved.
+busbar-core-config = { path = "../busbar-core-config", default-features = false }
 # The neutral substrate, named directly so the composition root can install the plane-facing seams
 # that live there — the hostless-egress driver (`egress::seam::install_hostless_egress`), which the
 # binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is

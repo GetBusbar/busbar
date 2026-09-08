@@ -173,13 +173,13 @@ async fn rig(fixture: Fixture) -> Rig {
     if fixture.seeded_group_requests().is_some() {
         groups.insert(
             group.clone(),
-            busbar_core::config::GroupCfg {
+            busbar_core_config::config::GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                limits: vec![busbar_core_config::config::groups::LimitCfg {
+                    metric: busbar_core_config::config::groups::LimitMetric::Budget,
                     amount: 100,
-                    per: Some(busbar_core::config::groups::LimitWindow::Total),
+                    per: Some(busbar_core_config::config::groups::LimitWindow::Total),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,

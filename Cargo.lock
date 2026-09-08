@@ -338,6 +338,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-core",
+ "busbar-core-config",
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp",
