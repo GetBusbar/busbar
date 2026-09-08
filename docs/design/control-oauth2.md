@@ -168,6 +168,15 @@ ONE copy; every response is byte-identical.
    (`STORE_ABI`, `TRANSPORT_ABI`). So `busbar-control-oauth2` **cannot implement
    `busbar_contract::plugin::Plugin`** and declares `meta::CONTROL_ABI = 1` locally instead. Recorded
    as an ignored, panicking test in `src/tests/conformance.rs` rather than as a comment.
+
+   The crate's manifest therefore **does not name `busbar-contract` at all**, and that absence is
+   part of the finding rather than an oversight: an edge nothing in the crate reads is a manifest
+   claiming conformance to a contract it does not touch. The manifest says so where the edge will
+   go. The crate's whole workspace-local dependency set is `busbar-secret-ref` (the `SecretRef`
+   grammar the operator's `signing_key:` is carried in, unresolved). Everything else is
+   third-party: `oauth-as`, `axum`, `ring`, `base64`, `serde`, `serde_json`, `tokio`, `tracing` —
+   no transport, no plane, no dialect, no unit, no other control crate, no `busbar-core`, no
+   `busbar-substrate`.
 2. **The config lowering → the config home.** While `busbar-core` lowers `oauth_as:`, it names
    `busbar-control-oauth2` as a normal dependency. Core names no route, path or handler through that
    edge, but the edge is real and is the reason `oauth_as/control.rs` (the declared-table → neutral-

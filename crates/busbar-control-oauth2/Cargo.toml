@@ -22,8 +22,20 @@ name = "busbar_control_oauth2"
 path = "src/lib.rs"
 
 [dependencies]
-# THE CONTRACT. The one busbar crate a plugin of any kind may name.
-busbar-contract = { path = "../busbar-contract" }
+# THE CONTRACT IS NOT NAMED HERE, AND ITS ABSENCE IS A FINDING RATHER THAN A CHOICE.
+#
+# `busbar-contract` is the one busbar crate a plugin of any kind may name, and a control surface
+# ought to name it: that is where `Kind::Control`, the control ABI floor and the control kind's
+# trait belong. None of the three exists. `busbar_contract::plugin::Kind` has eight variants and
+# `Control` is not among them; the crate carries an ABI floor for two kinds only (`STORE_ABI`,
+# `TRANSPORT_ABI`). So this crate cannot implement `plugin::Plugin`, and declaring the edge anyway
+# would be a dependency that does nothing — a manifest saying "conforms to the contract" while
+# nothing in the crate reads a line of it.
+#
+# It is therefore left out, and `src/meta.rs` declares `CONTROL_ABI` locally with the gap written
+# down, and `src/tests/conformance.rs` carries the two owed assertions as a test that fails rather
+# than as a comment. The edge lands, and this comment goes, when the control-kind row reaches
+# `busbar-contract`. See docs/design/control-oauth2.md section 7 item 1.
 # The operator's `signing_key:` reference, carried verbatim and unresolved. `SecretRef` is the
 # grammar of a reference, not a resolver: nothing in this crate reads a secret, and the resolution
 # happens in the composition that hands `build` the already-resolved material.
