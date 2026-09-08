@@ -174,12 +174,12 @@
     "crates/auth-admin-tokens/src"
    ],
    "tree_hash": "f3712a56c4c5f077ef5eb92e41a0276f85e1882b6652e4af8e8423048da7a79e",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
    "result": "zero",
    "counts": {},
-   "report": "zero; read fully",
-   "auditor": "opus-pass1",
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/auth-admin-tokens/src/tests"
@@ -193,6 +193,15 @@
      "tree_hash": "f3712a56c4c5f077ef5eb92e41a0276f85e1882b6652e4af8e8423048da7a79e",
      "counts": {},
      "report": "zero; read fully"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "f3712a56c4c5f077ef5eb92e41a0276f85e1882b6652e4af8e8423048da7a79e",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
     }
    ]
   },
@@ -203,14 +212,12 @@
     "crates/auth-static-plugin/src"
    ],
    "tree_hash": "5b262becf58afcc3f997a73a817b5cf7a981636c3bb331e36cb0e6b28f42912c",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
-   "result": "findings",
-   "counts": {
-    "NIT": 2
-   },
-   "report": "license compared with ==, whitespace-only token accepted (test-support plugin); read fully",
-   "auditor": "opus-pass1",
+   "result": "zero",
+   "counts": {},
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/auth-static-plugin/src/tests"
@@ -226,6 +233,15 @@
       "NIT": 2
      },
      "report": "license compared with ==, whitespace-only token accepted (test-support plugin); read fully"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "5b262becf58afcc3f997a73a817b5cf7a981636c3bb331e36cb0e6b28f42912c",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
     }
    ]
   },
@@ -339,15 +355,31 @@
    "paths": [
     "crates/busbar/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "25c9bc0bac0ce503b401dbcaa8786ab071db759b621e1b5113673929ec1bdf79",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "25c9bc0bac0ce503b401dbcaa8786ab071db759b621e1b5113673929ec1bdf79",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-a2a/src",
@@ -2887,18 +2919,32 @@
    "paths": [
     "crates/export-example-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9d3eb355998d73305de7f4630616152c07afba086ac5bfbb12653414274b44e4",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/export-example-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "9d3eb355998d73305de7f4630616152c07afba086ac5bfbb12653414274b44e4",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/hook-test-plugin/src",
@@ -2906,18 +2952,28 @@
    "paths": [
     "crates/hook-test-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "eda658c1cd42ece0c548974c0a8e4ddf410773f377f3c85cc4240356590553f4",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/hook-test-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "eda658c1cd42ece0c548974c0a8e4ddf410773f377f3c85cc4240356590553f4",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/hooks-ranking/src",
@@ -2925,18 +2981,28 @@
    "paths": [
     "crates/hooks-ranking/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "21df9039c11b6bf7b4283e21837425e19724295b786e029fcd01c0dcb2e97068",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/hooks-ranking/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "21df9039c11b6bf7b4283e21837425e19724295b786e029fcd01c0dcb2e97068",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/plane-abi-spike/src",
@@ -2944,18 +3010,32 @@
    "paths": [
     "crates/plane-abi-spike/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "90654969f1de71e6e7bd60fd69b8b3f3a49071ba3a1913d746eee0ee7141238e",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/plane-abi-spike/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "90654969f1de71e6e7bd60fd69b8b3f3a49071ba3a1913d746eee0ee7141238e",
+     "counts": {
+      "MEDIUM": 2
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/plane-abi-spike-plugin/src",
@@ -2963,18 +3043,32 @@
    "paths": [
     "crates/plane-abi-spike-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9977bd5e31c11319f8412e61ce8bb7560a66d6bffd4b4198fdc49521148eac75",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/plane-abi-spike-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "9977bd5e31c11319f8412e61ce8bb7560a66d6bffd4b4198fdc49521148eac75",
+     "counts": {
+      "MEDIUM": 2
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/plugin-loader/src",
@@ -3207,18 +3301,28 @@
    "paths": [
     "crates/secret-example-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e86d337b033f3271f936f391d6afd9fe43d3b7dc0afa5493d372ad852e1581fe",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/secret-example-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "e86d337b033f3271f936f391d6afd9fe43d3b7dc0afa5493d372ad852e1581fe",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/secret-ref/src",
@@ -3263,18 +3367,34 @@
    "paths": [
     "crates/store-example-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "366bba79faaecbc93aa82567b622edb652cce51e96a9f439405513faaed37baa",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "NIT": 1
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/store-example-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "366bba79faaecbc93aa82567b622edb652cce51e96a9f439405513faaed37baa",
+     "counts": {
+      "MEDIUM": 2,
+      "NIT": 1
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/store-memory/src",
@@ -3282,18 +3402,32 @@
    "paths": [
     "crates/store-memory/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "0de17045348b5691ccbe74cb48a6f5da7836306eeda7430ad847045403094d0b",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "exclude": [
     "crates/store-memory/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "0de17045348b5691ccbe74cb48a6f5da7836306eeda7430ad847045403094d0b",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "xtask/src",
@@ -3378,12 +3512,12 @@
     "crates/auth-admin-tokens/src/tests"
    ],
    "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
-   "result": "findings",
+   "result": "zero",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-root.md",
-   "auditor": "opus-test-auditor-root",
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "rounds": [
     {
@@ -3394,6 +3528,15 @@
      "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-root.md"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
     }
    ]
   },
@@ -3403,13 +3546,13 @@
    "paths": [
     "crates/auth-static-plugin/src/tests"
    ],
-   "tree_hash": "b920f1ddf8fa341026ed3ca50bd55053e16da7d9be7af55750ad4ea05151e66e",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "tree_hash": "e335b44627b8e94246a6585b4a92afbd07d19497dd005fafa7ffd4b161a11f83",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
-   "result": "findings",
+   "result": "zero",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-root.md",
-   "auditor": "opus-test-auditor-root",
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
    "rounds": [
     {
@@ -3420,6 +3563,15 @@
      "tree_hash": "b920f1ddf8fa341026ed3ca50bd55053e16da7d9be7af55750ad4ea05151e66e",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-root.md"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "e335b44627b8e94246a6585b4a92afbd07d19497dd005fafa7ffd4b161a11f83",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
     }
    ]
   },
@@ -4713,15 +4865,25 @@
    "paths": [
     "crates/hooks-ranking/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "60089f3c952f82910fe9abe81b78d446393ad10872c43d27808da2834b315ac9",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "60089f3c952f82910fe9abe81b78d446393ad10872c43d27808da2834b315ac9",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/plane-abi-spike/src/tests",
@@ -4729,15 +4891,29 @@
    "paths": [
     "crates/plane-abi-spike/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "354b7c1d09d28ef465f2e8ed0972247a277f38018e05c869c512041cfced0103",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "354b7c1d09d28ef465f2e8ed0972247a277f38018e05c869c512041cfced0103",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/plane-abi-spike/benches",
@@ -4889,15 +5065,25 @@
    "paths": [
     "crates/store-memory/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "44477e616be2d93673c854623cf0f15028128cdddd6735ad93a09ceca816807f",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "44477e616be2d93673c854623cf0f15028128cdddd6735ad93a09ceca816807f",
+     "counts": {},
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": "crates/store-memory/tests",
@@ -5175,15 +5361,31 @@
    "paths": [
     "examples"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "6e975225085e845189ec229a50cc56eca7a1061f570aa2382142445019316fd4",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 2
+   },
+   "report": "gate/audits/codeaudit-examples-r1.md",
+   "auditor": "opus-codeaudit-examples-r1",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-codeaudit-examples-r1",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "6e975225085e845189ec229a50cc56eca7a1061f570aa2382142445019316fd4",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 2
+     },
+     "report": "gate/audits/codeaudit-examples-r1.md"
+    }
+   ]
   },
   {
    "id": ".github",

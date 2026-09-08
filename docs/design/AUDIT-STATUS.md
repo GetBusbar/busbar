@@ -6,152 +6,152 @@ An audit result describes one tree. When a scope's tree hash moves, its result e
 the scope reads `stale` -- the code must be looked at again. Nothing here is a wall clock;
 `age` is commits between the audited commit and HEAD.
 
-HEAD at generation: `b5140185ce51f27715d761aadbc1768bdbb8149b`
+HEAD at generation: `2ebcf291f0db0811eb9aa2e9ea9542397fc8d5fe`
 
 ## Totals over production LOC
 
 | status | LOC | share |
 | --- | ---: | ---: |
 | clean | 0 | 0.0% |
-| unconfirmed | 1502 | 0.2% |
+| unconfirmed | 2239 | 0.4% |
 | fixed | 0 | 0.0% |
 | in_progress | 0 | 0.0% |
 | stale | 611183 | 96.1% |
-| open | 19723 | 3.1% |
-| unaudited | 3323 | 0.5% |
+| open | 22309 | 3.5% |
+| unaudited | 0 | 0.0% |
 | invalid | 0 | 0.0% |
 
 ## production scopes (65)
 
 | scope | status | round | age (commits) | LOC | result | auditor | report |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |
-| `crates/api/src` | stale | 1 | 527 | 3584 | findings (MEDIUM=2, LOW=6, NIT=4) | opus-pass1 | `foreign wire field bricks a VirtualKey row (fixed); redeem_plane_token defaulted to first-redemption (fixed); put_key tombstone precondition unenforceable (ABI, post-1.6.0); all 10 production files read` |
-| `crates/auth-admin-tokens/src` | unconfirmed | 1 | 527 | 63 | zero | opus-pass1 | `zero; read fully` |
-| `crates/auth-static-plugin/src` | open | 1 | 527 | 127 | findings (NIT=2) | opus-pass1 | `license compared with ==, whitespace-only token accepted (test-support plugin); read fully` |
-| `crates/busbar-a2a-codec/src` | unconfirmed | 6 | 527 | 1439 | zero | opus-pass2 | `zero; every production file read fully` |
-| `crates/busbar-a2a/src` | stale | 1 | 90 | 47639 | findings (HIGH=2, MEDIUM=3, LOW=3) | opus-prod-auditor-a2a | `audits/prod-a2a.md — PARTIAL first read (wind-down): backend URL leaks into refusals; legacy pushback token never revoked; unmetered GetExtendedAgentCard/ListTasks` |
-| `crates/busbar-caps/src` | stale | 8 | 558 | 3530 | findings (MEDIUM=1, LOW=4, NIT=2) | opus-p3-caps-contract-kernel | `challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named` |
-| `crates/busbar-contract-transport/src` | stale | 6 | 527 | 933 | findings (HIGH=1) | opus-pass3 | `transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully` |
-| `crates/busbar-contract/src` | stale | 8 | 620 | 4558 | findings (MEDIUM=3, LOW=4) | opus-p3-caps-contract-kernel | `challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named` |
-| `crates/busbar-core/src` | stale | 2 | 527 | 168107 | findings (HIGH=3, MEDIUM=10, LOW=6, NIT=3) | opus-pass2 | `rotate_key unbounded id (fixed), auth.mode replaced the chain (fixed), malformed pools/export replaced with empty (fixed), consent decoder panic (fixed); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported` |
-| `crates/busbar-grammar/src` | open | 6 | 527 | 568 | findings (MEDIUM=1, LOW=1, NIT=2) | opus-pass2 | `span not readable back from the journal (fixed); skip_container punctuation; read fully` |
-| `crates/busbar-kernel/src` | stale | 8 | 558 | 5448 | findings (MEDIUM=3, LOW=3) | opus-p3-caps-contract-kernel | `challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named` |
-| `crates/busbar-llm-codec/src` | stale | 7 | 558 | 85479 | findings (HIGH=5, MEDIUM=5) | opus-p3-llm-codec | `3 fixed (gemini tail toolUse tokens, openai cache_write tier, gemini open_tools product cap), 8 HIGH/MEDIUM unfixed handed to a follow-up wave; conformance 255/260 unchanged` |
-| `crates/busbar-llm/src` | stale | 1 | 90 | 58818 | findings (HIGH=2, MEDIUM=5, LOW=3) | opus-prod-auditor-llm | `audits/prod-llm.md — PARTIAL first read (wind-down): Meter step never receives a sink/hold on live units; non-SSE post-first-byte cut refunds` |
-| `crates/busbar-mcp-codec/src` | stale | 6 | 527 | 2422 | zero | opus-pass2 | `zero; every production file read fully` |
-| `crates/busbar-mcp/src` | stale | 1 | 527 | 47388 | findings (HIGH=1, MEDIUM=11, LOW=12) | opus-pass1 | `bare-host format carried a url past the ssrf guard (fixed), handshake id collided with the opening handshake (fixed), call-log dispatched for calls that never left (fixed), token endpoint body unbounded (fixed), secret sources leaked to callers (fixed); notify not cancel-safe, supervisor reset never fires, listen ungated, sampling input unbounded, demotion row skipped silently reported` |
-| `crates/busbar-plane-a2a/src` | stale | 7 | 620 | 2209 | findings (MEDIUM=1, LOW=1, NIT=1) | opus-pass3 | `push-config create decoded before its body arrived (fixed); DELETE /a2a/tasks/{id} decodes as a read` |
-| `crates/busbar-plane-admin/src` | stale | 6 | 527 | 1566 | findings (HIGH=1, MEDIUM=1, NIT=4) | opus-pass2 | `unauthenticated admin caller answered 403 not 401 (fixed, root arm); split envelope never decodes (fixed); all src read fully` |
-| `crates/busbar-plane-llm/src` | stale | 7 | 527 | 1826 | findings (MEDIUM=2, LOW=3, NIT=1) | opus-p3-plane-llm | `same-dialect answer relay parsed the answer it relayed (fixed, gate added); request-relay alloc gate red on protocol_for's boxed handle; two money-shaped coverage gaps named` |
-| `crates/busbar-plane-mcp/src` | stale | 7 | 558 | 2388 | findings (HIGH=2, MEDIUM=1, LOW=1, NIT=2) | opus-pass3 | `caller could send server notices into the catalogue write (fixed), server notices never reached their route (fixed), non-object result lost the discriminator (fixed)` |
-| `crates/busbar-plane-voice/src` | open | 7 | 11 | 2611 | findings (HIGH=2, MEDIUM=8, LOW=3) | opus-codeaudit-streams-r1 | `busbar-landq-state/gate/audits/codeaudit-streams-r1.md -- unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding` |
-| `crates/busbar-plugin/src` | stale | 1 | 90 | 7881 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
-| `crates/busbar-substrate-values/src` | stale | 6 | 527 | 10753 | findings (MEDIUM=1, LOW=1, NIT=5) | opus-pass2 | `interned-name pointer match without length (fixed); base64 trailing bits; all production files read, diagnostics catalogue checked mechanically, unit tests unread` |
-| `crates/busbar-substrate/src` | stale | 8 | 527 | 39284 | findings (MEDIUM=1, LOW=5) | opus-pass2 | `inbound ws acceptor had no message or frame ceiling (fixed); outbound ws mirror, limits install ordering, retry header restore reported; test files unread` |
-| `crates/busbar-timing/src` | stale | 6 | 527 | 820 | findings (LOW=1) | opus-pass2 | `atexit catch site named; read fully` |
-| `crates/busbar-transport-grpc/src` | stale | 6 | 527 | 1566 | findings (LOW=1) | opus-pass2 | `per-stream Reset reaches the reader without a StreamId (needs a contract-transport seam); all files read fully` |
-| `crates/busbar-transport-http/src` | stale | 6 | 527 | 1925 | findings (MEDIUM=1, LOW=1) | opus-pass2 | `100-continue answered before the body cap (fixed); misplaced test doc (fixed); all files read fully` |
-| `crates/busbar-transport-sse/src` | stale | 7 | 527 | 552 | zero | opus-pass3 | `zero (two nits); all files read fully` |
-| `crates/busbar-transport-stdio/src` | stale | 7 | 527 | 833 | findings (MEDIUM=1, NIT=2) | opus-pass3 | `write never refused a payload spelling the frame delimiter (fixed); all files read fully` |
-| `crates/busbar-transport-tcp/src` | open | 7 | 527 | 1279 | findings (MEDIUM=1) | opus-pass3 | `tests.rs read fully; half_close test performs a full close; connect timeout absent; RawStream::from constant-fold survived a plant` |
-| `crates/busbar-transport-tls/src` | stale | 7 | 527 | 2499 | findings (HIGH=1, MEDIUM=1) | opus-pass3 | `pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed); tcp connect has no timeout on tcp and tls dial; tests.rs read fully` |
-| `crates/busbar-transport-ws/src` | open | 7 | 527 | 1039 | findings (MEDIUM=1) | opus-pass3 | `battery.rs read fully; userinfo guard, max_frame_size and poisoned-arm plants survived; timing constants asserted against themselves` |
-| `crates/busbar-unit-admission/src` | stale | 5 | 617 | 2083 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-audit/src` | open | 7 | 527 | 2126 | findings (MEDIUM=1, NIT=1) | opus-pass3 | `legacy pipe-joined digest precondition unenforced at AuditEntry (byte-frozen; owner decision); all files read fully` |
-| `crates/busbar-unit-auth/src` | stale | 5 | 617 | 1425 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-breaker/src` | stale | 5 | 617 | 2151 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-cost/src` | stale | 5 | 617 | 668 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-egress-auth/src` | stale | 5 | 617 | 1212 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-egress/src` | stale | 5 | 617 | 3146 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-ledger/src` | open | 7 | 620 | 2504 | findings (LOW=3, NIT=1) | opus-p3-wal-ledger-verbs | `every fix proven by a failing case first, 15/15 plants caught after two coverage adds` |
-| `crates/busbar-unit-scope/src` | open | 5 | 617 | 616 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-transport-key/src` | stale | 7 | 527 | 1055 | zero | opus-pass3 | `zero confirmed; all files read fully` |
-| `crates/busbar-unit-trust/src` | stale | 5 | 617 | 2706 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-usage/src` | stale | 5 | 617 | 949 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
-| `crates/busbar-unit-verbs/src` | stale | 7 | 620 | 2429 | findings (HIGH=1, MEDIUM=1, LOW=3) | opus-p3-wal-ledger-verbs | `every fix proven by a failing case first, 15/15 plants caught after two coverage adds` |
-| `crates/busbar-unit-wal/src` | stale | 7 | 558 | 2906 | findings (MEDIUM=1, LOW=2) | opus-p3-wal-ledger-verbs | `every fix proven by a failing case first, 15/15 plants caught after two coverage adds` |
-| `crates/busbar-voice-codec/src` | open | 7 | 11 | 5534 | findings (MEDIUM=2, LOW=2) | opus-codeaudit-streams-r1 | `busbar-landq-state/gate/audits/codeaudit-streams-r1.md -- a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit` |
-| `crates/busbar-voice/src` | stale | 5 | 558 | 9128 | findings (HIGH=1, MEDIUM=2) | opus | `legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths` |
-| `crates/busbar/build.rs` | unaudited | - | - | 94 | unaudited | - | - |
-| `crates/busbar/src/main.rs` | stale | 6 | 527 | 2323 | findings (HIGH=1, MEDIUM=1, LOW=1) | opus-pass2 | `shipped voice stub table refuses every client tool reply (critical, fix dispatched); mount_root_voice discards the seal; three load-bearing doc comments false; read fully` |
-| `crates/busbar/src/root` | stale | 7 | 527 | 29293 | findings (HIGH=8, MEDIUM=5, LOW=2) | opus-pass3 | `node_book ships a null shipper with no data_dir (critical); migration::run never called; identity only proven at the standard tier; no verifier or revocation view bound; transport provisioning has no caller; late-accrual path has zero coverage; a2a redeem passes ts as expiry; fix agents dispatched` |
-| `crates/export-example-plugin/src` | unaudited | - | - | 33 | unaudited | - | - |
-| `crates/hook-test-plugin/src` | unaudited | - | - | 284 | unaudited | - | - |
-| `crates/hooks-ranking/src` | unaudited | - | - | 258 | unaudited | - | - |
-| `crates/plane-abi-spike-plugin/src` | unaudited | - | - | 72 | unaudited | - | - |
-| `crates/plane-abi-spike/src` | unaudited | - | - | 362 | unaudited | - | - |
-| `crates/plugin-loader/src` | stale | 7 | 90 | 5687 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
-| `crates/plugin-pack/src` | open | 1 | 90 | 603 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
-| `crates/plugin-sdk/src` | open | 6 | 90 | 1404 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
-| `crates/plugin-sign/src` | stale | 1 | 90 | 889 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
-| `crates/plugin-testkit/src` | open | 1 | 90 | 920 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
-| `crates/secret-example-plugin/src` | unaudited | - | - | 68 | unaudited | - | - |
-| `crates/secret-ref/src` | open | 1 | 90 | 392 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
-| `crates/store-example-plugin/src` | unaudited | - | - | 1357 | unaudited | - | - |
-| `crates/store-memory/src` | unaudited | - | - | 795 | unaudited | - | - |
-| `xtask/src` | stale | 2 | 146 | 41125 | findings (HIGH=19, MEDIUM=34, LOW=24) | opus-xtask-auditor-a | `audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree` |
+| `crates/api/src` | stale | 1 | 529 | 3584 | findings (MEDIUM=2, LOW=6, NIT=4) | opus-pass1 | `foreign wire field bricks a VirtualKey row (fixed); redeem_plane_token defaulted to first-redemption (fixed); put_key tombstone precondition unenforceable (ABI, post-1.6.0); all 10 production files read` |
+| `crates/auth-admin-tokens/src` | unconfirmed | 1 | 13 | 63 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/auth-static-plugin/src` | unconfirmed | 1 | 13 | 127 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/busbar-a2a-codec/src` | unconfirmed | 6 | 529 | 1439 | zero | opus-pass2 | `zero; every production file read fully` |
+| `crates/busbar-a2a/src` | stale | 1 | 92 | 47639 | findings (HIGH=2, MEDIUM=3, LOW=3) | opus-prod-auditor-a2a | `audits/prod-a2a.md — PARTIAL first read (wind-down): backend URL leaks into refusals; legacy pushback token never revoked; unmetered GetExtendedAgentCard/ListTasks` |
+| `crates/busbar-caps/src` | stale | 8 | 560 | 3530 | findings (MEDIUM=1, LOW=4, NIT=2) | opus-p3-caps-contract-kernel | `challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named` |
+| `crates/busbar-contract-transport/src` | stale | 6 | 529 | 933 | findings (HIGH=1) | opus-pass3 | `transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully` |
+| `crates/busbar-contract/src` | stale | 8 | 622 | 4558 | findings (MEDIUM=3, LOW=4) | opus-p3-caps-contract-kernel | `challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named` |
+| `crates/busbar-core/src` | stale | 2 | 529 | 168107 | findings (HIGH=3, MEDIUM=10, LOW=6, NIT=3) | opus-pass2 | `rotate_key unbounded id (fixed), auth.mode replaced the chain (fixed), malformed pools/export replaced with empty (fixed), consent decoder panic (fixed); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported` |
+| `crates/busbar-grammar/src` | open | 6 | 529 | 568 | findings (MEDIUM=1, LOW=1, NIT=2) | opus-pass2 | `span not readable back from the journal (fixed); skip_container punctuation; read fully` |
+| `crates/busbar-kernel/src` | stale | 8 | 560 | 5448 | findings (MEDIUM=3, LOW=3) | opus-p3-caps-contract-kernel | `challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named` |
+| `crates/busbar-llm-codec/src` | stale | 7 | 560 | 85479 | findings (HIGH=5, MEDIUM=5) | opus-p3-llm-codec | `3 fixed (gemini tail toolUse tokens, openai cache_write tier, gemini open_tools product cap), 8 HIGH/MEDIUM unfixed handed to a follow-up wave; conformance 255/260 unchanged` |
+| `crates/busbar-llm/src` | stale | 1 | 92 | 58818 | findings (HIGH=2, MEDIUM=5, LOW=3) | opus-prod-auditor-llm | `audits/prod-llm.md — PARTIAL first read (wind-down): Meter step never receives a sink/hold on live units; non-SSE post-first-byte cut refunds` |
+| `crates/busbar-mcp-codec/src` | stale | 6 | 529 | 2422 | zero | opus-pass2 | `zero; every production file read fully` |
+| `crates/busbar-mcp/src` | stale | 1 | 529 | 47388 | findings (HIGH=1, MEDIUM=11, LOW=12) | opus-pass1 | `bare-host format carried a url past the ssrf guard (fixed), handshake id collided with the opening handshake (fixed), call-log dispatched for calls that never left (fixed), token endpoint body unbounded (fixed), secret sources leaked to callers (fixed); notify not cancel-safe, supervisor reset never fires, listen ungated, sampling input unbounded, demotion row skipped silently reported` |
+| `crates/busbar-plane-a2a/src` | stale | 7 | 622 | 2209 | findings (MEDIUM=1, LOW=1, NIT=1) | opus-pass3 | `push-config create decoded before its body arrived (fixed); DELETE /a2a/tasks/{id} decodes as a read` |
+| `crates/busbar-plane-admin/src` | stale | 6 | 529 | 1566 | findings (HIGH=1, MEDIUM=1, NIT=4) | opus-pass2 | `unauthenticated admin caller answered 403 not 401 (fixed, root arm); split envelope never decodes (fixed); all src read fully` |
+| `crates/busbar-plane-llm/src` | stale | 7 | 529 | 1826 | findings (MEDIUM=2, LOW=3, NIT=1) | opus-p3-plane-llm | `same-dialect answer relay parsed the answer it relayed (fixed, gate added); request-relay alloc gate red on protocol_for's boxed handle; two money-shaped coverage gaps named` |
+| `crates/busbar-plane-mcp/src` | stale | 7 | 560 | 2388 | findings (HIGH=2, MEDIUM=1, LOW=1, NIT=2) | opus-pass3 | `caller could send server notices into the catalogue write (fixed), server notices never reached their route (fixed), non-object result lost the discriminator (fixed)` |
+| `crates/busbar-plane-voice/src` | open | 7 | 13 | 2611 | findings (HIGH=2, MEDIUM=8, LOW=3) | opus-codeaudit-streams-r1 | `busbar-landq-state/gate/audits/codeaudit-streams-r1.md -- unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding` |
+| `crates/busbar-plugin/src` | stale | 1 | 92 | 7881 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
+| `crates/busbar-substrate-values/src` | stale | 6 | 529 | 10753 | findings (MEDIUM=1, LOW=1, NIT=5) | opus-pass2 | `interned-name pointer match without length (fixed); base64 trailing bits; all production files read, diagnostics catalogue checked mechanically, unit tests unread` |
+| `crates/busbar-substrate/src` | stale | 8 | 529 | 39284 | findings (MEDIUM=1, LOW=5) | opus-pass2 | `inbound ws acceptor had no message or frame ceiling (fixed); outbound ws mirror, limits install ordering, retry header restore reported; test files unread` |
+| `crates/busbar-timing/src` | stale | 6 | 529 | 820 | findings (LOW=1) | opus-pass2 | `atexit catch site named; read fully` |
+| `crates/busbar-transport-grpc/src` | stale | 6 | 529 | 1566 | findings (LOW=1) | opus-pass2 | `per-stream Reset reaches the reader without a StreamId (needs a contract-transport seam); all files read fully` |
+| `crates/busbar-transport-http/src` | stale | 6 | 529 | 1925 | findings (MEDIUM=1, LOW=1) | opus-pass2 | `100-continue answered before the body cap (fixed); misplaced test doc (fixed); all files read fully` |
+| `crates/busbar-transport-sse/src` | stale | 7 | 529 | 552 | zero | opus-pass3 | `zero (two nits); all files read fully` |
+| `crates/busbar-transport-stdio/src` | stale | 7 | 529 | 833 | findings (MEDIUM=1, NIT=2) | opus-pass3 | `write never refused a payload spelling the frame delimiter (fixed); all files read fully` |
+| `crates/busbar-transport-tcp/src` | open | 7 | 529 | 1279 | findings (MEDIUM=1) | opus-pass3 | `tests.rs read fully; half_close test performs a full close; connect timeout absent; RawStream::from constant-fold survived a plant` |
+| `crates/busbar-transport-tls/src` | stale | 7 | 529 | 2499 | findings (HIGH=1, MEDIUM=1) | opus-pass3 | `pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed); tcp connect has no timeout on tcp and tls dial; tests.rs read fully` |
+| `crates/busbar-transport-ws/src` | open | 7 | 529 | 1039 | findings (MEDIUM=1) | opus-pass3 | `battery.rs read fully; userinfo guard, max_frame_size and poisoned-arm plants survived; timing constants asserted against themselves` |
+| `crates/busbar-unit-admission/src` | stale | 5 | 619 | 2083 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-audit/src` | open | 7 | 529 | 2126 | findings (MEDIUM=1, NIT=1) | opus-pass3 | `legacy pipe-joined digest precondition unenforced at AuditEntry (byte-frozen; owner decision); all files read fully` |
+| `crates/busbar-unit-auth/src` | stale | 5 | 619 | 1425 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-breaker/src` | stale | 5 | 619 | 2151 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-cost/src` | stale | 5 | 619 | 668 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-egress-auth/src` | stale | 5 | 619 | 1212 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-egress/src` | stale | 5 | 619 | 3146 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-ledger/src` | open | 7 | 622 | 2504 | findings (LOW=3, NIT=1) | opus-p3-wal-ledger-verbs | `every fix proven by a failing case first, 15/15 plants caught after two coverage adds` |
+| `crates/busbar-unit-scope/src` | open | 5 | 619 | 616 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-transport-key/src` | stale | 7 | 529 | 1055 | zero | opus-pass3 | `zero confirmed; all files read fully` |
+| `crates/busbar-unit-trust/src` | stale | 5 | 619 | 2706 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-usage/src` | stale | 5 | 619 | 949 | in_progress | round-5 finder fleet | `in flight; no reading recorded against this scope yet` |
+| `crates/busbar-unit-verbs/src` | stale | 7 | 622 | 2429 | findings (HIGH=1, MEDIUM=1, LOW=3) | opus-p3-wal-ledger-verbs | `every fix proven by a failing case first, 15/15 plants caught after two coverage adds` |
+| `crates/busbar-unit-wal/src` | stale | 7 | 560 | 2906 | findings (MEDIUM=1, LOW=2) | opus-p3-wal-ledger-verbs | `every fix proven by a failing case first, 15/15 plants caught after two coverage adds` |
+| `crates/busbar-voice-codec/src` | open | 7 | 13 | 5534 | findings (MEDIUM=2, LOW=2) | opus-codeaudit-streams-r1 | `busbar-landq-state/gate/audits/codeaudit-streams-r1.md -- a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit` |
+| `crates/busbar-voice/src` | stale | 5 | 560 | 9128 | findings (HIGH=1, MEDIUM=2) | opus | `legacy runtime (busbar-voice, busbar-mcp stdio, busbar-core plane_host/governance/admin) -- HIGH=1 MEDIUM=2 fix queued, plus ~10 further MEDIUM/LOW reported in retiring core paths` |
+| `crates/busbar/build.rs` | open | 1 | 13 | 94 | findings (MEDIUM=1, LOW=1) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/busbar/src/main.rs` | stale | 6 | 529 | 2323 | findings (HIGH=1, MEDIUM=1, LOW=1) | opus-pass2 | `shipped voice stub table refuses every client tool reply (critical, fix dispatched); mount_root_voice discards the seal; three load-bearing doc comments false; read fully` |
+| `crates/busbar/src/root` | stale | 7 | 529 | 29293 | findings (HIGH=8, MEDIUM=5, LOW=2) | opus-pass3 | `node_book ships a null shipper with no data_dir (critical); migration::run never called; identity only proven at the standard tier; no verifier or revocation view bound; transport provisioning has no caller; late-accrual path has zero coverage; a2a redeem passes ts as expiry; fix agents dispatched` |
+| `crates/export-example-plugin/src` | open | 1 | 13 | 33 | findings (LOW=1) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/hook-test-plugin/src` | unconfirmed | 1 | 13 | 284 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/hooks-ranking/src` | unconfirmed | 1 | 13 | 258 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/plane-abi-spike-plugin/src` | open | 1 | 13 | 72 | findings (MEDIUM=2) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/plane-abi-spike/src` | open | 1 | 13 | 362 | findings (MEDIUM=2) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/plugin-loader/src` | stale | 7 | 92 | 5687 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
+| `crates/plugin-pack/src` | open | 1 | 92 | 603 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
+| `crates/plugin-sdk/src` | open | 6 | 92 | 1404 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
+| `crates/plugin-sign/src` | stale | 1 | 92 | 889 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
+| `crates/plugin-testkit/src` | open | 1 | 92 | 920 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
+| `crates/secret-example-plugin/src` | unconfirmed | 1 | 13 | 68 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/secret-ref/src` | open | 1 | 92 | 392 | findings (HIGH=4, MEDIUM=15, LOW=24) | opus-prod-auditor-plugins | `audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks` |
+| `crates/store-example-plugin/src` | open | 1 | 13 | 1357 | findings (MEDIUM=2, NIT=1) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/store-memory/src` | open | 1 | 13 | 795 | findings (MEDIUM=1) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `xtask/src` | stale | 2 | 148 | 41125 | findings (HIGH=19, MEDIUM=34, LOW=24) | opus-xtask-auditor-a | `audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree` |
 
 ## test scopes (67)
 
 | scope | status | round | age (commits) | LOC | result | auditor | report |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |
-| `crates/api/src/tests` | stale | 1 | 277 | 1690 | findings (severities unrecorded) | opus-test-auditor-root | `busbar-landq-state/gate/audits/tests-root.md` |
-| `crates/auth-admin-tokens/src/tests` | open | 1 | 277 | 56 | findings (severities unrecorded) | opus-test-auditor-root | `busbar-landq-state/gate/audits/tests-root.md` |
-| `crates/auth-static-plugin/src/tests` | stale | 1 | 277 | 99 | findings (severities unrecorded) | opus-test-auditor-root | `busbar-landq-state/gate/audits/tests-root.md` |
-| `crates/busbar-a2a-codec/src/tests` | open | 1 | 277 | 98 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
-| `crates/busbar-contract-transport/tests` | open | 1 | 277 | 215 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
-| `crates/busbar-contract/tests` | stale | 1 | 277 | 3033 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
-| `crates/busbar-core/benches` | open | 1 | 278 | 115 | findings (severities unrecorded) | opus-test-auditor-core | `busbar-landq-state/gate/audits/tests-core.md` |
-| `crates/busbar-core/src/tests` | stale | 1 | 278 | 11164 | findings (HIGH=0, MEDIUM=4, LOW=9) | opus-test-auditor-core | `busbar-landq-state/gate/audits/tests-core.md` |
-| `crates/busbar-core/tests` | stale | 1 | 278 | 921 | findings (severities unrecorded) | opus-test-auditor-core | `busbar-landq-state/gate/audits/tests-core.md` |
-| `crates/busbar-grammar/tests` | open | 1 | 277 | 717 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
-| `crates/busbar-kernel/tests` | stale | 1 | 277 | 5669 | findings (HIGH=0, MEDIUM=12, LOW=5) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
-| `crates/busbar-llm-codec/src/tests` | stale | 1 | 277 | 17725 | findings (HIGH=8, MEDIUM=25, LOW=9) | opus-test-auditor-llm-codec | `busbar-landq-state/gate/audits/tests-llm-codec.md` |
-| `crates/busbar-llm/src/tests` | open | 1 | 277 | 660 | findings (severities unrecorded) | opus-test-auditor-llm-codec | `busbar-landq-state/gate/audits/tests-llm-codec.md` |
-| `crates/busbar-mcp-codec/src/tests` | open | 1 | 277 | 704 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
-| `crates/busbar-mcp/src/tests` | open | 1 | 277 | 73 | findings (HIGH=3, MEDIUM=6, LOW=5) | opus-test-auditor-legacy-planes | `busbar-landq-state/gate/audits/tests-legacy-planes.md` |
+| `crates/api/src/tests` | stale | 1 | 279 | 1690 | findings (severities unrecorded) | opus-test-auditor-root | `busbar-landq-state/gate/audits/tests-root.md` |
+| `crates/auth-admin-tokens/src/tests` | unconfirmed | 1 | 13 | 56 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/auth-static-plugin/src/tests` | unconfirmed | 1 | 13 | 99 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `crates/busbar-a2a-codec/src/tests` | open | 1 | 279 | 98 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-contract-transport/tests` | open | 1 | 279 | 215 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
+| `crates/busbar-contract/tests` | stale | 1 | 279 | 3033 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
+| `crates/busbar-core/benches` | open | 1 | 280 | 115 | findings (severities unrecorded) | opus-test-auditor-core | `busbar-landq-state/gate/audits/tests-core.md` |
+| `crates/busbar-core/src/tests` | stale | 1 | 280 | 11164 | findings (HIGH=0, MEDIUM=4, LOW=9) | opus-test-auditor-core | `busbar-landq-state/gate/audits/tests-core.md` |
+| `crates/busbar-core/tests` | stale | 1 | 280 | 921 | findings (severities unrecorded) | opus-test-auditor-core | `busbar-landq-state/gate/audits/tests-core.md` |
+| `crates/busbar-grammar/tests` | open | 1 | 279 | 717 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
+| `crates/busbar-kernel/tests` | stale | 1 | 279 | 5669 | findings (HIGH=0, MEDIUM=12, LOW=5) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
+| `crates/busbar-llm-codec/src/tests` | stale | 1 | 279 | 17725 | findings (HIGH=8, MEDIUM=25, LOW=9) | opus-test-auditor-llm-codec | `busbar-landq-state/gate/audits/tests-llm-codec.md` |
+| `crates/busbar-llm/src/tests` | open | 1 | 279 | 660 | findings (severities unrecorded) | opus-test-auditor-llm-codec | `busbar-landq-state/gate/audits/tests-llm-codec.md` |
+| `crates/busbar-mcp-codec/src/tests` | open | 1 | 279 | 704 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-mcp/src/tests` | open | 1 | 279 | 73 | findings (HIGH=3, MEDIUM=6, LOW=5) | opus-test-auditor-legacy-planes | `busbar-landq-state/gate/audits/tests-legacy-planes.md` |
 | `crates/busbar-plane-a2a/src/tests` | unaudited | - | - | 1065 | unaudited | - | - |
-| `crates/busbar-plane-a2a/tests` | stale | 1 | 277 | 1892 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plane-a2a/tests` | stale | 1 | 279 | 1892 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
 | `crates/busbar-plane-admin/src/tests` | unaudited | - | - | 1135 | unaudited | - | - |
-| `crates/busbar-plane-llm/tests` | open | 1 | 277 | 2760 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plane-llm/tests` | open | 1 | 279 | 2760 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
 | `crates/busbar-plane-mcp/src/tests` | unaudited | - | - | 1155 | unaudited | - | - |
-| `crates/busbar-plane-mcp/tests` | stale | 1 | 277 | 1898 | findings (HIGH=1, MEDIUM=3, LOW=5) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
-| `crates/busbar-plane-voice/src/tests` | open | 1 | 277 | 1666 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
-| `crates/busbar-plane-voice/tests` | open | 1 | 277 | 186 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
-| `crates/busbar-plugin/src/tests` | open | 1 | 277 | 166 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
-| `crates/busbar-plugin/tests` | open | 1 | 277 | 1104 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
-| `crates/busbar-substrate-values/src/tests` | stale | 1 | 277 | 3254 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
-| `crates/busbar-substrate/src/tests` | stale | 1 | 277 | 1110 | findings (HIGH=1, MEDIUM=3, LOW=3) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
-| `crates/busbar-substrate/tests` | open | 1 | 277 | 334 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
-| `crates/busbar-timing/src/tests` | open | 1 | 277 | 66 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
-| `crates/busbar-timing/tests` | stale | 1 | 277 | 51 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
-| `crates/busbar-transport-grpc/src/tests` | open | 1 | 277 | 1806 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
+| `crates/busbar-plane-mcp/tests` | stale | 1 | 279 | 1898 | findings (HIGH=1, MEDIUM=3, LOW=5) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plane-voice/src/tests` | open | 1 | 279 | 1666 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plane-voice/tests` | open | 1 | 279 | 186 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plugin/src/tests` | open | 1 | 279 | 166 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plugin/tests` | open | 1 | 279 | 1104 | findings (severities unrecorded) | opus-test-auditor-planes | `busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-substrate-values/src/tests` | stale | 1 | 279 | 3254 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
+| `crates/busbar-substrate/src/tests` | stale | 1 | 279 | 1110 | findings (HIGH=1, MEDIUM=3, LOW=3) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
+| `crates/busbar-substrate/tests` | open | 1 | 279 | 334 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
+| `crates/busbar-timing/src/tests` | open | 1 | 279 | 66 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
+| `crates/busbar-timing/tests` | stale | 1 | 279 | 51 | findings (severities unrecorded) | opus-test-auditor-kernel | `busbar-landq-state/gate/audits/tests-kernel.md` |
+| `crates/busbar-transport-grpc/src/tests` | open | 1 | 279 | 1806 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
 | `crates/busbar-transport-http/src/tests` | unaudited | - | - | 2274 | unaudited | - | - |
 | `crates/busbar-transport-sse/src/tests` | unaudited | - | - | 869 | unaudited | - | - |
-| `crates/busbar-transport-stdio/src/tests` | stale | 1 | 277 | 767 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
-| `crates/busbar-transport-ws/src/tests` | open | 1 | 277 | 1079 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
-| `crates/busbar-unit-admission/src/tests` | stale | 1 | 277 | 3107 | findings (HIGH=14, MEDIUM=16, LOW=13) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-audit/src/tests` | stale | 1 | 277 | 1930 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-auth/src/tests` | open | 1 | 277 | 1763 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-transport-stdio/src/tests` | stale | 1 | 279 | 767 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
+| `crates/busbar-transport-ws/src/tests` | open | 1 | 279 | 1079 | findings (severities unrecorded) | opus-test-auditor-substrate | `busbar-landq-state/gate/audits/tests-substrate.md` |
+| `crates/busbar-unit-admission/src/tests` | stale | 1 | 279 | 3107 | findings (HIGH=14, MEDIUM=16, LOW=13) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-audit/src/tests` | stale | 1 | 279 | 1930 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-auth/src/tests` | open | 1 | 279 | 1763 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
 | `crates/busbar-unit-breaker/src/tests` | unaudited | - | - | 1820 | unaudited | - | - |
-| `crates/busbar-unit-cost/src/tests` | open | 1 | 277 | 1092 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-cost/tests` | open | 1 | 277 | 262 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-egress/src/tests` | stale | 1 | 277 | 3756 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-egress/tests` | open | 1 | 277 | 609 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-ledger/src/tests` | stale | 1 | 277 | 2060 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-trust/src/tests` | stale | 1 | 277 | 3284 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-trust/tests` | open | 1 | 277 | 113 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-usage/src/tests` | open | 1 | 277 | 1115 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-verbs/src/tests` | stale | 1 | 277 | 2847 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
-| `crates/busbar-unit-wal/src/tests` | stale | 1 | 277 | 2153 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-cost/src/tests` | open | 1 | 279 | 1092 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-cost/tests` | open | 1 | 279 | 262 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-egress/src/tests` | stale | 1 | 279 | 3756 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-egress/tests` | open | 1 | 279 | 609 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-ledger/src/tests` | stale | 1 | 279 | 2060 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-trust/src/tests` | stale | 1 | 279 | 3284 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-trust/tests` | open | 1 | 279 | 113 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-usage/src/tests` | open | 1 | 279 | 1115 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-verbs/src/tests` | stale | 1 | 279 | 2847 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
+| `crates/busbar-unit-wal/src/tests` | stale | 1 | 279 | 2153 | findings (severities unrecorded) | opus-test-auditor-units | `busbar-landq-state/gate/audits/tests-units.md` |
 | `crates/busbar-voice-codec/tests` | unaudited | - | - | 108 | unaudited | - | - |
 | `crates/busbar-voice/src/tests` | unaudited | - | - | 2488 | unaudited | - | - |
 | `crates/busbar/benches` | unaudited | - | - | 522 | unaudited | - | - |
 | `crates/busbar/src/tests` | unaudited | - | - | 701 | unaudited | - | - |
-| `crates/busbar/tests` | stale | 1 | 277 | 12142 | findings (HIGH=15, MEDIUM=38, LOW=13) | opus-test-auditor-root | `busbar-landq-state/gate/audits/tests-root.md` |
-| `crates/hooks-ranking/src/tests` | unaudited | - | - | 390 | unaudited | - | - |
+| `crates/busbar/tests` | stale | 1 | 279 | 12142 | findings (HIGH=15, MEDIUM=38, LOW=13) | opus-test-auditor-root | `busbar-landq-state/gate/audits/tests-root.md` |
+| `crates/hooks-ranking/src/tests` | unconfirmed | 1 | 13 | 390 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
 | `crates/plane-abi-spike/benches` | unaudited | - | - | 234 | unaudited | - | - |
-| `crates/plane-abi-spike/src/tests` | unaudited | - | - | 194 | unaudited | - | - |
+| `crates/plane-abi-spike/src/tests` | open | 1 | 13 | 194 | findings (MEDIUM=1) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
 | `crates/plugin-loader/src/tests` | unaudited | - | - | 8324 | unaudited | - | - |
 | `crates/plugin-loader/tests` | unaudited | - | - | 175 | unaudited | - | - |
 | `crates/plugin-pack/src/tests` | unaudited | - | - | 883 | unaudited | - | - |
@@ -160,7 +160,7 @@ HEAD at generation: `b5140185ce51f27715d761aadbc1768bdbb8149b`
 | `crates/plugin-sign/src/tests` | unaudited | - | - | 1123 | unaudited | - | - |
 | `crates/plugin-testkit/src/tests` | unaudited | - | - | 99 | unaudited | - | - |
 | `crates/secret-ref/src/tests` | unaudited | - | - | 268 | unaudited | - | - |
-| `crates/store-memory/src/tests` | unaudited | - | - | 755 | unaudited | - | - |
+| `crates/store-memory/src/tests` | unconfirmed | 1 | 13 | 755 | zero | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
 | `crates/store-memory/tests` | unaudited | - | - | 339 | unaudited | - | - |
 
 ## instrument scopes (18)
@@ -170,21 +170,21 @@ HEAD at generation: `b5140185ce51f27715d761aadbc1768bdbb8149b`
 | `.githooks` | unaudited | - | - | 16 | unaudited | - | - |
 | `.github` | unaudited | - | - | 628 | unaudited | - | - |
 | `.github/scripts` | unaudited | - | - | 58 | unaudited | - | - |
-| `.github/workflows` | stale | 3 | 381 | 13601 | findings (HIGH=4, MEDIUM=3, LOW=3) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
+| `.github/workflows` | stale | 3 | 383 | 13601 | findings (HIGH=4, MEDIUM=3, LOW=3) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
 | `assets/readme` | unaudited | - | - | 3122 | unaudited | - | - |
-| `examples` | unaudited | - | - | 996 | unaudited | - | - |
-| `qa` | stale | 2 | 381 | 29699 | findings (HIGH=2, MEDIUM=4, LOW=2, NIT=3) | opus-instr-p3-construction | `construction gate fresh eyes: eight rules wrote FAIL into a ledger nobody read, the only gating legacy-reach ratchet and two doubles rows were never owed (now RED at 95 vs 92), seven stale unsafe waivers each forgave a paid debt, two waiver families invisible to the stale-waiver rule, three more rules pass on a renamed subject; 45/45 rules planted` |
-| `scripts` | stale | 5 | 381 | 36317 | findings (HIGH=20, MEDIUM=14, LOW=1) | opus-instr-p3-scripts-mz | `scripts m-z fresh eyes: six gates guarded their scan root but not their subject, the queue lander only ever landed the first commit, a secret gate nothing runs, the PGO proof asserted a flag not the artifact, a prose comment satisfied the plugin registry check; 37 plants, every survivor closed with a red proof; 33 fixes` |
+| `examples` | open | 1 | 13 | 996 | findings (MEDIUM=1, LOW=2) | opus-codeaudit-examples-r1 | `gate/audits/codeaudit-examples-r1.md` |
+| `qa` | stale | 2 | 383 | 29714 | findings (HIGH=2, MEDIUM=4, LOW=2, NIT=3) | opus-instr-p3-construction | `construction gate fresh eyes: eight rules wrote FAIL into a ledger nobody read, the only gating legacy-reach ratchet and two doubles rows were never owed (now RED at 95 vs 92), seven stale unsafe waivers each forgave a paid debt, two waiver families invisible to the stale-waiver rule, three more rules pass on a renamed subject; 45/45 rules planted` |
+| `scripts` | stale | 5 | 383 | 36317 | findings (HIGH=20, MEDIUM=14, LOW=1) | opus-instr-p3-scripts-mz | `scripts m-z fresh eyes: six gates guarded their scan root but not their subject, the queue lander only ever landed the first commit, a secret gate nothing runs, the PGO proof asserted a flag not the artifact, a prose comment satisfied the plugin registry check; 37 plants, every survivor closed with a red proof; 33 fixes` |
 | `testing` | unaudited | - | - | 320 | unaudited | - | - |
-| `testing/a2a-governance` | open | 3 | 381 | 305 | findings (MEDIUM=1) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
-| `testing/a2a-harness` | stale | 3 | 381 | 11453 | findings (HIGH=3, MEDIUM=2) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
-| `testing/a2a-supplement` | stale | 3 | 381 | 4036 | findings (HIGH=1, MEDIUM=1) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
-| `testing/a2a-tck` | stale | 3 | 381 | 1921 | findings (HIGH=1, MEDIUM=2) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
-| `testing/fleet-fixtures` | stale | 2 | 381 | 2014 | findings (MEDIUM=1, LOW=1) | opus-instr-p3-fleet | `fleet fixtures fresh eyes: verdict survived twelve plants; the default ledger path is fixed and never truncated for ad-hoc runs; last-row-wins is documented` |
-| `testing/llm-conformance` | stale | 3 | 381 | 2443 | findings (HIGH=1, MEDIUM=2, LOW=2, NIT=3) | opus-instr-p3-conformance | `conformance rig fresh eyes: a drifted spec cache decided verdicts (a body missing a required member passed), gaps had no ceiling, outcome and status were never reconciled; 23 plants, 2 survivors fixed` |
-| `testing/mcp-conformance` | stale | 3 | 381 | 5848 | findings (HIGH=4, MEDIUM=3, LOW=2) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
-| `testing/shadow-oracle` | stale | 7 | 90 | 60655 | findings (HIGH=11, MEDIUM=14, LOW=10) | opus-oracle-auditor-b | `audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red` |
-| `testing/voice-conformance` | stale | 3 | 381 | 1645 | findings (HIGH=2, NIT=1) | opus-instr-p3-voice | `voice rig fresh eyes: 11 of 14 legs deleted still passed (floor 3), the spec leg had no required scenario set and judges busbar's own re-encode rather than the pinned spec (report)` |
+| `testing/a2a-governance` | open | 3 | 383 | 305 | findings (MEDIUM=1) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
+| `testing/a2a-harness` | stale | 3 | 383 | 11453 | findings (HIGH=3, MEDIUM=2) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
+| `testing/a2a-supplement` | stale | 3 | 383 | 4036 | findings (HIGH=1, MEDIUM=1) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
+| `testing/a2a-tck` | stale | 3 | 383 | 1921 | findings (HIGH=1, MEDIUM=2) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
+| `testing/fleet-fixtures` | stale | 2 | 383 | 2014 | findings (MEDIUM=1, LOW=1) | opus-instr-p3-fleet | `fleet fixtures fresh eyes: verdict survived twelve plants; the default ledger path is fixed and never truncated for ad-hoc runs; last-row-wins is documented` |
+| `testing/llm-conformance` | stale | 3 | 383 | 2443 | findings (HIGH=1, MEDIUM=2, LOW=2, NIT=3) | opus-instr-p3-conformance | `conformance rig fresh eyes: a drifted spec cache decided verdicts (a body missing a required member passed), gaps had no ceiling, outcome and status were never reconciled; 23 plants, 2 survivors fixed` |
+| `testing/mcp-conformance` | stale | 3 | 383 | 5848 | findings (HIGH=4, MEDIUM=3, LOW=2) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
+| `testing/shadow-oracle` | stale | 7 | 92 | 60655 | findings (HIGH=11, MEDIUM=14, LOW=10) | opus-oracle-auditor-b | `audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red` |
+| `testing/voice-conformance` | stale | 3 | 383 | 1645 | findings (HIGH=2, NIT=1) | opus-instr-p3-voice | `voice rig fresh eyes: 11 of 14 legs deleted still passed (floor 3), the spec leg had no required scenario set and judges busbar's own re-encode rather than the pinned spec (report)` |
 
 ## Statuses
 
