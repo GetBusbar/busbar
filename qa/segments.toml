@@ -114,7 +114,7 @@ id     = "config-stability"
 status = "active"
 tier   = "fast"
 # The config-stability gate: the drift guard, the additive-only classifier, and its self-test.
-run    = "scripts/config-stability-gate.sh --selftest && scripts/config-stability-gate.sh --check"
+run    = "cargo xtask gate config-schema --selftest && cargo xtask gate config-schema"
 
 [[segment]]
 id     = "method-coverage-acceptance"

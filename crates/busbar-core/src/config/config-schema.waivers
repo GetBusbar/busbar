@@ -1,14 +1,14 @@
 # config-schema.waivers — the config-stability gate's ONLY escape hatch (busbar 1.5.3, unit F).
 #
 # The config grammar is FROZEN after 1.5.3: additive-only forever (new OPTIONAL key / new section /
-# new enum variant). `scripts/config-stability-gate.sh` fails RED on anything else. This file is the
+# new enum variant). `cargo xtask gate config-schema` fails RED on anything else. This file is the
 # narrow, auditable way to say "yes, this specific break is intentional and reviewed".
 #
 # WHY A FILE AND NOT AN ENV VAR: an env var can be set in a workflow edit and reviewed by nobody. A
 # waiver here is a line in the PR diff, sitting right next to the break it excuses, and a reviewer
 # sees it. The gate also prints every applied waiver loudly in its output.
 #
-# RULES (enforced by scripts/config-schema.py load_waivers + proven by the gate's self-test):
+# RULES (enforced by xtask::gates::config_schema::classify::load_waivers + proven by the gate's self-test):
 #   - One waiver per line:   <exact-path> = <reason>
 #     paths are  Type.field  |  Type::Variant  |  Type  |  "type AliasName"
 #   - EXACT paths only. No globs, no wildcards — `*` or `?` is a hard error. A waiver excuses ONE

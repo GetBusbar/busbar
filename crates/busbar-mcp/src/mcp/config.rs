@@ -92,7 +92,7 @@ pub(crate) const NAMESPACE_SEP: &str = "_";
 ///
 /// The A2A plane's `PinMechanism` (`busbar_a2a::a2a::config`) is the same concept for the other plane and used to share
 /// this bare name. That was survivable only while the config-grammar fingerprint
-/// (`scripts/config-schema.py`) did not track this file. Its snapshot is a FLAT map keyed by the
+/// (then `scripts/config-schema.py`, now `cargo xtask gate config-schema`) did not track this file. Its snapshot is a FLAT map keyed by the
 /// bare Rust ident with no module path, so two `PinMechanism`s occupy one key: the second file read
 /// wins, and the first plane's grammar silently stops being covered. Adding `mcp/config.rs` to the
 /// tracked set with the names still clashing produced exactly that —

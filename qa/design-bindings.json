@@ -2062,7 +2062,7 @@
    "checks": [
     {
      "kind": "gate",
-     "ref": "scripts/config-stability-gate.sh",
+     "ref": "xtask/src/gates/config_schema/mod.rs",
      "proves": "the config grammar is frozen against a committed snapshot; deny_unknown_fields flips and breaking deltas are red",
      "source": "curated",
      "status": "mapped"
@@ -2076,7 +2076,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "gate:scripts/config-stability-gate.sh, test:test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fields"
+   "verdict_detail": "gate:xtask/src/gates/config_schema/mod.rs, test:test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fields"
   },
   {
    "id": "PB-41",
@@ -3577,14 +3577,14 @@
     },
     {
      "kind": "gate",
-     "ref": "scripts/config-stability-gate.sh",
+     "ref": "xtask/src/gates/config_schema/mod.rs",
      "proves": "no legal earlier config.yaml becomes a boot failure (additive-only grammar)",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:documented|readme|export-standards, test:reserved_hook_names_are_frozen, test:test_validate_allows_api_prefixed_but_boundary_safe_names, gate:scripts/config-stability-gate.sh"
+   "verdict_detail": "oracle-cell:documented|readme|export-standards, test:reserved_hook_names_are_frozen, test:test_validate_allows_api_prefixed_but_boundary_safe_names, gate:xtask/src/gates/config_schema/mod.rs"
   },
   {
    "id": "PB-75",
@@ -4234,14 +4234,14 @@
     },
     {
      "kind": "gate",
-     "ref": "scripts/config-stability-gate.sh",
+     "ref": "xtask/src/gates/config_schema/mod.rs",
      "proves": "a key cannot silently stop landing (additive-only grammar)",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:every_shipped_config_migrates_to_a_valid_current_config, test:every_patch_mirrors_every_field_of_its_section, test:resolved_billing_and_limits_config_is_byte_stable, gate:scripts/config-stability-gate.sh"
+   "verdict_detail": "test:every_shipped_config_migrates_to_a_valid_current_config, test:every_patch_mirrors_every_field_of_its_section, test:resolved_billing_and_limits_config_is_byte_stable, gate:xtask/src/gates/config_schema/mod.rs"
   },
   {
    "id": "PB-91",

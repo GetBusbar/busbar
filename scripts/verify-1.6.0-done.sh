@@ -18,7 +18,7 @@
 #                    check is a no-op that regenerates the goldens instead of comparing to them), and
 #                    every filtered step declares its test count so a filter that selects nothing is
 #                    RED rather than vacuously green (see filtered_cargo_test).
-#   config-stability scripts/config-stability-gate.sh --check (config-schema.snapshot.json byte-stable).
+#   config-stability cargo xtask gate config-schema (config-schema.snapshot.json byte-stable).
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
@@ -228,9 +228,16 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #
 # A DONE run means "this tree was measured against something outside itself". Any of these set means
 # it was measured against something the operator chose, which is a different claim.
+#
+# UPDATE_CONFIG_SCHEMA IS GONE FROM THIS LIST, and its absence is a strengthening rather than a
+# relaxation. The config-schema gate's regen path is now the `--write` FLAG, not an environment
+# variable, and this script invokes the gate without it — so a DONE run structurally CANNOT
+# regenerate the snapshot, where before it could only be asserted not to have. A flag has to be
+# written at the call site, in a diff. The two CONFIG_SCHEMA_* variables stay: the gate still reads
+# both, and both still defeat the claim this script makes.
 assert_bless_env_empty() {
   local v bad=0
-  for v in UPDATE_OPENAPI UPDATE_CONFIG_SCHEMA BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
+  for v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
            SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
     if [ -n "${!v:-}" ]; then echo "regen/repoint env var $v is SET ('${!v}') — the comparison would be against something the operator chose, not the pinned reference"; bad=1; fi
   done
@@ -324,8 +331,8 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "CONFIG-STABILITY — config-schema.snapshot.json is additive-only / byte-stable"
-step "config-stability-gate --selftest" bash scripts/config-stability-gate.sh --selftest
-step "config-stability-gate --check"    bash scripts/config-stability-gate.sh --check
+step "config-schema gate --selftest" cargo xtask gate config-schema --selftest
+step "config-schema gate"            cargo xtask gate config-schema
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
