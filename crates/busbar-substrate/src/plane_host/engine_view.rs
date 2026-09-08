@@ -106,6 +106,30 @@ pub trait EngineTablesView {
     fn upstream_creds(&self) -> busbar_api::UpstreamCreds;
 }
 
+/// Every distinct upstream provider the tables route through, with how many lanes reach each, in
+/// provider-name order.
+///
+/// ONE PROJECTION, TWO RENDERINGS, and that is why it is here rather than at either call site. The
+/// administrative surface answers this fact twice: `GET /providers`, whose answer the composition
+/// root now produces from the loop, and the `providers` member of the effective-config read, which
+/// the surface underneath still produces. Two loops over `lane_view` would be two chances for those
+/// two answers to disagree about the same node — and they are literally the same fact, so a
+/// disagreement would be a defect with no correct side.
+///
+/// Neutral in and neutral out: a `Vec` of names and counts, which is what lets one caller build a
+/// core view struct out of it and the other render bytes, without either naming the other's types.
+#[must_use]
+pub fn providers_by_lane_count(tables: &dyn EngineTablesView) -> Vec<(String, usize)> {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for lane in 0..tables.lane_count() {
+        if let Some(view) = tables.lane_view(lane) {
+            *counts.entry(view.provider.to_string()).or_insert(0) += 1;
+        }
+    }
+    // A `BTreeMap` is already in provider order, which is the order both readings answer in.
+    counts.into_iter().collect()
+}
+
 /// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
 /// models, reached when no plane contributed a runtime slot (the featureless binary). Substrate-owned
 /// so core boots — and its scrape/discovery readers see empty tables rather than panicking — even with
