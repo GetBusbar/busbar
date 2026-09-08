@@ -16,7 +16,14 @@ use std::collections::BTreeMap;
 
 /// Nano-units per cent: the divisor that lands a derived nano-unit total in whole cents, and the
 /// multiplier that takes a configured cent cap back into the nano-units a hold is sized in.
-pub const NANOS_PER_CENT: u128 = 10_000_000;
+///
+/// THE COST UNIT'S NUMBER, NAMED HERE RATHER THAN WRITTEN AGAIN. It used to be a second literal
+/// beside the pricing law's own, with the same value and nothing requiring it to stay that way —
+/// the same shape as the rate conversion two functions down, which drifted once and cost a request
+/// judged at one rate and billed at another. A constant that is the other constant cannot drift from
+/// it, and the name stays because the door's callers spell the divisor and the multiplier the same
+/// way they always did.
+pub const NANOS_PER_CENT: u128 = busbar_unit_cost::NANOS_PER_CENT;
 
 /// The uncached input token key.
 pub const UNIT_INPUT: &str = "input";
@@ -193,6 +200,15 @@ impl Pricer {
     /// a wrapping cast would land negative, which the floor below would then turn into zero — an
     /// over-the-top ledger deriving as FREE and bypassing every budget cap. Pinning at the maximum
     /// instead gives an astronomically over-cap spend that blocks.
+    ///
+    /// THE PROJECTION IS THE COST UNIT'S, for the reason [`RateNanos::from_micros_per_token`] gives
+    /// at length about the rate conversion. This used to be a second hand-written truncating divide
+    /// beside a second declaration of the divisor, and the argument that unified the rate applies to
+    /// the cent unchanged: the divisor, the truncation direction and the saturation posture are
+    /// three decisions the door and the ledger have to make the same way, and the way to make sure
+    /// they do is for there to be one of them. What is left here is the accumulation over the
+    /// door's own rate table and the fee lookahead — the part that is the door's decision rather
+    /// than the pricing law.
     pub fn derive_spend_cents<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
@@ -205,7 +221,7 @@ impl Pricer {
                 nanos = nanos.saturating_add(rate.reserved_nanos(units));
             }
         }
-        let mut cents = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
+        let mut cents = busbar_unit_cost::cents_of(nanos);
         if include_request_fee {
             let fee = self
                 .price_per_request_cents
