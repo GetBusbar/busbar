@@ -2254,9 +2254,12 @@ jobs:
       - teller-steps
       # In `needs` so the umbrella waits for it and can print its verdict, but NOT in RESULTS below:
       # the job is report-only (continue-on-error) until its check is green on HEAD. See the job.
-      # report-only: construction-gate -- RED BY DESIGN on HEAD while the construction work it
-      #   measures is in flight; waited for and PRINTED by this job, deliberately not counted, until
-      #   the job is flipped off continue-on-error. Delete this line and add a RESULTS row then.
+      # report-only: construction-gate -- RED BY DESIGN while the work it measures is in flight [retires: I4]
+      #   Waited for and PRINTED by this job, deliberately not counted, until the job is flipped off
+      #   continue-on-error. Delete this line and add a RESULTS row then. The `[retires:]` tag names
+      #   the tracker row that ends this exemption, and `ci-umbrella:declaration-expiry` looks it up:
+      #   a report-only job is DEBT, and debt names the row that retires it. (`# non-gating:` below
+      #   is the other kind — a statement of what a job IS — and owes no expiry.)
       - construction-gate
     # ── THE JOBS DELIBERATELY OUTSIDE THIS LIST ───────────────────────────────────────────────────
     # scripts/ci-umbrella-lint.py reads these two lines and requires that EVERY job in this file is
