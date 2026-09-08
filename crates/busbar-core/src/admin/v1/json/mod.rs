@@ -69,7 +69,11 @@ impl AdminTransport for JsonV1 {
         // JSON wire.
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
-            .route("/info", get(info))
+            // NO `/info` ROUTE. `get_info` CROSSED in 1.6.0's admin Cut 1b — the widest of the
+            // crossings, because the answer is the node's release, its compiled-in proof, its boot
+            // epoch, its table counts and its config generation all at once. The composition root
+            // reads every one of them through neutral accessors and renders the bytes; nothing
+            // admin-shaped travels to do it.
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
             // NO `/models` AND NO `/providers` ROUTE. Both CROSSED to the loop in 1.6.0's admin Cut 1:

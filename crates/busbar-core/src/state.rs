@@ -614,6 +614,47 @@ impl App {
     ///
     /// Neutral out: names, a word and a flag, so one caller builds a view struct out of it and the
     /// other writes bytes, without either naming the other's types.
+    /// The release this node is running, as the `info` read reports it.
+    ///
+    /// THIS crate's package version and not the composition's, which is the whole reason it is a
+    /// method rather than a literal the loop could write for itself: `GET /info` crossed to the
+    /// composition root in 1.6.0's admin Cut 1b, and a version stamped by the crate that renders the
+    /// answer would report the composition's version on a build where the two ever diverge.
+    #[must_use]
+    pub fn release_version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    /// The COMPILED-IN PROOF this binary carries — the auth modules baked in, the removable hook
+    /// plugins baked in, and the always-present weighted SWRR floor — the compliance-by-compilation
+    /// evidence the `info` read publishes.
+    ///
+    /// A fact of the BINARY reached through the node, which is where every other fact the `info` read
+    /// carries is reached. See [`App::ingress_door_facts`] for why the folds live here.
+    #[must_use]
+    pub fn compiled_in_proof(&self) -> (Vec<&'static str>, Vec<&'static str>, bool) {
+        crate::admin::v1::service::compiled_in_proof()
+    }
+
+    /// This process's BOOT EPOCH: seconds of uptime, and the unix second it started at. `None` on
+    /// either when the start instant was never stamped.
+    #[must_use]
+    pub fn process_epoch(&self) -> (Option<u64>, Option<u64>) {
+        crate::admin::v1::service::process_epoch()
+    }
+
+    /// Whether this node's config is MUTABLE — an API-applied change is written to a config-overlay
+    /// backend and survives a restart. `false` is the LOCKED posture, in which every config-plane
+    /// mutation is refused.
+    ///
+    /// The DERIVATION lives here rather than at either reader: "persistence is on" and "there is a
+    /// writable overlay path" are the same fact, and a reader that re-derived it from the path could
+    /// choose a different meaning for the absence.
+    #[must_use]
+    pub fn config_persistence(&self) -> bool {
+        self.overlay_path.is_some()
+    }
+
     #[must_use]
     pub fn ingress_door_facts(&self) -> (Vec<&'static str>, &'static str, bool) {
         (

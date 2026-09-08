@@ -23,10 +23,10 @@ use busbar_substrate::diagnostics::{
 use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
 use super::contract::{
-    AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView, GroupView,
-    HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView, ModelView,
-    NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView,
-    ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
+    AdminError, AuthView, ConfigValidateView, EffectiveConfigView, GroupView, HookHealthView,
+    HookTransportView, HookView, KeyUsageView, ModelUsageView, ModelView, NamedDefView, Page,
+    PluginView, PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView, ProviderView,
+    UsageBreakdown, UsageView, UsageWindow,
 };
 use crate::config::named_map::NamedMapSection;
 use crate::config::{
@@ -130,6 +130,31 @@ static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new(
 pub fn mark_start() {
     let _ = PROCESS_START.set(std::time::Instant::now());
     let _ = PROCESS_START_EPOCH.set(busbar_substrate::store::now());
+}
+
+/// This process's BOOT EPOCH as the `info` read reports it: seconds of uptime, and the unix second
+/// the process started at. `None` on either when the start was never stamped — a unit test that
+/// skips `main` — which is a missing reading rather than a zero one.
+///
+/// Read through here rather than off the statics because the `info` read CROSSED to the composition
+/// root's loop in 1.6.0's admin Cut 1b: the loop renders those two fields and this crate renders
+/// nothing of them any more, and a process fact reached through two spellings is a process fact that
+/// can be sampled at two moments. `App::process_epoch` is the door the loop reaches it through.
+pub(crate) fn process_epoch() -> (Option<u64>, Option<u64>) {
+    (
+        PROCESS_START.get().map(|s| s.elapsed().as_secs()),
+        PROCESS_START_EPOCH.get().copied(),
+    )
+}
+
+/// The COMPILED-IN PROOF this binary reports: the auth modules baked in, the removable hook plugins
+/// baked in, and the always-present weighted SWRR floor.
+///
+/// The floor's `true` is here rather than at the call site because it is a claim about the BUILD and
+/// not about a reading of it — it is compiled in unconditionally and non-removable — and a literal
+/// `true` written at a renderer is a literal a second renderer writes for itself.
+pub(crate) fn compiled_in_proof() -> (Vec<&'static str>, Vec<&'static str>, bool) {
+    (auth_modules_compiled_in(), hook_plugins_compiled_in(), true)
 }
 
 /// One cached computation of `store_plugin_catalog`'s tarball-derived rows for one plugins
@@ -877,39 +902,16 @@ impl AdminService {
         Self { app }
     }
 
-    /// `GET /api/v1/admin/info` — version, the COMPILED-IN plugin sets (compliance-by-compilation proof),
-    /// uptime, and pool/model/provider topology. Read scope. Infallible today, but returns `Result`
-    /// for a uniform transport contract (every op is `Result<View, AdminError>`).
-    pub(crate) async fn info(&self) -> Result<InfoView, AdminError> {
-        // The compiled-in plugin sets reflect the ACTUAL binary (feature-gated): the `keys` /
-        // `admin-tokens` auth builtins plus the ranking hooks. `weighted` is the one baked in
-        // (non-removable), so it appears as `weighted_floor` below, not in `hook_plugins`.
-        let auth_modules = auth_modules_compiled_in();
-        let hook_plugins = hook_plugins_compiled_in();
-
-        let view = self.app.engine_tables_view();
-        let providers: std::collections::BTreeSet<String> = (0..view.lane_count())
-            .filter_map(|i| view.lane_view(i).map(|l| l.provider.to_string()))
-            .collect();
-
-        Ok(InfoView {
-            version: env!("CARGO_PKG_VERSION"),
-            build: BuildInfo {
-                auth_modules,
-                hook_plugins,
-                weighted_floor: true,
-            },
-            uptime_seconds: PROCESS_START.get().map(|s| s.elapsed().as_secs()),
-            started_at: PROCESS_START_EPOCH.get().copied(),
-            topology: TopologyInfo {
-                pools: view.pools().len(),
-                models: view.model_indices().len(),
-                providers: providers.len(),
-            },
-            config_persistence: self.app.overlay_path.is_some(),
-            config_version: self.app.config_version,
-        })
-    }
+    // NO `info` READ HERE. `GET /api/v1/admin/info` CROSSED to the composition root's loop in
+    // 1.6.0's admin Cut 1b, and it is the widest of the crossings so far: the release, the
+    // compiled-in proof, the process's own boot epoch, the pool/model/provider counts, and the
+    // config generation and its persistence posture. Every one of them is now reached through a
+    // NEUTRAL accessor on `App` — `release_version`, `compiled_in_proof`, `process_epoch`,
+    // `config_persistence`, and the substrate table view — rather than assembled here, which is what
+    // let the answer cross without any admin-shaped type crossing with it.
+    //
+    // NOTHING IN THIS CRATE RENDERS THOSE FIELDS ANY MORE, so `InfoView` and its two nested views
+    // moved to `contract::schema`, where the shapes this crate documents without producing live.
 
     /// `GET /api/v1/admin/pools` — the pool topology (name + member models/weights). Read scope. Sorted
     /// by name for a stable, diff-friendly listing. Live per-member

@@ -163,53 +163,11 @@ pub(crate) fn forbidden(needed: Scope) -> AdminError {
     }
 }
 
-/// The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers
-/// version negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect
-/// the ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a
-/// provably smaller surface. No LLM content, ever.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct InfoView {
-    /// busbar semantic version (`CARGO_PKG_VERSION`).
-    pub(crate) version: &'static str,
-    pub(crate) build: BuildInfo,
-    /// Seconds since process start, or `None` if the start instant was never stamped.
-    pub(crate) uptime_seconds: Option<u64>,
-    /// Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any
-    /// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
-    /// to read a counter reset as "new epoch", never as "reverted".
-    pub(crate) started_at: Option<u64>,
-    pub(crate) topology: TopologyInfo,
-    /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
-    /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
-    /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
-    /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
-    pub(crate) config_persistence: bool,
-    /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
-    /// compare to tell whether the running config changed. Process-local (resets on restart).
-    pub(crate) config_version: u64,
-}
-
-/// The compiled-in feature proof (`InfoView.build`).
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct BuildInfo {
-    /// Auth modules baked into this binary (e.g. `["tokens"]`; empty under `--no-default-features`).
-    pub(crate) auth_modules: Vec<&'static str>,
-    /// Hook plugins baked into this binary (e.g. `["ranking"]`).
-    pub(crate) hook_plugins: Vec<&'static str>,
-    /// The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
-    pub(crate) weighted_floor: bool,
-}
-
-/// Pool/model/provider counts (`InfoView.topology`).
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct TopologyInfo {
-    pub(crate) pools: usize,
-    pub(crate) models: usize,
-    pub(crate) providers: usize,
-}
+// NO `InfoView`, `BuildInfo` OR `TopologyInfo` HERE. `GET /api/v1/admin/info` CROSSED to the
+// composition root's loop in 1.6.0's admin Cut 1b, so this crate serializes none of the three, and a
+// struct nothing serializes is a mirror rather than a contract type. All three moved to
+// `contract::schema`, and the composition-level ownership pin is what holds the mirror to the bytes
+// the loop actually writes.
 
 /// A pool in the topology read (`GET /api/v1/admin/pools`). Summary shape today: name + the member
 /// models and their weights. LIVE per-member status (breaker state, available concurrency, latency
