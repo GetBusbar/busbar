@@ -135,8 +135,25 @@ busbar-voice = ["busbar-voice-codec"]
 # striking one `[[cell]]` renumbers every later row. `because` is at least 80 characters and names
 # the face.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting:
-# every entry that ever stood here was struck once the base carried it.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 150
+because = """The FIRST gating figure for the dialect kind's contract face. The dialect kind is a new \
+row in the closed kind set, and a kind that the contract cannot name is a kind no plugin can \
+implement — so `busbar-contract` grows one trait, its associated types, and the dialect id. Every \
+`pub` item in busbar-contract and busbar-caps was counted against implementors and callers across \
+the workspace before this moved: exactly one item had nothing behind it (`ids::TransportId`, \
+deleted) and every other zero-implementor item is claimed by a queued branch, a dated migration row \
+or an object-safety fixture. The raise could not be paid for out of dead surface because there is \
+almost none. 150 lines of headroom, once; the next kind's trait comes out of surface or out of a \
+second owner ruling."""
+
+# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
+# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
+# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
+# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
+# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
+# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -365,7 +382,22 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+# RAISED ONCE, 3480 -> 3630, by owner ruling of 2026-09-08, and the ruling is recorded here rather
+# than only in a commit message because the next reader of this number has to know it was PAID
+# ATTENTION TO rather than nudged. What was measured before it moved: every `pub` item in
+# busbar-contract and busbar-caps, counted against implementors and callers across the whole
+# workspace and against docs/. The count found exactly ONE item with nothing behind it
+# (`ids::TransportId`, deleted), and found that every other zero-implementor item is CLAIMED — by a
+# queued keep-* branch, by a dated PLUGIN-TREE.md migration row, or by the object-safety fixtures
+# the plugin-tree steps require. `kinds::Store` is the sharpest case: 22 verbs, zero implementors in
+# the tree, and a queued branch that makes `RecordSink` its supertrait and writes `&dyn Store` into a
+# test. So the dialect kind's ONE trait could not be paid for out of dead surface, because there is
+# almost none, and the choice was between the raise and shipping a kind the contract cannot name.
+# The figure the ruling bought is 150 lines of headroom; the base carried 3500 when the ruling was
+# written and carries 3480 now, so the raise lands at 3630 rather than the 3650 first recorded.
+# It is the last one that is free: the next kind's trait comes out of surface, or out of a second
+# ruling.
+caps_contract_ceiling = 3630
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
