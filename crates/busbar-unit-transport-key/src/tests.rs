@@ -73,12 +73,15 @@ impl AccessJournal for RecordingJournal {
 #[derive(Default)]
 struct RecordingSink {
     server: std::sync::Mutex<Option<Arc<ServerConfig>>>,
+    client: std::sync::Mutex<Option<Arc<rustls::ClientConfig>>>,
 }
 impl TlsConfigSink for RecordingSink {
     fn register_server_config(&self, _slot: u64, cfg: Arc<ServerConfig>) {
         *self.server.lock().unwrap() = Some(cfg);
     }
-    fn register_client_config(&self, _slot: u64, _cfg: Arc<rustls::ClientConfig>) {}
+    fn register_client_config(&self, _slot: u64, cfg: Arc<rustls::ClientConfig>) {
+        *self.client.lock().unwrap() = Some(cfg);
+    }
 }
 
 /// A valid self-signed cert/key pair resolves and builds a server-only `ServerConfig`, with ALPN
@@ -162,7 +165,7 @@ fn resolves_and_builds_mtls_config_when_client_ca_present() {
 /// trusts the server's certificate under, so a failure that comes back is about the CLIENT's
 /// certificate and not about the server's.
 fn handshake_offering_no_client_certificate(
-    config: ServerConfig,
+    config: Arc<ServerConfig>,
     server_ca_pem: &str,
 ) -> Result<(), rustls::Error> {
     let mut roots = RootCertStore::empty();
@@ -175,7 +178,7 @@ fn handshake_offering_no_client_certificate(
     let mut client =
         rustls::ClientConnection::new(Arc::new(client_config), "localhost".try_into().unwrap())
             .unwrap();
-    let mut server = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+    let mut server = rustls::ServerConnection::new(config).unwrap();
 
     for _ in 0..16 {
         let mut to_server = Vec::new();
@@ -234,14 +237,14 @@ fn only_the_mtls_config_refuses_a_client_that_offers_no_certificate() {
     let server_only =
         build_server_config(&resolve_tls_material(&source, &journal, "cert", "key", None).unwrap())
             .unwrap();
-    handshake_offering_no_client_certificate(server_only, &server_ca_pem)
+    handshake_offering_no_client_certificate(Arc::new(server_only), &server_ca_pem)
         .expect("server-only TLS asks a client for nothing and completes");
 
     let mtls = build_server_config(
         &resolve_tls_material(&source, &journal, "cert", "key", Some("ca")).unwrap(),
     )
     .unwrap();
-    let err = handshake_offering_no_client_certificate(mtls, &server_ca_pem)
+    let err = handshake_offering_no_client_certificate(Arc::new(mtls), &server_ca_pem)
         .expect_err("mTLS means the client MUST present a certificate");
     assert!(
         matches!(err, rustls::Error::NoCertificatesPresented),
@@ -447,4 +450,109 @@ fn the_handle_the_unit_issues_is_the_one_a_transport_consumes() {
     let issued = issue_handle(&TransportKeyToken::mint(&seal), 3, "fp");
     let consumed: &busbar_contract::TransportKeyHandle = &issued;
     assert_eq!(consumed.slot(), 3);
+}
+
+/// [`provision_client`] had no test and no in-tree caller: it registers the caller's own
+/// `ClientConfig` — never one this unit builds — and hands back the handle over its slot. The one
+/// property worth pinning is that the EXACT config handed in is the one that lands in the sink,
+/// not a rebuilt copy of it — this unit resolves no secret and journals nothing on the dial side,
+/// so there is nothing here for it to have transformed.
+#[test]
+fn provision_client_registers_the_exact_config_handed_in_over_its_slot() {
+    install_crypto_provider();
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let token = TransportKeyToken::mint(&seal);
+    let sink = RecordingSink::default();
+    let cfg = Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth(),
+    );
+
+    let handle = provision_client(
+        &sink,
+        &token,
+        Slot {
+            index: 5,
+            fingerprint: "client-fp",
+        },
+        Arc::clone(&cfg),
+    );
+
+    assert_eq!(handle.slot(), 5);
+    assert_eq!(handle.fingerprint(), "client-fp");
+    let registered = sink
+        .client
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the config was registered");
+    assert!(
+        Arc::ptr_eq(&registered, &cfg),
+        "the exact Arc handed in must be the one registered, not a rebuilt copy"
+    );
+}
+
+/// [`provision_server_named`] had no test at all: `only_the_mtls_config_refuses_a_client_that_
+/// offers_no_certificate` pins the single-cert path's client-cert verifier
+/// (`build_server_config`'s own inline arm); this is the SAME property for the named-SNI path's
+/// separate arm at the call site that builds `client_verifier` off `default_material.client_ca_pem`.
+/// Changing that arm to `builder.with_no_client_auth()` unconditionally would leave every other
+/// assertion about a named-SNI config — ALPN, the resolver's name table — untouched and green,
+/// while a listener an operator configured for mTLS quietly took anonymous clients.
+#[test]
+fn a_named_sni_listeners_shared_mtls_setting_refuses_an_anonymous_client() {
+    install_crypto_provider();
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let token = TransportKeyToken::mint(&seal);
+
+    let (server_ca_pem, server_cert_pem, server_key_pem) =
+        gen_ca_and_leaf(vec!["localhost".into()]);
+    let (client_ca_pem, _client_leaf_pem, _client_key_pem) =
+        gen_ca_and_leaf(vec!["busbar-client".into()]);
+    let (named_cert_pem, named_key_pem) = gen_self_signed();
+    let source = MapSource(
+        [
+            ("default-cert", server_cert_pem.into_bytes()),
+            ("default-key", server_key_pem.into_bytes()),
+            ("ca", client_ca_pem.into_bytes()),
+            ("named-cert", named_cert_pem.into_bytes()),
+            ("named-key", named_key_pem.into_bytes()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let journal = RecordingJournal::default();
+    let sink = RecordingSink::default();
+
+    provision_server_named(
+        &source,
+        &journal,
+        &sink,
+        &token,
+        Slot {
+            index: 0,
+            fingerprint: "fixture",
+        },
+        &[NamedTlsLocations {
+            sni: "named.example",
+            cert: "named-cert",
+            key: "named-key",
+        }],
+        &TlsLocations {
+            cert: "default-cert",
+            key: "default-key",
+            client_ca: Some("ca"),
+        },
+        DEFAULT_ALPN,
+    )
+    .unwrap();
+
+    let cfg = sink.server.lock().unwrap().clone().expect("registered");
+    let err = handshake_offering_no_client_certificate(cfg, &server_ca_pem)
+        .expect_err("the listener's shared mTLS setting must refuse an anonymous client");
+    assert!(
+        matches!(err, rustls::Error::NoCertificatesPresented),
+        "the handshake failed for the wrong reason: {err:?}"
+    );
 }
