@@ -27,6 +27,12 @@
 // `busbar_substrate::diag_warn!` resolve exactly as before.
 pub mod diagnostics;
 
+// Config VALUE SHAPES whose consumer is not the substrate. Today: the `plugins:` block, read by
+// `busbar-plugin-sign` and `busbar-plugin-loader` — neither of which is in `busbar-substrate`'s
+// dependency closure, nor should the substrate be in theirs. `busbar_substrate::config::plugins`
+// re-exports it, so the grammar keeps ONE address.
+pub mod config;
+
 // The five neutral transport/crypto utility leaves: JSON canonicalization + the depth-guarded parser
 // seam, the base64/media-type helper, the AWS EventStream framing codec, the source-scoped
 // lossless-extras namespace, and the hand-rolled SigV4 signer.

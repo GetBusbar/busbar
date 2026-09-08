@@ -19,6 +19,13 @@ pub mod groups;
 pub mod hooks;
 pub mod limits;
 pub mod oauth_as;
+
+// The `plugins:` block is declared one layer DOWN, in `busbar-substrate-values`, because its
+// consumers (`busbar-plugin-sign`'s trust policy, `busbar-plugin-loader`'s fetch list) are outside
+// this crate's dependency closure and must read the grammar without an edge to the whole engine
+// substrate. Re-exported here so the config grammar keeps ONE address.
+pub use busbar_substrate_values::config::plugins;
+
 pub mod pools;
 pub mod projection;
 pub mod providers;

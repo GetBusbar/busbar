@@ -11,6 +11,13 @@ license = "Apache-2.0"
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-sign = { path = "../plugin-sign" }
+# The `plugins:` config GRAMMAR (`config::plugins::PluginsCfg`) and the diagnostics catalog the two
+# anti-downgrade-floor warnings are coded against. The RESOLUTION of that grammar — the fetch list
+# and the trust policy (`policy.rs`) — is this crate's, because every type it produces is; the
+# grammar is declared one layer down, in the substrate's PURE half, so that reading it costs no edge
+# to the engine substrate. `busbar-substrate-values` depends only on `busbar-api`/`busbar-plugin`/
+# `busbar-timing`, so there is no cycle back into this crate.
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # The three unit-side store seams the composition root binds to one loaded store (`store_adapter`).
 # None of the three crates may name a store, so the adapter that implements all three lives on this
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
