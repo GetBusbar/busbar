@@ -138,3 +138,7 @@ if ! result="$(jq -n \
 fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

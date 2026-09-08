@@ -182,3 +182,7 @@ i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); 
 count_matching() { awk -v re="$1" '$0 ~ re {n++} END{print n+0}' "$2" 2>/dev/null || echo 0; }
 step store_errors "$(( $(count_matching 'store error' "$W/busbar1.log") + $(count_matching 'store error' "$W/busbar2.log") ))"
 jq -n --argjson eff "$eff" --arg body "$u2" '{status:0, headers:{}, body:$body, effects:($eff | . + {warnings_boot1: $w1})}' --arg w1 "$(count_matching '[Ww][Aa][Rr][Nn]' "$W/busbar1.log")" >"$RAW/captured.json"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

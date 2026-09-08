@@ -183,3 +183,7 @@ case "$MODE" in
     ;;
   *) fail -1 "unknown mode '$MODE' (files|logs)" ;;
 esac
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0
