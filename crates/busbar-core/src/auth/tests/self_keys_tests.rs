@@ -576,7 +576,7 @@ async fn resolve_then_issue_via_real_seam() {
     assert!(issued.secret.expose_secret().starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
     // The token the seam handed back verifies through the ordinary path.
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     assert!(gov
         .verify_token(issued.secret.expose_secret(), now, None)
         .is_some());
@@ -603,7 +603,11 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
         "the whole sub lives inside the user: namespace"
     );
     assert!(gov
-        .verify_token(issued.secret.expose_secret(), crate::store::now(), None)
+        .verify_token(
+            issued.secret.expose_secret(),
+            busbar_substrate::store::now(),
+            None
+        )
         .is_some());
 }
 

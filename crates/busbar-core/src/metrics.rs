@@ -334,7 +334,7 @@ pub(crate) fn record_plane_request_duration(
 /// are bounded by the operator's configuration; virtual-key ids are bounded by the set of
 /// keys the admin has created. No client-supplied label values are ever emitted.
 pub fn refresh_scrape_gauges(app: &App) {
-    let now = crate::state::now();
+    let now = busbar_substrate::store::now();
 
     // ── Governance: per-key spend, budget-remaining, tokens ────────────────────────────────────
     if let Some(gov) = &app.governance {
@@ -522,7 +522,7 @@ pub fn refresh_scrape_gauges(app: &App) {
     // breaker-cell fold K times. Memoize it per lane_idx here and reuse across every pool that shares
     // the lane (and across the by_model loop below). Per-POOL facts (`classify(pool, …)`,
     // `cooldown_remaining_in(pool, …)`) stay per-iteration — only the lane-global snapshot is cached.
-    let mut snap_cache: std::collections::HashMap<usize, crate::store::LaneSnapshot> =
+    let mut snap_cache: std::collections::HashMap<usize, busbar_substrate::store::LaneSnapshot> =
         std::collections::HashMap::new();
     // The routing tables through the NEUTRAL read seam (money-path Phase 3-4 B): the scrape reads pool
     // label spaces, per-pool member lane indices, a lane's model string, and the per-pool queue depth
@@ -623,8 +623,8 @@ pub fn refresh_scrape_gauges(app: &App) {
 fn emit_lane_gauges(
     pool_label: &str,
     lane_label: &str,
-    snap: &crate::store::LaneSnapshot,
-    avail: &Result<(), crate::store::Unavailable>,
+    snap: &busbar_substrate::store::LaneSnapshot,
+    avail: &Result<(), busbar_substrate::store::Unavailable>,
     now: u64,
 ) {
     // Build the `pool`/`lane` labels ONCE per lane (the two `to_string()` allocations) and clone the

@@ -404,7 +404,7 @@ impl AuthMiddleware {
         if self.chain.is_empty() && !self.keys_in_chain {
             return ChainVerdict::Open;
         }
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         // `Pass` puts are BUFFERED, not admitted, until the chain identifies. An all-`Pass` chain
         // ends `Denied` (below), so admitting them eagerly let an unauthenticated caller fill the
         // cache with entries that then evict real `Identify` rows under the oldest-inserted
@@ -916,7 +916,7 @@ fn run_admin_chain(
         (None, None) => None,
         (b, h) => Some(format!("b:{}\nh:{}", b.unwrap_or(""), h.unwrap_or(""))),
     };
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     // Captured BEFORE the first module runs — see the identical capture in `run_chain_cached` and
     // `auth_cache::CacheGeneration`. This is the plane the hazard actually bites on: an external
     // `kind: auth` admin module runs on the blocking pool with a multi-second budget (the shipped
@@ -1482,7 +1482,7 @@ pub(crate) async fn auth_middleware(
             } = app.mutation_limiter.check(
                 actor,
                 crate::admin::rate::MutationClass::Forbidden,
-                crate::store::now(),
+                busbar_substrate::store::now(),
             ) {
                 crate::admin::audit::AUDIT.record_by(
                     "admin.forbidden",
@@ -1523,7 +1523,7 @@ pub(crate) async fn auth_middleware(
                 .unwrap_or("anonymous");
             if let crate::admin::rate::RateCheck::Denied { first_in_window } = app
                 .mutation_limiter
-                .check(actor, class, crate::store::now())
+                .check(actor, class, busbar_substrate::store::now())
             {
                 // Audit the first denial of the window only. The durable audit write-through is a
                 // blocking store round-trip, and this is the SHED path — auditing every rejected
@@ -1984,7 +1984,7 @@ fn verify_sigv4_ingress_credential(
     // against a fixed dummy secret so the work — and the timing/response — is indistinguishable
     // from a wrong-signature rejection (no AccessKeyId-enumeration oracle). The dummy is a
     // constant, never a real secret.
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let (secret, resolved): (String, Option<(crate::governance::VirtualKey, bool)>) =
         match gov.lookup_credential("sigv4", &parsed.access_key_id) {
             Some((key, cred)) => {

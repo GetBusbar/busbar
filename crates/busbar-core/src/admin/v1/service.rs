@@ -128,7 +128,7 @@ static PROCESS_START_EPOCH: std::sync::OnceLock<u64> = std::sync::OnceLock::new(
 /// it is safe to call unconditionally at startup.
 pub fn mark_start() {
     let _ = PROCESS_START.set(std::time::Instant::now());
-    let _ = PROCESS_START_EPOCH.set(crate::store::now());
+    let _ = PROCESS_START_EPOCH.set(busbar_substrate::store::now());
 }
 
 /// One cached computation of `store_plugin_catalog`'s tarball-derived rows for one plugins
@@ -953,7 +953,7 @@ impl AdminService {
     /// NEUTRAL `(lane idx, weight)` projection ([`EngineTablesView::pool_members`]), naming no plane type.
     fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
         let view = self.app.engine_tables_view();
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let members = members
             .iter()
             .map(|&(idx, weight)| {
@@ -1196,7 +1196,7 @@ impl AdminService {
         let Some(rt) = self.app.cost.group_named(name) else {
             return Err(AdminError::not_found(format!("group `{name}`")));
         };
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let mut buckets = Vec::with_capacity(rt.buckets.len());
         for b in &rt.buckets {
             let usage = match &self.app.governance {
@@ -1439,7 +1439,7 @@ impl AdminService {
             return out;
         };
 
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         // Bound the cache with the same TTL+`retain()` idiom
         // `admin/mod.rs`'s `idempotency_cache` uses: prune before every read, not just on write, so
         // an abandoned path's entry cannot sit forever just because nothing keeps writing to it.
@@ -2131,7 +2131,7 @@ impl AdminService {
     /// `window`: a caller-selected PAST bucket start (validated: bucket-aligned, not in the
     /// future); `None` = the current bucket. The response shape is pinned: always one bucket.
     pub(crate) async fn get_usage(&self, window: Option<u64>) -> Result<UsageView, AdminError> {
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let current = crate::governance::metering_bucket(now);
         let bucket = match window {
             None => current,

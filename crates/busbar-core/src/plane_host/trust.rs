@@ -170,7 +170,7 @@ pub(crate) extern "C-unwind" fn verify_lookup(
             return StatusClass::Refused; // no subject bytes → fail-closed, never a Hit.
         };
 
-        let now = crate::store::now_ms();
+        let now = busbar_substrate::store::now_ms();
         // Decide the outcome under the cache lock, RELEASING it before registering a lease (which
         // takes the dispatch-scope lock) so the two locks are never held nested — the scope's
         // reclaim path (on drop) takes the cache lock alone, so ordering cannot deadlock.
@@ -242,7 +242,8 @@ pub(crate) extern "C-unwind" fn verify_store(
         let Some(ckey) = (unsafe { cache_key(k) }) else {
             return StatusClass::Refused;
         };
-        let expires = crate::store::now_ms().saturating_add(ttl_secs.saturating_mul(1_000));
+        let expires =
+            busbar_substrate::store::now_ms().saturating_add(ttl_secs.saturating_mul(1_000));
         let mut c = lock_cache();
         c.fresh.insert(ckey.clone(), expires);
         // Release this subject's leadership: clear it, and drop the lease→subject mapping. The scope
@@ -482,7 +483,7 @@ pub(crate) extern "C-unwind" fn approval_redeem(host: HostCtx, key: *const Key) 
         let Some(nonce) = (unsafe { subject(k.key_ptr, k.key_len) }) else {
             return StatusClass::Refused;
         };
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let expires_at = now.saturating_add(crate::plane::approvals::DEFAULT_TTL_SECS);
         if redeem_approval(&state.app.spent_token_ledger, &nonce, expires_at, now) {
             StatusClass::Ok // first redemption.

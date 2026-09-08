@@ -110,9 +110,12 @@ pub(crate) fn swrr_shard_index(pool: &str) -> usize {
 // re-exports `fnv1a_u64` for `hooks`/`governance`).
 pub(crate) use busbar_substrate::store::{FNV1A_OFFSET_BASIS, FNV1A_PRIME};
 
-// `fnv1a_u64` moved to `busbar_substrate::store` (re-exported just above); core's `crate::store`
-// re-export chain (`pub use in_memory::*`) keeps `crate::store::fnv1a_u64` resolving unchanged.
-pub use busbar_substrate::store::fnv1a_u64;
+// `fnv1a_u64` moved to `busbar_substrate::store`.
+//
+// R5-store: the re-export up through `crate::store` is DELETED — its four readers outside this
+// engine (`governance/mod.rs`, `hooks/gate.rs`) name the substrate directly. What stays is a private
+// import for this module's own shard-index and key hashing.
+use busbar_substrate::store::fnv1a_u64;
 
 /// Number of SWRR lock shards. The SWRR weight read-modify-write only needs to be serialized
 /// PER POOL (the `Σ current_weight == 0` invariant is pool-local — two disjoint pools share no
@@ -583,7 +586,10 @@ pub(crate) fn make_lane_data_with_weight(id: usize, max_permits: usize) -> (Lane
 // `config::BreakerCfg` grammar), rehomed from a `From` impl (orphan-rule blocked once the target type
 // is foreign) to an inherent `to_runtime` method on the config type — the same shape `config`'s
 // `on_exhausted`/`OnExhausted` lowering already uses.
-pub use busbar_substrate::store::{BreakerCfg, TripConfig, TripMode};
+// R5-store: a private import, not a re-export. `TripConfig`/`TripMode` never had a reader outside
+// this engine, and `BreakerCfg`'s two — `failover/mod.rs` and the test-support pool builder — name
+// `busbar_substrate::store::BreakerCfg` directly.
+use busbar_substrate::store::{BreakerCfg, TripConfig, TripMode};
 
 /// Resolve the parsed `breaker:` config into the runtime [`BreakerCfg`] the FSM evaluates.
 /// `honor_retry_after` has no config knob (always honored), and an absent `trip` block falls

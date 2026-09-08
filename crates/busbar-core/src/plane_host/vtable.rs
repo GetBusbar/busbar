@@ -189,14 +189,14 @@ extern "C-unwind" fn card_sign(
 // WIRED slots — real primitives, full boundary discipline.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-/// WIRED `clock_now` → `crate::store::now_ms`, the host wall clock. The ABI contract is Unix
+/// WIRED `clock_now` → `busbar_substrate::store::now_ms`, the host wall clock. The ABI contract is Unix
 /// NANOSECONDS, so the host-side milliseconds clock is scaled up; sourcing it through
-/// `crate::store::now_ms` keeps the plane off any ambient clock (the whole point of the slot).
+/// `busbar_substrate::store::now_ms` keeps the plane off any ambient clock (the whole point of the slot).
 extern "C-unwind" fn clock_now(host: HostCtx) -> u64 {
     catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: the host passes a live `HostState` ptr for the dispatch duration (see `recover`).
         let _state: &HostState = unsafe { recover(host) };
-        crate::store::now_ms().saturating_mul(1_000_000)
+        busbar_substrate::store::now_ms().saturating_mul(1_000_000)
     }))
     .unwrap_or(0) // fail-closed: a panicked clock reads 0, never a wild value.
 }

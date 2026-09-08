@@ -88,7 +88,7 @@ impl SettleAdmission for BreakerAdmission {
 /// [`AdmissionId`]; it NEVER holds a [`PlaneAdmission`].
 ///
 /// On a refusal the returned [`AdmissionId`] is [`NONE`](AdmissionId::NONE), reconstructed into the
-/// store's own [`Unavailable`](crate::store::Unavailable) taxonomy so [`crate::failover::walk_with`]'s
+/// store's own [`Unavailable`](busbar_substrate::store::Unavailable) taxonomy so [`crate::failover::walk_with`]'s
 /// `admit` closure gets the SAME refusal shape `try_admit_breaker` handed it — the reconstruction is
 /// the inverse of [`classify_unavailable`] (coarse: the ABI carries a fine [`Unavailability`] + a
 /// second-rounded recovery floor, not the exact internal epoch; the sync sites render `Retry-After`
@@ -102,7 +102,7 @@ pub fn breaker_admit_over(
     scope: &super::DispatchScope,
     pool: &[u8],
     lane: u32,
-) -> Result<AdmissionId, crate::store::Unavailable> {
+) -> Result<AdmissionId, busbar_substrate::store::Unavailable> {
     let key = Key {
         size: core::mem::size_of::<Key>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
@@ -134,7 +134,7 @@ pub fn breaker_admit_over(
     ))
 }
 
-/// The inverse of [`classify_unavailable`]: rebuild the store's own [`Unavailable`](crate::store::Unavailable)
+/// The inverse of [`classify_unavailable`]: rebuild the store's own [`Unavailable`](busbar_substrate::store::Unavailable)
 /// from the ABI [`Unavailability`] reason + the second-rounded recovery floor a [`breaker_admit_over`]
 /// refusal carried back. Coarse by construction — the ABI does not carry the exact internal epoch, so
 /// the `BreakerOpen`/`AtCapacity` payloads are reconstituted from the floor. This feeds
@@ -146,13 +146,13 @@ pub fn breaker_admit_over(
 fn reconstruct_unavailable(
     reason: Unavailability,
     retry_after_secs: u64,
-) -> crate::store::Unavailable {
-    use crate::store::Unavailable;
+) -> busbar_substrate::store::Unavailable {
+    use busbar_substrate::store::Unavailable;
     match reason {
         Unavailability::Dead => Unavailable::Dead,
         Unavailability::Budget => Unavailable::BudgetExhausted,
         Unavailability::Open | Unavailability::NoneAdmissible => Unavailable::BreakerOpen {
-            until: crate::store::now().saturating_add(retry_after_secs),
+            until: busbar_substrate::store::now().saturating_add(retry_after_secs),
         },
         Unavailability::AtCapacity => Unavailable::AtCapacity {
             drain_hint_ms: Some(retry_after_secs.saturating_mul(1_000)),
@@ -336,24 +336,27 @@ pub(super) extern "C-unwind" fn breaker_admit(host: HostCtx, key: *const Key) ->
     .unwrap_or(AdmissionId::NONE) // fail-closed: a panicked admit refuses.
 }
 
-/// Map the store's [`Unavailable`](crate::store::Unavailable) refusal taxonomy onto the neutral ABI
+/// Map the store's [`Unavailable`](busbar_substrate::store::Unavailable) refusal taxonomy onto the neutral ABI
 /// [`Unavailability`] reason + a recovery-floor in whole seconds — so a refused admit keeps its
 /// SPECIFIC meaning (Open vs probe-lost vs dead vs budget vs capacity) across the host boundary rather
 /// than collapsing to a bare [`AdmissionId::NONE`]. The floor is the store's own single definition of
 /// "when could this be usable again" (`recovery_hint_ms`), rounded up to seconds; `0` for a refusal
 /// that does not self-recover (administratively down / budget spent).
-fn classify_unavailable(u: &crate::store::Unavailable, now: u64) -> (Unavailability, u64) {
+fn classify_unavailable(
+    u: &busbar_substrate::store::Unavailable,
+    now: u64,
+) -> (Unavailability, u64) {
     let retry = u
         .recovery_hint_ms(now)
         .map(|ms| ms.div_ceil(1_000))
         .unwrap_or(0);
     let reason = match u {
-        crate::store::Unavailable::Dead => Unavailability::Dead,
-        crate::store::Unavailable::BudgetExhausted => Unavailability::Budget,
-        crate::store::Unavailable::BreakerOpen { .. } => Unavailability::Open,
-        crate::store::Unavailable::ProbeInFlight => Unavailability::ProbeInFlight,
-        crate::store::Unavailable::AtCapacity { .. } => Unavailability::AtCapacity,
-        crate::store::Unavailable::Shedding => Unavailability::Shedding,
+        busbar_substrate::store::Unavailable::Dead => Unavailability::Dead,
+        busbar_substrate::store::Unavailable::BudgetExhausted => Unavailability::Budget,
+        busbar_substrate::store::Unavailable::BreakerOpen { .. } => Unavailability::Open,
+        busbar_substrate::store::Unavailable::ProbeInFlight => Unavailability::ProbeInFlight,
+        busbar_substrate::store::Unavailable::AtCapacity { .. } => Unavailability::AtCapacity,
+        busbar_substrate::store::Unavailable::Shedding => Unavailability::Shedding,
     };
     (reason, retry)
 }
@@ -413,7 +416,8 @@ pub(super) extern "C-unwind" fn breaker_admit_reason(
                     _admission: admission,
                 })),
             Err(unavailable) => {
-                let (reason, retry) = classify_unavailable(&unavailable, crate::store::now());
+                let (reason, retry) =
+                    classify_unavailable(&unavailable, busbar_substrate::store::now());
                 // SAFETY: as above.
                 unsafe { write_refusal(out, reason, retry) };
                 AdmissionId::NONE

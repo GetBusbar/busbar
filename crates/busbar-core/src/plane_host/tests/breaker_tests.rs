@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
-use crate::store::BreakerState;
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_plugin::hot::{RawFault, RawStatus, Signal, POD_VERSION};
+use busbar_substrate::store::BreakerState;
 
 const POOL: &[u8] = b"tool:fs";
 const POOL_STR: &str = "tool:fs";
@@ -317,8 +317,11 @@ fn breaker_admit_reason_carries_the_refusal_reason() {
     let app = crate::test_support::TestApp::new().build();
     // Park the cell Open with a FUTURE cooldown (absolute epoch) so the next admit is refused
     // BreakerOpen rather than winning a half-open probe.
-    app.plane_breakers
-        .force_open(POOL_STR, 0, crate::store::now().saturating_add(3600));
+    app.plane_breakers.force_open(
+        POOL_STR,
+        0,
+        busbar_substrate::store::now().saturating_add(3600),
+    );
     with_dispatch_scope(&app, |host, vt| {
         let admit_reason = vt.breaker_admit_reason.unwrap();
         let k = key(0);

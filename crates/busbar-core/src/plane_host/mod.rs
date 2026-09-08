@@ -284,7 +284,7 @@ pub async fn identity_admit_over(
 }
 
 /// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam — the
-/// host-driven form of a plane's [`crate::store::now`]. The slot's ABI unit is Unix NANOSECONDS
+/// host-driven form of a plane's [`busbar_substrate::store::now`]. The slot's ABI unit is Unix NANOSECONDS
 /// (see [`vtable`]'s `clock_now`, which scales the host milliseconds clock up), so this scales it
 /// back down to the seconds `store::now` returns; the value is identical to reading `store::now`
 /// in place. A fresh per-call [`DispatchScope`] backs the borrow — a clock read acquires no host
@@ -299,7 +299,7 @@ pub fn clock_now_secs_over(app: &App) -> u64 {
 }
 
 /// Read the host wall clock in MILLISECONDS through the wired [`clock_now`](vtable) seam — the
-/// host-driven form of [`crate::store::now_ms`]. The slot's ABI unit is Unix NANOSECONDS, sourced
+/// host-driven form of [`busbar_substrate::store::now_ms`]. The slot's ABI unit is Unix NANOSECONDS, sourced
 /// host-side from `store::now_ms` scaled up; this scales it back to milliseconds, so the value is
 /// identical to reading `store::now_ms` in place. `store::now_ms` is crate-private, so this is the
 /// form a plane compiled apart from the host reaches the same clock through. Backed by a fresh
@@ -324,7 +324,7 @@ pub fn clock_now_ms_over(app: &App) -> u64 {
 /// tuple handed to `operation_resolved` is preserved BYTE-IDENTICALLY — the chat `proto` is the
 /// registry's residual-default dialect (read by NAME, so this neutral core spells none),
 /// [`Transport::Http`](crate::transport::Transport), the `handlers::chat(proto, Http)` op,
-/// `caller_token = None`, `model_not_found_message = None`, `charged_at = crate::store::now()` (whole
+/// `caller_token = None`, `model_not_found_message = None`, `charged_at = busbar_substrate::store::now()` (whole
 /// SECONDS, the same source [`clock_now_secs_over`] scales to), and `LazyBody::parse` over the SAME
 /// bytes — so governance attribution and metering are unchanged. The async future stays `Send`: it
 /// only `.await`s the native core async fn; no `HostCtx` is minted here, and any minted inside
@@ -425,7 +425,7 @@ impl busbar_substrate::plane_host::BreakerHost for EngineHostImpl {
         scope: &DispatchScope,
         pool: &[u8],
         lane: u32,
-    ) -> Result<busbar_plugin::hot::AdmissionId, crate::store::Unavailable> {
+    ) -> Result<busbar_plugin::hot::AdmissionId, busbar_substrate::store::Unavailable> {
         breaker::breaker_admit_over(&self.app, scope, pool, lane)
     }
 
@@ -945,7 +945,7 @@ impl busbar_substrate::plane_host::IdentityHost for EngineHostImpl {
         self.app
             .governance
             .as_ref()
-            .and_then(|g| g.verify_token(token, crate::store::now(), None))
+            .and_then(|g| g.verify_token(token, busbar_substrate::store::now(), None))
     }
 
     fn identity_audience_binding(

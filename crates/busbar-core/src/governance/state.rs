@@ -36,7 +36,8 @@ impl GovState {
         signer: Option<crate::governance::signing::TokenSigner>,
     ) -> StoreResult<Self> {
         let by_id = Self::load(store.as_ref())?;
-        let by_credential = Self::load_by_credential(store.as_ref(), &by_id, crate::store::now())?;
+        let by_credential =
+            Self::load_by_credential(store.as_ref(), &by_id, busbar_substrate::store::now())?;
         // Hydrate the denylist. A store with no denylist support returns empty (nothing revoked);
         // a durable one returns every persisted revoked subject.
         let denylist: std::collections::HashSet<String> =
@@ -47,7 +48,7 @@ impl GovState {
         let denylist = crate::governance::revocation::RevocationSync::new(
             store.clone(),
             denylist,
-            crate::store::now(),
+            busbar_substrate::store::now(),
         );
         Ok(Self {
             store,
@@ -235,7 +236,7 @@ impl GovState {
     /// (`verify_token`) and the inbound SigV4 admit path (`verify_inbound_sigv4_and_resolve`), so a
     /// revoked subject's credentials are rejected identically regardless of which credential is presented.
     pub fn is_revoked(&self, sub: &str) -> bool {
-        self.is_revoked_at(sub, crate::store::now())
+        self.is_revoked_at(sub, busbar_substrate::store::now())
     }
 
     /// [`GovState::is_revoked`] against an explicit clock — the staleness guard needs a `now`, and
@@ -2308,7 +2309,7 @@ impl GovState {
         let _refresh_guard = self.refresh_lock.lock().unwrap_or_else(|e| e.into_inner());
         let fresh = Self::load(self.store.as_ref())?;
         let fresh_cred =
-            Self::load_by_credential(self.store.as_ref(), &fresh, crate::store::now())?;
+            Self::load_by_credential(self.store.as_ref(), &fresh, busbar_substrate::store::now())?;
         // Both indices live under the single `caches` lock, so the swap below is ONE atomic critical
         // section — a concurrent reader holding `caches_read` sees either the entire old pair or the
         // entire new pair, never a new `by_id` against a stale `by_credential` (or vice versa).

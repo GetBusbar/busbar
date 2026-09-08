@@ -49,7 +49,9 @@
 // used by only ONE plane and so reads dead in the other's single-plane build too.
 #![allow(dead_code)]
 
-use super::in_memory::{BreakerCfg, HealthState, LaneData};
+use busbar_substrate::store::BreakerCfg;
+
+use super::in_memory::{HealthState, LaneData};
 use super::{LaneRuntime, Unavailable};
 use crate::diagnostics::{diag_warn, PLANE_BREAKER_HARD_DOWN, PLANE_BREAKER_TRIPPED};
 use std::sync::Arc;
