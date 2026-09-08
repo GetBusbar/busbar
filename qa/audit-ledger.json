@@ -2183,13 +2183,16 @@
    "paths": [
     "crates/busbar-unit-admission/src"
    ],
-   "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "fb870bf44ea33c2b91e54ed5e09d9f4e2a770305b27cf8548d141444d25072a9",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "LOW": 2
+   },
+   "report": "the door keeps a second hand-written copy of the cents projection and of the nano-per-cent constant while already delegating the rate conversion to the crate that owns the pricing law; the shipped cell store implements none of the three duties its own trait doc assigns a store, so its per-bucket map holds an entry per principal ever seen and the last-used field provided for eviction is read by nothing",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-admission/src/tests"
@@ -2217,6 +2220,18 @@
      "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "fb870bf44ea33c2b91e54ed5e09d9f4e2a770305b27cf8548d141444d25072a9",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 2
+     },
+     "report": "the door keeps a second hand-written copy of the cents projection and of the nano-per-cent constant while already delegating the rate conversion to the crate that owns the pricing law; the shipped cell store implements none of the three duties its own trait doc assigns a store, so its per-bucket map holds an entry per principal ever seen and the last-used field provided for eviction is read by nothing"
     }
    ]
   },
@@ -2227,15 +2242,12 @@
     "crates/busbar-unit-audit/src"
    ],
    "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1,
-    "NIT": 1
-   },
-   "report": "legacy pipe-joined digest precondition unenforced at AuditEntry (byte-frozen; owner decision); all files read fully",
-   "auditor": "opus-pass3",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
+   "counts": {},
+   "report": "chain digesting, amendment and the legacy ring were read and nothing survived triage; three lenses left scope unread, so this is a sample",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-audit/src/tests"
@@ -2284,6 +2296,15 @@
       "NIT": 1
      },
      "report": "legacy pipe-joined digest precondition unenforced at AuditEntry (byte-frozen; owner decision); all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+     "counts": {},
+     "report": "chain digesting, amendment and the legacy ring were read and nothing survived triage; three lenses left scope unread, so this is a sample"
     }
    ]
   },
@@ -2293,13 +2314,16 @@
    "paths": [
     "crates/busbar-unit-auth/src"
    ],
-   "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "484bf94021ea6a4ad7aed4d8d72c3f9d36a2788f31e5a2222a0b8247e738d57e",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "LOW": 1
+   },
+   "report": "the admin scope mirror re-implements the scope unit's rungs with no cross-crate test holding the two answers together, unlike the breaker mirror next door which has one; the credential cache builds an owned key on every lookup including the hit it exists to make cheap; the crate's dialect ladder spells one dialect differently from the plane's claim table and the egress-auth header table",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-auth/src/tests"
@@ -2327,6 +2351,18 @@
      "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "484bf94021ea6a4ad7aed4d8d72c3f9d36a2788f31e5a2222a0b8247e738d57e",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "the admin scope mirror re-implements the scope unit's rungs with no cross-crate test holding the two answers together, unlike the breaker mirror next door which has one; the credential cache builds an owned key on every lookup including the hit it exists to make cheap; the crate's dialect ladder spells one dialect differently from the plane's claim table and the egress-auth header table"
     }
    ]
   },
@@ -2336,13 +2372,17 @@
    "paths": [
     "crates/busbar-unit-breaker/src"
    ],
-   "tree_hash": "8dc4d147509a13ef5d6a7508e32f84fd1eb6e978d60b8ed7ccacebcfbb70555f",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "052a2b88e04b7516be9a6a641a4e60ac41be8a77144bc6c08a85f506ffe7421d",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "an upstream failure the path could put no number on falls through the status ladder into the arm meant for an unexpected success and is recorded as the caller's fault, so a destination failing that way never trips its cell and keeps taking full traffic; the four per-destination maps insert and never remove, so retired destinations stay resident for the life of the process; a reopen journals a cooldown re-read after its own transition lock was released",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-breaker/src/tests"
@@ -2370,6 +2410,19 @@
      "tree_hash": "8dc4d147509a13ef5d6a7508e32f84fd1eb6e978d60b8ed7ccacebcfbb70555f",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "052a2b88e04b7516be9a6a641a4e60ac41be8a77144bc6c08a85f506ffe7421d",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "an upstream failure the path could put no number on falls through the status ladder into the arm meant for an unexpected success and is recorded as the caller's fault, so a destination failing that way never trips its cell and keeps taking full traffic; the four per-destination maps insert and never remove, so retired destinations stay resident for the life of the process; a reopen journals a cooldown re-read after its own transition lock was released"
     }
    ]
   },
@@ -2379,13 +2432,15 @@
    "paths": [
     "crates/busbar-unit-cost/src"
    ],
-   "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "49228f678db78e962beb2a0c1cbf1f9808640f5dee033f7669a6f5b1d60a3a41",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "pricing one settled unit heap-allocates a string per usage line and one more for the fee line, from a class name that is already static, on a path the crate's own allocation case does not cover",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-cost/src/tests"
@@ -2413,6 +2468,17 @@
      "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "49228f678db78e962beb2a0c1cbf1f9808640f5dee033f7669a6f5b1d60a3a41",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "pricing one settled unit heap-allocates a string per usage line and one more for the fee line, from a class name that is already static, on a path the crate's own allocation case does not cover"
     }
    ]
   },
@@ -2422,13 +2488,16 @@
    "paths": [
     "crates/busbar-unit-egress/src"
    ],
-   "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "00077db60c5f40cd66b8c9e3a21a50b2455f010bda16bb2c05918b94cb8e3727",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 2
+   },
+   "report": "the pool name is copied into an owned string on every attempt and again on delivery, so a failover pays for it several times per request; the outbound request that carries the substituted cleartext credential derives its debug output where the sibling credential type hand-writes one that prints presence only; the pick rebuilds the whole candidate list on every retry",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-egress/src/tests"
@@ -2456,6 +2525,18 @@
      "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "00077db60c5f40cd66b8c9e3a21a50b2455f010bda16bb2c05918b94cb8e3727",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 2
+     },
+     "report": "the pool name is copied into an owned string on every attempt and again on delivery, so a failover pays for it several times per request; the outbound request that carries the substituted cleartext credential derives its debug output where the sibling credential type hand-writes one that prints presence only; the pick rebuilds the whole candidate list on every retry"
     }
    ]
   },
@@ -2465,13 +2546,13 @@
    "paths": [
     "crates/busbar-unit-egress-auth/src"
    ],
-   "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
+   "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
    "result": "in_progress",
    "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "report": "the signer's canonicalization and key derivation were checked against the published algorithm and matched; the conformance reading covered a fifth of the scope, so this is a sample",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-egress-auth/src/tests"
@@ -2499,6 +2580,15 @@
      "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
+     "counts": {},
+     "report": "the signer's canonicalization and key derivation were checked against the published algorithm and matched; the conformance reading covered a fifth of the scope, so this is a sample"
     }
    ]
   },
@@ -2509,15 +2599,15 @@
     "crates/busbar-unit-ledger/src"
    ],
    "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 7,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "LOW": 3,
-    "NIT": 1
+    "HIGH": 1,
+    "MEDIUM": 1
    },
-   "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
-   "auditor": "opus-p3-wal-ledger-verbs",
+   "report": "the book of balances grows a row per bucket, dimension, scope and window for the life of the process and the one function that retires a sealed window has no caller outside its own cases; separately every mutation and every read clones a string-owning key to reach a map entry that in the common case inserts nothing, justified by a comment saying the identifier has no total order when it does",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-ledger/src/tests"
@@ -2568,6 +2658,18 @@
       "NIT": 1
      },
      "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1
+     },
+     "report": "the book of balances grows a row per bucket, dimension, scope and window for the life of the process and the one function that retires a sealed window has no caller outside its own cases; separately every mutation and every read clones a string-owning key to reach a map entry that in the common case inserts nothing, justified by a comment saying the identifier has no total order when it does"
     }
    ]
   },
@@ -2578,12 +2680,12 @@
     "crates/busbar-unit-scope/src"
    ],
    "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
    "result": "in_progress",
    "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "report": "read as the authority the auth unit's admin mirror defers to; nothing survived triage in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-scope/src/tests"
@@ -2611,6 +2713,15 @@
      "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
+     "counts": {},
+     "report": "read as the authority the auth unit's admin mirror defers to; nothing survived triage in what was opened"
     }
    ]
   },
@@ -2620,13 +2731,13 @@
    "paths": [
     "crates/busbar-unit-transport-key/src"
    ],
-   "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
-   "result": "zero",
+   "tree_hash": "9cfdb0cb7d5db8651c3fcce3b0b069a888adef9701d9904abf2265481a02eebf",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
    "counts": {},
-   "report": "zero confirmed; all files read fully",
-   "auditor": "opus-pass3",
+   "report": "the default protocol list and the config builder's own literal are pinned by two cases that would go red on a change, so the documented identity between them holds; nothing survived triage",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-transport-key/src/tests"
@@ -2672,6 +2783,15 @@
      "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
      "counts": {},
      "report": "zero confirmed; all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "9cfdb0cb7d5db8651c3fcce3b0b069a888adef9701d9904abf2265481a02eebf",
+     "counts": {},
+     "report": "the default protocol list and the config builder's own literal are pinned by two cases that would go red on a change, so the documented identity between them holds; nothing survived triage"
     }
    ]
   },
@@ -2681,13 +2801,15 @@
    "paths": [
     "crates/busbar-unit-trust/src"
    ],
-   "tree_hash": "fbc6a4c033bc2c5d5fde6ca2cef59ea5910f9548b48ac54bd8201b3f3ce4dc94",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "12d3b9b5fb0a6209d7de8be5a246c033026d33b7866406cb5bea1a68823689f5",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the per-hop candidate list is rebuilt in full on every retry inside the pick loop; the weighted walk's credits are bounded by the algorithm's own invariant, so the plain addition there is not the hazard it looks like",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-trust/src/tests"
@@ -2715,6 +2837,17 @@
      "tree_hash": "fbc6a4c033bc2c5d5fde6ca2cef59ea5910f9548b48ac54bd8201b3f3ce4dc94",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "12d3b9b5fb0a6209d7de8be5a246c033026d33b7866406cb5bea1a68823689f5",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the per-hop candidate list is rebuilt in full on every retry inside the pick loop; the weighted walk's credits are bounded by the algorithm's own invariant, so the plain addition there is not the hazard it looks like"
     }
    ]
   },
@@ -2724,13 +2857,15 @@
    "paths": [
     "crates/busbar-unit-usage/src"
    ],
-   "tree_hash": "47d129e75c87118d11b74c9d5bf02bd366ea71fc4e54a2739e50ff025232d655",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "aec26e16a2f5da2d6ee4548ddf56f394999e5d483345e2300ba60d00c0c43031",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the locator floor's lower band truncates to zero and can never fire for a kernel floor smaller than the configured ratio, while the upper band works at every size",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-usage/src/tests"
@@ -2758,6 +2893,17 @@
      "tree_hash": "47d129e75c87118d11b74c9d5bf02bd366ea71fc4e54a2739e50ff025232d655",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "aec26e16a2f5da2d6ee4548ddf56f394999e5d483345e2300ba60d00c0c43031",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the locator floor's lower band truncates to zero and can never fire for a kernel floor smaller than the configured ratio, while the upper band works at every size"
     }
    ]
   },
@@ -2767,17 +2913,13 @@
    "paths": [
     "crates/busbar-unit-verbs/src"
    ],
-   "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 1,
-    "LOW": 3
-   },
-   "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
-   "auditor": "opus-p3-wal-ledger-verbs",
+   "tree_hash": "1ba453ab2313c7fe43830eacb7225da04186c5f9dc2dfe0947a29309043ca205",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
+   "counts": {},
+   "report": "the mint plan, idempotency probe, posture and rate paths were read and nothing survived triage; the group-name ceiling sits at the provisioning door by design",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-verbs/src/tests"
@@ -2831,6 +2973,15 @@
       "LOW": 3
      },
      "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "1ba453ab2313c7fe43830eacb7225da04186c5f9dc2dfe0947a29309043ca205",
+     "counts": {},
+     "report": "the mint plan, idempotency probe, posture and rate paths were read and nothing survived triage; the group-name ceiling sits at the provisioning door by design"
     }
    ]
   },
@@ -2840,16 +2991,13 @@
    "paths": [
     "crates/busbar-unit-wal/src"
    ],
-   "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1,
-    "LOW": 2
-   },
-   "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
-   "auditor": "opus-p3-wal-ledger-verbs",
+   "tree_hash": "72b37e94e96e3314aa0d61d4a4cdb059f2b6cd1c3656266d32d0fe442f126144",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
+   "counts": {},
+   "report": "segment, journal, recovery and shipping were read and nothing survived triage; three lenses left scope unread, so this is a sample",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-wal/src/tests"
@@ -2903,6 +3051,15 @@
       "LOW": 2
      },
      "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "72b37e94e96e3314aa0d61d4a4cdb059f2b6cd1c3656266d32d0fe442f126144",
+     "counts": {},
+     "report": "segment, journal, recovery and shipping were read and nothing survived triage; three lenses left scope unread, so this is a sample"
     }
    ]
   },
@@ -4801,17 +4958,13 @@
    "paths": [
     "crates/busbar-unit-admission/src/tests"
    ],
-   "tree_hash": "02b0ec22593c021a3706948c8e86cb828521460754bdd57f2789f1379224512b",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 14,
-    "MEDIUM": 16,
-    "LOW": 13
-   },
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "tree_hash": "5503756dbf5c8dab0316bb4edd74f53369235e90d18d7a5f643d63cfd6406b29",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
+   "counts": {},
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4826,6 +4979,15 @@
       "LOW": 13
      },
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "5503756dbf5c8dab0316bb4edd74f53369235e90d18d7a5f643d63cfd6406b29",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4835,13 +4997,13 @@
    "paths": [
     "crates/busbar-unit-audit/src/tests"
    ],
-   "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "0fe8e4dc1592bd440db786a819ce47ca9e16e0f602cbf48033b4152e443fb314",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4852,6 +5014,15 @@
      "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "0fe8e4dc1592bd440db786a819ce47ca9e16e0f602cbf48033b4152e443fb314",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4862,12 +5033,12 @@
     "crates/busbar-unit-auth/src/tests"
    ],
    "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "left unread by every lens this round; the production surface was read instead",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4878,6 +5049,15 @@
      "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
+     "counts": {},
+     "report": "left unread by every lens this round; the production surface was read instead"
     }
    ]
   },
@@ -4887,14 +5067,25 @@
    "paths": [
     "crates/busbar-unit-breaker/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "b1f4bfa439fea9b374281db54ab68e48863b1ced8cb6a538f9ec9f68813361d8",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "in_progress",
    "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "report": "left unread by every lens this round; the production surface was read instead",
+   "auditor": "opus-units-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "b1f4bfa439fea9b374281db54ab68e48863b1ced8cb6a538f9ec9f68813361d8",
+     "counts": {},
+     "report": "left unread by every lens this round; the production surface was read instead"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-cost/src/tests",
@@ -4903,12 +5094,12 @@
     "crates/busbar-unit-cost/src/tests"
    ],
    "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4919,6 +5110,15 @@
      "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4929,12 +5129,14 @@
     "crates/busbar-unit-cost/tests"
    ],
    "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "the allocation case measures the rate lookup only, so the function that prices a settled unit allocates outside anything the case can see",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4945,6 +5147,17 @@
      "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "the allocation case measures the rate lookup only, so the function that prices a settled unit allocates outside anything the case can see"
     }
    ]
   },
@@ -4954,13 +5167,13 @@
    "paths": [
     "crates/busbar-unit-egress/src/tests"
    ],
-   "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "2a45665002fd0fd1261d01e9813bb642e16a3baeb7698f870ad31f167aaf8dce",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "left unread by every lens this round; the production surface was read instead",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4971,6 +5184,15 @@
      "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "2a45665002fd0fd1261d01e9813bb642e16a3baeb7698f870ad31f167aaf8dce",
+     "counts": {},
+     "report": "left unread by every lens this round; the production surface was read instead"
     }
    ]
   },
@@ -4980,13 +5202,13 @@
    "paths": [
     "crates/busbar-unit-egress/tests"
    ],
-   "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "531952f1df3987fa04fbed0c057661635774566d3c0e5e7cc246752adfbaa0ed",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "the cross-crate breaker adapter case was read and is a real agreement test, not one that passes by construction",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4997,6 +5219,15 @@
      "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "531952f1df3987fa04fbed0c057661635774566d3c0e5e7cc246752adfbaa0ed",
+     "counts": {},
+     "report": "the cross-crate breaker adapter case was read and is a real agreement test, not one that passes by construction"
     }
    ]
   },
@@ -5006,13 +5237,13 @@
    "paths": [
     "crates/busbar-unit-ledger/src/tests"
    ],
-   "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "7fca94edb019117dd26129b8b65c66fe426e54c6e82d90c65f5c204e68b0dc06",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -5023,6 +5254,15 @@
      "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "7fca94edb019117dd26129b8b65c66fe426e54c6e82d90c65f5c204e68b0dc06",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -5032,13 +5272,13 @@
    "paths": [
     "crates/busbar-unit-trust/src/tests"
    ],
-   "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "37885d786faaf1daf9ff22702495adeeb9da3e745251e83300115fd7e7a38f61",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "sampled for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -5049,6 +5289,15 @@
      "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "37885d786faaf1daf9ff22702495adeeb9da3e745251e83300115fd7e7a38f61",
+     "counts": {},
+     "report": "sampled for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -5059,12 +5308,12 @@
     "crates/busbar-unit-trust/tests"
    ],
    "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "the weighted-allocation case was read and measures what it claims to",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -5075,6 +5324,15 @@
      "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
+     "counts": {},
+     "report": "the weighted-allocation case was read and measures what it claims to"
     }
    ]
   },
@@ -5085,12 +5343,12 @@
     "crates/busbar-unit-usage/src/tests"
    ],
    "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -5101,6 +5359,15 @@
      "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -5110,13 +5377,13 @@
    "paths": [
     "crates/busbar-unit-verbs/src/tests"
    ],
-   "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -5127,6 +5394,15 @@
      "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -5136,13 +5412,13 @@
    "paths": [
     "crates/busbar-unit-wal/src/tests"
    ],
-   "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "da7d9cab5fca1ad8035f853335bf54a0f5f9597f072bad9f64c7289325b923ff",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -5153,6 +5429,15 @@
      "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "da7d9cab5fca1ad8035f853335bf54a0f5f9597f072bad9f64c7289325b923ff",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
