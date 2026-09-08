@@ -126,6 +126,7 @@ fn all_sources(kernel: &Kernel) -> McpLegSources<'_> {
         denylist: Some(Denylist::default()),
         door: Some(Door::new(InMemoryCells::new())),
         groups: Some(GroupTable::default()),
+        pricer: Some(Pricer::flat(0)),
         store: Some(Arc::new(busbar_core::governance::MemoryStore::new())),
         meter_policy: Some(crate::root::policy::build(
             &crate::root::policy::MeterPolicyConfig::default(),
@@ -189,6 +190,7 @@ fn a_binding_with_no_source_refuses_boot_naming_the_field() {
     refuses!("kinds", denylist);
     refuses!("door", door);
     refuses!("chain", groups);
+    refuses!("pricer", pricer);
     refuses!("records", store);
     refuses!("meter_policy", meter_policy);
     refuses!("scope_policy", scope_policy);
@@ -233,44 +235,56 @@ fn the_boot_refusal_quotes_the_source_table() {
 //   THE MONEY IS READ LIVE, NEVER CAPTURED AT BOOT
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// **The leg holds no price and no fee, and it reads both off the process's live card.**
+/// **The leg keeps no class price, and it reads them off the process's live card.**
 ///
 /// A structural proof rather than a behavioural one, and deliberately: the card holder is a process
 /// global, so a cell that swapped a card to watch a figure move would be a cell every other cell in
 /// this binary races against. What can be said without racing anything is the thing that actually
-/// matters — that there is nowhere on this leg for a boot reading to be KEPT, and that the one place
-/// the figures are read names the holder.
+/// matters — that there is nowhere on this leg for a boot reading of the RATES to be KEPT, and that
+/// the one place they are read names the holder.
 ///
-/// A leg that captured either at boot would go on pricing this node's ledger against rates the
+/// A leg that captured them at boot would go on pricing this node's ledger against rates the
 /// operator has already replaced: the usage projection reprices on an apply and the ledger would
-/// not, and the identity that says the two are one money would hold only until the first fee changed.
+/// not, and the identity that says the two are one money would hold only until the first rate moved.
+///
+/// **THE FLAT FEE IS THE STATED EXCEPTION.** It is a `Pricer` the caller resolved, held on the leg,
+/// because the fee lives behind the cost unit's own field and the construction gate names the two
+/// crates entitled to read it — a composition root deriving a pricer from it would be a third. So
+/// the fee this leg prices with is the one resolved when the leg was assembled, exactly as the A2A
+/// sibling's is, and this cell asserts the exception is the ONLY one.
 #[test]
-fn the_leg_keeps_no_captured_price_and_reads_the_live_card() {
+fn the_leg_keeps_no_captured_rate_and_reads_the_live_card() {
     let src = include_str!("../units_mcp_leg.rs");
     let start = src
         .find("pub struct McpLeg {")
         .expect("the leg struct is in this file");
     let body = &src[start..start + src[start..].find("\n}\n").expect("it closes")];
-    for kept in ["prices:", "pricer:", "bytes_nanos:", "fee_nanos:"] {
+    for kept in ["prices:", "bytes_nanos:", "fee_nanos:", "tool_calls:"] {
         assert!(
             !body.contains(kept),
-            "`McpLeg` keeps `{kept}` — a figure held on the leg is a figure read once at boot, and \
-             an apply after that moves the projection and not this node's books"
+            "`McpLeg` keeps `{kept}` — a rate held on the leg is a rate read once at boot, and an \
+             apply after that moves the projection and not this node's books"
         );
     }
-    let money = src
-        .find("fn money(&self)")
-        .map(|at| &src[at..at + 900])
-        .expect("the one reading of the money is written here");
     assert!(
-        money.contains("ROOT_CARD.pin()"),
-        "the figures come off the process's own card holder, which the rate-apply seam swaps on \
-         boot AND on every live apply or reload"
+        body.contains("pricer: Pricer,"),
+        "the flat fee IS held, and it is held as a value the caller resolved rather than one this \
+         leg derived — a change that made the leg derive it would be a third crate reading a field \
+         the gate says two may read, and this cell is where that shows up"
+    );
+    let prices = src
+        .find("fn prices(&self)")
+        .map(|at| &src[at..at + 900])
+        .expect("the one reading of the rates is written here");
+    assert!(
+        prices.contains("ROOT_CARD.pin()"),
+        "the rates come off the process's own card holder, which the rate-apply seam swaps on boot \
+         AND on every live apply or reload"
     );
     assert!(
-        money.contains("lane_rates") && money.contains("per_request_fee_cents"),
-        "and both readings are the card's own published ones, over the registration's own lane — \
-         no class-keyed table is invented and no configuration key is added"
+        prices.contains("lane_rates") && prices.contains("nanos_per_unit"),
+        "and the readings are the card's own published ones, over the registration's own lane — no \
+         class-keyed table is invented and no configuration key is added"
     );
 }
 
