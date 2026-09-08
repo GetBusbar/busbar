@@ -9,6 +9,14 @@
 //! no protocol meaning — no verbs, no ids, no JSON. That belongs to whichever plane rides this
 //! transport.
 //!
+//! ## Serving a declared surface on it
+//!
+//! [`mount`] is the generic half: hand it a plane's declared surface and a session driver, and it
+//! addresses the upgrade against a declared binding, publishes the arrival facts, hands every
+//! inbound frame across the driver seam and writes back every frame the driver answers, in order.
+//! Which plane it is serving it does not know, and `tests/no_plane_names.rs` holds it to that over
+//! this crate's own source and manifest.
+//!
 //! ## The lower layer
 //!
 //! The architecture composes `ws` OVER `http` (itself over `tcp`/`tls`), and states the top
@@ -29,6 +37,7 @@
 #![deny(missing_docs)]
 
 mod conn;
+pub mod mount;
 mod transport;
 
 pub use conn::StaticConfig;
