@@ -1453,7 +1453,11 @@ async fn run(data_workers: usize) {
     // would look healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
     // directory, so nothing appears beside a configuration that asked for none, and it is built
     // before either listener binds because the first accepted connection can settle.
-    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    #[cfg(any(
+        feature = "root-admin",
+        feature = "root-llm",
+        feature = "root-a2a-serve"
+    ))]
     let book = root::durability::node_book();
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
