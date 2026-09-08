@@ -243,11 +243,6 @@ static KINDS: &[KindDef] = &[
         matchers: &["busbar-export-"],
     },
     KindDef {
-        kind: "spike",
-        family: Family::Neutral,
-        matchers: &["=plane-abi-spike", "=plane-abi-spike-plugin"],
-    },
-    KindDef {
         kind: "legacy",
         family: Family::Plane,
         matchers: &[
@@ -302,6 +297,7 @@ const LEGACY_CRATES: &[&str] = &[
 const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
     ("plane", "plane"),
     ("transport", "transport"),
+    ("store", "store"),
     ("hook", "hooks"),
     ("pure_auth", "auth"),
     ("egress_auth", "auth"),
