@@ -56,6 +56,8 @@
 //! make a number look better: a waiver says "not owed, and here is why", and laundering a gap into
 //! one is how the losslessness claim became false in the first place.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 fn repo_root() -> std::path::PathBuf {
@@ -244,8 +246,14 @@ fn every_carried_claim_names_a_real_test() {
                 stack.push(p);
             } else if p.extension().and_then(|x| x.to_str()) == Some("rs") {
                 if let Ok(t) = std::fs::read_to_string(&p) {
-                    haystack.push_str(&t);
-                    haystack.push('\n');
+                    // Comments stripped and string/char literal CONTENTS blanked, so a doc
+                    // comment naming the instrument (`/// see fn carries_x(`) or a string literal
+                    // spelling it cannot satisfy the claim in place of a real function
+                    // definition.
+                    for line in common::classify(&t, false) {
+                        haystack.push_str(&line.blank);
+                        haystack.push('\n');
+                    }
                 }
             }
         }
