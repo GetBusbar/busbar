@@ -63,7 +63,7 @@ pub fn pool_key(bucket: &str, pool: &str) -> TotalsKey {
     TotalsKey::new(
         BucketId::new(bucket),
         CapDimension::NanoUnits,
-        BucketScope::Pool(pool.to_string()),
+        BucketScope::Pool(pool.into()),
     )
 }
 

@@ -463,12 +463,16 @@ impl StoreAdapter {
                     push("", CapDimension::Requests, ledger.requests);
                     push(
                         "",
-                        CapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                        CapDimension::Class(BILLABLE_REQUESTS_CLASS.into()),
                         ledger.billable_requests,
                     );
                     for model in &ledger.models {
                         for (unit, count) in &model.usage_units {
-                            push(&model.model, CapDimension::Class(unit.clone()), *count);
+                            push(
+                                &model.model,
+                                CapDimension::Class(unit.as_str().into()),
+                                *count,
+                            );
                         }
                     }
                     // The bucket's balance comes from the ENFORCEMENT ledger alone. The metering
@@ -508,7 +512,7 @@ impl StoreAdapter {
                         };
                         push(CapDimension::Requests, row.requests);
                         push(
-                            CapDimension::Class(BILLABLE_REQUESTS_CLASS.to_string()),
+                            CapDimension::Class(BILLABLE_REQUESTS_CLASS.into()),
                             row.billable_requests,
                         );
                         for (unit, amount) in [
@@ -517,7 +521,7 @@ impl StoreAdapter {
                             (UNIT_CACHE_READ, row.tokens_cache_read),
                             (UNIT_CACHE_WRITE, row.tokens_cache_write),
                         ] {
-                            push(CapDimension::Class(unit.to_string()), amount);
+                            push(CapDimension::Class(unit.into()), amount);
                         }
                     }
                 }
