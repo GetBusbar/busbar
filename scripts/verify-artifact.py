@@ -793,25 +793,38 @@ def row_coverage(rows: list, targets: dict) -> dict:
 
     The five `kind: image` rows apply only to targets whose `kind` is `image`. Both such targets in
     .github/release-targets.json carry `published: false`, and release-stage.yml's `targets` job
-    builds the verify matrix from the PUBLISHED targets only (deliberately — `cargo build --target
-    image-linux-amd64` is not a thing). The two musl binaries are in the same position. So
-    `image_boots_documented_quickstart`, `image_runs_as_nonroot`, `image_release_pubkey`,
-    `image_version_anchored` and `image_matches_packaged_binary` are written, correct, reviewed,
-    covered by set equality — and have never executed. Every reader of the contract sees fourteen
-    properties asserted about what ships. Nine are.
+    built the verify matrix from the PUBLISHED targets only (deliberately — `cargo build --target
+    image-linux-amd64` is not a thing). So `image_boots_documented_quickstart`,
+    `image_runs_as_nonroot`, `image_release_pubkey`, `image_version_anchored` and
+    `image_matches_packaged_binary` were written, correct, reviewed, covered by set equality — and
+    had never executed. Every reader of the contract saw fourteen properties asserted about what
+    ships. Nine were.
 
     That is worse than an absent check, because an absent check is visibly absent. This function
     makes it visible: it returns, per row, the targets that make it applicable, split by whether
     the release pipeline verifies that target at all. `main()` names every uncovered row in its
-    output and in the job summary, and `--coverage` exits non-zero on one, so the gap can be a gate
-    the moment a workflow calls it.
+    output and in the job summary, and `--coverage` exits non-zero on one, so the gap is a gate.
 
-    "Verified" is `published == true`: that is precisely the set release-stage.yml's `targets` job
-    emits as the verify matrix. Deriving it from the same field the workflow derives it from means
-    this report cannot drift into claiming coverage the pipeline does not provide.
+    "VERIFIED" IS `published == true` OR `kind == image`, AND THE SECOND HALF IS NOT A CONCESSION.
+    It is the same rule as before — the set of targets release-stage.yml actually runs a contract
+    leg over — restated after that file grew a second such leg. `targets` now emits TWO matrices
+    from this same file: `matrix` (the published set, verified by the `verify-artifact` job against
+    the released archive) and `images` (the `kind: image` set, verified by the `verify-image` job
+    against the digest `stage-image` pushed, with the musl artifact the image packages passed in as
+    `--packaged-from`). Deriving this report from the same predicates the workflow derives its
+    matrices from is what keeps it from drifting into claiming coverage the pipeline does not
+    provide — in EITHER direction: claiming a gap that has been closed trains readers to ignore the
+    gap report, which costs exactly as much as missing a real one.
+
+    The two musl binaries remain `unverified_targets`: nothing runs the contract's binary rows
+    (archive_shape, release_pubkey, quickstart_boots, …) against a musl tarball. What the image leg
+    added is narrower and worth stating precisely — `image_matches_packaged_binary` proves the
+    binary inside the image IS the musl artifact, byte for byte, which makes the image rows' verdict
+    a verdict about those bytes too, but it is not the binary contract run against them.
     """
     specs = targets.get("targets") or []
-    verified_specs = [t for t in specs if t.get("published") is True]
+    verified_specs = [t for t in specs
+                      if t.get("published") is True or t.get("kind") == "image"]
     out = {
         "verified_targets": [t["target"] for t in verified_specs],
         # The TARGET-level half of the same gap. The two musl binaries are `published: false` and
@@ -820,7 +833,11 @@ def row_coverage(rows: list, targets: dict) -> dict:
         # not show up in the row list below, because their rows (archive_shape, release_pubkey, …)
         # are covered on the six published targets — which is exactly the confusion worth naming:
         # a row being covered SOMEWHERE is not that row being covered on THESE bytes.
-        "unverified_targets": [t["target"] for t in specs if t.get("published") is not True],
+        # The complement of the verified set, computed FROM it rather than restated as its own
+        # predicate: two predicates for one partition drift, and this one did — the image targets
+        # went on being listed here as "opened by no contract run" the moment a job started running
+        # five contract rows against them.
+        "unverified_targets": [t["target"] for t in specs if t not in verified_specs],
         "rows": {},
         "gaps": [],
     }
@@ -838,10 +855,12 @@ def print_coverage_gaps(cov: dict, contract_path: str) -> None:
     if cov["unverified_targets"]:
         print("\nUNVERIFIED TARGETS — declared in the targets file, opened by no contract run: %s"
               % ", ".join(cov["unverified_targets"]))
-        print("  The musl entries are the bytes that go INSIDE the published container image, and the")
-        print("  image entries are that image. Nothing runs the verifier against either, so every")
-        print("  property proven below is proven about the tarballs and about nothing a container user")
-        print("  ever executes. `packaged_into` says which image each musl binary feeds.")
+        print("  These are the musl binaries that go INSIDE the published container image. No leg runs")
+        print("  the BINARY rows (archive_shape, release_pubkey, quickstart_boots, …) against one, so")
+        print("  every such property proven below is proven about the tarballs. The image itself IS")
+        print("  verified — release-stage.yml's `verify-image` runs the image rows against the staged")
+        print("  digest — and `image_matches_packaged_binary` proves the image carries exactly these")
+        print("  bytes, which is a narrower claim than running the binary contract over them.")
     if not cov["gaps"]:
         print("coverage: every declared contract row is executed by at least one verified target.")
         return
@@ -1026,19 +1045,30 @@ def selftest() -> int:
           "published:false must still switch a published-only row off, as a real exemption")
 
     # ── THE COVERAGE REPORT DISCRIMINATES ────────────────────────────────────────────────────────
-    # Set equality is satisfied by the real contract and always has been; five rows still run
-    # against nothing. These cases prove the report says so, and — the other half — that it does not
-    # cry gap when a row IS covered.
+    # Set equality is satisfied by the real contract and always has been. The five image rows used
+    # to be executed by nothing, and this case asserted exactly that. release-stage.yml's
+    # `verify-image` job now runs them against the staged digest, so the assertion is INVERTED
+    # rather than deleted: the report must say they are covered. Deleting it would have left the
+    # report free to drift back to crying gap over a closed gap, which trains a reader to ignore
+    # the one output whose job is to say a check never ran. The negative case below keeps the other
+    # direction honest.
     real_contract = json.load(open(DEFAULT_CONTRACT, encoding="utf-8"))
     real_targets = json.load(open(DEFAULT_TARGETS, encoding="utf-8"))
     real_rows = _assert_contract_is_whole(real_contract)
     cov = row_coverage(real_rows, real_targets)
     image_rows = sorted(r["id"] for r in real_rows
                         if (r.get("applies_when") or {}).get("kind") == "image")
-    check("the image rows are named as gaps",
-          set(image_rows) <= set(cov["gaps"]) and image_rows,
-          "declared+implemented, applicable only to published:false image targets, executed by nothing: %s"
-          % ", ".join(cov["gaps"]))
+    check("the image rows are covered, not named as gaps",
+          image_rows and not (set(image_rows) & set(cov["gaps"]))
+          and all(cov["rows"][r]["covered_by"] for r in image_rows),
+          "release-stage.yml's verify-image runs them against the staged digest; covered by %s"
+          % ", ".join(sorted({t for r in image_rows for t in cov["rows"][r]["covered_by"]})))
+    # THE OTHER DIRECTION, on the same rows: remove the image targets and the same five rows must be
+    # reported as gaps again. A report that can only ever say "covered" is not a report.
+    imageless = {"targets": [t for t in real_targets["targets"] if t.get("kind") != "image"]}
+    check("a row whose targets all disappeared IS named as a gap",
+          set(image_rows) <= set(row_coverage(real_rows, imageless)["gaps"]),
+          "with no kind:image target left, the five image rows are executed by nothing and say so")
     check("a covered row is NOT named as a gap",
           "release_pubkey" not in cov["gaps"] and cov["rows"]["release_pubkey"]["covered_by"],
           "release_pubkey runs on %d verified target(s)" % len(cov["rows"]["release_pubkey"]["covered_by"]))

@@ -780,6 +780,12 @@ jobs:
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
       assets: ${{ steps.emit.outputs.assets }}
+      # The `kind: image` targets, with the native runner, OCI platform and musl feeder each needs.
+      # Derived here rather than written literally in `verify-image`'s matrix so the image half of
+      # the contract enumerates from .github/release-targets.json exactly as the binary half does --
+      # a hardcoded list is a second statement of which artifacts a release ships, and the release
+      # gate's `contract:drift` row refuses one on sight.
+      images: ${{ steps.emit.outputs.images }}
       # The bare list of target triples, for the set-equality job. It is emitted HERE, from the same
       # parse as the build matrix, so "the set that was supposed to be produced" and "the set that
       # was supposed to be verified" are literally the same computation and cannot drift apart.
@@ -836,7 +842,57 @@ jobs:
                   "release-targets.json declares %d PUBLISHED targets; busbar ships 6. Refusing to "
                   "run a build matrix and a verify matrix over a set this small: an empty "
                   "expectation list passes for a release that published nothing." % len(inc))
+          # THE IMAGE HALF OF THE CONTRACT, ENUMERATED FROM THE SAME FILE AND FOR THE SAME REASON.
+          #
+          # The two `kind: image` entries are not build legs -- docker.yml builds the image -- but
+          # they are declared artifacts with five contract rows of their own
+          # (image_boots_documented_quickstart, image_runs_as_nonroot, image_release_pubkey,
+          # image_version_anchored, image_matches_packaged_binary). They are `published: false`, so
+          # the verify matrix above -- which is the PUBLISHED set, correctly -- never enumerated
+          # them, and those five rows had never executed once:
+          # `scripts/verify-artifact.py --coverage` names all five as gaps, by id. Every reader of
+          # .github/artifact-contract.json saw fourteen properties asserted about what ships; nine
+          # were. `verify-image` below is the leg that runs them, against the digest this run
+          # staged.
+          #
+          # Each image needs three things this file already knows: the NATIVE runner for its
+          # architecture (an image row that boots the image has to run it, not emulate it), the OCI
+          # platform string, and WHICH musl artifact the image is supposed to package -- the
+          # `image_matches_packaged_binary` row compares sha256s, and a comparison needs both sides.
+          images = []
+          for t in spec["targets"]:
+              if t.get("kind") != "image":
+                  continue
+              # `image-linux-amd64` -> `amd64`, which is exactly how docker.yml names its
+              # build-binaries matrix legs and the `busbar-<arch>` artifact each of them uploads.
+              docker_arch = t["target"].rsplit("-", 1)[-1]
+              feeders = [m["target"] for m in spec["targets"]
+                         if m.get("packaged_into") == t["target"]]
+              # STRICT. `packaged_into` is the declaration that ties a musl binary to the image that
+              # carries it, and the image contract's strongest row is "the binary inside the image
+              # IS that artifact". Zero feeders means nothing to compare against and the row would
+              # be asked to verify an image against nothing; two means the file no longer says which
+              # bytes are owed. Either way the honest move is to stop here rather than run a
+              # contract that cannot state its own subject.
+              if len(feeders) != 1:
+                  raise SystemExit(
+                      "release-targets.json: image target %s is fed by %r. EXACTLY one target must "
+                      "declare `packaged_into: %s`, because the image contract asserts the binary "
+                      "inside the image is that artifact byte for byte."
+                      % (t["target"], feeders, t["target"]))
+              images.append({"target": t["target"], "runner": t["runner"],
+                             "platform": t["platform"], "docker_arch": docker_arch,
+                             "packaged_from": feeders[0]})
+          # The same floor, for the same reason as `inc` above: a discovered set with no floor
+          # passes when it is empty, and an empty image matrix would report a green staging run in
+          # which the published container image was never opened.
+          if len(images) != 2:
+              raise SystemExit(
+                  "release-targets.json declares %d `kind: image` targets; the release publishes a "
+                  "two-architecture image. Refusing to run an image contract over a set this size: "
+                  "an empty matrix verifies nothing and reports green." % len(images))
           print("matrix=" + json.dumps({"include": inc}))
+          print("images=" + json.dumps({"include": images}))
           print("targets=" + json.dumps(sorted(t["target"] for t in shipped)))
           print("assets=" + json.dumps(assets))
           PY
@@ -1217,6 +1273,99 @@ jobs:
                 % (len(declared), ", ".join(sorted(declared))))
           PY
 
+  # -- THE IMAGE, PUT THROUGH THE SAME CONTRACT THE TARBALLS PASS ---------------------------------
+  #
+  # FIVE DECLARED CONTRACT ROWS THAT HAD NEVER RUN, ONCE.
+  #
+  # .github/artifact-contract.json declares fourteen rows. Five of them are `applies_when: {kind:
+  # image}` and both `kind: image` targets are `published: false`, so the `verify-artifact` matrix
+  # above -- correctly enumerated from the PUBLISHED set -- never contained them. Set equality
+  # between declared and implemented rows was satisfied the whole time (verify-artifact.py asserts
+  # it and would have failed the run otherwise), which is exactly why nothing noticed:
+  # `image_boots_documented_quickstart`, `image_runs_as_nonroot`, `image_release_pubkey`,
+  # `image_version_anchored` and `image_matches_packaged_binary` are written, reviewed, correct, and
+  # were executed by nothing. `scripts/verify-artifact.py --coverage` names all five, by id, and
+  # exits non-zero; every artifact-contract run prints them as GAPs in its own summary. That is
+  # worse than an absent check, because a reader of the contract counts fourteen properties asserted
+  # about what ships and nine hold.
+  #
+  # This job is the leg those rows were waiting for, and it is the one place in the pipeline where
+  # both halves of the comparison exist at once: the image has been pushed (stage-image), and the
+  # musl binary it is supposed to package is an artifact of that same run (docker.yml's
+  # `busbar-<arch>`). After the promote neither is true -- the musl binary is not a release asset,
+  # so nothing downstream can ever prove the image PACKAGES the built artifact rather than
+  # containing a second, separately-compiled one. That row (image_matches_packaged_binary) is the
+  # one that makes the image a package rather than a parallel build path, and the aarch64 key defect
+  # (#52) is precisely what a second build path does.
+  #
+  # BY DIGEST, NOT BY TAG. `--image` takes the manifest digest `stage-image` reported -- the same
+  # value `record-staged` writes into the record and `release.yml`'s resolve-staged re-derives from
+  # both registries before promoting. A tag is a moving pointer, so verifying `:staging-<sha>`
+  # proves something about whatever that name meant at the instant of the pull; the digest IS the
+  # artifact, and it is the digest -- not the name -- that gets retagged as X.Y.Z on the promote.
+  # So what this job verifies and what a user later pulls are the same bytes by construction.
+  #
+  # NATIVE RUNNERS, ONE PER ARCHITECTURE, from the target's own `runner` field: three of the five
+  # rows RUN the image, and an arm64 image booted under emulation is a different experiment from an
+  # arm64 image booted on arm64 -- which is the whole reason the binary half of the contract fans
+  # out onto native runners too.
+  verify-image:
+    name: contract ${{ matrix.target }}
+    needs: [plan, targets, stage-image]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.targets.outputs.images) }}
+    # Same `!cancelled()` reasoning as every other verifier in this file: a red upstream must make
+    # this LOUDER, not switch it off. It gates the promote through `verify-staged`'s `needs:`.
+    if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The musl binary docker.yml built and packaged into this image, from THIS run. The
+      # `image_matches_packaged_binary` row sha256s it against the binary it reads back out of the
+      # image, so this download is one half of that comparison and its absence must fail the job
+      # rather than skip the row.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: busbar-${{ matrix.docker_arch }}
+          path: packaged
+
+      - name: The image contract, against the digest that was staged
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Inert data through env:, never spliced into the script -- an org variable is not a
+          # secret and is writable by anyone with org-admin. Same rule as `verify-artifact` above.
+          RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+          DIGEST: ${{ needs.stage-image.outputs.digest }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # A DIGEST OR NOTHING. An empty or malformed value would make `--image` a name the
+          # verifier cannot pin, and the image rows would then either run against a tag or fail with
+          # a message about argument shape rather than about the release. Refuse first, plainly.
+          case "$DIGEST" in
+            sha256:*) : ;;
+            *) echo "::error::stage-image reported '${DIGEST:-<nothing>}' as the manifest digest, which is not a sha256 digest. The image contract addresses the image by digest on purpose -- a tag is a moving pointer and the promote retags the DIGEST -- so there is nothing honest to verify here. Re-run this workflow."; exit 1 ;;
+          esac
+          ref="getbusbar/busbar@${DIGEST}"
+          # Pull once, explicitly, for THIS platform: three of the five rows run the image and one
+          # reads its config off the local copy, and a pull that fails should say so as a pull
+          # failure rather than as five row failures with the same cause.
+          docker pull --platform "$PLATFORM" "$ref"
+          chmod +x packaged/busbar
+          python3 scripts/verify-artifact.py \
+            --target "$TARGET" \
+            --version "$VERSION" \
+            --pubkey "$RELEASE_PUBKEY" \
+            --image "$ref" \
+            --packaged-from packaged/busbar \
+            --repo "$GITHUB_REPOSITORY" \
+            --repo-root .
+
   # -- THE GATE: CONSUMER VERIFICATION, BEFORE THE NAME EXISTS -------------------------------------
   #
   # This is the job the whole restructure exists to make possible. It runs verify-deploy.yml -- the
@@ -1255,7 +1404,11 @@ jobs:
     # asset set could still flip the draft public and push the tag — the publish-before-verify
     # seam this release model exists to close. A failed need SKIPS this gate, which skips promote,
     # which leaves nothing public.
-    needs: [plan, verify-assets, verify-set-equality, stage-image]
+    #
+    # `verify-image` joins that list for the same reason verify-set-equality is on it: the five
+    # image contract rows now execute, and a contract that runs and fails must stop the promote
+    # rather than be a red square beside a green one.
+    needs: [plan, verify-assets, verify-set-equality, verify-image, stage-image]
     uses: ./.github/workflows/verify-deploy.yml
     with:
       version: ${{ needs.plan.outputs.version }}
