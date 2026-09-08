@@ -202,6 +202,36 @@ pub fn run(gate: &StructureLintGate, cx: &Ctx) -> Report {
         &["OVERSIZED", "planted_monster.rs"],
     ));
 
+    // THE OTHER HALF OF THE SAME RULE: an empty offender list is this cap's PASSING answer, so a
+    // walk that read nothing looks exactly like a clean tree. The plant empties the rule's own scan
+    // set — the same idiom the candidate floor above is proven with, over `oversized::scan`'s exact
+    // spec, which differs from the corpus's (`benches/` is in the cap's scope and out of the
+    // corpus's).
+    match cx.walk(
+        &crate::ctx::WalkSpec::new([roots::CRATES])
+            .ext("rs")
+            .exclude(["/tests/"]),
+    ) {
+        Ok(files) => {
+            let mut ov = Overlay::new();
+            for s in &files {
+                ov.remove(&s.rel);
+            }
+            report.push(tree_case(
+                cx,
+                gate,
+                "an impl-file walk that read nothing is refused, not reported as no monsters",
+                &[oversized::ROW_OVERSIZED],
+                ov,
+                &["OVERSIZED-SCAN-FAILED"],
+            ));
+        }
+        Err(e) => report.note_infra_failure(format!(
+            "structure-lint selftest: the impl-file walk is unreadable ({e}), so the cap's floor \
+             plant has nothing to empty"
+        )),
+    }
+
     // A GRANDFATHERED FILE STAYS GREEN, which is the half of the rule an exception list can get
     // wrong in the expensive direction.
     if let Some(first) = t.grandfathered.first() {
