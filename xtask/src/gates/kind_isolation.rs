@@ -383,6 +383,9 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     ("plugin-tooling", "unit"),
     ("secret", "api"),
     ("secret", "plugin-tooling"),
+    // A store plugin implements the contract's record sink: the spec edge every plugin kind
+    // carries (PLUGIN-TREE §4), first taken by store-memory when the kernel record store landed.
+    ("store", "contract"),
     ("store", "api"),
     ("store", "plugin-tooling"),
     ("store", "store"),
