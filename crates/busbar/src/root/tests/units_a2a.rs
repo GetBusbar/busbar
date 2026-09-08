@@ -1937,3 +1937,87 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
     );
     assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
 }
+
+/// **A record leg driven through the kernel lands in the store's own record verbs.**
+///
+/// This is the whole seam in one cell. The leg goes in at the composition root, is validated by the
+/// kernel's one runner — schema declared, operation declared, body within the ceiling — and comes
+/// out the far side as a `busbar_contract::kinds::RecordSink` call on a real `MemoryStore`. The
+/// assertion is deliberately made on the STORE and not on the adapter's own return: a binding that
+/// answered from a cache of its own would satisfy the read-back and still have written nothing
+/// durable, and that is exactly the failure a record leg exists to rule out.
+///
+/// The store is reached through the contract, which is the point: the backend implements the
+/// contract's sink and names no kernel, the kernel names no store, and this file — the composition
+/// root — is the only thing that has both in its hands.
+#[test]
+fn a_record_leg_through_the_kernel_lands_in_the_stores_own_record_verbs() {
+    use busbar_contract::kinds::{RecordBytes, RecordSink};
+
+    let store = Arc::new(busbar_core::governance::MemoryStore::new());
+    let legs = SinkRecordLegs::new(store.clone());
+    let key = LegKey {
+        id: "t-1",
+        parent: None,
+        seq: 0,
+        ts: 7,
+        expires_at: 9,
+        terminal: false,
+    };
+
+    legs.run(records::SCHEMA_TASK, records::OP_PUT, &key, b"submitted")
+        .expect("a declared operation on a declared schema, inside the ceiling");
+
+    assert_eq!(
+        store
+            .record_get(records::SCHEMA_TASK, b"t-1")
+            .expect("the backend's own read"),
+        Some(RecordBytes::new(b"submitted".to_vec()).expect("inside the ceiling")),
+        "the leg wrote where the STORE keeps its records, not where the binding could see it"
+    );
+    assert_eq!(
+        legs.run(records::SCHEMA_TASK, records::OP_GET, &key, b"")
+            .expect("the read leg")
+            .body,
+        Some(b"submitted".to_vec()),
+        "and it reads back out through the same runner"
+    );
+}
+
+/// **The kernel refuses before the sink, on the binding the contract's verbs back too.**
+///
+/// The three checks are the runner's and are not restated in either binding, so a schema this plane
+/// never declared has to be refused with the store untouched — no row written, and the refusal
+/// naming the schema rather than surfacing as a backend failure.
+#[test]
+fn an_undeclared_schema_never_reaches_the_contract_sink() {
+    use busbar_contract::kinds::RecordSink;
+
+    let store = Arc::new(busbar_core::governance::MemoryStore::new());
+    let legs = SinkRecordLegs::new(store.clone());
+    let stranger = busbar_contract::ids::RecordSchemaId::new("ledger");
+    let key = LegKey {
+        id: "t-1",
+        parent: None,
+        seq: 0,
+        ts: 7,
+        expires_at: 9,
+        terminal: false,
+    };
+
+    let refusal = legs
+        .run(stranger, records::OP_PUT, &key, b"submitted")
+        .expect_err("a schema this plane does not declare");
+
+    assert!(
+        matches!(refusal, LegError::UndeclaredOp { schema, .. } if schema == "ledger"),
+        "refused as a leg naming something that does not exist, not as a store failure: {refusal:?}"
+    );
+    assert_eq!(
+        store
+            .record_scan(stranger, b"", 8)
+            .expect("the backend's own scan"),
+        vec![],
+        "and nothing reached the backend"
+    );
+}
