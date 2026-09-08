@@ -5,6 +5,7 @@
 
 mod checkpoint_tests;
 mod fixtures;
+mod hydrate_tests;
 mod identity_tests;
 mod migration_tests;
 mod recompute_tests;

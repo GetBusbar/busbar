@@ -918,3 +918,207 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
     );
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
 }
+
+// ── THE RESTART CELL ────────────────────────────────────────────────────────────────────────────
+
+/// Settle `settled` nano-units against a bucket, over a hold that reserved exactly that much.
+fn settle_nanos(durability: &mut Durability, bucket: &str, window: WindowStart, settled: u64) {
+    use busbar_caps::{
+        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+        QuantitySource, Usage, UsageLine, UsageToken,
+    };
+    let seal = KernelSeal::acquire_for_kernel();
+    let key = totals_key(bucket);
+    durability.ledger.record_hold_opened(&key, window, settled);
+    let hold = Hold::open(
+        &AdmitToken::<Admit>::mint(&seal),
+        PrincipalId::new(bucket),
+        settled,
+    );
+    let usage = Usage::report(
+        &UsageToken::mint(&seal),
+        vec![UsageLine {
+            class: MeterClassId::new("nano_units"),
+            quantity: settled,
+            source: QuantitySource::Count,
+            estimated: false,
+        }],
+    )
+    .expect("one line");
+    let durability_token = token();
+    let at = Settling {
+        key: &key,
+        window,
+        durability: &durability_token,
+        step: StepName::Meter,
+        stamp: stamp(),
+    };
+    durability
+        .settle(
+            &at,
+            hold,
+            u128::from(settled),
+            &usage,
+            &LedgerToken::mint(&seal),
+        )
+        .expect("the journal takes it");
+}
+
+/// **Boot, spend, restart, spend again — through the real journal, on a real disk.**
+///
+/// The end-to-end statement of what the hydration is for. Every figure below crosses a process
+/// boundary: the first node writes its postings onto a journal in a directory, is dropped, and a
+/// second node opens the same directory and reads them back into its own book. Nothing is handed
+/// between the two but the bytes on the disk.
+///
+/// The counter-arm is the same second boot WITHOUT the hydration, which is what the unit chain did
+/// before this existed: an empty book against a chain full of postings.
+#[test]
+fn the_ledgers_spend_survives_a_restart_and_the_second_run_accrues_on_top_of_it() {
+    const WINDOW: WindowStart = 86_400;
+    let scratch = ScratchDir::new("ledger-hydrate");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_restart");
+
+    // ── BOOT ────────────────────────────────────────────────────────────────────────────────────
+    let mut first = build_for_node(&cfg, 7, Box::new(NullShipper::new()), rows())
+        .expect("the directory is writable");
+    let booted = first.hydrate_ledger().expect("an empty chain hydrates");
+    assert_eq!(booted.postings, 0, "a first boot replays nothing");
+    assert!(booted.carried.is_empty(), "and carries nothing");
+
+    // ── SPEND ───────────────────────────────────────────────────────────────────────────────────
+    settle_nanos(&mut first, "vk_restart", WINDOW, 250_000_000);
+    settle_nanos(&mut first, "vk_restart", WINDOW, 90_000_000);
+    assert_eq!(
+        first.ledger.book().get(&key, WINDOW).settled,
+        340_000_000,
+        "the first run settled 0.34 of a unit"
+    );
+    drop(first);
+
+    // ── RESTART, hydrating ──────────────────────────────────────────────────────────────────────
+    let mut second = build_for_node(&cfg, 7, Box::new(NullShipper::new()), rows())
+        .expect("the journal reopens onto what it wrote");
+    assert_eq!(
+        second.ledger.book().get(&key, WINDOW).settled,
+        0,
+        "a fresh node's book is empty until it hydrates — the chain is the only thing that remembers"
+    );
+    let restored = second.hydrate_ledger().expect("the chain reads back");
+    assert_eq!(restored.postings, 2, "both postings replayed");
+    assert_eq!(restored.balances, 1, "onto one balance");
+    assert_eq!(
+        second.ledger.book().get(&key, WINDOW).settled,
+        340_000_000,
+        "THE FIGURE SURVIVED THE RESTART, to the nano-unit"
+    );
+    assert_eq!(
+        restored.carried.nanos(&key, WINDOW),
+        340_000_000,
+        "and the carried figure the door is bound to is that same number"
+    );
+    assert_eq!(
+        restored.carried.bucket_cents("vk_restart", Some(WINDOW)),
+        34,
+        "in the whole cents a spend cap is configured in"
+    );
+    assert!(
+        busbar_unit_ledger::identity::residual(
+            &busbar_unit_ledger::totals::Totals::zero(),
+            &second.ledger.book().get(&key, WINDOW)
+        )
+        .holds(),
+        "and the restored book balances"
+    );
+
+    // ── SPEND AGAIN ─────────────────────────────────────────────────────────────────────────────
+    settle_nanos(&mut second, "vk_restart", WINDOW, 60_000_000);
+    assert_eq!(
+        second.ledger.book().get(&key, WINDOW).settled,
+        400_000_000,
+        "the second run's spend lands on top of what it inherited"
+    );
+
+    // ── THE COUNTER-ARM ─────────────────────────────────────────────────────────────────────────
+    drop(second);
+    let forgetful =
+        build_for_node(&cfg, 7, Box::new(NullShipper::new()), rows()).expect("the journal reopens");
+    assert_eq!(
+        forgetful.ledger.book().get(&key, WINDOW).settled,
+        0,
+        "a boot that does not hydrate starts at zero against a chain holding four postings"
+    );
+}
+
+/// A posting record round-trips: what [`Posting::body`] writes is what [`posting_from`] reads.
+///
+/// The two are one encoding with two ends, and the failure this catches is silent — a decoder that
+/// drifted from the writer answers `None`, the boot hydrates nothing, and every balance starts the
+/// process with its whole cap.
+#[test]
+fn a_posting_body_reads_back_as_the_balance_and_the_figures_it_wrote() {
+    use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension};
+
+    for key in [
+        totals_key("vk_plain"),
+        TotalsKey::new(
+            BucketId::new("group:team@day#pool:eu"),
+            CapDimension::Requests,
+            BucketScope::Pool("eu-west".into()),
+        ),
+        TotalsKey::new(
+            BucketId::new("a/bucket/with/slashes"),
+            CapDimension::Concurrent,
+            BucketScope::All,
+        ),
+        TotalsKey::new(
+            BucketId::new("vk_class"),
+            CapDimension::Class("audio.seconds".into()),
+            BucketScope::All,
+        ),
+    ] {
+        let posting = Posting {
+            key: key.clone(),
+            window: 86_400,
+            reserved: 5_000,
+            settled: 4_200,
+            overdraft: 700,
+            rate_card_version: 3,
+            wall: 1_700_000_000,
+            mono: 42,
+        };
+        let read = posting_from(&posting.body()).expect("a posting body reads back as one");
+        assert_eq!(read.key, key, "the balance survives the round trip");
+        assert_eq!(read.window, 86_400);
+        assert_eq!(read.settled, 4_200);
+        assert_eq!(read.overdraft, 700);
+    }
+}
+
+/// A sealed audit record shares the `Transaction` class and must never be read as a posting.
+///
+/// If it were, every audit record on the chain would fold a fabricated figure into the book at
+/// boot. The discriminator is structural: an audit body's first field is a hex digest, and a digest
+/// cannot parse as a balance key.
+#[test]
+fn an_audit_record_is_never_mistaken_for_a_posting() {
+    assert!(
+        posting_from(&[]).is_none(),
+        "an empty body is not a posting"
+    );
+    assert!(
+        posting_from(&migration_body(&marker(1, 1_700_000_000))).is_none(),
+        "nor is a migration marker"
+    );
+    // A hex digest where a balance key would be: the shape every audit body starts with.
+    let mut audit_shaped = BodyWriter::new();
+    audit_shaped.text(&"a".repeat(64));
+    audit_shaped.text(&"b".repeat(64));
+    assert!(
+        posting_from(&audit_shaped.finish()).is_none(),
+        "a digest cannot parse as a balance key, which is what tells the two apart"
+    );
+}

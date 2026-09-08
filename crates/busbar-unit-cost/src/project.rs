@@ -150,3 +150,63 @@ fn sum_nanos<'a>(
     }
     nanos
 }
+
+// ── the budget comparison's arithmetic ──────────────────────────────────────────────────────────
+
+/// **What a spend cap has left, in whole minor units, floored at zero.**
+///
+/// The door used to spell this itself, twice: once as `cap.saturating_sub(derived).max(0)` in the
+/// headroom read and once, in a different shape, as the two-armed comparison in the admission check.
+/// Two spellings of one subtraction is the shape that lets a request be JUDGED against one figure
+/// and REPORTED against another — the headroom answer an operator reads and the answer the door
+/// acted on can drift apart with nothing in the build to notice.
+///
+/// So the subtraction lives once, here, beside the projections it is a consumer of. Saturating,
+/// because a spend already past the top of the range must not wrap into headroom; floored at zero,
+/// because a bucket that is over its cap has nothing left rather than a negative amount left, and a
+/// negative headroom handed to a top-up would size a hold backwards.
+#[must_use]
+pub fn budget_remaining_cents(cap_cents: i64, spent_cents: i64) -> i64 {
+    cap_cents.saturating_sub(spent_cents).max(0)
+}
+
+/// **The spend a budget comparison reads: what the balance already carried, plus what this process
+/// has accrued since.**
+///
+/// The carried figure is the ledger's, restored at boot from the durable record; the accrued figure
+/// is the node-local cell's, derived from the tokens counted since. They are two facts about one
+/// balance and the comparison needs their sum, which makes the sum money arithmetic — so it is here
+/// rather than at the door, for the same reason the divide and the rate conversion are.
+///
+/// Saturating and floored at zero, for the reason the derivations are: an adversarial ledger that
+/// pushed the total past the top of the range would, wrapped, land negative and read as FREE.
+#[must_use]
+pub fn spend_total_cents(carried_cents: i64, accrued_cents: i64) -> i64 {
+    carried_cents.saturating_add(accrued_cents).max(0)
+}
+
+/// **Whether one more request may be admitted against a spend cap.**
+///
+/// Two ways to be over, and they are not the same question. The bucket is over when nothing is left
+/// at all; and it is over when what is left will not cover the flat fee this request would add. The
+/// second arm is the fee LOOKAHEAD, and dropping it would admit a request the fee alone puts past
+/// the cap — the bucket would then be over budget by exactly one fee for the rest of the window.
+///
+/// **Written as the tag wrote it, deliberately, and NOT rearranged around the subtraction.**
+///
+/// The obvious form is `budget_remaining_cents(cap, spent)` compared against the fee, and it is
+/// wrong — not by argument but by measurement. The two disagree at the saturation edge: at
+/// `cap = i64::MAX, spent = 1, fee = i64::MAX` the tag's `spent.saturating_add(fee)` pins at
+/// `i64::MAX`, which is NOT greater than the cap, so the tag admits; the subtraction form has
+/// `i64::MAX` of fee against `i64::MAX - 1` of headroom and refuses. That is a request the shipped
+/// binary admits and a rearrangement would refuse, and this release does not move a money decision
+/// by a single case.
+///
+/// So the arithmetic MOVED here and did not change: the two arms below are the two arms of
+/// `busbar-unit-admission`'s check pass at the tag, character for character. What the move buys is
+/// that the comparison and the headroom read now live beside each other, under one crate's tests,
+/// with the divergence between the two forms written down rather than waiting to be discovered.
+#[must_use]
+pub fn over_budget(cap_cents: i64, spent_cents: i64, fee_cents: i64) -> bool {
+    spent_cents >= cap_cents || spent_cents.saturating_add(fee_cents) > cap_cents
+}
