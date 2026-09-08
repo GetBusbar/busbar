@@ -24,3 +24,7 @@ pub mod service;
 #[cfg(test)]
 #[path = "tests/hook_stage_projection.rs"]
 mod hook_stage_projection;
+
+#[cfg(test)]
+#[path = "tests/hook_view_wire_order.rs"]
+mod hook_view_wire_order;
