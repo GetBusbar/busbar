@@ -326,3 +326,183 @@ fn the_handle_carries_no_material() {
         "the handle's debug output should say it carries none: {rendered}"
     );
 }
+
+// ── the driver, over a real plane ───────────────────────────────────────────────────────────────
+
+/// The whole driver, assembled the way a listener is handed one.
+///
+/// Gated on the plane feature as well as the root one because the fixture NAMES a plane, and a
+/// build without that plane has no bytes for it to mean. The driver itself names none: what the
+/// test hands it is a `&dyn Plane`, and that is the property the assertions below turn on.
+#[cfg(all(feature = "root-admin", feature = "plane-a2a"))]
+mod driver {
+    use busbar_contract::transport::surface::{Answering, Bar};
+    use busbar_contract::transport::{Arrival, Outcome, UnitDriver};
+
+    use crate::root::kernel::ProductionUnits;
+    use crate::root::transports::LoopDriver;
+
+    /// The facts an HTTP mount publishes for a posted document, in the order it publishes them.
+    const FACTS: &[(&str, &str)] = &[
+        ("path", "/a2a"),
+        ("method", "POST"),
+        ("peer", "203.0.113.9:52000"),
+    ];
+
+    const CHAIN: &[&str] = &["tcp", "http"];
+
+    /// Everything a listener holds, in one value, so a test reads like a composition and not like a
+    /// constructor.
+    struct Node {
+        kernel: busbar_kernel::teller::Kernel,
+        units: ProductionUnits,
+        gauge: busbar_kernel::slice::ConcurrencyGauge,
+        canary: busbar_caps::Canary,
+    }
+
+    impl Node {
+        fn new() -> Self {
+            Node {
+                kernel: crate::root::kernel::new_kernel(),
+                units: ProductionUnits::admin_only(std::sync::Arc::new(
+                    crate::root::units_admin::RefusingDispatch,
+                )),
+                gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
+                canary: busbar_caps::Canary::new(),
+            }
+        }
+
+        fn driver<'n>(&'n self, plane: &'n dyn busbar_contract::Plane) -> LoopDriver<'n> {
+            LoopDriver::new(&self.kernel, &self.units, &self.gauge, &self.canary, plane)
+        }
+    }
+
+    fn arrival<'a>(
+        body: &'a [u8],
+        operation: Option<&'a busbar_contract::transport::surface::Operation>,
+    ) -> Arrival<'a> {
+        Arrival {
+            facts: FACTS,
+            body,
+            transport: "http",
+            chain: CHAIN,
+            operation,
+            bar: Bar::Credential,
+        }
+    }
+
+    /// THE BYTES THAT LEAVE ARE THE PLANE'S.
+    ///
+    /// The driver used to answer every arrival with nothing at all, because it could not build a
+    /// context to ask a plane with. It can now, and what comes back is the plane's own refusal
+    /// document — carrying the CALLER'S OWN request identifier, which is the part that proves the
+    /// plane read the arriving bytes rather than being handed a shape the driver made up.
+    ///
+    /// The ending is the loop's. This root composes no A2A steps yet, so the unit really does end
+    /// at the first step, and what is asserted is that the outcome the transport frames is the one
+    /// the loop reached.
+    #[test]
+    fn the_driver_answers_with_the_planes_own_bytes() {
+        let node = Node::new();
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let driver = node.driver(&plane);
+        let body = br#"{"jsonrpc":"2.0","id":"req-7","method":"message/send","params":{}}"#;
+        let answer = driver.drive(arrival(body, None), &busbar_plane_a2a::surface::SURFACE);
+
+        let rendered = String::from_utf8(answer.body.clone()).expect("the plane wrote text");
+        assert!(
+            rendered.contains("\"jsonrpc\""),
+            "the answer is this plane's own envelope: {rendered}"
+        );
+        assert!(
+            rendered.contains("req-7"),
+            "the plane read the caller's identifier off the arriving bytes: {rendered}"
+        );
+        assert!(
+            rendered.contains("\"error\""),
+            "a unit this root composes no steps for is refused, and the plane renders the \
+             refusal: {rendered}"
+        );
+        assert_eq!(
+            answer.outcome,
+            Outcome::NotFound,
+            "the loop refused at its first step for want of a destination, and that is the word \
+             the transport frames"
+        );
+    }
+
+    /// A body this plane cannot read still gets this plane's answer, and no identifier is invented
+    /// for it.
+    ///
+    /// The two halves matter separately. The plane is still asked — a refusal document is the
+    /// plane's to write whether or not it could read the request — and the identifier it would have
+    /// echoed is absent, because there was no draft to read one off. A driver that carried a draft
+    /// forward from a failed decode would be answering a caller about a request it never sent.
+    #[test]
+    fn an_unreadable_body_is_answered_without_an_invented_identifier() {
+        let node = Node::new();
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let driver = node.driver(&plane);
+        let answer = driver.drive(
+            arrival(b"not a document", None),
+            &busbar_plane_a2a::surface::SURFACE,
+        );
+        let rendered = String::from_utf8(answer.body.clone()).expect("the plane wrote text");
+        assert!(
+            rendered.contains("\"error\""),
+            "the plane renders the refusal: {rendered}"
+        );
+        assert!(
+            !rendered.contains("req-7"),
+            "no draft, so no identifier is echoed: {rendered}"
+        );
+    }
+
+    /// The media type and the answer's shape come off the DECLARATION, and are absent where the
+    /// arrival addressed a mount rather than a route.
+    ///
+    /// Absent is the honest answer and not a gap: no declaration named a media type for a document
+    /// mount, because on a document mount it is the plane that names the operation, out of bytes
+    /// the transport does not read. A driver that guessed one would put a content type on an answer
+    /// nobody declared.
+    #[test]
+    fn the_frame_around_the_bytes_is_the_declarations() {
+        let node = Node::new();
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let driver = node.driver(&plane);
+
+        let unaddressed = driver.drive(arrival(b"{}", None), &busbar_plane_a2a::surface::SURFACE);
+        assert_eq!(unaddressed.media, "");
+        assert_eq!(unaddressed.answering, Answering::Unary);
+
+        let operation = busbar_plane_a2a::surface::SURFACE
+            .operations
+            .first()
+            .expect("the plane declares at least one operation");
+        let addressed = driver.drive(
+            arrival(b"{}", Some(operation)),
+            &busbar_plane_a2a::surface::SURFACE,
+        );
+        assert_eq!(
+            addressed.media, operation.response_media,
+            "the media type is the one the declaration names for this operation's answer"
+        );
+        assert_eq!(addressed.answering, operation.answering);
+    }
+
+    /// Two arrivals are two units, and nothing is carried between them.
+    ///
+    /// One driver serves every connection a listener accepts. A per-unit value that survived its
+    /// unit — the arena above all — would be one connection's bytes reachable from another's, so
+    /// the same request twice has to reach the same ending twice.
+    #[test]
+    fn each_arrival_is_its_own_unit() {
+        let node = Node::new();
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let driver = node.driver(&plane);
+        let body = br#"{"jsonrpc":"2.0","id":"req-7","method":"message/send","params":{}}"#;
+        let first = driver.drive(arrival(body, None), &busbar_plane_a2a::surface::SURFACE);
+        let second = driver.drive(arrival(body, None), &busbar_plane_a2a::surface::SURFACE);
+        assert_eq!(first, second);
+    }
+}
