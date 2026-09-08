@@ -244,7 +244,7 @@ fn list_models_dialect(
     // byte-identical to the prior three-arm `if`: an incidental `x-api-key`/SigV4 on a models-list
     // GET must not steer the envelope, only the two fingerprints the SDKs actually send here do.
     let mut sniff = axum::http::HeaderMap::new();
-    for &name in crate::proto::known_protocols() {
+    for &name in busbar_substrate::proto::known_protocols() {
         let Some(decl) = crate::proto::decl_for(name) else {
             continue;
         };

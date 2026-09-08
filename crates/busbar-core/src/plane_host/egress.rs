@@ -1068,7 +1068,8 @@ fn run_http_stream(
                         // `post_stream` reports a mid-body failure with `with_cause(&e)` (a bare
                         // Display alone drops the reset/timeout/certificate reason in the source
                         // chain). Same flattening the plane's own path produced.
-                        let _ = chunk_tx.send(ChunkMsg::Err(crate::egress::with_cause(&e)));
+                        let _ =
+                            chunk_tx.send(ChunkMsg::Err(busbar_substrate::egress::with_cause(&e)));
                         break;
                     }
                     None => {
