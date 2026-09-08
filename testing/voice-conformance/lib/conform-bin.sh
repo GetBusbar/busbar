@@ -17,8 +17,42 @@ VC_ROOT="$(cd "$VC_DIR/../.." && pwd)"          # repo root
 VC_FIXTURES="$VC_DIR/fixtures"
 VC_MAP="$VC_ROOT/docs/design/voice-cross-dialect-map.json"
 
+# The trees the harness IS. A `voice-conform` older than any file under these is a binary that would
+# judge source it was not built from — which is not an error at run time, it is a PASS about code
+# nobody is running. The legs are in the list for the reason the note below already gives: the bin
+# answers a `composition <slice>` subcommand per leg, so a leg added after the binary was built is a
+# slice the binary has never heard of.
+_vc_harness_trees() {
+  printf '%s\n' \
+    "$VC_ROOT/crates/busbar-voice/src" \
+    "$VC_ROOT/crates/busbar-voice-codec/src" \
+    "$VC_DIR/legs" \
+    "$VC_DIR/lib"
+}
+
+# Echo the first file that is NEWER than the given binary, and return 0 when there is one.
+# `-print -quit` stops at the first hit: this runs once per leg and the question is "is there any",
+# not "how many".
+_vc_newer_than() {
+  local bin="$1" dir hit
+  while IFS= read -r dir; do
+    [ -d "$dir" ] || continue
+    hit="$(find "$dir" -type f -newer "$bin" -print -quit 2>/dev/null || true)"
+    if [ -n "$hit" ]; then
+      printf '%s' "$hit"
+      return 0
+    fi
+  done < <(_vc_harness_trees)
+  return 1
+}
+
 # Echo the path to the built `voice-conform` binary, building it once if necessary.
-#   * $VOICE_CONFORM_BIN, if set, is used verbatim (the workflow builds once and exports it).
+#   * $VOICE_CONFORM_BIN, if set, names the binary the workflow built once and exported — and it is
+#     CHECKED before it is used. It was taken verbatim, which meant a path to nothing, or to a
+#     binary built before the source beside it changed, was believed: a stale harness runs, passes,
+#     and reports conformance about code that is not in the tree. That is the same false green the
+#     runner's own anti-vacuity rule exists to refuse, one level further in, and unlike a missing
+#     binary it leaves no trace at all — every leg reports PASS.
 #   * else the harness is built (cargo is incremental, so an up-to-date binary costs a lock and a
 #     stat; a binary older than the legs it serves once reported "unknown composition slice" for
 #     four legs that existed only in source, and this is what stops that recurring) — features
@@ -28,6 +62,17 @@ VC_MAP="$VC_ROOT/docs/design/voice-cross-dialect-map.json"
 #     never pollutes the RESULT lines the runner parses on stdout.
 voice_conform_bin() {
   if [ -n "${VOICE_CONFORM_BIN:-}" ]; then
+    if [ ! -x "$VOICE_CONFORM_BIN" ]; then
+      printf 'voice-conform: VOICE_CONFORM_BIN=%s is not an executable file\n' \
+        "$VOICE_CONFORM_BIN" >&2
+      return 1
+    fi
+    local newer
+    if newer="$(_vc_newer_than "$VOICE_CONFORM_BIN")"; then
+      printf 'voice-conform: VOICE_CONFORM_BIN=%s is older than %s — it would report conformance about source it was not built from\n' \
+        "$VOICE_CONFORM_BIN" "$newer" >&2
+      return 1
+    fi
     printf '%s' "$VOICE_CONFORM_BIN"
     return 0
   fi
