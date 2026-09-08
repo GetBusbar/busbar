@@ -91,5 +91,4 @@ pub use unit_end::{Abort, IdempotencyKey, Origin, OriginKind, Outcome, SessionId
 pub use usage::{LocatorPtr, QuantitySource, Usage, UsageError, UsageLine, MAX_USAGE_LINES};
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
