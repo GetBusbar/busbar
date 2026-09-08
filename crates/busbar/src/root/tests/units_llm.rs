@@ -2042,3 +2042,139 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
         failures.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// THE ROUTE SEAM'S OWN INSTRUMENT
+// ---------------------------------------------------------------------------------------------
+
+/// One request through the real loop, with the node's dispatch count read beside its answer.
+///
+/// A NODE PER REQUEST, exactly as [`drive`] builds one, so the figure is this unit's and not a
+/// running total the order of the tests could change.
+async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) {
+    let node = LlmNode::new();
+    let arrival = WalkArrival {
+        host: rig.host(),
+        gov: rig.gov(),
+        proto: PROTO,
+        operation: busbar_api::operation::Operation::CHAT,
+        caller_token: None,
+        headers: json_headers(),
+        body: fixture.body(),
+        path: None,
+    };
+    let response = node.answer(arrival, None).await;
+    (response, node.driven())
+}
+
+/// **THE COUNT IS THE INSTRUMENT, AND A STATUS CANNOT BE.**
+///
+/// The question this closes is the one the rig's own upstream handle was kept for and could only
+/// half answer: *"the unit stopped before the route step" is not a fact any counter on this side
+/// of the loop reports* (see [`Rig::upstream`]). The scripted upstream answers it only where a
+/// deployment HAS one and only for a unit that would have dialled it; the seam answers it for
+/// every unit, on this side, without a socket.
+///
+/// It cannot be answered by the answer. A unit refused at Verify and a unit an upstream itself
+/// refused are both a 4xx in this dialect's envelope, and a reader comparing the two legs on
+/// status, headers and body — which is what every other cell in this file does — reads them as
+/// the same event. Only "did anything run" tells them apart, and only the seam can say it.
+///
+/// THREE ENDS, THREE COUNTS. The two refusals bracket the door: `PoolAcl` is the pre-admission
+/// guard, refused at Verify with nothing charged; `OverBudget` is the door itself, refused at
+/// Admit. Neither may reach the engine, and *neither may reach it for a different reason* — a
+/// refusal that dialled an upstream and then discarded its answer has spent a caller's quota
+/// upstream and billed nobody for it. `BufferedOk` is the whole loop, and it drives EXACTLY once:
+/// a second drive of one unit is a request the client sent once and the upstream saw twice.
+///
+/// RED FIRST, and it was run red. With `route_leg` handing the walk's leg straight back to the
+/// loop — the line this seam replaced — the served fixture reports:
+///
+/// ```text
+/// BufferedOk (served: the whole loop, through the engine, exactly once):
+///     the engine was driven 0 time(s), expected 1
+/// ```
+///
+/// The two refusals read 0 on both sides of the change, which is the point of them: they are not
+/// what the seam moved, they are what the seam must not have moved. So the red is one finding and
+/// not three, and the two that stayed silent are the ones holding the money still.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one() {
+    let mut failures: Vec<String> = Vec::new();
+
+    // Each end gets its OWN deployment, so one fixture's seeded budget cannot decide another's.
+    for (fixture, expected, why) in [
+        (
+            Fixture::PoolAcl,
+            0u64,
+            "refused at Verify, before the door: the pre-admission guard",
+        ),
+        (
+            Fixture::OverBudget,
+            0,
+            "refused at Admit, at the door: the group's budget is spent",
+        ),
+        (
+            Fixture::BufferedOk,
+            1,
+            "served: the whole loop, through the engine, exactly once",
+        ),
+    ] {
+        let rig = rig(fixture).await;
+        let (response, driven) = drive_counting(&rig, fixture).await;
+        // The body is drained before the count is judged, because the seam is polled by the loop
+        // and a response whose body is still owed is a unit whose leg may not have finished. It
+        // also keeps this cell on the same footing as every other one in this file, which reads
+        // its figures out of a drained answer.
+        let observed = observe(&rig, response).await;
+
+        match driven {
+            None => failures.push(format!(
+                "{fixture:?} ({why}): the node reports no dispatch count at all — \
+                 the Route step is not reaching a seam that counts"
+            )),
+            Some(got) if got != expected => failures.push(format!(
+                "{fixture:?} ({why}): the engine was driven {got} time(s), expected {expected}"
+            )),
+            Some(_) => {}
+        }
+
+        // THE SECOND WITNESS, where the deployment has one. A refusal that never reached the
+        // seam must also never have reached a socket, and these two facts are independent: the
+        // count is taken on this side of the loop and the path is recorded on the other. A cell
+        // that asserted only the count would pass on a seam that stopped counting a drive it
+        // still performed.
+        let dialled = rig.upstream.get_last_request_path().is_some();
+        if expected == 0 && dialled {
+            failures.push(format!(
+                "{fixture:?} ({why}): the count says the engine did not run and the upstream \
+                 says it was dialled"
+            ));
+        }
+        if expected > 0 && !dialled {
+            failures.push(format!(
+                "{fixture:?} ({why}): the count says the engine ran and the upstream was never \
+                 dialled"
+            ));
+        }
+
+        // AND THE ANSWER IS UNCHANGED. The seam awaits the leg it was handed and returns that
+        // leg's value, so what a client reads is what a client read. Asserted here rather than
+        // taken on trust: an instrument that moved a byte would be an instrument that changed
+        // the thing it measures.
+        if field(&observed, "status").is_empty() {
+            failures.push(format!(
+                "{fixture:?} ({why}): the unit produced no status at all"
+            ));
+        }
+
+        rig.server.shutdown().await;
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} finding(s) at the route seam:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

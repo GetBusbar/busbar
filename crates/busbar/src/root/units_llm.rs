@@ -286,6 +286,17 @@ pub struct LlmNode {
     /// late accrual prices arrives after the exit sealed the end, so there is no step of the unit
     /// whose token could stand in.
     usage_token: busbar_caps::UsageToken,
+    /// THE ONE SEAM THIS PLANE'S ROUTE STEP REACHES THE ENGINE THROUGH.
+    ///
+    /// On the node rather than on the unit because what it instruments is a statement about a SET of
+    /// units: "how many of the units this node took actually drove the engine" is the question, and a
+    /// per-unit counter could only ever answer it about one.
+    ///
+    /// It is the loop's seam and not this plane's — see [`PlaneDispatch`] — and the plane's own leg
+    /// is what gets handed across it. Route drives; nothing here reports.
+    ///
+    /// [`PlaneDispatch`]: crate::root::transports::PlaneDispatch
+    dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
 }
 
 impl std::fmt::Debug for LlmNode {
@@ -331,7 +342,22 @@ impl LlmNode {
             }),
             next_key: AtomicU64::new(1),
             mono: AtomicU64::new(0),
+            // THE PRODUCTION HALF, which awaits the leg it is handed and returns that leg's own
+            // value. Composed here because composing is what this file does: the plane names the
+            // work, the root names what the work is driven through, and neither names the other's.
+            dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
         }
+    }
+
+    /// How many of this node's units have driven the engine through the Route seam.
+    ///
+    /// The instrument the switch-over is measured with, and it measures what a status cannot: a
+    /// refusal the loop rendered and an upstream's own refusal are the same bytes on the wire, and
+    /// only the count says whether anything ran. Reading it needs the seam this node was composed
+    /// with to be one that counts, which the production composition above is.
+    #[must_use]
+    pub fn driven(&self) -> Option<u64> {
+        self.dispatch.driven()
     }
 
     /// WHEN A UNIT ARRIVED, taken once: this node's two clocks, read together.
@@ -1435,7 +1461,21 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         //
         // The unit still holds the loop's own meter — the same one this argument names — so that
         // the figure has somewhere to land when the settlement moves to where the tap is.
-        Box::pin(async move { self.walk.route(token, &destination).await })
+        //
+        // THROUGH THE ONE SEAM. The leg below is the walk's own and is what this line always was;
+        // what changed is that it is HANDED to the loop's dispatch instead of being returned
+        // straight to the loop. The seam awaits it and gives back its value, so the bytes, the
+        // status, the headers, the stream's frames and the tap on its body are the plane's exactly
+        // as they were — byte identity is a property of that construction, not of a measurement.
+        //
+        // What the seam adds is the one fact no status can carry: that the engine ran for this unit.
+        // A unit refused at Authenticate, Verify, Approve or Admit never reaches Route, so it never
+        // reaches this line, and the count says so rather than a rendered refusal having to be told
+        // apart from an upstream's own.
+        self.node.dispatch.execute(
+            self.op_class,
+            Box::pin(async move { self.walk.route(token, &destination).await }),
+        )
     }
 }
 
