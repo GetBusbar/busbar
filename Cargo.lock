@@ -903,6 +903,7 @@ name = "busbar-store-memory"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin-testkit",
 ]
 
