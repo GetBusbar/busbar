@@ -124,7 +124,7 @@ pub fn denylist_hits(cx: &Ctx) -> Option<BTreeMap<String, Vec<String>>> {
     if !cx.abs("Cargo.toml").is_file() || !cx.abs("xtask").is_dir() {
         return Some(BTreeMap::new());
     }
-    let report = crate::denylist::run(cx.root());
+    let report = crate::denylist::run(cx);
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for h in &report.hits {
         out.entry(h.crate_name.clone()).or_default().push(format!(
