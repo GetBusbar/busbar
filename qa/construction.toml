@@ -120,6 +120,11 @@ from = 47
 to = 48
 because = """A SIDEWAYS MOVE, re-pinned on both sides in the commit that makes it, which is exactly the manoeuvre this rule's own header paragraph names: `install_protocols_with_path_ingress` leaves `busbar_core::proto::registry` and arrives at `busbar_substrate::proto`, so the root's busbar_core figure falls 27 -> 26 in this same diff and its busbar_substrate figure rises 47 -> 48. NET IS ZERO, and net is what the retirement measures: `rules.legacy-reach.ceiling` stays 91 and the `legacy-reach` total row stays PASS. Nothing new is reached -- one symbol changed which retiring crate holds it -- and core's copy plus the two re-exports that existed only to serve it (`install_protocols`, `first_path_model_without_arrival`) are DELETED rather than aliased."""
 
+[gate.ceiling_raises."gate.surface_ceilings.contract_transport"]
+from = 845
+to = 938
+because = """DECLARED FACE: the duplex session seam on `busbar-contract-transport` -- the session crosses ONCE at the open and what comes back is a handle, `drive()` runs per frame and is infallible for the reason the one-shot seam is, `close()` runs on every ending including the ugly ones, and `Cut` names which end went first. Measured NET with scripts/loc-surface.py: 845 -> 938, +93 surface lines, every one of them in crates/busbar-contract-transport/src/session.rs plus the one `pub mod` / `pub use` pair in src/lib.rs; nothing else in the crate moved and nothing was deleted to make room. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the seam, to name it in that crate's enumerated contents, and 938 is still inside that section's own 1k ceiling for the crate."""
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -128,7 +133,7 @@ because = """A SIDEWAYS MOVE, re-pinned on both sides in the commit that makes i
 [gate.surface_ceilings]
 contract_caps = 3478
 grammar = 388
-contract_transport = 845
+contract_transport = 938
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
