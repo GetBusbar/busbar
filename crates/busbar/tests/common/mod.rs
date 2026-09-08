@@ -294,3 +294,172 @@ pub fn item_body<'a>(lines: &'a [Line], signature: &str) -> Option<Vec<&'a Line>
     // scans it, rather than silently reporting the item absent.
     Some(body)
 }
+
+// ─── THE HOST VTABLE'S CAPABILITY SLOTS ──────────────────────────────────────────────────────────
+//
+// `busbar-plugin`'s `PlaneHostVtable` is the `#[repr(C)]` rebuild of the capabilities the retiring
+// `busbar_substrate::plane_host::EngineHost` trait declares. Two composition-root gates
+// (`plane_host_universal_purity`, `plane_meter_seam_reachability`) pin properties of that capability
+// set, and both had the trait as their ONLY input — so the deletion of the trait would have left them
+// enumerating an empty set and reporting no violations about nothing.
+//
+// The slot list is the surviving spelling, and this is the ONE parser for it. It lives here, in the
+// classifier both gates already share, rather than being written twice: two private opinions about
+// what a capability slot is would be two gates that can disagree about the ABI they both pin.
+
+fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The `{…}`-matched body of `pub trait <name>` in `src`, or `None` when the trait is absent.
+///
+/// `src` must already be comment-stripped. Same identifier-boundary guard and brace match as
+/// [`struct_body`], so supertrait bound lists and per-method bodies are all inside the result.
+pub fn trait_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    delimited_body(src, &format!("pub trait {name}"))
+}
+
+/// Every method NAME declared in a trait body: each `fn <ident>` token whose `fn` sits on an
+/// identifier boundary. Robust to `#[allow(...)]`/doc/attribute lines (those carry no `fn` keyword)
+/// and to generic params (only the name after `fn` is read).
+pub fn trait_method_names(body: &str) -> Vec<String> {
+    let chars: Vec<char> = body.chars().collect();
+    let n = chars.len();
+    let mut names: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 1 < n {
+        if chars[i] == 'f' && chars[i + 1] == 'n' {
+            let before_ok = i == 0 || !is_ident_char(chars[i - 1]);
+            let after = i + 2;
+            let after_ok = after < n && chars[after].is_whitespace();
+            if before_ok && after_ok {
+                let mut j = after;
+                while j < n && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                let start = j;
+                while j < n && is_ident_char(chars[j]) {
+                    j += 1;
+                }
+                if j > start {
+                    let ident: String = chars[start..j].iter().collect();
+                    if ident.chars().next().is_some_and(|c| !c.is_ascii_digit())
+                        && !names.contains(&ident)
+                    {
+                        names.push(ident);
+                    }
+                    i = j;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    names
+}
+
+/// The `{…}`-matched body following the first occurrence of `header` on an identifier boundary.
+fn delimited_body<'a>(src: &'a str, header: &str) -> Option<&'a str> {
+    let start = src.find(header)?;
+    let after = src[start + header.len()..].chars().next();
+    if matches!(after, Some(ch) if is_ident_char(ch)) {
+        return None;
+    }
+    let bytes = src.as_bytes();
+    let mut i = start + header.len();
+    while i < bytes.len() && bytes[i] != b'{' {
+        i += 1;
+    }
+    if i >= bytes.len() {
+        return None;
+    }
+    let open = i;
+    let mut depth = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open..=i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The `{…}`-matched body of `pub struct <name>` in `src`, or `None` when the struct is absent.
+///
+/// `src` must already be comment-stripped ([`production_text`] or a caller's equivalent). The
+/// identifier boundary is guarded, so `pub struct Foo` does not match a longer `pub struct FooBar`,
+/// and the brace match runs from the header's first `{`, so the whole field list is inside the result.
+pub fn struct_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    delimited_body(src, &format!("pub struct {name}"))
+}
+
+/// Every CAPABILITY SLOT name on the vtable struct `name` in `src`: each `pub <ident>: Option<` field.
+///
+/// The `Option<` requirement is what tells a capability slot from the table's own scalars — the frozen
+/// `abi` preamble, the `size` guard and the schema `version` are not capabilities and are not
+/// `Option`, so they fall out without being named here and cannot rot when the preamble changes shape.
+///
+/// Scanned token-wise rather than by splitting on `,` or on lines: a slot whose type ever carried a
+/// comma (a bare `Option<extern "C-unwind" fn(a, b)>` instead of a type alias) would be silently
+/// dropped by a comma split, and a capability these gates silently drop is exactly the invisibility
+/// they exist to prevent. An absent struct yields the empty set — which the CALLER must treat as a
+/// refusal, never as "no capabilities to check".
+pub fn vtable_slot_names(src: &str, name: &str) -> Vec<String> {
+    let Some(body) = struct_body(src, name) else {
+        return Vec::new();
+    };
+    let chars: Vec<char> = body.chars().collect();
+    let n = chars.len();
+    let mut names: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let is_pub = chars[i] == 'p'
+            && i + 2 < n
+            && chars[i + 1] == 'u'
+            && chars[i + 2] == 'b'
+            && (i == 0 || !is_ident_char(chars[i - 1]))
+            && (i + 3 >= n || !is_ident_char(chars[i + 3]));
+        if !is_pub {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 3;
+        while j < n && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let start = j;
+        while j < n && is_ident_char(chars[j]) {
+            j += 1;
+        }
+        if j == start {
+            i += 3;
+            continue;
+        }
+        let ident: String = chars[start..j].iter().collect();
+        while j < n && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= n || chars[j] != ':' {
+            i = j.max(i + 3);
+            continue;
+        }
+        j += 1;
+        while j < n && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let ty: String = chars[j..n.min(j + 7)].iter().collect();
+        let numeric_head = ident.chars().next().is_some_and(|c| c.is_ascii_digit());
+        if ty.starts_with("Option<") && !numeric_head && !names.contains(&ident) {
+            names.push(ident);
+        }
+        i = j.max(i + 3);
+    }
+    names
+}
