@@ -58,6 +58,25 @@ fi
 # `$(grep -c . "$ALL" || echo 0)` yields the two-line string "0\n0" and the `-eq 0` test below then
 # errors out instead of taking the vacuous-run branch — i.e. the guard against a vacuous green was
 # itself silently broken by a vacuous input. Found by running TEST 1 below rather than by reading.
+
+# ── EVERY ROW MUST NAME THE VERSION IT IS ABOUT ────────────────────────────────────────────────
+# The ledgers are downloaded artifacts merged by name pattern, and nothing in that path binds a row
+# to the release under test. A leg that resolved a different version (release-fleet's `resolve`
+# falls back to "the current latest release" when none is supplied), a re-run whose inputs changed
+# between legs, or a stale ledger sitting in $RUNNER_TEMP from an earlier local run all contribute
+# rows that read exactly like evidence for THIS release. So the version travels IN the row (lib.sh's
+# fifth column) and only rows naming this version count. A row naming anything else — or nothing at
+# all, which is what a row written by a check that never learned its version looks like — is named
+# and is RED: it is a check that verified some other release, and counting it here would let a
+# green verdict for 1.5.4 stand in for 1.6.0.
+MINE="${RUNNER_TEMP:-/tmp}/release-gate-mine.tsv"
+awk -F'\t' -v v="$VERSION" 'NF && $5 == v' "$ALL" > "$MINE"
+foreign_ids="$(awk -F'\t' -v v="$VERSION" \
+  'NF && $5 != v {printf "%s(%s) ", $1, ($5 == "" ? "<no version>" : $5)}' "$ALL")"
+if [ -n "$foreign_ids" ]; then
+  echo "::error title=release gate::RED — these ledger rows are about a DIFFERENT release than ${VERSION:-<unknown>}, and are NOT counted as evidence for it: ${foreign_ids}. Fix: find the leg that ran against another version (a stale workflow input, a resolve fallback to 'latest', or a ledger file left over from an earlier run in the same temp dir) and re-run it against ${VERSION:-this version}."
+fi
+ALL="$MINE"
 rows="$(awk 'NF{n++} END{print n+0}' "$ALL")"
 
 # ── THE VACUOUS-GREEN GUARD, FIRST, BEFORE ANY OTHER VERDICT ────────────────────────────────────
@@ -66,7 +85,7 @@ if [ "$rows" -eq 0 ]; then
   {
     echo "## Release gate: RED — vacuous run"
     echo
-    echo "**Zero checks reported a result.** Nothing was verified. Ledger dir: \`${LEDGER_DIR}\`."
+    echo "**Zero checks reported a result for this version.** Nothing was verified. Ledger dir: \`${LEDGER_DIR}\`.${foreign_ids:+ Rows WERE present, but every one of them named a different release: \`${foreign_ids}\`.}"
   } >> "$SUMMARY"
   exit 1
 fi
@@ -137,9 +156,18 @@ printf 'reported: %s   pass: %s   fail: %s   skip: %s   did not run: %s\n' \
   echo '```'
   cat "$report"
   echo '```'
+  [ -z "$foreign_ids" ] || {
+    echo
+    echo "> **Rows about a different release, not counted:** \`${foreign_ids}\`"
+  }
 } >> "$SUMMARY"
 
 rc=0
+if [ -n "$foreign_ids" ]; then
+  # Re-stated here so it lands in the verdict block with everything else that makes the run red; the
+  # ::error:: above fires before the vacuous guard so it is visible even on a run with no usable rows.
+  rc=1
+fi
 if [ -n "$fail_ids" ]; then
   echo "::error title=release gate::RED — these checks FAILED for ${VERSION}: ${fail_ids}. Every check ran; none was masked by an earlier failure. Each failure has its own ::error:: above with expected vs observed and the fix."
   rc=1
