@@ -391,6 +391,162 @@ impl RecordLegs {
     }
 }
 
+/// The same legs, over a store that publishes the CONTRACT's three record verbs.
+///
+/// [`RecordLegs`] above binds to `busbar_api::Store` and is the 1.5.5 path: eight kind-tagged
+/// operations, byte for byte what the previous release's callers drive. This one binds to
+/// `busbar_contract::kinds::RecordSink` — `record_put`, `record_get`, `record_scan` — which is what
+/// a store-kind plugin actually implements, and it is the binding a deployment that named a
+/// contract-native backend runs on.
+///
+/// TWO BINDINGS AND ONE RUNNER. Both go through [`busbar_kernel::pump::run_record_leg`], so the
+/// three checks happen once and in the kernel for both; what differs is only which verbs the sink
+/// publishes. That is the composition root's half and nobody else's — the plane holds no store, the
+/// backend names no kernel, and this file is the only thing holding both.
+pub struct SinkRecordLegs {
+    sink: Arc<dyn busbar_contract::kinds::RecordSink>,
+}
+
+impl std::fmt::Debug for SinkRecordLegs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SinkRecordLegs")
+    }
+}
+
+impl SinkRecordLegs {
+    /// Bind the legs to a record sink.
+    #[must_use]
+    pub fn new(sink: Arc<dyn busbar_contract::kinds::RecordSink>) -> Self {
+        SinkRecordLegs { sink }
+    }
+
+    /// Run one leg. The validation is the kernel's, exactly as it is for [`RecordLegs::run`].
+    ///
+    /// # Errors
+    ///
+    /// The schema or the operation is undeclared, the body is oversize, or the sink refused.
+    pub fn run(
+        &self,
+        schema: RecordSchemaId,
+        op: &'static str,
+        key: &LegKey<'_>,
+        body: &[u8],
+    ) -> Result<LegResult, LegError> {
+        busbar_kernel::pump::run_record_leg(self, &Schemas, schema, op, &key.as_kernel(), body)
+            .map(LegResult::from)
+            .map_err(LegError::from)
+    }
+
+    /// The key a record is stored under, as one opaque byte string.
+    ///
+    /// The contract's verbs key on BYTES, and the columns a leg carries have to be folded into them
+    /// without losing the two properties the plane reads back: an append-only child is keyed by its
+    /// parent AND its sequence, so a second append never replaces the first, and the sequence is
+    /// big-endian so the sink's key order IS sequence order. A top-level record is keyed by its id
+    /// alone, so a put replaces exactly what the plane asked it to.
+    ///
+    /// The NUL separator is what keeps a parent's prefix from reaching into a longer parent's rows:
+    /// `t-1` and `t-10` are different chains, and a prefix of `t-1` without the terminator would
+    /// scan both.
+    fn sink_key(key: &LegKey<'_>) -> Vec<u8> {
+        match key.parent {
+            Some(parent) => {
+                let mut bytes = Vec::with_capacity(parent.len() + 9);
+                bytes.extend_from_slice(parent.as_bytes());
+                bytes.push(0);
+                bytes.extend_from_slice(&key.seq.to_be_bytes());
+                bytes
+            }
+            None => key.id.as_bytes().to_vec(),
+        }
+    }
+}
+
+/// The contract's record sink, presented to the kernel as the sink a record leg lands in.
+///
+/// Three verbs answer four of this plane's operations, and the other three are refused rather than
+/// approximated. `delete`, `revoke` and `verify_live` are not expressible in `put`/`get`/`scan`: a
+/// delete faked as a put of an empty body is a row that still reads back, and a liveness answer
+/// invented here would be this file deciding a capability question that belongs to the backend that
+/// holds the deadline. A schema whose plane declares those operations needs a backend that publishes
+/// them, and saying so is the honest answer — the kernel carries the sink's own words through.
+impl busbar_kernel::pump::RecordStore for SinkRecordLegs {
+    fn perform(
+        &self,
+        schema: RecordSchemaId,
+        op: &'static str,
+        key: &busbar_kernel::pump::RecordKey<'_>,
+        body: &[u8],
+    ) -> Result<busbar_kernel::pump::RecordAnswer, String> {
+        let key = LegKey {
+            id: key.id,
+            parent: key.parent,
+            seq: key.seq,
+            ts: key.ts,
+            expires_at: key.expires_at,
+            terminal: key.terminal,
+        };
+        let at = SinkRecordLegs::sink_key(&key);
+        let fail = |e: busbar_contract::kinds::StoreError| e.to_string();
+        match op {
+            records::OP_GET => Ok(busbar_kernel::pump::RecordAnswer {
+                body: self
+                    .sink
+                    .record_get(schema, &at)
+                    .map_err(fail)?
+                    .map(|v| v.as_slice().to_vec()),
+                ..busbar_kernel::pump::RecordAnswer::default()
+            }),
+            // A put REPLACES under its key and an append cannot, because an append's key carries its
+            // own sequence. One verb, two operations, and the difference is in the key rather than
+            // in a second write path that could drift from the first.
+            records::OP_PUT | records::OP_APPEND => {
+                let value = busbar_contract::kinds::RecordBytes::new(body.to_vec())
+                    // Unreachable: the kernel checked this body against the SAME ceiling
+                    // (`busbar_contract::bounded::MAX_RECORD_BYTES`) before calling. Carried as a
+                    // sink refusal rather than unwrapped, because a panic on the request path is
+                    // never the right answer to a case that says the check above stopped working.
+                    .map_err(|bytes| format!("record body of {bytes} bytes is over the ceiling"))?;
+                self.sink.record_put(schema, &at, &value).map_err(fail)?;
+                Ok(busbar_kernel::pump::RecordAnswer::default())
+            }
+            records::OP_SCAN => {
+                // A scan of an append-only schema is narrowed to one parent; a scan of a top-level
+                // schema is the whole schema. Which of the two is carried by the leg's key, not
+                // guessed from the schema — the same reading `RecordLegs` makes above.
+                let prefix = match key.parent {
+                    Some(parent) => {
+                        let mut bytes = parent.as_bytes().to_vec();
+                        bytes.push(0);
+                        bytes
+                    }
+                    None => Vec::new(),
+                };
+                Ok(busbar_kernel::pump::RecordAnswer {
+                    bodies: self
+                        .sink
+                        // UNBOUNDED ON PURPOSE. The published path's `list_plane_records` answers a
+                        // selection in full, and a plan that read a truncated one would act on a
+                        // history missing its most recent rows without anything saying so. The bound
+                        // that exists is the ceiling on each record, which the kernel already
+                        // enforced; a smaller number here would be this file inventing a limit the
+                        // plane never asked for.
+                        .record_scan(schema, &prefix, u32::MAX)
+                        .map_err(fail)?
+                        .into_iter()
+                        .map(|(_, v)| v.as_slice().to_vec())
+                        .collect(),
+                    ..busbar_kernel::pump::RecordAnswer::default()
+                })
+            }
+            other => Err(format!(
+                "this store publishes the record verbs only; `{other}` on `{}` needs a backend that declares it",
+                schema.as_str()
+            )),
+        }
+    }
+}
+
 /// This plane's record schemas and their operation tables, as the kernel reads them.
 ///
 /// The declaration is the plane crate's and is not restated: a schema that gains or loses an
