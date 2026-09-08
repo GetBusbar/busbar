@@ -68,7 +68,7 @@ const NESTED_WATCH: &[&str] = &[NESTED_TOP_LEVEL_KEY];
 #[derive(Default)]
 pub(crate) struct Lifted {
     mcp: Option<McpEndpointSection>, // plane-purity: frozen-wire the frozen carrier field + its snapshot TYPE
-    oauth_as: Option<Option<crate::oauth_as::config::OauthAsCfg>>,
+    oauth_as: Option<Option<busbar_substrate::config::oauth_as::OauthAsCfg>>,
     tools: Option<ToolsSection>,
     agents: Option<AgentsSection>,
     streams: Option<StreamsSection>,
@@ -111,7 +111,7 @@ impl Lifted {
 /// error message positioned and path-prefixed exactly like every other section's.
 enum LiftedValue {
     Mcp(McpEndpointSection), // plane-purity: frozen-wire the frozen carrier TYPE for one lifted key
-    OauthAs(Option<crate::oauth_as::config::OauthAsCfg>),
+    OauthAs(Option<busbar_substrate::config::oauth_as::OauthAsCfg>),
     Tools(ToolsSection),
     Agents(AgentsSection),
     Streams(StreamsSection),

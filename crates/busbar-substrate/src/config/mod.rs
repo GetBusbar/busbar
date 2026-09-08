@@ -18,6 +18,7 @@ pub mod auth;
 pub mod groups;
 pub mod hooks;
 pub mod limits;
+pub mod oauth_as;
 pub mod pools;
 pub mod projection;
 pub mod providers;
