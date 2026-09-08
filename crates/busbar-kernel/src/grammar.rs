@@ -39,41 +39,6 @@ pub use busbar_contract::{
 /// a plane resolved and the pointer the pump resolves are resolved by one reading of one grammar.
 pub use busbar_grammar::{resolve_pointer, scan_frontier, Resolved, Span, MAX_JSON_DEPTH};
 
-/// The three axes the boot-time overlap check groups selector forms onto.
-///
-/// Deliberately coarser than the contract's per-form family: the overlap decision only needs to
-/// know whether two selectors read the same axis at all, and every handshake-derived form is one
-/// axis for that purpose. It is the kernel's own grouping, which is why it lives here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SelectorFamily {
-    /// The request path.
-    Path,
-    /// A named header.
-    Header,
-    /// The transport handshake: server name, protocol, certificate subject, stream name, port.
-    Transport,
-}
-
-/// Which axis a selector reads.
-#[must_use]
-pub fn family(selector: &Selector) -> SelectorFamily {
-    match selector {
-        Selector::ExactPath(_)
-        | Selector::PrefixOneLevel(_)
-        | Selector::PathPattern(_)
-        | Selector::PathSuffix(_)
-        | Selector::PathContains(_) => SelectorFamily::Path,
-        Selector::HeaderExact(..) | Selector::HeaderPresent(_) | Selector::HeaderPrefix(..) => {
-            SelectorFamily::Header
-        }
-        Selector::Sni(_)
-        | Selector::ClientCertSubject(_)
-        | Selector::StreamName(_)
-        | Selector::Alpn(_)
-        | Selector::Port(_) => SelectorFamily::Transport,
-    }
-}
-
 /// How specific a selector is, for the within-one-plane precedence order: a literal beats a
 /// variable, longer beats shorter, a whole path beats a fragment of one.
 #[must_use]

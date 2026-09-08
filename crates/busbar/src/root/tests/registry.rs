@@ -136,8 +136,6 @@ fn the_planes_declare_forty_eight_claims() {
 #[cfg(feature = "plane-voice")]
 #[test]
 fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
-    use busbar_kernel::grammar::family;
-
     let claims = plane_claims();
     let mut cross_family = 0usize;
     let mut same_family = 0usize;
@@ -146,7 +144,7 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
             if left.plane == right.plane || !claims_overlap(&left.claim, &right.claim) {
                 continue;
             }
-            if family(&left.claim.selector) == family(&right.claim.selector) {
+            if left.claim.selector.form().family() == right.claim.selector.form().family() {
                 same_family += 1;
             } else {
                 cross_family += 1;
@@ -178,7 +176,6 @@ fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
 #[test]
 fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     use busbar_contract::grammar::PathSeg;
-    use busbar_kernel::grammar::family;
 
     let claims = plane_claims();
     let (mut tail, mut variable, mut fragments) = (0usize, 0usize, 0usize);
@@ -191,7 +188,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
         for right in &claims[i + 1..] {
             if left.plane == right.plane
                 || !claims_overlap(&left.claim, &right.claim)
-                || family(&left.claim.selector) != family(&right.claim.selector)
+                || left.claim.selector.form().family() != right.claim.selector.form().family()
             {
                 continue;
             }
