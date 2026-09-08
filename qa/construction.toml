@@ -264,6 +264,18 @@ from = 162
 to = 168
 because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it. The dead `ir/` re-export shims are DELETED from `busbar-core` rather than aliased, so the spellings that used to reach through core now name the crate that actually holds them. The falls are in this same diff and are re-pinned with it -- `busbar-core x dialect` 1196 -> 1195 and `busbar-core x plane` 3067 -> 3049 -- which is what makes this a move and not a growth; `ceiling-slack` holds every ratcheted row to what it measures, so an un-re-pinned fall would be drift hiding as slack. This row is `[[cell]] busbar-substrate-values x plane`, 162 -> 168: the same six plane spellings, on the side that now owns the code. Core's `plane` row falls 3067 -> 3049 in this same diff."""
 
+[gate.ceiling_raises."cell.74.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 12
+because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it. `busbar-core`'s `trust/` verify shim is DELETED and its callers are repointed at `busbar_substrate::trust::verify`, so `busbar-core x plane` falls 3049 -> 3030 in this same diff and the receiving rows rise. `ceiling-slack` holds every ratcheted row to what it measures, so both directions are owed in the commit that earns them. This row is `[[cell]] busbar-core x unit`, 10 -> 12: ONE line, `src/trust/mod.rs` naming `busbar-unit-trust`, counted once as the crate name and once as the kind-qualified id, where the shim used to stand between them. Core reaching a unit BY ITS NAME is the transitional edge the ledger already carries a `[[transitional]] from = "busbar-core", to = "busbar-unit-*"` row for; this writes the number down instead of leaving it as slack."""
+
+[gate.ceiling_raises."cell.219.count"]
+file = "qa/kind-isolation.toml"
+from = 770
+to = 781
+because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it. `busbar-core`'s `trust/` verify shim is DELETED and its callers are repointed at `busbar_substrate::trust::verify`, so `busbar-core x plane` falls 3049 -> 3030 in this same diff and the receiving rows rise. `ceiling-slack` holds every ratcheted row to what it measures, so both directions are owed in the commit that earns them. This row is `[[cell]] busbar-substrate x plane`, 770 -> 781: the same verify path measured on the side that kept it."""
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
