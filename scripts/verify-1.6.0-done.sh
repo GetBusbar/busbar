@@ -127,7 +127,7 @@ step() {   # $1 = label ; rest = command
 # because the number was maintained by hand beside a list that grows: every new group had to remember
 # to raise it, and one did not. The selftest below now derives the true count from this file and
 # refuses a floor that does not equal it, so the constant can never drift below the list again.
-DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-20}"
+DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-21}"
 final_verdict() {
   local fail=0 green=0 total=0 i
   if [ "${#G_NAME[@]}" -gt 0 ]; then
