@@ -314,6 +314,33 @@ fn a_unit_keeps_the_plugin_it_started_with_across_a_reload() {
         .is_none());
 }
 
+/// `replace` and `retire` both walk every entry looking for one to close off; the filter has to
+/// read kind AND key, or a plugin sharing only the kind with the one being swapped is closed off
+/// alongside it.
+#[test]
+fn replace_and_retire_leave_a_same_kind_different_key_neighbour_untouched() {
+    let mut registry = Registry::new();
+    registry.register(plane("one")).expect("registered");
+    registry.register(plane("two")).expect("registered");
+
+    let after_replace = registry.replace(plane("one"));
+    // The neighbour is still the original object, live at every generation including the one the
+    // swap just opened — a swap of "one" must not touch "two"'s own entry.
+    assert!(registry
+        .resolve_at(PluginKind::Plane, "two", after_replace)
+        .is_some());
+    assert_eq!(registry.count(PluginKind::Plane), 2);
+
+    let after_retire = registry.retire(PluginKind::Plane, "one");
+    // Retiring "one" must not retire "two": "two" still resolves at the current generation.
+    assert!(registry
+        .resolve_at(PluginKind::Plane, "two", after_retire)
+        .is_some());
+    assert!(registry.resolve(PluginKind::Plane, "two").is_some());
+    // "one" is the one that actually went away.
+    assert!(registry.resolve(PluginKind::Plane, "one").is_none());
+}
+
 #[test]
 fn a_deployment_is_bootstrapped_exactly_once() {
     let fingerprint = [7u8; 32];
