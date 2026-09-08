@@ -105,24 +105,10 @@ pub(crate) struct RotatedKeyView {
     pub(crate) secret: Option<String>,
 }
 
-/// `GET /keys/{id}/usage`: the key's all-time attribution counters (a 1.5.0 key bucket accrues in
-/// the `total` window; limits live on the bound group's own windows) plus the fraction of the
-/// tightest `requests`/`tokens` limit across the group chain remaining (`null` = no such limit).
-#[derive(Serialize, JsonSchema)]
-pub(crate) struct KeyMeteringView {
-    pub(crate) id: String,
-    /// Always `"total"` (the key attribution window).
-    pub(crate) budget_period: String,
-    /// Always `0` (the all-time window start).
-    pub(crate) window_start: u64,
-    pub(crate) as_of: u64,
-    /// The bound `groups:` entry (`null` = unlimited key).
-    pub(crate) group: Option<String>,
-    pub(crate) spend_cents: i64,
-    pub(crate) tokens: u64,
-    pub(crate) requests: u64,
-    pub(crate) rate_headroom: Option<f64>,
-}
+/// The key metering mirror — relocated to the cost unit (`busbar_unit_cost::view`) with the other
+/// money-naming admin views (`spend_cents`, `budget_period`): a view that carries a figure is the
+/// cost unit's shape. Moved verbatim, still schema-only, still compiled only under `openapi-schema`.
+pub(crate) use busbar_unit_cost::view::KeyMeteringView;
 
 /// `GET /keys`: the cursor-paginated key list envelope (`{items, next_cursor}`, hand-rolled in the
 /// keys handler rather than via `Page<T>`).

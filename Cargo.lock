@@ -530,6 +530,7 @@ dependencies = [
  "busbar-store-memory",
  "busbar-substrate",
  "busbar-timing",
+ "busbar-unit-cost",
  "busbar-unit-scope",
  "bytes",
  "crc32fast",
@@ -1150,6 +1151,8 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-unit-admission",
+ "schemars",
+ "serde",
 ]
 
 [[package]]
