@@ -48,7 +48,9 @@ const VK_ID_PREFIX: &str = "vk_";
 /// Number of hex characters from the SHA-256 hash used as the suffix of a virtual-key id.
 #[cfg_attr(not(test), allow(dead_code))]
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
-/// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`.
+/// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`. Gated with it: no
+/// production path mints a hashed bearer secret any more.
+#[cfg(any(test, feature = "test-support"))]
 const SK_SECRET_PREFIX: &str = "sk-bb-";
 /// The `generation_hash` prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
 /// hashed bearer secret: the token is the credential, and the `generation_hash` column holds
@@ -815,6 +817,12 @@ pub type GovCtx = busbar_api::PlaneRequestCtx;
 /// back to a guessable (time-derived) secret. getrandom failure is near-impossible on supported
 /// platforms; on failure we return the error so the caller (`create_key`) surfaces a 500 instead of
 /// panicking the process — the server stays up.
+///
+/// Gated with its two callers. Once `create_key`/`create_key_with_aws` are test-only, the HASHED
+/// BEARER SECRET has no production minting path left at all — which is the shape 1.5.0 retired
+/// (every live key is a signed-token binding; see `docs/migration-1.5.md`). The compiler said so
+/// the moment the doors closed, and the answer is to close this too rather than to silence it.
+#[cfg(any(test, feature = "test-support"))]
 fn generate_secret() -> Result<String, getrandom::Error> {
     // Portable OS CSPRNG via getrandom: /dev/urandom on Unix, BCryptGenRandom on Windows, etc.
     let mut buf = [0u8; 32];
