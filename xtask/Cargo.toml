@@ -34,3 +34,38 @@ path = "src/main.rs"
 # `cargo_metadata` crate — one more dependency for a tool whose entire point is auditing
 # dependencies is one worth not adding, and the format-version=1 shape this tool reads is small.
 serde_json = { workspace = true }
+
+# ── THE CONFORMANCE HARNESS'S SUBJECTS ───────────────────────────────────────────────────────────
+#
+# A kind's shared conformance battery is TOOLING, and tooling depends on the plugins it drives —
+# never the reverse. The obvious shape (a helper crate every plugin crate takes as a dev-dependency)
+# puts a `unit -> plugin-tooling` edge in fourteen manifests, and the kind graph refuses every one
+# of them: `not-allowed`, and introduced by the branch, which no `[[dep]]` row may admit.
+#
+# So the subjects are named HERE. `xtask` is the gate runner, and `kind_isolation`'s own
+# `OFF_TREE_MANIFESTS` says what that means in its own words: "a workspace member and not a crate of
+# the product tree: it has no kind, it ships in no artifact, and every rule here is a rule it
+# enforces rather than one it is subject to". These edges are the tooling's; no kind edge is created
+# and no `[[cell]]` moves.
+#
+# `[dev-dependencies]`, deliberately: `cargo run -p xtask -- gate …` — every gate run, on every push
+# — builds the runner and nothing below. These compile under `cargo test -p xtask` and nowhere else.
+[dev-dependencies]
+# The `unit` kind's entry face, its steps and `Decision<S>`: what `tests/battery/unit.rs` is written
+# against.
+busbar-caps = { path = "../crates/busbar-caps" }
+# The fourteen `unit` crates, the subjects of `tests/unit_conformance.rs`.
+busbar-unit-admission = { path = "../crates/busbar-unit-admission" }
+busbar-unit-audit = { path = "../crates/busbar-unit-audit" }
+busbar-unit-auth = { path = "../crates/busbar-unit-auth" }
+busbar-unit-breaker = { path = "../crates/busbar-unit-breaker" }
+busbar-unit-cost = { path = "../crates/busbar-unit-cost" }
+busbar-unit-egress = { path = "../crates/busbar-unit-egress" }
+busbar-unit-egress-auth = { path = "../crates/busbar-unit-egress-auth" }
+busbar-unit-ledger = { path = "../crates/busbar-unit-ledger" }
+busbar-unit-scope = { path = "../crates/busbar-unit-scope" }
+busbar-unit-transport-key = { path = "../crates/busbar-unit-transport-key" }
+busbar-unit-trust = { path = "../crates/busbar-unit-trust" }
+busbar-unit-usage = { path = "../crates/busbar-unit-usage" }
+busbar-unit-verbs = { path = "../crates/busbar-unit-verbs" }
+busbar-unit-wal = { path = "../crates/busbar-unit-wal" }
