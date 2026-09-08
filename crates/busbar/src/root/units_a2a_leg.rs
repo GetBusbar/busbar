@@ -669,7 +669,7 @@ impl A2aLeg {
         chain: Option<&'r BucketChain>,
         now: u64,
         mono: u64,
-        dispatch: Option<&'r dyn crate::root::units_a2a::A2aDispatch>,
+        dispatch: Option<&'r dyn crate::root::transports::PlaneDispatch>,
     ) -> A2aBindings<'r, InMemoryCells> {
         A2aBindings {
             auth: &self.auth,
@@ -871,8 +871,8 @@ impl A2aLeg {
         kernel: &Kernel,
         ctx: &UnitCtx,
         run: Run<'_>,
-        dispatch: Option<&dyn crate::root::units_a2a::A2aDispatch>,
-    ) -> (Ended, Option<crate::root::units_a2a::A2aAnswer>) {
+        dispatch: Option<&dyn crate::root::transports::PlaneDispatch>,
+    ) -> (Ended, Option<crate::root::transports::PlaneAnswer>) {
         // THE TWO CLOCKS, PINNED ONCE, HERE. Two readings and not one number written twice: the wall
         // epoch dates the unit and the monotonic reading orders it. Read at the top of the walk so
         // every step of this unit is judged against the same moment — a check in one window and a
