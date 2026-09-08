@@ -536,7 +536,7 @@ async fn a_body_over_the_operators_cap_is_the_surfaces_to_refuse() {
 /// otherwise send one caller's request to the surface twice.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_seam_of_one_arrival_executes_at_most_once() {
-    use crate::root::units_a2a::A2aDispatch as _;
+    use crate::root::units_a2a::PlaneDispatch as _;
 
     let calls = Arc::new(SurfaceCalls::default());
     let runtime = tokio::runtime::Handle::current();
