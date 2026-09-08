@@ -2,11 +2,16 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The reasons a verb call can be refused, named the way the architecture document names them
-//! (`Refused(Approve, InsufficientApprovers)`, `Refused(Approve, SelfApproval)`, and so on) so a
-//! caller can render or audit the exact reason without re-deriving it from a status code.
+//! (`Refused(Admit, RateLimited)` and so on) so a caller can render or audit the exact reason
+//! without re-deriving it from a status code.
+//!
+//! Five codes that were here in the 17-verb draft are gone with the ceremony they described:
+//! `InsufficientApprovers`, `SelfApproval`, `PayloadMismatch`, `OperatorUnset` and
+//! `ApprovalPending`. A refusal code with no reachable condition is worse than no code — it invites
+//! a caller to branch on something that can never happen.
 
 /// A refused verb call. `step` mirrors the ten-step names `busbar-caps` seals (this crate only ever
-/// refuses at `Approve` or `Admit` — the other eight belong to units this crate is not); `reason` is
+/// refuses at `Admit` or `Verify` — the other eight belong to units this crate is not); `reason` is
 /// the stable machine-readable code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Refusal {
@@ -26,9 +31,7 @@ impl Refusal {
 /// The step a refusal is attributed to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefusalStep {
-    /// The maker-checker approval step.
-    Approve,
-    /// The admission step (scope, posture, rate limit, replay).
+    /// The admission step (scope, allow-list, rate limit, replay).
     Admit,
     /// The verb executed but its own domain rule (a missing group, a bad state) refused it.
     Verify,
@@ -38,18 +41,8 @@ pub enum RefusalStep {
 /// own vocabulary rather than inventing a parallel one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasonCode {
-    /// `set_dual_control(required)` needs at least two distinct admin principals.
-    InsufficientApprovers,
-    /// An `approve` whose approver is the same principal as the maker.
-    SelfApproval,
-    /// A payload hash on `approve` that does not equal the pending mutation's.
-    PayloadMismatch,
-    /// An irreducible verb other than `set_operator_key`/`export_keyset`, called while
-    /// `operator: unset`.
-    OperatorUnset,
-    /// A mutating verb called under `required` posture with no matching `approve` yet.
-    ApprovalPending,
-    /// The caller's scope does not satisfy the verb's required scope.
+    /// The caller's scope does not satisfy the verb's required scope, or the caller's per-verb
+    /// allow-list does not name this verb.
     Unauthorized,
     /// An `Idempotency-Key` header names an in-flight reservation (same actor, same key).
     IdempotencyInFlight,

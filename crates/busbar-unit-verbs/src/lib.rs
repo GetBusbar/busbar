@@ -11,7 +11,7 @@
 //! request body, and encodes whatever this crate returns back into an HTTP response. Every kernel
 //! verb's SEMANTICS — what a mint actually does, what a rotate actually does, whether a call is
 //! rate-limited, whether an `Idempotency-Key` retry replays instead of double-running, whether a
-//! new 1.6.0 verb is admitted under the current dual-control posture — live here, behind the
+//! new 1.6.0 verb is admitted by the caller's scope — live here, behind the
 //! [`governance::Governance`] and [`store::Store`] traits the integrator binds to the concrete
 //! record store (`busbar-core`'s `GovState` and neighbours, in the target architecture).
 //!
@@ -38,12 +38,16 @@
 //! idempotency cache ([`idempotency`]; per-node, in-process, 600 s TTL, keyed `(actor, header)` for
 //! a mint and `(actor, "rotate:{id}:{k}")` for a rotate, no body hash), the mutation rate limiter
 //! ([`rate`]; fixed one-minute windows, `Config`/`Crud`/`PluginInspect` budgets, failed attempts
-//! count too), the mint's parent-existence-only group plan ([`mint`]), and the posture rules for
-//! the 13 new verbs ([`posture`]; refused under `operator: unset` except `set_operator_key` and
-//! `export_keyset`; refused under `required` dual control without a matching `approve`).
+//! count too), and the mint's parent-existence-only group plan ([`mint`]).
+//!
+//! There is no posture module and no approval state. The owner's 2026-09-08 ruling ("the admin API
+//! is dumb; policy lives in the calling app") retired the operator key, dual control and the
+//! irreducible set together with the five ceremony verbs that operated them, so the only thing
+//! standing between a caller and a new verb is the scope that verb requires and the per-verb
+//! allow-list on the caller's own credential.
 //!
 //! Everything else a legacy verb or a new verb actually DOES to the record store — 60 of the 66
-//! legacy operations, and the domain effect of every new verb once posture admits it — is a
+//! legacy operations, and the domain effect of every new verb — is a
 //! `// contract:` seam on [`governance::Governance`] or [`store::Store`]: this crate enforces the
 //! SHAPE of the call (which verb, what scope it needs, which rate class, whether it replays), the
 //! integrator supplies the effect. See those two modules' doc comments for the exact list of what
@@ -53,7 +57,6 @@
 pub mod governance;
 pub mod idempotency;
 pub mod mint;
-pub mod posture;
 pub mod rate;
 pub mod refusal;
 pub mod store;
@@ -63,13 +66,12 @@ pub mod verbs;
 
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 pub use idempotency::ReplayEncoder;
-pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 pub use rate::ConfigClassRule;
 pub use refusal::{ReasonCode, Refusal, RefusalStep};
 pub use store::{Store, StoreError};
 pub use verb::{
-    KernelVerb, VerbScope, IRREDUCIBLE_VERBS, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
-    NEW_VERBS, READ_ONLY_NEW_VERBS,
+    KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
+    READ_ONLY_NEW_VERBS,
 };
 pub use verbs::{required_scope, MintOutcome, MintedKeyOutcome, NonceSource, Verbs};
 

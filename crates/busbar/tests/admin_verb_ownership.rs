@@ -18,9 +18,9 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 15 |
-//! | the surface answers, and the loop hands it back | everything else that is mounted | 59 |
-//! | nobody answers | gated, then `404` — the shipped defect the sibling pin names | 10 |
+//! | the loop answers, and the surface has no route | the operation is a ledger view or a recovery verb | 8 |
+//! | the surface answers, and the loop hands it back | everything else that is mounted | 66 |
+//! | nobody answers | scope-checked, then `404` — the shipped defect the sibling pin names | 10 |
 //!
 //! ## Why it is derived and then measured, rather than written down
 //!
@@ -58,13 +58,6 @@
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
-
-/// The path the composition serves its own discovery document at.
-///
-/// Named rather than spelled at the two call sites, because it is the one row of the table this
-/// file both ASKS and READS: the answer to this request is the list of every other request the
-/// composition claims to answer.
-const OPENAPI_PATH: &str = "/api/v1/admin/openapi.json";
 
 /// The three of the eighty-four whose effect lands on `Store` through the executing unit's own
 /// per-verb entry points, so the governance seam — and therefore the surface underneath — is never
@@ -283,7 +276,7 @@ async fn documented_gets() -> Vec<String> {
 
 /// The whole partition, derived from the two crates and then measured against a running surface.
 #[tokio::test]
-async fn the_eighty_three_are_split_between_the_loop_and_the_surface() {
+async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
     busbar_core::metrics::init();
 
     let absent = ask_a_fresh_surface("GET", A_PATH_THAT_DOES_NOT_EXIST).await;

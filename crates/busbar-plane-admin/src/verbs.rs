@@ -2,28 +2,23 @@
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
 //! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 13 are the
-//! 1.6.0-additive operator verbs the design names by name only (`verify`, `plane_facts`,
-//! `plane_record_write`, `set_operator_key`, `set_escrow`, `chain_break`, `store_restore`,
-//! `reseal_epoch_floor`, `set_dual_control`, `commit_upgrade`, `export_keyset`, `approve`,
+//! 1.6.0-additive money-governance verbs (`verify`, `plane_facts`, `plane_record_write`,
+//! `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_overdraft_ceiling`,
+//! `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`,
 //! `amend_rate_history`) — new admin-API surface, not part of the 1.5.5 tag.
 //!
-//! There is no correction verb among them, and that is the money model rather than an oversight.
-//! busbar is a meter and an audit trail: one sealed facts line per unit, written at the end and
-//! never edited. `adjust`, `resolve_slice`, `resolve_dispute`, `set_dispute_max_age` and
-//! `set_overdraft_ceiling` were the five that edited a posted figure or armed a policy for editing
-//! one, so all five left with their paths. Corrections belong to the calling app, against the
-//! exported sealed lines.
+//! **The bindings are transcribed, not invented.** They are the one-table section of
+//! `docs/design/admin-new-verbs-contract.md`, row for row: `GET /api/v1/admin/<kebab-case-verb>`
+//! for the two reads, `POST` for the
+//! rest, and the path is the WHOLE verb name kebab-cased — `set-overdraft-ceiling`, not
+//! `overdraft-ceiling`. Five rows the earlier draft carried are gone with the owner's 2026-09-08
+//! ruling (`set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset`, `approve`), and
+//! `amend_rate_history` is the one row that does NOT follow the naming rule: it is a ledger write,
+//! and its path is the one the published 1.5.5 binary was recorded refusing.
 //!
-//! `amend_rate_history` is the one money verb, and it is not one of them. It ADDS a dated rate row
-//! and never edits one; because price is never stored, every read that follows derives its money
-//! against the rows then in force. That is a reprice, which is visible, dated and superseded rather
-//! than deleted — the opposite of the five, whose whole effect was to move a figure already posted.
-//!
-//! **Binding.** `GET verify` and `GET plane-facts` are the design's own words — the two read-only
-//! verbs bind as `GET`, every mutating verb as `POST`, each under the admin prefix as its own
-//! kebab-cased name. Which side of that split a verb falls on is the design's; the exact spelling of
-//! a path is still this table's, so if a real binding ever differs only these literals change — the
-//! codec logic (`find_verb`, path-pattern matching) reads them as data.
+//! `verify` and `plane_facts` are marked read-only; every other row is marked `full`. Nothing else
+//! about a row is this table's to decide — the codec (`find_verb`, path-pattern matching) reads the
+//! literals and has no opinion about them.
 
 use crate::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
 use busbar_contract::ids::OpClassId;
@@ -59,18 +54,6 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/operator-key",
-        verb: "set_operator_key",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/escrow",
-        verb: "set_escrow",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
         path: "/api/v1/admin/chain-break",
         verb: "chain_break",
         read_only: false,
@@ -89,8 +72,14 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/dual-control",
-        verb: "set_dual_control",
+        path: "/api/v1/admin/set-overdraft-ceiling",
+        verb: "set_overdraft_ceiling",
+        read_only: false,
+    },
+    VerbEntry {
+        method: "POST",
+        path: "/api/v1/admin/set-dispute-max-age",
+        verb: "set_dispute_max_age",
         read_only: false,
     },
     VerbEntry {
@@ -101,14 +90,30 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/export-keyset",
-        verb: "export_keyset",
+        path: "/api/v1/admin/resolve-dispute",
+        verb: "resolve_dispute",
         read_only: false,
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/approve",
-        verb: "approve",
+        path: "/api/v1/admin/resolve-slice",
+        verb: "resolve_slice",
+        read_only: false,
+    },
+    VerbEntry {
+        method: "POST",
+        path: "/api/v1/admin/adjust",
+        verb: "adjust",
+        read_only: false,
+    },
+    // The one row not under the `<kebab-case-verb>` rule. `amend_rate_history` is a ledger write,
+    // and this path is not a proposal: it is the path the published 1.5.5 binary was asked and
+    // refused, recorded in `ledger|amend|adjusting-entries`. Moving it would orphan that cell and
+    // the additivity claim it carries.
+    VerbEntry {
+        method: "POST",
+        path: "/api/v1/admin/ledger/amend-rate-history",
+        verb: "amend_rate_history",
         read_only: false,
     },
     VerbEntry {
