@@ -57,7 +57,7 @@ pub const ROW_STRICT_DONE: &str = "no-deferral:strict-done";
 pub const DISCOVERY_FLOOR: usize = 50;
 
 const WAIVERS: &str = "scripts/no-deferral.waivers";
-const TRACKER: &str = "docs/design/1.6.0-TRACKER.md";
+pub(crate) const TRACKER: &str = "docs/design/1.6.0-TRACKER.md";
 
 #[derive(Debug, Clone)]
 struct Waiver {
@@ -366,7 +366,11 @@ fn is_exact_location(matcher: &str) -> bool {
 }
 
 /// The `[retires: <ID>]` tag's id.
-fn expiry_id(reason: &str) -> Option<String> {
+///
+/// `pub(crate)` because [`crate::gates::ci_umbrella`] holds its own exemption hatch to the same
+/// standard and must read the tag the same way. A second copy of "what a retirement tag looks like"
+/// is how one of the two hatches quietly starts accepting a shape the other refuses.
+pub(crate) fn expiry_id(reason: &str) -> Option<String> {
     let at = reason.find("[retires:")?;
     let rest = &reason[at + "[retires:".len()..];
     let end = rest.find(']')?;
@@ -382,7 +386,10 @@ fn expiry_id(reason: &str) -> Option<String> {
 }
 
 /// `^- \[[ x]\] <id>\s` in the tracker.
-fn tracker_has_row(tracker: &str, id: &str) -> bool {
+///
+/// `pub(crate)` for the same reason as [`expiry_id`]: the umbrella's hatch resolves its tag against
+/// THIS tracker, by this rule, or the two gates disagree about what a live row is.
+pub(crate) fn tracker_has_row(tracker: &str, id: &str) -> bool {
     tracker.lines().any(|l| {
         for head in ["- [ ] ", "- [x] "] {
             if let Some(rest) = l.strip_prefix(head) {
