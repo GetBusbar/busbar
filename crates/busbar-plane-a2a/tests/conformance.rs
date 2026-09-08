@@ -328,6 +328,23 @@ fn an_error_answer_is_terminal() {
     }
 }
 
+/// A unit whose answer this plane is about to read, for the state opener.
+fn hop_unit<'u>(op: busbar_contract::ids::OpClassId) -> busbar_contract::unit::Unit<'u> {
+    busbar_contract::unit::Unit::new(
+        &common::TestSeal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        op,
+        busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
+        None,
+    )
+}
+
 /// The ordinary answer — the one every caller gets — ends its unit.
 ///
 /// This is the shape the plane's own fixture already carries, and the shape a `message/send` or a
@@ -336,27 +353,25 @@ fn an_error_answer_is_terminal() {
 /// body that never arrived intact: it refunds the destination budget and posts a compensating
 /// transient against the breaker.
 ///
-/// RED BY DESIGN. The bytes of this answer are IDENTICAL to the bytes of the first event of a
-/// streamed run — a `message/stream` opens with the same task snapshot — so no predicate over the
-/// body alone can tell them apart. What tells them apart is whether the unit was opened as a
-/// streaming one, which this plane records on the draft and cannot read back here: `decode_response`
-/// is handed neither the unit nor, at the one production call site, any session state to have put
-/// it in. Removing this `#[ignore]` needs that seam, not a cleverer predicate. Deliberately not
-/// softened into a test of what the plane does today.
+/// The bytes of this answer are IDENTICAL to the bytes of the first event of a streamed run — a
+/// `message/stream` opens with the same task snapshot — so no predicate over the body alone can
+/// tell them apart, and this plane does not try. It reads what the unit was OPENED as out of the
+/// state the egress attempt opened for the hop, which is what `open_unit_state` puts there.
 #[test]
-#[ignore = "RED BY DESIGN: an ordinary answer and a streamed run's first event are the same bytes, \
-            and decode_response is handed neither the unit's streaming fact nor session state to \
-            have recorded it in — see the seam gap reported with this commit"]
 fn a_plain_answer_ends_its_unit() {
     let plane = A2aPlane::EMPTY;
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
+    let unit = hop_unit(ops::OP_MESSAGE_SEND);
+    let mut st = plane
+        .open_unit_state(&unit, &ctx)
+        .expect("this plane carries state across a hop");
     let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"id":"t1","kind":"task"}}"#;
     let frames = vec![response_frame(answer)];
     let mut cursor = FrameCursor::new(&frames);
     let sealed = sealed_destination();
     match plane
-        .decode_response(&mut cursor, &sealed, None, &ctx)
+        .decode_response(&mut cursor, &sealed, Some(&mut st), &ctx)
         .expect("a successful answer decodes")
     {
         Progress::Terminal { for_, r } => {
@@ -367,6 +382,82 @@ fn a_plain_answer_ends_its_unit() {
             );
         }
         other => panic!("an ordinary answer decoded as {other:?}"),
+    }
+}
+
+/// An answer read with no state at all is read as a complete one.
+///
+/// A hop that opened no state is not licence to hold the unit open for ever. The default is the
+/// one that costs nobody anything: the answer ends its unit, which is what the answer to every
+/// non-streaming method in the vocabulary does. A streamed run is the case that has to say so, and
+/// it says so through the state.
+#[test]
+fn an_answer_read_with_no_state_ends_its_unit() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"id":"t1","kind":"task"}}"#;
+    let frames = vec![response_frame(answer)];
+    let mut cursor = FrameCursor::new(&frames);
+    let sealed = sealed_destination();
+    assert!(
+        matches!(
+            plane
+                .decode_response(&mut cursor, &sealed, None, &ctx)
+                .expect("a successful answer decodes"),
+            Progress::Terminal { .. }
+        ),
+        "an answer read with no state ends its unit"
+    );
+}
+
+/// The twin: the same bytes under a streamed run are a frame in the middle of it, and the run ends
+/// on the event that says it is the last one.
+///
+/// `message/stream` opens with exactly the task snapshot the unary answer above carries. Reading
+/// that as the end of the unit would cut a run at its first event, relay one snapshot as the whole
+/// answer and report it as a completed exchange. The separating fact is the unit's, not the body's.
+#[test]
+fn a_streamed_run_ends_on_its_last_event_and_not_before() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let unit = hop_unit(ops::OP_MESSAGE_STREAM);
+    let mut st = plane
+        .open_unit_state(&unit, &ctx)
+        .expect("this plane carries state across a hop");
+    let sealed = sealed_destination();
+
+    // The opening event: the same bytes the ordinary answer above is made of.
+    let opening = br#"{"id":1,"jsonrpc":"2.0","result":{"id":"t1","kind":"task"}}"#;
+    let frames = vec![response_frame(opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed, Some(&mut st), &ctx)
+        .expect("the opening event decodes")
+    {
+        Progress::Frame { r, .. } => assert_eq!(
+            r.finish,
+            busbar_contract::unit::FinishClass::TurnComplete,
+            "the run is not over"
+        ),
+        other => panic!("a streamed run's opening event decoded as {other:?}"),
+    }
+
+    // The event that says it is the last one.
+    let last = br#"{"id":1,"jsonrpc":"2.0","result":{"final":true,"kind":"status-update","status":{"state":"completed"},"taskId":"t1"}}"#;
+    let frames = vec![response_frame(last)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed, Some(&mut st), &ctx)
+        .expect("the last event decodes")
+    {
+        Progress::Terminal { r, .. } => assert_eq!(
+            r.finish,
+            busbar_contract::unit::FinishClass::Complete,
+            "the run ended"
+        ),
+        other => panic!("a streamed run's last event decoded as {other:?}"),
     }
 }
 
