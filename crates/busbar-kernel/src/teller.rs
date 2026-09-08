@@ -58,11 +58,11 @@ use std::future::Future;
 
 use busbar_caps::{
     Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
-    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldAccrual,
-    HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
-    PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
-    TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
-    VerifiedDestination, Verify,
+    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Frame, Hold,
+    HoldAccrual, HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind,
+    Outcome, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route,
+    SessionId, StepName, TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage,
+    UsageLine, UsageToken, VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
@@ -659,6 +659,19 @@ pub enum Ended {
         requests: u32,
         /// Whether the flat per-request fee posted.
         fee: u32,
+        /// What the Encode step wrote, when it wrote anything.
+        ///
+        /// The loop has always run Encode and always thrown its answer away, which left a driver
+        /// above the loop with a completed unit and no body to answer with — it could render a
+        /// refusal, because a refusal is reconstructible from the ending, but a completed unit's
+        /// bytes exist exactly once and only here. Carrying the frame out is what makes the ending
+        /// a complete account of the unit rather than an account of its money alone.
+        ///
+        /// `None` is not "no answer": it is the step declining to write one. Encode refused, or the
+        /// unit ended on a path where the cell was already empty and nothing was encoded against
+        /// it. A driver reads `None` as "render this ending yourself" and reads `Some` as "these
+        /// are the bytes the plane wrote, send them".
+        frame: Option<Frame>,
     },
     /// Somebody else — the node's sweep — took the hold first and has already settled it. Doing
     /// anything here would be the second settlement of one unit.
@@ -793,10 +806,11 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
             let _sealed = units
                 .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
                 .into_result(seal);
-            let _bytes = units
+            let bytes = units
                 .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-                .into_result(seal);
-            exit(kernel, units, ctx, run, outcome, false)
+                .into_result(seal)
+                .ok();
+            exit(kernel, units, ctx, run, outcome, false, bytes)
         }
         // The door answered, and its answer decides exactly two things: whether a hold goes into the
         // cell, and what the end is settled against. Everything after it — the walk, the meter, the
@@ -1013,12 +1027,13 @@ fn terminal<U: Units>(
     let _sealed = units
         .audit(&UnitToken::<Audit>::mint(seal), ctx, &outcome)
         .into_result(seal);
-    let _bytes = units
+    let bytes = units
         .encode(&UnitToken::<Encode>::mint(seal), ctx, &outcome)
-        .into_result(seal);
+        .into_result(seal)
+        .ok();
     match settling {
         Settling::Exit(reached_admitted) => {
-            exit(kernel, units, ctx, run, outcome, reached_admitted)
+            exit(kernel, units, ctx, run, outcome, reached_admitted, bytes)
         }
         Settling::Parent(accrual) => {
             // The child opened no reservation of its own, but the table minted it an arrival hold
@@ -1050,6 +1065,9 @@ fn terminal<U: Units>(
                         // both is the parent it is spending against.
                         requests: 0,
                         fee: 0,
+                        // The child encoded like every other unit, above, and its bytes are its
+                        // own: the parent carries the child's SPEND, not the child's answer.
+                        frame: bytes,
                     }
                 }
             }
@@ -1105,6 +1123,9 @@ fn drop_arrival(_hold: Hold) {}
 /// same breath — every end, whatever it was — settles per the table, and seals the end. If the cell
 /// is already empty the node's sweep got here first and this call does nothing at all, which is the
 /// only correct answer: a unit is settled once.
+/// `frame` is what the Encode step wrote, taken by the caller that ran it — this path does not run
+/// Encode and does not invent bytes when the step declined to write any. It is carried through
+/// rather than re-derived because a unit's answer is written exactly once.
 pub fn exit<U: Units>(
     kernel: &Kernel,
     units: &U,
@@ -1112,6 +1133,7 @@ pub fn exit<U: Units>(
     run: Run<'_>,
     outcome: Outcome,
     reached_admitted: bool,
+    frame: Option<Frame>,
 ) -> Ended {
     let seal = &kernel.seal;
     let taken = run.cell.take(&ExitToken::mint(seal));
@@ -1173,6 +1195,7 @@ pub fn exit<U: Units>(
                 end: UnitEnd::seal(&ExitToken::mint(seal), outcome, posted),
                 requests,
                 fee,
+                frame,
             }
         }
     }
