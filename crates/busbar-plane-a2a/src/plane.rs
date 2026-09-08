@@ -166,6 +166,16 @@ fn has(body: &[u8], pointer: &str) -> bool {
     read_raw(body, pointer).is_some()
 }
 
+/// Whether a body STATES something at one pointer — the member is there and it is not the null
+/// literal.
+///
+/// Presence alone is not a statement. An agent that writes `"result":null` beside nothing else has
+/// told the caller as little as one that omitted the member, and the two spellings of the same
+/// nothing must be read the same way or the emptier one slips through as an answer.
+fn states(body: &[u8], pointer: &str) -> bool {
+    read_raw(body, pointer).is_some_and(|raw| raw != b"null")
+}
+
 /// Which code and words this dialect answers one refusal reason with.
 ///
 /// ## What this mapping is, and what it is not
@@ -521,8 +531,8 @@ impl Plane for A2aPlane {
         // answer at all: it is the agent pushing something, which opens a unit of its own and runs
         // all seven steps like any other.
         let id = read_raw(body, jsonrpc::PTR_ID);
-        let is_error = has(body, jsonrpc::PTR_ERROR);
-        let has_result = has(body, jsonrpc::PTR_RESULT);
+        let is_error = states(body, jsonrpc::PTR_ERROR);
+        let has_result = states(body, jsonrpc::PTR_RESULT);
         if id.is_none() && !is_error && !has_result {
             let mut facts = Facts::new();
             if let Some(task) = read_str(body, "/taskId").or_else(|| read_str(body, "/id")) {
@@ -558,6 +568,23 @@ impl Plane for A2aPlane {
             }
         }
         let for_ = id.and_then(|raw| f::correlation_for(raw, ctx.arena()));
+        // AN ANSWER STATES SOMETHING. This protocol's answers state a result or state an error, and
+        // an envelope that states neither is a truncated write or an agent that got it wrong. It
+        // was read as a COMPLETED answer: an empty body handed back to the caller as their result,
+        // and the fee a unit draws is decided from the finish this step reports, so the caller paid
+        // for it. It ends the unit here, and it ends it as an error — the honest finish for "the
+        // agent said nothing" — rather than as a decode failure, which would leave the loop with no
+        // finish at all and is the one answer the fee evidence reads as a completed exchange.
+        if !is_error && !has_result {
+            return Ok(Progress::Terminal {
+                for_,
+                r: Box::new(Response {
+                    ir: view(body, jsonrpc::RESPONSE_PTRS, ctx)?,
+                    finish: FinishClass::Error,
+                    facts,
+                }),
+            });
+        }
         // An answer that says it is the last one is the last one. An answer carrying an error is
         // also the last one, whatever it says about itself: an agent does not keep streaming after
         // it has reported that it failed.

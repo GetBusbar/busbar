@@ -328,6 +328,83 @@ fn an_error_answer_is_terminal() {
     }
 }
 
+/// The ordinary answer — the one every caller gets — ends its unit.
+///
+/// This is the shape the plane's own fixture already carries, and the shape a `message/send` or a
+/// `tasks/get` is answered with. A unit that never reaches its ending is a unit the loop is still
+/// holding open on a connection whose work is finished, and the egress attempt reads that as a
+/// body that never arrived intact: it refunds the destination budget and posts a compensating
+/// transient against the breaker.
+///
+/// RED BY DESIGN. The bytes of this answer are IDENTICAL to the bytes of the first event of a
+/// streamed run — a `message/stream` opens with the same task snapshot — so no predicate over the
+/// body alone can tell them apart. What tells them apart is whether the unit was opened as a
+/// streaming one, which this plane records on the draft and cannot read back here: `decode_response`
+/// is handed neither the unit nor, at the one production call site, any session state to have put
+/// it in. Removing this `#[ignore]` needs that seam, not a cleverer predicate. Deliberately not
+/// softened into a test of what the plane does today.
+#[test]
+#[ignore = "RED BY DESIGN: an ordinary answer and a streamed run's first event are the same bytes, \
+            and decode_response is handed neither the unit's streaming fact nor session state to \
+            have recorded it in — see the seam gap reported with this commit"]
+fn a_plain_answer_ends_its_unit() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"id":"t1","kind":"task"}}"#;
+    let frames = vec![response_frame(answer)];
+    let mut cursor = FrameCursor::new(&frames);
+    let sealed = sealed_destination();
+    match plane
+        .decode_response(&mut cursor, &sealed, None, &ctx)
+        .expect("a successful answer decodes")
+    {
+        Progress::Terminal { for_, r } => {
+            assert_eq!(r.finish, busbar_contract::unit::FinishClass::Complete);
+            assert_eq!(
+                for_.expect("it correlates").value,
+                busbar_contract::ids::CorrelationValue::Num(1)
+            );
+        }
+        other => panic!("an ordinary answer decoded as {other:?}"),
+    }
+}
+
+/// An envelope that states neither a result nor an error is not an answer, and is not reported as
+/// a completed one.
+///
+/// A truncated write or a buggy agent produces exactly this. Calling it complete tells the caller
+/// their request succeeded, hands them nothing, and — because the fee is decided from the finish
+/// the plane reports — charges them for it. The unit still ENDS here, and it ends as an error: a
+/// decode failure would leave the loop with no finish at all, which is the one answer the fee
+/// evidence reads as a completed exchange.
+#[test]
+fn an_envelope_stating_neither_result_nor_error_ends_the_unit_as_an_error() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    for empty in [
+        br#"{"id":7,"jsonrpc":"2.0"}"#.as_slice(),
+        // A stated but empty result is the same nothing, written the other way.
+        br#"{"id":7,"jsonrpc":"2.0","result":null}"#.as_slice(),
+    ] {
+        let frames = vec![response_frame(empty)];
+        let mut cursor = FrameCursor::new(&frames);
+        let sealed = sealed_destination();
+        match plane
+            .decode_response(&mut cursor, &sealed, None, &ctx)
+            .expect("an empty envelope decodes")
+        {
+            Progress::Terminal { r, .. } => assert_eq!(
+                r.finish,
+                busbar_contract::unit::FinishClass::Error,
+                "an empty envelope was reported as a completed answer"
+            ),
+            other => panic!("an empty envelope decoded as {other:?}"),
+        }
+    }
+}
+
 /// A refusal is rendered as this dialect's own error envelope, with the caller's identifier.
 #[test]
 fn a_refusal_is_rendered_in_this_dialect() {
