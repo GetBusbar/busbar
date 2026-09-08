@@ -567,21 +567,6 @@ pub(crate) async fn rollback_plugin(
     }
 }
 
-/// `GET /api/v1/admin/auth` — the ingress auth chain + upstream-credential mode (no secrets).
-pub(crate) async fn get_auth(State(handle): State<Arc<AppHandle>>) -> Response {
-    respond(StatusCode::OK, service(&handle).get_auth().await)
-}
-
-/// `GET /api/v1/admin/admin-auth` — the admin-plane auth config (the admin surface guard;
-/// + config-plane `ETag` so a `PUT /api/v1/admin/admin-auth` can chain `If-Match` off this read).
-pub(crate) async fn get_admin_auth(State(handle): State<Arc<AppHandle>>) -> Response {
-    let version = handle.load().config_version;
-    with_config_etag(
-        respond(StatusCode::OK, service(&handle).get_admin_auth().await),
-        version,
-    )
-}
-
 /// `GET /api/v1/admin/usage` — the fleet METERING read: current UTC-day bucket, raw token split
 /// per (model, provider) and per key + derived spend_micros (see the service/contract docs).
 /// `?window=<bucket-start-epoch>` selects a PAST UTC-day bucket (default: current). The response
@@ -4694,9 +4679,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     }
 
     use crate::admin::v1::contract::{
-        AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
-        HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
-        PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
+        AuthView, ConfigValidateView, EffectiveConfigView, GroupView, HookHealthView, HookView,
+        InfoView, ModelView, NamedDefView, Page, PluginInstallView, PluginReloadView, PluginView,
+        PoolDetailView, PoolView, ProviderView, UsageView,
     };
 
     // Info & topology.
@@ -4741,7 +4726,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     );
     // Auth & credentials.
     typed!("/auth", "get", "200", AuthView);
-    typed!(PATH_ADMIN_AUTH, "get", "200", AdminAuthView);
+    typed!(PATH_ADMIN_AUTH, "get", "200", sview::AdminAuthView);
     typed!(PATH_ADMIN_AUTH, "put", "200", sview::AdminAuthPutView);
     typed!("/auth/cache/flush", "post", "200", sview::CacheFlushView);
     // Plugins, usage, config.

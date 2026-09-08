@@ -583,6 +583,48 @@ impl App {
             _ => &busbar_substrate::plane_host::EMPTY_VIEW,
         }
     }
+
+    /// The ADMIN-plane guard chain this generation runs, as configured module names in order.
+    ///
+    /// A NEUTRAL read of a field that is otherwise this crate's own: names, in order, and nothing
+    /// else. It is `pub` for the same reason [`App::engine_tables_view`] is — `GET /admin-auth`
+    /// crossed to the composition root's loop in 1.6.0's admin Cut 1, and the loop has to read the
+    /// same chain the retired handler read, at request time, off whichever generation is current.
+    /// `PUT /admin-auth` stays on the surface underneath and swaps a new generation onto the handle,
+    /// so a read-after-write through this accessor is coherent across the two halves.
+    ///
+    /// An EMPTY chain is the open (anonymous, full-authority) dev posture, and it is a real value
+    /// rather than an absence — which is why this returns the slice and never an `Option`.
+    #[must_use]
+    pub fn admin_guard_chain(&self) -> &[String] {
+        &self.admin_chain
+    }
+
+    /// This node's INGRESS front door, as the three neutral facts the two readings of it share: the
+    /// auth-chain module names in order, the upstream-credential mode as the word it is reported by,
+    /// and whether the door is open.
+    ///
+    /// ONE FOLD, TWO RENDERINGS, which is why the mapping from the credential-mode enum to its word
+    /// is here and not at either call site. `GET /auth` CROSSED to the composition root's loop in
+    /// 1.6.0's admin Cut 1b and the root renders these bytes; the `auth` member of the
+    /// effective-config read is still rendered here, into `AuthView`. They are the same three facts
+    /// about the same generation, so a node that answered them two ways would be a defect with no
+    /// correct side — and the enum-to-word mapping is exactly the kind of thing two call sites
+    /// eventually spell differently.
+    ///
+    /// Neutral out: names, a word and a flag, so one caller builds a view struct out of it and the
+    /// other writes bytes, without either naming the other's types.
+    #[must_use]
+    pub fn ingress_door_facts(&self) -> (Vec<&'static str>, &'static str, bool) {
+        (
+            self.auth.chain_names(),
+            match self.upstream_creds() {
+                crate::auth::UpstreamCreds::Own => "own",
+                crate::auth::UpstreamCreds::Passthrough => "passthrough",
+            },
+            self.auth.is_open(),
+        )
+    }
 }
 
 impl App {

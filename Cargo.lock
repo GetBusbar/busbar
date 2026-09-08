@@ -349,6 +349,7 @@ dependencies = [
  "busbar-plugin-loader",
  "busbar-plugin-sign",
  "busbar-store-example-plugin",
+ "busbar-store-memory",
  "busbar-substrate",
  "busbar-substrate-values",
  "busbar-transport-grpc",

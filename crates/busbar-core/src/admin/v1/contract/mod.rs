@@ -947,19 +947,11 @@ pub(crate) struct KeyUsageView {
     pub(crate) usage: UsageBreakdown,
 }
 
-/// The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface
-/// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
-/// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
-/// the open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct AdminAuthView {
-    /// Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.
-    pub(crate) configured: bool,
-    /// The active admin-plane guard module names, the `admin_auth` chain verbatim (e.g.
-    /// `["admin-tokens"]`), reported in order. Empty when the admin plane is open.
-    pub(crate) modules: Vec<String>,
-}
+// NO `AdminAuthView` HERE. `GET /api/v1/admin/admin-auth` CROSSED to the composition root's loop in
+// 1.6.0's admin Cut 1b, so this crate no longer SERIALIZES that read — and a struct nothing
+// serializes is not a contract type, it is a mirror of one. It moved to `contract::schema`, beside
+// every other shape this crate documents without producing, and the composition-level ownership pin
+// is what holds the mirror to the bytes the loop actually writes.
 
 /// The result of `POST /api/v1/admin/config/validate`, a DRY-RUN: does a proposed config resolve +
 /// validate, WITHOUT applying anything. `ok` is the verdict; `errors` lists every structural/resolution
