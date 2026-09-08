@@ -155,6 +155,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask full-gate --selftest",
     "cargo xtask gate release-order --format=tsv",
     "cargo xtask teller-steps --root-legs",
+    "cargo xtask teller-steps --root-legs-gating",
 ];
 
 /// The cargo invocations only CI can run, each with a written reason. Windows is the one gap a
