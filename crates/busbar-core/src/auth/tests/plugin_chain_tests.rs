@@ -93,7 +93,7 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
-        &plugins.to_policy().unwrap(),
+        &crate::preflight::engine_trust_policy(&plugins).unwrap(),
     )
     .expect("scan admits a v1 auth plugin (floor is 1)");
 
@@ -136,7 +136,7 @@ fn browser_login_on_v1_plugin_is_a_build_error() {
     let plugins2 = plugins_cfg_allow_unsigned(&dir2);
     let registry2 = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins2.dir),
-        &plugins2.to_policy().unwrap(),
+        &crate::preflight::engine_trust_policy(&plugins2).unwrap(),
     )
     .expect("scan");
     crate::auth::token::LoginMethods::build(&cfg, &registry2, &resolver)
@@ -548,7 +548,7 @@ fn admin_modules_rebuilt_on_reload() {
     let plugins = plugins_cfg_allow_unsigned(&dir);
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
-        &plugins.to_policy().unwrap(),
+        &crate::preflight::engine_trust_policy(&plugins).unwrap(),
     )
     .expect("scan succeeds");
     let mut cfg = AuthCfg::default_none();
@@ -628,7 +628,7 @@ fn untrusted_auth_plugin_fails_closed_not_open() {
     // the scan succeeds (skips are not fatal) but resolving the referenced module fails loud.
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&strict.dir),
-        &strict.to_policy().unwrap(),
+        &crate::preflight::engine_trust_policy(&strict).unwrap(),
     )
     .expect("scan succeeds; the untrusted plugin is merely skipped");
     let mw_err = AuthMiddleware::new(
@@ -684,7 +684,7 @@ fn missing_auth_plugin_is_loud_boot_failure() {
     // The middleware's own resolution is equally loud.
     let registry = busbar_plugin_loader::scan_and_validate(
         Path::new(&plugins.dir),
-        &plugins.to_policy().unwrap(),
+        &crate::preflight::engine_trust_policy(&plugins).unwrap(),
     )
     .expect("scan");
     let mw_err = AuthMiddleware::new(

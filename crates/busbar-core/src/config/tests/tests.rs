@@ -2310,7 +2310,7 @@ fn to_policy_with_floor_warns_only_on_a_non_empty_malformed_floor() {
         let mut cfg = PluginsCfg::default();
         cfg.min_versions.insert("p".to_string(), floor.to_string());
         tracing::subscriber::with_default(sub, || {
-            let _ = cfg.to_policy_with_floor("1.5.0");
+            let _ = busbar_plugin_loader::trust_policy(&cfg, "1.5.0");
         });
         let n = events.lock().unwrap().len();
         n
@@ -2883,7 +2883,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
         enabled: true,
         ..Default::default()
     };
-    let mut automatic = cfg.to_policy().expect("automatic policy");
+    let mut automatic = crate::preflight::engine_trust_policy(&cfg).expect("automatic policy");
     automatic.first_party_key = Some(release.verifying_key());
     // DEFAULT policy: no per-name floor pins this artifact, so its 0.9.0 version line is its own
     // business — a verified first-party plugin loads regardless of the binary's version.
@@ -2900,7 +2900,7 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
 
     // EXPLICIT per-name floor (the rollback-pin seam): pinned exactly at the artifact's version,
     // it loads; the pin binds and nothing older passes (asserted below).
-    let mut explicit = cfg.to_policy().expect("explicit policy");
+    let mut explicit = crate::preflight::engine_trust_policy(&cfg).expect("explicit policy");
     explicit.first_party_floors.insert(
         "busbar-store-valkey-plugin".to_string(),
         "0.9.0".to_string(),
@@ -2956,14 +2956,14 @@ fn to_policy_honors_runtime_first_party_floor_override() {
         ..Default::default()
     };
     // Default: the automatic floor equals the binary version and there are no per-name overrides.
-    let auto = cfg.to_policy().expect("policy");
+    let auto = crate::preflight::engine_trust_policy(&cfg).expect("policy");
     assert_eq!(auto.binary_version, env!("CARGO_PKG_VERSION"));
     assert!(auto.first_party_floors.is_empty());
     // With an explicit per-name override (as a persisted rollback pin sets): only that name is lowered;
     // the global binary_version floor (what every OTHER first-party plugin uses) is untouched.
     cfg.first_party_floors
         .insert("acme-hook".to_string(), "0.9.0".to_string());
-    let pinned = cfg.to_policy().expect("policy");
+    let pinned = crate::preflight::engine_trust_policy(&cfg).expect("policy");
     assert_eq!(pinned.binary_version, env!("CARGO_PKG_VERSION"));
     assert_eq!(
         pinned
@@ -2989,7 +2989,7 @@ fn to_policy_still_returns_ok_for_a_malformed_floor() {
     cfg.min_versions
         .insert("p".to_string(), "v1.6.0".to_string());
     assert!(
-        cfg.to_policy().is_ok(),
+        crate::preflight::engine_trust_policy(&cfg).is_ok(),
         "a malformed floor must not fail the boot — it is refused at the comparator instead"
     );
 }
@@ -3138,7 +3138,7 @@ fetch:
   - url: https://host/plugins/store-sqlite.tar.gz
 ";
     let cfg: PluginsCfg = serde_yaml::from_str(yaml).unwrap();
-    let specs = cfg.fetch_specs().expect("fetch_specs resolves");
+    let specs = busbar_plugin_loader::fetch_specs(&cfg).expect("fetch_specs resolves");
     assert_eq!(specs.len(), 2);
     // github → release-asset url + {repo}.tar.gz filename, pin carried.
     assert_eq!(specs[0].filename, "widget.tar.gz");
@@ -3159,7 +3159,7 @@ fn test_fetch_env_spec_reads_var() {
     std::env::set_var("BUSBAR_T_FETCH_URL", "https://host/p/thing.tar.gz@abc123");
     let cfg: PluginsCfg =
         serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_URL\n").unwrap();
-    let specs = cfg.fetch_specs().expect("env spec resolves");
+    let specs = busbar_plugin_loader::fetch_specs(&cfg).expect("env spec resolves");
     assert_eq!(specs[0].url, "https://host/p/thing.tar.gz");
     assert_eq!(specs[0].sha256.as_deref(), Some("abc123"));
     assert_eq!(specs[0].filename, "thing.tar.gz");
@@ -3172,7 +3172,7 @@ fn test_fetch_env_spec_unset_is_error() {
     std::env::remove_var("BUSBAR_T_FETCH_UNSET");
     let cfg: PluginsCfg =
         serde_yaml::from_str("enabled: true\nfetch:\n  - env: BUSBAR_T_FETCH_UNSET\n").unwrap();
-    let err = cfg.fetch_specs().expect_err("unset env var must error");
+    let err = busbar_plugin_loader::fetch_specs(&cfg).expect_err("unset env var must error");
     assert!(
         err.contains("BUSBAR_T_FETCH_UNSET") && err.contains("not set"),
         "{err}"

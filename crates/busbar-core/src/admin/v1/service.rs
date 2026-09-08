@@ -1436,7 +1436,7 @@ impl AdminService {
             None,
             None,
         )];
-        let Ok(policy) = self.app.plugins_cfg.to_policy() else {
+        let Ok(policy) = crate::preflight::engine_trust_policy(&self.app.plugins_cfg) else {
             return out;
         };
 
@@ -1714,10 +1714,7 @@ impl AdminService {
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
 
-        let policy = self
-            .app
-            .plugins_cfg
-            .to_policy()
+        let policy = crate::preflight::engine_trust_policy(&self.app.plugins_cfg)
             .map_err(AdminError::Validation)?;
 
         // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
@@ -1869,10 +1866,7 @@ impl AdminService {
             )));
         }
 
-        let policy = self
-            .app
-            .plugins_cfg
-            .to_policy()
+        let policy = crate::preflight::engine_trust_policy(&self.app.plugins_cfg)
             .map_err(AdminError::Validation)?;
 
         let unpacked = busbar_plugin_loader::tarball::unpack(tarball)
@@ -2018,11 +2012,9 @@ impl AdminService {
         // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
         // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
         // never the ARTIFACT.
-        let mut policy = self
-            .app
-            .plugins_cfg
-            .to_policy_with_floor(&manifest.version)
-            .map_err(AdminError::Validation)?;
+        let mut policy =
+            busbar_plugin_loader::trust_policy(&self.app.plugins_cfg, &manifest.version)
+                .map_err(AdminError::Validation)?;
         policy
             .min_versions
             .insert(manifest.name.clone(), manifest.version.clone());

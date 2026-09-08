@@ -499,7 +499,7 @@ pub fn build_app_from_config(
     // per-request. `prior.is_none()` is the boot(fatal-on-miss) vs reload(warn-on-miss) discriminator.
     // Signature verification stays the trust gate below; fetch is integrity/cache + delivery only.
     if plugins_cfg.enabled && !plugins_cfg.fetch.is_empty() {
-        let specs = plugins_cfg.fetch_specs()?;
+        let specs = busbar_plugin_loader::fetch_specs(&plugins_cfg)?;
         let dir = std::path::Path::new(&plugins_cfg.dir).to_path_buf();
         // Ensure the target dir exists so the atomic rename has a home.
         if let Err(e) = crate::durable::create_dir_all(&dir) {
