@@ -17,9 +17,17 @@ busbar-api = { path = "../api", optional = true }
 # opaque `PlaneRecord` body exactly as core does — off unless the `store` feature is on.
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+# OPTIONAL, off by default: the plugin ARCHIVE fixture (`loader_fixtures`) packages a manifest +
+# cdylib exactly as the shipped packer does and reads the supported abi list off the loader, so a
+# fixture can never pin an abi the loader has moved past. Only a crate whose battery drives the real
+# loader turns this on.
+busbar-plugin-sign = { path = "../plugin-sign", optional = true }
+busbar-plugin-loader = { path = "../plugin-loader", optional = true }
 
 [features]
 default = []
 # The `Store` contract conformance suite (`store_conformance`). A store plugin turns this on in its
 # `[dev-dependencies]`.
 store = ["dep:busbar-api", "dep:serde", "dep:serde_json"]
+# The plugin tarball fixture. Turned on by the two crates whose batteries dlopen a real plugin.
+loader-fixtures = ["dep:busbar-plugin-sign", "dep:busbar-plugin-loader"]
