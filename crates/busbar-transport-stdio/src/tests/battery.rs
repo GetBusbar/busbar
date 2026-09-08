@@ -70,6 +70,76 @@ async fn round_trip_byte_exact() {
     assert_eq!(frame.meta.status, None, "STATUS_CLASS is None for stdio");
 }
 
+/// Frame meta is honest on frames a REAL `StdioTransport` emitted, and the check that says so is
+/// one an inflating or a deflating fixture turns red.
+///
+/// The battery's other cells assert one correct byte count against one fixture, which a metering
+/// regression returning a constant that happens to equal that fixture's length ships straight
+/// through. The metering path reads `FrameMeta.bytes` as the bytes meter class, so a dishonest one
+/// is a figure somebody is charged, not a cosmetic slip — the check has to be shown to discriminate
+/// rather than merely to agree.
+///
+/// Payloads of DIFFERENT lengths, for the same reason: a constant cannot be right about two.
+/// `meta.bytes == bytes.len()` on its own is only the frame's internal consistency, so the total is
+/// also checked against what the fixture wrote, counted here rather than read back off the frames
+/// under test.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &busbar_contract::wire::Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &busbar_contract::wire::Frame, by: i64) -> busbar_contract::wire::Frame {
+        busbar_contract::wire::Frame {
+            meta: busbar_contract::wire::FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+
+    let payloads: [Vec<u8>; 3] = [
+        b"one".to_vec(),
+        b"a rather longer second frame".to_vec(),
+        vec![b'z'; 4096],
+    ];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut frames = t.frames(b);
+    let mut metered = 0_u64;
+    let mut carried = 0_u64;
+    for _ in 0..payloads.len() {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        metered += frame.meta.bytes;
+        carried += frame.bytes.len() as u64;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+    assert_eq!(carried, on_the_wire, "every byte the fixture wrote arrived");
+    assert_eq!(
+        metered, on_the_wire,
+        "and the figure the meter would read is that same number, not a constant that fits one frame"
+    );
+}
+
 /// A payload carrying the delimiter is refused, not written through and split at the peer.
 ///
 /// This transport's whole framing is one frame per line, and `write` is what appends the newline.

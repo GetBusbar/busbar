@@ -63,6 +63,76 @@ async fn upgrade_then_round_trip_byte_exact() {
     assert_eq!(frame.meta.status, None, "no status leg after the upgrade");
 }
 
+/// Frame meta is honest on frames a REAL `WsTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The battery's other cells assert one correct byte count against one fixture, which a metering
+/// regression returning a constant that happens to equal that fixture's length ships straight
+/// through. The metering path reads `FrameMeta.bytes` as the bytes meter class, so a dishonest one
+/// is a figure somebody is charged, not a cosmetic slip — the check has to be shown to discriminate
+/// rather than merely to agree.
+///
+/// Payloads of DIFFERENT lengths, for the same reason: a constant cannot be right about two. One of
+/// them is past the default frame size so the message under test is one this transport reassembled
+/// from continuation frames rather than one it read whole — the count owed is the message's, and a
+/// reassembly that counted a fragment would be wrong in exactly the direction that is cheap.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &busbar_contract::wire::Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &busbar_contract::wire::Frame, by: i64) -> busbar_contract::wire::Frame {
+        busbar_contract::wire::Frame {
+            meta: busbar_contract::wire::FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let t = WsTransport::new();
+    let (a, b) = pair(&t, 1024 * 1024).await;
+
+    let payloads: [Vec<u8>; 3] = [
+        b"one".to_vec(),
+        b"a rather longer second message".to_vec(),
+        vec![b'z'; 200_000],
+    ];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        t.write(&a, StreamId(0), ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut frames = t.frames(b);
+    let mut metered = 0_u64;
+    let mut carried = 0_u64;
+    for _ in 0..payloads.len() {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        metered += frame.meta.bytes;
+        carried += frame.bytes.len() as u64;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+    assert_eq!(carried, on_the_wire, "every byte the fixture wrote arrived");
+    assert_eq!(
+        metered, on_the_wire,
+        "and the figure the meter would read is that same number, not a constant that fits one frame"
+    );
+}
+
 /// The in-band `http` → `ws` upgrade, driven through the seam the design names: `http` accepts the
 /// connection, `ws` adopts the stream it gives up, and the handshake runs on the layer that speaks
 /// it. The facts of the pre-upgrade layer do not survive it — `http` no longer knows the connection

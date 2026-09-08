@@ -1821,6 +1821,96 @@ async fn closing_a_dialled_connection_releases_its_socket() {
     );
 }
 
+/// Frame meta is honest on frames a REAL `GrpcTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The round-trip cell asserts one correct byte count against one four-byte fixture, which a
+/// metering regression returning the constant `4` ships straight through. The metering path reads
+/// `FrameMeta.bytes` as the bytes meter class, so a dishonest one is a figure somebody is charged,
+/// not a cosmetic slip — the check has to be shown to discriminate rather than merely to agree.
+///
+/// Messages of DIFFERENT lengths, for the same reason: a constant cannot be right about two. They
+/// go on ONE call in order, because the count owed is per message and a transport that reported the
+/// call's running total instead would agree with the first message and with nothing after it.
+///
+/// The terminal status frame this transport appends is deliberately not counted: it carries zero
+/// bytes by construction, and asserting that separately is what says so.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &busbar_contract::wire::Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &busbar_contract::wire::Frame, by: i64) -> busbar_contract::wire::Frame {
+        busbar_contract::wire::Frame {
+            meta: busbar_contract::wire::FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let payloads: [Vec<u8>; 3] = [
+        b"four".to_vec(),
+        b"a rather longer second message".to_vec(),
+        vec![b'z'; 40_000],
+    ];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        client_t
+            .write(&client_conn, StreamId(1), ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut server_frames = server_t.frames(server_conn);
+    let mut metered = 0_u64;
+    let mut carried = 0_u64;
+    for expected in &payloads {
+        let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+            .await
+            .expect("each message arrives")
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.bytes.len(), expected.len(), "byte-exact");
+        metered += frame.meta.bytes;
+        carried += frame.bytes.len() as u64;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+    assert_eq!(carried, on_the_wire, "every byte the fixture wrote arrived");
+    assert_eq!(
+        metered, on_the_wire,
+        "and the figure the meter would read is that same number, not a constant that fits one \
+         message"
+    );
+}
+
 /// The message ceiling this transport decodes against is the deployment's, not the framing
 /// library's.
 ///
