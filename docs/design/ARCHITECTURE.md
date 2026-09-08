@@ -212,7 +212,7 @@ to mount generically. `PLUGIN-TREE.md` §1 is normative for what a control crate
 |---|---|---|
 | Plane | 7 codec, 7 fact, 2 introspection methods; `SessionPlane::open_session` / `open_upstream` — **18 call sites** | `KEY`, `CLAIMS`, `OP_CLASSES`, `METER_CLASSES` (each entry: key, `family`, `direction: Input | Response | CacheRead | CacheWrite | Kernel`, default divisor — the card may price but never re-family; "class family" everywhere means this field), `SESSION_FACTS`, `CONTENT_FACTS`, `RECORD_SCHEMAS`, `INTROSPECTION_VERBS`, `INTERRUPT_FACT`, `EGRESS_PACING_FACT`, `CONFIG_SCHEMA` |
 | Dialect | 4 codec methods over its plane's IR (decode-to-IR, encode-from-IR, decode-response-to-IR, encode-response); pure, no I/O, no clock | `KEY`, `PLANE`, `CLAIMS` (compile-time constants of this crate; the plane's `CLAIMS` is the union of its own and its registered dialects'), `LOCATIONS`, `SCHEME_ALT`, `EGRESS_SCHEME`, `STREAMING_CONTENT_TYPE`, `HEAD_KEYS`, `VERBS`, meter-locator pointers |
-| Transport (in-tree) | `arrival / listen / accept / dial / frames / write / upgrade / close / unit0_refusal` (async, boxed futures) | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD` |
+| Transport (in-tree) | `arrival / listen / accept / dial / frames / write / encode_envelope / adopt / detach / composed_over / close / unit0_refusal` (async, boxed futures; the single `upgrade` this row once named ships as the three-way split the crate settled on — `adopt` on the target, `detach` on the source, `composed_over` for the boot-time comparison — because the upgrade belongs to the TARGET, which is the only layer that can build the handle that comes out of it) | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD` |
 | Control | the lesser workflow and nothing else — `verify` (through the auth kind) · `admit` · `audit` · `answer`. No Route to an upstream, no egress, no encode-from-facts, no meter: every operation posts zero | `KEY`, its route table as data (the `(method, path) → verb` rows it claims), its own request and response body shapes, the refusal codes it renders, its UI data. It names no money, fee, rate or posting vocabulary; no upstream, pool, failover or breaker vocabulary; no transport, plane, dialect, unit or sibling-control crate; it owns no key material and no process-global state, and serves no route absent from its claim table |
 | Auth (ingress) | `verify(credential, arrival, clock, prior: Option<ChallengeState>) → CredentialFacts | Challenge { bytes, state, rounds_left } | Pass` (`Pass` = abstain, 1.5.5's chain continuation; the migrated `auth.chain` runs through `run_chain_cached` semantics, the credential cache applying to EXTERNAL modules only — the `keys` arm is cache-exempt — PB-35) (the proof of round n arrives with the state of round n−1); `refresh(clock) → KeyMaterial` (Tick-driven) | `KEY`, `LOCATIONS` (arrival forms), issuer config, `IO: bool` |
 | Egress-auth scheme | `decorate(cfg, &EgressBody, signer) → AuthDecoration`; `continue_handshake(state, &Frame, signer) → AuthDecoration` for multi-round schemes (the upstream challenge reaches round 2 here) | `KEY` |
@@ -398,9 +398,13 @@ exceptions report permanently — there is no verdict to wait for and no verb th
 | accrual whose `HoldAccrual` was refused (parent already exited) | the child's own posting, backed by a synchronous slice draw at settle (overdraft if the slice is empty; on a `total` bucket it still posts, flagged `Overdraft` with no carry and the bucket stays exhausted — exposure ≤ `max_provider_push` × max price_c × `tier_bp` ÷ 10^4 nano-units per class) so the identity balances; a `late_accrual` ALWAYS posts | `late_accrual`, referencing the parent's settle |
 | value delivered, settle record lost (`DurabilityLost`) | retained and re-appended | `unposted` |
 
-**`UnitEnd`** = `Completed | Refused(step, reason) | Failed(step, reason) | Aborted(Client | Kernel { reason } |
-Drain | Superseded { by }) | TimedOut(step)`, constructed only by the exit path, carrying
-`posted: Result<Posted, DurabilityLost>`.
+**`UnitEnd`** = `Completed | Refused(step, reason) | Failed(step, reason) | Aborted(Kernel { reason } |
+Superseded { by }) | TimedOut(step)`, constructed only by the exit path, carrying
+`posted: Result<Posted, DurabilityLost>`. `Aborted` has TWO arms, not four: `Client` and `Drain` were
+once variants here as well as reasons in the closed vocabulary, so one ending could be written down
+two ways and nothing reading the record could tell the spellings apart. They are folded into
+`Kernel { reason }` as `ReasonCode::ClientGone` and `ReasonCode::Drain`; `Superseded` keeps a variant
+because it names the unit that took over, which no reason code carries.
 
 ### 2.3 Session shapes (all the same loop)
 
@@ -620,7 +624,7 @@ bound to the unit and a declared target location), exactly one occurrence at tha
 Claim            = { transport: key, selector: Selector, scheme: auth scheme key (+ declared alternatives),
                      idempotency: Option<{ location: Location, replay: Reference | Body }> }
 Selector         = ExactPath(p) | PrefixOneLevel(p) | Sni(host) | ClientCertSubject(dn) | PathPattern([Lit(s) | Var | Tail]) (1.5.5's `/{name}/v1/…`, `/{provider}/{model}/v1/…`, `/model/{id}/converse`, `/v1beta/models/*rest` — one boot cell per 1.5.5 route) | HeaderExact(name, value) | HeaderPresent(name) | HeaderPrefix(name, prefix) | PathSuffix(s) | PathContains(s) (the three forms 1.5.5's protocol-detection ladder needs — `anthropic-version` / `x-api-key` / `x-goog-api-key` presence, `AWS4-HMAC-SHA256` prefix, `/v1/chat/completions` suffix, `:generateContent` / `/converse` contains — pinned as the 14-rung ladder in PB-30; `overlaps` treats a Present/Prefix/Suffix/Contains claim as overlapping any claim on the same header or path family) | StreamName(s) | Alpn(a) | Port(n)
-ArrivalLocation  = Header(name) | Query(name) | FirstFrameJsonPointer(ptr) | ClientCert | Signed { over: Url | Body | Both }
+ArrivalLocation  = Header(name) | Query(name) | PathSegment(n) (CG-01: the segment index of the claim's own `PathPattern`, so a protocol that names the priced thing in the request target needs no kernel-side body rewrite; masked as a span, same-length fill) | FirstFrameJsonPointer(ptr) | ClientCert | Signed { over: Url | Body | Both }
                  | HandshakeFrames { max_frames, max_bytes }                       // the ONLY forms an auth scheme's LOCATIONS may use
 Location         = ArrivalLocation | UnitJsonPointer(ptr)                          // UnitJsonPointer: idempotency only; kernel-extracted from the Ir span
 ```
@@ -659,9 +663,12 @@ pub trait Transport: Plugin + Send + Sync + 'static {
     fn dial<'a>(&'a self, dest: &'a VerifiedDestination, keys: &'a TransportKeyHandle) -> Fut<'a, Conn>;
     fn frames(&self, conn: Conn) -> Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
     fn write<'a>(&'a self, conn: &'a Conn, stream: StreamId, bytes: ArenaBytes<'a>) -> Fut<'a, usize>;   // copies into a per-connection slab; returns bytes queued
-    fn upgrade<'a>(&'a self, conn: Conn, to: &'a str, keys: &'a TransportKeyHandle) -> Fut<'a, Conn>;
+    fn encode_envelope<'a>(&self, fields: &[(&str, &[u8])], body: &[u8], arena: &'a dyn Arena) -> Result<ArenaBytes<'a>, Encode>;   // the transport owns its own envelope layout; the lane cross-check reads exactly these bytes
+    fn adopt<'a>(&'a self, from: &'a dyn Transport, conn: Conn, keys: &'a TransportKeyHandle) -> Fut<'a, Conn>;   // the in-band upgrade, on the TARGET
+    fn detach(&self, conn: &Conn) -> Option<RawStream>;                                                          // the source gives its stream up
+    fn composed_over(&self) -> Option<&'static str>;                                                             // what boot compares against COMPOSES_OVER
     fn close(&self, conn: Conn, reason: CloseReason);
-    fn unit0_refusal<'a>(&'a self, conn: Conn, refusal: &'a Refusal, bytes: ArenaBytes<'a>) -> Fut<'a, ()>;
+    fn unit0_refusal<'a>(&'a self, conn: Conn, stream: Option<StreamId>, refusal: &'a Refusal, bytes: ArenaBytes<'a>) -> Fut<'a, ()>;
 }
 ```
 `TransportError` is closed and mapped 1:1 onto `UnitEnd` reasons. The **egress unit** owns the pool per
@@ -675,9 +682,9 @@ fact; journaled as `Slice` lines on the destination's own bucket; oracle cells: 
 exhaustion, refund on body failure, pick order with `budget_remaining`.
 **Composition**: the top transport owns `KEY`, claims, `SESSION`, `SESSION_BOUND` and Unit 0; lower
 layers yield frames and are never claim targets; Locations resolve against the bottom layer's
-`ArrivalRecord`, re-resolved after `upgrade`; a `HANDOFF` declares the signalling→session binding.
+`ArrivalRecord`, re-resolved after an in-band upgrade (`adopt`/`detach`); a `HANDOFF` declares the signalling→session binding.
 **Key material**: the **transport-key unit** resolves keys through the secret plugin at
-`listen`/`dial`/`upgrade` (journaled `Access`) and hands an opaque `TransportKeyHandle`. Backpressure
+`listen`/`dial`/`adopt` (journaled `Access`) and hands an opaque `TransportKeyHandle`. Backpressure
 is bidirectional with a bounded per-unit frame buffer.
 
 ### 3.5 Capability types (sealed by token, not by visibility)
