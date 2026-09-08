@@ -873,7 +873,7 @@ impl DuplexWriter for OpenAiRealtimeCodec {
 
     /// Every server event is a frame in this dialect — the streamed shapes ARE its own — so this
     /// writer never answers `None`.
-    fn write_down(&self, ev: IrServerEvent, _st: &mut DecodeState) -> Option<WireEvent> {
+    fn write_down(&self, ev: IrServerEvent, st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
             IrServerEvent::SessionCreated { session } => json!({
                 "type": wire::SESSION_CREATED,
@@ -893,10 +893,27 @@ impl DuplexWriter for OpenAiRealtimeCodec {
                     "call_id": call_id,
                     "delta": String::from_utf8_lossy(&json_delta),
                 }),
-                IrDuplexTool::CallClose { call_id, .. } => json!({
-                    "type": wire::FN_ARGS_DONE,
-                    "call_id": call_id,
-                }),
+                // THE CLOSE STATES THE WHOLE ARGUMENTS. This dialect's `done` event carries the
+                // complete argument string — its own reader reads them back off it, because a peer
+                // that joined mid-call saw no delta and has nothing else to dispatch from. So the
+                // accumulation the fragments built is TAKEN here, exactly as the atomic dialect
+                // takes it at the same seam, and framed as the JSON STRING this dialect states
+                // arguments in. A bare `{type, call_id}` was a done event saying the model asked
+                // for nothing, which is a different call from the one it made.
+                //
+                // Nothing accumulated is a zero-argument tool: the EMPTY OBJECT rather than an
+                // absent field, because a `done` without `arguments` is not a done and dropping the
+                // frame would drop the call.
+                IrDuplexTool::CallClose { call_ref, call_id } => {
+                    let args = st
+                        .take_call_args(call_ref)
+                        .map_or_else(|| "{}".to_string(), |v| v.to_string());
+                    json!({
+                        "type": wire::FN_ARGS_DONE,
+                        "call_id": call_id,
+                        "arguments": args,
+                    })
+                }
                 IrDuplexTool::CallResult {
                     call_id, output, ..
                 } => json!({

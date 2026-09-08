@@ -856,6 +856,75 @@ fn tool_call_loop_correlates_by_call_id() {
     );
 }
 
+/// THE CLOSE STATES THE ARGUMENTS IT ACCUMULATED.
+///
+/// `response.function_call_arguments.done` is the event this dialect states a call's COMPLETE
+/// arguments on — its own reader reads them back off it (`read_down`, `FN_ARGS_DONE`) precisely
+/// because a peer that joined mid-call never saw a delta and has nothing else to dispatch from.
+/// Framing the close as a bare `{type, call_id}` wrote a done event that says the arguments are
+/// empty, so a relayed call reached its executor with none: the wire lost what the IR was still
+/// holding. The accumulation is taken from the session exactly as the atomic dialect takes it.
+#[test]
+fn a_close_states_the_arguments_the_call_accumulated() {
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("call_abc");
+    st.push_call_args(call, br#"{"city":"#);
+    st.push_call_args(call, br#""SF"}"#);
+
+    let framed = codec
+        .write_down(
+            IrServerEvent::Tool(IrDuplexTool::CallClose {
+                call_ref: call,
+                call_id: "call_abc".into(),
+            }),
+            &mut st,
+        )
+        .expect("a close is a frame in this dialect");
+    let v = as_value(&framed);
+    assert_eq!(v["type"], json!(wire::FN_ARGS_DONE));
+    assert_eq!(v["call_id"], json!("call_abc"));
+    assert_eq!(
+        v["arguments"],
+        json!(r#"{"city":"SF"}"#),
+        "the assembled arguments ride out on the close, as a JSON string, the shape this \
+         dialect's own reader reads back"
+    );
+
+    // Single-consume: the accumulation is gone with the call that closed.
+    assert!(
+        st.take_call_args(call).is_none(),
+        "framing the close TAKES the accumulation rather than copying it"
+    );
+}
+
+/// A ZERO-ARGUMENT TOOL IS STILL A CALL.
+///
+/// Nothing was accumulated — a tool that takes no arguments, whose `done` stated an empty string and
+/// therefore yielded no `CallArgs` at all. The close is still framed, and it states the EMPTY
+/// ARGUMENTS OBJECT rather than omitting the field: this dialect's `done` carries `arguments`, and a
+/// done without one is not a done. Dropping the frame instead would drop the call.
+#[test]
+fn a_close_with_nothing_accumulated_states_the_empty_arguments_object() {
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("call_none");
+
+    let framed = codec
+        .write_down(
+            IrServerEvent::Tool(IrDuplexTool::CallClose {
+                call_ref: call,
+                call_id: "call_none".into(),
+            }),
+            &mut st,
+        )
+        .expect("a close with no arguments is still a frame");
+    let v = as_value(&framed);
+    assert_eq!(v["type"], json!(wire::FN_ARGS_DONE));
+    assert_eq!(v["call_id"], json!("call_none"));
+    assert_eq!(v["arguments"], json!("{}"));
+}
+
 #[test]
 fn function_call_output_authoring_roundtrips() {
     // The plane authors a result (client->server) and it re-frames to function_call_output.
