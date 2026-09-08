@@ -16,10 +16,16 @@ pub fn production_lines(src: &str) -> Vec<(usize, String)> {
     let mut pending_test_attr = false;
     let mut test_mod_depth: Option<i32> = None;
     let mut depth: i32 = 0;
+    let mut lex = LexState::default();
 
     for (i, raw_line) in src.lines().enumerate() {
         let stripped = strip_comment_line(raw_line, &mut in_block_comment);
         let trimmed = stripped.trim();
+        // THE BRACES ARE COUNTED HERE AND NOWHERE ELSE. `stripped` still carries literal contents
+        // by design (a needle inside a `"…"` is still the file naming it), so the depth arithmetic
+        // reads the blanked copy instead: `out.push('{')` in a test module used to leave the depth
+        // permanently one too high and drop every production line after it.
+        let counted = blank_code(&stripped, &mut lex);
 
         let this_line_is_test = test_mod_depth.is_some();
 
@@ -35,14 +41,14 @@ pub fn production_lines(src: &str) -> Vec<(usize, String)> {
         if !this_line_is_test
             && pending_test_attr
             && trimmed.contains("mod ")
-            && trimmed.contains('{')
+            && counted.contains('{')
         {
             test_mod_depth = Some(depth);
             pending_test_attr = false;
         }
 
-        let opens = stripped.matches('{').count() as i32;
-        let closes = stripped.matches('}').count() as i32;
+        let opens = counted.matches('{').count() as i32;
+        let closes = counted.matches('}').count() as i32;
         depth += opens - closes;
 
         let was_test = test_mod_depth.is_some();
@@ -69,6 +75,11 @@ pub struct ScopeLine {
     /// Empty for a whole-line comment; a trailing `// …` stripped only when the line holds no
     /// string literal, so a `//` inside a `"…"` cannot eat the line's braces.
     pub code: String,
+    /// [`code`](Self::code) with every literal and comment body blanked, carried across lines.
+    /// THE ONLY FIELD A DELIMITER COUNT MAY READ: `code` deliberately keeps literal contents so a
+    /// rule can search them, and `rel.contains('{')` in production source used to be counted as an
+    /// open brace off exactly that.
+    pub counted: String,
     pub is_comment: bool,
     pub gated: bool,
 }
@@ -95,15 +106,19 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
     let mut pending = false;
     let mut pend_age = 0u32;
     let mut depth: i32 = 0;
+    let mut lex = LexState::default();
 
     for (i, raw) in src.lines().enumerate() {
         let is_comment = raw.trim_start().starts_with("//");
         let code = code_of(raw);
+        // Read off the RAW line, so the blanker sees the comment markers and the multi-line
+        // literals `code_of` hands back whole whenever the line holds a `"`.
+        let counted = blank_code(raw, &mut lex);
         let mut gated = false;
 
         if in_test {
             gated = true;
-            depth += braces(&code);
+            depth += braces(&counted);
             if depth <= 0 {
                 in_test = false;
                 depth = 0;
@@ -113,9 +128,9 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
             let t = code.trim_start();
             if code.trim().is_empty() || t.starts_with("#[") {
                 pend_age += 1;
-            } else if code.contains('{') {
+            } else if counted.contains('{') {
                 pending = false;
-                depth = braces(&code);
+                depth = braces(&counted);
                 if depth > 0 {
                     in_test = true;
                 } else {
@@ -139,11 +154,14 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
         if !in_test && !pending && arms_test_cfg(&code) {
             gated = true;
             let rest = strip_cfg_attr(&code);
+            // The attribute holds no literal, so the blanked line strips to the same remainder —
+            // and that remainder is the one the braces are counted off.
+            let rest_counted = strip_cfg_attr(&counted);
             if rest.trim().is_empty() {
                 pending = true;
                 pend_age = 0;
-            } else if rest.contains('{') {
-                depth = braces(&rest);
+            } else if rest_counted.contains('{') {
+                depth = braces(&rest_counted);
                 if depth > 0 {
                     in_test = true;
                 } else {
@@ -161,6 +179,7 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
             no: i + 1,
             raw: raw.to_string(),
             code,
+            counted,
             is_comment,
             gated,
         });
@@ -184,8 +203,10 @@ fn code_of(line: &str) -> String {
     }
 }
 
-fn braces(s: &str) -> i32 {
-    s.matches('{').count() as i32 - s.matches('}').count() as i32
+/// Brace depth of ONE ALREADY-BLANKED line. Takes [`blank_code`] output and nothing else, which is
+/// the whole point: there is one counter, and it cannot be reached without blanking first.
+fn braces(blanked: &str) -> i32 {
+    delta(blanked, '{', '}')
 }
 
 /// Arm only on a line that IS the attribute: anchored at the start of a CODE line, with `test` as a
@@ -272,43 +293,214 @@ fn strip_cfg_attr(code: &str) -> String {
     code[end + 2..].trim_start().to_string()
 }
 
-/// Blank the CONTENTS of every double-quoted string literal, keeping the quotes and the line's
-/// length. `tracing-lint.sh` counted parens inside string literals, so a message containing `"f("`
-/// started a runaway that absorbed the rest of the file and reported every later `#[instrument]`
-/// as clean. Any rule that counts delimiters, or that looks for a token that could equally be a
-/// literal (a scanner searching for `use busbar_` must not match its own needle), blanks first.
-pub fn blank_literals(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
+/// What [`blank_code`] was in the middle of when the previous line ended. Rust's string literals
+/// and its block comments both span lines, so a per-line blanker that starts clean re-reads the
+/// body of a multi-line literal as code; carrying this across the file is what makes the answer
+/// the same one the compiler would give.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LexState {
+    /// `/* … */` nesting depth. Rust block comments NEST, so this is a depth and not a flag.
+    block: u32,
+    /// The literal still open at end of line, if any.
+    open: Option<OpenLit>,
+}
+
+/// The one literal shape that can still be open when a line ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenLit {
+    /// A `"…"` (or `b"…"`, `c"…"`) literal: closed by the next unescaped `"`.
+    Quoted,
+    /// A raw literal (`r"…"`, `r#"…"#`, `br##"…"##`): closed by `"` followed by exactly this many
+    /// `#`. No escape processing at all — that is what makes it raw.
+    Raw(usize),
+}
+
+/// Blank the CONTENTS of every string, byte-string, raw-string and char literal, and of every
+/// comment, keeping the delimiters and the line's length. `tracing-lint.sh` counted parens inside
+/// string literals, so a message containing `"f("` started a runaway that absorbed the rest of the
+/// file and reported every later `#[instrument]` as clean. Any rule that counts delimiters, or that
+/// looks for a token that could equally be a literal (a scanner searching for `use busbar_` must
+/// not match its own needle), blanks first.
+///
+/// THIS IS THE ONLY LEXER IN THE CRATE THAT DELIMITER COUNTS MAY READ. Everything it has to know
+/// about is a shape that really occurs in this tree: `rel.contains('{')` (a char literal holding a
+/// brace), `assert_eq!(x, "a{b")` (a brace in a test message), `'\u{7f}'` (a brace inside a char
+/// ESCAPE), `r#"{"a":1}"#` (a raw string, where `\` is not an escape), `b'{'` (a byte char), and
+/// `/* /* */ */` (a nested block comment). A lifetime (`&'a str`) is NOT a char literal and is left
+/// alone.
+///
+/// `st` carries the multi-line state; pass `&mut LexState::default()` for a standalone line, which
+/// is what [`blank_literals`] does.
+pub fn blank_code(line: &str, st: &mut LexState) -> String {
     let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
     let mut i = 0;
-    let mut in_str = false;
+
     while i < chars.len() {
         let c = chars[i];
-        if in_str {
-            if c == '\\' {
-                out.push(' ');
-                if i + 1 < chars.len() {
-                    out.push(' ');
-                }
+
+        if st.block > 0 {
+            if c == '/' && chars.get(i + 1) == Some(&'*') {
+                st.block += 1;
+                out.push_str("  ");
                 i += 2;
-                continue;
-            }
-            if c == '"' {
-                in_str = false;
-                out.push('"');
+            } else if c == '*' && chars.get(i + 1) == Some(&'/') {
+                st.block -= 1;
+                out.push_str("  ");
+                i += 2;
             } else {
                 out.push(' ');
+                i += 1;
             }
-            i += 1;
             continue;
         }
-        if c == '"' {
-            in_str = true;
+
+        match st.open {
+            Some(OpenLit::Quoted) => {
+                if c == '\\' {
+                    out.push(' ');
+                    if i + 1 < chars.len() {
+                        out.push(' ');
+                    }
+                    i += 2;
+                } else if c == '"' {
+                    st.open = None;
+                    out.push('"');
+                    i += 1;
+                } else {
+                    out.push(' ');
+                    i += 1;
+                }
+                continue;
+            }
+            Some(OpenLit::Raw(hashes)) => {
+                if c == '"' && closes_raw(&chars, i + 1, hashes) {
+                    st.open = None;
+                    out.push('"');
+                    out.extend(std::iter::repeat_n(' ', hashes));
+                    i += 1 + hashes;
+                } else {
+                    out.push(' ');
+                    i += 1;
+                }
+                continue;
+            }
+            None => {}
         }
+
+        if c == '/' && chars.get(i + 1) == Some(&'*') {
+            st.block = 1;
+            out.push_str("  ");
+            i += 2;
+            continue;
+        }
+        // A line comment runs to end of line and carries no state with it.
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            out.extend(std::iter::repeat_n(' ', chars.len() - i));
+            break;
+        }
+
+        // A literal PREFIX (`b`, `c`, `r`, `br`, `cr`) only reads as a prefix when it is not the
+        // tail of an identifier — `for_r"x"` is not Rust, but `char_r` followed by nothing is, and
+        // a scanner that guessed wrong here would blank live code.
+        let prefixed = st.open.is_none() && !is_ident_char(prev_char(&chars, i));
+        if prefixed {
+            if let Some((consumed, lit)) = opens_literal(&chars, i) {
+                out.extend(std::iter::repeat_n(' ', consumed - 1));
+                out.push('"');
+                st.open = Some(lit);
+                i += consumed;
+                continue;
+            }
+            if let Some(end) = char_literal_end(&chars, i) {
+                out.push('\'');
+                out.extend(std::iter::repeat_n(' ', end - i - 1));
+                out.push('\'');
+                i = end + 1;
+                continue;
+            }
+            // A byte char: `b'{'`. The `b` is code, the literal after it is not.
+            if c == 'b' {
+                if let Some(end) = char_literal_end(&chars, i + 1) {
+                    out.push('b');
+                    out.push('\'');
+                    out.extend(std::iter::repeat_n(' ', end - i - 2));
+                    out.push('\'');
+                    i = end + 1;
+                    continue;
+                }
+            }
+        }
+
         out.push(c);
         i += 1;
     }
     out
+}
+
+/// The same blanking for a line read on its own, with no carried state.
+pub fn blank_literals(line: &str) -> String {
+    blank_code(line, &mut LexState::default())
+}
+
+/// `open` minus `close` over text [`blank_code`] has already blanked. THE ONE COUNTER: every gate
+/// that tracks brace or paren depth calls this and nothing else, so there is no second copy to
+/// forget the blanking step.
+pub fn delta(blanked: &str, open: char, close: char) -> i32 {
+    blanked.matches(open).count() as i32 - blanked.matches(close).count() as i32
+}
+
+fn prev_char(chars: &[char], i: usize) -> Option<char> {
+    i.checked_sub(1).and_then(|p| chars.get(p)).copied()
+}
+
+fn is_ident_char(c: Option<char>) -> bool {
+    c.is_some_and(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// `"` followed by exactly `hashes` `#` and then something that is not another `#`.
+fn closes_raw(chars: &[char], from: usize, hashes: usize) -> bool {
+    (0..hashes).all(|k| chars.get(from + k) == Some(&'#'))
+}
+
+/// A quoted literal opening at `i`: returns how many chars the OPENER spans (prefix + hashes +
+/// the `"`) and which shape is now open. `None` when `i` does not open one.
+fn opens_literal(chars: &[char], i: usize) -> Option<(usize, OpenLit)> {
+    let mut j = i;
+    // `b`/`c` byte- or C-string prefix.
+    if matches!(chars.get(j), Some('b') | Some('c'))
+        && matches!(chars.get(j + 1), Some('r') | Some('"'))
+    {
+        j += 1;
+    }
+    if chars.get(j) == Some(&'r') {
+        let mut hashes = 0;
+        let mut k = j + 1;
+        while chars.get(k) == Some(&'#') {
+            hashes += 1;
+            k += 1;
+        }
+        if chars.get(k) == Some(&'"') {
+            return Some((k + 1 - i, OpenLit::Raw(hashes)));
+        }
+        return None;
+    }
+    (chars.get(j) == Some(&'"')).then_some((j + 1 - i, OpenLit::Quoted))
+}
+
+/// The index of the closing `'` of a char literal opening at `i`, or `None` when the `'` is a
+/// LIFETIME. `'a` and `'static` are not literals; `'x'`, `'\''` and `'\u{7f}'` are.
+fn char_literal_end(chars: &[char], i: usize) -> Option<usize> {
+    if chars.get(i) != Some(&'\'') {
+        return None;
+    }
+    if chars.get(i + 1) == Some(&'\\') {
+        // The escaped char cannot itself close the literal, so the search starts past it. This is
+        // what keeps `'\''` and `'\u{7f}'` whole.
+        return (i + 3..chars.len()).find(|&k| chars[k] == '\'');
+    }
+    // Exactly one char between the quotes, or it is a lifetime.
+    (chars.get(i + 1).is_some() && chars.get(i + 2) == Some(&'\'')).then_some(i + 2)
 }
 
 /// One line with `//` and `/* */` comments removed. `in_block` carries block-comment state across
