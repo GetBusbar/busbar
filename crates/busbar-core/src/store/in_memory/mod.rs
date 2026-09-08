@@ -1,6 +1,7 @@
 use super::*;
 
-use crate::diagnostics::{diag_warn, LANE_HARD_DOWN};
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::LANE_HARD_DOWN;
 
 mod availability;
 mod breaker;

@@ -5,12 +5,24 @@
 //! `BUSBAR-NNNN` code an operator can paste into the docs and land on an entry that says what
 //! it means, whether it needs action, and what to do.
 //!
-//! The catalog itself — [`Class`], [`Severity`], [`Diagnostic`], [`Banner`], [`REGISTRY`],
-//! [`by_code`], and the `docs/diagnostics.{md,json}` renderers — now lives in the neutral
-//! `busbar-substrate` crate and is re-exported here unchanged, so every in-core call site keeps
-//! using `crate::diagnostics::…`. What stays local to core are the emit macros, because a
-//! `macro_rules!` macro cannot be re-exported across a crate boundary without `#[macro_export]`
-//! polluting the crate root, and the coverage lint that scans core's own tree.
+//! RETIRING re-export shim (D33 wave 5, row `diagnostics/`). The catalog itself — [`Class`],
+//! [`Severity`], [`Diagnostic`], [`Banner`], [`REGISTRY`], [`by_code`], the three emit macros and
+//! the `docs/diagnostics.{md,json}` renderers — lives in `busbar-substrate-values`, the neutral
+//! home, and is named through `busbar_substrate::{diagnostics::…, diag_warn, diag_error,
+//! diag_debug}`. Core declares no diagnostic of its own.
+//!
+//! WHY THIS MODULE IS STILL HERE. Eighteen of core's twenty-nine caller files were repointed at the
+//! substrate spelling and this shim was left standing for the eleven that were not: `auth/`,
+//! `config/`, `config_validate/`, `oauth_as/`, `hooks/`, `audit/` and `export/` are being emptied by
+//! their own retirement cuts, and repointing a file out from under a concurrent cut is how a merge
+//! loses a diagnostic. The module goes when the last of those eleven does — the delete is one line
+//! in `lib.rs` and this directory, with no caller left to repoint.
+//!
+//! The local emit macros below are byte-identical twins of the substrate ones (same
+//! `::tracing::warn!(diag = %$diag.banner(), …)` expansion), so a caller that has already moved and
+//! one that has not emit the same line. What is genuinely core's own, and outlives the shim, is the
+//! COVERAGE LINT in `tests.rs`: it scans core's tree through core's own `CARGO_MANIFEST_DIR` and
+//! must be re-homed inside this crate rather than deleted with the re-exports.
 //!
 //! ## Emitting
 //!

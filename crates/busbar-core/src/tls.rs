@@ -41,7 +41,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::diagnostics::{diag_warn, TLS_ACCEPT_PERSISTENT_FAILURE};
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::TLS_ACCEPT_PERSISTENT_FAILURE;
 use std::time::{Duration, Instant};
 
 /// Hard wall-clock bound on the TLS handshake for a single accepted connection. A client that

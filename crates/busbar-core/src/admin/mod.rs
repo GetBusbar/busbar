@@ -32,11 +32,12 @@ where
 
 use crate::admin::v1::contract::taxonomy::Cond;
 use crate::admin::v1::contract::AdminError;
-use crate::diagnostics::{
-    diag_debug, diag_error, ADMIN_CREATEKEY_MALFORMED_BODY, ADMIN_STORE_OPERATION_FAILED,
-    ADMIN_STORE_TASK_JOIN_FAILED, ADMIN_UPDATEKEY_MALFORMED_BODY, CREATEKEY_UNKNOWN_POOL,
-};
 use crate::governance::{NewKeySpec, VirtualKey};
+use busbar_substrate::diagnostics::{
+    ADMIN_CREATEKEY_MALFORMED_BODY, ADMIN_STORE_OPERATION_FAILED, ADMIN_STORE_TASK_JOIN_FAILED,
+    ADMIN_UPDATEKEY_MALFORMED_BODY, CREATEKEY_UNKNOWN_POOL,
+};
+use busbar_substrate::{diag_debug, diag_error};
 
 /// Process-wide gate serializing the existence-sensitive critical sections of the key store.
 ///
