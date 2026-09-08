@@ -865,6 +865,7 @@ fn admit_with_no_chain(
         Some(surface),
         rates.pricer(),
         0,
+        false,
     );
     let units = A2aUnits::new(bindings, draft, Grants::of(Scope::ReadOnly));
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
@@ -1190,6 +1191,251 @@ fn serve_presenting(
         },
         dispatch,
     )
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   AN OPEN ADDRESS IS OPEN, AND IT IS THE ADDRESS THAT DECIDES
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// What the leg made of one request line, with no credential on it.
+fn decode_at(leg: &A2aLeg, path: &str, method: &str, body: &[u8]) -> Decoded {
+    let facts: [(&str, &str); 3] = [("path", path), ("method", method), ("peer", "127.0.0.1:1")];
+    let chain: [&'static str; 2] = ["tcp", "http"];
+    leg.decode(
+        &busbar_contract::transport::Arrival {
+            facts: &facts,
+            body,
+            transport: "http",
+            chain: &chain,
+            operation: None,
+            bar: busbar_contract::transport::Bar::Open,
+        },
+        0,
+    )
+}
+
+/// **THE DISCOVERY ADDRESSES DEMAND NO AUDIENCE, because the plane declares them OPEN.**
+///
+/// RED FIRST, and the red was a live 401. This protocol serves its protected-resource metadata and
+/// its own agent card unauthenticated — that is where a conformant client looks FIRST, and the
+/// metadata document is how a caller learns which audience to ask for. A leg that demanded an
+/// audience there refused every caller before it could discover what to present, and the shipped
+/// surface answered both with 200.
+///
+/// The reason it happened is the reason the fix is shaped this way: openness was read off the
+/// OPERATION, and this protocol's card operation is served at three addresses — two open discovery
+/// ones and one credentialed extended card. An operation is the wrong granularity for a question the
+/// declaration answers per ADDRESS.
+#[test]
+fn the_discovery_addresses_demand_no_audience() {
+    let kernel = a_kernel();
+    let leg = a_leg_that_checks_the_audience(&kernel);
+    for path in [
+        "/.well-known/agent-card.json",
+        "/.well-known/oauth-protected-resource/a2a",
+    ] {
+        let read = decode_at(&leg, path, "GET", b"");
+        assert!(
+            read.op.is_some(),
+            "`{path}` is an address this plane declares, so it must be a unit it has"
+        );
+        assert_eq!(
+            read.expected_aud, None,
+            "`{path}` is declared OPEN and must not demand an audience"
+        );
+        assert!(
+            read.declared_schemes.is_empty(),
+            "`{path}` narrows within nothing, because it declares no scheme to narrow within"
+        );
+    }
+}
+
+/// **And the credentialed addresses still demand one.**
+///
+/// The other half, and the one that must not be lost while fixing the first: the extended card is
+/// the SAME operation as the discovery card and is served under a credential, so a fix that read
+/// openness off the operation would open it. The document mount is the second: the operation lives
+/// inside the body there, no open target addresses `POST /a2a`, and it stays credentialed.
+#[test]
+fn the_credentialed_addresses_still_demand_an_audience() {
+    let kernel = a_kernel();
+    let leg = a_leg_that_checks_the_audience(&kernel);
+    for (path, method, body) in [
+        ("/a2a/extendedAgentCard", "GET", &b""[..]),
+        (
+            "/a2a",
+            "POST",
+            &br#"{"jsonrpc":"2.0","id":1,"method":"message/send"}"#[..],
+        ),
+    ] {
+        let read = decode_at(&leg, path, method, body);
+        assert_eq!(
+            read.expected_aud.as_deref(),
+            Some(THIS_NODES_AUDIENCE),
+            "`{method} {path}` is served under a credential and must demand this node's audience"
+        );
+        assert!(!read.declared_schemes.is_empty());
+    }
+}
+
+/// **The push callback stays open, which is the address that was open before this cut.**
+#[test]
+fn the_push_callback_address_stays_open() {
+    let kernel = a_kernel();
+    let leg = a_leg_that_checks_the_audience(&kernel);
+    assert_eq!(
+        decode_at(&leg, "/a2a/push", "POST", b"{}").expected_aud,
+        None
+    );
+}
+
+/// Walk one request line through the leg, with the deployment's own door in front of it.
+fn walk_at(leg: &A2aLeg, kernel: &Kernel, path: &str, method: &str, body: &[u8]) -> Ended {
+    use crate::root::transports::PlaneLeg as _;
+    let facts: [(&str, &str); 3] = [("path", path), ("method", method), ("peer", "127.0.0.1:1")];
+    let chain: [&'static str; 2] = ["tcp", "http"];
+    let arrival = busbar_contract::transport::Arrival {
+        facts: &facts,
+        body,
+        transport: "http",
+        chain: &chain,
+        operation: None,
+        bar: busbar_contract::transport::Bar::Open,
+    };
+    let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+        &kernel.admit_token(),
+        busbar_caps::PrincipalId::new(""),
+        0,
+    ));
+    let leases = busbar_kernel::slice::LeaseCell::new();
+    let meter = busbar_kernel::teller::AccrualMeter::new();
+    let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
+    let canary = busbar_caps::Canary::new();
+    leg.walk(
+        &arrival,
+        kernel,
+        &a_ctx(),
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    )
+}
+
+/// A leg whose deployment configured a CLOSED front door — the shape `auth.chain: [keys]` resolves
+/// to, where an anonymous caller is denied.
+fn a_leg_behind_a_closed_door(kernel: &Kernel) -> A2aLeg {
+    let mut sources = all_sources(kernel);
+    sources.auth = Some(Auth::new(
+        crate::root::data_plane::data_chain(&[crate::root::data_plane::ChainPosition {
+            provider: "keys",
+            module: busbar_unit_auth::chain::KEYS_MODULE,
+        }])
+        .expect("the built-in arm resolves"),
+    ));
+    sources.expected_aud = Some(THIS_NODES_AUDIENCE.to_string());
+    A2aLeg::assemble(sources).expect("every source is present")
+}
+
+/// **AN ANONYMOUS CALLER REACHES A DECLARED-OPEN ADDRESS THROUGH A CLOSED DEPLOYMENT.**
+///
+/// RED FIRST, and the red was a live 401 on the two addresses a conformant client reads FIRST. The
+/// deployment's chain is the deployment's answer for the addresses it guards; a protocol's discovery
+/// endpoints are not among them, and running the chain there refuses every caller before it can
+/// learn which audience to present. The previous release serves both with its auth middleware
+/// bypassed; this is that behaviour, reached through the plane's own declaration.
+#[test]
+fn an_anonymous_caller_reaches_a_declared_open_address_through_a_closed_deployment() {
+    let kernel = a_kernel();
+    let leg = a_leg_behind_a_closed_door(&kernel);
+    for path in [
+        "/.well-known/agent-card.json",
+        "/.well-known/oauth-protected-resource/a2a",
+    ] {
+        let ended = walk_at(&leg, &kernel, path, "GET", b"");
+        assert_ne!(
+            crate::root::transports::outcome_of(&ended),
+            busbar_contract::transport::Outcome::Unauthenticated,
+            "`{path}` is declared OPEN and must not be refused for want of a credential"
+        );
+    }
+}
+
+/// **And a CREDENTIALED address behind the same closed deployment still refuses one.**
+///
+/// The half that must not be lost while fixing the first. A fix that opened the door for every
+/// address of this protocol would serve the whole plane anonymously on a deployment whose operator
+/// configured a chain — which is the same defect pointed the other way, and the worse one.
+#[test]
+fn a_credentialed_address_behind_a_closed_deployment_still_refuses_an_anonymous_caller() {
+    let kernel = a_kernel();
+    let leg = a_leg_behind_a_closed_door(&kernel);
+    let ended = walk_at(
+        &leg,
+        &kernel,
+        "/a2a",
+        "POST",
+        br#"{"jsonrpc":"2.0","id":1,"method":"message/send"}"#,
+    );
+    assert_eq!(
+        crate::root::transports::outcome_of(&ended),
+        busbar_contract::transport::Outcome::Unauthenticated,
+        "the document mount is served under a credential and an anonymous caller is refused there"
+    );
+}
+
+/// **A DECLARED-OPEN address is not closed again by the scope step.**
+///
+/// RED FIRST, and the red broke push delivery. This protocol's push callback is declared OPEN — a
+/// fronted agent posts a task update to it and the AUTHORITY is the push token inside the request,
+/// which is the surface's to check and is where the shipped release checks it. A loop that admitted
+/// the caller anonymously at the door and then refused it at Approve turned every real push delivery
+/// into a 403 before the surface ever saw the token, which is a working feature deleted by a
+/// composition rather than by a decision.
+///
+/// So an open address carries the scope its own operation declares. The narrowness is the whole
+/// safety argument: only an address the plane's surface declares OPEN reaches this at all, this
+/// protocol declares three, and two of them are read-only discovery.
+#[test]
+fn a_declared_open_address_is_not_closed_again_by_the_scope_step() {
+    let kernel = a_kernel();
+    let leg = a_leg_behind_a_closed_door(&kernel);
+    let ended = walk_at(&leg, &kernel, "/a2a/push", "POST", b"{}");
+    assert_ne!(
+        crate::root::transports::outcome_of(&ended),
+        busbar_contract::transport::Outcome::Forbidden,
+        "the push callback is declared open and its authority is the token the surface reads"
+    );
+}
+
+/// **And a CREDENTIALED address is still judged against what an anonymous caller holds.**
+///
+/// The other half. An open address's grants are its own declaration's; every other address is
+/// judged against the read-only set an unidentified caller holds, and a fix that widened that would
+/// hand the whole plane's write verbs to anybody.
+#[test]
+fn a_credentialed_address_is_still_judged_against_the_anonymous_set() {
+    let kernel = a_kernel();
+    let mut sources = all_sources(&kernel);
+    sources.auth = Some(Auth::new(crate::root::data_plane::open_door()));
+    let leg = A2aLeg::assemble(sources).expect("every source is present");
+    let ended = walk_at(
+        &leg,
+        &kernel,
+        "/a2a",
+        "POST",
+        br#"{"jsonrpc":"2.0","id":1,"method":"message/send"}"#,
+    );
+    assert_eq!(
+        crate::root::transports::outcome_of(&ended),
+        busbar_contract::transport::Outcome::Forbidden,
+        "an anonymous caller through an open FRONT DOOR still holds only the read-only set, and \
+         `message/send` is not in it"
+    );
 }
 
 /// Walk one body through the leg, as the driver would.

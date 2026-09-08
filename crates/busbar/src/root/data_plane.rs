@@ -43,7 +43,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use busbar_contract::transport::surface::{binding_at, check_surface, resolve_target, WireSurface};
+use busbar_contract::transport::surface::{
+    binding_at, check_surface, resolve_target, Bar, WireSurface,
+};
 use busbar_kernel::teller::{Kernel, Run, UnitCtx};
 use busbar_unit_auth::AuthChain;
 
@@ -144,6 +146,13 @@ impl PlaneChain {
             || binding_at(self.surface, target).is_some()
     }
 
+    /// **Whether this request line is an address the plane declared OPEN.** See
+    /// [`addresses_openly`], which this asks of the surface this chain serves.
+    #[must_use]
+    pub fn addresses_openly(&self, target: &str, method: &str) -> bool {
+        addresses_openly(self.surface, target, method)
+    }
+
     /// The address this plane's document binding is mounted on, where it declares one.
     ///
     /// The FIRST declared mount, in the declarer's own order, for the same reason a target list is
@@ -224,6 +233,31 @@ impl PlaneChain {
     }
 }
 
+/// **WHETHER ONE REQUEST LINE IS AN ADDRESS THIS PROTOCOL DECLARED OPEN.**
+///
+/// ## Why the ADDRESS decides and the operation does not
+///
+/// A protocol's discovery endpoints are open because that is where a conformant client looks FIRST:
+/// the protected-resource metadata is how a caller learns which audience to ask for, and demanding
+/// that audience to read it refuses every caller before it can find out what to present. And an open
+/// address is not an open OPERATION — the same operation is routinely served twice, once
+/// unauthenticated for discovery and once under a credential for the fuller answer — so a leg that
+/// read openness off the operation either refuses the discovery address or opens the credentialed
+/// one. Both have happened; the second is worse.
+///
+/// So the question is asked of the surface, per ADDRESS, exactly as the declaration answers it: the
+/// dispatch that addresses this request line carries its own bar, and that bar is the answer.
+///
+/// **A request line no TARGET addresses is not open.** A document call carries its operation inside
+/// the body — the request line names only the mount — so nothing about it can be decided from the
+/// line, and the fail-closed reading is the one that demands a credential. That is also what the
+/// declaration says: this protocol's document dispatches are declared under a credential.
+#[must_use]
+pub fn addresses_openly(surface: &WireSurface, target: &str, method: &str) -> bool {
+    resolve_target(surface, path_of(target), method)
+        .is_some_and(|(_, dispatch, _)| matches!(dispatch.bar(), Bar::Open))
+}
+
 /// One request target with its query and fragment cut off, which is the part that is a PATH.
 ///
 /// Neither is part of the address, and a resolver that read them would answer 404 to a well-formed
@@ -298,6 +332,27 @@ impl std::fmt::Display for UnresolvedProvider {
             self.provider, self.module
         )
     }
+}
+
+/// **THE DOOR AN ADDRESS ITS PROTOCOL DECLARED OPEN IS SERVED THROUGH: none.**
+///
+/// Not a stand-in and not a weakening — it is what the declaration SAYS, and what the shipped
+/// release already does. A protocol's discovery addresses are unauthenticated because that is where
+/// a conformant client looks first: the protected-resource metadata is how a caller learns which
+/// audience to ask for, and running the deployment's chain there refuses every caller before it can
+/// discover what to present. The previous release serves exactly these addresses with its auth
+/// middleware bypassed, and this is that behaviour reached through the declaration rather than
+/// through a route list.
+///
+/// It is NOT reachable by address alone: [`addresses_openly`] is what decides, and it answers from
+/// the surface's own per-dispatch bar. A request line no target addresses — a document call, whose
+/// operation lives in the body — is not open, so this door cannot be reached by pointing at a mount.
+#[must_use]
+pub fn open_door() -> AuthChain {
+    // no-test-doubles-in-production: the empty chain here is REVIEWED and is declared in
+    // qa/construction.toml. It is the protocol's own declaration for these addresses, not a
+    // deployment's door left unbuilt.
+    AuthChain::new(Vec::new(), false)
 }
 
 /// **THE DATA PLANE'S FRONT DOOR, from the deployment's own `auth.chain:`.**

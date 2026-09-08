@@ -453,6 +453,13 @@ pub struct A2aLegSources<'k> {
 pub struct A2aLeg {
     plane: A2aPlane,
     auth: Auth,
+    /// The door an address this protocol DECLARED OPEN is served through: none.
+    ///
+    /// Built once beside the deployment's own, because it is a constant of the protocol rather than
+    /// a value configuration picks — see [`crate::root::data_plane::open_door`]. Which of the two a
+    /// unit is judged behind is decided per ADDRESS, off the plane's own declared surface, and never
+    /// per operation.
+    open_auth: Auth,
     auth_bindings: AuthBindings,
     trust_token: TrustToken,
     origin: Origin,
@@ -504,6 +511,7 @@ impl A2aLeg {
         Ok(A2aLeg {
             plane: sources.plane,
             auth: sources.auth.ok_or_else(|| missing("auth"))?,
+            open_auth: Auth::new(crate::root::data_plane::open_door()),
             auth_bindings: sources
                 .auth_bindings
                 .ok_or_else(|| missing("auth_bindings"))?,
@@ -732,9 +740,14 @@ impl A2aLeg {
         dispatch: Option<&'r dyn crate::root::units_a2a::A2aDispatch>,
         pricer: &'r Pricer,
         bytes_nanos: u64,
+        open: bool,
     ) -> A2aBindings<'r, InMemoryCells> {
         A2aBindings {
-            auth: &self.auth,
+            // THE DOOR THIS UNIT IS JUDGED BEHIND, chosen per ADDRESS. The deployment's own chain
+            // guards the addresses the deployment guards; an address this protocol DECLARED open is
+            // served through no door, because that is where a conformant client looks first and
+            // running the chain there refuses every caller before it can learn what to present.
+            auth: if open { &self.open_auth } else { &self.auth },
             auth_bindings: &self.auth_bindings,
             trust_token: &self.trust_token,
             pools,
@@ -759,6 +772,21 @@ impl A2aLeg {
             dispatch,
             origin: self.origin,
         }
+    }
+
+    /// **Whether the address this arrival names is one THIS PLANE DECLARED OPEN.**
+    ///
+    /// Asked of the plane's own declared surface through the generic reader, so the answer here and
+    /// the answer a mount composed over the same surface gives are one reading. The request line is
+    /// the arrival's own reserved facts — never a header and never a path this file spelled — and an
+    /// arrival that publishes neither is not an open address, which is the fail-closed reading.
+    fn addresses_openly(&self, arrival: &busbar_contract::transport::Arrival<'_>) -> bool {
+        use busbar_contract::transport::facts;
+        let (Some(path), Some(method)) = (arrival.fact(facts::PATH), arrival.fact(facts::METHOD))
+        else {
+            return false;
+        };
+        crate::root::data_plane::addresses_openly(&busbar_plane_a2a::surface::SURFACE, path, method)
     }
 
     /// What the plane made of one arrival, read ONCE.
@@ -799,11 +827,16 @@ impl A2aLeg {
         let presented = arrival
             .fact(busbar_contract::transport::facts::CREDENTIAL)
             .map(presented_credential);
-        // AND THE OPEN SURFACES STAY OPEN. The plane's own `authenticate` says which of its claims
-        // declare no scheme, and a claim with no scheme has nothing to narrow WITHIN and no audience
-        // to demand: asking for one there would refuse a surface this protocol deliberately leaves
-        // open. The question is the plane's and is asked of it, never re-derived from a path.
-        let under_scheme = op.is_some_and(|op| !is_open_surface(op));
+        // AND THE OPEN ADDRESSES STAY OPEN. This protocol serves its protected-resource metadata and
+        // its own agent card unauthenticated, because that is where a conformant client looks FIRST
+        // and the metadata document is how a caller learns which audience to ask for — demanding
+        // that audience to read it refuses every caller before it can find out what to present.
+        //
+        // Asked per ADDRESS and never per operation. The card operation is served at three addresses
+        // — two open discovery ones and one credentialed extended card — so an operation-shaped
+        // answer either refuses the discovery addresses or opens the credentialed one. The question
+        // goes to the plane's own declared surface, which answers it per dispatch.
+        let under_scheme = op.is_some() && !self.addresses_openly(arrival);
         Decoded {
             op,
             request_bytes,
@@ -832,16 +865,6 @@ impl A2aLeg {
             },
         }
     }
-}
-
-/// Whether one operation of this plane is served on a claim that declares NO credential scheme.
-///
-/// Asked of the plane rather than answered here: `A2aPlane::authenticate` is the one place this
-/// protocol says which of its surfaces are deliberately open, and a second list in the root would be
-/// a second opinion about which addresses admit an unidentified caller — the worst possible thing to
-/// hold two answers to.
-fn is_open_surface(op: busbar_contract::ids::OpClassId) -> bool {
-    op == ops::OP_PUSH_EVENT
 }
 
 /// The scheme alternatives this plane's credentialed claims declare, read off the claims themselves.
@@ -972,6 +995,9 @@ impl A2aLeg {
         // priced by how long it took.
         let rates = self.rates();
         let bytes_nanos = self.bytes_nanos(rates.card());
+        // WHETHER THIS ADDRESS IS ONE THE PLANE DECLARED OPEN, read ONCE and used by both halves of
+        // the same decision: which door this unit is judged behind, and which grants it carries.
+        let open = self.addresses_openly(arrival);
 
         let bindings = self.bindings(
             &pools,
@@ -983,11 +1009,30 @@ impl A2aLeg {
             dispatch,
             rates.pricer(),
             bytes_nanos,
+            open,
         );
         // THE GRANTS ARE THE CALLER'S, and this arrival presented no credential, so they are the
         // anonymous set. Read-only is what an unidentified caller holds; the approve step compares
         // it against the policy's own entry for the class and refuses what it does not cover.
-        let units = A2aUnits::new(bindings, draft, Grants::of(Scope::ReadOnly));
+        //
+        // EXCEPT ON AN ADDRESS THIS PROTOCOL DECLARED OPEN, where the scope step has nothing to
+        // decide: there is no identity to narrow, because the declaration says this address admits
+        // an unidentified caller, and the operation's real authority is the surface's to check —
+        // the push callback's token is INSIDE the request and is where the shipped release checks
+        // it. A loop that admitted the caller at the door and refused it at Approve turned every
+        // real push delivery into a refusal before the surface saw the token.
+        //
+        // The narrowness is the safety argument, and it is worth stating: only an address the
+        // plane's own surface declares OPEN reaches this arm, this protocol declares three, and two
+        // of them are read-only discovery.
+        let grants = Grants::of(if open {
+            draft
+                .op
+                .map_or(Scope::ReadOnly, crate::root::units_a2a::declared_scope)
+        } else {
+            Scope::ReadOnly
+        });
+        let units = A2aUnits::new(bindings, draft, grants);
         let ended = busbar_kernel::teller::run_unit(kernel, &units, ctx, run);
         // READ AFTER THE WALK and off the units the walk ran against, which is the only place it
         // exists: the loop's ending carries a frame and a frame carries no status and no headers.

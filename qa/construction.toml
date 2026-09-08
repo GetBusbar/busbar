@@ -1008,6 +1008,12 @@ symbol = "without_directory("
 verdict = "double"
 because = "the same node's unbound key authorities, where the sealed root has the governance directory"
 
+[rules.no-test-doubles-in-production.known_sites.declared-open-door]
+file = "crates/busbar/src/root/data_plane.rs"
+symbol = "AuthChain::new(Vec::new()"
+verdict = "real"
+because = "the door a protocol's DECLARED-OPEN address is served through — the previous release serves those same addresses with its chain bypassed, and this is that reached through the declaration"
+
 [rules.no-test-doubles-in-production.known_sites.root-card-pricer]
 file = "crates/busbar/src/root/kernel.rs"
 symbol = "Pricer::flat("
