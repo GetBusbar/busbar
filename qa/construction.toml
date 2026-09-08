@@ -47,7 +47,6 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
 #     correct by construction and is the cheap first half of kind-by-declaration.
 [gate.plugin_kinds]
-plane = ["crates/busbar-plane-*"]
 # THE THREE KINDS THIS TABLE DID NOT NAME, added 2026-09-09. ARCHITECTURE.md's kind list is
 # normative and names ten kinds plus the `unit` core row; this table named ten KEYS and three of the
 # eleven were missing from it -- `dialect`, `unit` and `control`. `cargo xtask gate kind-isolation`
@@ -59,13 +58,24 @@ plane = ["crates/busbar-plane-*"]
 # splits them into `busbar-plane-<plane>-<dialect>` is what creates the first one. The glob is
 # written for the shape it will have, and a kind whose glob matches nothing is a kind with no crate
 # rather than a rule switched off -- which is exactly the case `kind-isolation:truths` now watches.
-dialect = ["crates/busbar-plane-*-*"]
 # `control` is the tenth kind (owner ruling 2026-09-08). Its one member is `busbar-plane-admin`,
 # whose NAME says plane and which is not one; the R7 rename makes it `busbar-control-admin`. The
 # declaration lives in qa/kind-isolation.toml's [[registered]] row, which is where PLUGIN-TREE.md
 # has said it lives since it was written.
-control = ["crates/busbar-control-*"]
 unit = ["crates/busbar-unit-*"]
+# `busbar-plane-<plane>` and NOT `busbar-plane-<plane>-<dialect>`: the four-segment form is the
+# DIALECT kind, and the glob that used to end at `*` swallowed it, so the first dialect crate to
+# land would have been scored against the plane rows — purity, neutrality, the plane skeleton — for
+# a kind whose whole definition is that it carries the vendor vocabulary a plane may not. The two
+# globs are written as one pair on purpose: narrowing the plane row without adding the dialect row
+# would leave a dialect crate of no kind at all, which the isolation gate refuses at census.
+plane = ["crates/busbar-plane-*", "!crates/busbar-plane-*-*"]
+dialect = ["crates/busbar-plane-*-*"]
+# The CONTROL kind, whose first crates are `busbar-control-admin` (today `busbar-plane-admin`,
+# registered as control until R7 renames it) and `busbar-control-oauth2`. Without the row a
+# `busbar-control-*` crate matches nothing here and is unclassified — which reads as a crate no
+# kind rule is written for, rather than as the kind it says it is in its own name.
+control = ["crates/busbar-control-*"]
 hook = ["crates/hook*"]
 pure_auth = ["crates/auth-*"]
 egress_auth = ["crates/egress-auth-*"]
@@ -136,6 +146,15 @@ busbar-voice = ["busbar-voice-codec"]
 # the face.
 
 [[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 152
+because = """The SURFACE-measured twin of the same one owner ruling that raises \
+`rules.loc-ceilings.caps_contract_ceiling`. The two rows are one decision counted two ways, and \
+raising one without the other would leave the pair capped at whichever number is smaller while the \
+larger one reads as the ruling -- a ceiling raised in name only. The measurement that spent it is \
+recorded once, beside `[rules.loc-ceilings]`, rather than transcribed twice."""
+
+[[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
 by = 150
 because = """The FIRST gating figure for the dialect kind's contract face. The dialect kind is a new \
@@ -161,7 +180,15 @@ second owner ruling."""
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+# 3478 -> 3630 with `[rules.loc-ceilings].caps_contract_ceiling`, and in the same commit, because
+# the two rows are ONE owner decision measured two ways. Raising one and not the other would leave
+# the pair's ceiling at whichever number is smaller while the larger one reads as the ruling — a
+# ceiling that has been raised in name only. The measurement that spent it is written down beside
+# the other number rather than twice; see `[rules.loc-ceilings]`. `grammar` and
+# `contract_transport` are NOT part of the ruling and keep the figures the integration line
+# measured them at: the dialect kind's trait is contract surface, and nothing it adds is grammar or
+# transport surface, so raising those two would be spending a ruling on rows it was not written for.
+contract_caps = 3630
 grammar = 388
 contract_transport = 845
 
@@ -529,7 +556,13 @@ patterns = [
 ]
 # kinds scanned: plane, hook, pure_auth, egress_auth (gate.plugin_kinds); store/secret/export are
 # I/O kinds and are out of scope for this rule by design (section 1.2 exempts them).
-kinds = ["plane", "hook", "pure_auth", "egress_auth"]
+#
+# `dialect` joins them because the kind's own definition says it is PURE — it translates bytes and
+# does nothing else — and a kind declares that axis on the commit that names it, not on the commit
+# that lands its first crate. The glob matches no directory today, which this rule reads as "the
+# kind has no crate yet" and not as a pass; the day the first dialect lands it is scanned from its
+# first line rather than from whenever somebody remembered to add the word.
+kinds = ["plane", "dialect", "hook", "pure_auth", "egress_auth"]
 # Reviewed exceptions: crate -> list of patterns from above accepted for that crate, with the reason
 # living in the commit that added it. Empty at hour 0.
 [rules.source-denylist.allowlist]
