@@ -28,7 +28,7 @@
 use crate::gates::structure_lint::roots::Addresses;
 use crate::gates::structure_lint::{
     axis, census, choke_points, corpus, fn_scoped, hybrid, inline_tests, oversized, plane_dups,
-    plane_store, roots, Findings, StructureLintGate, Tables, CORPUS_DEPENDENT,
+    plane_store, roots, Findings, StructureLintGate, Tables,
 };
 use crate::ledger::Row;
 use crate::parity::LegacyRun;
@@ -128,7 +128,7 @@ impl StructureLintGate {
             ));
         }
         if !f.candidate_floor.is_empty() {
-            f.did_not_run = CORPUS_DEPENDENT.to_vec();
+            f.did_not_run = super::corpus_took_them_down();
         }
         Ok(f.sorted().rows())
     }
