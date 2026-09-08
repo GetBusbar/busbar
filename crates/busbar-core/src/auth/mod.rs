@@ -19,18 +19,16 @@ use crate::diagnostics::{
 };
 use crate::sigv4::{SIGV4_ALGORITHM, X_AMZ_CONTENT_SHA256, X_AMZ_DATE};
 
-/// The two non-`Authorization` headers that native vendor SDKs use to carry their API key:
-/// the Anthropic SDK sends `x-api-key`, the Gemini SDK sends `x-goog-api-key`. busbar accepts
-/// either as a carrier of the SAME busbar client token / virtual key (validated identically,
-/// in constant time, against the same allowlist / governance lookup). Checked AFTER
-/// `Authorization: Bearer` (see `extract_client_token`).
-const X_API_KEY: &str = "x-api-key";
-const X_GOOG_API_KEY: &str = "x-goog-api-key";
-
-/// The header name for the operator admin token carrier (busbar-proprietary surface).
+// THE CARRIERS — which headers may carry a client credential, in what order they are read, and the
+// two rules that are easy to get wrong (a present-but-empty header is ABSENT, and a non-Bearer
+// `Authorization` FALLS THROUGH rather than terminating the search) — live in
+// `busbar_unit_auth::carrier`. The header NAMES (`x-api-key`, `x-goog-api-key`, the Bearer scheme
+// word) are part of that rule and are stated there once; core names the rule through
+// [`RequestHeaders`] below rather than restating any of it.
+/// The header name for the operator admin token carrier (busbar-proprietary surface). NOT a client
+/// carrier: the operator token is deliberately not readable from the vendor-SDK headers, so it stays
+/// core's own constant.
 pub(crate) const X_ADMIN_TOKEN: &str = "x-admin-token";
-/// The Bearer auth-scheme token (case-insensitive match in `extract_bearer_token`).
-const AUTH_SCHEME_BEARER: &str = "bearer";
 /// The liveness-probe path, mounted `RouteAuth::None` on every router that serves it (see
 /// [`crate::core_routes`]). One constant so the mount and the reserved-path list cannot drift.
 pub(crate) const HEALTHZ_PATH: &str = "/healthz";
@@ -91,6 +89,32 @@ pub(crate) enum ChainVerdict {
     },
     Open,
     Denied,
+}
+
+/// This request's headers, as [`busbar_unit_auth::carrier::HeaderView`].
+///
+/// The whole adapter: the unit must not know which transport delivered the request, so it asks for
+/// named headers through a trait, and this is the axum answer. `HeaderMap::get` compares header
+/// names case-insensitively (it parses the name), which is exactly the comparison the unit
+/// documents; a value that is not valid text reads as ABSENT, the same as no header at all.
+///
+/// A newtype rather than an impl on `HeaderMap` because both the trait and the type are foreign
+/// here. It carries no rule of its own — the carrier order, the empty-is-absent filter and the
+/// Bearer fall-through all live in the unit.
+pub(crate) struct RequestHeaders<'a>(pub(crate) &'a axum::http::HeaderMap);
+
+impl busbar_unit_auth::carrier::HeaderView for RequestHeaders<'_> {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.0.get(name).and_then(|v| v.to_str().ok())
+    }
+}
+
+/// The busbar client token this request presented, from whichever carrier carried it.
+///
+/// One line, and it exists so the [`RequestHeaders`] wrap is written once rather than at each of the
+/// call sites that has a whole `Request` in hand.
+pub(crate) fn client_token(req: &Request<Body>) -> Option<String> {
+    busbar_unit_auth::carrier::extract_client_token(&RequestHeaders(req.headers()))
 }
 
 // 1.5.0: the static-token allowlist module is GONE. Data-plane auth is the built-in `keys`
@@ -640,58 +664,16 @@ impl AuthMiddleware {
         busbar_api::constant_time_eq(a, b)
     }
 
-    /// Extract the token from an `Authorization: Bearer <token>` header (scheme match is
-    /// case-insensitive). Splits on the first space rather than byte-slicing, so a malformed header
-    /// with a multibyte character in the scheme position can't panic on a UTF-8 boundary.
-    pub(crate) fn extract_bearer_token(auth_header: &str) -> Option<String> {
-        let (scheme, token) = auth_header.split_once(' ')?;
-        if scheme.eq_ignore_ascii_case(AUTH_SCHEME_BEARER) && !token.is_empty() {
-            Some(token.to_string())
-        } else {
-            None
-        }
-    }
-
-    /// Extract the busbar client token from whichever scheme the caller used, in a FIXED
-    /// precedence order: `Authorization: Bearer <t>` first, then `x-api-key: <t>` (Anthropic SDK),
-    /// then `x-goog-api-key: <t>` (Gemini SDK). The `x-api-key`/`x-goog-api-key` values are the raw
-    /// token (no scheme prefix); an empty value is treated as absent so a present-but-blank header
-    /// does not mask a token in a lower-precedence carrier. The returned token is validated
-    /// identically and in constant time regardless of which header carried it.
-    ///
-    /// Bedrock SDKs authenticate with inbound AWS SigV4, NOT a bearer-style token, so this extractor
-    /// deliberately does NOT read any `x-amz-*` / SigV4 `Authorization` header — a non-Bearer
-    /// `Authorization` (AWS4-HMAC-SHA256 or Basic) falls through to the vendor carriers and otherwise
-    /// yields `None` here. Inbound SigV4 is now handled SEPARATELY, under governance, by
-    /// `verify_sigv4_ingress_credential` (the MinIO/S3-compatible model: an AWS-style access-key-id + secret
-    /// access key issued per virtual key, whose signature busbar verifies via `crate::sigv4`). On a
-    /// successful verify the same `GovCtx` a bearer auth attaches is attached, so Bedrock ingress now
-    /// receives full virtual-key governance under `token`/governance mode — it no longer requires
-    /// `passthrough`. This token path itself is unchanged.
-    pub(crate) fn extract_client_token(req: &Request<Body>) -> Option<String> {
-        let header_str = |name: &str| {
-            req.headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
-        };
-
-        if let Some(t) = req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(Self::extract_bearer_token)
-        {
-            return Some(t);
-        }
-        if let Some(t) = header_str(X_API_KEY).filter(|t| !t.is_empty()) {
-            return Some(t);
-        }
-        if let Some(t) = header_str(X_GOOG_API_KEY).filter(|t| !t.is_empty()) {
-            return Some(t);
-        }
-        None
-    }
+    // The two extractors that used to sit here — `extract_bearer_token` and `extract_client_token`
+    // — are `busbar_unit_auth::carrier::{extract_bearer_token, extract_client_token}`. Core reads
+    // the client credential by handing the unit a [`RequestHeaders`] view of this request's headers.
+    //
+    // Bedrock SDKs authenticate with inbound AWS SigV4, NOT a bearer-style token, so the carriers
+    // deliberately read no `x-amz-*` header — and a non-Bearer `Authorization`
+    // (`AWS4-HMAC-SHA256`, `Basic`) falls THROUGH to the vendor carriers rather than terminating the
+    // search. Inbound SigV4 is handled separately, under governance, by
+    // `verify_sigv4_ingress_credential`; on a successful verify it attaches the same `GovCtx` a
+    // bearer auth attaches, so that path never needed a carrier of its own.
 
     /// Validate the request's token by running the AUTH CHAIN. `token` accepts a credential extracted
     /// from ANY supported carrier (see `extract_client_token`); the comparison is identical and
@@ -1445,7 +1427,7 @@ pub(crate) async fn auth_middleware(
     // then x-api-key, then x-goog-api-key). This single value drives BOTH the static-allowlist
     // check and the governance virtual-key lookup, so every scheme is validated identically and in
     // constant time. Replaces the previous Bearer-only `bearer_token`.
-    let client_token: Option<String> = AuthMiddleware::extract_client_token(&req);
+    let client_token: Option<String> = crate::auth::client_token(&req);
 
     // Thread the caller's token into request extensions for passthrough forwarding, using the same
     // multi-scheme carrier precedence as auth (Bearer / x-api-key / x-goog-api-key). Inserted BEFORE
@@ -1474,7 +1456,7 @@ pub(crate) async fn auth_middleware(
             .headers()
             .get(AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(AuthMiddleware::extract_bearer_token);
+            .and_then(busbar_unit_auth::carrier::extract_bearer_token);
         let (verdict, scope_cap) =
             run_admin_chain_maybe_offloaded(&app, admin_bearer, admin_header_token.clone()).await;
         let (id_module, principal) = match verdict {
