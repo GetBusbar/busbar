@@ -184,13 +184,17 @@ fn handle_cli_flags() -> Option<i32> {
         Some("--list-plugins") => Some(list_plugins_command()),
         Some("--migrate-config") => Some(migrate_config_command(args.next())),
         Some("--help" | "-h") => {
+            // THE FIRST LINE UNDER `USAGE:` IS THE PUBLISHED 1.5.5 LINE AND STAYS THAT WAY. It is
+            // the one line that says how busbar is invoked and where its configuration comes from,
+            // and a flag synopsis in its place (`busbar [-c <path>] [--providers <path>]`) says
+            // neither: the two optional flags only POINT AT the same YAML, and CONFIG INPUTS below
+            // already spells them out. tests/cli_help_usage_line.rs pins it against the golden
+            // recording of the published binary, so this line cannot drift again unnoticed.
             println!(
                 "busbar {ver} — native-protocol LLM gateway
 
 USAGE:
-    busbar [-c <path>] [--providers <path>]
-                        run the gateway (configured via environment + YAML; the two optional flags
-                        point busbar at its config.yaml / providers.yaml — see CONFIG INPUTS below)
+    busbar              run the gateway (configured entirely via environment + YAML)
     busbar --help       print this help
     busbar --version    print the version (and the build-provenance stamp)
     busbar --build-info print the build-provenance stamp alone (profile / opt-level / lto /
