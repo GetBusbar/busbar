@@ -539,16 +539,27 @@ pub fn run(gate: &StructureLintGate, cx: &Ctx) -> Report {
     if let Some((rel, text)) = sink_file(cx, &addresses) {
         let mut ov = Overlay::new();
         ov.set(&rel, text.replace("PlaneStore", "Store"));
+        // TWO ROWS, TWO CASES, over the same plant. Listed together, a red from either one passed
+        // the pair — and only `not-narrowed` was ever firing, so `widened` could have been deleted
+        // with the selftest green. Each now reads its own row and nothing else.
         report.push(tree_case(
             cx,
             gate,
-            "a plane sink widened back to the audit-carrying store re-arms the forge",
-            &[
-                plane_store::ROW_SINK_NOT_NARROWED,
-                plane_store::ROW_SINK_WIDENED,
-            ],
+            "a plane sink that stops naming the narrowed store re-arms the forge",
+            &[plane_store::ROW_SINK_NOT_NARROWED],
             ov,
-            &["PLANE-SINK"],
+            &["PLANE-SINK-NOT-NARROWED"],
+        ));
+
+        let mut ov = Overlay::new();
+        ov.set(&rel, text.replace("PlaneStore", "Store"));
+        report.push(tree_case(
+            cx,
+            gate,
+            "a plane sink widened back to the audit-carrying store is a finding on its own row",
+            &[plane_store::ROW_SINK_WIDENED],
+            ov,
+            &["PLANE-SINK-WIDENED"],
         ));
 
         // EVERY sink, not one of them: a rule that still finds a second attach has not been shown
@@ -589,10 +600,7 @@ pub fn run(gate: &StructureLintGate, cx: &Ctx) -> Report {
             cx,
             gate,
             "a boot seam that moved or was renamed is refused",
-            &[
-                plane_store::ROW_BOOTCTX_SUBJECT,
-                plane_store::ROW_BOOTCTX_NOT_NARROWED,
-            ],
+            &[plane_store::ROW_BOOTCTX_SUBJECT],
             ov,
             &["BOOTCTX-MISSING"],
         ));
@@ -603,12 +611,24 @@ pub fn run(gate: &StructureLintGate, cx: &Ctx) -> Report {
             cx,
             gate,
             "a boot-surface field that reaches the audit chain is a finding",
-            &[
-                plane_store::ROW_BOOTCTX_WIDENED,
-                plane_store::ROW_BOOTCTX_NOT_NARROWED,
-            ],
+            &[plane_store::ROW_BOOTCTX_WIDENED],
             ov,
             &["BOOTCTX-WIDENED"],
+        ));
+
+        // THE POSITIVE HALF, ON ITS OWN ROW. It was listed beside the two cases above and proven by
+        // neither: both of them go red on a row this one is not about, so the rule that requires the
+        // boot surface to NAME the narrowed store could have been deleted with the selftest green.
+        // Taking the trait's name out of the struct is the tree that rule exists to refuse.
+        let mut ov = Overlay::new();
+        ov.set(&bootctx, text.replace("PlaneStore", "Store"));
+        report.push(tree_case(
+            cx,
+            gate,
+            "a boot surface that stops naming the narrowed store is a finding on its own row",
+            &[plane_store::ROW_BOOTCTX_NOT_NARROWED],
+            ov,
+            &["BOOTCTX-NOT-NARROWED"],
         ));
     } else {
         report.note_infra_failure(

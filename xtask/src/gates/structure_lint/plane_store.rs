@@ -107,7 +107,15 @@ fn scan_sinks(cx: &Ctx, a: &Addresses, f: &mut Findings) {
             if !line.contains(NARROWED) {
                 f.sink_not_narrowed.push(finding_sink_not_narrowed(&site));
             }
-            if line.contains("dyn Store") || WIDE_HANDLES.iter().any(|h| line.contains(h)) {
+            // THE SAME TEST ITS BOOT-SEAM SIBLING MAKES (`scan_bootctx` below): any `dyn ` bound on
+            // the attach that is not the narrowed trait. It read `line.contains("dyn Store")` — a
+            // bare spelling this tree does not write. Every plane sink here is declared
+            // `dyn crate::plane::store::PlaneStore`, so widening it to
+            // `dyn crate::plane::store::Store` — the exact rename this rule exists to catch — did
+            // not contain the needle and the rule was near-dead: the co-listed not-narrowed row was
+            // what turned its case red.
+            let dyn_wide = line.contains("dyn ") && !line.contains(NARROWED);
+            if dyn_wide || WIDE_HANDLES.iter().any(|h| line.contains(h)) {
                 f.sink_widened.push(finding_sink_widened(&site));
             }
         }
