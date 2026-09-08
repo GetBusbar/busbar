@@ -23,7 +23,7 @@ use busbar_contract::unit::{
     AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
     Unit, UnitEnd, UsageLocator, UsageLocators,
 };
-use busbar_contract::wire::{Decode, Encode, Frame, FrameCursor, TransportEnvelope};
+use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
 use crate::facts as f;
 use crate::jsonrpc;
@@ -415,6 +415,18 @@ impl Plane for A2aPlane {
             return Ok(Ingress::NeedMore);
         }
         let envelope = jsonrpc::read(body)?;
+        // A MESSAGE WITH NO IDENTIFIER ASKED FOR NO ANSWER. The specification forbids replying to
+        // one, and this plane composed a reply anyway: with nothing to correlate, the encoder wrote
+        // the identifier as null and put `{"id":null,…}` on the wire — and opened a priced unit for
+        // a message that was owed none. This protocol defines no client notification at all, so
+        // there is no known-notice arm to keep: the frame is consumed, nothing goes out for it, and
+        // nothing is charged. The three surfaces of this plane that legitimately carry no envelope
+        // are answered above, by the target, and never reach here.
+        if envelope.id.is_none() {
+            return Ok(Ingress::Discard {
+                reason: DiscardCode::Unsupported,
+            });
+        }
         let method = envelope.method_str(body).ok_or(Decode::Malformed)?;
         let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
         let facts = request_facts(body, &envelope);

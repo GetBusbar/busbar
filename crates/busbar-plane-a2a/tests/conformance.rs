@@ -405,6 +405,28 @@ fn an_envelope_stating_neither_result_nor_error_ends_the_unit_as_an_error() {
     }
 }
 
+/// A message that asked for no answer is not answered, and is not metered.
+///
+/// The specification is explicit that a server must not reply to a notification. Composing a reply
+/// to one puts `{"id":null,…}` on the wire and opens a priced unit for a message that should have
+/// produced none.
+#[test]
+fn a_message_with_no_identifier_is_not_answered() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let notice = br#"{"jsonrpc":"2.0","method":"message/send","params":{}}"#;
+    let frames = vec![frame(notice)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("a notification decodes")
+    {
+        Ingress::Discard { .. } => {}
+        other => panic!("a notification decoded as {other:?}"),
+    }
+}
+
 /// A refusal is rendered as this dialect's own error envelope, with the caller's identifier.
 #[test]
 fn a_refusal_is_rendered_in_this_dialect() {
