@@ -35,6 +35,8 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod unit;
+
 use busbar_caps::{TransportKeyHandle, TransportKeyToken};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};

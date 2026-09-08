@@ -54,6 +54,7 @@ pub mod chain;
 pub mod decide;
 pub mod estimate;
 pub mod price;
+pub mod unit;
 pub mod window;
 
 pub use cells::{CellStore, Cells, InMemoryCells, InMemoryLocked, LedgerCell, MAX_MODELS_PER_CELL};

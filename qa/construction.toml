@@ -123,17 +123,116 @@ because = """A SIDEWAYS MOVE, re-pinned on both sides in the commit that makes i
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3478
 to = 3500
-because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: scripts/loc-surface.py 3478 -> 3500 over busbar-contract + busbar-caps, of which +2 is the RecordSink face two commits back and +20 is crates/busbar-caps/src/unit.rs plus its one `pub mod` / `pub use` pair; 3500 is section 1.1's 3.5k exactly and nothing was deleted to make room. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: scripts/loc-surface.py 3478 -> 3500 over busbar-contract + busbar-caps, of which +2 is the RecordSink face and +20 is crates/busbar-caps/src/unit.rs; 3500 is section 1.1's 3.5k exactly. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 from = 3480
 to = 3502
 because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: the gate's own call-graph count 3480 -> 3502, busbar-caps 1173 + busbar-contract 2329. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+from = 5379
+to = 5409
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: kernel 3083 own + 2326 reachable-by-name in 10 busbar-unit-* files = 5409, up 30 on the impl blocks in the unit files the Teller loop calls directly; section 1.1's kernel ceiling is 8k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+
+[gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
+from = 14606
+to = 15019
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: all fourteen busbar-unit-* crates together 14606 -> 15019, +413: the fourteen impl blocks, less the one line busbar-unit-cost's own `impl Unit for CostUnit` gives back because it is expressed against the dated card API (`price_at_card`) rather than `PinnedCard`; section 1.1's unit-* ceiling is 45k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+
+[gate.ceiling_raises."rules.loc-ceilings.verbs_ceiling"]
+from = 1428
+to = 1478
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: busbar-unit-verbs 1428 -> 1478, +50, its own impl block; section 1.1's verbs sub-ceiling is 15k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23465
-to = 23487
-because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: the same +22 read through the kernel + caps/contract + unit-* union, which sums caps/contract and therefore moves with it: 23465 -> 23487, against section 1.1's 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+to = 23930
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: the union 23465 -> 23930, the sum of the three rises above plus the caps/contract face already declared; section 1.1's union ceiling is 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+
+[gate.ceiling_raises."cell.268.count"]
+file = "qa/kind-isolation.toml"
+from = 50
+to = 52
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-admission x caps`, 50 -> 52: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.272.count"]
+file = "qa/kind-isolation.toml"
+from = 23
+to = 26
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-audit x caps`, 23 -> 26: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.281.count"]
+file = "qa/kind-isolation.toml"
+from = 11
+to = 12
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-breaker x caps`, 11 -> 12: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.286.count"]
+file = "qa/kind-isolation.toml"
+from = 12
+to = 14
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-cost x caps`, 12 -> 14: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.288.count"]
+file = "qa/kind-isolation.toml"
+from = 34
+to = 35
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-egress x caps`, 34 -> 35: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.294.count"]
+file = "qa/kind-isolation.toml"
+from = 7
+to = 8
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-egress-auth x caps`, 7 -> 8: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.297.count"]
+file = "qa/kind-isolation.toml"
+from = 17
+to = 19
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-ledger x caps`, 17 -> 19: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.299.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 5
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-scope x caps`, 3 -> 5: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.303.count"]
+file = "qa/kind-isolation.toml"
+from = 10
+to = 11
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-transport-key x caps`, 10 -> 11: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.311.count"]
+file = "qa/kind-isolation.toml"
+from = 19
+to = 21
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-usage x caps`, 19 -> 21: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.312.count"]
+file = "qa/kind-isolation.toml"
+from = 16
+to = 17
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-verbs x caps`, 16 -> 17: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.316.count"]
+file = "qa/kind-isolation.toml"
+from = 37
+to = 39
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-wal x caps`, 37 -> 39: that crate's new `src/unit.rs` and the fields its `Input` struct restates. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.306.count"]
+file = "qa/kind-isolation.toml"
+from = 106
+to = 110
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-transport-key x transport`, 106 -> 110: the `Tls*` types this crate ALREADY DEFINES (`TlsConfigSink`, `TlsLocations`) surfaced as fields of the new `ProvisionInput`. The crate is not reaching a transport; it is naming its own types in the one place the kind's entry requires them to be named. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
+
+[gate.ceiling_raises."cell.313.count"]
+file = "qa/kind-isolation.toml"
+from = 486
+to = 493
+because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-verbs x control`, 486 -> 493: `busbar_caps::AdminToken` and the `admin` field of the new `VerbInput` that holds it. The word is caps vocabulary that happens to contain a control instance's name; no control crate is named, imported or depended on. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -359,15 +458,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5379
+kernel_ceiling = 5409
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3502
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14606
+unit_total_ceiling = 15019
 verbs_crate = "busbar-unit-verbs"
-verbs_ceiling = 1428
-union_ceiling = 23487
+verbs_ceiling = 1478
+union_ceiling = 23930
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

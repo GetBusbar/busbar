@@ -2649,7 +2649,7 @@ count = "165"
 [[cell]]
 crate = "busbar-unit-admission"
 kind = "caps"
-count = "50"
+count = "52"
 
 [[cell]]
 crate = "busbar-unit-admission"
@@ -2669,7 +2669,7 @@ count = "17"
 [[cell]]
 crate = "busbar-unit-audit"
 kind = "caps"
-count = "23"
+count = "26"
 
 [[cell]]
 crate = "busbar-unit-audit"
@@ -2714,7 +2714,7 @@ count = "4"
 [[cell]]
 crate = "busbar-unit-breaker"
 kind = "caps"
-count = "11"
+count = "12"
 
 [[cell]]
 crate = "busbar-unit-breaker"
@@ -2739,7 +2739,7 @@ count = "4"
 [[cell]]
 crate = "busbar-unit-cost"
 kind = "caps"
-count = "12"
+count = "14"
 
 [[cell]]
 crate = "busbar-unit-cost"
@@ -2749,7 +2749,7 @@ count = "6"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "caps"
-count = "34"
+count = "35"
 
 [[cell]]
 crate = "busbar-unit-egress"
@@ -2779,7 +2779,7 @@ count = "51"
 [[cell]]
 crate = "busbar-unit-egress-auth"
 kind = "caps"
-count = "7"
+count = "8"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"
@@ -2794,7 +2794,7 @@ count = "4"
 [[cell]]
 crate = "busbar-unit-ledger"
 kind = "caps"
-count = "17"
+count = "19"
 
 [[cell]]
 crate = "busbar-unit-ledger"
@@ -2804,7 +2804,7 @@ count = "20"
 [[cell]]
 crate = "busbar-unit-scope"
 kind = "caps"
-count = "3"
+count = "5"
 
 [[cell]]
 crate = "busbar-unit-scope"
@@ -2824,7 +2824,7 @@ count = "6"
 [[cell]]
 crate = "busbar-unit-transport-key"
 kind = "caps"
-count = "10"
+count = "11"
 
 [[cell]]
 crate = "busbar-unit-transport-key"
@@ -2839,7 +2839,7 @@ count = "6"
 [[cell]]
 crate = "busbar-unit-transport-key"
 kind = "transport"
-count = "106"
+count = "110"
 
 [[cell]]
 crate = "busbar-unit-trust"
@@ -2864,17 +2864,17 @@ count = "45"
 [[cell]]
 crate = "busbar-unit-usage"
 kind = "caps"
-count = "19"
+count = "21"
 
 [[cell]]
 crate = "busbar-unit-verbs"
 kind = "caps"
-count = "16"
+count = "17"
 
 [[cell]]
 crate = "busbar-unit-verbs"
 kind = "control"
-count = "486"
+count = "493"
 
 [[cell]]
 crate = "busbar-unit-verbs"
@@ -2889,7 +2889,7 @@ count = "6"
 [[cell]]
 crate = "busbar-unit-wal"
 kind = "caps"
-count = "37"
+count = "39"
 
 [[cell]]
 crate = "busbar-voice"
