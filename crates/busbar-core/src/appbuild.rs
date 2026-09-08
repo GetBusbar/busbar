@@ -9,12 +9,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::auth::AuthMiddleware;
-use crate::diagnostics::{
-    diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
-    GOVERNANCE_STORE_EPHEMERAL, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH,
-    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
-    STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED,
-};
 use crate::preflight::{
     build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
     resolve_signing_key, validate_secret_refs,
@@ -30,10 +24,17 @@ use crate::{
     observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
     telemetry, tls, transport, trust,
 };
+use busbar_substrate::diagnostics::{
+    DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
+    OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
+    STORE_SECRET_REF_UNRESOLVED,
+};
 use busbar_substrate::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
     HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
 };
+use busbar_substrate::{diag_error, diag_warn};
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
@@ -127,7 +128,7 @@ pub fn inert_durable_keys_banner(
 
 /// Return the STATEFUL-PLANE ephemeral-store WARN to emit, or `None` when no sharper warn applies.
 ///
-/// The generic [`crate::diagnostics::GOVERNANCE_STORE_EPHEMERAL`] notice beside the store resolution
+/// The generic [`busbar_substrate::diagnostics::GOVERNANCE_STORE_EPHEMERAL`] notice beside the store resolution
 /// speaks to GOVERNANCE state (keys / usage / ledgers). MCP and A2A are ALSO stateful planes: their
 /// in-flight TASK state lives only in the resolved store, so on the RAM store it is dropped on
 /// restart and any task that was mid-flight breaks on its next request. This returns a sharper warn

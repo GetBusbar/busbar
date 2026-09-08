@@ -594,8 +594,8 @@ impl PlaneCallLog {
                     Ok(_) => bodies.push(body),
                     Err(e) => {
                         out.unreadable += 1;
-                        crate::diagnostics::diag_error!(
-                            crate::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
+                        busbar_substrate::diag_error!(
+                            busbar_substrate::diagnostics::PLANE_CALLLOG_ROW_UNREADABLE,
                             principal = %principal,
                             error = %e,
                             "a persisted per-call record could NOT be decoded on restore; it is being \
@@ -614,8 +614,8 @@ impl PlaneCallLog {
                 // enumerated principal whose records were all UNREADABLE is a different condition,
                 // already counted into `unreadable` and reported above, not folded in here.)
                 out.empty_chains += 1;
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::PLANE_CALLLOG_EMPTY_CHAIN,
                     principal = %principal,
                     "the durable per-call log enumerates this principal but returned NO records \
                      for it; the chain is being reopened at seq 1 and the discrepancy is reported \
@@ -625,8 +625,8 @@ impl PlaneCallLog {
             if let Some(brk) = self.seed_chain(host, principal, &bodies)? {
                 // REPORTED, and the records stay restored. See the module header: refusing here would
                 // convert a detection control into a deletion primitive.
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::PLANE_CALLLOG_CHAIN_VERIFY_FAILED,
                     principal = %brk.scope,
                     break_detail = %brk,
                     "per-call CHAIN VERIFICATION FAILED on restore — the persisted records \
@@ -890,8 +890,8 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
         }
         Err(e) => {
             if !WRITE_FAILED_LATCHED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
                     principal = %principal,
                     request_id = %request_id,
                     server = %server,
@@ -903,8 +903,8 @@ pub fn emit(host: HostCtx, principal: &str, input: CallInput) {
                      contiguous — what is missing is this record, not the ones after it."
                 );
             } else {
-                crate::diagnostics::diag_debug!(
-                    crate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
+                busbar_substrate::diag_debug!(
+                    busbar_substrate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
                     principal = %principal,
                     request_id = %request_id,
                     server = %server,
@@ -932,8 +932,8 @@ pub fn emit_hostless(principal: &str, input: CallInput) {
         input.request_id.clone(),
     );
     if let Err(e) = CALLS.record_hostless(principal, input) {
-        crate::diagnostics::diag_debug!(
-            crate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
+        busbar_substrate::diag_debug!(
+            busbar_substrate::diagnostics::PLANE_CALLLOG_WRITE_FAILED,
             principal = %principal,
             request_id = %request_id,
             server = %server,

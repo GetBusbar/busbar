@@ -1,9 +1,9 @@
 use super::*;
 
-use crate::diagnostics::{
-    diag_error, diag_warn, ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED,
-    PLUGIN_ROLLBACK_REVERT_FAILED,
+use busbar_substrate::diagnostics::{
+    ADMIN_AUTH_CHAIN_EMPTY, PLUGIN_ROLLBACK_PIN_PERSIST_FAILED, PLUGIN_ROLLBACK_REVERT_FAILED,
 };
+use busbar_substrate::{diag_error, diag_warn};
 
 /// `GET /api/v1/admin/info` — version, compiled-in plugin proof, uptime, topology.
 pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
@@ -2927,8 +2927,8 @@ fn current_root_settings(
         }
         crate::config::overlay::OverlayReadState::Loaded(doc) => doc.root.unwrap_or_default(),
         crate::config::overlay::OverlayReadState::Unreadable => {
-            crate::diagnostics::diag_warn!(
-                crate::diagnostics::CONFIG_SETTINGS_OVERLAY_UNREADABLE,
+            busbar_substrate::diag_warn!(
+                busbar_substrate::diagnostics::CONFIG_SETTINGS_OVERLAY_UNREADABLE,
                 endpoint,
                 path = %p.display(),
                 "{endpoint} read the config overlay while it was unreadable/corrupt; reporting NO \
@@ -2937,8 +2937,8 @@ fn current_root_settings(
             crate::config::overlay::RootSettings::default()
         }
         crate::config::overlay::OverlayReadState::VersionTooNew(v) => {
-            crate::diagnostics::diag_warn!(
-                crate::diagnostics::CONFIG_SETTINGS_OVERLAY_VERSION_TOO_NEW,
+            busbar_substrate::diag_warn!(
+                busbar_substrate::diagnostics::CONFIG_SETTINGS_OVERLAY_VERSION_TOO_NEW,
                 endpoint,
                 path = %p.display(),
                 overlay_version = v,
@@ -2984,8 +2984,8 @@ pub(crate) async fn get_config_settings(State(handle): State<Arc<AppHandle>>) ->
         // sibling `config_transaction` path and surface it as a 500 — NEVER a fabricated empty-settings
         // 200, which would misreport "the operator has set no overrides" when the read never completed.
         Err(e) => {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::CONFIG_SETTINGS_READ_TASK_JOIN_FAILED,
+            busbar_substrate::diag_error!(
+                busbar_substrate::diagnostics::CONFIG_SETTINGS_READ_TASK_JOIN_FAILED,
                 error = %e,
                 "GET /config/settings overlay read task failed to join"
             );

@@ -43,12 +43,12 @@
 
 use std::sync::OnceLock;
 
-use crate::diagnostics::{
-    diag_debug, diag_warn, METRICS_KEY_GAUGE_LIMIT_EXCEEDED,
-    METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED, METRICS_SCRAPE_KEY_USAGE_READ_FAILED,
-    METRICS_SCRAPE_LIST_KEYS_FAILED,
-};
 use crate::state::App;
+use busbar_substrate::diagnostics::{
+    METRICS_KEY_GAUGE_LIMIT_EXCEEDED, METRICS_SCRAPE_GROUP_LEDGER_READ_FAILED,
+    METRICS_SCRAPE_KEY_USAGE_READ_FAILED, METRICS_SCRAPE_LIST_KEYS_FAILED,
+};
+use busbar_substrate::{diag_debug, diag_warn};
 
 // ── THE RECORDER INSTALL, RE-EXPORTED BY IDENTITY FROM THE NEUTRAL SUBSTRATE ─────────────────────
 //
