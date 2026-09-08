@@ -86,6 +86,16 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
+**Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —
+`docs/design/D33-legacy-retirement.md` §7 carries the measurement):
+
+| crate | kind | what it holds | ceiling |
+|---|---|---|---|
+| `busbar-core-config` | core | the config document root, loader, env interpolation, migrator, overlay, named-map validator, the byte-identity prepass, the validator and the secret resolver — the product's config grammar, which had **no** replacement anywhere and could not be cut leaf-first (the layer reaches up into ten modules at 65 sites) | its own row, against a measured **20,050** surface lines |
+| `busbar-core-hooks` | core | the hook POLICY engine — resolution, gates, rewrites, singleflight, scrape — which the plain-data hook carriers in the substrate are not and never were. The kernel seats hook PLUGINS; this seats their policies | its own row (1,662 surface today) |
+| `busbar-control-admin` | control | the admin surface. `busbar-plane-admin` until **R7** renames it; registered as `control` by an explicit row until then | none (control carries no §1.1 union row) |
+| `busbar-control-oauth2` | control | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer — which had no crate and no kind. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface | none |
+
 ### 1.2 Core → plugin. Never plugin → core.
 
 Every plugin is passive: the kernel registers it, calls it, consumes what it returns.
@@ -182,16 +192,25 @@ scope. The plane key `streams` (formerly `voice`) is matched by the scan as the 
 **`docs/design/PLUGIN-TREE.md` is normative for this table.** It states, per kind, the ONE trait in
 `busbar-contract`, the compile boundary in both directions, the ceiling row, the testkit battery, the
 uniform crate skeleton, the single registration seam, the naming rule, and the procedure for adding a
-kind. There are **nine plugin kinds** — plane, dialect, transport, auth, egress-auth, store, secret,
-hook, export — and one core row, `unit`, which is never loadable. `loader` and `abi` are TCB crates,
+kind. There are **ten plugin kinds** — plane, dialect, transport, **control**, auth, egress-auth,
+store, secret, hook, export — and one core row, `unit`, which is never loadable. `loader` and `abi` are TCB crates,
 not kinds. "Rate card" below is CONFIG, not a kind: it has no trait, no `Kind` variant and no crate,
 and is listed here only because the pricing surface is read alongside them.
+
+**`control` is the tenth, ruled 2026-09-08**, and the metering is the whole of the split. There are
+two families of served things: DATA PLANES (llm, mcp, a2a, streams), which are metered and follow the
+strict step list of §2.2 in full, never deviating; and CONTROL SURFACES (admin, the OAuth issuer),
+which are not on the metered path and run the lesser workflow `verify → admit → audit → answer`.
+Every kind uses transports, and no kind declares a wire of its own: `http` is declared and registered
+in ONE spot — `busbar-transport-http` — and both families reach it by declaring routes as data for it
+to mount generically. `PLUGIN-TREE.md` §1 is normative for what a control crate CAN and CANNOT do.
 
 | Kind | Closed shape (kernel calls) | Open vocabulary (plugin declares) |
 |---|---|---|
 | Plane | 7 codec, 7 fact, 2 introspection methods; `SessionPlane::open_session` / `open_upstream` — **18 call sites** | `KEY`, `CLAIMS`, `OP_CLASSES`, `METER_CLASSES` (each entry: key, `family`, `direction: Input | Response | CacheRead | CacheWrite | Kernel`, default divisor — the card may price but never re-family; "class family" everywhere means this field), `SESSION_FACTS`, `CONTENT_FACTS`, `RECORD_SCHEMAS`, `INTROSPECTION_VERBS`, `INTERRUPT_FACT`, `EGRESS_PACING_FACT`, `CONFIG_SCHEMA` |
 | Dialect | 4 codec methods over its plane's IR (decode-to-IR, encode-from-IR, decode-response-to-IR, encode-response); pure, no I/O, no clock | `KEY`, `PLANE`, `CLAIMS` (compile-time constants of this crate; the plane's `CLAIMS` is the union of its own and its registered dialects'), `LOCATIONS`, `SCHEME_ALT`, `EGRESS_SCHEME`, `STREAMING_CONTENT_TYPE`, `HEAD_KEYS`, `VERBS`, meter-locator pointers |
 | Transport (in-tree) | `arrival / listen / accept / dial / frames / write / upgrade / close / unit0_refusal` (async, boxed futures) | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD` |
+| Control | the lesser workflow and nothing else — `verify` (through the auth kind) · `admit` · `audit` · `answer`. No Route to an upstream, no egress, no encode-from-facts, no meter: every operation posts zero | `KEY`, its route table as data (the `(method, path) → verb` rows it claims), its own request and response body shapes, the refusal codes it renders, its UI data. It names no money, fee, rate or posting vocabulary; no upstream, pool, failover or breaker vocabulary; no transport, plane, dialect, unit or sibling-control crate; it owns no key material and no process-global state, and serves no route absent from its claim table |
 | Auth (ingress) | `verify(credential, arrival, clock, prior: Option<ChallengeState>) → CredentialFacts | Challenge { bytes, state, rounds_left } | Pass` (`Pass` = abstain, 1.5.5's chain continuation; the migrated `auth.chain` runs through `run_chain_cached` semantics, the credential cache applying to EXTERNAL modules only — the `keys` arm is cache-exempt — PB-35) (the proof of round n arrives with the state of round n−1); `refresh(clock) → KeyMaterial` (Tick-driven) | `KEY`, `LOCATIONS` (arrival forms), issuer config, `IO: bool` |
 | Egress-auth scheme | `decorate(cfg, &EgressBody, signer) → AuthDecoration`; `continue_handshake(state, &Frame, signer) → AuthDecoration` for multi-round schemes (the upstream challenge reaches round 2 here) | `KEY` |
 | Store (kind `store`; native ABI **5**; every 1.5.5 dynamic plugin LOADS through an in-tree ADAPTER per kind at the exact 1.5.5 loader windows (store 2, auth 1–2, hook 1, export 2, secret 1), so a 1.5.5 plugins.yaml boots unchanged — parity clause, no `PluginAbiTooOld` for any 1.5.5 plugin) | `append_batch / replay_batch / reserve / release / heads / heartbeat / elect_checkpoint / claim_key / void_claims / replay_put / replay_get / session_put / session_remove / sessions_for / record_put / record_get / record_scan / legacy_cells_read / legacy_cells_write / legacy_audit_head / backup_watermark / purge_before` | `KEY`, `ABI_FLOOR`, `FLEET_SAFE`, schema versions, measured max sustained record rate |
