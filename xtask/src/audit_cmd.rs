@@ -135,13 +135,20 @@ pub fn main(root: &std::path::Path, args: &[String]) -> i32 {
     }
 }
 
-fn read_scopes(register: &std::path::Path) -> Vec<Json> {
-    // A MISSING REGISTER IS AN EMPTY ONE, and `sync` then reports every derived scope as added —
-    // which is the honest reading, because nothing has been recorded about any of them.
-    audit::load(register)
-        .ok()
-        .and_then(|d| d.get("scopes").as_array().map(<[Json]>::to_vec))
-        .unwrap_or_default()
+/// A MISSING REGISTER IS AN EMPTY ONE, and `sync` then reports every derived scope as added —
+/// which is the honest reading, because nothing has been recorded about any of them.
+///
+/// AND ONLY A MISSING ONE. This used to collapse `Err` to the empty list, and `audit::load` returns
+/// `Err` for two different facts: the file is absent, and the file is there but will not parse. On
+/// the second, `sync` saw no existing scope, counted every derived one as added, merged over
+/// nothing, and `--write` replaced the recorded rounds with a bare list — on exit 0. One flipped
+/// byte or a merge-conflict marker discarded the history the audit programme keeps here. So the
+/// absence is answered and every other failure is a refusal.
+fn read_scopes(register: &std::path::Path) -> Result<Vec<Json>, String> {
+    match audit::load_optional(register)? {
+        Some(doc) => audit::scopes(&doc).map(<[Json]>::to_vec),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn ids(scopes: &[Json]) -> Vec<String> {
@@ -153,7 +160,10 @@ fn ids(scopes: &[Json]) -> Vec<String> {
 
 fn cmd_sync(git: &Git, register: &std::path::Path, write: bool) -> i32 {
     let derived = audit::derive_scopes(git.repo());
-    let existing = read_scopes(register);
+    let existing = match read_scopes(register) {
+        Ok(scopes) => scopes,
+        Err(e) => return die(e),
+    };
     let derived_ids = ids(&derived);
     let existing_ids = ids(&existing);
 

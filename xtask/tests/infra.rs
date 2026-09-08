@@ -1372,3 +1372,69 @@ fn no_deferral_reports_the_unwaived_markers_and_the_stale_waiver_together() {
     assert_eq!(row("no-deferral:waiver-shape").status, Status::Pass);
     assert_eq!(row("no-deferral:discovery-floor").status, Status::Pass);
 }
+
+// ── the audit register ──────────────────────────────────────────────────────────────────────────
+
+/// A REGISTER THAT CANNOT BE READ IS NOT A REGISTER THAT SAYS NOTHING.
+///
+/// `ledger sync` derives the scope list from the tree and MERGES it over what the register already
+/// records, carrying `round`, `result`, `auditor`, `tree_hash`, `counts` and the whole `rounds[]`
+/// history across. If the existing side comes back empty, every derived scope counts as ADDED, the
+/// merge has nothing to carry, and `--write` replaces the committed audit evidence with a bare
+/// scope list — on exit 0, under a line that says `sync: wrote`.
+///
+/// So the two facts that produce an empty existing side must be told apart. A MISSING register is
+/// genuinely an empty one — nothing has been recorded about anything, and reporting every scope as
+/// added is the honest reading. A register that is PRESENT and unreadable is the opposite fact, and
+/// the three shapes below are all of it: bytes that are not JSON at all, JSON that carries no scope
+/// list, and a `scopes` key that is not a list. None may be answered by overwriting the file.
+#[test]
+fn a_register_that_cannot_be_read_is_refused_rather_than_overwritten() {
+    let dir = tmpdir("audit-register");
+    for (tag, bytes) in [
+        ("not-json", "{\"scopes\": [{\"id\": \"crates/x\"},\n"),
+        ("no-scope-list", "{\"version\": 1}\n"),
+        ("scopes-not-a-list", "{\"scopes\": {}}\n"),
+    ] {
+        let reg = dir.join(format!("{tag}.json"));
+        std::fs::write(&reg, bytes).expect("the fixture register writes");
+        let code = xtask::audit_cmd::main(
+            &repo_root(),
+            &[
+                "sync".to_string(),
+                "--ledger".to_string(),
+                reg.display().to_string(),
+                "--write".to_string(),
+            ],
+        );
+        assert_ne!(
+            code, 0,
+            "{tag}: a register this tool cannot read is not a register with nothing in it"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&reg).expect("the register is still there"),
+            bytes,
+            "{tag}: the refusal must happen BEFORE the write — an exit code alone would not catch \
+             a fix that refuses after destroying the history"
+        );
+    }
+}
+
+/// The other half, so the refusal above is not simply "sync never writes any more": a register that
+/// is ABSENT is still an empty one, `sync --write` creates it, and the run succeeds.
+#[test]
+fn a_missing_register_is_still_an_empty_one_and_sync_creates_it() {
+    let dir = tmpdir("audit-register-absent");
+    let reg = dir.join("audit-ledger.json");
+    let code = xtask::audit_cmd::main(
+        &repo_root(),
+        &[
+            "sync".to_string(),
+            "--ledger".to_string(),
+            reg.display().to_string(),
+            "--write".to_string(),
+        ],
+    );
+    assert_eq!(code, 0, "a missing register is the one empty one");
+    assert!(reg.exists(), "and `--write` is what puts it there");
+}
