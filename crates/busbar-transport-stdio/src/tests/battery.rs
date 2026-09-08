@@ -575,6 +575,7 @@ fn program_dest(
                 path: "/bin/sh",
                 args: argv,
                 env,
+                extras: &[],
             },
             lane: busbar_contract::LaneId::new("test"),
         },

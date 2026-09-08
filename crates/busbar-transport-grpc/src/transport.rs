@@ -221,7 +221,14 @@ impl Transport for GrpcTransport {
             // The method the destination names is the `:path` every call this connection opens is
             // dialled against. A destination that names none falls back to this crate's own frame
             // method, which is the only path a byte-blind transport can serve on its own.
-            let method = address.method().unwrap_or(crate::server::RPC_PATH);
+            //
+            // Read as a declared KEY — the same reserved spelling the arrival grammar already uses
+            // for a request method — rather than off an arm of this family's own. A destination
+            // that declares keys for some other family is not this transport's business and it
+            // does not see them.
+            let method = address
+                .extra(busbar_contract_transport::registry::facts::METHOD)
+                .unwrap_or(crate::server::RPC_PATH);
             // The socket is the layer below's, dialled against the address this destination
             // already carries. Re-addressing narrows the sealed destination to what that layer
             // reads; it does not re-seal it, and it cannot widen where the unit may go.
@@ -232,6 +239,7 @@ impl Transport for GrpcTransport {
                     busbar_contract_transport::dest::UpstreamAddress::Socket {
                         authority,
                         sni: address.sni(),
+                        extras: &[],
                     },
                 )
                 .ok_or(TransportError::AddressRefused)?;
