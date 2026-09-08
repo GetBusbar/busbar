@@ -534,7 +534,7 @@ Type index (definitions in `busbar-contract`): `ArrivalRecord { source, port, al
 Option<CertFacts>, transport_chain }` · `Refusal { step, reason (closed code), retry_after, stream:
 Option<StreamId>, correlates: Option<CorrelationRef> }` (client-rendered reasons are opaque codes) ·
 `Unit0Trigger`, `HandshakeTrigger`, `Handoff` · `SelectorForm` · `FinishClass { Complete, TurnComplete,
-Partial, Error }` · `OpClassId`, `AdminVerbId`, `MeterClassId`, `RecordSchemaId`, `TransportId` (a registry id, never key material — `TransportKeyHandle` is the key) ·
+Partial, Error }` · `OpClassId`, `AdminVerbId`, `MeterClassId`, `RecordSchemaId` (a transport is named by the `&'static str` key on `Plugin`; its key material is the opaque `TransportKeyHandle`, and there is no interned id between them) ·
 `PlaneFacts`, `ContentFacts`, `HookFacts { permutation, restrict, veto, rewrite, tap }`, `IrPatch`, `HookView` ·
 `CredentialLocator { narrowing: Option<SchemeAlt>, from_session: bool }` · `CredentialFacts { principal,
 issuer, expiry, session_bindable }` · `Challenge { bytes, state, rounds_left }` · `ScopeFacts
