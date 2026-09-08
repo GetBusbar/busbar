@@ -363,7 +363,7 @@
     "MEDIUM": 1,
     "LOW": 1
    },
-   "report": "findings recorded (MEDIUM: 1, LOW: 1); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "pgo=true in the build-provenance stamp can be faked by setting an env var that no shipping build path sets any more, and the stamp's target-cpu/target-features/lto substrings are spliced in unvalidated despite the file's own no-spaces invariant",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "rounds": [
@@ -377,7 +377,7 @@
       "MEDIUM": 1,
       "LOW": 1
      },
-     "report": "findings recorded (MEDIUM: 1, LOW: 1); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "pgo=true in the build-provenance stamp can be faked by setting an env var that no shipping build path sets any more, and the stamp's target-cpu/target-features/lto substrings are spliced in unvalidated despite the file's own no-spaces invariant"
     }
    ]
   },
@@ -2926,7 +2926,7 @@
    "counts": {
     "LOW": 1
    },
-   "report": "findings recorded (LOW: 1); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "header falsely claims to mirror the store example's config-less posture, but that store parses and acts on a config key that switches its backend to a disk-backed store",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
@@ -2942,7 +2942,7 @@
      "counts": {
       "LOW": 1
      },
-     "report": "findings recorded (LOW: 1); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "header falsely claims to mirror the store example's config-less posture, but that store parses and acts on a config key that switches its backend to a disk-backed store"
     }
    ]
   },
@@ -3017,7 +3017,7 @@
    "counts": {
     "MEDIUM": 2
    },
-   "report": "findings recorded (MEDIUM: 2); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "live unsafe FFI/ABI code (raw pointer derefs, from_raw_parts, extern C-unwind exports) matches none of the plugin-kind gate globs so no forbid-unsafe/manifest/source-denylist row ever runs over it, and the frozen ABI version plus admit kernel are hand-duplicated against the sibling plugin crate with nothing cross-checking the two copies",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
@@ -3033,7 +3033,7 @@
      "counts": {
       "MEDIUM": 2
      },
-     "report": "findings recorded (MEDIUM: 2); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "live unsafe FFI/ABI code (raw pointer derefs, from_raw_parts, extern C-unwind exports) matches none of the plugin-kind gate globs so no forbid-unsafe/manifest/source-denylist row ever runs over it, and the frozen ABI version plus admit kernel are hand-duplicated against the sibling plugin crate with nothing cross-checking the two copies"
     }
    ]
   },
@@ -3050,7 +3050,7 @@
    "counts": {
     "MEDIUM": 2
    },
-   "report": "findings recorded (MEDIUM: 2); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "re-declares the frozen ABI's version literal and admit kernel by hand from the sibling spike crate with nothing cross-checking the two copies, and — like that sibling — touches raw pointers/from_raw_parts across a real dlopen boundary while matching no plugin-kind gate glob, so forbid-unsafe/manifest-allowlist/source-denylist never run against it",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
@@ -3066,7 +3066,7 @@
      "counts": {
       "MEDIUM": 2
      },
-     "report": "findings recorded (MEDIUM: 2); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "re-declares the frozen ABI's version literal and admit kernel by hand from the sibling spike crate with nothing cross-checking the two copies, and — like that sibling — touches raw pointers/from_raw_parts across a real dlopen boundary while matching no plugin-kind gate glob, so forbid-unsafe/manifest-allowlist/source-denylist never run against it"
     }
    ]
   },
@@ -3375,7 +3375,7 @@
     "MEDIUM": 2,
     "NIT": 1
    },
-   "report": "findings recorded (MEDIUM: 2, NIT: 1); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "depends on a sibling instance of its own kind even though the normative spec forbids that absolutely for any kind ('no sibling instance, ever'), which only passes because the gate's manifest allowlist waives it by name; redeem_plane_token makes every plane token except 'ask' infinitely replayable via the trait's default, the opposite of the in-tree store backend's own documented anti-replay stance; and its tests live at a different path than every other crate in the unit uses",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
@@ -3392,7 +3392,7 @@
       "MEDIUM": 2,
       "NIT": 1
      },
-     "report": "findings recorded (MEDIUM: 2, NIT: 1); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "depends on a sibling instance of its own kind even though the normative spec forbids that absolutely for any kind ('no sibling instance, ever'), which only passes because the gate's manifest allowlist waives it by name; redeem_plane_token makes every plane token except 'ask' infinitely replayable via the trait's default, the opposite of the in-tree store backend's own documented anti-replay stance; and its tests live at a different path than every other crate in the unit uses"
     }
    ]
   },
@@ -3409,7 +3409,7 @@
    "counts": {
     "MEDIUM": 1
    },
-   "report": "findings recorded (MEDIUM: 1); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "the map backing the contract's record verbs has no sweep, ticker, TTL or delete verb -- unlike every other map in the file -- so it grows without bound for the life of a long-lived process",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
@@ -3425,7 +3425,7 @@
      "counts": {
       "MEDIUM": 1
      },
-     "report": "findings recorded (MEDIUM: 1); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "the map backing the contract's record verbs has no sweep, ticker, TTL or delete verb -- unlike every other map in the file -- so it grows without bound for the life of a long-lived process"
     }
    ]
   },
@@ -4898,7 +4898,7 @@
    "counts": {
     "MEDIUM": 1
    },
-   "report": "findings recorded (MEDIUM: 1); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "the suite's one fixture drives the admit kernel down the same accept path in every test, so the throttle branch, deny branch, and the over-budget/size/version guards are never exercised -- replacing the kernel's body with a constant accept would still pass",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "rounds": [
@@ -4911,7 +4911,7 @@
      "counts": {
       "MEDIUM": 1
      },
-     "report": "findings recorded (MEDIUM: 1); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "the suite's one fixture drives the admit kernel down the same accept path in every test, so the throttle branch, deny branch, and the over-budget/size/version guards are never exercised -- replacing the kernel's body with a constant accept would still pass"
     }
    ]
   },
@@ -5369,7 +5369,7 @@
     "MEDIUM": 1,
     "LOW": 2
    },
-   "report": "findings recorded (MEDIUM: 1, LOW: 2); round text not captured, unproven -- needs re-audit to recover specifics",
+   "report": "a router example's copy-paste config names a module that does not exist for the in-process shape it claims, when the shipped binary is actually an out-of-process socket server needing different config; its two reference sidecars read peer input with no size cap; and a usage script neither enables strict shell error handling nor checks its cloud CLI's exit status, so a failing query silently reads as empty",
    "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "rounds": [
@@ -5383,7 +5383,7 @@
       "MEDIUM": 1,
       "LOW": 2
      },
-     "report": "findings recorded (MEDIUM: 1, LOW: 2); round text not captured, unproven -- needs re-audit to recover specifics"
+     "report": "a router example's copy-paste config names a module that does not exist for the in-process shape it claims, when the shipped binary is actually an out-of-process socket server needing different config; its two reference sidecars read peer input with no size cap; and a usage script neither enables strict shell error handling nor checks its cloud CLI's exit status, so a failing query silently reads as empty"
     }
    ]
   },
