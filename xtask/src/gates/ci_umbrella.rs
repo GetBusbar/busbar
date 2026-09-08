@@ -34,20 +34,24 @@
 //!    it excused and silently excuses the next one to take the name.
 //! 6. [`ROW_DECL_REASON`] — a declaration carries a reason of at least [`MIN_REASON`] characters.
 //!    An exemption without a reason becomes permanent by accident.
-//! 7. [`ROW_ROW_SHAPE`] — every RESULTS line is `jobkey|tier|${{ needs.<job>.result }}`.
-//! 8. [`ROW_LABEL`] — a RESULTS row's label and the job it reads agree, so the printed name is the
+//! 7. [`ROW_DECL_EXPIRY`] — a `# report-only:` declaration carries `[retires: <ID>]` naming a LIVE
+//!    row in the tracker. A report-only job is waited for and not counted: that is debt, and debt
+//!    names the row that ends it. `# non-gating:` is exempt by marker and the reason is argued at
+//!    [`rule_decl_expiry`] — it is a statement of what a job IS, not a deferral.
+//! 8. [`ROW_ROW_SHAPE`] — every RESULTS line is `jobkey|tier|${{ needs.<job>.result }}`.
+//! 9. [`ROW_LABEL`] — a RESULTS row's label and the job it reads agree, so the printed name is the
 //!    measured one.
-//! 9. [`ROW_REF_JOB`] — a RESULTS row scores a job that exists.
-//! 10. [`ROW_REF_NEEDS`] — a RESULTS row scores a job that is in `needs`. `needs.X.result` for an X
+//! 10. [`ROW_REF_JOB`] — a RESULTS row scores a job that exists.
+//! 11. [`ROW_REF_NEEDS`] — a RESULTS row scores a job that is in `needs`. `needs.X.result` for an X
 //!     that is not a dependency evaluates to the empty string, which is neither "success" nor a
 //!     recognised skip.
-//! 11. [`ROW_TIER`] — TIER IFF FULL-TIER GUARD. A RESULTS row's tier is `full` exactly when the job
+//! 12. [`ROW_TIER`] — TIER IFF FULL-TIER GUARD. A RESULTS row's tier is `full` exactly when the job
 //!     it scores carries the full-tier `if:` guard the umbrella's own `FULL_TIER` expression
 //!     mirrors. The tier column is not a label: the umbrella forgives `skipped` only for a `full`
 //!     row on a fast-tier run. A guarded job labelled `fast` reddens every fast-tier run for doing
 //!     what it was told; an unguarded job labelled `full` has its real skip forgiven, which is the
 //!     required check quietly not requiring it.
-//! 12. [`ROW_JOBS_FLOOR`], 13. [`ROW_NEEDS_FLOOR`], 14. [`ROW_RESULTS_FLOOR`] — THE FLOORS.
+//! 13. [`ROW_JOBS_FLOOR`], 14. [`ROW_NEEDS_FLOOR`], 15. [`ROW_RESULTS_FLOOR`] — THE FLOORS.
 //!     A reader that matched nothing reports a clean file; a `needs` list that shrank is a required
 //!     check that stopped requiring things; an unread ledger scores nothing and prints GREEN. Each
 //!     floor is a `const` here with no environment override, and each is proven to bite ON ITS OWN
@@ -70,6 +74,7 @@ pub const ROW_MEMBERSHIP: &str = "ci-umbrella:membership";
 pub const ROW_SCORED: &str = "ci-umbrella:needs-scored";
 pub const ROW_DECL_LIVE: &str = "ci-umbrella:declaration-names-a-live-job";
 pub const ROW_DECL_REASON: &str = "ci-umbrella:declaration-reason";
+pub const ROW_DECL_EXPIRY: &str = "ci-umbrella:declaration-expiry";
 pub const ROW_ROW_SHAPE: &str = "ci-umbrella:results-row-shape";
 pub const ROW_LABEL: &str = "ci-umbrella:results-label-matches-job";
 pub const ROW_REF_JOB: &str = "ci-umbrella:results-scores-a-real-job";
@@ -149,6 +154,10 @@ impl Gate for CiUmbrellaGate {
         let decls = declarations(&text);
         rows.push(rule_decl_live(&decls, &jobs));
         rows.push(rule_decl_reason(&decls));
+        rows.push(rule_decl_expiry(
+            &decls,
+            cx.read(crate::gates::no_deferral::TRACKER).ok().as_deref(),
+        ));
 
         let non_gating: BTreeSet<String> = decls
             .iter()
@@ -267,6 +276,30 @@ impl Gate for CiUmbrellaGate {
              threshold here);",
             "# non-gating: coverage -- brief",
             &["5-character reason"],
+        ));
+
+        // THE EXPIRY, IN BOTH SHAPES IT CAN BE WRONG: no tag at all, and a tag pointing at a row
+        // the tracker does not carry. The second is the one worth having — a hatch that only
+        // checked for the SHAPE of a retirement id would accept `[retires: SOMEDAY]` and read as
+        // reviewed, which is the same permanent exemption written more convincingly.
+        report.push(plant_subst(
+            cx,
+            self,
+            "a report-only exemption with no retirement tag is permanent by accident",
+            &[ROW_DECL_EXPIRY],
+            "[retires: I4]",
+            "",
+            &["carries no `[retires:"],
+        ));
+
+        report.push(plant_subst(
+            cx,
+            self,
+            "a retirement tag naming a row the tracker does not carry is refused",
+            &[ROW_DECL_EXPIRY],
+            "[retires: I4]",
+            "[retires: ZZ999]",
+            &["ZZ999", "is not a row in"],
         ));
 
         report.push(plant_subst(
@@ -530,6 +563,7 @@ const OWED: &[&str] = &[
     ROW_SCORED,
     ROW_DECL_LIVE,
     ROW_DECL_REASON,
+    ROW_DECL_EXPIRY,
     ROW_ROW_SHAPE,
     ROW_LABEL,
     ROW_REF_JOB,
@@ -825,6 +859,78 @@ fn rule_decl_live(decls: &[Declaration], jobs: &[String]) -> Row {
                  one to take the name",
                 offenders.join(", ")
             ),
+        )
+    }
+}
+
+/// A DEFERRAL EXPIRES; A CLASSIFICATION DOES NOT. The two markers are not two spellings of one
+/// hatch, and the difference decides who owes a retirement date.
+///
+/// `# report-only:` is a job the umbrella WAITS FOR and deliberately does not COUNT. It is a live
+/// exemption from the scored set — debt, with a condition under which it ends — and until now the
+/// only things asked of it were that the job still exists and that the reason is 30 characters. No
+/// expiry, no cross-reference, and the declaration lives in the very file the pull request is
+/// editing. The sibling `no-deferral` gate already holds the stronger line for exactly this shape:
+/// `[retires: <ID>]` naming a row that is LOOKED UP in the tracker, so an exemption cannot outlive
+/// the work it was waiting on without somebody noticing.
+///
+/// `# non-gating:` is the other kind: a job that is not a dependency at all because of what it IS —
+/// `coverage` reports to Codecov, `proof-manifest` publishes a dashboard and by its own contract
+/// changes no gate. Those are permanent statements of kind, not deferrals, and demanding a
+/// retirement id would force somebody to write a date that will never come. A gate that requires a
+/// lie gets one. So the exemption from the expiry rule is BY MARKER, and it is named here rather
+/// than left as an absence.
+///
+/// The tag and the lookup are `no_deferral`'s, not a second copy: one spelling of "what a
+/// retirement tag looks like", resolved against one tracker.
+fn rule_decl_expiry(decls: &[Declaration], tracker: Option<&str>) -> Row {
+    let deferrals: Vec<&Declaration> = decls.iter().filter(|d| d.kind == "report-only").collect();
+    let Some(tracker) = tracker else {
+        return Row::fail(
+            ROW_DECL_EXPIRY,
+            "the tracker could not be read, so no exemption's expiry could be resolved",
+            format!(
+                "{} could not be read. Every `# report-only:` exemption names a row there, and an \
+                 exemption whose expiry cannot be checked is an exemption with no expiry — which \
+                 is the state this rule exists to refuse.",
+                crate::gates::no_deferral::TRACKER
+            ),
+        );
+    };
+    let offenders: Vec<String> = deferrals
+        .iter()
+        .filter_map(|d| match crate::gates::no_deferral::expiry_id(&d.reason) {
+            None => Some(format!(
+                "`# report-only: {}` carries no `[retires: <ID>]`. It is waited for and not \
+                     counted, which is debt; debt names the row that ends it.",
+                d.job
+            )),
+            Some(id) if !crate::gates::no_deferral::tracker_has_row(tracker, &id) => Some(format!(
+                "`# report-only: {}` retires against `{id}`, which is not a row in {}. A \
+                         tag pointing at nothing is the same permanent exemption written more \
+                         convincingly.",
+                d.job,
+                crate::gates::no_deferral::TRACKER
+            )),
+            Some(_) => None,
+        })
+        .collect();
+    if offenders.is_empty() {
+        Row::pass(
+            ROW_DECL_EXPIRY,
+            "every report-only exemption names a live tracker row that retires it",
+            format!(
+                "{} report-only exemption(s), each tagged; {} non-gating declaration(s), which are \
+                 statements of kind and owe no expiry",
+                deferrals.len(),
+                decls.len() - deferrals.len()
+            ),
+        )
+    } else {
+        Row::fail(
+            ROW_DECL_EXPIRY,
+            "a report-only exemption has no expiry, so it is permanent by accident",
+            format!("{} finding(s): {}", offenders.len(), offenders.join(" | ")),
         )
     }
 }
