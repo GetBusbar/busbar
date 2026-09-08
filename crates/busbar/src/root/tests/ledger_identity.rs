@@ -352,8 +352,7 @@ fn a_dropped_posting_names_its_row_and_its_amount() {
     // second posting on it, so the row does not vanish — it comes up SHORT, which is the
     // failure a missed posting actually produces.
     let dropped = 3;
-    let expected_row =
-        RowKey::new(s[dropped].bucket, DAY, s[dropped].lane, s[dropped].provider);
+    let expected_row = RowKey::new(s[dropped].bucket, DAY, s[dropped].lane, s[dropped].provider);
 
     let (whole, legacy, _) = drive(&s, None);
     assert!(
@@ -838,8 +837,7 @@ fn an_instant_no_entry_covers_lands_on_no_row_and_is_listed() {
     let early: Vec<&BookedLine> = lines.iter().filter(|l| l.arrived_ms < MID_MS).collect();
     assert!(!early.is_empty());
 
-    let (ledger, unpriceable) =
-        reprice(&view, CurrencyCode::USD, early.iter().copied(), row_of);
+    let (ledger, unpriceable) = reprice(&view, CurrencyCode::USD, early.iter().copied(), row_of);
     assert_eq!(unpriceable.len(), early.len(), "{unpriceable:?}");
     assert!(unpriceable
         .iter()
