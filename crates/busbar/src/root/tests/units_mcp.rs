@@ -183,43 +183,12 @@ fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
 // four borrowed views and the one resource a plugin call is given. They are built here rather
 // than mocked away, because a decode cell that did not hand the plane a real arena would not be
 // driving the step that can run out of one.
-
-/// A leaking arena. Test-only, run a bounded number of times per process: the trait's
-/// allocators hand back borrowed slices, so an honest double either leaks or is unsafe, and
-/// this crate's tests do not reach for unsafe.
-struct CellArena;
-
-impl busbar_contract::bounded::Arena for CellArena {
-    fn alloc_bytes<'a>(
-        &'a self,
-        src: &[u8],
-    ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
-    {
-        let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
-    }
-
-    fn alloc_str<'a>(
-        &'a self,
-        src: &str,
-    ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, busbar_contract::bounded::Span)],
-    ) -> Result<
-        &'a [(&'a str, busbar_contract::bounded::Span)],
-        busbar_contract::bounded::ArenaBudget,
-    > {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
+//
+// The arena is the KERNEL'S, not a double. The leaking stand-in that used to sit here said in its
+// own doc comment that an honest one either leaks or is unsafe; that was true only while the
+// contract's `Arena` demanded `Sync`, which no bump allocator can be. With the clause gone the
+// shipping arena is a plain value the cell can own, so what the plane is handed in this test is the
+// same 4 KiB with the same fixed ceiling the serving path will hand it.
 
 struct CellConfig;
 
@@ -276,10 +245,12 @@ fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
     use busbar_contract::bounded::{FactValue, Labels};
     use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
+    use busbar_kernel::arena::{ArenaSpace, UnitArena};
     use busbar_plane_mcp::facts as f;
 
     let seal = KernelSeal::acquire_for_kernel();
-    let arena = CellArena;
+    let mut space = ArenaSpace::new();
+    let arena = UnitArena::new(&mut space);
     let config = CellConfig;
     let transport = CellTransport;
     let labels = Labels::new();

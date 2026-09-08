@@ -1988,42 +1988,12 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
 // it from a shape this module chose would be asserting its own answer. These build the four
 // borrowed views and the one resource a plugin call is given, so the plane's own decoder can be
 // handed a real frame.
-
-/// A leaking arena. Test-only, run a bounded number of times per process: the trait's
-/// allocators hand back borrowed slices, so an honest double either leaks or is unsafe.
-struct CellArena;
-
-impl busbar_contract::bounded::Arena for CellArena {
-    fn alloc_bytes<'a>(
-        &'a self,
-        src: &[u8],
-    ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
-    {
-        let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
-    }
-
-    fn alloc_str<'a>(
-        &'a self,
-        src: &str,
-    ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, busbar_contract::bounded::Span)],
-    ) -> Result<
-        &'a [(&'a str, busbar_contract::bounded::Span)],
-        busbar_contract::bounded::ArenaBudget,
-    > {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
+//
+// The arena is the KERNEL'S, not a double. The leaking stand-in that used to sit here said in its
+// own doc comment that an honest one either leaks or is unsafe; that was true only while the
+// contract's `Arena` demanded `Sync`, which no bump allocator can be. With the clause gone the
+// shipping arena is a plain value the cell can own, so what the plane is handed in this test is the
+// same 4 KiB with the same fixed ceiling the serving path will hand it.
 
 struct CellConfig;
 
@@ -2085,10 +2055,12 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
     use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
+    use busbar_kernel::arena::{ArenaSpace, UnitArena};
     use busbar_plane_voice::session::VoiceSessionState;
 
     let seal = KernelSeal::acquire_for_kernel();
-    let arena = CellArena;
+    let mut space = ArenaSpace::new();
+    let arena = UnitArena::new(&mut space);
     let config = CellConfig;
     let transport = CellTransport;
     let labels = Labels::new();
