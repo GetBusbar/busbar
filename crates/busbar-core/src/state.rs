@@ -5,17 +5,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub use crate::store::now;
-pub(crate) use crate::store::LaneRuntime;
+// R5-store: `LaneRuntime` is named from its defining crate. It relocated to
+// `busbar_substrate::store` with the rest of the lane-runtime seam; the `crate::state::LaneRuntime`
+// spelling had no reader anywhere — `state.rs` itself was the only one — so the shim is deleted, not
+// repointed.
+use busbar_substrate::store::LaneRuntime;
 
 // ── DATA-PLANE TOPOLOGY + the sharded upstream client — RELOCATED to `busbar-substrate::topology`
 // (1.6.0 App-retype WEDGE 3-PREP) so the plane crates reach the neutral worker-count / worker-id
-// process facts and the per-worker-sharded upstream client without naming `busbar-core`. Re-exported
-// here at their historical `busbar_core::state::…` paths so every in-core call site — the
-// composition root's boot publish (`set_data_workers`/`set_worker_id`), the store-striping readers
-// (`worker_stripes`/`worker_stripe`), `appbuild`/`engine_facade`'s `UpstreamClients` — is unchanged.
-// The two worker accessors kept `pub(crate)` here (they were `pub(crate)` before the move); the rest
-// keep their prior `pub` visibility.
-pub use busbar_substrate::topology::{set_data_workers, set_worker_id, UpstreamClients};
+// process facts and the per-worker-sharded upstream client without naming `busbar-core`. The
+// store-striping readers (`worker_stripes`/`worker_stripe`) still resolve their historical
+// `crate::state::…` path and keep the `pub(crate)` visibility they had before the move.
+//
+// R5-store: `set_data_workers`, `set_worker_id` and `UpstreamClients` are no longer re-exported.
+// D33 wave 0 cut 2 already retargeted the composition root's boot publish onto
+// `busbar_substrate::topology::…`, which left the three `busbar_core::state::…` spellings with no
+// caller at all bar one `engine_facade` re-export line, itself repointed here. Nothing outside core
+// names them.
 pub(crate) use busbar_substrate::topology::{worker_stripe, worker_stripes};
 
 /// The subset of resolved limits that FEEDS the upstream reqwest client build — every setting
@@ -1033,8 +1039,10 @@ where
 }
 
 // ── DETACHED-WORK DRAIN — RELOCATED to `busbar-substrate::detached` so the plane crates (which
-// deliberately never link busbar-core) reach the same seam. Re-exported here for core callers
-// and the composition root.
-pub use busbar_substrate::detached::{
-    set_worker_detached, set_worker_shutdown, spawn_detached, DetachedTasks, DETACHED_DRAIN_GRACE,
-};
+// deliberately never link busbar-core) reach the same seam.
+//
+// R5-store: the whole `crate::state::…` re-export block is DELETED. D33 wave 0 cut 2 retargeted the
+// composition root onto `busbar_substrate::detached::…`, after which four of the five names
+// (`set_worker_detached`, `set_worker_shutdown`, `DetachedTasks`, `DETACHED_DRAIN_GRACE`) had no
+// caller left anywhere, and the fifth (`spawn_detached`) had exactly one — `export/webhook.rs` —
+// which now names the substrate directly.
