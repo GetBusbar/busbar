@@ -30,7 +30,7 @@ use std::sync::Arc;
 use busbar_substrate::admin_verbs::{
     registered, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError,
 };
-use busbar_substrate::api::NamedDefView;
+use busbar_substrate::api::PlaneNamedDefView;
 
 /// Project one `tools:` entry — one registered MCP server — onto the shared named-definition view.
 ///
@@ -47,7 +47,7 @@ use busbar_substrate::api::NamedDefView;
 pub(crate) fn mcp_server_view(
     name: &str,
     cfg: &crate::mcp::config::McpServerDefCfg,
-) -> NamedDefView {
+) -> PlaneNamedDefView {
     let mut keys: Vec<String> = cfg
         .tools_allow
         .keys()
@@ -57,13 +57,10 @@ pub(crate) fn mcp_server_view(
         .collect();
     keys.sort();
     keys.dedup();
-    NamedDefView {
+    PlaneNamedDefView {
         name: name.to_string(),
-        module: cfg.pin.mechanism.token().to_string(),
+        module: Some(cfg.pin.mechanism.token().to_string()),
         settings_keys: keys,
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
         // THE A2A PLANE'S TRUST COLUMNS, absent here rather than filled in, and that is a merge
         // decision rather than an omission. `agents:` added `pin_mechanism`/`fingerprint_pinned`/
         // `reverify_ttl` to this shared view; this projection predates them and already answers the
@@ -80,7 +77,7 @@ pub(crate) fn mcp_server_view(
 
 /// Every registered MCP server, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/tools`.
-pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<PlaneNamedDefView> {
     super::runtime_slots(slots)
         .servers
         .servers
@@ -93,7 +90,7 @@ pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<
 pub(crate) fn get(
     slots: &dyn busbar_substrate::plane_host::PlaneSlots,
     name: &str,
-) -> Option<NamedDefView> {
+) -> Option<PlaneNamedDefView> {
     super::runtime_slots(slots)
         .servers
         .servers

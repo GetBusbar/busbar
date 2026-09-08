@@ -7,7 +7,7 @@
 //! counterpart is `crate::mcp::admin_view`; the seam that reaches both is
 //! [`busbar_substrate::plane::registry::PlaneDecl::named_def_list`] / `named_def_get`.
 
-use busbar_substrate::api::NamedDefView;
+use busbar_substrate::api::PlaneNamedDefView;
 
 /// Project one `agents:` DEFINITION onto the shared named-map view.
 ///
@@ -16,14 +16,13 @@ use busbar_substrate::api::NamedDefView;
 /// rewrite-through-busbar posture exists to keep on the server side. What IS projected is what an
 /// operator auditing trust needs and cannot get anywhere else: which root the entry is pinned to,
 /// whether a fingerprint has been approved yet, and how often it is re-checked.
-fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDefView {
-    NamedDefView {
+fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> PlaneNamedDefView {
+    PlaneNamedDefView {
         name: name.to_string(),
-        module: String::new(),
+        // An agent registration names no module, and this view OMITS the key rather than
+        // sending `""` — the empty string would assert a fact that does not exist.
+        module: None,
         settings_keys: Vec::new(),
-        max_admin_scope: None,
-        token_configured: None,
-        browser_login_configured: None,
         pin_mechanism: Some(
             serde_json::to_value(cfg.pin.mechanism)
                 .ok()
@@ -42,7 +41,7 @@ fn agent_def_view(name: &str, cfg: &crate::a2a::config::AgentDefCfg) -> NamedDef
 
 /// Every registered agent, as the shared named-definition view. The read half of
 /// `GET /api/v1/admin/agents`.
-pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<NamedDefView> {
+pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<PlaneNamedDefView> {
     // Read the operator's `agents:` definitions off the plane's OWN runtime object through the
     // neutral `plane_slots` seam (`runtime_off_slots` → `agent_defs()`), the byte-analog of MCP's
     // `runtime_slots(slots).servers.servers` — no `slots.as_any().downcast::<App>()`. The a2a slot
@@ -64,7 +63,7 @@ pub(crate) fn list(slots: &dyn busbar_substrate::plane_host::PlaneSlots) -> Vec<
 pub(crate) fn get(
     slots: &dyn busbar_substrate::plane_host::PlaneSlots,
     name: &str,
-) -> Option<NamedDefView> {
+) -> Option<PlaneNamedDefView> {
     // Off the plane's own slot through the neutral seam — `None` (plane absent) and a missing name
     // both answer `None`, byte-identical to the old empty-map lookup.
     crate::a2a::runtime_off_slots(slots)

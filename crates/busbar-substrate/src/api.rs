@@ -34,15 +34,24 @@ pub fn ap(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
 }
 
-/// ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD
-/// (`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and
-/// `tools:`/`agents:` when they land).
+/// ONE definition of ONE 1.5.3 PLUGIN-INSTANCE named-DEFINITION map: the read shape of the generic
+/// named-map CRUD for the two sections that shipped in 1.5.5 —
+/// `GET /api/v1/admin/identity-providers[/{name}]` and `GET /api/v1/admin/export[/{name}]`.
 ///
-/// Deliberately ONE view for every section rather than one per kind: the sections share the frozen
-/// `{module, settings}` spine and differ only by optional kind-specific fields, which are
-/// `skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly
-/// `{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,
-/// and a new section adds fields here (additive) instead of a parallel view + a parallel handler.
+/// ONE view for both rather than one per kind: they share the frozen `{module, settings}` spine and
+/// differ only by optional kind-specific fields, which are `skip_serializing_if`-omitted for the
+/// section that has none. So `/export` serves exactly `{name, module, settings_keys}` while
+/// `/identity-providers` additionally carries its ceiling.
+///
+/// THIS TYPE IS FROZEN TO ITS 1.5.5 SHAPE and is not the place a new section adds a field. PB-75
+/// binds the served `openapi.json` to 1.5.5 byte-for-byte except for additive endpoints, and this
+/// schema is referenced by twelve operations that all shipped in 1.5.5. 1.6.0 briefly widened it to
+/// cover the two NEW plane sections (`tools:`, `agents:`) as well, and that cost real contract
+/// ground: `agents:` entries name no plugin, so `module` acquired a `skip_serializing_if` and
+/// schemars duly dropped it from `required` — narrowing the contract for `/export` and
+/// `/identity-providers`, whose bodies had never once omitted it. A section whose entries are not
+/// plugin instances belongs on [`PlaneNamedDefView`] instead; the two schemas are separate precisely
+/// so neither can drag the other's guarantees down.
 ///
 /// SECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,
 /// which is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET
@@ -59,12 +68,12 @@ pub struct NamedDefView {
     pub name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
     ///
-    /// OMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today
-    /// `agents:`, whose entries describe endpoints somebody else runs
-    /// (`NamedMapSection::requires_module`).
-    /// Every section that HAS a module requires it to be non-empty, so this can never be omitted
-    /// for one that does.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    /// ALWAYS SERIALIZED, and therefore always in the schema's `required` list — the 1.5.5
+    /// guarantee, restored. Both sections this view serves demand a non-empty `module:` on every
+    /// write path (`NamedMapSection::requires_module`), so the only way to reach an empty one is an
+    /// `unparseable` overlay entry whose raw document had no `module` key; that case emits
+    /// `"module":""`, exactly as 1.5.5 did, rather than dropping the key. A section whose entries
+    /// legitimately have no module is not modelled here at all — see [`PlaneNamedDefView`].
     pub module: String,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
@@ -87,6 +96,49 @@ pub struct NamedDefView {
     /// puts a button on the hosted login page.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub browser_login_configured: Option<bool>,
+    /// Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
+    /// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
+    /// overlay); the value is the parse error. Such an entry is dropped at every rebuild, so it is
+    /// NOT live: `module`/`settings_keys` are the raw stored document's best-effort projection, not
+    /// a resolved definition. Present so the drop is DISCOVERABLE here rather than only in a boot
+    /// log line. Absent (and omitted from the body) for every live definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unparseable: Option<String>,
+}
+
+/// The read shape of a PLANE named-definition map: the 1.6.0-NEW sections
+/// (`GET /api/v1/admin/tools[/{name}]`, `GET /api/v1/admin/agents[/{name}]`), whose entries describe
+/// a REMOTE ENDPOINT somebody else runs rather than a plugin instance this node loads.
+///
+/// A separate type from [`NamedDefView`] because the two answer different questions and carry
+/// different guarantees, and collapsing them cost the older one its contract. The distinction is
+/// already a first-class property of the section table — `NamedMapSection::requires_module()` is
+/// `false` for exactly the `Plane(_)` sections — so this type is that predicate's wire counterpart:
+/// the sections that need no `module:` are the sections that serve THIS view. That keeps
+/// `NamedDefView` frozen at its 1.5.5 shape (PB-75) while these paths, which no 1.5.5 client has
+/// ever seen, stay free to grow: a new plane field lands here and is additive by construction.
+///
+/// The secret rule is unchanged and unconditional: a credential REFERENCE collapses to a boolean
+/// and a `settings:` bag to its KEY NAMES, on this view exactly as on the other one.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+pub struct PlaneNamedDefView {
+    /// The registration NAME: the map key, and the token every reference site uses.
+    pub name: String,
+    /// What is behind this entry, when the plane has a single word for it — OMITTED, not
+    /// empty-stringed, when it does not.
+    ///
+    /// `agents:` omits it: an agent registration names no module, and an empty string would be a
+    /// blank column asserting a fact that does not exist. `tools:` fills it with the authenticity
+    /// root the server is bound to (`McpPinMechanism::token`), because for a remote endpoint that
+    /// IS "what is behind this entry", and an operator scanning the list needs to spot an
+    /// `unpinned` registration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
+    /// The KEY NAMES of this registration's opaque bag, sorted, WITHOUT their values — for `tools:`
+    /// the APPROVED CAPABILITY NAMES. Names only, never their hashes or schemas: this surface is
+    /// reachable at READ-ONLY admin scope, the same rule [`NamedDefView::settings_keys`] follows.
+    pub settings_keys: Vec<String>,
     /// `agents` ONLY: which authenticity root this registration is pinned to (`jws_issuer_key` |
     /// `cert_spki` | `mtls` | `unpinned`). Projected because an operator scanning a registration
     /// list needs to SEE which entries have no root; a mechanism that could only be discovered by
@@ -103,14 +155,63 @@ pub struct NamedDefView {
     /// never client-visible.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reverify_ttl: Option<String>,
-    /// Set ONLY on an entry that is STORED in the config overlay but could NOT be parsed into this
-    /// section's typed config by this binary (a downgrade whose struct lost a field, a hand-edited
-    /// overlay); the value is the parse error. Such an entry is dropped at every rebuild, so it is
-    /// NOT live: `module`/`settings_keys` are the raw stored document's best-effort projection, not
-    /// a resolved definition. Present so the drop is DISCOVERABLE here rather than only in a boot
-    /// log line. Absent (and omitted from the body) for every live definition.
+    /// Set ONLY on an entry STORED in the config overlay that this binary could NOT parse; the
+    /// value is the parse error. The plane twin of [`NamedDefView::unparseable`], and it carries
+    /// the same warning: such an entry is dropped at every rebuild, so `module`/`settings_keys` are
+    /// the raw stored document's best-effort projection, not a resolved registration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unparseable: Option<String>,
+}
+
+/// EITHER named-definition read view, for the ONE generic handler that serves every section.
+///
+/// The wire shape is the inner view and nothing else (`#[serde(untagged)]` serializes the variant's
+/// contents directly, adding no discriminant), so this type costs zero bytes and exists purely to
+/// let `list_named_defs`/`get_named_def` keep a single return type across sections whose SCHEMAS
+/// differ. Which schema a path documents is decided where the section table is walked, on
+/// `NamedMapSection::requires_module()` — the same predicate that decides which variant is built —
+/// so the doc and the body cannot disagree about a section.
+///
+/// Deliberately NOT the type the OpenAPI document references: a `oneOf` of the two views would tell
+/// a 1.5.5 client that `/export` might answer either shape, which is false and is the very
+/// weakening splitting the views exists to undo. Each path `$ref`s the one view it can actually
+/// serve.
+// The `JsonSchema` derive exists only to satisfy the bound on the one wrapper that FLATTENS this
+// type (`json::named_map::MutatedDefView`, the upsert response). It contributes NOTHING to the
+// served document: nothing calls `subschema_for` on either type, and the mutation responses are
+// documented through the concrete per-section view above. Asserted, not assumed — the openapi
+// golden test's companion checks neither name appears in `components/schemas`.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub enum AnyNamedDefView {
+    /// A PLUGIN-INSTANCE section's definition (`identity-providers`, `export`) — the 1.5.5 shape.
+    Instance(NamedDefView),
+    /// A PLANE section's registration (`tools`, `agents`) — the 1.6.0-new shape.
+    Plane(PlaneNamedDefView),
+}
+
+impl AnyNamedDefView {
+    /// The definition's NAME, whichever view carries it. The generic handler sorts and de-duplicates
+    /// on this without caring which section it is serving.
+    pub fn name(&self) -> &str {
+        match self {
+            AnyNamedDefView::Instance(v) => &v.name,
+            AnyNamedDefView::Plane(v) => &v.name,
+        }
+    }
+}
+
+impl From<NamedDefView> for AnyNamedDefView {
+    fn from(v: NamedDefView) -> Self {
+        AnyNamedDefView::Instance(v)
+    }
+}
+
+impl From<PlaneNamedDefView> for AnyNamedDefView {
+    fn from(v: PlaneNamedDefView) -> Self {
+        AnyNamedDefView::Plane(v)
+    }
 }
 
 /// Attach a `$ref` schema onto `<abs_path>.<method>.responses.<status>.content` — the module-level
