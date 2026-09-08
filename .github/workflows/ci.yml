@@ -238,6 +238,15 @@ jobs:
         run: cargo xtask gate workspace-deps --selftest
       - name: Workspace-deps lint
         run: cargo xtask gate workspace-deps
+      # THE GATE SET ITSELF, checked against this file. Every step above runs ONE gate; nothing
+      # asked whether the set of steps still covers the set of registered gates. That question lives
+      # in `full-gate --selftest` — the registry-vs-ci.yml set equality, both directions, plus the
+      # written excuse of every gate deliberately not run here, each now checked against the tree
+      # rather than taken as prose. It ran in no workflow, no CARGO_LOCAL entry and no test, which
+      # means a gate could be deleted from this file with everything green. It reads text and runs
+      # nothing, so it costs a second.
+      - name: Gate registry vs this workflow
+        run: cargo xtask full-gate --selftest
       # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
       # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
       # promoted commit's. That has already cost a silent green: measured on qa c736177 the

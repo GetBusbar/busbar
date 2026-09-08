@@ -152,6 +152,7 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate structure-lint",
     "cargo xtask gate workspace-deps --selftest",
     "cargo xtask gate workspace-deps",
+    "cargo xtask full-gate --selftest",
     "cargo xtask gate release-order --format=tsv",
     "cargo xtask teller-steps --root-legs",
 ];
