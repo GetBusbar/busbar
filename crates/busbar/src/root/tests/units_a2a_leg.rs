@@ -115,10 +115,17 @@ fn all_sources(kernel: &Kernel) -> A2aLegSources<'_> {
             .expect("a memory-buffered journal cannot fail to open"),
         ))),
         key_scopes: None,
+        expected_aud: Some(THIS_NODES_AUDIENCE.to_string()),
         priced: false,
         has_key: false,
     }
 }
+
+/// The RFC 8707 canonical URI a token has to name to be spendable on this node's A2A mount.
+///
+/// The shape the rig's own boundary proof reads back off the served protected-resource metadata:
+/// `<public_url>/a2a`, and never a name this test invented for the plane.
+const THIS_NODES_AUDIENCE: &str = "http://127.0.0.1:8080/a2a";
 
 /// A breaker that benches nothing, so a cell about assembly is not also a cell about readiness.
 struct EveryLaneOpen;
@@ -187,6 +194,32 @@ fn a_binding_with_no_source_refuses_boot_naming_the_field() {
     refuses!("meter_policy", meter_policy);
     refuses!("scope_policy", scope_policy);
     refuses!("durability", durability);
+    // And the one that is not a binding but a fact the leg reads off every arrival. It refuses for
+    // the same reason and is the sharpest case of it: a leg with no audience reads a bearer without
+    // checking what it was minted FOR, which admits every token this node's own signing key ever
+    // issued for any surface — and boots clean, because an absent audience refuses nothing.
+    refuses!("expected_aud", expected_aud);
+}
+
+/// **The audience's refusal quotes the decode table, the same way a binding's quotes the bindings'.**
+#[test]
+fn the_audience_has_a_written_down_source_of_its_own() {
+    let kernel = a_kernel();
+    let mut sources = all_sources(&kernel);
+    sources.expected_aud = None;
+    let refusal = A2aLeg::assemble(sources).expect_err("the audience has no source");
+    let row = DECODE_SOURCES
+        .iter()
+        .find(|(name, _)| *name == "expected_aud")
+        .expect("the decode table has a row for it");
+    assert_eq!(
+        refusal.source, row.1,
+        "the refusal's words are the decode table's own row"
+    );
+    assert!(
+        row.1.contains("/a2a"),
+        "and the row names the canonical URI the boundary is drawn at"
+    );
 }
 
 /// **And a complete set assembles.**
@@ -687,6 +720,246 @@ fn admit_with_no_chain(
     decision.into_result(&seal).err().map(|r| r.reason())
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE AUDIENCE BOUNDARY, AT THE LEG
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// A token this node's own signing key minted, and the audience it was minted FOR.
+///
+/// Three of them, because three is what the boundary is drawn between: one bound to this mount, one
+/// bound to nothing at all — the ORDINARY data-plane token every deployment already issues — and one
+/// bound to a different resource. The second is the dangerous one and the reason the cells below
+/// exist: it is not a forgery, it is a credential this node minted and honours elsewhere.
+fn audience_carried_by(credential: &str) -> Option<Option<&'static str>> {
+    match credential {
+        "bound-to-this-mount" => Some(Some(THIS_NODES_AUDIENCE)),
+        "bound-to-nothing" => Some(None),
+        "bound-elsewhere" => Some(Some("https://example.invalid/mcp")),
+        _ => None,
+    }
+}
+
+/// A key directory that enforces the plane boundary the way the node's real verifier does.
+///
+/// The match is `busbar_substrate::governance::signing::SigningKey::verify`'s own, arm for arm: a
+/// plain token is admissible where nothing is expected, a bound token exactly where its audience is
+/// expected, and nothing else falls through. Mirroring it rather than simplifying it is what makes
+/// these cells about the leg — a double that just compared `expected_aud` to a constant would go
+/// green for a leg that supplied no audience at all, because "no audience" would simply never match.
+struct TheNodesOwnBoundary;
+
+impl crate::root::kernel::auth_bindings::VirtualKeyDirectory for TheNodesOwnBoundary {
+    fn verify(
+        &self,
+        credential: &str,
+        _now: u64,
+        expected_aud: Option<&str>,
+    ) -> Option<crate::root::kernel::auth_bindings::KeyFacts> {
+        let carried = audience_carried_by(credential)?;
+        let admissible = match (expected_aud, carried) {
+            (None, None) => true,
+            (Some(expected), Some(aud)) => expected == aud,
+            _ => false,
+        };
+        admissible.then(|| crate::root::kernel::auth_bindings::KeyFacts {
+            id: "key-a2a-1".to_string(),
+            name: "an approved key".to_string(),
+        })
+    }
+
+    fn revoked(&self, _credential: &str) -> bool {
+        false
+    }
+}
+
+/// A leg whose door is shut to everything but a token minted for THIS node's mount.
+fn a_leg_that_checks_the_audience(kernel: &Kernel) -> A2aLeg {
+    let mut sources = all_sources(kernel);
+    // The signed-key arm and no boxed module: the door stays shut, and the arm is the one thing
+    // that can open it — which is what makes these cells about the audience rather than about a
+    // chain that would have admitted anyone.
+    sources.auth = Some(Auth::new(busbar_unit_auth::AuthChain::new(
+        Vec::new(),
+        true,
+    )));
+    sources.auth_bindings = Some(AuthBindings::new(Arc::new(TheNodesOwnBoundary)));
+    A2aLeg::assemble(sources).expect("every source is present")
+}
+
+/// **A bearer minted for another audience is refused at the door, and NEVER reaches the surface.**
+///
+/// RED FIRST, and the red is the whole reason the audience is a boot source rather than an option.
+/// Before this cut the leg's decode answered `expected_aud: None` for every arrival — so the chain
+/// was asked "is this token any good" without ever being told what it had to have been minted FOR,
+/// and every token this node's own signing key had ever issued, for any surface, opened this one.
+/// The rig's boundary proof is exactly this probe and it would have gone green on that leg, because
+/// nothing on the serving path read the credential at all.
+///
+/// THE COUNT IS THE INSTRUMENT. A refusal whose bytes look right but whose surface already ran is an
+/// operation executed for a caller the door said no to, and no assertion on the answer can tell the
+/// two apart.
+#[test]
+fn a_bearer_minted_for_another_audience_never_reaches_the_surface() {
+    let kernel = a_kernel();
+    let leg = a_leg_that_checks_the_audience(&kernel);
+    let surface = CountingSurface::default();
+
+    let (ended, answer) = serve_presenting(
+        &leg,
+        &kernel,
+        br#"{"jsonrpc":"2.0","id":1,"method":"tasks/list"}"#,
+        // The same bytes the node would accept, presented under an expectation this node does not
+        // hold: the directory above mints only for `THIS_NODES_AUDIENCE`.
+        Some("Bearer bound-to-nothing"),
+        Some(&surface),
+    );
+
+    assert_eq!(
+        refused_at(&ended),
+        Some(busbar_caps::StepName::Authenticate),
+        "a token this node's audience does not cover is refused at the step that reads it"
+    );
+    assert_eq!(
+        surface.asked(),
+        0,
+        "and the surface was never asked, so nothing was executed for it"
+    );
+    assert!(
+        answer.is_none(),
+        "so there is no answer to carry out and the mount renders the loop's own refusal"
+    );
+}
+
+/// **And the token minted FOR this mount is admitted, and does reach it.**
+///
+/// The other half, and the half that makes the cell above a boundary rather than a door shut to
+/// everything: a leg that refused every credential would pass the counterfactual and serve nobody.
+/// The audience the token carries is the one this node publishes, so it is spent here.
+#[test]
+fn a_bearer_minted_for_this_mount_is_admitted_and_reaches_the_surface() {
+    let kernel = a_kernel();
+    let leg = a_leg_that_checks_the_audience(&kernel);
+    let surface = CountingSurface::default();
+
+    let (_ended, answer) = serve_presenting(
+        &leg,
+        &kernel,
+        br#"{"jsonrpc":"2.0","id":1,"method":"tasks/list"}"#,
+        Some("Bearer bound-to-this-mount"),
+        Some(&surface),
+    );
+
+    assert_eq!(
+        surface.asked(),
+        1,
+        "the credential named this node's own mount, so the unit walked through to the seam"
+    );
+    assert_eq!(
+        answer.map(|a| a.status),
+        Some(SURFACE_STATUS),
+        "and what came back is the surface's answer"
+    );
+}
+
+/// **The scheme word is stripped once, and only for a carrier the PLANE declared.**
+///
+/// Two properties in one cell because they are one decision. The chain is handed the secret and not
+/// the carrier's spelling of it — a directory comparing against `Bearer a-real-token` would never
+/// match — and the carrier is matched against the alternatives the plane's own claims declare rather
+/// than against a literal here, case-insensitively, because `bearer` is a case-insensitive token on
+/// the wire.
+#[test]
+fn the_carrier_is_the_planes_own_and_the_secret_reaches_the_chain_bare() {
+    let kernel = a_kernel();
+    let leg = a_leg_that_checks_the_audience(&kernel);
+
+    for presented in ["Bearer bound-to-this-mount", "bearer bound-to-this-mount"] {
+        let surface = CountingSurface::default();
+        let _ = serve_presenting(
+            &leg,
+            &kernel,
+            br#"{"jsonrpc":"2.0","id":1,"method":"tasks/list"}"#,
+            Some(presented),
+            Some(&surface),
+        );
+        assert_eq!(
+            surface.asked(),
+            1,
+            "`{presented}` carries the same secret as every other spelling of the same carrier"
+        );
+    }
+
+    // And a carrier the plane never declared narrows to nothing. Narrowing to nothing inside a
+    // non-empty declared set is a refusal, which is the fail-closed answer: a node that quietly
+    // accepted an undeclared scheme would be honouring a credential nobody wrote down.
+    let surface = CountingSurface::default();
+    let (ended, _) = serve_presenting(
+        &leg,
+        &kernel,
+        br#"{"jsonrpc":"2.0","id":1,"method":"tasks/list"}"#,
+        Some("Basic bound-to-this-mount"),
+        Some(&surface),
+    );
+    assert_eq!(
+        refused_at(&ended),
+        Some(busbar_caps::StepName::Authenticate),
+        "a carrier this plane's claims do not declare does not open it"
+    );
+    assert_eq!(surface.asked(), 0, "and nothing was executed for it");
+}
+
+/// **The alternatives the leg narrows within are the plane's own, not a copy.**
+///
+/// Read off `claims::CLAIMS` rather than restated, so a claim that gained an alternative gains it
+/// here too. A literal in the root would be a second declaration of what this protocol accepts, and
+/// the one that drifts is the one nobody re-derived.
+#[test]
+fn the_declared_alternatives_are_read_off_the_planes_claims() {
+    let from_the_plane: Vec<&str> = busbar_plane_a2a::claims::CLAIMS
+        .iter()
+        .flat_map(|claim| claim.scheme_alternatives.iter().copied())
+        .collect();
+    assert!(
+        !from_the_plane.is_empty(),
+        "this plane declares credentialed claims, or there is no boundary to draw"
+    );
+    for alt in declared_schemes() {
+        assert!(
+            from_the_plane.contains(alt),
+            "`{alt}` is narrowed to by the leg and declared by no claim of this plane"
+        );
+    }
+    for alt in &from_the_plane {
+        assert!(
+            declared_schemes().contains(alt),
+            "the plane declares `{alt}` and the leg would refuse a caller that presented it"
+        );
+    }
+}
+
+/// **An arrival that presented nothing still presents nothing.**
+///
+/// The three open surfaces of this protocol carry no credential by design, and the anonymous posture
+/// has to stay reachable: a leg that invented an empty bearer would be telling the chain a credential
+/// was presented and is blank, which is a different — and worse — statement than "none arrived".
+#[test]
+fn an_arrival_with_no_credential_fact_presents_none() {
+    let kernel = a_kernel();
+    let leg = A2aLeg::assemble(all_sources(&kernel)).expect("every source is present");
+    let surface = CountingSurface::default();
+    // The permissive fixture chain is open, so this walks exactly as it did before the credential
+    // fact existed — which is the byte-identity this cut rests on for an arrival that carries none.
+    let (_ended, answer) = serve_presenting(
+        &leg,
+        &kernel,
+        br#"{"jsonrpc":"2.0","id":1,"method":"tasks/list"}"#,
+        None,
+        Some(&surface),
+    );
+    assert_eq!(surface.asked(), 1, "an anonymous caller is still served");
+    assert!(answer.is_some(), "and its answer still comes back out");
+}
+
 /// The bytes the loop's ending carries on its frame, where it carries one.
 fn frame_bytes(ended: &Ended) -> Option<Vec<u8>> {
     match ended {
@@ -702,11 +975,29 @@ fn serve_one(
     body: &[u8],
     dispatch: Option<&dyn crate::root::units_a2a::A2aDispatch>,
 ) -> (Ended, Option<crate::root::units_a2a::A2aAnswer>) {
-    let facts: [(&str, &str); 3] = [
+    serve_presenting(leg, kernel, body, None, dispatch)
+}
+
+/// The same walk, for an arrival that PRESENTED something.
+///
+/// The credential travels as the transport's own reserved fact and WHOLE — the scheme word included
+/// — because that is what a mounted arrival publishes. A helper that handed the leg a bare token
+/// would be testing a strip this leg would then never have to do.
+fn serve_presenting(
+    leg: &A2aLeg,
+    kernel: &Kernel,
+    body: &[u8],
+    credential: Option<&str>,
+    dispatch: Option<&dyn crate::root::units_a2a::A2aDispatch>,
+) -> (Ended, Option<crate::root::units_a2a::A2aAnswer>) {
+    let mut facts: Vec<(&str, &str)> = vec![
         ("path", "/a2a"),
         ("method", "POST"),
         ("peer", "127.0.0.1:1"),
     ];
+    if let Some(credential) = credential {
+        facts.push((busbar_contract::transport::facts::CREDENTIAL, credential));
+    }
     let chain: [&'static str; 2] = ["tcp", "http"];
     let arrival = busbar_contract::transport::Arrival {
         facts: &facts,
