@@ -291,6 +291,25 @@ pub(crate) async fn push_notification(
             "this endpoint is addressed by the push token busbar registered with the agent",
         );
     };
+    // ── THE DEADLINE IS ENFORCED ON PRESENT, NOT ONLY ON SUBMIT. ────────────────────────────────
+    //
+    // `token_live` below retires a token when its task ends, and `taskstore`'s retention sweep is
+    // what ends a task nobody has touched for `ACTIVE_TASK_ABANDON_SECS` — it moves it to
+    // `canceled`, which is terminal. Those two facts were supposed to compose into a bound on the
+    // token's lifetime, and they did not, because the sweep ran ONLY as a side effect of a new
+    // submission. A deployment that stops submitting stops enforcing the bound: the silent task
+    // never ages out, and the capability that names it stays live for as long as the process does.
+    // The documented deadline was a deadline only on a busy node.
+    //
+    // So the sweep is run HERE, at the one moment that matters — a token being offered — and the
+    // check that reads its result is the next thing that happens. `sweep_now` claims the work once
+    // per second, so a backend pushing hard pays an atomic load and nothing else, and the clock is
+    // the same wall clock the sweep's bounds are written in.
+    //
+    // AFTER the MAC, deliberately. The token has already been proven to have been minted by this
+    // process, so this is not a scan an anonymous caller can drive.
+    crate::taskstore::TASKS.sweep_now(busbar_substrate::store::now());
+
     if body.len() > MAX_PUSH_BODY {
         return refused(
             axum::http::StatusCode::PAYLOAD_TOO_LARGE,
