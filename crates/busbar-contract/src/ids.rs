@@ -60,11 +60,12 @@ declare_id! {
     MeterClassId => "a meter class";
     /// One record schema a plane declares for its kernel-held durable records.
     RecordSchemaId => "a record schema";
-    /// A transport's registry identity.
-    ///
-    /// This is a registry name and never key material; the opaque key handle is the only thing
-    /// that carries a key.
-    TransportId => "a transport";
+    // A TRANSPORT'S REGISTRY IDENTITY IS NOT ONE OF THESE, and the omission is deliberate. There
+    // was a `TransportId` here with the same shape as its siblings, and in the whole workspace
+    // nothing declared one, nothing was handed one and nothing compared two: a transport reaches
+    // its registry entry through the `&'static str` key on `Plugin`, and its key material through
+    // the opaque `TransportKeyHandle`, which is the distinction the deleted type's own doc was
+    // drawing. An interned id that no surface accepts is surface a plugin author has to read past.
     /// The priced axis: a config-declared name per plane and upstream.
     ///
     /// The type index calls the lane the rate card's first key. It is carried on a verified
