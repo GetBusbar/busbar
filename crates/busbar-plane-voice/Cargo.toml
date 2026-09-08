@@ -48,6 +48,13 @@ serde_json = { workspace = true }
 # payloads are `bytes::Bytes`; this crate reads and builds them at the same seam, so it names the
 # same crate rather than converting through an owned `Vec<u8>` at the boundary.
 bytes = { workspace = true }
+# THE SERVER-SIDE TOOL EXECUTOR PORT's async signature. `ToolExecutor::execute` is an `async fn` in a
+# trait object the session runtime shares across concurrent frame handlers, so the port is written on
+# the same `#[async_trait]` desugaring it always was — the move is a MOVE, and rewriting the signature
+# to a hand-rolled `Pin<Box<dyn Future>>` would change the item's shape crossing the boundary. On
+# `qa/construction.toml`'s `manifest-allowlist.reviewed_allowlist`, so a pure kind may name it; it is a
+# proc-macro that expands to `Box`ed futures and pulls no I/O into this crate's closure.
+async-trait = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

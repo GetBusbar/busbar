@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SERVER-SIDE TOOL EXECUTOR PORT (design `plane4-duplex-session.md` §2.2 — the tool moat).
+//! THE SERVER-SIDE TOOL EXECUTOR PORT (the tool-moat section of `plane4-duplex-session.md`).
 //!
 //! The whole reason a governed plane beats a dumb WS pipe: tool calls execute SERVER-SIDE, under
 //! governance, and the browser is never trusted to author them. The runtime correlates a call by its
-//! [`crate::ir::tool::CallRef`], accumulates the streamed argument bytes, and on close hands the
+//! [`busbar_voice_codec::ir::tool::CallRef`], accumulates the streamed argument bytes, and on close hands the
 //! `(name, arguments)` to this port for execution — never to the client. The port is plane-local and
 //! dependency-inverted so the composition root binds the real tool registry while tests bind a fake.
 
@@ -22,7 +22,7 @@ pub trait ToolExecutor: Send + Sync {
     /// answer until one says otherwise — is the moat above: the runtime accumulates the arguments and
     /// calls [`Self::execute`], and the client never authors the result. `false` says the answer can
     /// only come from the client, which makes the call's reply leg a governed WAIT held by the node's
-    /// own table ([`crate::runtime::GovernedCalls`]) rather than an execution held here.
+    /// own table ([`crate::governed::GovernedCalls`]) rather than an execution held here.
     ///
     /// Defaulted to `true` deliberately: an executor that has not thought about the question serves
     /// what it is asked, which is the safe end. The unsafe end would be a node that quietly stopped

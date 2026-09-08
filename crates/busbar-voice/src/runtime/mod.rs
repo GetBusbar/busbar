@@ -13,7 +13,12 @@ pub mod carrier;
 pub mod metering;
 pub mod scope;
 pub mod session;
-pub mod tools;
+/// THE SERVER-SIDE TOOL EXECUTOR PORT, RE-EXPORTED FROM `busbar-plane-voice`. `ToolExecutor` and
+/// `EchoToolExecutor` moved to the plane crate for the same reason the governed-call port below did:
+/// the port is what a tool call MEANS to this plane, and it names nothing this crate owns. Re-exported
+/// as a MODULE, not just its items, so `crate::runtime::tools::EchoToolExecutor` — the spelling the
+/// topology and governed-binding cells use — resolves exactly what it always did.
+pub use busbar_plane_voice::tools;
 
 pub use carrier::Carrier;
 // THE GOVERNED-CALL PORT, RE-EXPORTED FROM `busbar-plane-voice`. `GovernedCalls` / `ReplyRefusal` /

@@ -780,6 +780,7 @@ dependencies = [
 name = "busbar-plane-voice"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "busbar-contract",
  "busbar-voice-codec",
  "bytes",
