@@ -36,73 +36,16 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
     (addr, handle)
 }
 
-/// `GET /api/v1/admin/info` flows end-to-end through the ports-and-adapters stack (JSON-REST
-/// transport → service → contract view): admin-token guarded, returns the version, the
-/// compiled-in plugin proof (with the default build's `tokens`/`ranking` present + the always-on
-/// `weighted_floor`), and the topology counts. Proves the transport is mounted and the frozen
-/// v1 surface answers.
-#[tokio::test]
-async fn test_admin_v1_info_reports_version_features_and_topology() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let (addr, handle) = serve_with_gov(gov).await;
-    let client = reqwest::Client::new();
-
-    // Wrong token → 401 (the v1 surface is admin-guarded like the rest of /admin).
-    let unauth = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        unauth.status().as_u16(),
-        401,
-        "v1/info must be admin-guarded"
-    );
-
-    let resp = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status().as_u16(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(
-        body["version"].as_str(),
-        Some(env!("CARGO_PKG_VERSION")),
-        "info must report the build version"
-    );
-    // The `weighted_floor` is ALWAYS true (non-removable). `keys` is engine-handled and always
-    // present; `admin-tokens`/`ranking` are present iff their feature is compiled in - so the
-    // compliance-by-compilation proof holds under `--no-default-features` too.
-    assert_eq!(body["build"]["weighted_floor"], serde_json::json!(true));
-    let auth_modules = body["build"]["auth_modules"].as_array().unwrap();
-    assert!(
-        auth_modules.iter().any(|m| m == "keys"),
-        "auth_modules must contain the built-in `keys` verifier: {auth_modules:?}"
-    );
-    assert_eq!(
-        auth_modules.iter().any(|m| m == "admin-tokens"),
-        cfg!(feature = "auth-admin-tokens"),
-        "auth_modules must contain `admin-tokens` iff its feature is compiled in: {auth_modules:?}"
-    );
-    let hook_plugins = body["build"]["hook_plugins"].as_array().unwrap();
-    assert_eq!(
-            hook_plugins.iter().any(|m| m == "ranking"),
-            cfg!(feature = "hooks-ranking"),
-            "hook_plugins must contain `ranking` iff the hooks-ranking feature is compiled in: {hook_plugins:?}"
-        );
-    // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
-    assert!(body["topology"]["pools"].is_number());
-    assert!(body["topology"]["models"].is_number());
-    assert!(body["topology"]["providers"].is_number());
-    // 1.5.3 durable-by-default: a plain TestApp is MUTABLE with a writable overlay → persistence on.
-    assert_eq!(body["config_persistence"], true);
-
-    handle.abort();
-}
+// THE `GET /api/v1/admin/pools` READ IS NOT TESTED HERE ANY MORE. It CROSSED to the composition
+// root's loop in 1.6.0's admin Cut 1b — the widest crossing of the cut, because the answer is the
+// node's release, its compiled-in proof, its boot epoch, its table counts and its config generation
+// at once — and this router has no route for it. Every one of those facts is now reached through a
+// neutral accessor on `App`, and the claim about the ANSWER moved with the operation, to the root's
+// `units_admin` tests, where it is compared byte for byte instead of field by field.
+//
+// Every OTHER test in this file that used `/info` as a convenient mounted read — an auth probe, a
+// scope probe, a `config_version` reading — now asks a read this router still answers: `/pools` for
+// the door, `/config` for the version (the same counter, on the read that carries it as `version`).
 
 /// The topology read surface THIS ROUTER STILL ANSWERS (`/api/v1/admin/pools`) flows through the
 /// service and projects the pool view. Built on a two-lane, two-provider fixture so the pool
@@ -212,7 +155,7 @@ async fn test_api_root_unmatched_paths_speak_the_admin_envelope() {
 
     // Wrong method on a real endpoint: 405 in the envelope with the frozen code.
     let r = client
-        .delete(format!("http://{addr}/api/v1/admin/info"))
+        .delete(format!("http://{addr}/api/v1/admin/config"))
         .header("x-admin-token", "admintok")
         .send()
         .await
@@ -1113,7 +1056,7 @@ providers: {}
 ",
     )
     .unwrap();
-    let before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+    let before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/config")))
         .send()
         .await
         .unwrap()
@@ -1125,7 +1068,7 @@ providers: {}
         .await
         .unwrap();
     assert_eq!(bad.status().as_u16(), 400, "invalid disk config rejects");
-    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/config")))
         .send()
         .await
         .unwrap()
@@ -1133,7 +1076,7 @@ providers: {}
         .await
         .unwrap();
     assert_eq!(
-        before["config_version"], after["config_version"],
+        before["version"], after["version"],
         "a rejected reload changes nothing"
     );
 
@@ -1259,7 +1202,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     // read-only: GET 200, mutations 403 with the frozen envelope.
     let r = with(
         "grp:viewers",
-        client.get(format!("http://{addr}/api/v1/admin/info")),
+        client.get(format!("http://{addr}/api/v1/admin/pools")),
     )
     .send()
     .await
@@ -1313,7 +1256,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     // Unmapped group: authenticated but zero grants — 403 even on reads.
     let r = with(
         "grp:strangers",
-        client.get(format!("http://{addr}/api/v1/admin/info")),
+        client.get(format!("http://{addr}/api/v1/admin/pools")),
     )
     .send()
     .await
@@ -1324,7 +1267,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     // test-scope-module it earns nothing (a role never rides another module's binding table).
     let r = with(
         "grp:sneaky",
-        client.get(format!("http://{addr}/api/v1/admin/info")),
+        client.get(format!("http://{addr}/api/v1/admin/pools")),
     )
     .send()
     .await
@@ -1447,7 +1390,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     // Two reads as a group-mapped principal: the module's Identify lands in the cache.
     for _ in 0..2 {
         let r = client
-            .get(format!("http://{addr}/api/v1/admin/info"))
+            .get(format!("http://{addr}/api/v1/admin/pools"))
             .header("x-admin-token", "grp:viewers")
             .send()
             .await
@@ -1597,7 +1540,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     let r = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
+        .get(format!("http://{addr}/api/v1/admin/pools"))
         .header("x-admin-token", "admintok")
         .send()
         .await
@@ -1622,7 +1565,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     // …after which the operator token no longer authenticates (it is not in the chain)…
     let r = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
+        .get(format!("http://{addr}/api/v1/admin/pools"))
         .header("x-admin-token", "admintok")
         .send()
         .await
@@ -1635,7 +1578,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     // …and the surviving credential carries on.
     let r = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
+        .get(format!("http://{addr}/api/v1/admin/pools"))
         .header("x-admin-token", "grp:admins")
         .send()
         .await
@@ -1691,7 +1634,7 @@ async fn test_admin_v1_put_auth_refuses_empty_chain() {
 
     // Nothing changed: the operator credential still authenticates.
     let r = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
+        .get(format!("http://{addr}/api/v1/admin/config"))
         .header("x-admin-token", "admintok")
         .send()
         .await
@@ -2801,7 +2744,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
 
     // The config version bumped from 0 → 1 on the apply (drift-detection primitive).
     let info: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/info"))
+        .get(format!("http://{addr}/api/v1/admin/config"))
         .header("x-admin-token", "admintok")
         .send()
         .await
@@ -2809,10 +2752,7 @@ async fn test_admin_v1_register_hook_takes_effect_live() {
         .json()
         .await
         .unwrap();
-    assert_eq!(
-        info["config_version"], 1,
-        "one apply bumped the config version"
-    );
+    assert_eq!(info["version"], 1, "one apply bumped the config version");
 
     // GET one by name also sees it.
     let one = client
@@ -3264,9 +3204,11 @@ async fn test_admin_v1_config_plane_golden_path() {
             .len(),
         0
     );
-    let info0 = get("/api/v1/admin/info".into()).await;
-    assert_eq!(info0["config_version"], 0);
-    assert_eq!(info0["config_persistence"], true);
+    // THE CONFIG-PLANE READ, which carries the same generation counter under its own name. It does
+    // NOT carry `config_persistence`: that field belongs to `GET /info`, which CROSSED, so the claim
+    // that a plain `TestApp` is mutable-with-a-writable-overlay is made where the answer is now
+    // produced — in the root's crossed-info cell.
+    assert_eq!(get("/api/v1/admin/config".into()).await["version"], 0);
 
     // Register.
     let created = c
@@ -3289,7 +3231,6 @@ async fn test_admin_v1_config_plane_golden_path() {
         .unwrap()
         .iter()
         .any(|h| h["name"] == name));
-    assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 1);
     assert_eq!(get("/api/v1/admin/config".into()).await["version"], 1);
     assert!(crate::config::overlay::read(&overlay)
         .unwrap()
@@ -3321,7 +3262,7 @@ async fn test_admin_v1_config_plane_golden_path() {
             .len(),
         0
     );
-    assert_eq!(get("/api/v1/admin/info".into()).await["config_version"], 2);
+    assert_eq!(get("/api/v1/admin/config".into()).await["version"], 2);
     assert!(!crate::config::overlay::read(&overlay)
         .unwrap()
         .hooks
@@ -9042,14 +8983,14 @@ async fn test_admin_v1_overlay_reset_groups_reverts_to_base() {
         "the runtime group is in the overlay before the reset"
     );
     let ver_before: serde_json::Value =
-        admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+        admin(client.get(format!("http://{addr}/api/v1/admin/config")))
             .send()
             .await
             .unwrap()
             .json()
             .await
             .unwrap();
-    let v_before = ver_before["config_version"].as_u64().unwrap();
+    let v_before = ver_before["version"].as_u64().unwrap();
 
     // RESET the groups section.
     let reset = admin(client.delete(format!("http://{addr}/api/v1/admin/overlay/groups")))
@@ -9340,13 +9281,14 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    let v_before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let v_before: serde_json::Value =
+        admin(client.get(format!("http://{addr}/api/v1/admin/config")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
 
     // No overlay writes have happened → both sections are empty. A reset is a clean no-op success.
     for section in ["groups", "hooks"] {
@@ -9365,15 +9307,16 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
             "an empty-section reset changes nothing"
         );
     }
-    let v_after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let v_after: serde_json::Value =
+        admin(client.get(format!("http://{addr}/api/v1/admin/config")))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
     assert_eq!(
-        v_before["config_version"], v_after["config_version"],
+        v_before["version"], v_after["version"],
         "an idempotent no-op reset does not bump the version"
     );
 
@@ -9621,14 +9564,14 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     let client = reqwest::Client::new();
     let admin = |r: reqwest::RequestBuilder| r.header("x-admin-token", "admintok");
 
-    let before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+    let before: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/config")))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let v_before = before["config_version"].as_u64().unwrap();
+    let v_before = before["version"].as_u64().unwrap();
 
     // PUT live-swappable sections only.
     let put = admin(client.put(format!("http://{addr}/api/v1/admin/config/settings")))
@@ -9666,7 +9609,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
     assert_eq!(root.per_request_fee, Some(7));
 
     // The version bumped (a live swap happened).
-    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/info")))
+    let after: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/config")))
         .send()
         .await
         .unwrap()
@@ -9674,7 +9617,7 @@ async fn test_admin_v1_config_settings_round_trip_survives_reload() {
         .await
         .unwrap();
     assert!(
-        after["config_version"].as_u64().unwrap() > v_before,
+        after["version"].as_u64().unwrap() > v_before,
         "the PUT bumped the config version"
     );
 

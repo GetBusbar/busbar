@@ -181,7 +181,9 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_new_verb_path() {
     // The control from the other direction: a path the surface DOES have answers differently, so
     // the green above is the new-verb paths being absent rather than the surface answering 404 to
     // everything.
-    let known = ask(addr, "GET", "/api/v1/admin/info").await;
+    // `/pools` and not `/info`: `get_info` CROSSED to the loop in 1.6.0's admin Cut 1b, so this
+    // surface has no route for it and it would make the control say the opposite of what it means.
+    let known = ask(addr, "GET", "/api/v1/admin/pools").await;
     assert_ne!(
         known.status, 404,
         "the surface answered 404 to an operation it has always had"

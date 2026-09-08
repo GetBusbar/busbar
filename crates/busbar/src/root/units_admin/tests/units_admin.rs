@@ -2865,14 +2865,14 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
 
-/// `answered_by` is the same twelve the integration pin measures against a running surface.
+/// `answered_by` is the same thirteen the integration pin measures against a running surface.
 ///
 /// The two halves of one claim, deliberately kept apart. `crates/busbar/tests/admin_verb_ownership.rs`
 /// serves the administrative surface and asks it which of the eighty-eight it has a route for; it
 /// cannot reach this function, because this crate mounts no library. This one can reach the function
-/// and cannot serve a router. So the integration pin measures the WORLD and names the twelve it
+/// and cannot serve a router. So the integration pin measures the WORLD and names the thirteen it
 /// found, and this one checks that the production predicate — the one each crossing edits — names
-/// the same twelve.
+/// the same thirteen.
 ///
 /// Written as the set rather than as a count for the reason the pin beside it gives: a count lets one
 /// verb leave the loop as another arrives.
@@ -2895,6 +2895,7 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
             "chain_break",
             "get_admin_auth",
             "get_auth",
+            "get_info",
             "get_ledger_checkpoints",
             "get_ledger_migration",
             "get_ledger_openapi_json",
@@ -2908,9 +2909,9 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: seventy-six of the eighty-eight are
+    // The complement is not empty and is not the whole table: seventy-five of the eighty-eight are
     // still produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 76);
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 75);
 }
 
 // ── the crossed operations, asked of the composition ────────────────────────────────────────────
@@ -3166,6 +3167,63 @@ async fn the_crossed_auth_read_is_answered_by_the_loop_in_the_retired_handlers_b
         body,
         "{\"chain\":[],\"upstream_credentials\":\"own\",\"open\":true}"
     );
+}
+
+/// The crossed `GET /info` is answered by the loop, in the retired handler's bytes.
+///
+/// THE WIDEST OF THE CROSSED ANSWERS, and the only one whose body is not fully determined: two of
+/// its fields are readings of a clock. So the two readings are taken OUT of the answer and asserted
+/// for what they are — a stamped process reports a number, never `null` — and the rest is compared
+/// as one byte string, which is the only comparison that pins the field ORDER and the nesting
+/// together. Parsing and comparing key sets would not: this crate's JSON reader sorts an object's
+/// keys, so a body that emitted them in any order would pass.
+///
+/// The counts come from the same fixture the two table reads use, so a `providers` count that walked
+/// a different projection from `GET /providers` would show up here as one node answering two ways.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_crossed_info_read_is_answered_by_the_loop_in_the_retired_handlers_bytes() {
+    // The stamp is process-wide and idempotent; an unstamped process truthfully reports `null`
+    // uptimes, which is a different answer from the one under test.
+    busbar_core::admin::v1::service::mark_start();
+    let router = a_composition_over_two_providers();
+    let (status, content_type, body) =
+        get_through_the_composition(&router, "/api/v1/admin/info").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+
+    // THE TWO CLOCK READINGS, asserted as readings and then substituted back in. `null` is the
+    // honest answer for a process whose start was never stamped, and telling the two apart is the
+    // whole content of these fields — so the assertion is that each is a NUMBER, not that it is one
+    // particular second.
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("the crossed body is JSON");
+    let uptime = parsed["uptime_seconds"]
+        .as_u64()
+        .expect("a stamped process reports an uptime, never null");
+    let started_at = parsed["started_at"]
+        .as_u64()
+        .expect("a stamped process reports a boot epoch, never null");
+
+    // THE REST AS BYTES: the field order, the nesting, the compiled-in proof and the counts. The
+    // release is the ENGINE crate's and not the composition's — they agree today, and the seam
+    // exists so the two cannot silently stop agreeing.
+    let node = a_node_over(&[]);
+    let (auth_modules, hook_plugins, _) = node.compiled_in_proof();
+    let quoted = |names: &[&str]| -> String {
+        names
+            .iter()
+            .map(|name| format!("\"{name}\""))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let expected = format!(
+        "{{\"version\":\"{version}\",\"build\":{{\"auth_modules\":[{auth}],\"hook_plugins\":[{hooks}],\"weighted_floor\":true}},\"uptime_seconds\":{uptime},\"started_at\":{started_at},\"topology\":{{\"pools\":0,\"models\":2,\"providers\":2}},\"config_persistence\":true,\"config_version\":0}}",
+        version = node.release_version(),
+        auth = quoted(&auth_modules),
+        hooks = quoted(&hook_plugins),
+    );
+    assert_eq!(body, expected);
 }
 
 /// PUT-THEN-GET ACROSS THE TWO HALVES: the write the surface underneath still owns is visible to the

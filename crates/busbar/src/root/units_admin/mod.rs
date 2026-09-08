@@ -588,6 +588,50 @@ pub trait NodeFacts: Send + Sync {
     /// underneath renders the same three facts into the effective-config read and a mapping written
     /// twice is a mapping that can be written differently twice.
     fn ingress_door(&self) -> (Vec<String>, String, bool);
+
+    /// Everything the node says about ITSELF: its release, the proof of what was compiled into it,
+    /// its boot epoch, the size of its tables, and the config generation it is running.
+    ///
+    /// One method for one read, off ONE generation, which matters more here than anywhere else on
+    /// this trait: this answer names the config version AND the counts that version produced, and a
+    /// reader that sampled them separately could publish a version that never had those tables.
+    fn node_info(&self) -> NodeInfo;
+}
+
+/// What a node reports about itself, as the crossed `GET /info` renders it.
+///
+/// A struct rather than a tuple, and root-owned rather than substrate-owned. Ten facts positionally
+/// is a shape nobody can read a call site of, and the alternative — a type in the substrate — would
+/// put an ADMIN-shaped view in a crate whose whole job is to name no surface. So the carrier lives
+/// here, beside the renderer that is the only thing entitled to write these bytes, and every FIELD
+/// of it is a neutral scalar or list the node already answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeInfo {
+    /// The release this node is running, as the crate that owns the surface reports it.
+    pub version: String,
+    /// The auth modules compiled into this binary, in the order the proof lists them.
+    pub auth_modules: Vec<String>,
+    /// The removable hook plugins compiled into this binary.
+    pub hook_plugins: Vec<String>,
+    /// The always-present weighted SWRR floor. Carried rather than written by the renderer because
+    /// it is a claim about the BUILD, and a literal at a renderer is a literal a second renderer
+    /// writes for itself.
+    pub weighted_floor: bool,
+    /// Seconds since this process started, or `None` when the start was never stamped.
+    pub uptime_seconds: Option<u64>,
+    /// The unix second this process started at — the BOOT EPOCH a consumer reads a counter reset
+    /// against, so a reset is "new epoch" and never "reverted".
+    pub started_at: Option<u64>,
+    /// How many pools this node routes over.
+    pub pools: usize,
+    /// How many directly-addressable models this node routes over.
+    pub models: usize,
+    /// How many DISTINCT upstream providers those lanes reach.
+    pub providers: usize,
+    /// Whether an API-applied config change is durable across a restart.
+    pub config_persistence: bool,
+    /// The config generation this node is running.
+    pub config_version: u64,
 }
 
 /// The facts of a node this composition never handed its handle to.
@@ -618,6 +662,26 @@ impl NodeFacts for UnboundFacts {
         // An OPEN door signing with its own credentials, which is what a node with no ingress really
         // is: no chain to run, and nothing to forward a caller's credential to.
         (Vec::new(), "own".to_string(), true)
+    }
+
+    fn node_info(&self) -> NodeInfo {
+        // A node this composition never handed its handle to, described honestly: no release it can
+        // name, nothing it can prove was compiled in, no boot it observed, and empty tables. Every
+        // field is the same "nothing behind this binding" the lists above answer with, and none of
+        // them is a plausible-looking figure invented to fill a shape.
+        NodeInfo {
+            version: String::new(),
+            auth_modules: Vec::new(),
+            hook_plugins: Vec::new(),
+            weighted_floor: false,
+            uptime_seconds: None,
+            started_at: None,
+            pools: 0,
+            models: 0,
+            providers: 0,
+            config_persistence: false,
+            config_version: 0,
+        }
     }
 }
 
@@ -680,6 +744,32 @@ impl NodeFacts for HandleFacts {
             upstream_credentials.to_string(),
             open,
         )
+    }
+
+    fn node_info(&self) -> NodeInfo {
+        // ONE load for the whole answer. The counts below and the config version beside them are
+        // facts of the SAME generation, and reading them off two loads could publish a version that
+        // never had those tables — the same class of fault the seam's own note describes, one step
+        // finer.
+        let generation = self.handle.load();
+        let tables = generation.engine_tables_view();
+        let (auth_modules, hook_plugins, weighted_floor) = generation.compiled_in_proof();
+        let (uptime_seconds, started_at) = generation.process_epoch();
+        NodeInfo {
+            version: generation.release_version().to_string(),
+            auth_modules: auth_modules.into_iter().map(ToString::to_string).collect(),
+            hook_plugins: hook_plugins.into_iter().map(ToString::to_string).collect(),
+            weighted_floor,
+            uptime_seconds,
+            started_at,
+            pools: tables.pools().len(),
+            models: tables.model_indices().len(),
+            // THE SAME PROJECTION `GET /providers` COUNTS, so the number this read publishes and the
+            // list that read serves can never describe different nodes.
+            providers: tables.providers_by_lane_count().len(),
+            config_persistence: generation.config_persistence(),
+            config_version: generation.config_version,
+        }
     }
 }
 
@@ -862,6 +952,7 @@ fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>
 const CROSSED_VERBS: &[KernelVerb] = &[
     KernelVerb::GetAdminAuth,
     KernelVerb::GetAuth,
+    KernelVerb::GetInfo,
     KernelVerb::GetModels,
     KernelVerb::GetProviders,
 ];
@@ -920,6 +1011,7 @@ fn render_crossed_view(verb: KernelVerb, facts: &dyn NodeFacts) -> Option<AdminA
             let (chain, upstream_credentials, open) = facts.ingress_door();
             crossed_answer(render_auth(&chain, &upstream_credentials, open).into_bytes())
         }
+        KernelVerb::GetInfo => crossed_answer(render_info(&facts.node_info()).into_bytes()),
         // Unreachable while the set above and this match name the same verbs, which is the
         // invariant the set exists to make checkable rather than a case to invent a body for.
         _ => return None,
@@ -934,7 +1026,7 @@ fn render_crossed_view(verb: KernelVerb, facts: &dyn NodeFacts) -> Option<AdminA
 /// exists to make impossible. See [`render_providers`] for why it is written by hand.
 fn render_admin_auth(modules: &[String]) -> String {
     let mut out = String::from("{\"configured\":");
-    out.push_str(if modules.is_empty() { "false" } else { "true" });
+    out.push_str(json_bool(!modules.is_empty()));
     out.push_str(",\"modules\":[");
     for (i, module) in modules.iter().enumerate() {
         if i > 0 {
@@ -963,9 +1055,81 @@ fn render_auth(chain: &[String], upstream_credentials: &str, open: bool) -> Stri
     out.push_str("],\"upstream_credentials\":");
     json_string(upstream_credentials, &mut out);
     out.push_str(",\"open\":");
-    out.push_str(if open { "true" } else { "false" });
+    out.push_str(json_bool(open));
     out.push('}');
     out
+}
+
+/// `GET /api/v1/admin/info` — what the node says about itself.
+///
+/// The retired handler's shape, field for field and in its order, nested objects included: `build`
+/// carries the compiled-in proof and `topology` the three counts, exactly where a client that
+/// upgraded into this release expects to find them. See [`render_providers`] for why it is written
+/// by hand.
+///
+/// The two `Option<u64>` fields render as `null` when absent, which is what the retired handler's
+/// serializer did with them and is a different statement from `0`: a process whose start was never
+/// stamped has no uptime, and reporting zero would claim it had just booted.
+fn render_info(info: &NodeInfo) -> String {
+    let mut out = String::from("{\"version\":");
+    json_string(&info.version, &mut out);
+    out.push_str(",\"build\":{\"auth_modules\":");
+    json_string_array(&info.auth_modules, &mut out);
+    out.push_str(",\"hook_plugins\":");
+    json_string_array(&info.hook_plugins, &mut out);
+    out.push_str(",\"weighted_floor\":");
+    out.push_str(json_bool(info.weighted_floor));
+    out.push_str("},\"uptime_seconds\":");
+    json_optional_number(info.uptime_seconds, &mut out);
+    out.push_str(",\"started_at\":");
+    json_optional_number(info.started_at, &mut out);
+    out.push_str(",\"topology\":{\"pools\":");
+    out.push_str(&info.pools.to_string());
+    out.push_str(",\"models\":");
+    out.push_str(&info.models.to_string());
+    out.push_str(",\"providers\":");
+    out.push_str(&info.providers.to_string());
+    out.push_str("},\"config_persistence\":");
+    out.push_str(json_bool(info.config_persistence));
+    out.push_str(",\"config_version\":");
+    out.push_str(&info.config_version.to_string());
+    out.push('}');
+    out
+}
+
+/// One JSON array of strings, quoted and escaped.
+fn json_string_array(values: &[String], out: &mut String) {
+    out.push('[');
+    for (i, value) in values.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        json_string(value, out);
+    }
+    out.push(']');
+}
+
+/// One JSON boolean.
+///
+/// Named rather than spelled inline at each of the four sites that need it, because `if b {"true"}
+/// else {"false"}` written four times is four chances to write it once the other way round.
+fn json_bool(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+/// One JSON number, or `null` for a reading that was never taken.
+///
+/// `null` and not `0`, and the distinction is the whole reason this is a function: a process whose
+/// start instant was never stamped has NO uptime, and a zero would claim it had just booted.
+fn json_optional_number(value: Option<u64>, out: &mut String) {
+    match value {
+        Some(number) => out.push_str(&number.to_string()),
+        None => out.push_str("null"),
+    }
 }
 
 /// `GET /api/v1/admin/providers` — the distinct upstream providers and how many lanes reach each.

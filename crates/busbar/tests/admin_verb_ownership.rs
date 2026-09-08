@@ -18,8 +18,8 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 12 |
-//! | the surface answers, and the loop hands it back | everything else that is mounted | 62 |
+//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 13 |
+//! | the surface answers, and the loop hands it back | everything else that is mounted | 61 |
 //! | nobody answers | gated, then `404` — the shipped defect the sibling pin names | 14 |
 //!
 //! ## Why it is derived and then measured, rather than written down
@@ -87,7 +87,13 @@ const A_PATH_THAT_DOES_NOT_EXIST: &str = "/api/v1/admin/nope";
 /// verb never had a route, so forgetting one costs a bucket. A crossed verb HAD one, so a set that
 /// silently lost a row would call a deleted route "nobody answers" — the exact shipped defect the
 /// sibling pin exists to name — rather than a crossing that half happened.
-const CROSSED_VERBS: &[&str] = &["get_admin_auth", "get_auth", "get_models", "get_providers"];
+const CROSSED_VERBS: &[&str] = &[
+    "get_admin_auth",
+    "get_auth",
+    "get_info",
+    "get_models",
+    "get_providers",
+];
 
 /// What a surface that does NOT answer an operation answers with.
 ///
@@ -336,12 +342,12 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
 
     assert_eq!(
         loop_owned.len(),
-        12,
+        13,
         "the loop answers a different number of operations than it did: {loop_owned:?}"
     );
     assert_eq!(
         surface_answers.len(),
-        62,
+        61,
         "the surface underneath answers a different number of operations than it did"
     );
     assert_eq!(
@@ -365,6 +371,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
             "chain_break",
             "get_admin_auth",
             "get_auth",
+            "get_info",
             "get_ledger_checkpoints",
             "get_ledger_migration",
             "get_ledger_openapi_json",
