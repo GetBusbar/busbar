@@ -242,6 +242,44 @@ fn a_directory_that_cannot_be_read_is_a_walk_error_not_an_empty_one() {
     );
 }
 
+/// A SYMLINKED TREE IS A TREE THIS WALK CANNOT BOUND, so it refuses rather than following it.
+///
+/// `collect` decided what to recurse into with `path.is_dir()`, which FOLLOWS a symlink. With no
+/// visited set and no depth cap, a directory symlink pointing at an ancestor recursed until the
+/// stack was exhausted and ABORTED THE PROCESS — which is none of the four exit codes the runner
+/// contracts, and which takes every other gate in a batched run with it.
+///
+/// The refusal is what the walk can honestly say. Skipping the link silently is the same
+/// "an unreadable subtree is an empty one" this seam was just taught to refuse, and a depth cap
+/// names "too deep" rather than the link, so it cannot tell a loop from a legitimately deep tree.
+/// No symlink exists anywhere under `crates/` or `xtask/`, so the strictness costs nothing today
+/// and a developer who symlinks a crate gets a named, actionable error instead of a partial scan.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_directory_is_refused_rather_than_followed_into_a_cycle() {
+    let dir = tmpdir("symlink-cycle");
+    let inner = dir.join("inner");
+    std::fs::create_dir_all(&inner).expect("the inner directory");
+    std::fs::write(inner.join("a.rs"), "pub fn a() {}\n").expect("one real file");
+    // The cycle: `inner/up` points back at its own ancestor.
+    std::os::unix::fs::symlink(&dir, inner.join("up")).expect("the directory symlink");
+
+    let rel = dir
+        .strip_prefix(repo_root())
+        .expect("the scratch dir is under the repo root")
+        .display()
+        .to_string();
+    let walked = cx().walk(&WalkSpec::new([rel]).ext("rs"));
+    std::fs::remove_dir_all(&dir).expect("the scratch dir is removable");
+
+    assert!(
+        matches!(walked, Err(WalkError::Io { .. })),
+        "a walk that follows a directory symlink into its own ancestor exhausts the stack and \
+         aborts the process, which is not one of the exit codes this runner contracts; got {:?}",
+        walked.map(|f| f.len())
+    );
+}
+
 #[test]
 fn a_missing_walk_root_is_an_error_rather_than_being_silently_dropped() {
     let c = cx();
