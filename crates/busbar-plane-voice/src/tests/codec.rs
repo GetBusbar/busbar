@@ -1050,6 +1050,240 @@ fn a_one_shot_transcription_meters_the_text_it_returned() {
     assert_eq!(quantity("text_tokens_out"), Some(3));
 }
 
+/// The frame that OPENS a session reaches the upstream rendered, exactly like every frame after it.
+///
+/// Unit 0's egress body IS the session's first upstream frame. It used to be handed to the
+/// destination byte-for-byte off the unit's body, and the unit's body was a decoded artefact rather
+/// than anything a provider can read: a client `session.update` reached the upstream as an empty
+/// body, so the caller's instructions, tools, voice and VAD never arrived and the session opened
+/// unconfigured. There was no test on this seam at all, which is why every gate was green.
+#[test]
+fn the_frame_that_opens_a_session_reaches_the_upstream_rendered() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut client = open_client_session(&plane, &c);
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(draft) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the session.update opens the turn")
+    else {
+        panic!("a session.update is the turn's first frame");
+    };
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+
+    let egress = plane
+        .encode_egress(&unit, &dest, Some(&mut upstream), &c)
+        .expect("the opening frame renders for the upstream");
+    let parsed: serde_json::Value = serde_json::from_slice(egress.body.as_slice())
+        .expect("the upstream is handed this dialect's own JSON, not a decoded artefact");
+    assert_eq!(
+        parsed["type"], "session.update",
+        "the upstream must be told the session is being configured"
+    );
+    let session = &parsed["session"];
+    assert_eq!(
+        session["instructions"], "You are a helpful voice agent.",
+        "the caller's instructions must reach the upstream"
+    );
+    assert_eq!(
+        session["voice"], "marin",
+        "the caller's voice must reach it"
+    );
+    assert!(
+        session["tools"].as_array().is_some_and(|t| !t.is_empty()),
+        "the caller's tools must reach it"
+    );
+    assert_eq!(
+        session["turn_detection"]["type"], "server_vad",
+        "the caller's VAD configuration must reach it"
+    );
+}
+
+/// A session whose first frame is AUDIO opens with a rendered audio event, never raw samples.
+///
+/// The other half of the same defect: the unit's body for an opening audio frame was the DECODED
+/// PCM, so passing it through wrote raw PCM16 onto a JSON-event WebSocket.
+#[test]
+fn a_session_opened_by_audio_writes_the_dialect_event_not_raw_samples() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut client = open_client_session(&plane, &c);
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let samples = vec![0x11u8; 96];
+    let append = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&samples),
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&append)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(draft) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the audio frame opens the turn")
+    else {
+        panic!("the first client event opens a turn");
+    };
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+
+    let egress = plane
+        .encode_egress(&unit, &dest, Some(&mut upstream), &c)
+        .expect("the opening frame renders for the upstream");
+    let parsed: serde_json::Value = serde_json::from_slice(egress.body.as_slice())
+        .expect("the upstream is handed this dialect's own JSON, not raw PCM");
+    assert_eq!(parsed["type"], "input_audio_buffer.append");
+    assert_eq!(
+        parsed["audio"], base64_of(&samples),
+        "the samples the caller sent must reach the upstream, carried the way the dialect carries them"
+    );
+}
+
+/// A turn the caller CUT OFF is still billed for the seconds they spoke into it.
+///
+/// The two ends of one turn: the frame that opens it and the frame that cuts it. A barge-in closes
+/// the interrupted turn and opens the one that takes over — and the close is a `take`, so the
+/// interrupted turn's seconds and tool calls were snapshotted and thrown away. Nothing downstream
+/// can recover a metered quantity a plane dropped, so those seconds were handed back for free on
+/// every barge-in of every call. Here: twenty seconds spoken into turn 0, a barge-in, more audio on
+/// turn 1, then the CUT response's own `response.done` — which must end turn 0, carrying turn 0's
+/// twenty seconds, and must leave turn 1 alone.
+#[test]
+fn a_barge_in_still_bills_the_turn_it_cut_off() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    // The two halves a session really has: frames arrive on the client's, and are relayed and
+    // answered on the upstream's. A test that used one value for both could not see this defect.
+    let mut client = open_client_session(&plane, &c);
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(first) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+    let cut_turn = crate::tests::harness::unit(first.op, first.body_ir, first.facts);
+    plane
+        .encode_egress(&cut_turn, &dest, Some(&mut upstream), &c)
+        .expect("the opening frame reaches the upstream");
+
+    // Twenty seconds of PCM16 at 24 kHz, relayed under the turn that is about to be cut off.
+    for _ in 0..20 {
+        let append = serde_json::to_vec(&json!({
+            "type": "input_audio_buffer.append",
+            "audio": base64_of(&vec![0u8; 48_000]),
+        }))
+        .expect("audio fixture serializes");
+        let frames = [frame(&append)];
+        let mut cursor = FrameCursor::new(&frames);
+        plane
+            .decode_ingress(&mut cursor, Some(&mut client), &c)
+            .expect("an uplink audio frame decodes");
+        plane
+            .encode_ingress_frame(&cut_turn, &frames[0], &dest, Some(&mut upstream), &c)
+            .expect("an uplink audio frame relays");
+    }
+
+    // The upstream starts answering, which binds the response to the turn it is answering.
+    let delta = serde_json::to_vec(&json!({
+        "type": "response.output_audio.delta",
+        "delta": base64_of(&[0u8; 96]),
+    }))
+    .expect("delta fixture serializes");
+    let frames = [frame(&delta)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+        .expect("a downlink audio frame decodes");
+
+    // The caller talks over it.
+    let truncate = serde_json::to_vec(&json!({
+        "type": "conversation.item.truncate",
+        "item_id": "item_1",
+        "content_index": 0,
+        "audio_end_ms": 640,
+    }))
+    .expect("truncate fixture serializes");
+    let frames = [frame(&truncate)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(second) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the barge-in decodes")
+    else {
+        panic!("a barge-in opens the turn that takes over");
+    };
+    let new_turn = crate::tests::harness::unit(second.op, second.body_ir, second.facts);
+
+    // One second spoken into the turn that took over.
+    let append = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&vec![0u8; 48_000]),
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&append)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("an uplink audio frame decodes");
+    plane
+        .encode_ingress_frame(&new_turn, &frames[0], &dest, Some(&mut upstream), &c)
+        .expect("an uplink audio frame relays under the new turn");
+
+    // And only NOW does the cut response finish winding down upstream.
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": { "usage": { "input_token_details": { "audio_tokens": 1 } } }
+    }))
+    .expect("usage fixture serializes");
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { for_, r } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+        .expect("the cut response's usage report decodes")
+    else {
+        panic!("a usage report ends the turn it belongs to");
+    };
+
+    assert_eq!(
+        for_, first.correlation_out,
+        "the cut response's report must end the turn it belongs to, not the one that replaced it"
+    );
+    let seconds = plane
+        .meter(&cut_turn, &r, &c)
+        .lines
+        .as_slice()
+        .iter()
+        .find(|l| l.class.as_str() == "audio_seconds_in")
+        .and_then(|l| l.quantity);
+    assert_eq!(
+        seconds,
+        Some(20),
+        "the twenty seconds the caller spoke into the turn they cut off are still owed"
+    );
+}
+
 /// A tiny standard base64 encoder, independent of the one this crate's `twilio` module carries, so
 /// the test fixtures above do not depend on that module's own correctness to construct their input.
 fn base64_of(bytes: &[u8]) -> String {
