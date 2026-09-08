@@ -1469,20 +1469,29 @@ async fn read_ingress_message(
         let mut decoder = raw::ChunkedDecoder::default();
         // A chunked sender declares no total, so the cap is held against the bytes that have
         // actually arrived rather than against a number the peer supplied.
+        // The cap is held immediately after every byte is counted, never at the top of the loop:
+        // a check that only runs before a read is a check the read that FINISHES the message never
+        // faces — and a body that arrived whole alongside the header block faces none at all,
+        // because the loop it lives in is never entered. The `Content-Length` twin below refuses on
+        // the declared length before reading a byte, so a cap evaluated one read late here would be
+        // one number meaning two different things on the two framings of the same body.
         let mut read_so_far = rest.len();
+        if read_so_far > max_body_bytes {
+            return Err(TransportError::Framing);
+        }
         decoder.feed(&rest).map_err(|_| TransportError::Framing)?;
         while !decoder.is_done() {
-            if read_so_far > max_body_bytes {
-                return Err(TransportError::Framing);
-            }
             let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);
             };
             let n = read.map_err(|e| HttpTransport::map_io_err(&e))?;
-            read_so_far += n;
             if n == 0 {
                 // The peer stopped before the terminal chunk: the declared framing did not happen,
                 // and guessing where the body ended is the one thing a transport must not do.
+                return Err(TransportError::Framing);
+            }
+            read_so_far += n;
+            if read_so_far > max_body_bytes {
                 return Err(TransportError::Framing);
             }
             decoder
