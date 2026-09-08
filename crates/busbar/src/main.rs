@@ -685,28 +685,6 @@ fn register_protocols() {
 // `plane-mcp`, and with every plane compiled out (`--no-default-features`) nothing pushes — the same
 // shape `register_protocols` has, minus its unconditional `extend`.
 #[allow(clippy::vec_init_then_push)]
-/// INSTALL THE CONTROL SURFACES — the composition root's one write into the UNMETERED axis.
-///
-/// The sibling of [`register_planes`], and deliberately a separate call rather than another push
-/// into the same list. A control surface is not a plane: it has no meter class, no scope kind, no
-/// audience binding and no claim ladder, so registering it as one would declare vocabulary it is
-/// defined by not having, and the boot seal would either refuse it or admit it as a plane whose
-/// meter is silently vacuous. Two families, two registries, one root.
-///
-/// UNCONDITIONAL, and that is the posture being preserved rather than an omission: `oauth_as:` has
-/// never had a feature gate. The surface was a normal dependency of `busbar-core` and its module
-/// carried no `#[cfg]`, so the shipped binary could always honour an `oauth_as:` block. What decides
-/// whether anything is built and served is the CONFIG — an absent block means no slot, and the
-/// mount loop then mounts nothing.
-/// ONE SYMBOL, and the shape is the legacy-reach ratchet's rather than a preference. The obvious
-/// spelling of this function names three retiring symbols — the decl, the seam's decl type and its
-/// installer — and the root's reach into the retiring crates is a ratchet that may only go down.
-/// Three for one registration is three the ratchet has to carry until the whole surface moves, so
-/// the list lives on the far side of the call and this names the act.
-fn register_control_surfaces() {
-    busbar_core::install_control_surfaces();
-}
-
 fn register_planes() {
     #[allow(unused_mut)]
     let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
@@ -747,6 +725,29 @@ fn register_planes() {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
     }
+}
+
+/// INSTALL THE CONTROL SURFACES — the composition root's one write into the UNMETERED axis.
+///
+/// The sibling of [`register_planes`], and deliberately a separate call rather than another push
+/// into the same list. A control surface is not a plane: it has no meter class, no scope kind, no
+/// audience binding and no claim ladder, so registering it as one would declare vocabulary it is
+/// defined by not having, and the boot seal would either refuse it or admit it as a plane whose
+/// meter is silently vacuous. Two families, two registries, one root.
+///
+/// UNCONDITIONAL, and that is the posture being preserved rather than an omission: `oauth_as:` has
+/// never had a feature gate. The surface was a normal dependency of `busbar-core` and its module
+/// carried no `#[cfg]`, so the shipped binary could always honour an `oauth_as:` block. What decides
+/// whether anything is built and served is the CONFIG — an absent block means no slot, and the
+/// mount loop then mounts nothing.
+///
+/// ONE SYMBOL, and the shape is the legacy-reach ratchet's rather than a preference. The obvious
+/// spelling of this function names three retiring symbols — the decl, the seam's decl type and its
+/// installer — and the root's reach into the retiring crates is a ratchet that may only go down.
+/// Three for one registration is three the ratchet has to carry until the whole surface moves, so
+/// the list lives on the far side of the call and this names the act.
+fn register_control_surfaces() {
+    busbar_core::install_control_surfaces();
 }
 
 /// REGISTER THE LINKED PLANES' DIAGNOSTICS — the composition root's one write into the diagnostics
