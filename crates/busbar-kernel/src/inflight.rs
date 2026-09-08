@@ -458,11 +458,43 @@ impl InFlight {
     }
 
     /// Put a unit in the table, or hand its hold back with the refusal.
+    ///
+    /// ONE LIVE UNIT PER KEY, and the second one is refused rather than replacing the first. The
+    /// map used to take it, which lost two things at once: both entries had claimed a slot and only
+    /// one was in the table, so the count ran permanently one above its contents and the cap the
+    /// crash-exposure figure is computed from shrank by one for the life of the node — and the slot
+    /// that was overwritten carried a live [`busbar_caps::HoldCell`] with an arrival hold in it that
+    /// no end could ever take, because the unit was no longer reachable from `get` or from
+    /// `snapshot`, so neither the exit path nor the sweep could settle it and the canary saw an
+    /// admitted unit that never settled.
+    ///
+    /// Refusing prevents both instead of correcting one, and it is the answer this table can
+    /// actually give: the hold goes back out with the refusal exactly as the cap-full arm above
+    /// already hands it back, so nothing is stranded and nothing has to be settled from a table that
+    /// holds no exit token. The check and the insert are under one shard guard, so two callers
+    /// presenting one key cannot both find it free.
+    ///
+    /// The sibling below deliberately does the opposite: a second `open` on a `SessionId`
+    /// supersedes, because a reconnecting session IS the same session. A second unit under one
+    /// `UnitKey` is not the same unit, and the kernel mints those keys.
     pub fn insert(&self, request: Enter) -> Result<Arc<UnitSlot>, CapRefused> {
         if !self.claim_slot(self.ceiling(&request)) {
             return Err(CapRefused {
                 step: cap_refusal_step(request.origin),
                 reason: ReasonCode::InFlightCap,
+                hold: request.arrival,
+            });
+        }
+        let mut shard = self
+            .shard(request.key)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if shard.contains_key(&request.key) {
+            drop(shard);
+            self.count.fetch_sub(1, Ordering::AcqRel);
+            return Err(CapRefused {
+                step: cap_refusal_step(request.origin),
+                reason: ReasonCode::InFlight,
                 hold: request.arrival,
             });
         }
@@ -477,10 +509,7 @@ impl InFlight {
             marked: AtomicBool::new(false),
             last_progress: AtomicU64::new(request.now),
         });
-        self.shard(request.key)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(request.key, Arc::clone(&slot));
+        shard.insert(request.key, Arc::clone(&slot));
         Ok(slot)
     }
 
