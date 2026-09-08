@@ -4,7 +4,7 @@
 //! THE DIALECT'S OWN VOCABULARY — the error codes, the name-pointer rule and the two paths — read
 //! by a test rather than only by the wire.
 //!
-//! Mutation testing over this crate left thirteen survivors that are all one sentence: **deleting
+//! Thirteen edits to this crate's error codes were all one sentence: **deleting
 //! the minus sign from an error-code constant changed nothing any test could see.** `-32700`
 //! became `+32700`, and so did `-32601`, `-32602`, `-32020`, `-32021`, `-32022`, `-32000`,
 //! `-32030` and both retired codes. A JSON-RPC code is exactly the kind of value that reads
@@ -245,8 +245,7 @@ fn a_method_with_no_name_pointer_answers_none_rather_than_an_empty_one() {
 /// buys. `tasks/result` was REMOVED by this revision. Under a `tasks/*` prefix rule it would report
 /// a `taskId` pointer, the header check would fire first, and a request whose only defect is naming
 /// a method that no longer exists would be answered `-32020` ("your headers are wrong") instead of
-/// `-32601` ("no such method"). Deleting the `tasks/*` arm was a surviving mutant; so was widening
-/// it.
+/// `-32601` ("no such method"). Nothing caught the `tasks/*` arm being deleted, or widened.
 #[test]
 fn a_removed_tasks_method_reports_no_name_pointer_so_it_can_answer_method_not_found() {
     for removed in ["tasks/result", "tasks/list"] {
