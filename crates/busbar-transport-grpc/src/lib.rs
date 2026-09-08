@@ -20,10 +20,12 @@
 //! network guard sits in front of the dial — in the trust unit, once for every carrier — rather
 //! than inside each one.
 //!
-//! The RPC path is the destination's: `UpstreamAddress::Grpc` names the method every call this
-//! connection opens is dialled against, so two plane operations can reach two upstream methods. A
-//! destination naming none falls back to `server::RPC_PATH`, the only path a byte-blind transport
-//! can serve on its own.
+//! The RPC path is the destination's: it is a DECLARED KEY on an ordinary socket destination —
+//! `UpstreamAddress::extra(facts::METHOD)`, the same reserved spelling the arrival grammar already
+//! uses for a request method — and not an arm of this family's own, so two plane operations can
+//! reach two upstream methods and a family this tree has never heard of costs the destination type
+//! nothing. A destination naming none falls back to `server::RPC_PATH`, the only path a byte-blind
+//! transport can serve on its own.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

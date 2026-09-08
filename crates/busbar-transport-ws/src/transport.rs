@@ -474,6 +474,7 @@ impl Transport for WsTransport {
                         } else {
                             None
                         }),
+                        extras: &[],
                     },
                 )
                 .ok_or(TransportError::AddressRefused)?;

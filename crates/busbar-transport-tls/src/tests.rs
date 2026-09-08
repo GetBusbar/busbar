@@ -725,6 +725,7 @@ async fn a_declared_certificate_name_is_what_the_handshake_offers() {
             address: busbar_contract_transport::dest::UpstreamAddress::Socket {
                 authority: leaked,
                 sni: Some("localhost"),
+                extras: &[],
             },
             lane: busbar_contract::LaneId::new("test"),
         },
@@ -845,6 +846,7 @@ async fn every_reserved_key_this_transport_publishes_is_declared() {
             address: busbar_contract_transport::dest::UpstreamAddress::Socket {
                 authority: leaked,
                 sni: Some("localhost"),
+                extras: &[],
             },
             lane: busbar_contract::LaneId::new("test"),
         },
@@ -1111,6 +1113,7 @@ mod cg_49_sni {
                 address: busbar_contract_transport::dest::UpstreamAddress::Socket {
                     authority: leaked_addr,
                     sni: Some(leaked_sni),
+                    extras: &[],
                 },
                 lane: busbar_contract::LaneId::new("test"),
             },

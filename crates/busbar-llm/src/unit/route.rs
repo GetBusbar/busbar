@@ -191,6 +191,7 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
             address: UpstreamAddress::Socket {
                 authority: lane.authority,
                 sni: None,
+                extras: &[],
             },
             lane: LaneId::new(lane.lane_id),
         };

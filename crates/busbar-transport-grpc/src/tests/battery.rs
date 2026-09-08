@@ -690,10 +690,13 @@ async fn the_destinations_method_is_the_path_the_call_opens_against() {
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            address: busbar_contract_transport::dest::UpstreamAddress::Grpc {
+            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
                 authority: host,
                 sni: None,
-                method: "/vendor.Inference/Chat",
+                extras: &[(
+                    busbar_contract_transport::registry::facts::METHOD,
+                    "/vendor.Inference/Chat",
+                )],
             },
             lane: busbar_contract::LaneId::new("test-lane"),
         },
@@ -1281,10 +1284,13 @@ async fn a_malformed_sealed_method_refuses_instead_of_panicking() {
         &Seal,
         busbar_contract::DestinationFacts::Upstream {
             transport: "grpc",
-            address: busbar_contract_transport::dest::UpstreamAddress::Grpc {
+            address: busbar_contract_transport::dest::UpstreamAddress::Socket {
                 authority: host,
                 sni: None,
-                method: "/pkg.Svc/My Method",
+                extras: &[(
+                    busbar_contract_transport::registry::facts::METHOD,
+                    "/pkg.Svc/My Method",
+                )],
             },
             lane: busbar_contract::LaneId::new("test-lane"),
         },

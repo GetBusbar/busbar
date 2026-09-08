@@ -8,8 +8,10 @@
 //! ## The RPC path: the destination's, with this crate's own as the fallback
 //!
 //! gRPC's own wire format names every call by an HTTP/2 `:path` of the shape
-//! `/package.Service/Method`. A dialled call uses the method the destination named —
-//! `UpstreamAddress::Grpc` carries it, and `GrpcTransport::dial` reads it — so two plane operations
+//! `/package.Service/Method`. A dialled call uses the method the destination named — the
+//! destination declares it under the reserved `method` key and `GrpcTransport::dial` reads it back
+//! through `UpstreamAddress::extra`, ignoring every key it does not understand — so two plane
+//! operations
 //! on one transport can reach two upstream methods. Only a destination naming none falls back to
 //! [`RPC_PATH`], which is also the path this byte-blind server answers on: served calls are
 //! answered whatever `:path` they arrive with, since the transport reads no meaning from it beyond
