@@ -315,6 +315,13 @@ pub enum TransformOutcome {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HookStatus {
     pub settings_version: Option<u64>,
+    // settings-leak-lint: allow — NON-PROJECTION engine type. This struct derives no `Serialize`:
+    // it is the parsed INBOUND `status` reply (the twin of `hooks::wire::StatusReply`, which
+    // carries the same marker for the same reason), held so the engine can compare key names. The
+    // one admin read behind it, `GET /hooks/{name}/status`, serves `HookStatusView`, whose
+    // `reported` side is `HookReportedStatus { settings_keys, settings_version }` — key names only,
+    // projected through `admin::v1::service::settings_keys`, with drift computed by
+    // `hooks::settings_drift_keys`, which also compares names. No wire member carries this bag.
     pub settings: Option<serde_json::Map<String, serde_json::Value>>,
     /// Raw metrics ARRAY (each entry `{name, type, value, labels?, quantiles?, ...}`); the engine
     /// validates + bounds entries before exposing them.
