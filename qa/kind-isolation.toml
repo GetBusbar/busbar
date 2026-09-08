@@ -1354,7 +1354,7 @@ count = "96"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1806"
+count = "1846"
 
 [[cell]]
 crate = "busbar"
@@ -1379,7 +1379,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "939"
+count = "941"
 
 [[cell]]
 crate = "busbar"

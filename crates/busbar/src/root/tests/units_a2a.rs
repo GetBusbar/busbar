@@ -1937,3 +1937,150 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
     );
     assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE PRODUCER
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **The producer asks the plane; it does not restate it.**
+///
+/// This is the property the whole shape of `from_decoded` exists to have, and it is asserted over
+/// EVERY operation class the plane declares rather than over one convenient example. For each class,
+/// the draft the producer builds must carry exactly the destination, the legs, the resource and the
+/// streaming flag the plane's own op-keyed tables answer with — the same tables `verify`, `route`,
+/// `approve` and `audit` read when the kernel drives them.
+///
+/// A restatement is what this forbids. If someone later copies the destination table into the root
+/// so the producer need not ask, the two copies drift the moment either is edited, and the drift is
+/// silent: the kernel would route a unit one way while the root's draft said another, and every
+/// downstream step — the fee's origin rule, the scope resource, the record legs — would be judging a
+/// unit that never existed. Asserting equality per class is what makes that edit fail here instead
+/// of in a deployment.
+#[cfg(feature = "root-a2a-serve")]
+#[test]
+fn the_producer_answers_every_class_exactly_as_the_plane_does() {
+    let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+    for op in ops::OP_CLASSES {
+        let decoded = Decoded {
+            op: Some(*op),
+            request_bytes: 128,
+            ..Decoded::default()
+        };
+        let built = A2aDraft::from_decoded(&plane, &decoded, an_arrival());
+
+        assert_eq!(
+            built.destination,
+            plane.destination_for(*op),
+            "{op:?}: the producer's destination is the plane's own answer"
+        );
+        assert_eq!(
+            built.legs,
+            plane.route_plan_for(*op).legs.as_slice().to_vec(),
+            "{op:?}: the producer's legs are the plane's own plan, in the plan's order"
+        );
+        assert_eq!(
+            built.resource,
+            plane.resource_for(),
+            "{op:?}: the producer's resource is the plane's own"
+        );
+        assert_eq!(
+            built.streaming,
+            plane.streaming_for(*op),
+            "{op:?}: the producer's streaming flag is the plane's own"
+        );
+        assert_eq!(
+            built.op,
+            Some(*op),
+            "{op:?}: and the class is carried through"
+        );
+        assert_eq!(
+            built.request_bytes, 128,
+            "{op:?}: the priced input is what decode measured"
+        );
+    }
+}
+
+/// **A body the plane could not read reaches nowhere, and says so.**
+///
+/// `op: None` is the decode step's way of saying these bytes are not this plane's. The draft it
+/// yields must name no resource, walk no leg, and carry the destination the plane itself calls
+/// unreachable — the empty host the trust unit refuses.
+///
+/// The alternative is the bug this pins shut: a producer that fell through to the CONFIGURED agent
+/// for an unrecognised body would dial a real backend with bytes nobody classified, which is the one
+/// outcome an unreadable request must never have. The empty host makes that a refusal at the trust
+/// unit, where refusals belong, rather than a hop.
+#[cfg(feature = "root-a2a-serve")]
+#[test]
+fn an_unreadable_body_is_produced_as_a_unit_that_reaches_nowhere() {
+    let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+    let built = A2aDraft::from_decoded(&plane, &Decoded::default(), an_arrival());
+
+    assert_eq!(built.op, None, "the plane recognised nothing");
+    assert_eq!(
+        built.destination,
+        busbar_plane_a2a::A2aPlane::unreachable_destination(),
+        "so it goes nowhere reachable, rather than to whichever agent happened to be configured"
+    );
+    assert!(built.legs.is_empty(), "and walks no leg");
+    assert_eq!(
+        built.resource, None,
+        "and names no resource to be approved against"
+    );
+    assert!(!built.streaming, "and is not a stream");
+
+    // WHAT IS TRUE HERE, rather than what would be tidy. `has_upstream` reads the destination's
+    // VARIANT, and the unreachable destination is an `Upstream` carrying an empty host — so an
+    // unreadable body reads as a unit that reaches an agent, and the fee's origin rule and the
+    // request slot's both read it that way.
+    //
+    // This is the PLANE's existing shape and not the producer's: a deployment with no `agents:`
+    // configured at all gets the same empty-host `Upstream` out of the plane's own `verify` step,
+    // and has done since before there was a producer. So it is pinned here as an observation rather
+    // than corrected here as a bug — the correction is a change to what a unit is charged as, which
+    // is not a change a producer may make on its own. Named in the hand-back as an open item.
+    assert!(
+        built.has_upstream(),
+        "the empty host is still an Upstream variant, which is what the origin rule reads"
+    );
+}
+
+/// **The producer writes down no result before the unit has run.**
+///
+/// `response_bytes` and `finish` are properties of an ANSWER, and at the moment an arrival is
+/// decoded there is not one. The metering step fills the first from the plane's own locator and the
+/// audit step fills the second from the ending the loop reached; a producer that guessed either
+/// would be handing those two steps a prior opinion to agree with.
+#[cfg(feature = "root-a2a-serve")]
+#[test]
+fn the_producer_leaves_the_ending_to_the_steps_that_learn_it() {
+    let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+    let decoded = Decoded {
+        op: Some(ops::OP_MESSAGE_SEND),
+        request_bytes: 4096,
+        ..Decoded::default()
+    };
+    let built = A2aDraft::from_decoded(&plane, &decoded, an_arrival());
+
+    assert_eq!(
+        built.response_bytes, 0,
+        "no answer has been read, so no answer has been measured"
+    );
+    assert_eq!(
+        built.request_bytes, 4096,
+        "while the side that HAS arrived is carried exactly"
+    );
+}
+
+/// The arrival record the producer tests hand in, so each one names the transport facts once.
+#[cfg(feature = "root-a2a-serve")]
+fn an_arrival() -> ArrivalRecord {
+    ArrivalRecord {
+        source: "127.0.0.1:1".to_string(),
+        port: 8080,
+        alpn: None,
+        sni: None,
+        peer_cert: None,
+        transport_chain: vec!["tcp", "http"],
+    }
+}
