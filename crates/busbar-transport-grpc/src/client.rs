@@ -117,6 +117,12 @@ pub(crate) async fn open_stream(
     // (`MissingUriSchemeAndAuthority`), a real error this crate's own battery caught red before
     // this fix.
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
+    // The same ceiling the accepted side decodes against: an answer this node buffers is an answer
+    // it has to hold, and a limit that applied only to what arrives at the door would leave the
+    // larger buffer on the leg nobody sized.
+    if state.max_message_bytes > 0 {
+        grpc = grpc.max_decoding_message_size(state.max_message_bytes);
+    }
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
     let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
     let response = match grpc

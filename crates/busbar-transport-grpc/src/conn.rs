@@ -290,12 +290,17 @@ pub(crate) struct ConnState {
     /// the layer below's chain plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
     pub(crate) chain: Vec<&'static str>,
+    /// The deployment's message ceiling, carried down from the transport that built this
+    /// connection so both the served and the dialled call sites can hand it to the framing layer.
+    /// Zero means the operator named no number and the library's own default stands.
+    pub(crate) max_message_bytes: usize,
 }
 
 impl ConnState {
     pub(crate) fn new(
         dialer: Option<(Arc<crate::client::Dialer>, http::Uri, &'static str)>,
         chain: Vec<&'static str>,
+        max_message_bytes: usize,
     ) -> Arc<Self> {
         let (inbound_tx, inbound_rx) = mpsc::channel(INBOUND_FRAME_BUFFER);
         Arc::new(Self {
@@ -311,6 +316,7 @@ impl ConnState {
             cut: SyncMutex::new(None),
             local_port: std::sync::atomic::AtomicU16::new(0),
             chain,
+            max_message_bytes,
         })
     }
 }

@@ -266,10 +266,11 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
 /// layer against what is registered, so a layer must exist before anything that names it.
 fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
     // The same number the door refuses a body at. A WebSocket message is assembled from
-    // continuation frames before anything above the transport sees it, so the ceiling has to be
-    // stated at the handshake or it is not stated at all — and a node that refuses a body of a
-    // given size over HTTP has no basis for holding a larger one over a socket it upgraded.
-    #[cfg(feature = "plane-voice")]
+    // continuation frames before anything above the transport sees it, and a gRPC message is
+    // refused on a length prefix its own framing library sizes, so on both wires the ceiling has to
+    // be stated where the connection is built or it is not stated at all — and a node that refuses
+    // a body of a given size over HTTP has no basis for holding a larger one over a socket it
+    // upgraded or a call it multiplexed.
     let max_message_bytes = client_settings.request_body_max_bytes;
     let tcp = Arc::new(TcpTransport::new());
     let tls = Arc::new(TlsTransport::new());
@@ -290,7 +291,10 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         Arc::clone(&tls) as Arc<dyn Transport>,
         max_message_bytes,
     ));
-    let grpc = Arc::new(GrpcTransport::over(Arc::clone(&http) as Arc<dyn Transport>));
+    let grpc = Arc::new(GrpcTransport::over_with_max_message_bytes(
+        Arc::clone(&http) as Arc<dyn Transport>,
+        max_message_bytes,
+    ));
     let stdio = Arc::new(StdioTransport::new());
     ComposedTransports {
         tcp,

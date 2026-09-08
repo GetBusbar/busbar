@@ -97,6 +97,12 @@ async fn handle_one_rpc(
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
     let mut grpc = tonic::server::Grpc::new(RawCodec);
+    // The deployment's ceiling, where it named one. Zero means it named none and the framing
+    // library's own default stands — the honest reading of an unset knob, since a transport that
+    // invented a number here would be answering a question nobody asked.
+    if state.max_message_bytes > 0 {
+        grpc = grpc.max_decoding_message_size(state.max_message_bytes);
+    }
     // The call is registered by the handler, not here. `Grpc::streaming` can answer entirely on
     // its own — a request naming a `grpc-encoding` this server has not enabled is refused while
     // its headers are still being read — and then the handler below, whose response stream being

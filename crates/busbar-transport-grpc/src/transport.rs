@@ -53,6 +53,19 @@ pub struct GrpcTransport {
     /// The layer this one composes over. `None` for an instance that will only ever be handed a
     /// stream directly, which is all a transport owning no socket can otherwise do.
     lower: Option<Arc<dyn Transport>>,
+    /// The largest message this transport will DECODE, in bytes; zero means the library's own
+    /// default stands.
+    ///
+    /// It is the deployment's request-body ceiling, and it has to be stated here or it is not
+    /// stated at all: the framing layer beneath refuses on a peer-declared length before it
+    /// reserves for it, against a number of its own that no operator chose. A node that refuses a
+    /// body of a given size at its HTTP door has no basis for buffering a larger one on the wire
+    /// beside it, and an operator who raises that number gets nothing here without this.
+    ///
+    /// Held as a plain field rather than read at `listen`: an instance that only ever DIALS never
+    /// reaches that call, and the composition root that built it is the only thing holding the
+    /// number for both directions.
+    max_message_bytes: usize,
 }
 
 impl Default for GrpcTransport {
@@ -69,6 +82,7 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             lower: None,
+            max_message_bytes: 0,
         }
     }
 
@@ -79,6 +93,19 @@ impl GrpcTransport {
             next_id: AtomicU64::new(1),
             conns: SyncMutex::new(HashMap::new()),
             lower: Some(lower),
+            max_message_bytes: 0,
+        }
+    }
+
+    /// The same, carrying the deployment's own message ceiling — see [`Self::max_message_bytes`].
+    ///
+    /// Zero leaves the framing library's default in place, which is the honest reading of "the
+    /// operator named no number".
+    #[must_use]
+    pub fn over_with_max_message_bytes(lower: Arc<dyn Transport>, max: usize) -> Self {
+        Self {
+            max_message_bytes: max,
+            ..Self::over(lower)
         }
     }
 
@@ -200,7 +227,7 @@ impl Transport for GrpcTransport {
             };
             let (stream, chain) = self.take(lower, &conn)?;
             let id = self.mint_id();
-            let state = ConnState::new(None, chain);
+            let state = ConnState::new(None, chain, self.max_message_bytes);
             state.set_local_port(port);
             self.conns.lock().unwrap().insert(id, state.clone());
             crate::server::serve_connection(stream, state);
@@ -251,7 +278,11 @@ impl Transport for GrpcTransport {
             let (stream, cut) = crate::conn::Cuttable::new(stream);
             let (dialer, origin, over) = client::handshake_h2(stream, authority).await?;
             let id = self.mint_id();
-            let state = ConnState::new(Some((Arc::new(dialer), origin, method)), chain);
+            let state = ConnState::new(
+                Some((Arc::new(dialer), origin, method)),
+                chain,
+                self.max_message_bytes,
+            );
             state.arm_cut(cut);
             self.conns.lock().unwrap().insert(id, state.clone());
             // When the HTTP/2 connection under this dial is over, so is anything that could arrive
