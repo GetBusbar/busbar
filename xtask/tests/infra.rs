@@ -46,6 +46,37 @@ fn row_tsv_is_the_shape_record_writes_with_tabs_and_newlines_flattened() {
     assert_eq!(r.tsv(), "install:script\tPASS\ta title\ta detail");
 }
 
+/// THE ROW THE SHELL ACTUALLY WRITES HAS SIX COLUMNS, and the reader must stop at the fourth.
+///
+/// `scripts/release-gate/lib.sh::record` writes `id, status, title, detail, ver, sha` — the version
+/// column is what `gate.sh` filters a merged artefact directory on, so it is not decoration and it
+/// is always present. `parse_rows` split with `splitn(4, '\t')`, which glues `detail\tver\tsha` into
+/// `detail`. That is the reachable half of the parity claim: `parity::check` compares the legacy
+/// rows read back through here against the Rust gate's own, so every ledger-path parity run was
+/// comparing a detail with two extra columns welded onto it against one without.
+///
+/// Splitting on every tab is exact rather than lenient: both writers strip tabs from the free-text
+/// fields (`record` with `tr`, `Row::tsv` with `flatten`), so column four is the whole detail and
+/// nothing else can be hiding in it.
+#[test]
+fn a_six_column_legacy_row_reads_back_with_its_real_detail() {
+    let rows = ledger::parse_rows("install:script\tPASS\ta title\ta detail\t1.6.0\tdeadbeef\n")
+        .expect("a row the shell wrote is a row this reader accepts");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "install:script");
+    assert_eq!(rows[0].status, Status::Pass);
+    assert_eq!(rows[0].title, "a title");
+    assert_eq!(
+        rows[0].detail, "a detail",
+        "the version and staged-sha columns are the shell reader's, not part of the detail"
+    );
+
+    // A FOUR-COLUMN ROW IS STILL A ROW. The Rust side writes four, and a legacy ledger predating
+    // the version column has four, so the reader must not start requiring six.
+    let short = ledger::parse_rows("a\tFAIL\tt\td\n").expect("four columns still parse");
+    assert_eq!(short[0].detail, "d");
+}
+
 #[test]
 fn write_leg_appends_and_never_truncates() {
     let dir = tmpdir("leg");
