@@ -15,6 +15,48 @@ fn envelope_shape_matches_the_1_5_5_error_contract() {
     assert!(error["message"].is_string());
 }
 
+/// The envelope stays one JSON document when the message is one a caller supplied.
+///
+/// Today's callers bring closed, quote-free prose, so the shape has never been asked this — but the
+/// envelope is `pub`, and the moment the administrative error taxonomy renders through it the
+/// message carries caller-supplied text: a resource name in a `not_found`, a validation complaint,
+/// the human half of a conflict. A `"` in any of those closes the string early and hands the reader
+/// a DIFFERENT document from the one this rendered, with a `code` the client's parser never sees.
+///
+/// The characters below are the closed set JSON requires an escape for: the two structural ones,
+/// the five with short forms, and a representative control character. Asserting through a parser
+/// rather than against expected bytes is deliberate — the claim is "still one document that says
+/// what it was given", not "escaped the way this test's author would have escaped it".
+#[test]
+fn the_envelope_survives_a_message_a_caller_wrote() {
+    const AWKWARD: &[&str] = &[
+        r#"key "prod" not found"#,
+        r"path C:\config not found",
+        "line one\nline two",
+        "carriage\rreturn",
+        "tab\there",
+        "backspace\u{08}here",
+        "formfeed\u{0c}here",
+        "control\u{01}here",
+    ];
+    for message in AWKWARD {
+        let rendered = envelope_of("invalid_request", message);
+        let parsed: serde_json::Value = serde_json::from_str(&rendered)
+            .unwrap_or_else(|e| panic!("the envelope around {message:?} is not one document: {e}"));
+        let error = parsed
+            .get("error")
+            .and_then(serde_json::Value::as_object)
+            .expect("the envelope's one key");
+        assert_eq!(error.len(), 2, "the envelope is code and message and nothing else");
+        assert_eq!(error["code"], "invalid_request");
+        assert_eq!(
+            error["message"].as_str(),
+            Some(*message),
+            "the message a reader parses back is not the message this was given"
+        );
+    }
+}
+
 #[test]
 fn every_reason_maps_to_one_of_the_ten_frozen_codes() {
     const FROZEN_CODES: &[&str] = &[
