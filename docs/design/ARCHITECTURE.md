@@ -1548,6 +1548,42 @@ the unit they entitle. Totality and type-level step order are what the surface c
   table. Together these are the hub-and-spoke shape already enforced; this row names it in the
   owner's words so it is legible as one decision rather than five independent rules.
 
+### Decisions 2026-09-07 (owner)
+
+- **The plugin kinds never cross-contaminate.** In the owner's words: *"busbar = core + plugins. We
+  have ~10 plugin kinds. They can never cross-contaminate. Never a plane-transport; we have planes,
+  we have transports. If we ever need something new we make a new plugin kind."* The proposal to
+  create `busbar-transport-a2a` is REFUSED as catastrophic: it fuses a KIND (`transport`) with
+  another kind's INSTANCE (`a2a`) and merges back exactly what the plane/transport split is tearing
+  apart. This is not a review convention — it is enforced by `cargo xtask gate kind-isolation`
+  (BLOCKING on every push) in four rows: the crate NAME (`busbar-transport-a2a`,
+  `busbar-plane-http`, `busbar-unit-mcp` and `busbar-plane-transport` are all refused, with the
+  instance vocabulary DERIVED from the plane crates' and transport crates' own names); the
+  kind-to-kind DEPENDENCY graph (a ratchet over the measured edge classes — a new class is refused,
+  a class the tree no longer has must be struck); the source VOCABULARY (a transport never names a
+  plane instance, a plane never names `axum`/`hyper`/`tonic`/`tungstenite`/`tokio::net`, and neither
+  a plane nor a codec ever names a transport crate); and the kind REGISTRY, where a crate that
+  matches no kind in the table is refused with the ruling itself — **make a new plugin kind, do not
+  fuse two**. The retiring `busbar-core`/`busbar-llm`/`busbar-mcp`/`busbar-a2a`/`busbar-voice`
+  crates are exempt as a dependency source until they are deleted, on a ratchet that is RED once the
+  crate an exemption excuses is gone.
+- **Crate names are `busbar-<kind>-<name>`; a dialect is a plugin kind.** Segment two is the kind.
+  The crates that predate the scheme reach their kind through the gate's explicit table until the
+  one-commit rename lands. A four-segment plane name — `busbar-plane-<plane>-<dialect>`, e.g.
+  `busbar-plane-llm-openai`, `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice` — is a DIALECT
+  of that plane, and the direction is fixed: the dialect names its plane, a plane never names a
+  dialect, and a dialect never names a sibling plane. Today's `*-codec` crates are the pre-split
+  dialects. A five-segment name is refused.
+- **Voice is the STREAMS plane** (config section `streams:`). `busbar-plane-voice` and
+  `busbar-voice-codec` are read as the streams plane until they are renamed; the alias is held on a
+  ratchet and is RED once the crate it translates is gone.
+- **This is the ship criterion.** On the ship SHA the answer is ZERO — zero fused names, zero
+  cross-kind edges, zero cross-kind vocabulary, one entry surface per kind and one shared
+  conformance battery per kind, with no permanent exemptions. The two additional rows
+  (`kind-isolation:shape`, `kind-isolation:testkit`) are owed by `cargo xtask gate
+  kind-isolation-ship`, which `scripts/verify-1.6.0-done.sh` runs at release time; they are RED on
+  HEAD by design and the ratchet is that they reach zero before the tag.
+
 **Proposal awaiting the owner (not a decision):** the admin "plane" is a codec for the admin wire
 whose only destination is core (`busbar-unit-verbs` executes; scope always checked; admin listener
 only) — renaming it "admin surface" would make that plain.
