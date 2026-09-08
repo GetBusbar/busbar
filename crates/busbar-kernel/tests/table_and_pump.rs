@@ -687,6 +687,47 @@ fn a_queue_that_drains_takes_the_backpressure_off() {
     assert_eq!(clock.depth(), 0);
 }
 
+/// Once the queue is at its cap, `offer` must stop counting new arrivals into `depth` — on
+/// either transport kind — or a queue that looks full forever after one overrun is a connection
+/// throttled for the rest of its life on a depth number nothing can bring back down.
+#[test]
+fn offer_never_grows_depth_past_the_queue_cap() {
+    let mut stream = EmissionClock::new(1_000, 2, TransportKind::Stream);
+    assert_eq!(stream.offer(0), Emission::Send);
+    assert!(matches!(stream.offer(0), Emission::Backpressure { .. }));
+    assert!(matches!(stream.offer(0), Emission::Backpressure { .. }));
+    assert_eq!(stream.depth(), 2, "the queue is at its cap");
+
+    // Three more overruns past the cap: depth must not move.
+    for _ in 0..3 {
+        assert!(matches!(stream.offer(0), Emission::Backpressure { .. }));
+        assert_eq!(stream.depth(), 2, "the guard holds depth at the cap, not past it");
+    }
+    // Draining by exactly the overrun count proves nothing was silently counted while over cap:
+    // two `emitted()` calls empty a depth that never grew past 2.
+    stream.emitted();
+    stream.emitted();
+    assert_eq!(stream.depth(), 0);
+
+    let mut datagram = EmissionClock::new(1_000, 2, TransportKind::Datagram);
+    assert_eq!(datagram.offer(0), Emission::Send);
+    assert!(matches!(datagram.offer(0), Emission::Backpressure { .. }));
+    assert!(matches!(datagram.offer(0), Emission::Backpressure { .. }));
+    assert_eq!(datagram.depth(), 2, "the queue is at its cap");
+
+    for _ in 0..3 {
+        assert_eq!(
+            datagram.offer(0),
+            Emission::Unemitted,
+            "a datagram overrun is dropped, not queued"
+        );
+        assert_eq!(datagram.depth(), 2, "the guard holds depth at the cap, not past it");
+    }
+    datagram.emitted();
+    datagram.emitted();
+    assert_eq!(datagram.depth(), 0);
+}
+
 #[test]
 fn a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved() {
     let budget = SpillBudget::new(1 << 20);
