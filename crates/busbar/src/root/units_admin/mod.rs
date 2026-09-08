@@ -608,12 +608,12 @@ impl NodeTopology for HandleTopology {
         let generation = self.handle.load();
         // THE PROJECTION IS THE SUBSTRATE'S, so this reading and the effective-config read's are the
         // same fact rather than two loops that agree today. See its own note for why.
-        busbar_substrate::plane_host::providers_by_lane_count(generation.engine_tables_view())
+        generation.engine_tables_view().providers_by_lane_count()
     }
 
     fn models(&self) -> Vec<(String, String)> {
         let generation = self.handle.load();
-        busbar_substrate::plane_host::models_by_lane(generation.engine_tables_view())
+        generation.engine_tables_view().models_by_lane()
     }
 }
 

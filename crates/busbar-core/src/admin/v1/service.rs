@@ -1016,7 +1016,10 @@ impl AdminService {
         // Cut 1 and the composition root renders that answer from the same neutral fact, so the
         // walk over the lanes lives once and what is left here is the rendering into the view type
         // the effective-config read embeds.
-        let models = busbar_substrate::plane_host::models_by_lane(self.app.engine_tables_view())
+        let models = self
+            .app
+            .engine_tables_view()
+            .models_by_lane()
             .into_iter()
             .map(|(model, provider)| ModelView { model, provider })
             .collect();
@@ -1030,14 +1033,16 @@ impl AdminService {
         // in 1.6.0's admin Cut 1 and the composition root renders that answer from the same neutral
         // fact — so the counting lives once, where both readings can reach it, and what is left here
         // is the rendering into the view type the effective-config read embeds.
-        let providers =
-            busbar_substrate::plane_host::providers_by_lane_count(self.app.engine_tables_view())
-                .into_iter()
-                .map(|(provider, model_count)| ProviderView {
-                    provider,
-                    model_count,
-                })
-                .collect();
+        let providers = self
+            .app
+            .engine_tables_view()
+            .providers_by_lane_count()
+            .into_iter()
+            .map(|(provider, model_count)| ProviderView {
+                provider,
+                model_count,
+            })
+            .collect();
         Ok(Page::single(providers))
     }
 
