@@ -206,14 +206,18 @@ impl DemotionRecord {
 /// And ONLY `Approved` clears. Every other state leaves the row exactly as it is — an upstream that
 /// has stopped answering has not stopped drifting, and clearing on it would let a demoted upstream
 /// buy its approval back by going dark.
-pub(crate) fn settle(demotions: &DemotionRecord, server: &str, state: crate::trust::TrustState) {
+pub(crate) fn settle(
+    demotions: &DemotionRecord,
+    server: &str,
+    state: busbar_substrate::trust::TrustState,
+) {
     match state {
         // The WALL clock, not the sweep's monotonic tick: this timestamp is read by an operator
         // after a restart, and a tick would be meaningless to them.
-        crate::trust::TrustState::Quarantined => {
+        busbar_substrate::trust::TrustState::Quarantined => {
             demotions.record(server, state.word(), busbar_substrate::store::now())
         }
-        crate::trust::TrustState::Approved => demotions.clear(server),
+        busbar_substrate::trust::TrustState::Approved => demotions.clear(server),
         _ => {}
     }
 }
