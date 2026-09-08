@@ -8,6 +8,7 @@ mod carrier_tests;
 mod chain_tests;
 mod detect_tests;
 mod exchange_tests;
+mod resolved_key_tests;
 mod unit_tests;
 
 use crate::chain::{ChainEntry, ResolvedKey};
@@ -95,10 +96,7 @@ impl crate::chain::KeyVerifier for OneKey {
         if token != self.token || expected_aud != self.aud {
             return None;
         }
-        Some(ResolvedKey {
-            id: "vk_one".to_string(),
-            name: "the one key".to_string(),
-        })
+        Some(ResolvedKey::unrestricted("vk_one", "the one key"))
     }
 }
 

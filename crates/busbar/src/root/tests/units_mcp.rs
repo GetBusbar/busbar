@@ -392,10 +392,8 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
             // to the literal, not to <McpPlane as PlaneMeta>::KEY: production supplies the audience
             // from that identical expression, so comparing against it here would let both sides
             // drift together if the plane's key string ever changed.
-            (credential == "tok" && expected_aud == Some("mcp")).then(|| KeyFacts {
-                id: "key-mcp-1".to_string(),
-                name: "an approved key".to_string(),
-            })
+            (credential == "tok" && expected_aud == Some("mcp"))
+                .then(|| KeyFacts::unrestricted("key-mcp-1", "an approved key"))
         }
 
         fn revoked(&self, _credential: &str) -> bool {
