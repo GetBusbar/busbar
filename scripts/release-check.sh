@@ -1500,7 +1500,7 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
       docker run -d --rm --name "$SUITE_CONTAINER" \
         -e POSTGRES_USER=busbar -e POSTGRES_PASSWORD=busbar -e POSTGRES_DB=busbar_release_check \
         -p 15432:5432 \
-        postgres:16 >/dev/null
+        postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b >/dev/null
       echo "  waiting for postgres to accept connections (pg_isready inside the container)..."
       waited=0
       until docker exec "$SUITE_CONTAINER" pg_isready -U busbar >/dev/null 2>&1; do
@@ -1522,7 +1522,7 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
         -e MYSQL_ROOT_PASSWORD=busbar -e MYSQL_USER=busbar -e MYSQL_PASSWORD=busbar \
         -e MYSQL_DATABASE=busbar_release_check \
         -p 13306:3306 \
-        mysql:8 >/dev/null
+        mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb >/dev/null
       echo "  waiting for mysql to accept connections (mysqladmin ping inside the container)..."
       waited=0
       # MySQL 8's first boot initializes the datadir and restarts once — allow a longer window than
@@ -1542,7 +1542,8 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
     valkey)
       SUITE_CONTAINER="busbar-release-check-valkey-$$"
       DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
-      docker run -d --rm --name "$SUITE_CONTAINER" -p 16379:6379 valkey/valkey:8 >/dev/null
+      docker run -d --rm --name "$SUITE_CONTAINER" -p 16379:6379 \
+        valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6 >/dev/null
       echo "  waiting for valkey to accept connections (valkey-cli ping inside the container)..."
       waited=0
       until [ "$(docker exec "$SUITE_CONTAINER" valkey-cli ping 2>/dev/null)" = "PONG" ]; do
@@ -1561,7 +1562,8 @@ while IFS=$'\t' read -r P_REPO P_DIR _ _ P_SERVICE P_RELGATE P_GATE _; do
       SUITE_CONTAINER="busbar-release-check-vault-$$"
       DOCKER_CONTAINERS+=("$SUITE_CONTAINER")
       docker run -d --rm --name "$SUITE_CONTAINER" --cap-add=IPC_LOCK \
-        -e VAULT_DEV_ROOT_TOKEN_ID=root -p 18200:8200 hashicorp/vault >/dev/null
+        -e VAULT_DEV_ROOT_TOKEN_ID=root -p 18200:8200 \
+        hashicorp/vault@sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2 >/dev/null
       echo "  waiting for vault to report healthy (/v1/sys/health)..."
       waited=0
       until curl -fsS "http://127.0.0.1:18200/v1/sys/health" >/dev/null 2>&1; do

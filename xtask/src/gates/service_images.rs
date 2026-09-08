@@ -31,10 +31,14 @@
 //! 7. [`ROW_EVERY_PIN_USED`] — every row of the table is used by at least one workflow. An unused
 //!    pin is a pin nobody bumps, and it is how the table starts describing a world that stopped
 //!    existing while still reading as authoritative.
-//! 8. [`ROW_RELEASE_CHECK`] — THE SCAN SET IS WIDER THAN THE WORKFLOWS. The container tags
-//!    `scripts/release-check.sh` names in its own `docker run` lines resolve to rows in the SAME
-//!    table. That script is where the drift was found, and a lint that reads only
-//!    `.github/workflows/` would have declared the tree clean on the day the hole was open.
+//! 8. [`ROW_RELEASE_CHECK`] — THE SCAN SET IS WIDER THAN THE WORKFLOWS. The container references
+//!    `scripts/release-check.sh` names in its own `docker run` lines are held to the SAME two
+//!    demands rules 4 and 6 make of a workflow's `image:` line: each carries an `@sha256:`, and it
+//!    is the digest this table pins for that image. Asking only whether the tag NAMES a row is the
+//!    question the original drift answers yes to — `postgres:16` was in the table and was still a
+//!    floating reference — so the name test alone reads the four tags it exists to ban as clean.
+//!    That script is where the drift was found, and a lint that reads only `.github/workflows/`
+//!    would have declared the tree clean on the day the hole was open.
 //!
 //! THE ESCAPE HATCH, ported exactly as the shell had it: an `image:` whose value is a workflow
 //! expression (`${{ … }}`) with no image literal in it is exempt. The value is not knowable from
@@ -331,14 +335,38 @@ impl Gate for ServiceImagesGate {
             &[ROW_FLOATING, ROW_ROW_PRESENT, ROW_PIN_MATCHES],
         ));
 
-        report.push(plant_release_check(
-            cx,
-            self,
-            "release-check.sh runs a container the table does not pin",
-            &[ROW_RELEASE_CHECK],
-            Some(("postgres:16 >/dev/null", "ghostdb:9 >/dev/null")),
-            &["ghostdb:9", "is not named in"],
-        ));
+        match a_pinned_reference(cx) {
+            Ok(reference) => {
+                let image = reference
+                    .split('@')
+                    .next()
+                    .unwrap_or(&reference)
+                    .to_string();
+                let unknown = format!("ghostdb:9@{PLANTED_DIGEST}");
+                report.push(plant_release_check(
+                    cx,
+                    self,
+                    "release-check.sh runs a container the table does not pin",
+                    &[ROW_RELEASE_CHECK],
+                    Some((&reference, &unknown)),
+                    &["ghostdb:9", "no row in"],
+                ));
+
+                // THE FLOATING TAG ITSELF — the drift this rule was written for, and the one shape
+                // a rule that only asks "is this name in the table?" is green over: the name IS in
+                // the table, and the reference still resolves to whatever the registry serves
+                // today.
+                report.push(plant_release_check(
+                    cx,
+                    self,
+                    "release-check.sh runs a container by a floating tag the table pins by digest",
+                    &[ROW_RELEASE_CHECK],
+                    Some((&reference, &image)),
+                    &[&image, "carries no @sha256:"],
+                ));
+            }
+            Err(e) => report.note_infra_failure(format!("service-images selftest: {e}")),
+        }
 
         report.push(plant_release_check(
             cx,
@@ -505,10 +533,20 @@ impl Gate for ServiceImagesGate {
             all(std::slice::from_ref(&planted_workflow), true),
         );
 
+        let unknown = format!("ghostdb:9@{PLANTED_DIGEST}");
         push(
             "release-check.sh runs a container the table does not pin",
             Some(ROW_RELEASE_CHECK),
-            release_check_overlay(cx, Some(("postgres:16 >/dev/null", "ghostdb:9 >/dev/null"))),
+            a_pinned_reference(cx).and_then(|r| release_check_overlay(cx, Some((&r, &unknown)))),
+            all(&[], true),
+        );
+        push(
+            "release-check.sh runs a container by a floating tag the table pins by digest",
+            Some(ROW_RELEASE_CHECK),
+            a_pinned_reference(cx).and_then(|r| {
+                let image = r.split('@').next().unwrap_or(&r).to_string();
+                release_check_overlay(cx, Some((&r, &image)))
+            }),
             all(&[], true),
         );
         push(
@@ -634,6 +672,28 @@ fn is_image_name(s: &str) -> bool {
         .is_some_and(|c| c.is_ascii_alphanumeric())
         && name.chars().all(is_ref_char)
         && tag.is_none_or(is_tag)
+}
+
+/// A whole container reference as a shell command writes it: `<name>[:tag]` with an OPTIONAL
+/// `@sha256:<64 hex>` pin, split into the two halves the release-check rule judges separately.
+///
+/// `is_image_name` alone cannot read a pinned reference — it splits at the first `:` and the tag
+/// half then carries the whole digest — so a reader built on it drops exactly the references that
+/// are correctly pinned and keeps the floating ones. That is anti-monotone: fixing the script
+/// would have emptied the scan set and tripped its floor.
+fn split_reference(s: &str) -> Option<(&str, Option<&str>)> {
+    match s.split_once('@') {
+        None => is_image_name(s).then_some((s, None)),
+        Some((name, digest)) => {
+            let hex = digest.strip_prefix("sha256:")?;
+            (is_image_name(name)
+                && hex.len() == 64
+                && hex
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()))
+            .then_some((name, Some(digest)))
+        }
+    }
 }
 
 /// Every `<name>[:tag]@sha256:<64 hex>` in a value, as `(reference, digest)`.
@@ -771,7 +831,7 @@ fn release_check_tags(text: &str) -> Vec<String> {
                 continue;
             }
             let token = token.trim_matches(['"', '\'']);
-            if !token.contains('$') && is_image_name(token) {
+            if !token.contains('$') && split_reference(token).is_some() {
                 out.push(token.to_string());
             }
             break;
@@ -974,16 +1034,52 @@ fn rule_release_check(cx: &Ctx, pins: &[Pin]) -> Row {
             ),
         );
     }
-    let offenders: Vec<&String> = tags
-        .iter()
-        .filter(|tag| !pins.iter().any(|p| &&p.image == tag))
-        .collect();
+    // THE REFERENCE IS JUDGED, NOT ITS NAME. Asking only whether the tag NAMES a table row is the
+    // question the drift already answers yes to: `postgres:16` is in the table, and `postgres:16`
+    // is exactly the floating reference this rule exists to ban. So each reference must carry the
+    // digest, and it must carry the SAME digest the table pins — the identical demand
+    // `ROW_FLOATING` and `ROW_PIN_MATCHES` make of a workflow's `image:` line.
+    let mut offenders: Vec<String> = Vec::new();
+    for tag in &tags {
+        let (image, digest) = match split_reference(tag) {
+            Some(parts) => parts,
+            None => {
+                offenders.push(format!(
+                    "{tag} — not a container reference this reader can judge"
+                ));
+                continue;
+            }
+        };
+        let Some(pin) = pins.iter().find(|p| p.image == image) else {
+            offenders.push(format!(
+                "{tag} — no row in {IMAGES_TSV} names `{image}`, so the gate that decides a \
+                 release is not pinned to the bytes CI is pinned to"
+            ));
+            continue;
+        };
+        match (digest, pin.digest.as_deref()) {
+            (None, _) => offenders.push(format!(
+                "{tag} — carries no @sha256:, so it is a FLOATING reference: it can resolve to \
+                 different bytes on two runs of the same commit, which is the drift this rule was \
+                 written for"
+            )),
+            (Some(d), Some(pinned)) if d != pinned => offenders.push(format!(
+                "{tag} — the table pins {pinned} for `{image}`, so the qa gate and CI are running \
+                 two different images under one name"
+            )),
+            (Some(_), None) => offenders.push(format!(
+                "{tag} — the row for `{image}` in {IMAGES_TSV} carries no digest, so there is \
+                 nothing to agree with"
+            )),
+            (Some(_), Some(_)) => {}
+        }
+    }
     if offenders.is_empty() {
         Row::pass(
             ROW_RELEASE_CHECK,
-            "every container the qa gate's script runs is named in the pinned table",
+            "every container the qa gate's script runs is pinned to the digest the table pins",
             format!(
-                "{} tag(s): {}",
+                "{} reference(s): {}",
                 tags.len(),
                 tags.iter()
                     .map(String::as_str)
@@ -994,16 +1090,8 @@ fn rule_release_check(cx: &Ctx, pins: &[Pin]) -> Row {
     } else {
         Row::fail(
             ROW_RELEASE_CHECK,
-            "the qa gate's script runs a container the pinned table does not name",
-            format!(
-                "{} — it is not named in {IMAGES_TSV}, so the gate that decides a release is not \
-                 pinned to the bytes CI is pinned to",
-                offenders
-                    .iter()
-                    .map(|t| t.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            "the qa gate's script runs a container that is not pinned to the table's bytes",
+            offenders.join(" | "),
         )
     }
 }
@@ -1080,6 +1168,21 @@ fn plant_release_check(
         Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
         Err(e) => unplantable(name, covers, naming, e),
     }
+}
+
+/// A pinned reference the qa gate's script really runs, read out of the script itself.
+///
+/// The plants below rewrite a reference; naming one as a literal here would mean a digest bump in
+/// the table becoming an unplantable selftest, and a selftest that cannot plant proves nothing
+/// about the rule it names. So the needle is discovered the same way the rule discovers it.
+fn a_pinned_reference(cx: &Ctx) -> Result<String, String> {
+    let text = cx.read(RELEASE_CHECK)?;
+    release_check_tags(&text)
+        .into_iter()
+        .find(|t| matches!(split_reference(t), Some((_, Some(_)))))
+        .ok_or_else(|| {
+            format!("{RELEASE_CHECK} runs no digest-pinned container to plant over").to_string()
+        })
 }
 
 /// The overlay one plant into the qa gate's script produces, shared by the self-test and the parity
