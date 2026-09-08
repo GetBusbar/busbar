@@ -1139,23 +1139,46 @@ fn run_root_legs(cx: &Ctx) -> i32 {
         .filter_map(|l| l.strip_suffix(": test"))
         .collect();
 
-    // `crates/busbar/src/root/units_llm.rs::the_fn` is the ledger's spelling; libtest's is
-    // `root::units_llm::tests::the_fn`. Deriving one from the other rather than storing both is
-    // what keeps the two from drifting apart.
+    // `crates/busbar/src/root/tests/units_llm.rs::the_fn` is the ledger's spelling; libtest's is
+    // `root::units_llm::tests::the_fn`.
+    //
+    // THE PATH IS LOOKED UP, NOT DERIVED, and the derivation it replaces could not have worked. It
+    // turned the ledger's file path straight into a module path, which reads a `tests/` directory
+    // segment as a `tests` MODULE — but every one of these cells lives in a file its owner pulls
+    // in with `#[cfg(test)] #[path = "tests/<name>.rs"] mod tests;`, so the directory is not in the
+    // module path at all and the owner's own name is (`root/tests/units_llm.rs` is
+    // `root::units_llm::tests`, `root/units_admin/tests/units_admin.rs` is
+    // `root::units_admin::tests`). Two layouts, neither one segment-for-segment; the derived name
+    // matched nothing in either, so this arm reported EVERY cell missing on a tree where every
+    // cell was present. Matching the listing on the `fn` name instead needs no rule about
+    // layout: exactly one test may end in `::<fn>`, or the claim is not resolvable and is refused
+    // — zero matches is the renamed-away cell this arm exists to catch, and two is an ambiguity a
+    // gate may not pick a winner in.
     let mut wanted: Vec<String> = Vec::new();
     let mut unknown: Vec<String> = Vec::new();
     let mut per_leg: BTreeMap<String, usize> = BTreeMap::new();
     for (leg, file, func) in &cells {
-        let path = file
-            .split("src/")
-            .nth(1)
-            .and_then(|s| s.strip_suffix(".rs"))
-            .map(|s| format!("{}::tests::{func}", s.replace('/', "::")))
-            .unwrap_or_default();
-        if path.is_empty() || !known.contains(path.as_str()) {
-            unknown.push(format!("  {leg}: {file}::{func} (looked for {path})"));
-        } else if !wanted.contains(&path) {
-            wanted.push(path);
+        let suffix = format!("::{func}");
+        let hits: Vec<&str> = known
+            .iter()
+            .filter(|t| t.ends_with(&suffix))
+            .copied()
+            .collect();
+        match hits.as_slice() {
+            [one] => {
+                if !wanted.contains(&(*one).to_string()) {
+                    wanted.push((*one).to_string());
+                }
+            }
+            [] => unknown.push(format!(
+                "  {leg}: {file}::{func} (no test in the five-leg build ends in `{suffix}`)"
+            )),
+            many => unknown.push(format!(
+                "  {leg}: {file}::{func} ({} tests end in `{suffix}`: {}) -- an ambiguous claim is \
+                 not a claim",
+                many.len(),
+                many.join(", ")
+            )),
         }
         *per_leg.entry(leg.clone()).or_default() += 1;
     }
