@@ -154,6 +154,8 @@ impl TransportMeta for GrpcTransport {
     // table's own words for this row.
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
         Some(busbar_contract_transport::wire::StatusAt::Terminal);
+    const STATUS_NAMESPACE: Option<&'static str> =
+        Some(busbar_contract_transport::registry::status_ns::GRPC);
 }
 
 impl Transport for GrpcTransport {
