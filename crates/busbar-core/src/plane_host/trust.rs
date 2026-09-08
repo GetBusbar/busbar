@@ -41,7 +41,7 @@
 //!   designates leadership faithfully and `verify_store` releases it, but the follower does not yet
 //!   block on a host-side condvar keyed to the leader's completion.
 //! * `trust_evaluate` consults the real durable drift state (the demotion records) and maps it to a
-//!   verdict; the FULL ordered validator (`crate::trust::validate::validate_request` —
+//!   verdict; the FULL ordered validator (`busbar_substrate::trust::validate::validate_request` —
 //!   identity → grant → artifact → generation) is wired once the counterparty→registration
 //!   resolution (a registry lookup that turns opaque identity bytes into an `Approval`/`Sighting`)
 //!   lands. Until then an un-demoted counterparty is `Allow` and a demoted one is `Quarantined`.
@@ -269,13 +269,13 @@ unsafe fn cache_key_raw(scope: u32, ptr: *const u8, len: usize) -> Option<CacheK
     Some((scope, bytes.to_vec()))
 }
 
-/// THE reverify-`due` REACH, wrapped once — returns the full [`crate::trust::reverify::Due`] REASON
+/// THE reverify-`due` REACH, wrapped once — returns the full [`busbar_substrate::trust::reverify::Due`] REASON
 /// (never a lossy bool). The compiled-in bool veneer that once collapsed it for the MCP plane is gone
 /// with that plane's `VerifyGate`, which now lives in the neutral substrate and names
 /// `reverify::due` directly; what remains funnels through here. The plane's a2a
 /// re-verify job (`crate::a2a::verify::reverify_once`) and the operator `sync` verb
 /// (`crate::a2a::verbs::sync`) funnel through here, so the a2a plane never reaches
-/// `crate::trust::reverify::due` itself post-extraction — only this host veneer does. `operator_sync`
+/// `busbar_substrate::trust::reverify::due` itself post-extraction — only this host veneer does. `operator_sync`
 /// OUTRANKS the timer (an operator who asks does not wait): it is unconditionally [`Due::OperatorSync`],
 /// exactly as `due` promises. Reconstructs a minimal ledger/policy because `due` reads only
 /// `last_checked_ms` and `ttl_ms` — `recovery_backoff_ms` and the drift counters never enter the
@@ -285,22 +285,22 @@ pub(crate) fn verify_decide_due(
     ttl_ms: u64,
     now_ms: u64,
     operator_sync: bool,
-) -> crate::trust::reverify::Due {
-    let ledger = crate::trust::reverify::Ledger {
+) -> busbar_substrate::trust::reverify::Due {
+    let ledger = busbar_substrate::trust::reverify::Ledger {
         last_checked_ms,
         ..Default::default()
     };
-    let policy = crate::trust::reverify::Policy {
+    let policy = busbar_substrate::trust::reverify::Policy {
         ttl_ms,
         recovery_backoff_ms: 0,
     };
-    crate::trust::reverify::due(&ledger, &policy, now_ms, operator_sync)
+    busbar_substrate::trust::reverify::due(&ledger, &policy, now_ms, operator_sync)
 }
 
 /// WIRED `verify_decide` → [`verify_decide_due`]: the STATELESS freshness DECISION over a
 /// [`VerifyQuery`] (the plane's own `last_checked_ms` + present flag, `ttl_ms`, `now_ms`). No host
 /// state is touched — the plane's `VerifyGate` keeps its ledger, coalescing and await; only the
-/// `reverify::due` arithmetic crosses here. Marshals the FULL [`crate::trust::reverify::Due`] REASON
+/// `reverify::due` arithmetic crosses here. Marshals the FULL [`busbar_substrate::trust::reverify::Due`] REASON
 /// onto its neutral [`VerifyDecision`] mirror (`Fresh` for reuse; a specific reason —
 /// `NeverChecked`/`TtlExpired`/`ClockWentBackwards` — when the subject is DUE), so the plane can
 /// reconstruct the rich reason it audits rather than a lossy bool. `operator_sync` stays the slot's
@@ -368,7 +368,7 @@ pub extern "C-unwind" fn approval_redeem_q(
 /// observation RECORDS the demotion, an `Approved` one CLEARS it (an operator's remedy, or a clean
 /// re-verification) — the one settle rule, so a caller that demotes and a caller that clears reach the
 /// same books. A sender that predates the field (guarded out by `size`) settles the pre-extension
-/// demote-only [`crate::trust::TrustState::Quarantined`]. The write is fire-and-forget at the primitive
+/// demote-only [`busbar_substrate::trust::TrustState::Quarantined`]. The write is fire-and-forget at the primitive
 /// (the disposition is already in force in-process; a store hiccup costs durability, not the refusal),
 /// so a clean call is `Ok`. A null key is `Refused`; a caught panic is `Fault`.
 pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key) -> StatusClass {
@@ -405,7 +405,7 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
 pub(crate) fn quarantine_drift(
     demotions: &crate::plane::quarantine::DemotionRecord,
     subject: &str,
-    state: crate::trust::TrustState,
+    state: busbar_substrate::trust::TrustState,
 ) {
     crate::plane::quarantine::settle(demotions, subject, state);
 }
@@ -426,7 +426,7 @@ pub(crate) fn quarantine_drift(
 pub fn quarantine_settle_over(
     app: &crate::state::App,
     subject: &str,
-    state: crate::trust::TrustState,
+    state: busbar_substrate::trust::TrustState,
 ) -> bool {
     let scope = crate::plane_host::DispatchScope::new();
     crate::plane_host::with_borrowed_host(app, &scope, |host, vt| {
@@ -505,14 +505,14 @@ mod reg_state {
     pub(super) const FAILED: u8 = 5;
 }
 
-/// Marshal a [`crate::trust::TrustState`] into the neutral u8 mirror the drift path carries in
+/// Marshal a [`busbar_substrate::trust::TrustState`] into the neutral u8 mirror the drift path carries in
 /// [`Key::drift_state`] (the same numbering [`reg_state`] names). Always compiled (the
 /// `EngineHost::quarantine_settle` core impl reaches `quarantine_settle_over`, which needs it, under
 /// any feature set), so a dead-code allow replaces the former `plane-mcp` gate. The inverse of
 /// [`trust_state_from_u8`]; the drift call sites use it to hand the slot the CALLER's disposition.
 #[allow(dead_code)]
-pub(crate) fn trust_state_u8(state: crate::trust::TrustState) -> u8 {
-    use crate::trust::TrustState;
+pub(crate) fn trust_state_u8(state: busbar_substrate::trust::TrustState) -> u8 {
+    use busbar_substrate::trust::TrustState;
     match state {
         TrustState::Pending => reg_state::PENDING,
         TrustState::Approved => reg_state::APPROVED,
@@ -522,12 +522,12 @@ pub(crate) fn trust_state_u8(state: crate::trust::TrustState) -> u8 {
     }
 }
 
-/// Reconstruct a [`crate::trust::TrustState`] from the neutral u8 mirror in [`Key::drift_state`].
+/// Reconstruct a [`busbar_substrate::trust::TrustState`] from the neutral u8 mirror in [`Key::drift_state`].
 /// `0`/absent (a sender that predates the field, guarded out by `size`) and any unknown value fail
-/// SAFE to [`crate::trust::TrustState::Quarantined`] — the pre-extension demote-only disposition, so
+/// SAFE to [`busbar_substrate::trust::TrustState::Quarantined`] — the pre-extension demote-only disposition, so
 /// a drift the caller could not name still records rather than silently clearing.
-fn trust_state_from_u8(v: u8) -> crate::trust::TrustState {
-    use crate::trust::TrustState;
+fn trust_state_from_u8(v: u8) -> busbar_substrate::trust::TrustState {
+    use busbar_substrate::trust::TrustState;
     match v {
         reg_state::PENDING => TrustState::Pending,
         reg_state::APPROVED => TrustState::Approved,
@@ -562,7 +562,7 @@ fn legacy_drift_verdict(state: &HostState, cp: &CounterpartyRef) -> TrustVerdict
 }
 
 /// FOLD the plane's marshalled per-step FACTS into a [`TrustVerdict`] in the EXACT order of
-/// `crate::trust::validate::validate_request` (identity → grant → artifact → generation) — the
+/// `busbar_substrate::trust::validate::validate_request` (identity → grant → artifact → generation) — the
 /// `Signal`→`classify` precedent applied to trust. The plane computes each step's fact (its
 /// `validate_request` runs plane-side over its own registry); the host reproduces the ORDER and the
 /// verdict MAPPING, so a refusal keeps its SPECIFIC step rather than collapsing to `Denied`. Proven

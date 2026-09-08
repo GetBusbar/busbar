@@ -155,7 +155,7 @@ fn clearing_an_absent_record_is_a_no_op() {
 #[test]
 fn only_a_drift_demotion_writes_and_only_an_agreeing_observation_clears() {
     use crate::plane::quarantine::settle;
-    use crate::trust::TrustState;
+    use busbar_substrate::trust::TrustState;
 
     let (_file, cfg) = durable_cfg("demotion-settle");
     let n = node(&cfg);
