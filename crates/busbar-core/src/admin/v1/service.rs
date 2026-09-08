@@ -1012,16 +1012,14 @@ impl AdminService {
     /// `GET /api/v1/admin/models` — every model lane + its upstream provider. Read scope. Sorted by
     /// model name. No credentials.
     pub(crate) async fn list_models(&self) -> Result<Page<ModelView>, AdminError> {
-        let view = self.app.engine_tables_view();
-        let mut models: Vec<ModelView> = (0..view.lane_count())
-            .filter_map(|i| {
-                view.lane_view(i).map(|l| ModelView {
-                    model: l.model.to_string(),
-                    provider: l.provider.to_string(),
-                })
-            })
+        // THE PROJECTION IS THE SUBSTRATE'S. `GET /models` CROSSED to the loop in 1.6.0's admin
+        // Cut 1 and the composition root renders that answer from the same neutral fact, so the
+        // walk over the lanes lives once and what is left here is the rendering into the view type
+        // the effective-config read embeds.
+        let models = busbar_substrate::plane_host::models_by_lane(self.app.engine_tables_view())
+            .into_iter()
+            .map(|(model, provider)| ModelView { model, provider })
             .collect();
-        models.sort_by(|a, b| a.model.cmp(&b.model));
         Ok(Page::single(models))
     }
 

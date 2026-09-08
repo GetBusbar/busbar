@@ -553,6 +553,12 @@ pub trait NodeTopology: Send + Sync {
     /// The order is part of the answer rather than a detail: the operation it renders has always
     /// answered sorted, and a client diffing two reads of a stable node must see no change.
     fn providers(&self) -> Vec<(String, usize)>;
+
+    /// Every model lane this node routes over, as `(model, provider)`, ordered by model name.
+    ///
+    /// One entry per LANE and not per model: two lanes may configure the same model name against
+    /// different providers, and the operation this renders has always answered both.
+    fn models(&self) -> Vec<(String, String)>;
 }
 
 /// The topology of a node this composition never handed its tables to.
@@ -565,6 +571,10 @@ pub struct UnboundTopology;
 
 impl NodeTopology for UnboundTopology {
     fn providers(&self) -> Vec<(String, usize)> {
+        Vec::new()
+    }
+
+    fn models(&self) -> Vec<(String, String)> {
         Vec::new()
     }
 }
@@ -599,6 +609,11 @@ impl NodeTopology for HandleTopology {
         // THE PROJECTION IS THE SUBSTRATE'S, so this reading and the effective-config read's are the
         // same fact rather than two loops that agree today. See its own note for why.
         busbar_substrate::plane_host::providers_by_lane_count(generation.engine_tables_view())
+    }
+
+    fn models(&self) -> Vec<(String, String)> {
+        let generation = self.handle.load();
+        busbar_substrate::plane_host::models_by_lane(generation.engine_tables_view())
     }
 }
 
@@ -778,7 +793,7 @@ fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>
 /// to agree about which verbs have crossed, and two matches that each decide it separately are two
 /// answers to one question. The ownership pin measures the consequence — a crossed verb must have no
 /// route on the surface underneath, and an uncrossed one must have one.
-const CROSSED_TOPOLOGY_VERBS: &[KernelVerb] = &[KernelVerb::GetProviders];
+const CROSSED_TOPOLOGY_VERBS: &[KernelVerb] = &[KernelVerb::GetModels, KernelVerb::GetProviders];
 
 /// The answer a crossed topology read produces: a 200 carrying JSON, and no other header.
 ///
@@ -802,6 +817,7 @@ fn render_topology_view(verb: KernelVerb, topology: &dyn NodeTopology) -> Option
         return None;
     }
     Some(match verb {
+        KernelVerb::GetModels => render_models(&topology.models()).into_bytes(),
         KernelVerb::GetProviders => render_providers(&topology.providers()).into_bytes(),
         // Unreachable while the set above and this match name the same verbs, which is the
         // invariant the set exists to make checkable rather than a case to invent a body for.
@@ -826,6 +842,26 @@ fn render_providers(providers: &[(String, usize)]) -> String {
         json_string(provider, &mut out);
         out.push_str(",\"model_count\":");
         out.push_str(&lanes.to_string());
+        out.push('}');
+    }
+    out.push_str("],\"next_cursor\":null}");
+    out
+}
+
+/// `GET /api/v1/admin/models` — every configured model lane and the provider it reaches.
+///
+/// The retiring handler's shape, field for field and in its order, inside the same page envelope
+/// every topology read answers in. See [`render_providers`] for why it is written by hand.
+fn render_models(models: &[(String, String)]) -> String {
+    let mut out = String::from("{\"items\":[");
+    for (i, (model, provider)) in models.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"model\":");
+        json_string(model, &mut out);
+        out.push_str(",\"provider\":");
+        json_string(provider, &mut out);
         out.push('}');
     }
     out.push_str("],\"next_cursor\":null}");
