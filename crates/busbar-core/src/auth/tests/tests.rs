@@ -167,20 +167,10 @@ fn assert_uuid_v4_shaped(id: &str) {
 // witnessed `bedrock::synth_amzn_request_id` codec fn directly, so it now lives beside that codec.
 // `assert_uuid_v4_shaped` stays here — its other callers below still use it.
 
-#[test]
-fn test_constant_time_eq_same() {
-    assert!(AuthMiddleware::constant_time_eq("secret", "secret"));
-}
-
-#[test]
-fn test_constant_time_eq_different_length() {
-    assert!(!AuthMiddleware::constant_time_eq("short", "longer"));
-}
-
-#[test]
-fn test_constant_time_eq_one_char_diff() {
-    assert!(!AuthMiddleware::constant_time_eq("secret1", "secret2"));
-}
+// The three `constant_time_eq` cases that stood here asserted the SAME three literals
+// (`secret`/`secret`, `short`/`longer`, `secret1`/`secret2`) that the primitive's owner already
+// asserts at `crates/api/src/tests/auth_tests.rs`. Core's copy tested `busbar-api`'s function
+// through a forwarder core no longer carries, so it went with the forwarder.
 
 #[test]
 fn test_extract_bearer_token_valid() {
