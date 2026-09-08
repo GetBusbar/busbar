@@ -265,7 +265,7 @@ fn a_listener_binds_through_the_transport_it_was_provisioned_into() {
         }),
         fingerprint: "data-listener",
     }];
-    let provisioned = provision_servers(&listeners, &source, &journal, &tls, &token)
+    let provisioned = provision_servers(&listeners, &source, &journal, &TlsSink(&tls), &token)
         .expect("a self-signed pair resolves and parses");
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -312,6 +312,75 @@ fn the_listener_view_answers_the_operators_message_ceiling() {
     assert_eq!(view.get_int("limits.request_body_max_bytes.other"), None);
     assert_eq!(view.get_int("port"), None);
     assert_eq!(view.bind(), Some("127.0.0.1:8080"));
+}
+
+/// THE DIRECTION OF THE SEAM, read off the manifest that decides it.
+///
+/// `ARCHITECTURE.md` section 3.4 states the flow one way only: the transport-key unit resolves the
+/// material and hands the transport an opaque [`TransportKeyHandle`]. A transport that NAMES the
+/// unit in its shipping `[dependencies]` has the edge pointing the other way — a plugin of one kind
+/// compiled against a kernel-internal unit, with nothing between them — and no amount of care
+/// inside the two crates makes that edge point the right way again.
+///
+/// The join belongs HERE, in the composition root, which is the one place allowed to know both
+/// ends. `[dev-dependencies]` is deliberately not checked: the TLS battery builds real key material
+/// through the unit and never ships in the plugin binary this rule protects, which is the same
+/// narrowing `manifest-allowlist` states for every other plugin kind.
+#[test]
+fn the_tls_transport_names_no_unit_in_what_it_ships() {
+    let manifest = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../busbar-transport-tls/Cargo.toml"
+    ))
+    .expect("the tls transport's manifest is in the tree");
+
+    let mut in_deps = false;
+    let mut named = Vec::new();
+    for line in manifest.lines() {
+        let s = line.trim();
+        if s.starts_with('[') && s.ends_with(']') {
+            in_deps = s == "[dependencies]" || s.starts_with("[dependencies.");
+            if s.starts_with("[dependencies.") {
+                named.push(s["[dependencies.".len()..s.len() - 1].to_string());
+            }
+            continue;
+        }
+        if !in_deps || s.is_empty() || s.starts_with('#') {
+            continue;
+        }
+        if let Some((name, _)) = s.split_once('=') {
+            named.push(name.trim().to_string());
+        }
+    }
+
+    let units: Vec<&String> = named
+        .iter()
+        .filter(|n| n.starts_with("busbar-unit-"))
+        .collect();
+    assert!(
+        units.is_empty(),
+        "a transport must receive key material as a handle, never by naming the unit that \
+         resolves it; busbar-transport-tls ships: {units:?}"
+    );
+}
+
+/// The root is what joins the unit to the transport, and it does it without either crate naming
+/// the other: [`TlsSink`] is the adapter, and a config provisioned through it lands in the slot the
+/// handle resolves to.
+#[test]
+fn the_root_adapter_lands_a_config_in_the_transports_own_slot() {
+    let (_, _, client) = self_signed();
+    let tls = busbar_transport_tls::TlsTransport::new();
+    let token = crate::root::kernel::new_kernel().transport_key_token();
+
+    let handle = provision_dial(
+        &TlsSink(&tls),
+        &token,
+        ListenerRole::Admin,
+        "dial-side",
+        client,
+    );
+    assert_eq!(handle.slot(), ListenerRole::Admin.slot_index());
 }
 
 /// The handle carries a slot and a fingerprint, and its debug output says as much rather than
