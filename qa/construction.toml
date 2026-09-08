@@ -309,7 +309,20 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 8000
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3500
+# RAISED ONCE, 3500 -> 3650, by owner ruling of 2026-09-08, and the ruling is recorded here rather
+# than only in a commit message because the next reader of this number has to know it was PAID
+# ATTENTION TO rather than nudged. What was measured before it moved: every `pub` item in
+# busbar-contract and busbar-caps, counted against implementors and callers across the whole
+# workspace and against docs/. The count found exactly ONE item with nothing behind it
+# (`ids::TransportId`, deleted), and found that every other zero-implementor item is CLAIMED — by a
+# queued keep-* branch, by a dated PLUGIN-TREE.md §8 migration row, or by the object-safety fixtures
+# §6 step 14 requires. `kinds::Store` is the sharpest case: 22 verbs, zero implementors in the tree,
+# and a queued branch that makes `RecordSink` its supertrait and writes `&dyn Store` into a test.
+# So the dialect kind's ONE trait could not be paid for out of dead surface, because there is
+# almost none, and the choice was between the raise and shipping a kind the contract cannot name.
+# 3650 is the raise, and it is the last one that is free: the next kind's trait comes out of
+# surface, or out of a second ruling.
+caps_contract_ceiling = 3650
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 45000
 verbs_crate = "busbar-unit-verbs"
