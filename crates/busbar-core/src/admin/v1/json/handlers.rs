@@ -1518,9 +1518,13 @@ pub(crate) async fn reset_overlay_section(
         // The valid set is DERIVED from `OverlaySection::all`, never restated here. The
         // hand-written version of this sentence outlived the addition of the `named_maps` section
         // and told operators `export` was not a section for a whole release.
+        //
+        // Owner ruling F-013 (2026-09-07): 1.6.0 keeps the 1.5.5 message WORDING ("expected `a`,
+        // `b`, ..., or `d`") even as the key list grows — `expected one of` was never 1.5.5's
+        // phrasing, so `valid_names_oxford` renders the old template, not `valid_names`.
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected one of {}",
-            OverlaySection::valid_names()
+            "unknown overlay section `{section}`: expected {}",
+            OverlaySection::valid_names_oxford()
         )));
     };
     let resource = format!("overlay:{}", section.as_str());

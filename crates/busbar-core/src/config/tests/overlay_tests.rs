@@ -929,3 +929,16 @@ fn read_drops_at_when_phase_is_already_present() {
     );
     std::fs::remove_file(&path).ok();
 }
+
+/// The `DELETE /overlay/{section}` not-found message restores the 1.5.5 WORDING (owner ruling
+/// F-013: wording stays, key-list growth is fine) with the four 1.6.0 named-map sections appended
+/// in their `NamedMapSection::sections()` order: 1.5.5's items first, in 1.5.5 order, the Oxford
+/// `, or` before the last item — NOT the 1.6.0-only "expected one of" template with no Oxford comma.
+#[test]
+fn valid_names_oxford_restores_1_5_5_template_with_grown_list() {
+    assert_eq!(
+        OverlaySection::valid_names_oxford(),
+        "`groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`, `tools`, \
+         or `agents`"
+    );
+}

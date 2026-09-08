@@ -676,15 +676,25 @@ impl OverlaySection {
         }
     }
 
-    /// The valid section names as a comma-separated, backticked list for an error message. Derived
-    /// from [`OverlaySection::all`] rather than written out, because the hand-written version of this
-    /// string is exactly what told operators `export` was not a section while it was becoming one.
-    pub(crate) fn valid_names() -> String {
-        OverlaySection::all()
+    /// The valid section names as the 1.5.5 WORDING expects them: a backticked, comma-separated,
+    /// Oxford-commaed list — `` `a`, `b`, `c`, or `d` `` — with the four 1.6.0 named-map sections
+    /// appended after the original four in [`OverlaySection::all`] order. Owner ruling (F-013,
+    /// 2026-09-07): 1.6.0 keeps 1.5.5's message WORDING; the key list is free to grow, the template
+    /// is not. Every caller that reports "which section names are valid" to a human (the `DELETE
+    /// /overlay/{section}` 400 body, the error taxonomy's documented condition prose) renders through
+    /// THIS one function, so the wording cannot drift between the wire response and the docs it
+    /// generates.
+    pub(crate) fn valid_names_oxford() -> String {
+        let names: Vec<String> = OverlaySection::all()
             .iter()
             .map(|s| format!("`{}`", s.as_str()))
-            .collect::<Vec<_>>()
-            .join(", ")
+            .collect();
+        match names.as_slice() {
+            [] => String::new(),
+            [only] => only.clone(),
+            [a, b] => format!("{a} or {b}"),
+            [init @ .., last] => format!("{}, or {last}", init.join(", ")),
+        }
     }
 }
 
