@@ -195,7 +195,7 @@ pub mod config {
     //! here module for module, so `busbar_substrate::config::<anything>` resolves exactly as it did
     //! and no reader, in or out of this crate, changes a spelling.
     pub use busbar_substrate_values::config::{
-        auth, groups, hooks, providers, sections, PolicyOnError, ProviderAuth,
+        auth, groups, hooks, pools, projection, providers, sections, PolicyOnError, ProviderAuth,
     };
 
     pub mod limits {
@@ -212,11 +212,6 @@ pub mod config {
         /// rather than beside the rest of the grammar only because it is a `tokio` mutex.
         #[cfg(any(test, feature = "test-support"))]
         pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    }
-
-    pub mod pools {
-        //! Re-exported whole from `busbar_substrate_values::config::pools`.
-        pub use busbar_substrate_values::config::pools::*;
     }
 }
 
