@@ -24,6 +24,10 @@
 ///
 /// Kept as an explicit list, not a prefix match, so a new divergence cannot hide under an existing
 /// allowance — adding one is an edit an owner reviews.
+// Read only by the two `#[cfg(feature = "openapi-schema")]` tests below, so this (and
+// `V155_FIXTURE`/`superset_violations`) are dead in a `cargo test`/`clippy` run that does not
+// enable that feature — same reason `busbar-substrate::api::ap` carries the same allowance.
+#[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
 const ACCEPTED: &[(&str, &str)] = &[
     (
         "/info/version",
@@ -44,22 +48,36 @@ const ACCEPTED: &[(&str, &str)] = &[
     (
         // plane-purity: frozen-wire the OpenAPI 3.1 keyword in a pointer, not the LLM dialect
         "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/responses/409/description",
-        "A NEW ERROR CONDITION, not a prose edit: 1.6.0 added `Conflict/StillReferenced` (a \
-         section reset that would leave base config.yaml naming a definition it removes). The \
-         description is generated from the endpoint's declared taxonomy, so restoring 1.5.5's \
-         string means UN-DECLARING a reachable 409 — which \
-         `declared_error_set_is_exactly_what_the_handlers_emit` correctly refuses. Documenting a \
-         real failure is the additive reading; the owner rules on the wording.",
+        "PB-75 REGISTERED CORRECTION (owner ruling 2026-09-08), and also a new error condition, not \
+         a prose edit: 1.6.0 added `Conflict/StillReferenced` (a section reset that would leave \
+         base config.yaml naming a definition it removes). The description is generated from the \
+         endpoint's declared taxonomy, so restoring 1.5.5's string means UN-DECLARING a reachable \
+         409 — which `declared_error_set_is_exactly_what_the_handlers_emit` correctly refuses. \
+         Documenting a real failure is the additive reading. Registered in \
+         testing/shadow-oracle/accepted-differences.json (F-011c, `description_corrections`) with \
+         its own CHANGELOG line.",
+    ),
+    (
+        "/components/schemas/NamedDefView/properties/max_admin_scope/description",
+        "PB-75 REGISTERED CORRECTION (owner ruling 2026-09-08): the 1.5.5 text advertised a `none` \
+         ceiling token that 1.5.5's own parser never accepted — `Scope` has exactly two variants \
+         (`ReadOnly`, `Full`) in both releases, and `Scope::parse_ceiling` is byte-identical between \
+         them, rejecting `none` with the same message in both. A published error corrected, not a \
+         behavior change. The description now states the ceiling tokens the parser actually accepts \
+         (`read-only` | `full`). Registered in testing/shadow-oracle/accepted-differences.json \
+         (F-011c, `description_corrections`) with its own CHANGELOG line.",
     ),
 ];
 
 /// The published 1.5.5 document — the contract this one is measured against.
+#[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
 const V155_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
 );
 
 /// Walk 1.5.5's document and collect the JSON pointer of every place 1.6.0's is not a superset.
+#[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
 fn superset_violations(old: &serde_json::Value, new: &serde_json::Value) -> Vec<String> {
     fn esc(k: &str) -> String {
         k.replace('~', "~0").replace('/', "~1")
@@ -163,12 +181,13 @@ fn the_1_5_5_schema_descriptions_are_frozen_verbatim() {
     .expect("1.5.5 fixture is JSON");
     let new = crate::admin::v1::json::openapi_doc();
 
+    // `NamedDefView/properties/max_admin_scope/description` is deliberately NOT here any more: it
+    // is a PB-75 registered correction (see `ACCEPTED` above), not a frozen 1.5.5 string.
     let frozen: &[(&str, &str)] = &[
         ("HookView", "description"),
         ("HookView", "properties/at/description"),
         ("NamedDefView", "description"),
         ("NamedDefView", "properties/module/description"),
-        ("NamedDefView", "properties/max_admin_scope/description"),
         ("OverlayResetView", "properties/reset/description"),
     ];
     for (schema, rel) in frozen {

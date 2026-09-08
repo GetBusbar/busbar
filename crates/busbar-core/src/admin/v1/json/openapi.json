@@ -1853,7 +1853,7 @@
             ]
           },
           "max_admin_scope": {
-            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).\n`None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely\nfor a section that carries no ceiling.",
+            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). Omitted\nentirely for a section that carries no ceiling; the most restrictive default applies when\nthe key itself is omitted. There is no `none` token — `Scope::parse_ceiling` rejects one.",
             "type": [
               "string",
               "null"

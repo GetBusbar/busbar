@@ -86,22 +86,22 @@ pub struct NamedDefView {
     /// and this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The
     /// values are readable only where they are writable: the config file and the config overlay.
     pub settings_keys: Vec<String>,
-    /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).
-    /// `None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely
-    /// for a section that carries no ceiling.
+    /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). Omitted
+    /// entirely for a section that carries no ceiling; the most restrictive default applies when
+    /// the key itself is omitted. There is no `none` token — `Scope::parse_ceiling` rejects one.
     //
-    // 1.5.5 text, VERBATIM and frozen — AND KNOWN TO BE WRONG about `none`. Flagged here rather
-    // than fixed because the fix is a wire-visible change to a 1.5.5 schema description and PB-75
-    // makes that the owner's call, not this file's.
-    //
-    // THE DEFECT IS 1.5.5'S OWN, not a 1.6.0 regression. There is no `none` token and there never
-    // was one on this surface: `Scope` has exactly two variants (`ReadOnly`, `Full`) in 1.5.5 and
-    // in 1.6.0, and `Scope::parse_ceiling` is byte-identical between the two releases — both reject
-    // `none` with the same message ("There is no `none`: omit the key for the most restrictive
-    // default ... the ceiling caps what a grant can reach, it cannot express the absence of one").
-    // So a 1.5.5 client that believed this description and sent `max_admin_scope: none` got a 400
-    // from 1.5.5 too. Restoring the text restores byte-parity with a published document that was
-    // already lying; correcting it is a separate, deliberate amendment.
+    // CORRECTED under PB-75 (owner ruling 2026-09-08). The 1.5.5 text advertised a `none` ceiling
+    // token that 1.5.5's own parser never accepted: `Scope` has exactly two variants (`ReadOnly`,
+    // `Full`) in 1.5.5 and in 1.6.0, and `Scope::parse_ceiling` is byte-identical between the two
+    // releases — both reject `none` with the same message ("There is no `none`: omit the key for
+    // the most restrictive default ... the ceiling caps what a grant can reach, it cannot express
+    // the absence of one"). A 1.5.5 client that believed the old description and sent
+    // `max_admin_scope: none` got a 400 from 1.5.5 too, so this is a published error corrected, not
+    // a behavior change. Registered as an `additive` entry in
+    // testing/shadow-oracle/accepted-differences.json (description_corrections on the
+    // admin.ops|GetOpenapiJson|ok / neutrality|routes|admin-openapi-paths (F-011b) entry) with a
+    // matching CHANGELOG line, per PB-75's rule that the openapi text is verbatim except for
+    // registered factual corrections.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_admin_scope: Option<String>,
     /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in
