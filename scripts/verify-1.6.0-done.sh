@@ -304,6 +304,17 @@ step "plane-purity --strict"   cargo xtask gate plane-purity-strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE SHIP CRITERION (owner, 2026-09-07): the ~10 plugin kinds never cross-contaminate, and on the
+# ship SHA that is ZERO — zero fused names, zero cross-kind edges, zero cross-kind vocabulary, one
+# entry surface per kind and one shared conformance battery per kind, with no permanent exemptions.
+# The four enforceable rows are BLOCKING on every push as `kind-isolation`; the strict twin adds the
+# two rows that are red on HEAD by design, and this is where they have to reach zero.
+begin_group "KIND-ISOLATION — the plugin kinds never cross-contaminate (ship criterion, 0 exemptions)"
+step "kind-isolation --selftest" cargo xtask gate kind-isolation-ship --selftest
+step "kind-isolation --ship"     cargo xtask gate kind-isolation-ship
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "PLANE-DELETE — each plane (llm/mcp/a2a/voice) is deletable"
 step "plane-delete-test --selftest" bash scripts/plane-delete-test.sh --selftest
 step "plane-delete-test --all"      bash scripts/plane-delete-test.sh --all
