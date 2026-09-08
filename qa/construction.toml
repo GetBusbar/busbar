@@ -249,8 +249,14 @@ because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind
 [gate.ceiling_raises."cell.9.count"]
 file = "qa/kind-isolation.toml"
 from = 1798
-to = 1806
-because = """DECLARED: `[[cell]] busbar x plane` 1798 -> 1806. A feature block is text and the census reads Cargo.toml, so declaring `root-a2a-serve` and the forwards beside it spells the plane the feature turns on eight more times. THE COMPOSITION ROOT IS THE ONE CRATE WHOSE JOB IS TO NAME EVERY PLANE -- that is what a composition root is, and 1798 of these hits were already there for exactly that reason. No dependency edge is added: the feature is default-OFF and forwards to deps the manifest already carries. The number moves in the commit that moves it because a rise is read by a person, never re-pinned by a tool."""
+to = 1846
+because = """DECLARED, and RE-STATED rather than stacked: `[[cell]] busbar x plane` 1798 -> 1846. The commit before this one took the same row to 1806 for the feature block; a declaration cannot cover the NEXT raise of the same ceiling, so this commit rewrites the entry with the number it actually lands on. The forty further hits are the producer ASKING THE PLANE: `A2aDraft::from_decoded` reads the plane's own op-keyed tables for destination, legs, resource and streaming rather than restating them, and the cells assert that equality per operation class over every class the plane declares. Naming the plane is the alternative to COPYING it, which is the whole argument of the commit. No dependency edge is added."""
+
+[gate.ceiling_raises."cell.14.count"]
+file = "qa/kind-isolation.toml"
+from = 939
+to = 941
+because = """DECLARED: `[[cell]] busbar x transport` 939 -> 941. Two hits, both in the arrival record the producer's cells hand in -- `transport_chain: vec!["tcp", "http"]` -- because a producer that is handed no arrival is a producer tested against nothing. The composition root is where a transport is named by construction; no dependency edge is added and `kind-isolation:transport-registration` is untouched."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
