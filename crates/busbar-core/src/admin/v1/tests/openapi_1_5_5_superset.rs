@@ -32,6 +32,7 @@ const ACCEPTED: &[(&str, &str)] = &[
          document necessarily says 1.6.0. A dedicated oracle cell pins the rewrite.",
     ),
     (
+        // plane-purity: frozen-wire the OpenAPI 3.1 keyword in a pointer, not the LLM dialect
         "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/responses/400/description",
         "The overlay `section` enumeration, which is DERIVED from `OverlaySection::valid_names()` \
          and grew with the 1.6.0 sections. Owned by the overlay-section change, not restated here.",
@@ -41,6 +42,7 @@ const ACCEPTED: &[(&str, &str)] = &[
         "Same derived section enumeration as the 400 description above.",
     ),
     (
+        // plane-purity: frozen-wire the OpenAPI 3.1 keyword in a pointer, not the LLM dialect
         "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/responses/409/description",
         "A NEW ERROR CONDITION, not a prose edit: 1.6.0 added `Conflict/StillReferenced` (a \
          section reset that would leave base config.yaml naming a definition it removes). The \
