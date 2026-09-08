@@ -234,7 +234,17 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -uo pipefail
+          # FAIL HERE, DO NOT CALL THE GATE. `resolve` produces no version only when it failed or
+          # was skipped, which means no check ran against anything. Calling gate.sh with an empty
+          # version then asked it to gate "" — and every ledger row now names the version it is
+          # about (lib.sh's fifth column), so an empty version matches nothing, the run reads as a
+          # vacuous one, and the real cause (resolve never produced a version) is a line of prose
+          # above a verdict that blames the ledgers. Worse, before that column existed the empty
+          # version was substituted into every message as `busbar <unknown>` and the run could go
+          # GREEN on rows about some other release. The ::error:: without an exit was the whole
+          # defect: it annotated and then continued.
           if [ -z "${VERSION:-}" ]; then
-            echo "::error title=release gate::the resolve job did not produce a version, so no check could run against anything. RED."
+            echo "::error title=release gate::RED — the resolve job produced NO version, so nothing was verified about any release. The gate is not run at all rather than run against an empty name: a verdict needs a subject. Fix: look at the resolve job above — a bad `version` input, or the latest-release redirect it falls back to failing."
+            exit 1
           fi
-          scripts/release-gate/gate.sh "${VERSION:-}"
+          scripts/release-gate/gate.sh "$VERSION"
