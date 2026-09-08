@@ -21,7 +21,12 @@ pub(crate) mod patch;
 /// The 1.6.0-only key PRE-PASS: lift the additive keys off a document before the frozen
 /// 1.5.5-shaped structs parse the remainder, so their `expected one of` lists never move.
 pub mod prepass;
-pub mod secret;
+/// THE SPELLING for the secret-reference type and its fail-closed resolver, which live beside the
+/// config leaf structs they resolve settings for, in [`busbar_substrate::config::secret`]. Moved
+/// there so the hook engine — which resolves every hook's `settings:` map before the JSON crosses
+/// the plugin ABI — can name one resolver rather than grow a second. Every in-core call site
+/// (`preflight`, `appbuild`, `auth`, `tls`, `state`) is unchanged.
+pub use busbar_substrate::config::secret;
 
 pub use prepass::{deploy_from_deserializer, deploy_from_yaml_str, deploy_from_yaml_value};
 
