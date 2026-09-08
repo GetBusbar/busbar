@@ -27,6 +27,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tonic::{Request, Response, Status};
 
 use busbar_contract::wire::Frame;
+use busbar_contract::TransportMeta;
 use busbar_contract::{SlabBytes, StreamId};
 use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::FrameMeta;
@@ -225,7 +226,15 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
         // WHICH numbering this is can read it. Handing `14` up unnamed had it matched against
         // HTTP's bands, where it falls in none, so an `UNAVAILABLE` upstream was read as the
         // caller's fault: no breaker record, no failover.
-        status_code: u8::try_from(code as i32).ok().map(WireStatus::Grpc),
+        // The namespace is the one the transport DECLARES, not one this line spells: a frame
+        // cannot report in a numbering the transport did not say it reports in.
+        status_code: <crate::transport::GrpcTransport as TransportMeta>::STATUS_NAMESPACE.and_then(
+            |ns| {
+                u32::try_from(code as i32)
+                    .ok()
+                    .map(|n| WireStatus::new(ns, n))
+            },
+        ),
         retry_after_secs: None,
     };
     Frame {

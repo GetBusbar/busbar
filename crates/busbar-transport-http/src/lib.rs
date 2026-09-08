@@ -526,6 +526,8 @@ impl TransportMeta for HttpTransport {
     const DECODES_PAYLOAD: bool = false;
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
         Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
+    const STATUS_NAMESPACE: Option<&'static str> =
+        Some(busbar_contract_transport::registry::status_ns::HTTP);
 }
 
 impl Transport for HttpTransport {
@@ -829,7 +831,11 @@ impl Transport for HttpTransport {
                             // Named as HTTP's number, because that is the numbering this transport
                             // reads: a reader downstream matches it against HTTP's bands only
                             // because the frame says so, never because it assumed.
-                            status_code: Some(WireStatus::Http(status)),
+                            // The namespace is the one this transport DECLARES, not one
+                            // this line spells: a frame cannot report in a numbering the
+                            // transport did not say it reports in.
+                            status_code: <Self as TransportMeta>::STATUS_NAMESPACE
+                                .map(|ns| WireStatus::new(ns, u32::from(status))),
                             retry_after_secs: retry_after,
                         },
                     };

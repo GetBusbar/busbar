@@ -376,6 +376,7 @@ impl TransportMeta for WsTransport {
     // "frames after the upgrade carry no status leg" — the transports table's own words for this
     // row.
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
 impl Transport for WsTransport {

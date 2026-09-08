@@ -66,6 +66,32 @@ pub mod facts {
     }
 }
 
+/// The status numberings the kernel reserves, spelled once.
+///
+/// The same shape as [`facts`] one module up, and for the same reason. A transport's numbering is
+/// its own to name — [`crate::wire::WireStatus::namespace`] is an open key, which is the whole point
+/// of it not being an arm — but these two are not a transport's own: they are the numberings the
+/// tree's own readers keep tables for, and a transport that reports in one of them has to spell it
+/// the way those readers spell it or its statuses silently stop matching.
+///
+/// A transport in one of these names the constant, in `TransportMeta::STATUS_NAMESPACE`. A transport
+/// with a numbering of its own names it whatever it likes, and none of this applies.
+pub mod status_ns {
+    /// HTTP's status codes, as the `http` (and SSE-over-HTTP) transports read them off a response.
+    pub const HTTP: &str = "http";
+    /// `grpc-status`, as the gRPC transport reads it off an answer's trailer.
+    pub const GRPC: &str = "grpc";
+
+    /// Every reserved numbering, for the readers that walk them.
+    pub const RESERVED: &[&str] = &[HTTP, GRPC];
+
+    /// Whether a numbering is one the kernel reserves.
+    #[must_use]
+    pub fn is_reserved(namespace: &str) -> bool {
+        RESERVED.contains(&namespace)
+    }
+}
+
 /// One registered transport, as the registry holds it for the boot check.
 ///
 /// The declarations are associated constants, which a trait object cannot read; this is them as

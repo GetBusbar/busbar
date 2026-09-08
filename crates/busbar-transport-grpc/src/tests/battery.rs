@@ -10,6 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use busbar_contract::{ArenaBytes, StreamId, Transport};
+use busbar_contract_transport::registry::status_ns;
 use busbar_contract_transport::wire::{StatusClass, TransportError, WireStatus};
 
 use crate::GrpcTransport;
@@ -196,7 +197,10 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
     );
     assert_eq!(
         terminal.meta.status_code,
-        Some(WireStatus::Grpc(tonic::Code::PermissionDenied as i32 as u8)),
+        Some(WireStatus::new(
+            status_ns::GRPC,
+            tonic::Code::PermissionDenied as i32 as u32
+        )),
         "the exact grpc-status number the upstream sent, not just its class"
     );
 }
@@ -249,7 +253,10 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     );
     assert_eq!(
         terminal.meta.status_code,
-        Some(WireStatus::Grpc(tonic::Code::Ok as i32 as u8)),
+        Some(WireStatus::new(
+            status_ns::GRPC,
+            tonic::Code::Ok as i32 as u32
+        )),
         "the number the upstream sent, which for an untroubled call is zero"
     );
 }
@@ -330,14 +337,17 @@ fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
         let frame = crate::server::terminal_frame(StreamId(1), Some(&status));
         assert_eq!(
             frame.meta.status_code,
-            Some(WireStatus::Grpc(code as i32 as u8)),
+            Some(WireStatus::new(status_ns::GRPC, code as i32 as u32)),
             "tonic::Code::{code:?} rides the frame as gRPC's own number, never as a bare one"
         );
     }
     let unavailable = tonic::Status::new(tonic::Code::Unavailable, "gone");
     let frame = crate::server::terminal_frame(StreamId(1), Some(&unavailable));
     assert_eq!(frame.meta.status, Some(StatusClass::ServerError));
-    assert_eq!(frame.meta.status_code, Some(WireStatus::Grpc(14)));
+    assert_eq!(
+        frame.meta.status_code,
+        Some(WireStatus::new(status_ns::GRPC, 14))
+    );
     assert_eq!(
         frame.meta.status_code.and_then(WireStatus::http),
         None,

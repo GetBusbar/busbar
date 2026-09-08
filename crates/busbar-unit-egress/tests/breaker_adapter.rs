@@ -22,6 +22,7 @@
 //!   class down to a representative HTTP-shaped code only when no number was reported at all.
 
 use busbar_caps::{KernelSeal, Route, UnitToken};
+use busbar_contract_transport::registry::status_ns;
 use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::WireStatus;
 use busbar_unit_breaker::cfg::BreakerCfg;
@@ -161,12 +162,22 @@ impl Breaker for BreakerAdapter {
     fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
         // The namespace crosses with the number: each numbering is read against its own table on
         // the far side, and the class fold is the fallback for an answer that carried no number.
+        // Asked by NAMESPACE, not by arm: the breaker's own enum is closed and names the two
+        // numberings it keeps tables for, so the narrowing lives here and a numbering it has no
+        // table for is simply not one of these two.
         let code = match status.code {
-            Some(WireStatus::Http(c)) => Some(busbar_unit_breaker::port::UpstreamCode::Http(c)),
-            Some(WireStatus::Grpc(c)) => Some(busbar_unit_breaker::port::UpstreamCode::Grpc(c)),
             None => {
                 Self::fold_class(status.class).map(busbar_unit_breaker::port::UpstreamCode::Http)
             }
+            Some(w) => w
+                .http()
+                .and_then(|c| u16::try_from(c).ok())
+                .map(busbar_unit_breaker::port::UpstreamCode::Http)
+                .or_else(|| {
+                    w.grpc()
+                        .and_then(|c| u8::try_from(c).ok())
+                        .map(busbar_unit_breaker::port::UpstreamCode::Grpc)
+                }),
         };
         let classified = self.0.classify(
             destination,
@@ -242,7 +253,7 @@ fn classify_folds_the_declared_error_map_through_the_adapter() {
         DestinationId::new(9),
         UpstreamStatus {
             class: None,
-            code: Some(WireStatus::Http(1113)),
+            code: Some(WireStatus::new(status_ns::HTTP, 1113)),
             retry_after: None,
         },
     );
@@ -311,7 +322,7 @@ fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with
         destination,
         UpstreamStatus {
             class: Some(StatusClass::ClientError),
-            code: Some(WireStatus::Http(403)),
+            code: Some(WireStatus::new(status_ns::HTTP, 403)),
             retry_after: None,
         },
     );
@@ -351,7 +362,7 @@ fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
         destination,
         UpstreamStatus {
             class: Some(StatusClass::ClientError),
-            code: Some(WireStatus::Http(429)),
+            code: Some(WireStatus::new(status_ns::HTTP, 429)),
             retry_after: Some(7),
         },
     );
@@ -385,7 +396,7 @@ fn a_server_error_with_no_retry_after_keeps_the_ladders_own_cooldown() {
         destination,
         UpstreamStatus {
             class: Some(StatusClass::ServerError),
-            code: Some(WireStatus::Http(503)),
+            code: Some(WireStatus::new(status_ns::HTTP, 503)),
             retry_after: None,
         },
     );

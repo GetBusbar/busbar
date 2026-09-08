@@ -291,7 +291,10 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
         &units.breaker,
         destination,
         busbar_unit_egress::ports::UpstreamStatus {
-            code: Some(busbar_contract::WireStatus::Http(503)),
+            code: Some(busbar_contract::WireStatus::new(
+                busbar_contract::transport::status_ns::HTTP,
+                503,
+            )),
             class: None,
             retry_after: None,
         },

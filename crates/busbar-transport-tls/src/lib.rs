@@ -427,6 +427,7 @@ impl TransportMeta for TlsTransport {
     const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::SNI, tfacts::ALPN, tfacts::PEER];
     const DECODES_PAYLOAD: bool = false;
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
 impl Transport for TlsTransport {

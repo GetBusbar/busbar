@@ -24,6 +24,7 @@ use busbar_contract::{
     RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
     UnitEnd, UsageLocators, VerifiedDestination,
 };
+use busbar_contract_transport::registry::status_ns;
 use busbar_contract_transport::wire::ArrivalRecord;
 use busbar_contract_transport::wire::Conn;
 use busbar_contract_transport::wire::ConnHandle;
@@ -345,7 +346,7 @@ impl Breaker for TestBreaker {
         // A test states a verdict per NAMESPACED code; a frame with no numeric status on it
         // reports none, so a verdict set under HTTP zero stands for "whatever this upstream
         // answered".
-        let key = status.code.unwrap_or(WireStatus::Http(0));
+        let key = status.code.unwrap_or(WireStatus::new(status_ns::HTTP, 0));
         if let Some(v) = self
             .verdicts
             .lock()
@@ -362,19 +363,27 @@ impl Breaker for TestBreaker {
         // Each numbering against its own table, exactly as the real adapter does it: a gRPC code
         // never meets HTTP's bands here either, or this fixture would agree with the very fold the
         // walk must not make.
-        match (status.code, status.class) {
-            (Some(WireStatus::Http(401 | 403)), _)
-            | (Some(WireStatus::Grpc(GRPC_PERMISSION_DENIED | GRPC_UNAUTHENTICATED)), _) => {
-                Classified {
-                    disposition: Disposition::HardDown,
-                    outcome: Outcome::HardDown,
-                    label: disposition::HARD_DOWN,
-                }
-            }
-            (Some(WireStatus::Http(408 | 429)), _)
-            | (Some(WireStatus::Http(500..=599)), _)
+        // Each numbering is asked for BY NAME, through the keyed accessor, and answers `None` to
+        // the other's question because the namespaces differ. A numbering this fixture keeps no
+        // table for answers `None` to both and falls through to the coarse class, which is the
+        // honest reading and cost this match nothing to acquire.
+        let http = status.code.and_then(WireStatus::http);
+        let grpc = status
+            .code
+            .and_then(WireStatus::grpc)
+            .and_then(|code| u8::try_from(code).ok());
+        match (http, grpc, status.class) {
+            (Some(401 | 403), _, _)
+            | (_, Some(GRPC_PERMISSION_DENIED | GRPC_UNAUTHENTICATED), _) => Classified {
+                disposition: Disposition::HardDown,
+                outcome: Outcome::HardDown,
+                label: disposition::HARD_DOWN,
+            },
+            (Some(408 | 429), _, _)
+            | (Some(500..=599), _, _)
             | (
-                Some(WireStatus::Grpc(
+                _,
+                Some(
                     GRPC_UNKNOWN
                     | GRPC_DEADLINE_EXCEEDED
                     | GRPC_RESOURCE_EXHAUSTED
@@ -382,7 +391,7 @@ impl Breaker for TestBreaker {
                     | GRPC_INTERNAL
                     | GRPC_UNAVAILABLE
                     | GRPC_DATA_LOSS,
-                )),
+                ),
                 _,
             ) => Classified {
                 disposition: Disposition::TransientUpstream,
@@ -391,9 +400,9 @@ impl Breaker for TestBreaker {
                 },
                 label: disposition::TRANSIENT,
             },
-            (Some(WireStatus::Http(400..=499)), _)
-            | (Some(WireStatus::Grpc(_)), _)
-            | (None, Some(StatusClass::ClientError)) => Classified {
+            (Some(400..=499), _, _)
+            | (_, Some(_), _)
+            | (None, None, Some(StatusClass::ClientError)) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::RecordNothing,
                 label: disposition::TRANSIENT,
