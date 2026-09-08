@@ -455,10 +455,12 @@ fn a_detached_node_refuses_the_session_at_the_door() {
     let Ended::Settled { end, .. } = run(&kernel, &unit) else {
         panic!("a refused unit settles through the same exit");
     };
-    assert!(
-        matches!(end.outcome(), Outcome::Refused(_, _)),
-        "got {:?}",
-        end.outcome()
+    assert_eq!(
+        end.outcome(),
+        Outcome::Refused(busbar_caps::StepName::Admit, ReasonCode::DurabilityUnavailable),
+        "a node with no I/O half must be refused at admit, under the node's own unavailability \
+         reason - not reported as an over-budget principal, and not any other refusal in the \
+         vocabulary"
     );
     assert_eq!(
         unit.dial_outcome(),
@@ -599,7 +601,12 @@ fn an_undeclared_operation_class_is_refused_before_the_door() {
     let Ended::Settled { end, requests, .. } = run(&kernel, &unit) else {
         panic!("the exit settles it");
     };
-    assert!(matches!(end.outcome(), Outcome::Refused(_, _)));
+    assert_eq!(
+        end.outcome(),
+        Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied),
+        "an operation class the policy was never told about must be refused at approve, under \
+         the scope-denied reason, not any other refusal in the vocabulary"
+    );
     assert_eq!(requests, 0, "a unit refused before the door draws nothing");
 }
 
