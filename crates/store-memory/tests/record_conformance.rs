@@ -19,7 +19,7 @@
 //! Its own file rather than an inline module, per the repo's test-locality rule.
 
 use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::kinds::RecordBytes;
+use busbar_contract::kinds::{RecordBytes, RecordSink};
 use busbar_store_memory::MemoryStore;
 
 const TASKS: RecordSchemaId = RecordSchemaId::new("task");
@@ -247,5 +247,31 @@ fn the_record_verbs_do_not_disturb_the_published_kind_tagged_rows() {
             .get_plane_record("task", "t-1")
             .expect("the published get"),
         Some(b"published".to_vec())
+    );
+}
+
+/// THE BINDING THE NODE ACTUALLY MAKES: this backend is reached as `busbar-contract`'s record sink,
+/// behind a pointer, by a caller that knows nothing else about it.
+///
+/// The kernel runs a record leg into a sink and never into a store, and a store-kind plugin may not
+/// name `busbar-kernel`. The one shape both halves are allowed to name is the contract's, so if
+/// these three verbs were merely inherent methods with the right spelling, the composition root
+/// would have to name `MemoryStore` by type to reach them and no second backend could take its
+/// place. Driving them through `&dyn RecordSink` is what proves the seam is a seam.
+#[test]
+fn the_backend_is_reachable_as_the_contracts_record_sink_behind_a_pointer() {
+    let store = MemoryStore::new();
+    let sink: &dyn RecordSink = &store;
+
+    sink.record_put(TASKS, b"t-1", &body(b"through the seam"))
+        .expect("the put");
+
+    assert_eq!(
+        sink.record_get(TASKS, b"t-1").expect("the get"),
+        Some(body(b"through the seam"))
+    );
+    assert_eq!(
+        sink.record_scan(TASKS, b"t-", 8).expect("the scan"),
+        vec![(b"t-1".to_vec(), body(b"through the seam"))]
     );
 }

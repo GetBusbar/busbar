@@ -5,6 +5,7 @@
 
 use super::*;
 use busbar_api::SecretForm;
+use busbar_contract::kinds::RecordSink;
 
 fn key(id: &str) -> VirtualKey {
     VirtualKey {

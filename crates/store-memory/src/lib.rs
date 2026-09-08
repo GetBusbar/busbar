@@ -135,101 +135,6 @@ impl MemoryStore {
         Self::default()
     }
 
-    /// Write one of a plane's kernel-held durable records.
-    ///
-    /// The signature is `busbar_contract::kinds::Store::record_put`'s, verb for verb, and the three
-    /// below are its siblings. They are INHERENT rather than a trait implementation for one reason,
-    /// and it is a rule rather than a preference: the manifest allow-list refuses a store-kind crate
-    /// that names `busbar-kernel`, so the kernel's own record sink is not a trait this crate may
-    /// implement; and the contract's `Store` is the whole twenty-two-verb protocol, of which this
-    /// backend answers the published half through [`Store`] above. What is here is the record half,
-    /// at the contract's own spelling, so the adapter that binds a loaded store to the kernel's sink
-    /// has one shape to forward to rather than two.
-    ///
-    /// The value arrives as a [`RecordBytes`], which is where the record ceiling is enforced: a body
-    /// over it cannot be constructed, so this method cannot be handed one.
-    ///
-    /// # Errors
-    ///
-    /// Never, for a RAM backend: there is nothing under it to be unavailable. The result is the
-    /// contract's shape so a durable backend can answer in the same place.
-    pub fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), ContractStoreError> {
-        let written_at = self.now();
-        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
-        records.insert(
-            (schema.as_str().to_string(), key.to_vec()),
-            RecordRow {
-                written_at,
-                value: value.clone(),
-            },
-        );
-
-        // Amortized bounded eviction, mirroring `add_usage`/`add_metering`/`put_key`/
-        // `put_credential` above — same ceiling, same cadence, same `>` boundary. This is the map's
-        // ONLY shrink path: the contract declares no delete verb (see the field's doc), so without
-        // it nothing internal or external could ever prune a row.
-        let sweep_needed = self
-            .records_sweep_ticker
-            .fetch_add(1, Ordering::Relaxed)
-            .wrapping_add(1)
-            .is_multiple_of(SWEEP_INTERVAL);
-        if sweep_needed {
-            let n = self.now();
-            records.retain(|_, row| row.written_at.saturating_add(MAX_RETENTION_SECS) > n);
-        }
-        Ok(())
-    }
-
-    /// Read one of a plane's kernel-held durable records.
-    ///
-    /// # Errors
-    ///
-    /// Never, for a RAM backend. An absent record is `Ok(None)` and not an error: a plane asking
-    /// for a row it has not written yet is an ordinary answer, not a fault.
-    pub fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, ContractStoreError> {
-        Ok(self
-            .records
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&(schema.as_str().to_string(), key.to_vec()))
-            .map(|row| row.value.clone()))
-    }
-
-    /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
-    ///
-    /// `limit` 0 means NOTHING, not everything. A caller that wants the whole prefix names a number;
-    /// reading zero as unbounded would make a miscomputed bound the one case that returns the entire
-    /// schema.
-    ///
-    /// # Errors
-    ///
-    /// Never, for a RAM backend.
-    pub fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
-        let schema = schema.as_str();
-        Ok(self
-            .records
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
-            .take(limit as usize)
-            .map(|((_, k), row)| (k.clone(), row.value.clone()))
-            .collect())
-    }
     fn keys(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, VirtualKey>> {
         self.keys.write().unwrap_or_else(|e| e.into_inner())
     }
@@ -336,6 +241,93 @@ impl MemoryStore {
     #[cfg(test)]
     fn pin_clock(&self, t: u64) {
         self.clock.store(t, Ordering::Relaxed);
+    }
+}
+
+/// THE RECORD HALF OF THE STORE PROTOCOL, at the contract's own spelling.
+///
+/// A trait implementation and not three inherent methods, because the node BINDS this: the kernel
+/// runs a plane's record legs into a sink held behind a pointer, and the composition root has to be
+/// able to hand it this backend without naming this type. `busbar_contract::kinds::RecordSink` is
+/// the one shape both halves are allowed to name — a store-kind crate may name the contract and may
+/// never name `busbar-kernel`, which is why the sink was hoisted into the contract rather than this
+/// crate reaching for the kernel's copy of it.
+///
+/// The published eight kind-tagged verbs are [`Store`] below and are untouched: these three key on
+/// an opaque byte string under a schema, and the two live in separate maps so a record leg is an
+/// addition beside the previous release's path and never a change to it.
+///
+/// A value arrives as a [`RecordBytes`], which is where the record ceiling is enforced: a body over
+/// it cannot be constructed, so these methods cannot be handed one. Nothing here can fail — this
+/// backend is RAM and has nothing under it to be unavailable — but the results are the contract's
+/// shape so a durable backend answers in the same place.
+impl busbar_contract::kinds::RecordSink for MemoryStore {
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), ContractStoreError> {
+        let written_at = self.now();
+        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
+        records.insert(
+            (schema.as_str().to_string(), key.to_vec()),
+            RecordRow {
+                written_at,
+                value: value.clone(),
+            },
+        );
+
+        // Amortized bounded eviction, mirroring `add_usage`/`add_metering`/`put_key`/
+        // `put_credential` above — same ceiling, same cadence, same `>` boundary. This is the map's
+        // ONLY shrink path: the contract declares no delete verb (see the field's doc), so without
+        // it nothing internal or external could ever prune a row.
+        let sweep_needed = self
+            .records_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            let n = self.now();
+            records.retain(|_, row| row.written_at.saturating_add(MAX_RETENTION_SECS) > n);
+        }
+        Ok(())
+    }
+
+    /// An absent record is `Ok(None)` and not an error: a plane asking for a row it has not written
+    /// yet is an ordinary answer, not a fault.
+    fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, ContractStoreError> {
+        Ok(self
+            .records
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(schema.as_str().to_string(), key.to_vec()))
+            .map(|row| row.value.clone()))
+    }
+
+    /// In key order, at most `limit` rows. `limit` 0 means NOTHING, not everything: a caller that
+    /// wants the whole prefix names a number, and reading zero as unbounded would make a
+    /// miscomputed bound the one case that returns the entire schema.
+    fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
+        let schema = schema.as_str();
+        Ok(self
+            .records
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
+            .take(limit as usize)
+            .map(|((_, k), row)| (k.clone(), row.value.clone()))
+            .collect())
     }
 }
 
