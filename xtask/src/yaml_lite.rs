@@ -717,16 +717,18 @@ fn parse_block_scalar(
     // The block's own indentation is the first content line's, and every line is measured against
     // it: the extra columns on a deeper line are CONTENT — for `|` they are the shell script's own
     // indentation, and for `>` they are what suppresses the fold.
+    // THE CUT IS A COLUMN OF WHITESPACE, NEVER A COUNT OF BYTES. `base` is the first content
+    // line's indent, but the body loop above admits every line more indented than the PARENT KEY —
+    // so a later line may sit between the two, and cutting it at `base` cuts into its content. If
+    // a multibyte character straddles that offset the slice panics outright: exit 101, which is
+    // neither "the gate failed" nor "the gate could not run", and it takes every other batched gate
+    // with it. Cutting at `min(base, this line's own indent)` is a boundary by construction —
+    // `indent_of` counts spaces and tabs, both ASCII — and it strips exactly the indentation the
+    // line has, which is what a shorter-indented line always meant.
     let base = indent_of(&body[0]);
     let dedented: Vec<String> = body
         .iter()
-        .map(|l| {
-            if l.len() >= base {
-                l[base..].to_string()
-            } else {
-                l.trim_start().to_string()
-            }
-        })
+        .map(|l| l[base.min(indent_of(l))..].to_string())
         .collect();
 
     let text = if style == '>' {
@@ -998,6 +1000,27 @@ mod structure_tests {
     fn anchors_and_multiple_documents_are_named_errors() {
         assert!(parse_structure("a: &anchor 1\n").is_err());
         assert!(parse_structure("---\na: 1\n").is_err());
+    }
+
+    /// A BLOCK SCALAR IS DEDENTED BY COLUMNS OF WHITESPACE, NEVER BY A COUNT OF BYTES.
+    ///
+    /// The block's base indent is the FIRST content line's, but the body loop admits every line
+    /// more indented than the parent key — so a later line may sit between the two. Cutting such a
+    /// line at the base OFFSET cuts into its content, and if a multibyte character straddles that
+    /// offset the slice panics, which is exit 101: not "the gate failed", not "the gate could not
+    /// run", and it takes every other batched gate down with it. The house prose style puts em
+    /// dashes (three bytes each) inside `run: |` blocks constantly.
+    #[test]
+    fn a_block_scalar_line_less_indented_than_the_first_keeps_its_multibyte_content() {
+        let doc = "jobs:\n  a:\n    run: |\n        first line, deeply indented\n       \
+                   — an em dash on a line the block did not start at\n";
+        let v = parse_structure(doc).expect("a valid workflow must parse, not abort the process");
+        let run = v["jobs"]["a"]["run"].as_str().expect("the block scalar");
+        assert!(
+            run.contains("— an em dash"),
+            "the dedent must strip that line's own indentation and nothing else: {run:?}"
+        );
+        assert!(run.starts_with("first line, deeply indented"));
     }
 }
 
