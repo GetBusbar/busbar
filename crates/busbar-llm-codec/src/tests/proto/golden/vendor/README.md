@@ -71,19 +71,19 @@ believed:
    bucket. It is a fourth independent term, and Google's own `totalTokenCount` only
    reconciles when it is added.
 
-## The consequence, recorded and NOT silently fixed
+## The consequence, and the money change it forced
 
-`IrUsageDetail::tool_use_prompt_tokens` is documented in `ir/types.rs` as "a
+`IrUsageDetail::tool_use_prompt_tokens` was documented in `ir/types.rs` as "a
 SUB-BUCKET of the prompt total, never an addition, so `billable_tokens` ignores it."
-The recording proves that wrong. Because busbar drops the term, a Gemini turn that
-used a server-side tool is under-counted by exactly `toolUsePromptTokenCount` (32 of
+The recording proves that wrong. Because busbar dropped the term, a Gemini turn that
+used a server-side tool was under-counted by exactly `toolUsePromptTokenCount` (32 of
 222 tokens — 14% — on the grounding recording here).
 
-Correcting that changes what busbar bills, so it is NOT done here. It is a registered
-money change and needs its own CHANGELOG line and owner sign-off. What this corpus
-does is make the discrepancy impossible to keep missing: the decoder now REPORTS it
-(see `IrUsageDetail::usage_note`) instead of reconciling silently against a total it
-cannot reach.
+busbar 1.6.0 BILLS it (registered money change, CHANGELOG + accepted-differences):
+Google charges the term at the input rate, so the reader folds it into
+`IrUsage::input_tokens` and the grounding recording now bills 222 — Google's own
+stated total — instead of 190. `IrUsageDetail::usage_identity_note` survives as a
+discrepancy metric for a `totalTokenCount` the table above cannot reach.
 
 ## Discrepancy 2 — the streaming path omits the field entirely
 

@@ -101,6 +101,19 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
   frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
   activity. See [Spec fidelity](#spec-fidelity).
+- **A Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.**
+  Vertex reports `usageMetadata.toolUsePromptTokenCount` BESIDE `promptTokenCount`, not inside it —
+  on a real `gemini-2.5-flash` capture the field is `32` while the entire `promptTokenCount` is
+  `18`, and Google's own `totalTokenCount` reconciles only when the term is added. 1.5.5 read it as
+  a slice of the prompt and left it out of the bill, so every grounded / server-tool Gemini turn was
+  under-counted by exactly that term (32 of 222 tokens — 14% — on that capture), and the shortfall
+  scaled with tool use. Busbar now counts it in the input tier, where Google charges it, on the
+  buffered path and on the recovery path a response too large to reassemble takes. A Gemini client
+  reading a cross-protocol response still sees the term beside the prompt count exactly as Vertex
+  spells it, and the `totalTokenCount` busbar synthesizes now reproduces Google's. Nothing else
+  about a Gemini response changed, and a turn with no server-side tool use bills exactly as it did.
+  See [Spec fidelity](#spec-fidelity) and
+  [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).

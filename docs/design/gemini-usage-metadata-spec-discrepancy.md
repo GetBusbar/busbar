@@ -63,23 +63,40 @@ slice of, so the question needs no appeal to any document. Independently, Google
 `totalTokenCount` (222) reconciles only when the term is added: the other three sum to
 190.
 
-**Consequence for money.** busbar folds `prompt + candidates + thoughts` into
-`IrUsage` and excludes the tool-use term from `billable_tokens`. A Gemini turn that
-used a server-side tool is therefore under-counted by exactly
+**Consequence for money.** busbar folded `prompt + candidates + thoughts` into
+`IrUsage` and excluded the tool-use term from `billable_tokens`. A Gemini turn that
+used a server-side tool was therefore under-counted by exactly
 `toolUsePromptTokenCount` — 32 of 222 tokens, **14%**, on the recording above. This is
 not a rounding artefact; it scales with server-side tool use.
 
-**Not fixed here, deliberately.** Folding the term into `input_tokens` changes what
-busbar bills. That is a registered money change requiring its own CHANGELOG entry and
-owner sign-off, and it was not made unilaterally. What landed instead is a report: the
-decoder cross-checks the billed figure against Google's stated `totalTokenCount` and
-surfaces any shortfall on `IrUsageDetail::usage_identity_note`
-(`reported_total`, `summed_total`, `unaccounted`, `identity`), plus a `tracing::warn!`.
-Nothing is zeroed, clamped or back-filled; the decoded buckets are exactly as received.
+**FIXED IN 1.6.0 (registered money change; owner ruling 2026-09-07, "Gemini billing
+must be right in 1.6.0").** Google charges the term at the input rate, so the reader
+adds it to `IrUsage::input_tokens`:
 
-**Open decision for the owner:** fold `toolUsePromptTokenCount` into `input_tokens`
-(making busbar's total match Google's), or ratify the current under-count as intended.
-The reporting field makes either choice explicit rather than accidental.
+| | 1.5.5 | 1.6.0 |
+|---|---:|---:|
+| `input_tokens` (grounding recording) | 18 | **50** |
+| `output_tokens` | 172 | 172 |
+| `billable_tokens` | 190 | **222** (= Google's `totalTokenCount`) |
+
+The same fold landed in `GeminiReader::recover_truncated_usage`, so a response too
+large to reassemble bills like its buffered twin. The Gemini WRITER is the exact
+inverse: the term rides inside `input_tokens` in the IR but sits beside
+`promptTokenCount` on the wire, so it is subtracted back out of the reconstructed
+prompt count and added into the synthesized `totalTokenCount`, which now reproduces
+Google's own number. `IrUsageDetail::tool_use_prompt_tokens` keeps the attribution and
+is still not a billable key of its own, so the tokens are counted exactly once.
+
+Registered in `testing/shadow-oracle/accepted-differences.json` with the CHANGELOG
+line; pinned by `crates/busbar-llm-codec/src/gemini/tests/usage_identity_tests.rs`.
+
+**The cross-check stays — as a metric, not a correction.** With all four terms billed,
+`gemini_usage_identity_note` can fire only when Google states a `totalTokenCount` that
+`GEMINI_USAGE_ADDITIVE_TERMS` cannot reach: a counter this dialect does not model yet,
+whose answer is a new recording and a new table entry. It surfaces `reported_total`,
+`summed_total`, `unaccounted`, `identity` plus a `tracing::warn!` carrying
+`wire_sum`/`unmodelled_term`. Nothing is zeroed, clamped or back-filled; the decoded
+buckets are exactly as received.
 
 ## Discrepancy 2 — the streaming path omits the field entirely
 
@@ -134,10 +151,15 @@ cachedContentTokenCount`) remains **unverified against real bytes** — it is as
 only by hand-written fixtures. It was left exactly as found. This is the obvious next
 recording to take.
 
-## Related known gap, unaddressed
+## Related known gap — the truncated path (CLOSED in 1.6.0)
 
-`GeminiReader::recover_truncated_usage` (`gemini/reader.rs`) mirrors `gemini_usage` for
-prompt / cached / candidates / thoughts but never reads `toolUsePromptTokenCount`, and
-does not run the identity cross-check. A head-truncated Gemini body therefore loses the
-tool-use attribution its complete twin carries, and reports no discrepancy. Out of
-scope for this change; recorded here so it is not rediscovered from scratch.
+`GeminiReader::recover_truncated_usage` (`gemini/reader.rs`) mirrored `gemini_usage` for
+prompt / cached / candidates / thoughts but never read `toolUsePromptTokenCount`. A
+head-truncated Gemini body therefore billed 32 tokens less than its complete twin and
+lost the tool-use attribution. It now reads the term, bills it into `input_tokens` and
+carries it as attribution, exactly as the buffered path does
+(`a_truncated_grounded_turn_bills_the_tool_use_term_too`).
+
+Still open there: the recovery path runs no identity cross-check, because the isolated
+tail object is not the full `IrUsage` the note is computed against. A truncated body
+whose `totalTokenCount` disagrees with the modelled terms reports no discrepancy.

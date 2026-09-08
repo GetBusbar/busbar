@@ -412,6 +412,18 @@
       "changelog": "Bedrock `usage.totalTokens` counts the cache tokens AWS counts."
     },
     {
+      "id": "G-1 gemini toolUsePromptTokenCount is an additive term and is billed",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-07 ruling: Gemini billing must be right in 1.6.0",
+      "cells": "^llm\\|[a-z_]+\\|gemini\\|request\\|ok(_stream_array|_tool_use_tokens)?$",
+      "expected_cells": 8,
+      "classes": [
+        "body"
+      ],
+      "rationale": "MEASURED, NOT READ. Seven real gemini-2.5-flash turns captured off Vertex AI and committed verbatim under crates/busbar-llm-codec/src/tests/proto/golden/vendor/ show usageMetadata.toolUsePromptTokenCount sitting BESIDE promptTokenCount, not inside it: on resp_g2g_vertex_grounding.json the field is 32 while the entire promptTokenCount is 18 -- a slice cannot exceed the total it slices -- and Google's own totalTokenCount (222) reconciles only when the term is ADDED to prompt + candidates + thoughts (190). 1.5.5 documented it as a sub-bucket of the prompt and excluded it from the bill, so every grounded / server-tool Gemini turn was under-counted by exactly that term (32 of 222 tokens, 14%, on that capture) and the shortfall scales with server-side tool use. 1.6.0 bills it in the INPUT tier, where Google charges it: gemini_usage() and GeminiReader::recover_truncated_usage both add it to IrUsage::input_tokens, so a truncated response bills like its buffered twin. The Gemini WRITER is the exact inverse -- the term is subtracted back out of the reconstructed promptTokenCount and added into the synthesized totalTokenCount -- so a native client sees the same wire shape Vertex sends and a totalTokenCount that now reproduces Google's. A turn with no server-side tool use is byte-identical to 1.5.5 and bills identically (the absent term adds zero). NO RECORDED CELL MOVES TODAY: the oracle's mock happy-path answer carries no toolUsePromptTokenCount at all, which is exactly how a 14% under-count survived a full golden, so llm|gemini|gemini|request|ok_tool_use_tokens is added to cells/__init__.py to make the surface visible and is a needs_fixture NAMED GAP until the mock answers the tool-use verb and the integrator records it from the published 1.5.5 binary. WHEN THAT GOLDEN IS RECORDED the new cell will diverge on `body` (the usageMetadata the door re-emits) AND on `effects.usage` (1.5.5 bills 190, 1.6.0 bills 222) -- and this improvement entry may not waive a usage class, so the owner must convert it to kind=breaking, or ratify it as an improvement whose usage divergence is judged on its own row, at that point. Registered now, with the CHANGELOG line, because the money change lands now.",
+      "changelog": "A Gemini turn that used a server-side tool bills the tool-use tokens Google charges for."
+    },
+    {
       "id": "A17 Anthropic billing_error names its own error type",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 oracle Phase 0 group-budget-total cell",

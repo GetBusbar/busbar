@@ -138,6 +138,12 @@ RESPONSES_CITATION_OUTCOME = (
     "happy path whose ANSWER carries a URL citation: the Responses annotation the published "
     "UrlCitationBody FLATTENS onto the annotation object, which the `ok` fixture's bare-text answer "
     "never exercises")
+GEMINI_TOOL_USE_TOKENS_OUTCOME = (
+    "ok_tool_use_tokens",
+    "happy path whose ANSWER reports `usageMetadata.toolUsePromptTokenCount`: the server-side "
+    "tool-use token term Vertex reports BESIDE `promptTokenCount` (measured 32 against an 18-token "
+    "prompt on a real capture), which the `ping` fixture's tool-less answer never produces and "
+    "which is therefore the one money term no recorded cell can see")
 BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME = (
     "ok_cachepoint_document",
     "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that "
@@ -247,6 +253,25 @@ def llm_cells(inv: dict) -> list[dict]:
     if "bedrock" in dialects:
         c = cell("bedrock", "bedrock", *BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME)
         c["needs_fixture"] = True
+        cells.append(c)
+    # THE TOOL-USE TOKEN TERM, on the DIAGONAL (gemini -> gemini). Google reports
+    # `usageMetadata.toolUsePromptTokenCount` as a FOURTH ADDITIVE term beside `promptTokenCount`,
+    # not as a slice of it -- measured, on real Vertex bytes, at 32 against an 18-token prompt
+    # (crates/busbar-llm-codec/src/tests/proto/golden/vendor/, and
+    # docs/design/gemini-usage-metadata-spec-discrepancy.md). 1.5.5 read it as a slice and dropped
+    # it from the bill, under-counting every server-tool Gemini turn by exactly that term; 1.6.0
+    # bills it in the input tier. NOT ONE RECORDED CELL SEES THAT: the mock's happy-path answer
+    # carries no tool-use term at all, so the whole money surface is invisible to the differ, which
+    # is precisely how a 14% under-count survived a full golden. The diagonal is the striking case
+    # because a same-dialect hop reads back bytes it has just written, so it pins the wire shape
+    # (the term BESIDE the prompt count, `totalTokenCount` reconciling) and the ledger row together.
+    # Same SKIP-able posture as the citation and cachePoint cells above: `needs_fixture` until the
+    # mock answers the `tool-use` verb and the integrator records the cell from the published 1.5.5
+    # binary, so it reads as a NAMED golden gap rather than a silent pass.
+    if "gemini" in dialects:
+        c = cell("gemini", "gemini", *GEMINI_TOOL_USE_TOKENS_OUTCOME)
+        c["needs_fixture"] = True
+        c["mock_control"] = {"tool-use": True}
         cells.append(c)
     return cells
 

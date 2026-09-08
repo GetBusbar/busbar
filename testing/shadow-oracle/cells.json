@@ -55,11 +55,11 @@
     }
   ],
   "counts": {
-    "total": 2317,
+    "total": 2318,
     "by_plane": {
       "a2a": 468,
       "core": 789,
-      "llm": 148,
+      "llm": 149,
       "mcp": 912
     },
     "by_family": {
@@ -80,7 +80,7 @@
       "hooks": 10,
       "http.crosscut": 23,
       "ledger": 5,
-      "llm.wire": 141,
+      "llm.wire": 142,
       "mcp": 912,
       "neutrality": 18,
       "ops.scrape": 15,
@@ -19808,6 +19808,22 @@
       "op": "chat",
       "outcome": "ok_stream_array",
       "why": "happy path, streamed as a JSON array (gemini without alt=sse)"
+    },
+    {
+      "id": "llm|gemini|gemini|request|ok_tool_use_tokens",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_tool_use_tokens",
+      "why": "happy path whose ANSWER reports `usageMetadata.toolUsePromptTokenCount`: the server-side tool-use token term Vertex reports BESIDE `promptTokenCount` (measured 32 against an 18-token prompt on a real capture), which the `ping` fixture's tool-less answer never produces and which is therefore the one money term no recorded cell can see",
+      "needs_fixture": true,
+      "mock_control": {
+        "tool-use": true
+      }
     },
     {
       "id": "llm|gemini|gemini|request|out_of_scope",

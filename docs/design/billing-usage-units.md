@@ -278,10 +278,18 @@ anti-double-count rule the plane mapping must enforce.
 > `totalTokenCount` reconciles only when the term is ADDED, making it a fourth
 > additive term rather than attribution. Excluding it from the billable keys
 > therefore UNDER-counts a grounded Gemini turn by exactly that amount (32 of
-> 222 tokens on that recording). Correcting it changes a bill, so it is held as
-> a registered money change; until then the decoder REPORTS the shortfall via
-> `IrUsageDetail::usage_identity_note`. See
-> `docs/design/gemini-usage-metadata-spec-discrepancy.md`.
+> 222 tokens on that recording).
+>
+> **CORRECTED IN 1.6.0 (registered money change).** Google charges the term at
+> the input rate, so the Gemini reader now adds it to `IrUsage::input_tokens`
+> (both the buffered decode and `recover_truncated_usage`), and a grounded turn
+> bills Google's own stated `totalTokenCount`. It stays in `IrUsageDetail` as
+> ATTRIBUTION — how many of those input tokens were server-side tool use — and,
+> like every other detail field, is never emitted as its own billable key, so
+> the anti-double-count rule above still holds: the tokens are counted once, in
+> the input tier. `IrUsageDetail::usage_identity_note` remains, now as a
+> discrepancy metric for a `totalTokenCount` the modelled terms cannot reach.
+> See `docs/design/gemini-usage-metadata-spec-discrepancy.md`.
 
 ---
 
