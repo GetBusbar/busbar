@@ -103,6 +103,7 @@ struct Opened {
     transport: String,
     chain: Vec<String>,
     bar: Bar,
+    credential: Option<String>,
 }
 
 /// A session driver that answers from a script and records everything it was handed.
@@ -154,6 +155,7 @@ impl SessionDriver for FakeDriver {
                 transport: open.transport.to_string(),
                 chain: open.chain.iter().map(|l| (*l).to_string()).collect(),
                 bar: open.bar,
+                credential: open.fact(tfacts::CREDENTIAL).map(str::to_string),
             });
         self.answer
     }
@@ -268,6 +270,14 @@ fn upgrade(target: &str) -> Upgrade<'_> {
     Upgrade {
         target,
         peer: "198.51.100.7:44311",
+        credential: None,
+    }
+}
+
+fn upgrade_presenting<'u>(target: &'u str, credential: &'u str) -> Upgrade<'u> {
+    Upgrade {
+        credential: Some(credential),
+        ..upgrade(target)
     }
 }
 
@@ -321,7 +331,7 @@ fn another_wires_binding_does_not_address_here() {
     assert!(address(&SURFACE, "ws", CHAIN, &upgrade("/nothing")).is_err());
 }
 
-/// The facts a session publishes are the two this transport declares, path first.
+/// The facts a session publishes are the ones this transport declares, path first.
 #[test]
 fn the_published_facts_are_the_declared_ones_in_order() {
     let up = upgrade("/session?since=4");
@@ -349,6 +359,63 @@ fn the_published_facts_are_the_declared_ones_in_order() {
     }
 }
 
+/// An upgrade that presented a credential publishes it, WHOLE, and an upgrade that presented none
+/// publishes no such fact at all.
+///
+/// The absent/empty distinction is the cell rather than a detail of it: a driver handed
+/// `("credential", "")` is being told one was presented and is blank, and a caller that presented
+/// none did not present a blank one. And the scheme word travels, because deciding what a scheme
+/// means is the authentication chain's — a transport that stripped a prefix would be interpreting a
+/// credential it may not read.
+#[test]
+fn a_presented_credential_is_published_whole_and_an_absent_one_is_absent() {
+    let presented = upgrade_presenting("/session", "Bearer sk-44401");
+    assert_eq!(
+        published_facts(&presented),
+        vec![
+            (tfacts::PATH, "/session"),
+            (tfacts::PEER, "198.51.100.7:44311"),
+            (tfacts::CREDENTIAL, "Bearer sk-44401"),
+        ]
+    );
+
+    let anonymous = upgrade("/session");
+    assert!(
+        published_facts(&anonymous)
+            .iter()
+            .all(|(k, _)| *k != tfacts::CREDENTIAL),
+        "an upgrade that presented nothing publishes no credential fact, not an empty one"
+    );
+
+    let blank = upgrade_presenting("/session", "");
+    assert_eq!(
+        published_facts(&blank)
+            .iter()
+            .find(|(k, _)| *k == tfacts::CREDENTIAL),
+        Some(&(tfacts::CREDENTIAL, "")),
+        "a credential that WAS presented and is blank is a different statement, and is made"
+    );
+}
+
+/// The credential is the ONLY one this session ever gets, and it reaches the driver's `open`.
+///
+/// Which is the whole reason it is on the upgrade rather than on a frame: after the upgrade the
+/// protocol has changed and there is no request left to carry one, so a mount that dropped it would
+/// leave a declared credential bar with nothing to resolve for the life of the session.
+#[test]
+fn the_upgrades_credential_reaches_the_open() {
+    let driver = FakeDriver::new(Vec::new());
+    let up = upgrade_presenting("/session", "Bearer sk-44401");
+    let mount = address(&SURFACE, "ws", CHAIN, &up).expect("the declared mount addresses");
+    open_session(&driver, &SURFACE, &mount, &up).expect("the fake driver opens");
+    assert_eq!(
+        driver.opened.lock().expect("the log")[0]
+            .credential
+            .as_deref(),
+        Some("Bearer sk-44401")
+    );
+}
+
 // ── opening ─────────────────────────────────────────────────────────────────────────────────────
 
 /// The open hands the driver the facts, the binding, the stack and the bar, and takes back a handle.
@@ -368,6 +435,7 @@ fn the_open_hands_over_what_the_transport_knows() {
             transport: "ws".into(),
             chain: vec!["tcp".into(), "http".into(), "ws".into()],
             bar: Bar::Credential,
+            credential: None,
         }]
     );
 }

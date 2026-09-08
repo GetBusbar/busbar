@@ -371,7 +371,8 @@ impl TransportMeta for WsTransport {
     const UNIT0_TRIGGER: Option<Unit0Trigger> = Some(Unit0Trigger::Upgrade);
     const UPGRADES_TO: &'static [&'static str] = &[];
     const HANDSHAKE_TRIGGER: Option<busbar_contract_transport::wire::HandshakeTrigger> = None;
-    const TRANSPORT_FACTS: &'static [&'static str] = &[tfacts::PATH, tfacts::PEER];
+    const TRANSPORT_FACTS: &'static [&'static str] =
+        &[tfacts::PATH, tfacts::PEER, tfacts::CREDENTIAL];
     const DECODES_PAYLOAD: bool = false;
     // "frames after the upgrade carry no status leg" — the transports table's own words for this
     // row.
