@@ -130,6 +130,30 @@ pub fn providers_by_lane_count(tables: &dyn EngineTablesView) -> Vec<(String, us
     counts.into_iter().collect()
 }
 
+/// Every configured lane as `(model, provider)`, in model-name order.
+///
+/// The same one-projection-two-readings rule [`providers_by_lane_count`] states, for the other
+/// topology read that crossed: `GET /models` is produced by the composition root's loop and the
+/// `models` member of the effective-config read is produced by the surface underneath, off the same
+/// lanes.
+///
+/// The sort is STABLE and on the model alone, which is not a detail: two lanes may configure the
+/// same model name against different providers, and the order the surface has always answered them
+/// in is the order they were configured. A sort that ordered by the pair, or a map keyed on the
+/// model, would silently reorder or drop one.
+#[must_use]
+pub fn models_by_lane(tables: &dyn EngineTablesView) -> Vec<(String, String)> {
+    let mut models: Vec<(String, String)> = (0..tables.lane_count())
+        .filter_map(|lane| {
+            tables
+                .lane_view(lane)
+                .map(|view| (view.model.to_string(), view.provider.to_string()))
+        })
+        .collect();
+    models.sort_by(|a, b| a.0.cmp(&b.0));
+    models
+}
+
 /// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
 /// models, reached when no plane contributed a runtime slot (the featureless binary). Substrate-owned
 /// so core boots — and its scrape/discovery readers see empty tables rather than panicking — even with
