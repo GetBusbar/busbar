@@ -559,4 +559,48 @@ mod tests {
             panic!("audit-ledger selftest did not prove itself: {failures:#?}");
         }
     }
+
+    /// `record --report` REFUSES THE CLASS OF LEAK THIS BRANCH JUST CLEANED OUT OF THE REGISTER.
+    /// A RED case for [`crate::audit_cmd::hygiene_refusal`], run through the real CLI entry point
+    /// against a SCRATCH COPY of the register (never the working tree — this gate never writes to
+    /// it) so the proof is that `ledger record` itself refuses, not just the helper function.
+    #[test]
+    fn record_refuses_a_public_hygiene_violation() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let src = cx.root().join(audit::REGISTER_REL);
+        let scratch = cx.scratch().join("hygiene-refusal-selftest.json");
+        std::fs::copy(&src, &scratch).expect("copy the register into scratch");
+        let before = std::fs::read_to_string(&scratch).expect("read the scratch copy");
+
+        let args: Vec<String> = [
+            "record",
+            "--ledger",
+            scratch.to_str().expect("scratch path is UTF-8"),
+            "--scope",
+            "xtask/src",
+            "--round",
+            "1",
+            "--result",
+            "zero",
+            "--report",
+            "gate/audits/codeaudit-fake-r9.md",
+            "--auditor",
+            "selftest",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+
+        let code = crate::audit_cmd::main(cx.root(), &args);
+        assert_eq!(
+            code, 2,
+            "`ledger record` must refuse a --report citing an audit-round artifact"
+        );
+
+        let after = std::fs::read_to_string(&scratch).expect("read the scratch copy after refusal");
+        assert_eq!(
+            before, after,
+            "a refused record must not write the register — the scratch copy changed"
+        );
+    }
 }
