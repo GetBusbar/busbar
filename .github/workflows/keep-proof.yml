@@ -18,13 +18,18 @@ name: keep-proof
 # WHAT IS AND IS NOT HERE, AND WHY.
 #   HERE:     fmt, clippy -D warnings, workspace build, the workspace test suite SHARDED across four
 #             runners, `cargo xtask gate --all`, `cargo xtask selftest`, the structure gate, the
-#             design-bindings gate (existence + regen-clean), the construction gate (report-only,
-#             exactly as in ci.yml).
-#   NOT HERE: the shadow oracle. It needs the PUBLISHED 1.5.5 binary plus service containers and is
-#             a twenty-three-minute product judgement whose reds are owner items, not hand-back
-#             defects. It stays on integration pushes, where the person who can act on a divergence
-#             is the one reading it. A keep branch that is green here and red there has learned
-#             something true either way; conflating the two teaches nothing.
+#             design-bindings gate (existence + regen-clean), the SHADOW ORACLE against the published
+#             1.5.5 binary scoped to the families the branch names, and the construction gate
+#             (report-only, exactly as in ci.yml).
+#   THE ORACLE IS THE POINT. It is the most expensive thing an agent runs locally -- a release build
+#             plus `record --plane all` is the better part of half an hour of a laptop, several
+#             laptops at once, producing a claim nobody else can check. Here it runs on a runner
+#             against the same published 1.5.5 binary by digest, the same release public key and the
+#             same three service containers ci.yml's shadow-oracle job uses, scoped by the branch's
+#             own `.keep-proof.toml`, and it publishes its report as an artifact plus a one-line
+#             commit status of its own. ci.yml's shadow-oracle is unchanged and still runs on
+#             integration pushes, unscoped: this one answers "did THIS hand-back move its families",
+#             that one answers "did the tree move at all".
 #   NOT HERE: the full tier's platform matrix (windows, no-default-features, timing, migration
 #             corpus, deletion matrix). Those are promotion-gate questions and they run on the
 #             integration branch this work lands on. This workflow answers "does the hand-back
@@ -381,6 +386,268 @@ jobs:
             exit 1
           fi
 
+  # ── THE SHADOW ORACLE, SCOPED BY THE BRANCH ────────────────────────────────────────────────────
+  # THE POINT OF THE WHOLE FILE, restated: the oracle is the single most expensive thing an agent
+  # runs locally -- a release build plus a full `record --plane all` is the better part of half an
+  # hour of somebody's laptop, several laptops at once, and the result is a claim nobody else can
+  # check. Here it runs on a runner, against the SAME published 1.5.5 binary by digest, the SAME
+  # release public key and the SAME service containers ci.yml's shadow-oracle job uses, and the
+  # report is an artifact anyone can download.
+  #
+  # SCOPED PER HAND-BACK, BY A FILE THE BRANCH COMMITS. `.keep-proof.toml` at the repository root
+  # carries the same two things `scripts/land.sh` takes on the command line:
+  #
+  #     families = '^(llm|teller)([|.]|$)'   # the oracle id-filter this hand-back can move
+  #     tests    = ["busbar-llm"]            # the packages it names
+  #
+  # and the recording is `record --plane all` with that filter, diffed with the same `--id-filter`,
+  # against the committed golden -- byte for byte the land.sh recipe, so a local green and a CI green
+  # are the same claim. THE FILE CAN ONLY NARROW THE ORACLE, NOTHING ELSE: absent or empty, the
+  # filter is `.` and every family is recorded. A branch cannot shrink its own test suite or its own
+  # gates by editing it -- the four shards and `gate --all` never read it -- because a gate a
+  # hand-back gets to scope is a gate the hand-back can turn off.
+  #
+  # WHY A THREE-LINE READER AND NOT A TOML PARSER: two keys, one line each, in a file this repository
+  # writes and reads. Installing a parser to read it would be a dependency in the proof path, and the
+  # proof path is the one place a dependency is least welcome.
+  oracle:
+    name: shadow oracle (this build vs the published 1.5.5, families the branch names)
+    runs-on: ubuntu-latest
+    # ci.yml's shadow-oracle measures 23-24 min unfiltered (release build ~4-7 min, recording ~15).
+    # Same ceiling as ci.yml's, for the same job.
+    timeout-minutes: 60
+    env:
+      BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+      GH_TOKEN: ${{ github.token }}
+    # The same three backends ci.yml's shadow-oracle boots, at the same digests: the store families'
+    # cells boot a real backend, spend, restart and read back, and a gap on both sides is not
+    # agreement. Digests are NOT re-pinned here — testing/fleet-fixtures/service-images.tsv is the
+    # single pinned list the `service image pins` gate enforces against every workflow.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+        env:
+          MYSQL_ROOT_PASSWORD: busbar
+          MYSQL_USER: busbar
+          MYSQL_PASSWORD: busbar
+          MYSQL_DATABASE: busbar_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      # The scope, read once and PRINTED. A run whose filter nobody can see is a run whose verdict
+      # nobody can size: "0 divergences" over one family and over twenty-six look identical.
+      - name: The scope this hand-back declares
+        id: scope
+        run: |
+          set -euo pipefail
+          fam='.'
+          tests=''
+          if [ -f .keep-proof.toml ]; then
+            got=$(sed -n "s/^[[:space:]]*families[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" .keep-proof.toml | head -1)
+            [ -n "$got" ] && fam="$got"
+            tests=$(sed -n 's/^[[:space:]]*tests[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' .keep-proof.toml \
+                    | head -1 | tr -d '"'"'" | tr ',' ' ')
+          else
+            echo "::notice::no .keep-proof.toml at the branch root — recording EVERY family (filter '.')."
+          fi
+          echo "oracle id-filter: ${fam}"
+          echo "packages named:   ${tests:-<none>}"
+          echo "families=${fam}" >> "$GITHUB_OUTPUT"
+          echo "tests=${tests}" >> "$GITHUB_OUTPUT"
+
+      # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. Identical to ci.yml's step and for the
+      # identical reason: the oracle binds 487xx/488xx, Linux's default ephemeral range covers it, and
+      # an outbound socket that takes 48812 as its SOURCE port makes the next bind fail. Reserved,
+      # then read back — a silently-failed sysctl leaves the flake in place under a quiet step.
+      - name: Reserve the oracle port band from the kernel's ephemeral pool
+        run: |
+          set -euo pipefail
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=48700-48900
+          got="$(sysctl -n net.ipv4.ip_local_reserved_ports)"
+          echo "ip_local_reserved_ports=${got}"
+          case "$got" in
+            *48700-48900*) ;;
+            *) echo "::error::the oracle port band was not reserved (got '${got}')"; exit 1 ;;
+          esac
+
+      - name: Oracle revision (keys the 1.5.5 artifact cache)
+        id: rev
+        run: |
+          set -euo pipefail
+          digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' \
+                   testing/shadow-oracle/golden-digests.tsv)
+          echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
+      - name: Cache the pinned 1.5.5 artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/busbar-oracle
+          key: ${{ steps.rev.outputs.key }}
+      - name: The differ can see a diff (replay selftest)
+        run: ./bin/oracle replay-selftest
+      - name: Fetch the published 1.5.5 binary and plugins by digest
+        run: |
+          set -euo pipefail
+          ./bin/oracle fetch-golden
+          plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
+          [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
+          for pl in $plugins; do
+            ./bin/oracle fetch-plugin "$pl" >/dev/null
+          done
+      - name: Build the candidate (release, with the release public key)
+        run: |
+          set -euo pipefail
+          if [ -z "${BUSBAR_RELEASE_PUBKEY:-}" ]; then
+            echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"
+            exit 1
+          fi
+          cargo build -p busbar --release --locked
+      - name: Both binaries accept the oracle config
+        run: ./bin/oracle selftest target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
+
+      - name: Record the candidate (--plane all, filtered to the declared families)
+        env:
+          FAMILIES: ${{ steps.scope.outputs.families }}
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
+          VALKEY_URL: redis://localhost:6379
+        run: |
+          set -euo pipefail
+          rm -rf target/oracle/recordings/candidate
+          mkdir -p target/oracle/recordings/candidate
+          ./bin/oracle record --plane all --bin target/release/busbar \
+            --filter "$FAMILIES" --out target/oracle/recordings/candidate
+
+      # THE GOLDEN IS THE COMMITTED 1.5.5 RECORDING, never re-derived here, and `--strict` makes the
+      # differ's exit status carry the verdict for this subset: zero owed cells, an unaccepted
+      # divergence, or an owed cell missing from the candidate is red. `continue-on-error` so the
+      # SUMMARY below still runs and still publishes the report — a divergence must arrive as numbers
+      # and a diverging.txt, not as a job that died before it could say what diverged.
+      - name: Replay — candidate vs the committed golden (strict, same id-filter)
+        id: replay
+        continue-on-error: true
+        env:
+          FAMILIES: ${{ steps.scope.outputs.families }}
+        run: |
+          set -uo pipefail
+          ./bin/oracle diff \
+            --golden testing/shadow-oracle/golden/1.5.5 \
+            --candidate target/oracle/recordings/candidate \
+            --out target/oracle/reports/keep \
+            --cells testing/shadow-oracle/cells.json \
+            --accepted testing/shadow-oracle/accepted-differences.json \
+            --id-filter "$FAMILIES" --strict
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      # OWED / DIVERGING / ACCEPTED, PER FAMILY, IN ONE PLACE. The report directory is the tool's
+      # answer; this only groups it by the id prefix so a reader sees WHICH family moved instead of a
+      # single total. A family with owed 0 is called out: an id-filter that matches nothing produces
+      # a green with no content, which is the one way this job could lie.
+      - name: Summarise the oracle by family
+        id: oraclesum
+        if: always()
+        env:
+          FAMILIES: ${{ steps.scope.outputs.families }}
+          REPLAY_RC: ${{ steps.replay.outcome }}
+        run: |
+          set -uo pipefail
+          rep=target/oracle/reports/keep
+          owed=0; div=0; acc=0
+          [ -f "$rep/owed.txt" ]      && owed=$(grep -c . "$rep/owed.txt" || true)
+          [ -f "$rep/diverging.txt" ] && div=$(grep -c . "$rep/diverging.txt" || true)
+          [ -f "$rep/accepted.txt" ]  && acc=$(grep -c . "$rep/accepted.txt" || true)
+          {
+            echo "### shadow oracle — filter \`${FAMILIES}\`"
+            echo ""
+            echo "| family | owed | diverging |"
+            echo "| --- | ---: | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$rep/owed.txt" ]; then
+            cut -d'|' -f1 "$rep/owed.txt" | sort | uniq -c | while read -r n f; do
+              d=0
+              [ -f "$rep/diverging.txt" ] && d=$(cut -d'|' -f1 "$rep/diverging.txt" | grep -c "^${f}\$" || true)
+              echo "| ${f} | ${n} | ${d} |" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+          line="oracle ${FAMILIES}: ${owed} owed, ${div} diverging, ${acc} accepted"
+          echo "$line"
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+          if [ "$owed" -eq 0 ]; then
+            echo "::error::the id-filter '${FAMILIES}' owes ZERO cells — a filter that matches nothing"
+            echo "::error::reports a green about an empty set. Fix the regex in .keep-proof.toml."
+            exit 1
+          fi
+          if [ -s "$rep/diverging.txt" ]; then
+            echo "::error::${div} diverging cell(s):"
+            head -40 "$rep/diverging.txt" | sed 's/^/::error::    /'
+          fi
+          [ "$REPLAY_RC" = "success" ] || exit 1
+
+      - name: Publish the oracle report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: keep-proof-oracle-report
+          path: |
+            target/oracle/reports/keep/report.md
+            target/oracle/reports/keep/report.json
+            target/oracle/reports/keep/diverging.txt
+            target/oracle/reports/keep/owed.txt
+            target/oracle/reports/keep/owed-gaps.txt
+            target/oracle/reports/keep/ledger.tsv
+          if-no-files-found: warn
+
+      # ITS OWN COMMIT STATUS, not just a line in the verdict's. The oracle is the expensive half of
+      # the proof and the half an owner reads on its own; a harvester should be able to ask "did the
+      # oracle move?" without waiting for the test shards.
+      - name: One-line oracle summary as a commit status
+        if: always()
+        run: |
+          set -u
+          line="${{ steps.oraclesum.outputs.line }}"
+          [ -n "$line" ] || line="oracle: did not produce a report (see the run)"
+          state=failure
+          [ "${{ steps.oraclesum.outcome }}" = "success" ] && state=success
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state="$state" \
+            -f context="keep-proof/oracle" \
+            -f description="$(printf '%.140s' "$line")" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
   # ── CONSTRUCTION GATE (REPORT-ONLY, EXACTLY AS IN ci.yml) ──────────────────────────────────────
   # Red by design on HEAD while the construction work it measures is in flight. It is run and
   # PRINTED so a hand-back can be read against it, and deliberately NOT scored: a report-only gate
@@ -431,6 +698,7 @@ jobs:
       - tests-total
       - gates
       - design-bindings
+      - oracle
       # In `needs` so the verdict waits for it and prints it, NOT in RESULTS below: report-only,
       # exactly as ci.yml's umbrella treats the same gate.
       - construction-gate
@@ -443,6 +711,7 @@ jobs:
         tests-total|${{ needs.tests-total.result }}
         gates|${{ needs.gates.result }}
         design-bindings|${{ needs.design-bindings.result }}
+        oracle|${{ needs.oracle.result }}
       CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -465,7 +734,7 @@ jobs:
 
           if [ "$fails" -eq 0 ]; then
             state="success"
-            desc="keep-proof GREEN: fmt/clippy/build, 4 test shards, gate --all + selftest, design bindings"
+            desc="keep-proof GREEN: fmt/clippy/build, 4 test shards, gate --all + selftest, design bindings, shadow oracle"
           else
             state="failure"
             desc="keep-proof RED (${fails}): ${reds}"
