@@ -11,10 +11,10 @@
     "Checked by: cargo xtask gate teller-steps. Wired into scripts/verify-1.6.0-done.sh",
     "beside the ISOMORPHISM group.",
     "",
-    "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `cell` above is the SHIPPED path: the",
-    "step proven where a conformance rig drives the plane as an operator would. All five planes now",
-    "also run through the composition root, behind root-llm / root-mcp / root-a2a / root-voice /",
-    "root-admin, and a step proven on the rig and unwitnessed over the loop is the same half-answer.",
+    "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `cell` above is the RIG column: the",
+    "step proven where a conformance rig drives the plane as an operator would. Each plane also has a",
+    "leg in the composition root -- root-llm / root-mcp / root-a2a / root-voice / root-admin -- and a",
+    "step proven on the rig and unwitnessed over the loop is the same half-answer.",
     "So every cell carries a SECOND verdict over its plane's root leg:",
     "  proven -- with `test`: a `<crates/busbar/src/root/units_*.rs>::<test fn>` cell that drives the",
     "            step through run_unit. The check verifies the file is the leg's own and the fn is in",
@@ -22,14 +22,35 @@
     "  none   -- with `note`: what the leg does instead, and why no cell drives this step yet. R-16:",
     "            name a gap, never paper it.",
     "The root column's gaps are PRINTED and named on every run but do not fail --check by themselves.",
-    "root-admin, root-mcp, root-a2a and root-voice are now IN the binary's default feature set, so for",
-    "those four the loop IS the shipped path and --root-legs-gating (below) holds them to the same red",
-    "rule the rig column has: a gating step with no cell over the loop fails. root-llm is still",
-    "default-off and being switched over plane by plane, so its root gaps remain the switch-over",
-    "queue and are printed rather than failed. What IS red on this column whatever the leg ships as: a",
-    "`proven` root cell whose named test does not exist, and a leg with no proven cell at all.",
+    "All five root-* features are in the binary's default set, and --root-legs-gating (below) holds",
+    "every one of them to the same red rule the rig column has: a gating step with no cell over the",
+    "loop fails. What IS red on this column whatever the leg ships as: a `proven` root cell whose",
+    "named test does not exist, and a leg with no proven cell at all.",
     "The two columns are independent verdicts about the same step and either may be \"none\" alone:",
-    "mcp.approve and a2a.decode are exactly that shape today -- open on the rig, proven over the loop."
+    "mcp.approve and a2a.decode are exactly that shape today -- open on the rig, proven over the loop.",
+    "",
+    "WHAT A `proven` ROOT CELL IS NOT. It says a named unit-test cell drives that step through",
+    "run_unit with all five legs compiled in. It does NOT say a request that arrived on a socket ever",
+    "reached that cell. This file used to claim, in this header, that because four of the legs were",
+    "default-on 'for those four the loop IS the shipped path'. That sentence was false for three of",
+    "them and half false for the fourth, and nothing here measured it -- --root-legs proves the cells",
+    "EXECUTE, never that a served request reaches them. A gate that asserts something it never",
+    "measures is a lie, so the assertion is gone and a MEASUREMENT stands in its place.",
+    "",
+    "THE SHIPPED-PATH CLAIM (`root_legs.<leg>.shipped_path` + `shipped_note`). One word per leg --",
+    "loop, legacy or split -- saying which half of the binary answers a request that arrives on that",
+    "plane, plus the argument behind it. `cargo xtask gate teller-steps` BUILDS the default-feature",
+    "release binary, boots it against a config that claims every plane, sends one request per leg",
+    "(admin: two reads, one of them a view that exists on no legacy route; llm: a chat completion;",
+    "mcp: a JSON-RPC initialize; a2a: the agent card; voice: the WebSocket upgrade) and reads the",
+    "verdict out of the per-unit records the binary itself emits at DEBUG",
+    "(crates/busbar/src/root/journal.rs): `loop` when the composition root's kernel loop produced the",
+    "answer, `legacy` when the root handed the request back to the legacy router to answer. Both",
+    "words on one leg is `split`. Neither word, on a probe the binary DID answer, is `legacy`. A probe",
+    "the binary never answered is not a verdict at all -- no evidence is red, never green -- and a run",
+    "in which no leg journalled a single loop record is refused as a broken instrument rather than",
+    "read as five legacy legs. The row is red whenever a claim and the binary disagree, in either",
+    "direction, so the day a leg flips its claim flips in the same landing."
   ],
   "steps": {
     "arrival": {
@@ -76,23 +97,33 @@
   "root_legs": {
     "root-llm": {
       "plane": "llm",
-      "file": "crates/busbar/src/root/tests/units_llm.rs"
+      "file": "crates/busbar/src/root/tests/units_llm.rs",
+      "shipped_path": "loop",
+      "shipped_note": "the compile-time ingress swap puts every arriving dialect into run_unit_async, so a chat completion journals one loop record and never a legacy one; the engine it then dials is an upstream client, not a second answerer"
     },
     "root-mcp": {
       "plane": "mcp",
-      "file": "crates/busbar/src/root/tests/units_mcp.rs"
+      "file": "crates/busbar/src/root/tests/units_mcp.rs",
+      "shipped_path": "legacy",
+      "shipped_note": "a JSON-RPC initialize is answered without the root taking any part: the only production line this leg owns discards its argument and compares four compile-time constants, and the function that would assemble a servable binding has no caller outside tests"
     },
     "root-a2a": {
       "plane": "a2a",
-      "file": "crates/busbar/src/root/tests/units_a2a.rs"
+      "file": "crates/busbar/src/root/tests/units_a2a.rs",
+      "shipped_path": "legacy",
+      "shipped_note": "the agent card comes back from this plane's own route specs with nothing journalled; boot builds a scope policy, measures its length against the operation classes and drops it, which diverts no byte and is written down as diverting none"
     },
     "root-voice": {
       "plane": "voice",
-      "file": "crates/busbar/src/root/tests/units_voice.rs"
+      "file": "crates/busbar/src/root/tests/units_voice.rs",
+      "shipped_path": "legacy",
+      "shipped_note": "a WebSocket upgrade on the session path is answered with no root record at all; the node and its call port really are composed at boot, but the table those two questions read is written only by a unit that production never constructs"
     },
     "root-admin": {
       "plane": "admin",
-      "file": "crates/busbar/src/root/units_admin/tests/units_admin.rs"
+      "file": "crates/busbar/src/root/units_admin/tests/units_admin.rs",
+      "shipped_path": "split",
+      "shipped_note": "half moved, and both halves are visible in one boot: the ledger view journals a loop record alone because no legacy route serves it, while a key list journals a loop record AND a legacy one, the second being the same request re-served on the old router for its answer bytes"
     }
   },
   "matrix": {

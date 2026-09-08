@@ -114,6 +114,8 @@ pub const ROW_RIG: &str = "teller-steps:rig-cells";
 pub const ROW_ROOT_COLUMN: &str = "teller-steps:root-column";
 pub const ROW_ROOT_LEGS: &str = "teller-steps:root-legs";
 pub const ROW_GATING: &str = "teller-steps:gating-gaps";
+/// THE MEASURED ROW. Every other row above reads the tree; this one reads a RUNNING BINARY.
+pub const ROW_SHIPPED: &str = "teller-steps:shipped-path";
 
 // -------------------------------------------------------------------------------------------
 // The matrix
@@ -635,6 +637,152 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
 }
 
 // -------------------------------------------------------------------------------------------
+// The shipped path: the one rule that MEASURES rather than reads
+// -------------------------------------------------------------------------------------------
+
+/// The claim each leg owes about what actually ships, and the argument behind it.
+const SHIPPED_KEY: &str = "shipped_path";
+const SHIPPED_NOTE_KEY: &str = "shipped_note";
+
+/// Compare every leg's `shipped_path` CLAIM against what a booted binary was measured doing, and
+/// report the two ways a claim can lie: understating the loop's reach and overstating it.
+///
+/// THE ORDER OF REFUSALS IS THE ORDER OF DOUBT. A measurement that could not be taken, or one taken
+/// through an instrument that recorded nothing anywhere, is reported as ONE failure about the
+/// measurement rather than as five failures about five legs — because with no instrument every leg
+/// reads `legacy`, and three of the five legs legitimately claim exactly that. A broken reader
+/// would otherwise agree with the file it is supposed to be checking.
+pub fn check_shipped(cx: &Ctx, m: &Matrix) -> Vec<String> {
+    let mut out = Vec::new();
+    let legs = m.root_legs();
+    let Some(legs_obj) = legs.as_object().filter(|o| !o.is_empty()) else {
+        // Already named by the root-legs row; nothing here can be measured against nothing.
+        return out;
+    };
+
+    let measured = match crate::shipped::measure(cx) {
+        Ok(mm) => mm,
+        Err(e) => {
+            out.push(format!(
+                "{LEDGER_REL}: the shipped path was NOT MEASURED, so every `{SHIPPED_KEY}` in this \
+                 file is an assertion again: {e}"
+            ));
+            return out;
+        }
+    };
+    if measured.vacuous() {
+        out.push(format!(
+            "{LEDGER_REL}: the probe ran and NOT ONE leg journalled a `{}` record. An instrument \
+             that records nothing reads exactly like five legacy legs, and three of these legs \
+             claim to be legacy -- so this is refused as an unmeasured run rather than read as a \
+             measurement that happens to agree",
+            crate::shipped::WORD_LOOP
+        ));
+        return out;
+    }
+
+    let mut seen_notes: BTreeMap<String, String> = BTreeMap::new();
+    for leg in legs_obj.keys() {
+        let entry = legs.get(leg);
+        let plane = entry.str_or("plane", "");
+        let claim = entry.str_or(SHIPPED_KEY, "");
+        if !crate::shipped::VERDICTS.contains(&claim.as_str()) {
+            out.push(format!(
+                "{LEDGER_REL}: root leg {} carries `{SHIPPED_KEY}` {}, which is not one of {}. A \
+                 leg with no claim about what ships is a leg whose measurement answers nothing",
+                json_lite::py_repr(leg),
+                json_lite::py_repr_json(entry.get(SHIPPED_KEY)),
+                py_list(crate::shipped::VERDICTS)
+            ));
+            continue;
+        }
+        // THE CLAIM OWES AN ARGUMENT on the same terms every root verdict does: a word out of a
+        // three-word vocabulary is a label, and the sentence behind it is what a reviewer disagrees
+        // with when the measurement moves.
+        let note = entry
+            .get(SHIPPED_NOTE_KEY)
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Some(why) = note_problem(&note) {
+            out.push(format!(
+                "{LEDGER_REL}: root leg {}'s `{SHIPPED_NOTE_KEY}` {}: {why}",
+                json_lite::py_repr(leg),
+                json_lite::py_repr(&note)
+            ));
+            continue;
+        }
+        if let Some(first) = seen_notes.get(&note) {
+            out.push(format!(
+                "{LEDGER_REL}: root leg {}'s `{SHIPPED_NOTE_KEY}` reuses the argument already made \
+                 for {} verbatim: one sentence pasted across five legs is one argument and four \
+                 labels",
+                json_lite::py_repr(leg),
+                json_lite::py_repr(first)
+            ));
+            continue;
+        }
+        seen_notes.insert(note, leg.to_string());
+
+        let Some(observed) = measured.legs.get(&plane) else {
+            out.push(format!(
+                "{LEDGER_REL}: root leg {} answers plane {}, which NO probe covers -- an unprobed \
+                 plane's claim is unfalsifiable",
+                json_lite::py_repr(leg),
+                json_lite::py_repr(&plane)
+            ));
+            continue;
+        };
+        match observed.verdict() {
+            Err(why) => out.push(format!(
+                "{LEDGER_REL}: root leg {} claims `{SHIPPED_KEY}` {} and NOTHING WAS MEASURED to \
+                 hold it to: {why}. No evidence is red, never green",
+                json_lite::py_repr(leg),
+                json_lite::py_repr(&claim)
+            )),
+            Ok(v) if v != claim => out.push(format!(
+                "{LEDGER_REL}: root leg {} claims `{SHIPPED_KEY}` {} and the booted binary was \
+                 measured serving {} -- {}. The claim and the binary disagree; the day a leg flips, \
+                 the claim flips in the same landing or this row is red",
+                json_lite::py_repr(leg),
+                json_lite::py_repr(&claim),
+                json_lite::py_repr(v),
+                observed.evidence()
+            )),
+            Ok(_) => {}
+        }
+    }
+    out
+}
+
+/// The measured evidence, one line per leg, for the row's detail. What a gate MEASURED belongs in
+/// the ledger beside its verdict; a pass that prints only "5 leg(s)" is a pass nobody can audit.
+fn shipped_detail(cx: &Ctx, m: &Matrix) -> String {
+    let Ok(measured) = crate::shipped::measure(cx) else {
+        return "not measured".to_string();
+    };
+    let legs = m.root_legs();
+    let mut parts: Vec<String> = Vec::new();
+    let names: Vec<&str> = legs
+        .as_object()
+        .map(|o| o.keys().collect())
+        .unwrap_or_default();
+    for leg in names {
+        let plane = legs.get(leg).str_or("plane", "");
+        let verdict = measured.legs.get(&plane).map_or_else(
+            || "unprobed".to_string(),
+            |o| match o.verdict() {
+                Ok(v) => v.to_string(),
+                Err(_) => "unmeasured".to_string(),
+            },
+        );
+        parts.push(format!("{plane}={verdict}"));
+    }
+    format!("{} leg(s) measured: {}", parts.len(), parts.join(", "))
+}
+
+// -------------------------------------------------------------------------------------------
 // The shipped-leg bar, and the render
 // -------------------------------------------------------------------------------------------
 
@@ -1094,6 +1242,9 @@ pub struct Findings {
     pub root_column: Vec<String>,
     pub root_legs: Vec<String>,
     pub gating: Vec<String>,
+    /// The measured row's findings, and the line the passing row prints its evidence on.
+    pub shipped: Vec<String>,
+    pub shipped_detail: String,
 }
 
 /// THE MATRIX DID NOT PARSE, so no rule below it ran. Every rule carries the refusal — the one
@@ -1117,6 +1268,8 @@ pub fn did_not_load(detail: &str) -> Findings {
         root_column: pick(ROW_ROOT_COLUMN),
         root_legs: pick(ROW_ROOT_LEGS),
         gating: pick(ROW_GATING),
+        shipped: pick(ROW_SHIPPED),
+        shipped_detail: "not measured".to_string(),
     }
 }
 
@@ -1174,6 +1327,13 @@ pub fn rows_from(f: &Findings) -> Vec<Row> {
             "a gating plane x step cell is still \"none\"",
             format!("0 of {cells} gating cell(s) are \"none\""),
         ),
+        one_row(
+            &f.shipped,
+            ROW_SHIPPED,
+            "every leg's shipped-path claim is what a booted binary was MEASURED doing",
+            "a shipped-path claim disagrees with the binary, or was never measured at all",
+            f.shipped_detail.clone(),
+        ),
     ]
 }
 
@@ -1189,6 +1349,7 @@ impl Gate for TellerStepsGate {
             ROW_ROOT_COLUMN.to_string(),
             ROW_ROOT_LEGS.to_string(),
             ROW_GATING.to_string(),
+            ROW_SHIPPED.to_string(),
         ]
     }
 
@@ -1207,6 +1368,8 @@ impl Gate for TellerStepsGate {
             root_column: root.column,
             root_legs: root.legs,
             gating: gating_gaps(&m),
+            shipped: check_shipped(cx, &m),
+            shipped_detail: shipped_detail(cx, &m),
         }))
     }
 
@@ -1451,8 +1614,102 @@ impl Gate for TellerStepsGate {
             report.push(prove_red(cx, self, label, &[covers], ov, &[naming]));
         }
 
+        // ── THE MEASURED ROW ─────────────────────────────────────────────────────────────────
+        // Its plants are not edits to the matrix: they are MEASUREMENTS that disagree with the
+        // matrix, planted through the same overlay seam a canned `cargo metadata` goes through.
+        // The base is the REAL measurement this tree produces, mutated one leg at a time, so a
+        // plant is always the shape the probe actually emits and a probe that stopped emitting it
+        // cannot pass its own selftest.
+        let base = match crate::shipped::measure(cx) {
+            Ok(m) => m,
+            Err(e) => {
+                report.note_infra_failure(format!(
+                    "the shipped path could not be measured, so the row that measures it cannot be \
+                     self-tested: {e}"
+                ));
+                return report;
+            }
+        };
+        for (label, mutate, naming) in shipped_plants() {
+            let mut planted = base.clone();
+            mutate(&mut planted);
+            let mut ov = Overlay::new();
+            ov.set_command(
+                crate::shipped::OVERLAY_KEY,
+                crate::shipped::render(&planted),
+            );
+            report.push(prove_red(cx, self, label, &[ROW_SHIPPED], ov, naming));
+        }
+
         report
     }
+}
+
+/// One planted MEASUREMENT: its label, the mutation applied to the real one, and the substrings the
+/// report must name.
+type ShippedPlant = (
+    &'static str,
+    Box<dyn Fn(&mut crate::shipped::Measured)>,
+    &'static [&'static str],
+);
+
+/// The measured row's red cases — A CLAIM THAT LIES IN EACH DIRECTION, and the two shapes of
+/// no-evidence.
+///
+/// The first three are the whole point of the row. A matrix may understate the loop's reach or
+/// overstate it, and only one of those two is the mistake people expect; a check that catches the
+/// flattering direction and not the modest one still lets the file drift the day a leg moves. The
+/// last two are the vacuous greens: a leg nothing answered, and a run nothing was recorded in.
+fn shipped_plants() -> Vec<ShippedPlant> {
+    vec![
+        (
+            "a leg the file calls legacy that the binary was measured serving from the loop",
+            Box::new(|m: &mut crate::shipped::Measured| {
+                if let Some(o) = m.legs.get_mut("mcp") {
+                    o.records.insert(crate::shipped::WORD_LOOP.to_string());
+                }
+            }),
+            &["root leg 'root-mcp' claims", "measured serving 'loop'"],
+        ),
+        (
+            "a leg the file calls loop that the binary was measured answering from the legacy crate",
+            Box::new(|m: &mut crate::shipped::Measured| {
+                if let Some(o) = m.legs.get_mut("llm") {
+                    o.records.clear();
+                }
+            }),
+            &["root leg 'root-llm' claims", "measured serving 'legacy'"],
+        ),
+        (
+            "a split leg whose legacy half stopped being measured, so `split` outlives the split",
+            Box::new(|m: &mut crate::shipped::Measured| {
+                if let Some(o) = m.legs.get_mut("admin") {
+                    o.records.remove(crate::shipped::WORD_LEGACY);
+                }
+            }),
+            &["root leg 'root-admin' claims", "measured serving 'loop'"],
+        ),
+        (
+            "a leg whose probe the binary never answered -- no evidence, which is never a verdict",
+            Box::new(|m: &mut crate::shipped::Measured| {
+                if let Some(o) = m.legs.get_mut("voice") {
+                    o.status = None;
+                    o.records.clear();
+                }
+            }),
+            &["NOTHING WAS MEASURED", "No evidence is red, never green"],
+        ),
+        (
+            "a run in which the instrument recorded nothing, which reads exactly like five legacy \
+             legs",
+            Box::new(|m: &mut crate::shipped::Measured| {
+                for o in m.legs.values_mut() {
+                    o.records.clear();
+                }
+            }),
+            &["NOT ONE leg journalled"],
+        ),
+    ]
 }
 
 /// One planted violation: its label, the owed row it exercises, the substring its report must NAME,
@@ -1534,6 +1791,16 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
     // different-sized matrix than the Rust gate did shows up as a row diff rather than as two
     // agreeing greens over two different matrices.
     let mut f = Findings::default();
+    // THE LEGACY CHECK NEVER BOOTED ANYTHING. It read the JSON, so it can say nothing at all about
+    // which half of a running binary answers a request, and a row it cannot answer is carried as a
+    // rule that did not run rather than as a rule that passed — the same treatment an unreadable
+    // matrix gets above, for the same reason.
+    f.shipped.push(
+        "the legacy check has no shipped-path rule: it read the matrix and booted no binary, so \
+         this verdict is one it could never reach — a rule that did not run is not a rule that \
+         passed"
+            .to_string(),
+    );
     if let Some(line) = all.iter().find(|l| l.starts_with("ROOT-STEPS: ")) {
         if let Some(total) = line
             .split_whitespace()

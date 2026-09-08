@@ -2324,7 +2324,9 @@ jobs:
   #      another leg's file, a root verdict carrying a label instead of an argument, a plane no root
   #      leg answers to, a leg that proves zero steps over the loop.
   #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
-  #      not "none". This reads the JSON.
+  #      not "none". This reads the JSON — AND, since the shipped-path row landed, boots the shipped
+  #      binary and measures which half of it answers each plane, so the file's `shipped_path` claim
+  #      is checked against a request that actually arrived rather than against a sentence.
   #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
   #      all five root legs on (root-admin,root-mcp,root-a2a,root-voice,root-llm) and EXECUTES every
   #      named root-leg cell. A matrix can only be verified against cells that run; verified against
@@ -2364,7 +2366,12 @@ jobs:
         run: cargo build -p xtask --locked
       - name: Teller-steps self-test (a lying matrix is refused)
         run: cargo xtask gate teller-steps --selftest
-      - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)
+      # BLOCKING, and the sixth row of it MEASURES: it builds the default-feature release binary,
+      # boots it against a config that claims every plane, sends one request per leg and reads which
+      # half of the binary answered out of the per-unit DEBUG records the binary writes. The matrix
+      # used to ASSERT which planes the loop serves — wrongly, for three of five — and nothing
+      # checked it. A gate that asserts what it never measures is a lie.
+      - name: Teller-steps matrix (BLOCKING — gating cells named, shipped path MEASURED)
         run: cargo xtask gate teller-steps
       # Ordered before the expensive arm on purpose: it reads two files and costs nothing, so a
       # shipped leg with an undriven gating step reddens in seconds rather than after a full

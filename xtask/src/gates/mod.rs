@@ -805,9 +805,12 @@ pub static REGISTRY: &[Registration] = &[
     Registration {
         name: "teller-steps",
         batch: 2,
-        tier: Tier::Fast,
+        // FULL, and it moved here the day the gate stopped only READING. Its shipped-path row
+        // builds the default-feature release binary, boots it and drives one request per plane —
+        // the only way to check a claim about which half of a running binary answers.
+        tier: Tier::Full,
         build: || Box::new(teller_steps::TellerStepsGate),
-        summary: "one cell per Teller step per plane, each with a second verdict over the root leg",
+        summary: "one cell per Teller step per plane, plus the MEASURED shipped path per root leg",
     },
     Registration {
         name: "config-schema",
