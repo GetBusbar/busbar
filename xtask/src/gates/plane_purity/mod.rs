@@ -108,6 +108,37 @@ impl Measurement {
     }
 }
 
+/// THE DELEGATED SCAN'S ARTEFACT: the `#SCAN` denominator line, then one TSV row per hit.
+///
+/// One derivation with two readers. `run` writes it to [`HITS_OUT_ENV`] for a caller outside this
+/// process, and the construction gate's `neutral-no-dialect` rule — which does not re-implement
+/// dialect policy, it reads this gate's answer — asks [`check_hits_artefact`] for the same bytes
+/// without a subprocess. A count read out of a file and a count read out of a return value must be
+/// the same count, so they come from the same place.
+pub fn hits_artefact(m: &Measurement, hits: &[&Hit]) -> String {
+    let mut text = m.scan_line();
+    text.push('\n');
+    for h in hits {
+        text.push_str(&h.tsv());
+        text.push('\n');
+    }
+    text
+}
+
+/// The `--check` hit artefact for `cx`, derived in this process.
+///
+/// This is what replaced `scripts/plane-purity-lint.sh`. The construction gate used to shell out to
+/// that script and read the file it left behind; the script is gone, this gate is what it became,
+/// and a gate that is already linked into the same binary does not need to be spawned to be asked.
+/// The failure mode it removes is the one this rule actually hit: a delegated scan whose SCRIPT had
+/// been deleted reported "no hits file" — which is indistinguishable, to a reader of the row, from
+/// a scan that ran and found nothing.
+pub fn check_hits_artefact(cx: &Ctx) -> Result<String, String> {
+    let m = measure(cx)?;
+    let hits = m.check_hits();
+    Ok(hits_artefact(&m, &hits))
+}
+
 /// Every listed root that is not present. A listed root that does not exist is scanned as zero
 /// files, and zero is the passing answer to every ban — so a crate that is legitimately gone leaves
 /// the set by being DELETED from [`crate::planes`] in a reviewed diff, never by its directory
@@ -322,13 +353,7 @@ impl Gate for PlanePurityGate {
         // The hit artefact, for the one delegated consumer that reads hit COUNTS out of it. Written
         // only when asked for by name, and prefixed with its own denominator.
         if let Some(path) = std::env::var_os(HITS_OUT_ENV) {
-            let mut text = m.scan_line();
-            text.push('\n');
-            for h in &hits {
-                text.push_str(&h.tsv());
-                text.push('\n');
-            }
-            let _ = std::fs::write(PathBuf::from(path), text);
+            let _ = std::fs::write(PathBuf::from(path), hits_artefact(&m, &hits));
         }
 
         match cx.walk(
