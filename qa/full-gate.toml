@@ -97,6 +97,7 @@ must_find = [
   "cargo xtask gate structure-lint",
   "scripts/public-hygiene-lint.py",
   "cargo xtask gate workspace-deps",
+  "cargo xtask gate kind-isolation",
   "scripts/check-proof-manifest-public.mjs",
   "testing/llm-conformance/run.sh",
 ]
