@@ -11,9 +11,7 @@ use busbar_unit_cost::{
     CLASS_INPUT, CLASS_OUTPUT,
 };
 use busbar_unit_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_unit_ledger::migration::{
-    LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords,
-};
+use busbar_unit_ledger::migration::{LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords};
 use busbar_unit_ledger::totals::CapDimension;
 
 /// Rows a test seeded, counting the reads so "the second boot touched nothing" is an assertion
@@ -241,8 +239,7 @@ fn a_deployment_that_configured_no_card_opens_with_an_absent_one() {
         rate_card: RateCard::absent(4),
         ..cfg()
     };
-    let migration =
-        migration_over(&rows, &mut records, &cfg, 1_700_000_000, None).expect("boots");
+    let migration = migration_over(&rows, &mut records, &cfg, 1_700_000_000, None).expect("boots");
     let view = migration.history.current();
     let (_, card) = view.card_at(0).expect("an absent card is still an entry");
     assert!(!card.pricing_enabled());
@@ -473,8 +470,7 @@ fn a_row_on_a_lane_the_card_does_not_name_prices_at_nothing_and_says_so() {
 fn the_first_boot_seals_the_opening() {
     let rows = rows();
     let mut records = NodeLocalRecords::new();
-    let outcome =
-        seal_opening(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("seals");
+    let outcome = seal_opening(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("seals");
     let Outcome::Sealed(opening) = outcome else {
         panic!("the first boot seals");
     };
@@ -521,8 +517,7 @@ fn the_second_boot_reads_nothing() {
 fn a_second_boot_appends_nothing_to_the_history() {
     let rows = rows();
     let mut records = NodeLocalRecords::new();
-    let first =
-        migration_over(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("boots");
+    let first = migration_over(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("boots");
     assert!(first.sealed_now());
     let after_first = rows.reads.get();
 
@@ -556,8 +551,7 @@ fn the_identity_closes_at_zero_before_and_after_a_second_boot() {
 
     let rows = rows();
     let mut records = NodeLocalRecords::new();
-    let first =
-        migration_over(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("boots");
+    let first = migration_over(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("boots");
     let Outcome::Sealed(opening) = &first.outcome else {
         panic!("the first boot seals");
     };

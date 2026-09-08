@@ -292,8 +292,7 @@ fn normalize(s: &str) -> String {
             serde_json::Value::Object(map) => {
                 for (k, val) in map.iter_mut() {
                     let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
-                    let is_clock =
-                        matches!(k.as_str(), "created" | "created_at" | "createTime");
+                    let is_clock = matches!(k.as_str(), "created" | "created_at" | "createTime");
                     if is_id && val.is_string() {
                         *val = serde_json::Value::String("<id>".to_string());
                     } else if (is_clock || k == "latencyMs") && val.is_number() {
@@ -2015,8 +2014,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 // THE RESOLVED KEY IS THE DEPLOYMENT'S KEY — the door read the bearer back to
                 // the binding it was minted for, which is what makes the attribution below a
                 // statement about a credential rather than about a struct literal.
-                if loop_gov.key().map(|k| k.id.clone()).as_deref()
-                    != Some(loop_rig.key.id.as_str())
+                if loop_gov.key().map(|k| k.id.clone()).as_deref() != Some(loop_rig.key.id.as_str())
                 {
                     failures.push(format!(
                         "{cred:?}: the door resolved a key that is not this deployment's"
@@ -2029,8 +2027,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 let settle_rig = rig(Fixture::BufferedOk).await;
                 match admit(&settle_rig, cred).await {
                     Ok(settle_gov) => {
-                        let settled =
-                            principal_the_loop_settled_on(&settle_rig, settle_gov).await;
+                        let settled = principal_the_loop_settled_on(&settle_rig, settle_gov).await;
                         if settled != settle_rig.key.id {
                             failures.push(format!(
                                 "{cred:?}: the loop settled on principal {settled:?}, not the \
@@ -2242,8 +2239,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     }
     // BEFORE THE DOOR. Nothing charged, nothing metered — which is the whole reason the seat is
     // at this step and not the next one.
-    if field(&stopped, "ledger_requests") != "0" || !field(&stopped, "metering_rows").is_empty()
-    {
+    if field(&stopped, "ledger_requests") != "0" || !field(&stopped, "metering_rows").is_empty() {
         failures.push(format!(
             "a veto was charged: requests={} rows={}",
             field(&stopped, "ledger_requests"),
