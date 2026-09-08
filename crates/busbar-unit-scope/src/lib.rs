@@ -198,25 +198,40 @@ pub fn is_kernel_granted(path: &str) -> bool {
 /// crate that has to name it names one literal.
 pub use busbar_contract::surface::ADMIN_PREFIX;
 
-/// `POST /config/validate` and `POST /plugins/inspect` — stateless dry-runs (reads in POST
-/// clothing: the body is the config to lint / tarball to preview) that stay `read-only` although
-/// every other mutation-shaped method needs `full`.
-const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
+/// `/config/validate` and `/plugins/inspect` — stateless dry-runs (reads in POST clothing: the body
+/// is the config to lint / tarball to preview) that stay `read-only` although every other
+/// mutation-shaped method on every other path needs `full`.
+///
+/// The pair is keyed on the PATH alone, not on the path and the method. The method a caller used is
+/// deliberately not consulted here, and that is not this rule being lax: it is the shipped surface's
+/// rule, and the shipped surface is what a credential was issued against. See
+/// [`admin_required_scope`].
+const READ_ONLY_DRY_RUN_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 
 /// The authorization matrix: the scope an admin endpoint requires, derived from METHOD + PATH —
 /// never from the body. A strict two-rung split: every read (`GET`/`HEAD`) plus the two stateless
-/// dry-run `POST`s is `read-only`; every mutation needs `full`. Unknown methods fail closed to
-/// `full`.
+/// dry-run paths is `read-only`; every mutation needs `full`. Unknown methods fail closed to `full`.
 ///
-/// Ported verbatim from 1.5.5's `busbar_core::admin::v1::contract::required_scope` (behaviourally
-/// identical; the only change is that `method` is a plain string here instead of `axum::http::Method`,
-/// so this crate carries no HTTP-framework dependency at all).
+/// THE 1.5.5 SURFACE'S RULE, which is not quite the rule this function used to state. It was
+/// described as a verbatim port of `busbar_core`'s `required_scope`, and for every method the two
+/// dry-run paths are actually mounted with it is one. It stopped being one for every method they are
+/// NOT mounted with: this copy asked whether the method was `POST` before granting the dry-run
+/// exemption, and the shipped copy never asked. So a read-only credential sending `PUT
+/// /api/v1/admin/config/validate` was authorized by the surface (and then answered `405` by a router
+/// that mounts the path `POST`-only) and refused `403` by this one — the same request, two answers,
+/// with the loop's answer arriving before the router ever got to say the method was wrong.
+///
+/// Between those two the shipped answer is the one that governs: an operator's read-only token was
+/// issued against the surface's matrix, and a copy that refuses where the surface admits is a
+/// tightening nobody asked for on a path where the tightening changes nothing except which refusal
+/// the caller reads. The exemption is therefore keyed on the path, as it always was in the copy that
+/// ships.
 pub fn admin_required_scope(method: &str, path: &str) -> Scope {
     if method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD") {
         return Scope::ReadOnly;
     }
     let rel = path.strip_prefix(ADMIN_PREFIX).unwrap_or(path);
-    if method.eq_ignore_ascii_case("POST") && READ_ONLY_POST_PATHS.contains(&rel) {
+    if READ_ONLY_DRY_RUN_PATHS.contains(&rel) {
         return Scope::ReadOnly;
     }
     Scope::Full

@@ -222,3 +222,41 @@ fn a_claims_operation_class_is_scoped_through_the_policy() {
         "an operation nobody wrote a policy entry for has not been authorized"
     );
 }
+
+/// The dry-run exemption is keyed on the PATH, not on the path and the method.
+///
+/// This is the surface's rule rather than a widening of it, and the distinction is worth a test
+/// because it looks like a widening: it grants `read-only` on methods the two paths are not mounted
+/// with, which sounds lax until you notice what the alternative did. Asking for the method first
+/// made this copy refuse `403` where the shipped surface authorized and then answered `405` — the
+/// same request, two answers, with the loop's arriving before the router could say the method was
+/// wrong. A credential is issued against the surface's matrix; a copy that refuses where the surface
+/// admits is a rule that was tightened in one place and not the other.
+///
+/// Nothing is actually reachable through the exemption on these methods: both paths mount `POST`
+/// only, so the router answers `405` whatever this returns. What the exemption decides is WHICH
+/// refusal a caller reads, and it decides it the way the surface always has.
+#[test]
+fn the_dry_run_exemption_does_not_ask_which_method_was_used() {
+    for path in [
+        "/api/v1/admin/config/validate",
+        "/api/v1/admin/plugins/inspect",
+    ] {
+        for method in ["POST", "PUT", "PATCH", "DELETE", "PROPFIND"] {
+            assert_eq!(
+                admin_required_scope(method, path),
+                Scope::ReadOnly,
+                "{method} {path} is not the scope the shipped surface requires"
+            );
+        }
+    }
+    // Not a blanket amnesty on mutation-shaped methods: the exemption is these two paths and no
+    // others, so a sibling under the same prefix is still `full`.
+    for method in ["POST", "PUT", "PATCH", "DELETE"] {
+        assert_eq!(
+            admin_required_scope(method, "/api/v1/admin/config"),
+            Scope::Full,
+            "{method} /api/v1/admin/config escaped the mutation bar"
+        );
+    }
+}
