@@ -1414,7 +1414,7 @@ fn default_per_request_fee() -> i64 {
 /// process-global tracer subscriber, so a second instance could not do anything except silently lose.
 /// A second instance of either is therefore a loud boot error, never a silent no-op.
 ///
-/// Each sink's settings carry that instance's resolved [`crate::export::projection::Projection`] —
+/// Each sink's settings carry that instance's resolved [`busbar_substrate::config::projection::Projection`] —
 /// the streams + fields THAT sink is granted. Core builds every payload TO that projection, so an
 /// ungranted field is never serialized and never crosses the ABI.
 #[derive(Debug, Clone, Default)]
@@ -1436,8 +1436,8 @@ impl ExportCfg {
     /// same mechanism for hook signals), then read per request as the COMPUTE GATE: core generates a
     /// stream's records ONLY when some sink declared it. Supersedes the one-off
     /// `export::request_log_configured()` boolean — one mechanism, not two.
-    pub(crate) fn projection_union(&self) -> crate::export::projection::ProjectionUnion {
-        crate::export::projection::ProjectionUnion::of(
+    pub(crate) fn projection_union(&self) -> busbar_substrate::config::projection::ProjectionUnion {
+        busbar_substrate::config::projection::ProjectionUnion::of(
             self.prometheus
                 .iter()
                 .map(|s| &s.projection)
@@ -1492,12 +1492,12 @@ pub struct PrometheusSettings {
     #[serde(default = "default_key_gauge_limit")]
     pub(crate) key_gauge_limit: usize,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_substrate::config::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_substrate::config::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-webhook` instance — relocated from the retired
@@ -1524,12 +1524,12 @@ pub(crate) struct WebhookSettings {
     #[serde(default = "default_webhook_delivery_timeout_secs")]
     pub(crate) delivery_timeout_secs: u64,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_substrate::config::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_substrate::config::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: request-log-file` instance.
@@ -1542,12 +1542,12 @@ pub(crate) struct FileSettings {
     #[serde(default)]
     pub(crate) rotate_mb: Option<u64>,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_substrate::config::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_substrate::config::projection::Projection,
 }
 
 /// `settings:` of an `export.<name>.module: otlp` instance — the new home of the DELETED
@@ -1560,12 +1560,12 @@ pub struct OtlpSettings {
     /// `otlp` export instance is present busbar installs an OpenTelemetry tracer + exports spans.
     pub url: String,
     /// THIS INSTANCE'S RESOLVED PROJECTION — the streams + fields this sink is granted, from its
-    /// `streams:` / `fields:` keys (see `crate::export::projection`). NOT an operator key: it is
+    /// `streams:` / `fields:` keys (see `busbar_substrate::config::projection`). NOT an operator key: it is
     /// `#[serde(skip)]` so the `settings:` bag stays exactly what the operator wrote, and it is
     /// filled in by [`resolve_export`]. It rides here so the delivery path can build this sink's
     /// payload TO ITS PROJECTION without a second lookup keyed on instance name.
     #[serde(skip)]
-    pub(crate) projection: crate::export::projection::Projection,
+    pub(crate) projection: busbar_substrate::config::projection::Projection,
 }
 
 /// One `{ name, value }` auth header for a webhook export instance.
@@ -1587,7 +1587,7 @@ pub(crate) struct ExportAuthHeader {
 /// - a SECOND `prometheus` or `otlp` instance is a boot error (see [`ExportCfg`] — those two are
 ///   process-singleton by construction and a second one could only lose silently);
 /// - the instance's PROJECTION (`streams:` / `fields:` / `durable:`) is resolved + validated by
-///   [`crate::export::projection::resolve_projection`], which is where the HARD RULE lives: a stream
+///   [`busbar_substrate::config::projection::resolve_projection`], which is where the HARD RULE lives: a stream
 ///   with no producer in this release, a stream the module cannot carry, a `fields:` list that omits
 ///   a pinned field, and `durable: true` are all LOUD errors here rather than a sink that validates
 ///   and delivers nothing.
@@ -1598,7 +1598,7 @@ pub fn resolve_export(defs: &ExportDefs, errors: &mut Vec<String>) -> ExportCfg 
     let mut otlp_owner: Option<&str> = None;
 
     for (name, def) in defs {
-        let projection = crate::export::projection::resolve_projection(
+        let projection = busbar_substrate::config::projection::resolve_projection(
             name,
             def.module.trim(),
             def.streams.as_deref(),
