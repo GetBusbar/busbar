@@ -857,46 +857,21 @@ pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::poli
 //   THE ONE SEAM THIS PLANE'S MOUNTED SURFACE IS REACHED THROUGH
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// What one operation of this plane answered: a status, its headers, and its body.
+/// THE SEAM IS NOT THIS PLANE'S, and that is why it is not defined here.
 ///
-/// The three together, because a caller reads all three and this root may not re-derive any of them.
-/// It is the plane's own answer travelling back OUT of the loop — the exact shape the administrative
-/// plane's seam carries for the same reason, and for the same reason it is a record of BYTES rather
-/// than of anything this file could reconstruct.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct A2aAnswer {
-    /// The status the surface answered with.
-    pub status: u16,
-    /// The headers it emitted, in emission order.
-    pub headers: Vec<(String, String)>,
-    /// The body it wrote. For a streamed operation this is the run of events, exactly as framed.
-    pub body: Vec<u8>,
-}
-
-/// THE ONE SEAM between this plane's units and the surface that already answers its operations.
+/// [`PlaneAnswer`] and [`PlaneDispatch`] used to be `A2aAnswer` and `A2aDispatch`, written in this
+/// file because this was the first plane whose leg had a mount to reach. Nothing in either of them
+/// was ever about A2A: the argument is an `OpClassId`, which every plane declares, and the answer is
+/// a status, headers and bytes, which every surface writes. So when the MCP leg needed the same seam
+/// the two types moved out to [`crate::root::transports`] — where [`PlaneLeg`] already is — rather
+/// than being copied under a second pair of names. Two structs with the same three fields are two
+/// things that can drift, and the first thing to drift between them would have been a difference
+/// nobody meant.
 ///
-/// ## Why there is exactly one, and why it takes no request
+/// Re-exported here rather than merely moved, so this plane's units read as one file.
 ///
-/// The units are the GATE and the surface is the ANSWER. Everything the loop decides — who is
-/// calling, where the unit may go, whether the caller may ask, whether it is paid for — happens
-/// before this seam is touched, and a unit refused at any of those steps never reaches it. What is on
-/// the far side is the operation's own body, which this root does not hold and may not reimplement:
-/// the whole value of the seam is that the answer a caller reads is the one the surface wrote.
-///
-/// It takes no request because the seam is bound to one. A unit of this plane is assembled per
-/// arrival — [`A2aUnits`] is built from what that arrival decided — so the thing that carries the
-/// arrival across is per-arrival too, and a request passed through the call would be the same request
-/// travelling twice. The administrative plane's seam is long-lived and takes its request as an
-/// argument because ITS units are long-lived; the shape follows the lifetime rather than the other
-/// way round.
-///
-/// The operation class IS passed, because it is the one thing the seam's far side may legitimately
-/// branch on and the one thing this file has already decided: the plane read the bytes and named the
-/// class, and handing it over is what makes "the loop chose the path" checkable from the seam.
-pub trait A2aDispatch: Send + Sync {
-    /// Hand one operation to the surface it is mounted on, and take back its whole answer.
-    fn execute(&self, op: OpClassId) -> A2aAnswer;
-}
+/// [`PlaneLeg`]: crate::root::transports::PlaneLeg
+pub use crate::root::transports::{PlaneAnswer, PlaneDispatch};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE BINDINGS
@@ -1009,8 +984,8 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// no dispatch, and the boot assembly must not refuse for the absence of a thing it deliberately
     /// did not build.
     ///
-    /// Bound per arrival, because a unit of this plane is. See [`A2aDispatch`].
-    pub dispatch: Option<&'r dyn A2aDispatch>,
+    /// Bound per arrival, because a unit of this plane is. See [`PlaneDispatch`].
+    pub dispatch: Option<&'r dyn PlaneDispatch>,
     /// The sealed origin the audit record is written under.
     ///
     /// Sealed by the kernel and carried here for the same reason the trust token is: `Origin::seal`
@@ -1059,7 +1034,7 @@ struct Progress {
     /// `None` on every unit that ended before Route, which is the property the gate rests on: a
     /// refusal at Verify, Approve or Admit leaves this empty because the seam was never touched, and
     /// an empty answer is what the mount reads to know the surface was never asked.
-    answer: Option<A2aAnswer>,
+    answer: Option<PlaneAnswer>,
 }
 
 /// One unit of the A2A plane, driven through the kernel's ten steps and its one exit.
@@ -1103,7 +1078,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// carries neither. That is the seam's shape rather than a gap: the exit path carries the whole
     /// answer, the Encode step carries the bytes it is measured on, and neither re-derives the other.
     #[must_use]
-    pub fn answer(&self) -> Option<A2aAnswer> {
+    pub fn answer(&self) -> Option<PlaneAnswer> {
         read_through_poison(&self.progress).answer.clone()
     }
 
