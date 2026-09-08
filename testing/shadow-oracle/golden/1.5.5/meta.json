@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "4dc55a68f597df28e72ee39c0ba5b40c53e1a9233e3c824b1b38f2541298d6da",
+  "harness_rev": "0b78ab46a816a7fa1362764574b8fe5e0be6e73f95353f91b7ddd8932d8c4ebf",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -54,6 +54,11 @@
         "from": "67382b6ed48e72a50d88e30852f1f0eee2911677b302403ceadae80f0dcbc6e3",
         "to": "4dc55a68f597df28e72ee39c0ba5b40c53e1a9233e3c824b1b38f2541298d6da",
         "why": "2026-09-08 documentation-only: the pin returns to v0.3.0 (v0.3.1's symmetric transform reports a transformed-equal line as diverging); no cell re-recorded"
+      },
+      {
+        "from": "4dc55a68f597df28e72ee39c0ba5b40c53e1a9233e3c824b1b38f2541298d6da",
+        "to": "0b78ab46a816a7fa1362764574b8fe5e0be6e73f95353f91b7ddd8932d8c4ebf",
+        "why": "documentation-only: PB-75 description corrections registered; no cell re-recorded"
       }
     ]
   },
