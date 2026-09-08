@@ -138,6 +138,11 @@ pub fn run_legacy(cx: &Ctx, argv: &[String], ledger_env: &str) -> Result<Vec<Row
     Ok(rows)
 }
 
+/// How long a legacy gate script may take before the parity run refuses instead of waiting. These
+/// are shell and Python lints over one tree; the slowest of them is seconds. Ten minutes is far
+/// above any of them and far below "forever", which is what this replaces.
+const LEGACY_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// Run the legacy argv over the tree, with its ledger pointed at a truncated scratch file whether
 /// or not it turns out to write one. Returns the process output and the ledger path.
 fn spawn_legacy(
@@ -155,12 +160,18 @@ fn spawn_legacy(
     ));
     ledger::truncate_leg(&leg).map_err(|e| format!("parity ledger {}: {e}", leg.display()))?;
 
-    let out = std::process::Command::new(&argv[0])
-        .args(&argv[1..])
+    // BOUNDED IN TIME. The legacy half is a shell or Python script this conversion is being
+    // compared against, and one that hangs — an interpreter waiting on stdin because a flag was
+    // dropped — used to block the parity run forever with no verdict at all: neither red nor green,
+    // which is the one answer the ledger's design refuses. The limit is written here, at the call
+    // site, rather than inside the helper, because a shell script and a cargo build do not deserve
+    // the same patience.
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..])
         .current_dir(cx.root())
         .env(ledger_env, &leg)
-        .env("LEDGER_DIR", cx.scratch())
-        .output()
+        .env("LEDGER_DIR", cx.scratch());
+    let out = crate::proc::output_with_timeout(&mut cmd, LEGACY_LIMIT)
         .map_err(|e| format!("parity: {} : {e}", argv[0]))?;
     Ok((out, leg))
 }

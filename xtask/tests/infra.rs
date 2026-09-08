@@ -562,6 +562,52 @@ fn strip_comment_line_keeps_string_literals_intact() {
     );
 }
 
+// ── a bounded child ─────────────────────────────────────────────────────────────────────────────
+
+/// A CHILD THAT OUTLIVES ITS LIMIT IS KILLED AND REFUSED, not waited on forever.
+///
+/// `Command::…output()` waits without end, and both runners that shell out used it. A hung child —
+/// an interpreter blocked on stdin because a flag was dropped, a wedged cargo — produces NO VERDICT
+/// AT ALL: neither red nor green, which is the one state the ledger's design refuses and none of
+/// the four exit codes `cli.rs` contracts.
+///
+/// The case is bounded twice on purpose. `is_err()` alone would pass on a helper that waited the
+/// full ten seconds and then returned an error, which is not the behaviour being pinned; the
+/// wall-clock assertion is what says the wait STOPPED.
+#[test]
+fn a_child_that_outlives_its_limit_is_killed_and_refused() {
+    let started = std::time::Instant::now();
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg("sleep 10");
+    let got = xtask::proc::output_with_timeout(&mut cmd, std::time::Duration::from_millis(200));
+    let elapsed = started.elapsed();
+
+    assert!(
+        got.is_err(),
+        "a child that never finished produced no verdict, and no verdict may be reported as an \
+         answer: {got:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the point of the limit is that the WAIT stops; it took {elapsed:?}"
+    );
+    assert!(
+        got.unwrap_err().contains("no verdict"),
+        "the refusal must say what it is, so a caller cannot read it as a failing gate"
+    );
+
+    // AND A CHILD THAT FINISHES IS STILL READ WHOLE. A timeout that quietly truncated output would
+    // be a worse bug than the one it fixes, and the pipes are drained on their own threads
+    // precisely so a child that prints more than a pipe buffer cannot deadlock the parent.
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.arg("-c").arg("seq 1 20000; echo done 1>&2");
+    let out = xtask::proc::output_with_timeout(&mut cmd, std::time::Duration::from_secs(30))
+        .expect("a child well inside its limit runs to completion");
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).lines().count() == 20000);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("done"));
+}
+
 // ── planes ──────────────────────────────────────────────────────────────────────────────────────
 
 /// EVERY KEY THE DIRECTORY-RESOLVED GREP GATES SCAN IS PUT TO THE TREE, not trusted.
