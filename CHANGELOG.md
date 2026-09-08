@@ -39,6 +39,27 @@ named next.
 
 ### Security
 
+- **Two admin key rotations could share one idempotency key, and the second was told the first's
+  answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
+  and both halves are caller-supplied free text: rotating `a:b` under header `c` and rotating `a`
+  under header `b:c` produced the same key, so the second call was served the first's cached
+  response. The key it named was never rotated, and the caller was told it was. Each half is now
+  length-prefixed, so no two `(id, header)` pairs can join to one key.
+
+  **On upgrade:** rotate replay keys are framed differently, so a rotate that was issued before the
+  upgrade and retried after it is treated as a first sighting and runs again. The window for this is
+  the ten-minute replay TTL. Nothing already rotated is affected, and mint (`create_key`) replay keys
+  are unchanged.
+
+- **An in-flight idempotency sentinel was swept after ten minutes, admitting a second mint.** The
+  cache sweep did not distinguish a completed call's cached response from the sentinel that says a
+  mutation is still running, so a mutation held past the replay window — a store gone slow, a mint
+  blocked on an unreachable signer — had its sentinel dropped, and the next retry was admitted as a
+  first sighting. Two credentials were minted where the sentinel existed so that one would, and the
+  longer a mutation was stuck the more retries arrived to be admitted. The sweep now applies to
+  committed values only; a sentinel is released by its own reservation completing, being cleared, or
+  being dropped. The replay TTL for a completed call's response is unchanged at 600 s.
+
 - **The A2A push-notification callback token was replayable; it is not any more.** Busbar registers
   its own callback with a backend agent under a per-task bearer token, and the composition root's
   check of that token passed a single timestamp as both the deadline and the clock — asking whether
