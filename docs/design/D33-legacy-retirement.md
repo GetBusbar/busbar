@@ -25,7 +25,7 @@
 
 ## 1. The ceiling, and what it decides
 
-`docs/design/ARCHITECTURE.md` §1.1 sets, and `scripts/construction-gate.sh` measures:
+`docs/design/ARCHITECTURE.md` §1.1 sets, and `cargo xtask gate construction` measures:
 
 | ceiling | today | headroom |
 |---|---|---|
@@ -234,7 +234,7 @@ being written *beside* them by design.
 
 Every cut: `cargo build --workspace`; `cargo test -p <touched>`;
 `cargo clippy --workspace --all-targets -- -D warnings`; `cargo fmt --check`;
-`scripts/construction-gate.sh` with no new red row and the §1.1 ceilings above honoured;
+`cargo xtask gate construction` with no new red row and the §1.1 ceilings above honoured;
 `scripts/plane-purity-lint.sh --strict` not worse; `scripts/plane-delete-test.sh --all` when a plane
 crate's dependencies changed.
 
@@ -295,7 +295,7 @@ The residue is not spelling: `state::App`, `boot::*`, `plane_host::*`, `plane::r
 `admin::planeverbs::CorePlaneAdminEnvelope`, `plane::config::config_sections`. Every one is either a
 core-owned implementation of a substrate trait, or blocked on a landing named in §3.
 
-Gates: `construction-gate.sh --summary` **byte-identical to the baseline** (the tree's six
+Gates: `cargo xtask gate construction --report` **byte-identical to the baseline** (the tree's six
 pre-existing red rows unchanged, no new one, every §1.1 ceiling unmoved).
 `plane-purity-lint.sh --strict` **byte-identical to the baseline** (RED on KEY 379/378, BACKWARDS
 33/29, test-reach llm 24/20 — all pre-existing, verified by running the lint against the base
