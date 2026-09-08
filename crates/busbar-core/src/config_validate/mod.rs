@@ -961,9 +961,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // external chain - is a LOUD boot warning: it is the explicit opt-in requires.
         for entry in auth.chain.iter().chain(auth.admin_auth.iter()) {
             if let Some(scope) = entry.max_admin_scope.as_deref() {
-                // The SAME check the admin named-map write path runs (`Scope::parse_ceiling`), so
+                // The SAME check the admin named-map write path runs (`parse_scope_ceiling`), so
                 // the API can never accept a ceiling this rule would refuse to boot.
-                match crate::admin::v1::contract::Scope::parse_ceiling(
+                match crate::admin::v1::contract::parse_scope_ceiling(
                     &format!("auth chain entry '{}'", entry.module),
                     scope,
                 ) {

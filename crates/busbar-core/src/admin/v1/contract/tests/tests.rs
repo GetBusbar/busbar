@@ -87,50 +87,14 @@ fn required_scope_mutations_are_full() {
     );
 }
 
-/// `parse` drops the retired delegated tokens (they now resolve to `None`, i.e. no grant), while
-/// `read-only`/`full` still round-trip.
-#[test]
-fn scope_parse_drops_mint_and_hooks_register() {
-    assert!(Scope::parse("mint").is_none());
-    assert!(Scope::parse("hooks-register").is_none());
-    assert!(Scope::parse("bogus").is_none());
-    assert_eq!(Scope::parse("read-only"), Some(Scope::ReadOnly));
-    assert_eq!(Scope::parse("full"), Some(Scope::Full));
-    assert_eq!(Scope::ReadOnly.as_str(), "read-only");
-    assert_eq!(Scope::Full.as_str(), "full");
-}
-
-/// The two-rung chain: `ReadOnly` does not satisfy a `Full` requirement, `Full` satisfies both, and
-/// a `Full` grant capped by a `ReadOnly` ceiling collapses to read-only.
-#[test]
-fn readonly_not_allow_full_full_allows_readonly() {
-    assert!(!Scope::ReadOnly.allows(Scope::Full));
-    assert!(Scope::ReadOnly.allows(Scope::ReadOnly));
-    assert!(Scope::Full.allows(Scope::ReadOnly));
-    assert!(Scope::Full.allows(Scope::Full));
-
-    // Grants: a Full grant capped by a ReadOnly ceiling authorizes reads but not mutations.
-    let capped = Grants::of(Scope::Full).capped_by(Scope::ReadOnly);
-    assert!(capped.allows(Scope::ReadOnly));
-    assert!(!capped.allows(Scope::Full));
-
-    // `with` is a union over `allows`, and `dominates`/`meet` derive from the same seam.
-    for a in Scope::ALL {
-        for b in Scope::ALL {
-            let union = Grants::of(a).with(b);
-            for n in Scope::ALL {
-                assert_eq!(
-                    union.allows(n),
-                    a.allows(n) || b.allows(n),
-                    "Grants::of({a:?}).with({b:?}).allows({n:?})"
-                );
-            }
-        }
-    }
-    assert_eq!(Scope::Full.meet(Scope::ReadOnly), Scope::ReadOnly);
-    assert!(Scope::Full.dominates(Scope::ReadOnly));
-    assert!(!Scope::ReadOnly.dominates(Scope::Full));
-}
+// THE SCOPE ALGEBRA'S PROOFS MOVED WITH THE ALGEBRA. `scope_parse_drops_mint_and_hooks_register`
+// and `readonly_not_allow_full_full_allows_readonly` stood here word for word beside identically
+// named tests in `busbar-unit-scope`, over a `Scope` that was itself a second copy. The definition
+// is the unit's now and so are its proofs; what this file still proves about scope is the part that
+// is genuinely core's — that the adapter above hands the unit's matrix the method this surface's
+// handlers were given (`required_scope_matrix`, `required_scope_mutations_are_full`), and that the
+// two crates answer one question with one answer
+// (`the_two_copies_of_the_authorization_matrix_answer_alike`).
 
 /// The stable error taxonomy is locked: each variant's `code` + HTTP status is the frozen wire
 /// contract tooling branches on. A change here is a breaking change to v1 and must fail this test.
@@ -194,5 +158,48 @@ fn usage_view_serializes_currency_from_const() {
     assert!(
         rv.get("currency").is_none(),
         "the raw-split ledger breakdown must NOT carry a currency"
+    );
+}
+
+/// The scope model exists twice, and the two copies do not agree.
+///
+/// `busbar-unit-scope`'s own doc comment says its matrix was "ported verbatim from 1.5.5's
+/// `busbar_core::admin::v1::contract::required_scope` (behaviourally identical)". This walks every
+/// method the surface can be asked with against the two paths the matrix treats specially and asks
+/// both copies the same question, which is the only way that claim can be checked rather than
+/// asserted.
+///
+/// It is written as a comparison rather than as a table of expected answers on purpose: the claim
+/// under test is not "the matrix says X", which each copy's own test already pins, but "there is one
+/// matrix". A table here would be a THIRD encoding of the rule and would drift from both.
+#[test]
+fn the_two_copies_of_the_authorization_matrix_answer_alike() {
+    const METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "PROPFIND"];
+    const PATHS: &[&str] = &[
+        "/api/v1/admin/info",
+        "/api/v1/admin/keys",
+        "/api/v1/admin/config/validate",
+        "/api/v1/admin/plugins/inspect",
+        "/api/v1/admin/hooks",
+    ];
+    let mut disagreements = Vec::new();
+    for method in METHODS {
+        let m = Method::from_bytes(method.as_bytes()).expect("a method the surface can be asked with");
+        for path in PATHS {
+            let here = required_scope(&m, path);
+            let unit = busbar_unit_scope::admin_required_scope(method, path);
+            if here.as_str() != unit.as_str() {
+                disagreements.push(format!(
+                    "{method} {path}: this crate says `{}`, the unit says `{}`",
+                    here.as_str(),
+                    unit.as_str()
+                ));
+            }
+        }
+    }
+    assert!(
+        disagreements.is_empty(),
+        "one authorization rule, two answers:\n  {}",
+        disagreements.join("\n  ")
     );
 }
