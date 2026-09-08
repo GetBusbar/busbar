@@ -8,10 +8,18 @@
 //! rather than re-derived per unit. Key material never lives in this crate's own state as bytes a
 //! caller can read: [`busbar_contract::TransportKeyHandle`] is opaque, so this crate keeps a
 //! slot-keyed registry of already-built `rustls` configs and looks one up by the handle's slot. The
-//! transport-key unit is what fills that registry, through
-//! [`busbar_unit_transport_key::TlsConfigSink`], at the moment it resolves the material and writes
-//! the `Access` entry the design requires — so a production listener has a key for the same reason
-//! a test one does, and nothing in this crate ever resolves a `SecretRef` or sees a byte of one.
+//! transport-key unit is what fills that registry, at the moment it resolves the material and
+//! writes the `Access` entry the design requires — so a production listener has a key for the same
+//! reason a test one does, and nothing in this crate ever resolves a `SecretRef` or sees a byte of
+//! one.
+//!
+//! **This crate names no unit, and that is a rule and not a coincidence.** The unit and this
+//! registry are joined in the composition root — `crates/busbar/src/root/transports.rs`, `TlsSink`
+//! — because a transport that named the unit would be the handle-passing rule of
+//! `ARCHITECTURE.md` section 3.4 pointing backwards: the unit hands the transport an opaque
+//! [`busbar_contract::TransportKeyHandle`], and nothing travels the other way. What this end of the
+//! seam offers is two public registration methods that take an already-built config and a slot
+//! number, and it does not care who calls them.
 //!
 //! ## Composition
 //!
@@ -219,9 +227,10 @@ impl TlsTransport {
 
     /// Register the server-side rustls config a [`TransportKeyHandle`]'s slot resolves to.
     ///
-    /// The transport-key unit is what calls this, through [`busbar_unit_transport_key::TlsConfigSink`],
-    /// at the moment it resolves the material and journals the access. Nothing here reads a secret;
-    /// this end of the seam only ever sees an already-built config and a slot number.
+    /// The transport-key unit is what calls this — through the root's `TlsSink` adapter, so this
+    /// crate names no unit — at the moment it resolves the material and journals the access.
+    /// Nothing here reads a secret; this end of the seam only ever sees an already-built config and
+    /// a slot number.
     pub fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
         self.server_configs
             .lock()
@@ -356,6 +365,16 @@ impl TlsTransport {
     }
 }
 
+/// The battery's own join, and the reason it is `#[cfg(test)]` rather than shipped.
+///
+/// The tests below build real certificates and drive them through the transport-key unit's real
+/// provisioning, because a fake key would prove nothing about a handshake. That needs the sink
+/// trait implemented for this transport — but only inside the test binary. In a shipped build the
+/// join is made in the composition root (`crates/busbar/src/root/transports.rs`, `TlsSink`), so
+/// nothing this crate compiles into a plugin binary names a unit. The two implementations forward
+/// to the same two inherent methods and are therefore the same behaviour; what differs is which
+/// binary carries the edge.
+#[cfg(test)]
 impl busbar_unit_transport_key::TlsConfigSink for TlsTransport {
     fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
         TlsTransport::register_server_config(self, slot, cfg);

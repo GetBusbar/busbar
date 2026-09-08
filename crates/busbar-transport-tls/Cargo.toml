@@ -15,10 +15,6 @@ license = "Apache-2.0"
 tokio-util = { workspace = true }
 busbar-contract = { path = "../busbar-contract" }
 busbar-contract-transport = { path = "../busbar-contract-transport" }
-# The unit that resolves this transport's key material. The edge points this way on purpose: the
-# unit reads secrets and this crate must not, so what crosses the seam is an already-built config
-# and a slot number, and the transport is the end that offers somewhere to put them.
-busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }
 busbar-transport-tcp = { path = "../busbar-transport-tcp" }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["net", "rt", "sync", "io-util", "time"] }
@@ -29,5 +25,13 @@ ring = { workspace = true }
 
 [dev-dependencies]
 busbar-caps = { path = "../busbar-caps" }
+# The unit that resolves TLS key material. A DEV dependency and never a shipping one: the battery
+# below builds real certificates and drives them through the unit's own provisioning, which is the
+# honest way to test that the handle a listener presents resolves to the config a listener needs.
+# What must not exist is the shipping edge — a transport naming a unit inverts the handle-passing
+# rule of ARCHITECTURE.md section 3.4 — so the production join is a two-method adapter in the
+# composition root (`crates/busbar/src/root/transports.rs`, `TlsSink`) and neither crate names the
+# other in what it ships.
+busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
 rcgen = { workspace = true }
