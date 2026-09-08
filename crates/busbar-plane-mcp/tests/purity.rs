@@ -166,15 +166,26 @@ fn the_decode_step_is_deterministic() {
     // Only the methods a CALLER sends. A method an upstream sends back is refused on the ingress
     // side by design, and a test that fed one in would be asserting the refusal rather than the
     // determinism.
-    let bodies: Vec<Vec<u8>> = busbar_plane_mcp::ops::METHODS
+    //
+    // Each body is paired with the claim transport its method is reachable on, asked of the
+    // surface: two of the caller-sent methods are declared on the console binding alone, and asking
+    // for one of those over the mounted request surface is a refusal rather than a decode.
+    let bodies: Vec<(Vec<u8>, &'static str)> = busbar_plane_mcp::ops::METHODS
         .iter()
         .filter(|r| r.sender == busbar_plane_mcp::ops::Sender::Client)
         .map(|row| {
-            format!(
-                r#"{{"jsonrpc":"2.0","id":5,"method":"{}","params":{{"id":"t1"}}}}"#,
-                row.method
+            let transport = ["http", "stdio"]
+                .into_iter()
+                .find(|t| busbar_plane_mcp::surface::row_on(row.method, t).is_some())
+                .unwrap_or_else(|| panic!("{} is reachable on no binding", row.method));
+            (
+                format!(
+                    r#"{{"jsonrpc":"2.0","id":5,"method":"{}","params":{{"id":"t1"}}}}"#,
+                    row.method
+                )
+                .into_bytes(),
+                transport,
             )
-            .into_bytes()
         })
         .collect();
     // The bodies are DERIVED — a filter over the declared method table — so a table that lost its
@@ -185,10 +196,10 @@ fn the_decode_step_is_deterministic() {
         !bodies.is_empty(),
         "no request body was derived from the declared caller methods, so nothing was driven twice"
     );
-    for body in &bodies {
+    for (body, transport) in &bodies {
         let mut answers = Vec::new();
         for _ in 0..8 {
-            let scaffold = Scaffold::new("http");
+            let scaffold = Scaffold::new(transport);
             let ctx = scaffold.ctx();
             let frames = vec![frame(body)];
             let mut cursor = FrameCursor::new(&frames);
