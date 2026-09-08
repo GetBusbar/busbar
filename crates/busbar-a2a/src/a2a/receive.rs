@@ -1941,7 +1941,13 @@ async fn admitted(
         return refuse_hop_early(
             &rpc_id,
             &super::relay::RelayRefusal::Unframable {
-                binding: "unknown",
+                // THE CARD'S OWN WORD, not the placeholder `"unknown"` this used to pass. The word
+                // was reaching the caller through `reason`, and `reason` is the field the caller's
+                // rendering no longer carries — it is composed over a BACKEND'S BYTES on the three
+                // framing sites and is not safe to echo. The binding name is the one thing here an
+                // operator can act on, so it travels in the field that is FOR it and is bounded on
+                // the way out (`relay::bounded_word`).
+                binding: binding.clone(),
                 method: super::local::method_of(&envelope).to_string(),
                 reason: format!(
                     "the agent's card declares `{binding}`, which is not one of A2A's three \
@@ -2812,17 +2818,44 @@ pub(super) fn notify_push(
 /// before anything about the hop is decided. It is the SAME status the refusal itself carries, so a
 /// caller cannot tell "refused before the context existed" from "refused at the socket" — the fault
 /// is busbar's either way and the distinction is an internal one.
+///
+/// THE BODY IS THE CALLER'S RENDERING, NEVER `Display`. This function used to put
+/// `refusal.to_string()` into the response, and `Display` is the OPERATOR's rendering: it names the
+/// backend's URL, its resolved address and its own prose on purpose, because that is what a journal
+/// line is for. On the card-fetch arm at the [`RelayRefusal`](super::relay::RelayRefusal) match
+/// above, that body reached an authorised caller — so any key holding a grant on an agent could
+/// read `agents.<agent>.url:` back out of busbar by taking the backend down, on all three bindings,
+/// with no race. That value is the one `docs/a2a.md` states is never client-visible and that
+/// `super::serve`'s `BackendLeak` apparatus refuses to publish a card over.
+///
+/// The endpoint still travels — to the JOURNAL, on the line below, which is the only place it now
+/// goes. `a2a/tests/refusal_leak_tests.rs` scans every arm of the caller's rendering for a planted
+/// backend address and requires the control to find the same address in `Display`, so neither half
+/// of this split can be lost without a red test.
 fn refuse_hop_early(rpc_id: &serde_json::Value, refusal: &super::relay::RelayRefusal) -> Response {
+    diag_debug!(A2A_RELAYED_SUBMISSION_FAILED, code = %refusal.client_code(), error = %refusal, "a2a: a hop was refused before a task context existed");
     (
         axum::http::StatusCode::from_u16(refusal.status())
             .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
-        axum::Json(super::rpcerror::body(
-            rpc_id,
-            super::rpcerror::A2aError::InvalidAgentResponse,
-            refusal.to_string(),
-        )),
+        axum::Json(refuse_hop_early_body(rpc_id, refusal)),
     )
         .into_response()
+}
+
+/// THE BODY [`refuse_hop_early`] SENDS, as a value.
+///
+/// Split out so the leak scan can assert on the bytes a caller receives without standing a backend
+/// up and taking it down again: the defect was in the body builder, and a test that drives a socket
+/// proves it for the one arm it managed to provoke rather than for all of them.
+pub(crate) fn refuse_hop_early_body(
+    rpc_id: &serde_json::Value,
+    refusal: &super::relay::RelayRefusal,
+) -> serde_json::Value {
+    super::rpcerror::body(
+        rpc_id,
+        super::rpcerror::A2aError::InvalidAgentResponse,
+        refusal.client_text(),
+    )
 }
 
 fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Response {
@@ -2869,7 +2902,12 @@ fn refuse_hop(ctx: &HopContext, refusal: &super::relay::RelayRefusal) -> Respons
             axum::Json(super::rpcerror::about_task(
                 &ctx.rpc_id,
                 super::rpcerror::A2aError::UnsupportedOperation,
-                refusal.to_string(),
+                // THE CALLER'S RENDERING, like every other body on this path. `BreakerOpen` names
+                // no backend, so this arm never leaked — but "which arms of `Display` are safe to
+                // return" is a fact somebody has to re-derive at every call site, and the rule that
+                // survives an edit is the mechanical one: NO `RelayRefusal` reaches a caller except
+                // through `client_text`. The words are unchanged bar the stable code they now carry.
+                refusal.client_text(),
                 &ctx.task_id,
             )),
         )
