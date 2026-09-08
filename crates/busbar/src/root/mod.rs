@@ -28,6 +28,10 @@
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
+//! - [`journal`] — the per-unit record that says WHICH HALF of the binary answered a served
+//!   request: the loop in this root, or the legacy router the root handed it back to. It is the
+//!   only externally visible difference between the two, and it exists because a matrix that
+//!   claims a plane is served by the loop owes a measurement rather than an assertion.
 //! - [`units_voice`] — one plane, switched over: a live voice session as a sequence of ordinary
 //!   units. The handshake that opens it, the per-frame turns the pump dispatches, the hold that is
 //!   the session's metering lease, and four seams to the half of the plane that owns sockets.
@@ -59,6 +63,7 @@ pub mod auth_bindings;
 pub mod durability;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
+pub mod journal;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;

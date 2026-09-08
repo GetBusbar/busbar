@@ -132,6 +132,13 @@ impl AdminNode {
                         meter: &meter,
                     },
                 );
+                // ONE JOURNAL RECORD PER UNIT THIS LEG DROVE. Emitted here, at the loop's own exit,
+                // rather than at the mount's entry: a request the table declined never became a
+                // unit, and counting it would report a loop that did not run.
+                crate::root::journal::served(
+                    crate::root::journal::leg::ADMIN,
+                    crate::root::journal::Answered::Loop,
+                );
                 // The loop ran; the answer is whatever Route put there. A unit refused before Route
                 // has none, and the refusal it ended on is what the surface renders. Read BEFORE
                 // the guard below hands the entry back, because the entry is where the answer is.
@@ -462,6 +469,14 @@ async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
 #[cfg(feature = "root-admin")]
 impl AdminDispatch for RouterDispatch {
     fn execute(&self, _verb: KernelVerb, request: &AdminRequest) -> AdminAnswer {
+        // THE RE-SERVE IS THE LEGACY HALF ANSWERING. Every byte below is produced by running this
+        // same request through the legacy admin router; the loop gated it and then stood aside. A
+        // leg that emits this record AND the loop record above is split, and this is the site that
+        // makes the split measurable rather than argued.
+        crate::root::journal::served(
+            crate::root::journal::leg::ADMIN,
+            crate::root::journal::Answered::Legacy,
+        );
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         if self.errands.send((request.clone(), reply)).is_err() {
             // The driving task is gone, which happens only as the node itself goes away. There is

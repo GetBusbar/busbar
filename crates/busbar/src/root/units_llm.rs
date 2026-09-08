@@ -535,6 +535,14 @@ impl LlmNode {
                     &unit,
                 )
                 .await;
+                // ONE JOURNAL RECORD PER UNIT THIS LEG DROVE — the same record the admin leg emits,
+                // for the same reason: without it, a request served by this loop and a request
+                // served by the legacy ingress are indistinguishable from outside the process, and
+                // the matrix's claim about which one ships is unmeasurable.
+                crate::root::journal::served(
+                    crate::root::journal::leg::LLM,
+                    crate::root::journal::Answered::Loop,
+                );
                 // THE EXIT ARM. The loop took the hold out of the cell and handed back a POSTING,
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
