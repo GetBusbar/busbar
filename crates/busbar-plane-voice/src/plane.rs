@@ -592,29 +592,75 @@ impl SessionPlane for VoicePlane {
 /// goes out instead is the same small opaque set every other plane in this workspace renders (see
 /// `busbar-plane-admin`'s own table): the caller learns the CLASS of refusal and nothing about why
 /// this node reached it.
-fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str, &'static str) {
+/// ## Why there is no catch-all arm
+///
+/// There was one, and it answered twenty-three of the forty-two reasons — including every ordinary
+/// operational one: a deadline, a stall, a client that went away, a destination whose budget was
+/// spent. All of them read to a client as a permanent internal failure, so a retry policy did the
+/// wrong thing with each. Nothing went red, because a match with a wildcard is total to the
+/// compiler and the guarding test walked a list the wildcard let stay short. The arms below are
+/// exhaustive so the next reason the contract gains cannot be absorbed the same way.
+pub(crate) fn refusal_render(
+    reason: busbar_contract::unit::RefusalReason,
+) -> (&'static str, &'static str) {
     use busbar_contract::unit::RefusalReason as R;
     match reason {
-        R::BodyTooLarge | R::DecodeFailed | R::SchemeNotDeclared | R::SecretPlaceholder => {
-            ("invalid_request", "the request could not be read")
-        }
-        R::CredentialRejected | R::SessionUnbound | R::CredentialBudget => {
+        R::BodyTooLarge
+        | R::DecodeFailed
+        | R::SchemeNotDeclared
+        | R::SecretPlaceholder
+        | R::CursorBudget
+        | R::Replayed
+        | R::Superseded => ("invalid_request", "the request could not be read"),
+        R::CredentialRejected | R::SessionUnbound | R::CredentialBudget | R::ChallengeExhausted => {
             ("unauthorized", "the session did not carry usable authority")
         }
-        R::ScopeMissing | R::Vetoed | R::Revoked | R::PoolNotPermitted => (
+        // What made it so — a missing scope, a hook, a withdrawal, a pool, a ceiling on what this
+        // caller may spend — is this node's business and not the caller's, so all of them wear one
+        // answer.
+        R::ScopeMissing
+        | R::Vetoed
+        | R::Revoked
+        | R::PoolNotPermitted
+        | R::OverBudget
+        | R::GroupFrozen
+        | R::OverdraftCeiling => (
             "forbidden",
             "the caller may not open a session for this operation",
         ),
-        R::RateLimited | R::InFlightCap | R::OpenSlotBusy | R::SessionBudget => {
+        R::RateLimited | R::InFlightCap | R::OpenSlotBusy | R::SessionBudget | R::InFlight => {
             ("rate_limited", "too many sessions at once")
         }
-        R::NoDestination | R::DestinationUnreachable | R::BreakerOpen | R::Drain => (
+        R::NoDestination
+        | R::DestinationUnreachable
+        | R::BreakerOpen
+        | R::DestinationBudgetExhausted
+        | R::Drain => (
             "unavailable",
             "no provider is reachable for this session right now",
         ),
-        // Everything else is this node saying no for a reason that is this node's own — the money,
-        // the buckets, the journal. A caller is told it failed here and nothing more.
-        _ => ("internal", "the session could not be opened at this time"),
+        // This node is not taking a new session right now. A caller may come back; nothing here
+        // says which of the node's ceilings was met.
+        R::SpillBudget
+        | R::ArenaBudget
+        | R::DurabilityUnavailable
+        | R::StaleSlice
+        | R::TierMismatch => (
+            "unavailable",
+            "this node is not taking new sessions right now",
+        ),
+        // The session ran out before it finished.
+        R::Stalled | R::DeadlineExceeded | R::ClientGone => {
+            ("unavailable", "the session did not finish in time")
+        }
+        // This node's own failure, including the two ways it can be misconfigured — the money, the
+        // buckets, the journal. A caller is told it failed here and nothing more.
+        R::Unpriced
+        | R::NoRate
+        | R::MeterDisputed
+        | R::HandoffMismatch
+        | R::PlanePanic
+        | R::TaskLost => ("internal", "the session could not be opened at this time"),
     }
 }
 

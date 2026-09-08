@@ -31,29 +31,12 @@ fn verify_and_route_reach_one_declared_sampling_destination() {
 /// contract's reason list is closed precisely so this can be checked rather than hoped for.
 #[test]
 fn every_refusal_reason_has_an_answer() {
-    let reasons = [
-        RefusalReason::InFlightCap,
-        RefusalReason::CursorBudget,
-        RefusalReason::CredentialBudget,
-        RefusalReason::SessionBudget,
-        RefusalReason::BodyTooLarge,
-        RefusalReason::OpenSlotBusy,
-        RefusalReason::SchemeNotDeclared,
-        RefusalReason::CredentialRejected,
-        RefusalReason::SessionUnbound,
-        RefusalReason::Revoked,
-        RefusalReason::ScopeMissing,
-        RefusalReason::Vetoed,
-        RefusalReason::NoDestination,
-        RefusalReason::OverBudget,
-        RefusalReason::GroupFrozen,
-        RefusalReason::Unpriced,
-        RefusalReason::OverdraftCeiling,
-        RefusalReason::StaleSlice,
-        RefusalReason::DurabilityUnavailable,
-        RefusalReason::TierMismatch,
-    ];
-    for reason in reasons {
+    assert_eq!(
+        EVERY_REASON.len(),
+        42,
+        "the contract's reason set changed and this walk did not"
+    );
+    for reason in EVERY_REASON {
         let (code, message) = refusal_render(reason);
         assert!(
             crate::jsonrpc::CODES.contains(&code),
@@ -65,6 +48,89 @@ fn every_refusal_reason_has_an_answer() {
         );
         assert!(!message.is_empty(), "{reason:?} renders no words");
     }
+}
+
+/// Every reason the contract declares, in its own declaration order.
+///
+/// A written-out walk-set, and it is safe to be one only because the renderer it drives matches
+/// EXHAUSTIVELY: a reason added to the contract does not compile until the renderer answers it, and
+/// the length assertion above is what says this walk saw it too. The list is what the tests
+/// iterate; the compiler is what keeps the renderer total.
+const EVERY_REASON: [RefusalReason; 42] = [
+    RefusalReason::InFlightCap,
+    RefusalReason::CursorBudget,
+    RefusalReason::CredentialBudget,
+    RefusalReason::SessionBudget,
+    RefusalReason::BodyTooLarge,
+    RefusalReason::OpenSlotBusy,
+    RefusalReason::SchemeNotDeclared,
+    RefusalReason::CredentialRejected,
+    RefusalReason::SessionUnbound,
+    RefusalReason::Revoked,
+    RefusalReason::ScopeMissing,
+    RefusalReason::Vetoed,
+    RefusalReason::NoDestination,
+    RefusalReason::OverBudget,
+    RefusalReason::GroupFrozen,
+    RefusalReason::Unpriced,
+    RefusalReason::OverdraftCeiling,
+    RefusalReason::StaleSlice,
+    RefusalReason::DurabilityUnavailable,
+    RefusalReason::TierMismatch,
+    RefusalReason::SpillBudget,
+    RefusalReason::ArenaBudget,
+    RefusalReason::RateLimited,
+    RefusalReason::DecodeFailed,
+    RefusalReason::ChallengeExhausted,
+    RefusalReason::PoolNotPermitted,
+    RefusalReason::NoRate,
+    RefusalReason::Replayed,
+    RefusalReason::InFlight,
+    RefusalReason::DestinationBudgetExhausted,
+    RefusalReason::BreakerOpen,
+    RefusalReason::DestinationUnreachable,
+    RefusalReason::MeterDisputed,
+    RefusalReason::HandoffMismatch,
+    RefusalReason::PlanePanic,
+    RefusalReason::TaskLost,
+    RefusalReason::SecretPlaceholder,
+    RefusalReason::Stalled,
+    RefusalReason::Drain,
+    RefusalReason::Superseded,
+    RefusalReason::ClientGone,
+    RefusalReason::DeadlineExceeded,
+];
+
+/// The refusals answered as this node's own failure are the ones that ARE this node's own failure.
+///
+/// A rate limit, an open breaker, a drain and a deadline are things a caller can act on: wait, fail
+/// over, come back later. Answered with the words this node keeps for "something here went wrong",
+/// a client's retry and failover policy reads a permanent internal error and does the wrong thing
+/// with every one of them. So the set of reasons that renders the node's-own-failure row is written
+/// down and checked, instead of being whatever the renderer's last arm happened to catch.
+#[test]
+fn only_this_nodes_own_failures_are_answered_as_one() {
+    const OWN_FAILURES: [RefusalReason; 7] = [
+        RefusalReason::Unpriced,
+        RefusalReason::NoRate,
+        RefusalReason::MeterDisputed,
+        RefusalReason::HandoffMismatch,
+        RefusalReason::PlanePanic,
+        RefusalReason::TaskLost,
+        RefusalReason::SecretPlaceholder,
+    ];
+    let row = refusal_render(RefusalReason::PlanePanic);
+    let mut answered_as_failure: Vec<RefusalReason> = EVERY_REASON
+        .into_iter()
+        .filter(|reason| refusal_render(*reason) == row)
+        .collect();
+    let mut expected = OWN_FAILURES.to_vec();
+    answered_as_failure.sort_by_key(|r| format!("{r:?}"));
+    expected.sort_by_key(|r| format!("{r:?}"));
+    assert_eq!(
+        answered_as_failure, expected,
+        "a refusal the caller could have acted on reads as this node's own failure"
+    );
 }
 
 /// A refusal tells the caller nothing about the money.

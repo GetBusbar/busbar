@@ -186,19 +186,55 @@ fn states(body: &[u8], pointer: &str) -> bool {
 /// envelope module's own tests. What is NOT pinned is the message TEXT, which the composition root
 /// must compare against the rig's recorded answers on the day it switches this plane on. That is
 /// stated here rather than left for someone to discover.
+/// ## Why there is no catch-all arm
+///
+/// There was one, and it answered twenty-two of the forty-two reasons — including every ordinary
+/// operational one: a rate limit, an open breaker, a drain, a deadline, a destination that could
+/// not be reached. All of them read to a client as a permanent internal error, so a retry and
+/// failover policy did the wrong thing with each. Nothing went red, because a match with a
+/// wildcard is total to the compiler and the guarding test walked a list the wildcard let stay
+/// short. The arms below are exhaustive so that the next reason the contract gains cannot be
+/// absorbed the same way: it will not compile until this dialect can say it.
+///
+/// Where this protocol's own closed code table has no code for a family — it has no way to say
+/// "wait and come back", which is the one a caller most needs — the family shares a code with
+/// another and its own WORDS carry the distinction. That is stated here rather than hidden behind
+/// a code that would read as something it is not.
 fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
     match reason {
-        // The caller's request was not one this node will take.
-        RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
+        // The bytes could not be read.
+        RefusalReason::DecodeFailed => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request could not be read",
+        ),
+        // The caller's request was larger than this node will take.
+        RefusalReason::BodyTooLarge | RefusalReason::CursorBudget => {
+            (jsonrpc::CODE_INVALID_REQUEST, "the request is too large")
+        }
         RefusalReason::SchemeNotDeclared
         | RefusalReason::CredentialRejected
         | RefusalReason::SessionUnbound
-        | RefusalReason::CredentialBudget => (
+        | RefusalReason::CredentialBudget
+        | RefusalReason::ChallengeExhausted => (
             jsonrpc::CODE_INVALID_REQUEST,
             "the request did not carry usable authority",
         ),
-        // The caller is known and may not do this.
-        RefusalReason::ScopeMissing | RefusalReason::Vetoed | RefusalReason::Revoked => (
+        // The request was well formed and is not the one this node is answering: it was already
+        // answered once, or a later one replaced it.
+        RefusalReason::Replayed | RefusalReason::Superseded => (
+            jsonrpc::CODE_INVALID_REQUEST,
+            "the request is not the one this node is serving",
+        ),
+        // The caller is known and may not do this. What made it so — a missing scope, a hook, a
+        // withdrawal, a pool, a ceiling on what this caller may spend — is this node's business
+        // and not the caller's, so all of them wear one answer.
+        RefusalReason::ScopeMissing
+        | RefusalReason::Vetoed
+        | RefusalReason::Revoked
+        | RefusalReason::PoolNotPermitted
+        | RefusalReason::OverBudget
+        | RefusalReason::GroupFrozen
+        | RefusalReason::OverdraftCeiling => (
             jsonrpc::CODE_UNSUPPORTED_OPERATION,
             "the caller may not perform this operation",
         ),
@@ -207,9 +243,44 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             jsonrpc::CODE_INVALID_PARAMS,
             "no agent is reachable for this request",
         ),
-        // Everything else is this node saying no for a reason that is this node's own. A caller is
-        // told that it failed here, and is told nothing about the money, the buckets or the store.
-        _ => (
+        // There was somewhere for it to go and it could not be got to. Distinct from the line
+        // above: nothing about the request is wrong, so a caller may try again — which is why this
+        // does NOT wear the invalid-parameters code a caller reads as permanent.
+        RefusalReason::DestinationUnreachable
+        | RefusalReason::BreakerOpen
+        | RefusalReason::DestinationBudgetExhausted => (
+            jsonrpc::CODE_INTERNAL,
+            "the agent could not be reached for this request",
+        ),
+        // This node is not taking the request right now. A caller may come back; nothing here says
+        // which of the node's ceilings was met.
+        RefusalReason::InFlightCap
+        | RefusalReason::SessionBudget
+        | RefusalReason::OpenSlotBusy
+        | RefusalReason::RateLimited
+        | RefusalReason::InFlight
+        | RefusalReason::SpillBudget
+        | RefusalReason::ArenaBudget
+        | RefusalReason::DurabilityUnavailable
+        | RefusalReason::StaleSlice
+        | RefusalReason::TierMismatch
+        | RefusalReason::Drain => (
+            jsonrpc::CODE_INTERNAL,
+            "this node is not taking this request right now",
+        ),
+        // The exchange ran out before it finished.
+        RefusalReason::Stalled | RefusalReason::DeadlineExceeded | RefusalReason::ClientGone => {
+            (jsonrpc::CODE_INTERNAL, "the request did not finish in time")
+        }
+        // This node's own failure, including the two ways it can be misconfigured. A caller is told
+        // that it failed here, and is told nothing about the money, the buckets or the store.
+        RefusalReason::Unpriced
+        | RefusalReason::NoRate
+        | RefusalReason::MeterDisputed
+        | RefusalReason::HandoffMismatch
+        | RefusalReason::PlanePanic
+        | RefusalReason::TaskLost
+        | RefusalReason::SecretPlaceholder => (
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),

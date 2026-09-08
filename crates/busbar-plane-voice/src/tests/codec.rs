@@ -1274,3 +1274,119 @@ fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
         "a late frame of the superseded turn must not relay onto the one that replaced it"
     );
 }
+
+/// Every reason the contract declares, in its own declaration order.
+///
+/// A written-out walk-set, and it is safe to be one only because the renderer it drives matches
+/// EXHAUSTIVELY: a reason added to the contract does not compile until the renderer answers it, and
+/// the length assertion below is what says this walk saw it too. The list is what the tests
+/// iterate; the compiler is what keeps the renderer total.
+const EVERY_REASON: [busbar_contract::unit::RefusalReason; 42] = {
+    use busbar_contract::unit::RefusalReason as R;
+    [
+        R::InFlightCap,
+        R::CursorBudget,
+        R::CredentialBudget,
+        R::SessionBudget,
+        R::BodyTooLarge,
+        R::OpenSlotBusy,
+        R::SchemeNotDeclared,
+        R::CredentialRejected,
+        R::SessionUnbound,
+        R::Revoked,
+        R::ScopeMissing,
+        R::Vetoed,
+        R::NoDestination,
+        R::OverBudget,
+        R::GroupFrozen,
+        R::Unpriced,
+        R::OverdraftCeiling,
+        R::StaleSlice,
+        R::DurabilityUnavailable,
+        R::TierMismatch,
+        R::SpillBudget,
+        R::ArenaBudget,
+        R::RateLimited,
+        R::DecodeFailed,
+        R::ChallengeExhausted,
+        R::PoolNotPermitted,
+        R::NoRate,
+        R::Replayed,
+        R::InFlight,
+        R::DestinationBudgetExhausted,
+        R::BreakerOpen,
+        R::DestinationUnreachable,
+        R::MeterDisputed,
+        R::HandoffMismatch,
+        R::PlanePanic,
+        R::TaskLost,
+        R::SecretPlaceholder,
+        R::Stalled,
+        R::Drain,
+        R::Superseded,
+        R::ClientGone,
+        R::DeadlineExceeded,
+    ]
+};
+
+/// Every closed refusal reason has an answer, and every answer is one of the opaque classes a
+/// client of this dialect is allowed to see.
+///
+/// Totality is the point: a reason with no row would be a session refused with nothing said, and
+/// the contract's reason list is closed precisely so this can be checked rather than hoped for.
+#[test]
+fn every_refusal_reason_has_an_answer() {
+    const OPAQUE: &[&str] = &[
+        "invalid_request",
+        "unauthorized",
+        "forbidden",
+        "rate_limited",
+        "unavailable",
+        "internal",
+    ];
+    assert_eq!(
+        EVERY_REASON.len(),
+        42,
+        "the contract's reason set changed and this walk did not"
+    );
+    for reason in EVERY_REASON {
+        let (code, message) = crate::plane::refusal_render(reason);
+        assert!(
+            OPAQUE.contains(&code),
+            "{reason:?} renders unknown code {code}"
+        );
+        assert!(!message.is_empty(), "{reason:?} renders no words");
+    }
+}
+
+/// The refusals answered as this node's own failure are the ones that ARE this node's own failure.
+///
+/// A rate limit, an open breaker, a drain and a deadline are things a caller can act on: wait, fail
+/// over, come back later. Answered with the words this node keeps for "something here went wrong",
+/// a client's retry policy reads a permanent internal failure and does the wrong thing with every
+/// one of them. So the set of reasons that renders the node's-own-failure row is written down and
+/// checked, instead of being whatever the renderer's last arm happened to catch.
+#[test]
+fn only_this_nodes_own_failures_are_answered_as_one() {
+    use busbar_contract::unit::RefusalReason as R;
+    const OWN_FAILURES: [R; 6] = [
+        R::Unpriced,
+        R::NoRate,
+        R::MeterDisputed,
+        R::HandoffMismatch,
+        R::PlanePanic,
+        R::TaskLost,
+    ];
+    let row = crate::plane::refusal_render(R::PlanePanic);
+    let mut answered_as_failure: Vec<R> = EVERY_REASON
+        .into_iter()
+        .filter(|reason| crate::plane::refusal_render(*reason) == row)
+        .collect();
+    let mut expected = OWN_FAILURES.to_vec();
+    answered_as_failure.sort_by_key(|r| format!("{r:?}"));
+    expected.sort_by_key(|r| format!("{r:?}"));
+    assert_eq!(
+        answered_as_failure, expected,
+        "a refusal the caller could have acted on reads as this node's own failure"
+    );
+}
