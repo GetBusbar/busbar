@@ -453,6 +453,7 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
     }
 }
 
+<<<<<<< HEAD
 // ── the loop's dispatch seam ─────────────────────────────────────────────────────────────────────
 
 /// THE ONE SEAM A UNIT'S ROUTE STEP REACHES THE SURFACE THAT ALREADY ANSWERS IT THROUGH.
@@ -551,6 +552,8 @@ impl PlaneDispatch for DrivenOnce {
     }
 }
 
+=======
+>>>>>>> ef1904b04 (root: the driver a listener is handed, over the real loop)
 #[cfg(test)]
 #[path = "tests/transports.rs"]
 mod tests;
