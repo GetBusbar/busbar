@@ -1024,5 +1024,74 @@ fn exactly_two_callers_can_take_a_hold_out_of_its_cell() {
         vec!["teller.rs".to_owned(), "tick.rs".to_owned()],
         "a hold leaves its cell in the exit path and in the sweep, once each. Anything else \
          settling a unit reaches the exit path rather than opening the cell itself"
+/// THE DOOR ANSWERED AFTER THE SWEEP TOOK THE CELL.
+///
+/// The sweep exists to take a slow or stalled unit's cell, and it can win that race against a door
+/// that is still answering. `HoldCell::admit` then refuses, and hands back the hold the door has
+/// just opened — a real reservation, sized in nano-units, which is NOT the arrival hold that
+/// reserves nothing.
+///
+/// The unit ends where the sweep ended it, so nothing here posts a second time; what has to be
+/// true is that the counts say what happened. A hold WAS opened at the door, and nothing counted
+/// it: the run read one draft, no hold and one settlement, so the two-sided canary — the
+/// arithmetic that exists to catch a unit going missing — was broken by the very race it watches
+/// for.
+#[test]
+fn a_hold_the_cell_refuses_is_still_a_hold_the_door_opened() {
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+    let gauge = ConcurrencyGauge::new();
+    let meter = AccrualMeter::new();
+
+    // A unit in the table, and the node's sweep gets to its cell first.
+    let table = InFlight::new(4, 0);
+    let slot = table.insert(client(1)).expect("the empty table takes it");
+    let swept = busbar_kernel::tick::sweep_settle(
+        &kernel,
+        &slot,
+        busbar_kernel::tick::Sweep::TaskLost {
+            at: StepName::Admit,
+        },
+        &Evidence::default(),
+        &canary,
+        &gauge,
+    );
+    assert!(swept.is_some(), "the sweep took the cell");
+    assert_eq!(slot.cell().state(), HoldCellState::Taken);
+
+    // The door answers a moment later, opens its hold, and the cell will not take it.
+    let ended = run_unit(
+        &kernel,
+        &TestUnits::passing(),
+        &ctx(1),
+        Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    assert!(
+        matches!(ended, Ended::AlreadySettled),
+        "the unit was settled a second time"
+    );
+
+    let counts = canary.counts();
+    assert_eq!(
+        (
+            counts.drafts,
+            counts.holds,
+            counts.accruals,
+            counts.settlements
+        ),
+        (1, 1, 0, 1),
+        "the hold the door opened is not on the counts"
+    );
+    assert_eq!(
+        canary.balanced(),
+        Ok(()),
+        "the race the sweep exists for breaks the arithmetic that watches for it"
     );
 }

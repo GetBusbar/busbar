@@ -57,8 +57,9 @@
 use std::future::Future;
 
 use busbar_caps::{
-    Abort, AdminToken, Admission, Admit, AdmitToken, Approve, Arrival, Audit, Authenticate,
-    Authenticated, Canary, Decision, Decode, DurabilityLost, Encode, ExitToken, Hold, HoldAccrual,
+    Abort, AdminToken, Admission, Admit, AdmitRejected, AdmitToken, Approve, Arrival, Audit,
+    Authenticate, Authenticated, Canary, CellError, Decision, Decode, DurabilityLost, Encode,
+    ExitToken, Hold, HoldAccrual,
     HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
     PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
     TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
@@ -825,9 +826,25 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                             (Settling::Exit(true), None)
                         }
                         Err(rejected) => {
-                            // The cell refused a second hold. The unit that lost the race ends here
-                            // and the hold it was carrying comes back rather than vanishing.
-                            drop_arrival(rejected.hold);
+                            // The cell refused the door's hold. The unit ends here, and the sweep
+                            // that took the cell has already sealed its end and written its
+                            // posting, so nothing is settled a second time.
+                            //
+                            // What IS true, and what nothing said until now, is that the door
+                            // opened a hold. The canary counts a draft for every unit and a hold
+                            // for every admission, and this path counted the draft and not the
+                            // hold — so the one race the sweep exists to win read as one draft, no
+                            // hold and one settlement, and the arithmetic that watches for a unit
+                            // going missing broke on the case it was built for.
+                            //
+                            // Counted only for the cell the sweep took. `AlreadyAdmitted` is one
+                            // cell admitted twice, which the loop's shape does not produce; if it
+                            // ever does, counting a second hold against one draft would CREATE the
+                            // break rather than close it.
+                            if rejected.error == CellError::AlreadyTaken {
+                                run.canary.hold_opened();
+                            }
+                            void_lost_admission(rejected);
                             (
                                 Settling::Exit(true),
                                 Some(Outcome::Failed(StepName::Admit, ReasonCode::InFlight)),
@@ -1115,6 +1132,20 @@ fn take_and_release(seal: &KernelSeal, run: &Run<'_>) -> Option<Hold> {
     run.leases.release_all(run.gauge);
     taken
 }
+/// The door's hold, on the unit that lost the race for its own cell.
+///
+/// Its own function, and taking the whole `AdmitRejected` by value rather than reaching into it for
+/// the hold, because the two disposals are not the same thing and one of them used to be spelled as
+/// the other. `drop_arrival` consumes the ARRIVAL hold, which reserves nothing; this consumes the
+/// hold the door has just opened, sized at real nano-units, and what happens to it is not nothing.
+///
+/// What is lost is stated plainly rather than papered over. The unit's end and its posting belong
+/// to whoever took the cell — settling here would be the second settlement of one unit, which the
+/// loop's own `Ended::AlreadySettled` exists to refuse. The reservation behind this hold is not
+/// released either, because releasing one is the composition root's: the loop holds no slice book,
+/// no settle site in this crate gives a draw back, and a `Hold` carries no bucket to give it back
+/// to. What the loop CAN say is that the hold existed, and the caller says it on the canary.
+fn void_lost_admission(_rejected: AdmitRejected) {}
 
 /// The one exit path.
 ///
