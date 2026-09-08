@@ -335,10 +335,30 @@ impl std::fmt::Display for MissingSource {
     }
 }
 
-/// Where in [`SOURCES`] one field is described, so a refusal quotes the table rather than a copy.
+/// WHERE THE FACTS THE LEG READS OFF ONE ARRIVAL COME FROM.
+///
+/// A SECOND TABLE, deliberately, and not four more rows on [`SOURCES`]. That table is one row per
+/// field of `A2aBindings` and is checked against that struct's own source, so a row for something
+/// which is not a binding would fail the check that makes the table worth having. What is here is
+/// the other half of the same accounting: the boot-resolved values [`A2aLeg::decode`] needs in order
+/// to answer [`Decoded`] with what a request actually carries, rather than with the anonymous
+/// posture it answered with while nothing on the serving path had a source for them.
+///
+/// One row today, and it is the one the boundary rests on.
+pub const DECODE_SOURCES: &[(&str, &str)] = &[(
+    "expected_aud",
+    "the RFC 8707 canonical URI `<public_url>/a2a`, derived exactly where the plane's own \
+     protected-resource metadata derives it (`crates/busbar-a2a/src/a2a/serve.rs::canonical_uri`) \
+     — ONE reading, so the audience a caller is told to ask for and the audience this node demands \
+     cannot drift apart",
+)];
+
+/// Where in [`SOURCES`] or [`DECODE_SOURCES`] one field is described, so a refusal quotes the table
+/// rather than a copy.
 fn source_of(field: &'static str) -> &'static str {
     SOURCES
         .iter()
+        .chain(DECODE_SOURCES)
         .find(|(name, _)| *name == field)
         .map_or("a source this table does not name", |(_, where_)| *where_)
 }
@@ -394,6 +414,13 @@ pub struct A2aLegSources<'k> {
     pub scope_policy: Option<ScopePolicy>,
     /// The node's one book.
     pub durability: Option<Arc<Mutex<Durability>>>,
+    /// THE AUDIENCE A CREDENTIAL HAS TO HAVE BEEN MINTED FOR to be spendable on this plane.
+    ///
+    /// The RFC 8707 canonical URI, `<public_url>/a2a`. `None` is a deployment that configured no
+    /// `public_url`, which is exactly the deployment the legacy plugin serves no A2A routes on at
+    /// all — its `admission()` is `None` and its route list is empty — so the assembly refuses
+    /// rather than serving a surface whose tokens nothing could be checked against.
+    pub expected_aud: Option<String>,
     /// The scopes this deployment's key is restricted to, where it is restricted.
     ///
     /// `None` is "no restriction named", which is a different answer from `Some(vec![])` — a key
@@ -438,6 +465,9 @@ pub struct A2aLeg {
     scope_policy: ScopePolicy,
     durability: Arc<Mutex<Durability>>,
     key_scopes: Option<Vec<String>>,
+    /// The RFC 8707 canonical URI a credential presented here must name. See
+    /// [`A2aLegSources::expected_aud`].
+    expected_aud: String,
     priced: bool,
     has_key: bool,
     /// When this process started, for the monotonic half of a unit's clock reading. The wall reading
@@ -490,6 +520,9 @@ impl A2aLeg {
                 .ok_or_else(|| missing("scope_policy"))?,
             durability: sources.durability.ok_or_else(|| missing("durability"))?,
             key_scopes: sources.key_scopes,
+            expected_aud: sources
+                .expected_aud
+                .ok_or_else(|| missing("expected_aud"))?,
             priced: sources.priced,
             has_key: sources.has_key,
             started: std::time::Instant::now(),
@@ -640,22 +673,97 @@ impl A2aLeg {
                 _ => None,
             }
         });
+        // WHAT THE REQUEST CARRIES ABOUT ITSELF, read off the arrival's own reserved fact rather
+        // than off a header. A transport publishes the credential WHOLE — the scheme word travels
+        // with it, because deciding what a scheme means is the chain's — so this is the one place
+        // the two halves are told apart, and it is told apart once for both readers below.
+        let presented = arrival
+            .fact(busbar_contract::transport::facts::CREDENTIAL)
+            .map(presented_credential);
+        // AND THE OPEN SURFACES STAY OPEN. The plane's own `authenticate` says which of its claims
+        // declare no scheme, and a claim with no scheme has nothing to narrow WITHIN and no audience
+        // to demand: asking for one there would refuse a surface this protocol deliberately leaves
+        // open. The question is the plane's and is asked of it, never re-derived from a path.
+        let under_scheme = op.is_some_and(|op| !is_open_surface(op));
         Decoded {
             op,
             request_bytes,
-            // THE THREE THE ARRIVAL DOES NOT CARRY, answered with what is true rather than with a
-            // guess. A mounted arrival publishes its path, method, authority and peer and no header
-            // at all, so there is no credential on it to present and no audience to check against.
-            // The mount that DOES read headers hands them through its own claim narrowing; until
-            // then this is the anonymous posture the plane's three open surfaces already declare,
-            // and it is visible here rather than invented into a bearer nobody sent.
-            credential: None,
-            expected_aud: None,
+            // The bare credential, with the scheme word taken off exactly once. The chain is handed
+            // the secret and never the carrier's spelling of it.
+            credential: presented.as_ref().and_then(|(_, token)| token.clone()),
+            // THE AUDIENCE, on every credentialed surface and on no open one. A bearer minted for
+            // another resource is a bearer for another surface, and this is the field that makes the
+            // authenticate step say so — it is the boundary the plane's own protected-resource
+            // metadata advertises, so a caller is told to ask for the same string this demands.
+            expected_aud: under_scheme.then(|| self.expected_aud.clone()),
+            // Nothing on this plane's mounted path is a bound session: every claim carries its
+            // credential on the request, so every unit re-authenticates and revocation bites.
             from_session: false,
-            narrowing: None,
-            declared_schemes: &[],
+            // NARROWED BY WHAT ARRIVED, within what the plane declared. A carrier the plane's claims
+            // do not name narrows to nothing, and narrowing to nothing inside a NON-EMPTY declared
+            // set is a refusal at the authenticate step — which is the fail-closed answer and the
+            // reason this is a lookup rather than a constant.
+            narrowing: under_scheme
+                .then(|| presented.as_ref().and_then(|(scheme, _)| *scheme))
+                .flatten(),
+            declared_schemes: if under_scheme {
+                declared_schemes()
+            } else {
+                &[]
+            },
         }
     }
+}
+
+/// Whether one operation of this plane is served on a claim that declares NO credential scheme.
+///
+/// Asked of the plane rather than answered here: `A2aPlane::authenticate` is the one place this
+/// protocol says which of its surfaces are deliberately open, and a second list in the root would be
+/// a second opinion about which addresses admit an unidentified caller — the worst possible thing to
+/// hold two answers to.
+fn is_open_surface(op: busbar_contract::ids::OpClassId) -> bool {
+    op == ops::OP_PUSH_EVENT
+}
+
+/// The scheme alternatives this plane's credentialed claims declare, read off the claims themselves.
+///
+/// Read rather than restated, so a claim that gained an alternative gains it here too. The open
+/// claims contribute nothing, which is the whole point of them being open.
+fn declared_schemes() -> &'static [&'static str] {
+    busbar_plane_a2a::claims::CLAIMS
+        .iter()
+        .map(|claim| claim.scheme_alternatives)
+        .find(|alts| !alts.is_empty())
+        .unwrap_or(&[])
+}
+
+/// One presented credential, split into the carrier it named and the secret it carried.
+///
+/// The scheme word is stripped ONCE and case-insensitively — `bearer <t>` is the same credential as
+/// `Bearer <t>` on the wire — and the word is matched against the alternatives the plane DECLARED
+/// rather than against a literal here, so the narrowing and the strip cannot disagree about which
+/// carrier this is.
+///
+/// A credential with no recognised carrier keeps its bytes and names no scheme. That is the
+/// fail-closed pair: the chain is handed exactly what arrived, and the narrowing is absent, which
+/// the authenticate step reads as a unit that did not narrow within a set that has alternatives.
+///
+/// An EMPTY secret is `None` rather than `Some("")`, the same distinction the transport already
+/// makes when it publishes the fact at all: a chain handed a blank credential is being told one was
+/// presented and is blank.
+fn presented_credential(value: &str) -> (Option<&'static str>, Option<String>) {
+    let trimmed = value.trim_start();
+    let split = trimmed.split_once(' ').and_then(|(word, rest)| {
+        declared_schemes()
+            .iter()
+            .find(|alt| alt.eq_ignore_ascii_case(word))
+            .map(|alt| (*alt, rest.trim_start()))
+    });
+    let (scheme, secret) = match split {
+        Some((alt, rest)) => (Some(alt), rest),
+        None => (None, trimmed),
+    };
+    (scheme, (!secret.is_empty()).then(|| secret.to_string()))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
