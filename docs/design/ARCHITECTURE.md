@@ -154,8 +154,8 @@ a registry or config. Only structure is closed.**
 
 Closed (structural): steps; `UnitEnd`; `Origin`; `Direction`; `Ingress`/`Progress`; destination kinds;
 selector, location and handoff forms; the JSON span grammar; quantity sources; cap-dimension SHAPE (`NanoUnits | Requests | Concurrent | Class(MeterClassId)` — any declared meter class is cappable by key, so `tokens`, `tokens_in`, `tokens_out`, `bytes`, `messages` are instances, not variants); hook
-seats; journal entry classes; capability types; kernel verbs (§4.7); the dual-controlled config key
-list and its defaults; the peer envelope; the effects-spec outcome classes (§8.1).
+seats; journal entry classes; capability types; kernel verbs (§4.7); the pinned config key list and
+its defaults; the peer envelope; the effects-spec outcome classes (§8.1).
 
 Open (declared by the plugin, priced or bound by config, dispatched by key): claims; op classes; meter
 classes; credential schemes; egress auth schemes; transports and their composition; session, transport,
@@ -963,22 +963,22 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   binary reads balances written by 1.6.0"; the boot check refuses slices if legacy cells show an
   unleased write in the current window.
 
-### 4.7 Corrections, disputes, dual control, config, defaults
+### 4.7 Corrections, disputes, admin authorization, config, defaults
 
 **Kernel verbs** (executed by `busbar-unit-verbs`, which holds `AdminToken` and builds `SecretOnce`; the
 admin plane is the codec only) are a closed table **derived mechanically from 1.5.5's `openapi.json`
-at the tag — 66 operations over 49 paths (34 `read-only`, 32 `full` — `POST /config/validate` and `POST /plugins/inspect` are read-only; `required_scope(method, path)` pinned, PB-62) — pinned by git object hash — PLUS the named non-admin 1.5.5 surfaces, each pinned by its handler: `POST /auth/token` (the self-serve exchange; exempt from dual control in both postures, Appendix A) and `GET /auth/token` (the browser exchange: unauthenticated exact-path bypass, `200 text/html` or `302` to the IdP, `?logout` / `?code` / `?method` / `?refresh` dispatch — PB-33), `GET /v1/models` and `/v1beta/models` (governance-scoped listings), `/stats`, `/healthz` (unconditional auth bypass on BOTH listeners), `/metrics` (present only when `export.prometheus` is configured; data-plane key auth) and `/metrics/hooks` (present only when `metrics::enabled()`) — PB-43 — with their own §8.1 effects rows; admin mutations are rate-limited exactly as `admin/rate.rs` (PB-32)**, plus
-the 1.6.0 additions: `verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`,
-`chain_break`, `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`,
-`set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`, `export_keyset`,
-`approve` (the maker-checker approval under `required`: its payload hash must equal the pending mutation's and its approver must differ from the maker) (17 verbs; keyset import is the off-node CLI, not a verb).
+at the tag — 66 operations over 49 paths (34 `read-only`, 32 `full` — `POST /config/validate` and `POST /plugins/inspect` are read-only; `required_scope(method, path)` pinned, PB-62) — pinned by git object hash — PLUS the named non-admin 1.5.5 surfaces, each pinned by its handler: `POST /auth/token` (the self-serve exchange) and `GET /auth/token` (the browser exchange: unauthenticated exact-path bypass, `200 text/html` or `302` to the IdP, `?logout` / `?code` / `?method` / `?refresh` dispatch — PB-33), `GET /v1/models` and `/v1beta/models` (governance-scoped listings), `/stats`, `/healthz` (unconditional auth bypass on BOTH listeners), `/metrics` (present only when `export.prometheus` is configured; data-plane key auth) and `/metrics/hooks` (present only when `metrics::enabled()`) — PB-43 — with their own §8.1 effects rows; admin mutations are rate-limited exactly as `admin/rate.rs` (PB-32)**, plus
+the 1.6.0 additions: `verify`, `plane_facts`, `plane_record_write`, `chain_break`, `store_restore`,
+`reseal_epoch_floor`, `set_overdraft_ceiling`, `set_dispute_max_age`, `commit_upgrade`,
+`resolve_dispute`, `resolve_slice`, `adjust` — **twelve** — plus `amend_rate_history`, the signed
+history amendment of §4.2 (keyset import and export are off-node CLI on a stopped node, not verbs).
 
-**HTTP binding of the 17.** Each of the 17 binds as `<kebab-case-verb>` under the admin prefix: POST for
+**HTTP binding of the twelve.** Each binds as `<kebab-case-verb>` under the admin prefix: POST for
 every mutating verb, GET for the two read-only verbs (`verify`, `plane_facts`). Bindings: `GET verify` ·
-`GET plane-facts` · `POST plane-record-write` · `POST set-operator-key` · `POST set-escrow` ·
-`POST chain-break` · `POST store-restore` · `POST reseal-epoch-floor` · `POST set-dual-control` ·
+`GET plane-facts` · `POST plane-record-write` ·
+`POST chain-break` · `POST store-restore` · `POST reseal-epoch-floor` ·
 `POST set-overdraft-ceiling` · `POST set-dispute-max-age` · `POST commit-upgrade` ·
-`POST resolve-dispute` · `POST resolve-slice` · `POST adjust` · `POST export-keyset` · `POST approve`.
+`POST resolve-dispute` · `POST resolve-slice` · `POST adjust`; and `POST amend-rate-history`.
 
 The
 15 operations the dev tree added to the admin API since the tag are separate new surface with their own
@@ -986,41 +986,56 @@ effects cells. `plugins/reload|rollback` are a registry
 generation swap sealed by `Load`/`Policy` entries and applied at a unit boundary; the store/governance instance is REUSED across the swap and 1.5.5's reload/rollback mechanics hold (PB-63). **Template
 instances**: the 1.5.5 SELF-SERVE exchange verb (`POST /auth/token`, not the admin key mint — whose caller-named `parent` is checked for EXISTENCE only, exactly as 1.5.5's `plan_mint_group` does — parity clause; no containment rule) mints a per-subject leaf bucket taking `resolve_child_default(groups, parent)` — the nearest-ancestor `child_default`, empty when none (1.5.5 has no `user:*` template; the template is a 1.6.0 alias for that rule) — whose `parent` is the role-binding group the exchanging identity maps to in `Policy` (1.5.5's `role_bindings.<module>.<role>.group` — never caller-named, exactly as 1.5.5) from the `user:*` template (caps
 inherited), bounded by `max_auto_provisioned_groups`, journaled `Policy { template_instance }`; template
-instantiation is **exempt from dual control** (the template itself is a listed key).
+instantiation applies immediately, like every other mutation.
 
-**Dual-control posture** is sealed at `Bootstrap`; **default is `single` on upgrade from 1.5.5 AND on a fresh install** (`Bootstrap` tells them apart by the presence of legacy cells; `required` is only ever chosen by `set_dual_control`). Under
-`single` every verb applies immediately, journaled, alarmed, on the ledger endpoint (PB-16) (every listed-key delta in the
-window is a ledger-endpoint line (PB-16)) — 1.5.5's operating posture. `set_dual_control(required)` needs ≥ 2 admin
-principals (`Refused(Approve, InsufficientApprovers)`); `required → single` needs dual control. Under
-`required`, maker-checker applies to every mutating verb except `approve` itself (the checker step — its only controls are the payload-hash equality and the `SelfApproval` refusal); the pending response is a named exception.
+**The authorization model, in full (owner ruling, 2026-09-08): the admin API is DUMB, and there is
+ONE admin tier.** busbar authorizes a call and nothing more. Policy — who may call what, which humans
+hold which roles, whether a change needs a second pair of eyes — lives in the CALLING APPLICATION,
+not in the node, and busbar carries no vocabulary for it.
 
-**Irreducible set, required in both postures**: `chain_break`, `store_restore`, `commit_upgrade`,
-`set_dual_control`, `reseal_epoch_floor`, `set_operator_key` (once set), `set_escrow`, `export_keyset`,
-changes to the **binary-digest set** (no verb: it changes only through an operator-signed config reload; `plugins.trust.publishers` stays an ordinary 1.5.5 config key applied on reload — CONF-183 / BOOT-134, PB-11) (the 1.5.5 `plugins/reload` and
-`rollback` verbs themselves are ordinary mutating verbs — immediate under `single`; the digest set is
-initialised at `Bootstrap` with the booting binary's own digest **when an operator key is present, and
-is `any` under `operator: unset`** — journaled, alarmed, on the ledger endpoint (PB-16), closed by the first
-`set_operator_key`; boot cell), **and `adjust`/`resolve_dispute` above `adjust_threshold`**. Control: an **operator
-key whose private half is never on a serving node**. **Ceremony on upgrade**: `busbar operator keygen`
-(off-node) → `operator.pub` beside `config.yaml`; **absent at `Bootstrap` → sealed `operator: unset`**,
-every irreducible verb refused except `set_operator_key` and `export_keyset` (so the keyset can be backed up before the ceremony — under `unset` it takes a MANDATORY recipient public key, seals to it, and the `Access` entry records the recipient fingerprint; plaintext export is never a path; residual risk in Appendix A)
-, which under `unset` are admitted with the admin
-credential, journaled, alarmed and shown on the ledger endpoint (PB-16) (so a 1.5.5 config boots unchanged and the fleet
-can always be brought under the key; consequence: until the ceremony EVERY irreducible verb other than `set_operator_key` and `export_keyset` is refused — `commit_upgrade`, `set_dual_control`, `set_escrow`, signer/digest changes, and `adjust`/`resolve_dispute` above `adjust_threshold` (floor 10^9 nano-units), so larger disputes stay open and alarmed; disaster recovery is unaffected because `chain_break`, `store_restore` and `reseal_epoch_floor` also exist as off-node CLI on a stopped node — stated here as the cost of `unset`). `busbar policy sign <config>` (off-node) emits a detached
-signature read beside `config.yaml`; verbs carry the signature as an argument. Rotation is a `Policy`
-entry signed by the retiring key; loss is covered by an M-of-N escrow — **a required argument of
-`set_operator_key`** (and of `Bootstrap` when the key is present at first boot), changed only by
-`set_escrow` in the irreducible set (break-glass journaled); without escrow the fleet can never
-`commit_upgrade` again, and the document says so.
+What the node enforces is a **per-verb allow-list on the admin token**: a token declares
+`verbs: [ … ]`, or `verbs: "*"` for every verb. `read-only` and `full` remain as the 1.5.5
+shorthands they already are — `read-only` is the read set, `full` is `*` — so a 1.5.5 token keeps
+its exact meaning and no 1.5.5 configuration changes. A call whose verb is not in its token's list is
+refused before the verb runs, journaled and alarmed like any other refusal; the list is sealed in
+`Policy` with the token and is the ONLY authorization question the node asks. Every verb applies
+immediately, journaled, alarmed, and on the ledger endpoint (PB-16) — 1.5.5's operating posture,
+unchanged and now the only one.
 
-**Config is not a side door**: the dual-controlled key list is a closed constant; the boot cell asserts
-coverage. On boot/reload the resolved policy is diffed against the last sealed `Policy`: under `single`,
-deltas apply and the diff is sealed; under `required`, a listed-key delta is refused unless a matching `approve { key, payload_hash }`
-entry (the maker-checker verb, journaled) carries a payload hash equal to the new value AND an approver fingerprint different from the maker's (at a COLD BOOT under `required` an unapproved listed-key delta in the file is journaled and alarmed, the node SERVES on the last sealed `Policy`, and the ledger endpoint (PB-16) names the rejected delta — the fail-safe choice, and the expectation the "change a fee and restart" cell asserts; for a config-file delta the maker is the admin credential that issued the reload, or the `Bootstrap`-sealed admin at boot) (`Refused(Approve, SelfApproval)`; both sealed in the `Policy` entry; cell); irreducible-set deltas need the operator
-signature in both postures. A reload that would violate an operator-pinned `max_unposted_accrual`
-(§4.7 table) is refused.
+There is no operator-key ceremony, no dual control, no escrow, no pending/approve round and no
+irreducible set: an application that wants maker-checker builds it above busbar out of two of its own
+roles and two tokens. **Every remaining sentence in this document that names an operator key, an
+operator signature, an escrow, a maker-checker approval, a dual-control posture or an irreducible
+set is superseded by this paragraph** — in §1.2's plugin-trust and keyset text, §4.2's and §10's
+"dual-controlled" qualifiers on config keys, §4.8's bootstrap sequence, §8.1's ceremony cell and
+Appendix A's entries — and each is deleted with the surface it names rather than restated. Keyset
+export and import stay what they already were: off-node CLI acting on a STOPPED node's `data_dir`,
+never verbs.
 
-**Defaults (pinned; sealed in every `Policy`; all dual-controlled)**:
+The **replay/idempotency cache stays as a MECHANISM, not a control**: a repeated call is answered
+from the sealed cache rather than executed twice. Its key is **(actor, verb, idempotency-key)** —
+the actor is in the key, so two principals presenting the same idempotency value are never served
+each other's answer — and its TTL is §4.4's formula, so a leaked sentinel outlives the window it
+guards rather than expiring inside it.
+
+**The binary-digest set** changes only through a config reload; `plugins.trust.publishers` stays an
+ordinary 1.5.5 config key applied on reload (CONF-183 / BOOT-134, PB-11), and the 1.5.5
+`plugins/reload` and `rollback` verbs are ordinary mutating verbs, applied immediately. The set is
+initialised at `Bootstrap` with the booting binary's own digest; boot cell.
+
+`adjust` and `resolve_dispute` carry no second gate above `adjust_threshold`: the threshold stays as
+the line at which the posting is **alarmed and named on the ledger endpoint** (PB-16), which is what
+it always measured, and the calling application decides who is allowed to cross it. Disaster
+recovery is unchanged and needs nothing on-node: `chain_break`, `store_restore` and
+`reseal_epoch_floor` exist as verbs AND as off-node CLI on a stopped node, and keyset export/import
+are off-node CLI only.
+
+**Config is not a side door**: on boot/reload the resolved policy is diffed against the last sealed
+`Policy`, the deltas apply, and the diff is sealed — one path, journaled, alarmed, and every delta a
+line on the ledger endpoint (PB-16), which is the expectation the "change a fee and restart" cell
+asserts. A reload that would violate a pinned `max_unposted_accrual` (§4.7 table) is refused.
+
+**Defaults (pinned; sealed in every `Policy`)**:
 
 | Key | Default | Rationale / constraint |
 |---|---|---|
@@ -1034,7 +1049,7 @@ signature in both postures. A reload that would violate an operator-pinned `max_
 | `variance_tolerance` | 1 % | per class family; a card may tighten; applies to `PlaneCount` / `Count × TransportFacts` versus their kernel companion |
 | `locator_floor_ratio` | 4 | one-sided sanity bound for `Locator` classes: a located quantity below kernel floor ÷ this ratio posts the LOWER (the located figure) with `MeterDisputed` — the dispute and its alarm are the control against an under-reporting plane, consistent with every other row; the floor is evidence, never a charge; a located quantity ABOVE floor × this ratio posts the located figure with `MeterDisputed` (flag-only upper bound — the wrong-locator meta-test is red in both directions) |
 | `lane_mismatch_alarm` | 10 per window per (plane, lane) | then `draining` (1.6.0-native planes only) |
-| `max_auto_provisioned_groups` | 0 = unlimited (1.5.5's literal default) | template instances; unbounded, dual-control-exempt minting, possibly of uncapped leaves — stated as such |
+| `max_auto_provisioned_groups` | 0 = unlimited (1.5.5's literal default) | template instances; unbounded minting, possibly of uncapped leaves — stated as such |
 | `tier_bp` (per bucket) | 10,000 | 1.0×; ≤ 100,000 (boot refusal above); differing values within one chain are a boot refusal (`TierMismatch`, like currency); a `tier_bp` delta is a ledger-endpoint line (PB-16); Appendix A |
 | `keyset_ref` | unset | when set (a secret-plugin ref sealed to the operator key), a node resolves the deployment keyset from the secret plugin at boot instead of `data_dir`, so an explicit-store deployment on ephemeral volumes needs no per-restart ceremony; unset → the keyset lives in `data_dir` and a fresh volume needs `busbar keyset import` — only when `data_dir` is configured; a 1.5.5-shaped deployment keeps its keyset in the store and needs nothing; on a `data_dir` deployment with `keyset_ref` unset and no `Access { KeysetExported }` entry the node boots with a WARNING and a ledger-endpoint line (PB-16) naming the single point of loss; a deployment without `data_dir` (every 1.5.5 config) gets the ledger-endpoint line only, no boot warning (PB-41) |
 | `data_dir` (OPTIONAL — 1.5.5 needs no data dir, so neither does 1.6.0: without one the journal is memory-buffered and shipped to the configured store synchronously, durability = the store durability, exactly the 1.5.5 rule, and the deployment keyset is sealed in the STORE at `Bootstrap`; with one, the group-commit WAL and local keyset apply) | UNSET (PB-13: no probe, no files); when written, the probe order `BUSBAR_DATA_DIR` / `--data-dir`, else the value as given, sealed in `Policy` on first boot and honoured thereafter; the refusal names `BUSBAR_DATA_DIR` (read-only-mount boot cell) (1.5.5 has no data-dir key) | WAL + `secret-local` keyset; must be writable, else boot refuses `DataDirNotWritable { path }` |
@@ -1056,8 +1071,8 @@ signature in both postures. A reload that would violate an operator-pinned `max_
 | `max_fanout_recipients` | 10,000 | `Refused(Approve, FanoutTooLarge)` when `sessions_for` resolves more |
 | `in_flight_reserve` | 10 % of `in_flight_cap` when a claimed transport declares `SESSION = true`, else 0 — so a 1.5.5 config sheds at exactly `max_inbound_concurrent` (8,192), PB-44 | held for provider frames of already-open sessions; drawn only against session Unit 0 arrivals |
 | `on_empty` (per restrict-capable hook) | `reject` (the 1.5.5 default, PB-1; migrated hooks sealed at `Migration`) | `weighted | reject | first` |
-| `in_flight_cap` (`Refused(Arrival, InFlightCap)` for client units, `Refused(Decode, InFlightCap)` for the rest) | read from 1.5.5's `limits.max_inbound_concurrent` (default 8,192; 0 = unbounded as there — then the arrival gate is open, the crash-exposure formula substitutes the node's measured peak in-flight count (published), and an operator-pinned `max_unposted_accrual` requires a finite `in_flight_cap` at boot, `Refused` otherwise) | `Refused(Arrival, InFlightCap)` above it; per-lane `max_concurrent` (1.5.5 `ModelCfg`) is the egress unit's per-destination pool ceiling — fail, never wait — an at-capacity lane is skipped within the pick (PB-2) |
-| `max_unposted_accrual` (per node) | **the ONE formula, from enforced quantities**: `in_flight_cap × (max_hold + max overdraft ceiling over capped buckets)` — accrual since the last Tick checkpoint can never exceed a unit's hold plus its journaled top-ups plus the ceiling at which it is aborted; published on the ledger endpoint (PB-16); alarmed above `unposted_alarm`; measured at M2 by the kill-mid-stream cell | asserted at boot/reload only when operator-pinned |
+| `in_flight_cap` (`Refused(Arrival, InFlightCap)` for client units, `Refused(Decode, InFlightCap)` for the rest) | read from 1.5.5's `limits.max_inbound_concurrent` (default 8,192; 0 = unbounded as there — then the arrival gate is open, the crash-exposure formula substitutes the node's measured peak in-flight count (published), and a pinned `max_unposted_accrual` requires a finite `in_flight_cap` at boot, `Refused` otherwise) | `Refused(Arrival, InFlightCap)` above it; per-lane `max_concurrent` (1.5.5 `ModelCfg`) is the egress unit's per-destination pool ceiling — fail, never wait — an at-capacity lane is skipped within the pick (PB-2) |
+| `max_unposted_accrual` (per node) | **the ONE formula, from enforced quantities**: `in_flight_cap × (max_hold + max overdraft ceiling over capped buckets)` — accrual since the last Tick checkpoint can never exceed a unit's hold plus its journaled top-ups plus the ceiling at which it is aborted; published on the ledger endpoint (PB-16); alarmed above `unposted_alarm`; measured at M2 by the kill-mid-stream cell | asserted at boot/reload only when the key is pinned |
 | `currency` | `USD` — the label 1.5.5 emits on the ledger endpoint (PB-16) (`USAGE_CURRENCY`), still abstract minor units | one per bucket; the legacy `/usage` line is byte-identical |
 | `session_idle_max` / `peer_table_ttl` | 300 s / `stale_serve_max + tick_interval` (631 s) | session idle close; peer-state aging outlives the quorum branch |
 | `stale_serve_max` | `lease_ttl + max_unit_duration` (630 s) | quorum-branch serving bound, before the store's release |
@@ -1066,7 +1081,7 @@ signature in both postures. A reload that would violate an operator-pinned `max_
 | `spill_budget` | `max_inbound_concurrent` × `request_body_max_bytes` per node; `max_inbound_concurrent: 0` ⇒ unbounded (1.5.5 buffered exactly that much, so no request 1.5.5 accepted is ever refused for spill — parity clause, PB-18) | large-body spooling before `Open`; outside the headline RSS row |
 | `per_request_fee` | 0 cents (1.5.5's deploy-level key, independent of the rate card, clamped as there) | posts even with no card |
 | `wal_capacity` / `unposted_alarm` | 4 GiB / 1 % of the smallest capped window budget, floor 10^9 nano-units | alarm at 80 %; `unposted_alarm` compares the MEASURED node Σ(accrued − checkpointed), never the formula bound |
-| `adjust_threshold` | 1 % of the bucket's window budget, floor 10^9 nano-units (the floor is the whole threshold on an uncapped attribution bucket) | above → operator signature |
+| `adjust_threshold` | 1 % of the bucket's window budget, floor 10^9 nano-units (the floor is the whole threshold on an uncapped attribution bucket) | above → the posting is alarmed and named on the ledger endpoint (PB-16); the calling application decides who may cross it |
 | `allow_unpriced` | **false** → `Refused(Admit, Unpriced)`; WITH A RATE CARD PRESENT (1.5.5 `pricing_enabled()`), a client-located NAME resolves to one of three things — a POOL (a candidate-set name, expanded by the trust unit to its member lanes at their own card entries), a by-lane name, or a card lane — and only a name that is NONE of the three for a KEYED principal is `Refused(Verify, UnknownLane)` (1.5.5's guard leg for leg; cell: a keyed request naming a pool with a card present serves and prices at the selected member's entry) rendered byte-identical to 1.5.5's 400, while an anonymous (unkeyed) unit with an unknown lane is served and attributed at 0 exactly as 1.5.5's four-way guard does; with NO card a keyed unknown lane is served at 0 as well (oracle cells: keyed × card × unknown lane; keyed × no card × unknown lane) | 1.5.5 is fail-closed on unknown lanes (its `model_unpriced` rule; it has no meter-class concept); at `Migration` the meter classes 1.5.5 never priced (everything outside its four token classes and the fee) are sealed into an explicit `unpriced_classes` list — journaled, on the ledger endpoint (PB-16), residual risk — so migrated planes keep serving |
 | `on_failure` (hooks at gate seats) | closed for hooks added in 1.6.0; the resolved 1.5.5 `on_error` chain of each MIGRATED hook (default `nothing` = the failing gate does not participate; fallback hooks; terminal `weighted | reject | first`) is sealed at `Migration` — cell: a migrated gate timing out under `nothing` still serves | |
 | reconciliation `T` | 24 h | |
