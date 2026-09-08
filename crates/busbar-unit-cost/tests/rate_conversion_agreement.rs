@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The two decimal-to-money conversions, held to the same answer.
+//! The money rules the door and the pricing law both need, held to the same answer.
 //!
-//! There is ONE of them in the tree now, and this file is what says so.
+//! Two of them: the decimal-to-integer RATE conversion, and the nano-unit-to-cent PROJECTION. There
+//! is one of each in the tree now, and this file is what says so.
 //!
 //! There used to be two. This crate's [`nano_rate`] is the pricing law's conversion; the admission
 //! unit carried its own copy inside its rate projection, because that crate named nothing here and
@@ -23,7 +24,7 @@
 //! trivially true.
 
 use busbar_unit_admission::RateNanos;
-use busbar_unit_cost::{minor_of, nano_rate, CurrencyCode, LaneClass, RateCard};
+use busbar_unit_cost::{cents_of, minor_of, nano_rate, CurrencyCode, LaneClass, RateCard};
 
 /// The admission unit's conversion, asked for one rate.
 ///
@@ -71,6 +72,105 @@ fn the_two_conversions_agree_on_ten_thousand_generated_rates() {
             "case {case}: the two conversions disagree at {micro} micro-units per unit"
         );
     }
+}
+
+/// The admission unit's CENT PROJECTION, asked for one nano-unit total.
+///
+/// The door has no way to be handed a nano total directly — it derives one from counts and rates —
+/// so the total is factored into a count and a rate whose product is exactly it, put through the
+/// door's own accumulation, and read back as cents. Nothing else in the derivation moves: the fee is
+/// zero, so what comes back out is the projection and only the projection.
+fn admission_cents(count: u64, nanos_per_unit: u64) -> i64 {
+    let mut table = std::collections::BTreeMap::new();
+    table.insert(
+        "m".to_string(),
+        RateNanos {
+            input: nanos_per_unit,
+            ..RateNanos::default()
+        },
+    );
+    let mut units = std::collections::BTreeMap::new();
+    units.insert(busbar_unit_admission::price::UNIT_INPUT.to_string(), count);
+    let pricer = busbar_unit_admission::Pricer::with_card(0, table);
+    pricer.derive_spend_cents(std::iter::once(("m", &units)), 0, true)
+}
+
+/// **THE CENT PROJECTION, HELD TO THE SAME ANSWER AS THE RATE CONVERSION IS.**
+///
+/// The door decides admission in cents and the ledger bills in cents, and until this file said so
+/// there were two truncating divides in the tree deriving that figure — this crate's [`cents_of`]
+/// and a second copy inside the admission unit's spend derivation, beside a second declaration of
+/// the divisor. That is the same shape as the rate conversion above, one fold further down: the
+/// divisor, the truncation direction and the saturation posture all have to be the same three
+/// decisions, because a request JUDGED at one projection and BILLED at another is a bill that does
+/// not match the decision that produced it.
+///
+/// The door now calls this crate's projection. Both sides of every assertion below are therefore the
+/// same function today, and the file passes by construction — exactly as the rate assertions above
+/// do, and for the same reason. What it is FOR is the day somebody re-forks those two lines: the
+/// moment the door carries its own divide again, these are the assertions that stop being trivially
+/// true.
+#[test]
+fn the_two_cent_projections_agree_on_ten_thousand_generated_totals() {
+    let mut seq = Seq(0x5EED_0000_CE47_5000);
+    for case in 0..10_000u32 {
+        // A count and a rate rather than a total, because the door reaches a total only by
+        // multiplying one by the other. Both are drawn to land the PRODUCT in the range where the
+        // divisor is what decides the answer: up to a hundred million nano-units per unit against a
+        // million units is a total of a few million cents, so almost every case sits a rounding step
+        // from a whole-cent boundary. Drawing both wide instead would look more searching and test
+        // less — every product would saturate at the top of the signed range and agree there
+        // whatever divisor either side used. The saturation has its own named cases below.
+        let count = seq.below(1_000_000);
+        let rate = seq.below(100_000_000);
+        let nanos = u128::from(count).saturating_mul(u128::from(rate));
+        assert_eq!(
+            cents_of(nanos),
+            admission_cents(count, rate),
+            "case {case}: the two cent projections disagree at {nanos} nano-units"
+        );
+    }
+}
+
+/// The totals where a difference in the cent projection would actually live: nothing, either side of
+/// a whole cent, the exact boundary, and the whole neighbourhood of the signed ceiling the
+/// saturation exists for. A generator reaches these only by luck, so they are named.
+#[test]
+fn the_two_cent_projections_agree_at_every_boundary_total() {
+    let cent = busbar_unit_cost::NANOS_PER_CENT;
+    assert_eq!(
+        busbar_unit_admission::price::NANOS_PER_CENT,
+        cent,
+        "the divisor is one number, not two that happen to match"
+    );
+    // (count, rate) pairs, and the nano total each one is: the door multiplies, so a total is named
+    // by its factors.
+    let boundaries: [(u64, u64); 10] = [
+        (0, 0),                 // nothing at all
+        (1, 1),                 // a single nano-unit: floors to nothing
+        (1, 9_999_999),         // one nano-unit short of a cent: still nothing
+        (1, 10_000_000),        // exactly one cent
+        (1, 10_000_001),        // a cent and a nano-unit: truncates back to one cent
+        (2, 5_000_000),         // half a cent twice: the counts sum BEFORE the divide
+        (1, u64::MAX),          // the widest single product a rate can carry
+        (u64::MAX, 1),          // and the widest a count can
+        (u64::MAX, 10_000_000), // past the signed ceiling in cents: saturates
+        (u64::MAX, u64::MAX),   // the largest product there is
+    ];
+    for (count, rate) in boundaries {
+        let nanos = u128::from(count).saturating_mul(u128::from(rate));
+        assert_eq!(
+            cents_of(nanos),
+            admission_cents(count, rate),
+            "the two cent projections disagree at {nanos} nano-units"
+        );
+    }
+    // And the saturation is the same saturation, not merely the same answer by coincidence: a total
+    // past the top of the signed range pins at the maximum on both sides rather than wrapping
+    // negative, which the floor would then read as free.
+    let over = u128::from(u64::MAX).saturating_mul(u128::from(u64::MAX));
+    assert_eq!(cents_of(over), i64::MAX);
+    assert_eq!(admission_cents(u64::MAX, u64::MAX), i64::MAX);
 }
 
 /// The values where a difference would actually live: the rounding boundary in both directions,
