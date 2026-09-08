@@ -293,6 +293,61 @@ pub fn provision_dial(
     provision_client(sink, token, slot, cfg)
 }
 
+// ── the seam a mounted leg reaches its own surface through ──────────────────────────────────────
+
+/// WHAT ONE OPERATION ANSWERED: a status, its headers, and its body.
+///
+/// The three together, because a caller reads all three and this root may not re-derive any of them.
+/// It is the plane's own answer travelling back OUT of the loop, and it is a record of BYTES rather
+/// than of anything this file could reconstruct.
+///
+/// **One type, for every plane with a mount.** It was the A2A plane's `A2aAnswer` while A2A was the
+/// only leg that had a dispatch seam. A second plane's leg wanting the same three fields is not a
+/// reason for a second struct with the same three fields: two copies are two things that can drift,
+/// and the whole content of this value is "the bytes are the surface's" — which is a statement about
+/// the SEAM and not about any protocol. So the A2A leg's own type moved here and became this one,
+/// rather than the MCP leg gaining a twin of it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlaneAnswer {
+    /// The status the surface answered with.
+    pub status: u16,
+    /// The headers it emitted, in emission order.
+    pub headers: Vec<(String, String)>,
+    /// The body it wrote. For a streamed operation this is the run of events, exactly as framed.
+    pub body: Vec<u8>,
+}
+
+/// THE ONE SEAM between a plane's units and the surface that already answers its operations.
+///
+/// ## Why there is exactly one, and why it takes no request
+///
+/// The units are the GATE and the surface is the ANSWER. Everything the loop decides — who is
+/// calling, where the unit may go, whether the caller may ask, whether it is paid for — happens
+/// before this seam is touched, and a unit refused at any of those steps never reaches it. What is on
+/// the far side is the operation's own body, which this root does not hold and may not reimplement:
+/// the whole value of the seam is that the answer a caller reads is the one the surface wrote.
+///
+/// It takes no request because the seam is BOUND to one. A unit of a mounted plane is assembled per
+/// arrival, so the thing that carries the arrival across is per-arrival too, and a request passed
+/// through the call would be the same request travelling twice. The administrative plane's seam is
+/// long-lived and takes its request as an argument because ITS units are long-lived; the shape
+/// follows the lifetime rather than the other way round.
+///
+/// The operation class IS passed, because it is the one thing the seam's far side may legitimately
+/// branch on and the one thing the leg has already decided: the plane read the bytes and named the
+/// class, and handing it over is what makes "the loop chose the path" checkable from the seam.
+///
+/// **One trait, for every plane with a mount**, and this is where the kinds stay siblings. The
+/// argument is an `OpClassId`, which every plane declares, and the answer is bytes, which every
+/// surface writes — so there is nothing protocol-shaped left in the signature and nothing for a
+/// second copy of it to specialise. A per-plane dispatch trait would have been one trait per plane
+/// carrying one identical method, and the first thing to differ between two of them would have been
+/// a difference nobody meant.
+pub trait PlaneDispatch: Send + Sync {
+    /// Hand one operation to the surface it is mounted on, and take back its whole answer.
+    fn execute(&self, op: busbar_contract::ids::OpClassId) -> PlaneAnswer;
+}
+
 // ── the leg a driver walks an arrival against ───────────────────────────────────────────────────
 
 /// WHAT ONE ARRIVAL IS WALKED AGAINST: a plane's units, for that arrival.
