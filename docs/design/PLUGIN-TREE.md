@@ -58,6 +58,19 @@ R7 renames it, registered as `control` by an explicit row in `qa/kind-isolation.
 (`busbar-auth-static`, `busbar-auth-admin-tokens`) stay auth, because a verifier answers a question
 about a credential and a control surface serves a route.
 
+**The two workflows, and the one place a wire is registered** (owner refinement, 2026-09-08). A PLANE
+follows the strict workflow every plane follows — the ten steps of §2 in order, complete, **never
+deviating**: a plane that skips a step or invents one is not a variant of the kind, it is a defect of
+it. A CONTROL surface follows the lesser workflow — `verify → admit → audit → answer` — for
+system-level functions, and has no other path. **Every kind uses transports**, and no kind of plugin
+declares or registers a wire of its own: `http` is declared and registered in exactly ONE spot,
+`busbar-transport-http`, and planes and control surfaces reach it only by declaring routes as data
+which that transport mounts generically. Three gate rows state this and are owed alongside Appendix
+G's six: **plane step-list completeness** (every plane declares and answers the whole step list, no
+deviation), **control path only** (a control crate touches no step outside verify/admit/audit/answer),
+and **single transport registration** (one registration site per wire; a second declaration of a wire
+already declared is RED wherever it appears).
+
 Reading of the table: the ceiling column and the testkit column are part of the kind's definition, not
 decoration. **A kind with no ceiling row and no battery is not a kind that can be gated**, and §6
 refuses to admit one.
