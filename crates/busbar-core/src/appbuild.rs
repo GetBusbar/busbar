@@ -39,7 +39,7 @@ use busbar_substrate::plane_host::{
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
 // `request_body_max_bytes`), each defaulting to its historical value at the config layer. They are
 // threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
-// is COUPLED to `request_body_max_bytes` via `crate::limits::translate_body_max_bytes`.
+// is COUPLED to `request_body_max_bytes` via `busbar_substrate::proxy::max_translate_body_bytes`.
 
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";

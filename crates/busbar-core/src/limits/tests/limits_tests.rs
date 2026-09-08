@@ -41,7 +41,10 @@ fn uninstalled_accessors_return_historical_defaults() {
     // this test can read the slot mid-swap and fail for a reason that has nothing to do with the
     // fallbacks it is asserting.
     let _lock = LIMITS_TEST_LOCK.blocking_lock();
-    assert_eq!(translate_body_max_bytes(), DEFAULT_REQUEST_BODY_MAX_BYTES);
+    assert_eq!(
+        busbar_substrate::proxy::max_translate_body_bytes(),
+        DEFAULT_REQUEST_BODY_MAX_BYTES
+    );
     assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
     assert_eq!(rate_sweep_interval(), DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
@@ -87,7 +90,10 @@ fn committed_guard_keeps_its_limits_live_after_the_guard_is_gone() {
         4_242,
         "a COMMITTED guard must not roll back when it drops: an accepted config's limits stay live"
     );
-    assert_eq!(translate_body_max_bytes(), 7 * 1024 * 1024);
+    assert_eq!(
+        busbar_substrate::proxy::max_translate_body_bytes(),
+        7 * 1024 * 1024
+    );
     assert_eq!(default_probe_interval_secs(), 37);
 }
 
@@ -115,7 +121,7 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
         let _rejected = InstallGuard::install(&distinctive(2_222, 1024, 3));
         assert_eq!(key_gauge_limit(), 2_222);
         assert_eq!(
-            translate_body_max_bytes(),
+            busbar_substrate::proxy::max_translate_body_bytes(),
             1024,
             "the candidate's limits must be live DURING the build — including the dangerous ones \
              the later validation step exists to reject"
@@ -134,7 +140,10 @@ fn uncommitted_guard_restores_the_previous_limits_exactly_not_the_defaults() {
         "guards the assertion above: if this ever equals the default, the test can no longer tell \
          a real restore from a reset-to-defaults"
     );
-    assert_eq!(translate_body_max_bytes(), 5 * 1024 * 1024);
+    assert_eq!(
+        busbar_substrate::proxy::max_translate_body_bytes(),
+        5 * 1024 * 1024
+    );
     assert_eq!(default_probe_interval_secs(), 17);
 }
 
@@ -161,7 +170,10 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
          struct behind"
     );
     assert_eq!(key_gauge_limit(), DEFAULT_KEY_GAUGE_LIMIT);
-    assert_eq!(translate_body_max_bytes(), DEFAULT_REQUEST_BODY_MAX_BYTES);
+    assert_eq!(
+        busbar_substrate::proxy::max_translate_body_bytes(),
+        DEFAULT_REQUEST_BODY_MAX_BYTES
+    );
     assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
 }
 
@@ -171,7 +183,7 @@ fn uncommitted_guard_restores_the_uninstalled_state_when_nothing_was_installed()
 /// `guard.prior` would pass with `Drop` deleted entirely — it would report success while proving
 /// nothing. So every read here goes through the module's accessors, which are the exact functions
 /// the deep call-stack use sites call per request/per connection (`auth`'s SigV4 body buffer and
-/// `tls`'s total-deadline derivation both call `translate_body_max_bytes()`; `metrics` calls
+/// `tls`'s total-deadline derivation both call `busbar_substrate::proxy::max_translate_body_bytes()`; `metrics` calls
 /// `key_gauge_limit()`), and they are read FROM ANOTHER THREAD — the guard is not on that thread's
 /// stack and is not reachable from it, so the only thing that can carry the restored value across is
 /// the process-global `INSTALLED` slot that a request would read.
@@ -189,9 +201,14 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     // test uses actually observes an install (so the post-drop read below is a real observation and
     // not a constant).
     let guard = InstallGuard::install(&distinctive(5_678, 1024, 2));
-    let during = std::thread::spawn(|| (key_gauge_limit(), translate_body_max_bytes()))
-        .join()
-        .expect("reader thread must not panic");
+    let during = std::thread::spawn(|| {
+        (
+            key_gauge_limit(),
+            busbar_substrate::proxy::max_translate_body_bytes(),
+        )
+    })
+    .join()
+    .expect("reader thread must not panic");
     assert_eq!(
         during,
         (5_678, 1024),
@@ -203,7 +220,7 @@ fn rollback_is_visible_on_the_live_read_path_from_another_thread() {
     let after = std::thread::spawn(|| {
         (
             key_gauge_limit(),
-            translate_body_max_bytes(),
+            busbar_substrate::proxy::max_translate_body_bytes(),
             default_probe_interval_secs(),
         )
     })

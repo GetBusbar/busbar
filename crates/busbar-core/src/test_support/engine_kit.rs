@@ -350,7 +350,7 @@ impl EngineApp for crate::state::App {
     fn router_with_handle(self: Arc<Self>) -> (axum::Router, Arc<dyn EngineHandle>) {
         let (router, handle) = crate::build_router_with_limits(
             self,
-            crate::limits::translate_body_max_bytes(),
+            busbar_substrate::proxy::max_translate_body_bytes(),
             crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
             crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
         );

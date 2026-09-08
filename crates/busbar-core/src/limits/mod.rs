@@ -21,8 +21,12 @@ pub(crate) mod admission;
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
     DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
+// The body-cap default is no longer read by any accessor on this page (the translate cap moved to
+// its own home); the tests below still assert the uninstalled fallback against it.
+#[cfg(test)]
+use crate::config::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
 // THE INSTALL SIDE lives with the shape it installs, in `busbar_substrate::config::limits`: the
 // process-global slot, the build-scoped rollback guard, and the test-only unconditional installer
@@ -44,15 +48,15 @@ fn get() -> Option<LimitsResolved> {
     busbar_substrate::config::limits::installed()
 }
 
-/// The egress translate-body cap (bytes). COUPLED to ingress `request_body_max_bytes`: one knob
-/// (`limits.request_body_max_bytes`) drives BOTH the inbound `DefaultBodyLimit` and this egress cap,
-/// so a body the gateway accepts inbound is always buffer-translatable on the cross-protocol egress
-/// path. When uninstalled, falls back to the historical 32 MiB.
-pub fn translate_body_max_bytes() -> usize {
-    get()
-        .map(|l| l.request_body_max_bytes)
-        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES)
-}
+// THE EGRESS TRANSLATE-BODY CAP is READ AT ITS OWN HOME, not here. It was a `pub fn
+// translate_body_max_bytes()` on this page reading `installed().request_body_max_bytes` with a
+// 32 MiB uninstalled fallback -- and `busbar_substrate::proxy::max_translate_body_bytes()` is the
+// same number, mirrored out of the same slot by `mirror_derived_caps` on EVERY mutation (install,
+// reload, `InstallGuard` rollback, the raw `set_installed` poke) with the same fallback constant,
+// `TRANSLATE_BODY_MAX_BYTES_DEFAULT`. The codec crates already read it there. Two names for one
+// process-global is one name too many while this crate is being emptied, and this is not a money
+// figure or an admission figure -- it is a transport body cap, so its home is the neutral values
+// leaf that already owns it, not a unit. This crate's four call sites now name that home.
 
 /// TLS handshake wall-clock bound (seconds), read per accepted connection in `tls::serve_one`.
 pub(crate) fn tls_handshake_timeout_secs() -> u64 {
@@ -112,14 +116,24 @@ pub(crate) fn usage_flush_interval_ms() -> u64 {
 }
 
 /// Process-wide active-probe interval fallback (seconds). Per-lane `health.interval_secs` overrides.
-pub fn default_probe_interval_secs() -> u64 {
+///
+/// `pub(crate)`: the PUBLIC form of this reading is the host seam
+/// `busbar_substrate::plane_host::PlaneHost::default_probe_interval_secs`, whose own doc already
+/// names itself "the neutral home" for it — the accessor cannot relocate by identity because it
+/// reads the process-global slot, so the seam is the home and this free fn is the one line behind
+/// it. Its single caller is this crate's `impl PlaneHost` (`plane_host/mod.rs`).
+pub(crate) fn default_probe_interval_secs() -> u64 {
     get()
         .map(|l| l.default_probe_interval_secs)
         .unwrap_or(DEFAULT_PROBE_INTERVAL_SECS)
 }
 
 /// Process-wide active-probe timeout fallback (seconds). Per-lane `health.timeout_secs` overrides.
-pub fn default_probe_timeout_secs() -> u64 {
+///
+/// `pub(crate)`, for the same reason as its interval twin above: the public form is
+/// `busbar_substrate::plane_host::PlaneHost::default_probe_timeout_secs`, and this crate's
+/// `impl PlaneHost` is its only caller.
+pub(crate) fn default_probe_timeout_secs() -> u64 {
     get()
         .map(|l| l.default_probe_timeout_secs)
         .unwrap_or(DEFAULT_PROBE_TIMEOUT_SECS)

@@ -1924,7 +1924,7 @@ routing:
 
 /// The body-size COUPLING: `limits.request_body_max_bytes` is the SINGLE knob; the resolved value
 /// the inbound `DefaultBodyLimit` uses IS the same value the egress translate-body cap reads
-/// (`crate::limits::translate_body_max_bytes` returns `request_body_max_bytes`). So an accepted
+/// (`busbar_substrate::proxy::max_translate_body_bytes` returns `request_body_max_bytes`). So an accepted
 /// request is always buffer-translatable on egress.
 #[test]
 fn test_request_body_size_couples_ingress_and_translate() {

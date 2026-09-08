@@ -303,7 +303,7 @@ async fn route_dispatches_to_handle_http_and_resolves_live_after_swap() {
     let app_a = app_with_table(table_a);
     let (data_router, _admin_router, handle) = crate::build_split_routers_with_limits(
         app_a,
-        crate::limits::translate_body_max_bytes(),
+        busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
@@ -402,7 +402,7 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
     app.plugin_routes = table;
     let (data_router, admin_router, _handle) = crate::build_split_routers_with_limits(
         Arc::new(app),
-        crate::limits::translate_body_max_bytes(),
+        busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
@@ -497,7 +497,7 @@ async fn head_dispatches_to_the_declared_get_route() {
     );
     let (data_router, _admin_router, _handle) = crate::build_split_routers_with_limits(
         app_with_table(table),
-        crate::limits::translate_body_max_bytes(),
+        busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );

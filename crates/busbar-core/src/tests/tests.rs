@@ -553,7 +553,7 @@ async fn split_admin_listener_no_double_exposure() {
         .build();
     let (data_router, admin_router, _handle) = build_split_routers_with_limits(
         app,
-        limits::translate_body_max_bytes(),
+        busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     );
@@ -1671,7 +1671,7 @@ fn secrets_block_rejects_alias_and_canonical_for_one_module() {
 /// after that is fallible (semantic validation, the plugin pre-flight, secret-ref resolution, the
 /// store open), and no error path used to put the previous values back. A `POST /config/apply` that
 /// returned 400 therefore mutated live, process-wide caps under the old `App` that kept serving:
-/// `limits::translate_body_max_bytes()` bounds both the SigV4 auth-middleware body buffer and the
+/// `busbar_substrate::proxy::max_translate_body_bytes()` bounds both the SigV4 auth-middleware body buffer and the
 /// cross-protocol translate buffer, so a rejected apply could silently start 401-ing larger Bedrock
 /// requests and failing larger cross-protocol completions.
 ///
@@ -1705,7 +1705,7 @@ fn a_rejected_config_leaves_no_limits_behind() {
         "the build failed for the expected reason: {err}"
     );
     assert_ne!(
-        crate::limits::translate_body_max_bytes(),
+        busbar_substrate::proxy::max_translate_body_bytes(),
         ILLEGAL,
         "the REJECTED config's limits are installed process-wide — an invalid apply changed the \
          live SigV4 and cross-protocol translate body caps"

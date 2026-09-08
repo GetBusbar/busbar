@@ -1649,7 +1649,7 @@ pub(crate) async fn auth_middleware(
         // the layer is absent or misconfigured (defense-in-depth).
         let (parts, body) = req.into_parts();
         let Ok(body_bytes) =
-            axum::body::to_bytes(body, crate::limits::translate_body_max_bytes()).await
+            axum::body::to_bytes(body, busbar_substrate::proxy::max_translate_body_bytes()).await
         else {
             return Err(unauthorized_response(&app, &path));
         };
