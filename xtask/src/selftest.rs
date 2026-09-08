@@ -397,7 +397,14 @@ fn check_vacuous_config_is_red(fails: &mut Vec<String>) {
         ("vacuous config: no crates/ directory", "no-crates-dir"),
     ] {
         let root = fixtures_dir().join(fixture);
-        let report = denylist::run(&root);
+        let Ok(cx) = crate::ctx::Ctx::at(&root, &root) else {
+            fails.push(format!(
+                "{label}: the fixture tree at {} would not open — the case proves nothing",
+                root.display()
+            ));
+            continue;
+        };
+        let report = denylist::run(&cx);
         if denylist::print_report(&report) {
             fails.push(format!(
                 "{label}: the run answered GREEN over {} crate(s) scanned and {} hit(s) — a \
