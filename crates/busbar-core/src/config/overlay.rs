@@ -1006,10 +1006,10 @@ fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
 /// decoy to occupy in the first place — the anti-pre-plant posture would add no protection here.
 pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
-    crate::durable::write_with(
+    busbar_api::durable::write_with(
         path,
         &json,
-        crate::durable::DurableOpts {
+        busbar_api::durable::DurableOpts {
             mode: Some(0o600),
             ..Default::default()
         },

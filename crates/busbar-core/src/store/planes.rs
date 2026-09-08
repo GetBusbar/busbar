@@ -81,15 +81,14 @@ pub struct PlaneBreakers {
     provisioned: bool,
 }
 
-/// The CEILING on a `tool_pools:`/`agent_pools:` member list, enforced at config validation
-/// (`config::check_failover_pool`) so an admission can never index past the plane store's fixed
-/// lane table. A constant rather than a config-derived size because [`PlaneBreakers`] is
-/// PROCESS-LIFETIME (learned reliability survives every apply) while pool sizes are per-generation
-/// config — a table sized to one generation's pools would need rebuilding, and rebuilding is
-/// exactly the state loss the process-lifetime rule exists to prevent. Eight is generous for the
-/// canonical case (one deployment, registered a handful of times); raising it is a one-line change
-/// plus the validation message.
-pub const MAX_POOL_MEMBERS: usize = 8;
+// The `tool_pools:`/`agent_pools:` member CEILING moved to `busbar_substrate::config::pools`
+// (1.6.0 R-config unblock 6), beside `CandidatePoolCfg` — the list it bounds. It is enforced at
+// CONFIG VALIDATION, so the config layer named `crate::store::MAX_POOL_MEMBERS` and carried an edge
+// into a busbar-core module for a bound on its own grammar. Re-exported here so this module's own
+// lane-table code and `plane_host::breaker` still name it unchanged; the value and its reasoning
+// are unchanged, and the reason it must be a constant rather than a config-derived size (this
+// table is PROCESS-LIFETIME, pool sizes are per-generation) is restated at the new home.
+pub use busbar_substrate::config::pools::MAX_POOL_MEMBERS;
 
 impl PlaneBreakers {
     /// The INERT handle for a config with NO plane content (no `tools:`, no `agents:`, no
