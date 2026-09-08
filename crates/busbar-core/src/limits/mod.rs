@@ -30,7 +30,9 @@ use crate::config::{
 // `busbar_core::limits::` paths — same statics, same guard type, same lock — so this crate's
 // composition root, its accessors below and its tests are untouched, and a plane crate's tests
 // install the same posture against the same slot without naming this crate.
-pub use busbar_substrate::config::limits::InstallGuard;
+// `pub(crate)`: the canonical public spelling is the substrate's own, and nothing outside
+// busbar-core reaches this path.
+pub(crate) use busbar_substrate::config::limits::InstallGuard;
 #[cfg(any(test, feature = "test-support"))]
 pub use busbar_substrate::config::limits::{install, LIMITS_TEST_LOCK};
 
