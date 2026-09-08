@@ -29,10 +29,10 @@ pub const XTASK_GATE_DIR: &str = "xtask/src/gates";
 /// following it would let the ledger vouch for its own citations: every ref would read as "invoked"
 /// because the ledger mentions it. A check whose evidence is its own claim has checked nothing.
 ///
-/// The Python file is gone; the entry stays because the rule is about the ROLE, not the file, and
-/// the same trap is one edit away from reopening. The Rust successor is safe by a second
-/// construction as well: `.rs` is deliberately not a runnable suffix, so no module is ever opened
-/// looking for further invocations.
+/// Both spellings are named: the Python is still on disk until the deletion commit, and its Rust
+/// successor carries the same role. The successor is safe by a second construction as well: `.rs`
+/// is deliberately not a runnable suffix, so no module is ever opened looking for further
+/// invocations.
 const NOT_AN_INVOKER: [&str; 2] = [
     "scripts/design-bindings.py",
     "xtask/src/gates/design_bindings",

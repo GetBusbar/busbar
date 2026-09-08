@@ -84,10 +84,6 @@ reason = "compares the two recording trees record.sh produces. With no recording
 script = "testing/llm-conformance/run.sh"
 reason = "replays the candidate recording against the vendor specs pinned in spec-digests.tsv, which are fetched over the network and are not in the repository. Its harness logic is proven here by testing/llm-conformance/selftest.sh, which runs."
 
-[[skip]]
-script = "scripts/construction-gate.sh"
-reason = "RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceilings) while the construction work it measures is in flight; ci.yml runs its --check report-only (continue-on-error, verdict printed by the umbrella, not counted). Running it here would red the whole local gate on a fact CI does not score. Its --selftest DOES run here (the rule above). Run 'scripts/construction-gate.sh --check' directly for the report; DELETE this entry when the CI job is flipped to blocking."
-
 # The invocations discovery MUST find, one per shape the pattern has to keep: a plain .sh, two
 # .py, a .mjs behind a `node ` prefix (the extension set and the interpreter list, pinned by
 # example), and four real testing/ paths — discovery could not see a testing/ root at all until
