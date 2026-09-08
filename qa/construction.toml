@@ -141,6 +141,12 @@ from = 1
 to = 3
 because = """DECLARED, and the declaration is the same sentence the diff is: `[[cell]] busbar-contract x kernel` -- the number of times a crate of kind `contract` spells `busbar-kernel` -- 1 -> 3. The two new spellings are PROSE and nothing else: `src/kinds.rs`'s doc comment on `RecordSink` and `tests/record_sink.rs`'s module header both say that the only trait naming the narrow sink USED TO live in `busbar-kernel`, a crate a store-kind plugin may not name, which is the entire reason these three verbs are declared in the contract instead. busbar-contract gains no dependency, no import and no type from busbar-kernel in this diff; `kind-isolation:deps` and `:build-inputs` are untouched and PASS. The census counts spellings rather than edges, which is what makes it worth reading, so the row is moved by hand in the commit that moves it. It falls back to 1 the day the face is old enough that its doc no longer has to say where the trait came from."""
 
+[gate.ceiling_raises."cell.211.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 3
+because = """DECLARED: `[[cell]] busbar-store-memory x kernel` 2 -> 3. The one new spelling is PROSE -- `tests/record_conformance.rs`'s cell header saying WHY this backend is driven through `&dyn RecordSink` rather than through its own inherent methods: the kernel runs a record leg into a sink and never into a store, and a store-kind plugin may not name `busbar-kernel`. That sentence is the cell's whole reason for existing. The crate gains no dependency, no import and no type from busbar-kernel here; `kind-isolation:deps` and `:build-inputs` are untouched. The number is moved in the commit that moves it rather than left as slack, and it falls to 2 the day the cell's header no longer has to explain the direction."""
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

@@ -2364,7 +2364,7 @@ count = "5"
 [[cell]]
 crate = "busbar-store-memory"
 kind = "kernel"
-count = "2"
+count = "3"
 
 [[cell]]
 crate = "busbar-store-memory"
