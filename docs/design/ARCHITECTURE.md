@@ -979,6 +979,11 @@ every mutating verb, GET for the two read-only verbs (`verify`, `plane_facts`). 
 `POST chain-break` · `POST store-restore` · `POST reseal-epoch-floor` ·
 `POST set-overdraft-ceiling` · `POST set-dispute-max-age` · `POST commit-upgrade` ·
 `POST resolve-dispute` · `POST resolve-slice` · `POST adjust`; and `POST amend-rate-history`.
+**Per-verb contracts** — request and response schema with exact keys and types, every refusal as
+(status, error code, 1.5.5-template message), scope, idempotency and replay semantics, the audit
+record and journal class written, the unit that executes it, and the cells owed — are written out
+one verb at a time in `docs/design/admin-new-verbs-contract.md`, whose header records which of its
+rows this amendment voids.
 
 The
 15 operations the dev tree added to the admin API since the tag are separate new surface with their own

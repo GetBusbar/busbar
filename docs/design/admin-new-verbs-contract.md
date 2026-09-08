@@ -1,8 +1,22 @@
-# busbar 1.6.0 — the contract of the 17 new admin verbs
+# busbar 1.6.0 — the contract of the new admin verbs
 
 **Status: DESIGN, for owner review. No handler is implemented against this document yet.**
 
-Base: `keep-admin-cut0` (`02754df98`). Branch `admin-17-verbs`.
+> **SUPERSEDED IN PART, 2026-09-08 (owner ruling; `ARCHITECTURE.md` §4.7 is the rule).** The admin
+> API is DUMB: one admin tier, and policy — roles, who may call what, whether a change wants a second
+> pair of eyes — lives in the calling application. **Five of the seventeen leave 1.6.0**:
+> `set_operator_key`, `set_escrow`, `set_dual_control`, `approve` and `export_keyset`; their rows
+> below, and every row's dual-control, pending-202, escrow, irreducible-set and operator-signature
+> clause, are void. **Twelve remain** — `verify`, `plane_facts`, `plane_record_write`, `chain_break`,
+> `store_restore`, `reseal_epoch_floor`, `set_overdraft_ceiling`, `set_dispute_max_age`,
+> `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust` — plus `amend_rate_history`, and
+> each is a plain scoped verb whose authorization is the per-verb allow-list on the admin token
+> (`verbs: [ … ]` or `verbs: "*"`; `read-only` and `full` remain the 1.5.5 shorthands). The replay
+> cache below stays as a MECHANISM keyed `(actor, verb, idempotency-key)`, never as a control.
+> What survives the amendment intact, and is why this document is kept: each remaining verb's method
+> and path, scope, request and response schema with exact keys and types, every refusal as
+> (status, error code, message in the 1.5.5 template style), the audit record and journal class it
+> writes, the unit that executes it, the view type where a figure appears, and the cells it owes.
 
 CG-56 is decided. `ARCHITECTURE.md` §4.7 (:957–962) names the HTTP binding of each of the seventeen,
 and Appendix A (:1513–1514) ratifies the rule. The seventeen are therefore no longer "written against
