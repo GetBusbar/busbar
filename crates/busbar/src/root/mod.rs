@@ -77,6 +77,8 @@ pub mod transports;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a;
 #[cfg(feature = "root-a2a")]
+pub mod units_a2a_boot;
+#[cfg(feature = "root-a2a")]
 pub mod units_a2a_leg;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a_mount;
