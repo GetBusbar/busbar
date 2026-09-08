@@ -113,12 +113,12 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
-# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
-# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
-# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
-# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
-# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
+# THE ENTRIES THAT STAND ON THIS BRANCH:
+
+[gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]
+from = 47
+to = 48
+because = """A SIDEWAYS MOVE, re-pinned on both sides in the commit that makes it, which is exactly the manoeuvre this rule's own header paragraph names: `install_protocols_with_path_ingress` leaves `busbar_core::proto::registry` and arrives at `busbar_substrate::proto`, so the root's busbar_core figure falls 27 -> 26 in this same diff and its busbar_substrate figure rises 47 -> 48. NET IS ZERO, and net is what the retirement measures: `rules.legacy-reach.ceiling` stays 91 and the `legacy-reach` total row stays PASS. Nothing new is reached -- one symbol changed which retiring crate holds it -- and core's copy plus the two re-exports that existed only to serve it (`install_protocols`, `first_path_model_without_arrival`) are DELETED rather than aliased."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -994,7 +994,7 @@ ceiling = 91
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 27
+figure = 26
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
@@ -1015,7 +1015,7 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+figure = 48
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]
