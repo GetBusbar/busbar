@@ -142,8 +142,8 @@ because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- 
 
 [gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
 from = 14606
-to = 15020
-because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: all fourteen busbar-unit-* crates together 14606 -> 15020, +414, which is the fourteen impl blocks and nothing else; section 1.1's unit-* ceiling is 45k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+to = 15019
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: all fourteen busbar-unit-* crates together 14606 -> 15019, +413: the fourteen impl blocks, less the one line busbar-unit-cost's own `impl Unit for CostUnit` gives back where this commit re-expresses it against the dated card API (`price_at_card`) instead of `PinnedCard`; section 1.1's unit-* ceiling is 45k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 [gate.ceiling_raises."rules.loc-ceilings.verbs_ceiling"]
 from = 1428
@@ -152,8 +152,8 @@ because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- 
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23465
-to = 23931
-because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: the union 23465 -> 23931, which is the sum of the three rises above plus the caps/contract face already declared; section 1.1's union ceiling is 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+to = 23930
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: the union 23465 -> 23930, the sum of the rises above plus the caps/contract face already declared; section 1.1's union ceiling is 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -384,10 +384,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3502
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 15020
+unit_total_ceiling = 15019
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1478
-union_ceiling = 23931
+union_ceiling = 23930
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

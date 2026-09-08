@@ -4,23 +4,25 @@
 //! The kind's ONE entry: `impl Unit for CostUnit`, in the exemplar's file position.
 
 use busbar_caps::step::Admit;
-use busbar_caps::{Unit, UnitToken, Usage};
+use busbar_caps::{Unit, UnitToken};
 
-use crate::posting::{price, Posting};
-use crate::rate::PinnedCard;
+use crate::currency::CurrencyCode;
+use crate::history::HistorySeq;
+use crate::posting::{price_at_card, Posting, Priced, Unpriceable};
+use crate::rate::RateCard;
 
 /// Everything the loop hands this unit inside the admit step.
 pub struct PriceInput<'a> {
+    /// The history sequence of the card pinned for the length of the decision — carried so a
+    /// refusal names the card that refused rather than "some card".
+    pub card_seq: HistorySeq,
     /// The rate card, pinned for the length of the decision.
-    pub pinned: &'a PinnedCard<'a>,
-    /// The lane being priced.
-    pub lane: &'a str,
-    /// What the unit used.
-    pub usage: &'a Usage,
-    /// How many fees this unit draws.
-    pub fee_count: u64,
-    /// The tier, in basis points.
-    pub tier_bp: u32,
+    pub card: &'a RateCard,
+    /// The sealed quantities being priced. The lane, the instant and the fee count are all its
+    /// own fields, so nothing is passed twice and nothing can disagree.
+    pub posting: &'a Posting,
+    /// The currency the answer is asked in.
+    pub currency: CurrencyCode,
 }
 
 /// The cost unit, as the thing the loop is handed.
@@ -39,16 +41,14 @@ pub struct CostUnit;
 impl Unit for CostUnit {
     type Step = Admit;
     type Input<'a> = PriceInput<'a>;
-    type Answer<'a> = Posting;
+    type Answer<'a> = Result<Priced, Unpriceable>;
     const OWNS_ITS_STEP: bool = false;
 
-    fn decide<'a>(&'a mut self, _token: &'a UnitToken<Admit>, input: PriceInput<'a>) -> Posting {
-        price(
-            input.pinned,
-            input.lane,
-            input.usage,
-            input.fee_count,
-            input.tier_bp,
-        )
+    fn decide<'a>(
+        &'a mut self,
+        _token: &'a UnitToken<Admit>,
+        input: PriceInput<'a>,
+    ) -> Result<Priced, Unpriceable> {
+        price_at_card(input.card_seq, input.card, input.posting, input.currency)
     }
 }
