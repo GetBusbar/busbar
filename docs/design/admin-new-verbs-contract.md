@@ -18,8 +18,8 @@
 > (status, error code, message in the 1.5.5 template style), the audit record and journal class it
 > writes, the unit that executes it, the view type where a figure appears, and the cells it owes.
 
-CG-56 is decided. `ARCHITECTURE.md` §4.7 (:957–962) names the HTTP binding of each of the seventeen,
-and Appendix A (:1513–1514) ratifies the rule. The seventeen are therefore no longer "written against
+CG-56 is decided. `ARCHITECTURE.md` §4.7 names the HTTP binding of each verb under
+**HTTP binding of the twelve**, and Appendix A ratifies the rule. The seventeen are therefore no longer "written against
 a guess": every row below derives its method and path from §4.7's own list, and everything §4.7 does
 not say is marked **ARCHITECTURE silent; proposed: …** so the owner rules once, in the open, rather
 than an implementer deciding it in a handler.
@@ -128,7 +128,7 @@ table row flips what that test asks, which is the intended coupling.
 Same cause, same fix, and they are path literals rather than methods. §4.7's rule is
 `<kebab-case-verb>` — the **whole verb name**, `set_` prefix and all.
 
-| verb | §4.7 (:957–962) | plane table today | file:line |
+| verb | §4.7's binding list | plane table today | file:line |
 |---|---|---|---|
 | `set_operator_key` | `POST /api/v1/admin/set-operator-key` | `/api/v1/admin/operator-key` | `verbs.rs:54` |
 | `set_escrow` | `POST /api/v1/admin/set-escrow` | `/api/v1/admin/escrow` | `verbs.rs:60` |
