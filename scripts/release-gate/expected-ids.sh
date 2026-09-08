@@ -32,6 +32,25 @@ emit() {  # emit <id> <description>
 # rather than one composite "the artifact is fine" because a composite hides which property broke,
 # and because #52 broke exactly one of the six (pubkey/plugin) while the other four were perfect.
 
+# THE TARGET LIST IS READ ONCE, AND A READ THAT FAILED IS NOT AN EMPTY LIST.
+#
+# `published_targets` shells out to jq. Inside a process substitution its failure is invisible: the
+# exit status is not the loop's and `set -e` never sees it, so a jq that failed for ANY reason —
+# contract absent, malformed after an edit, `.targets[]` renamed, jq not installed — produces an
+# empty stream, the loop body never runs, every per-target id vanishes, and this script exits 0 with
+# a perfectly-formatted short answer. gate.sh checks only the exit code, so it accepts it; every
+# per-target check that DID report lands in `unexpected` (a warning), and every one that did NOT is
+# owed by nobody. Silent, green, and in the direction that matters.
+#
+# So the list is captured first and a non-zero exit is fatal here, where it can still be said out
+# loud, rather than inferred later from a list nobody can tell is incomplete. This decides nothing
+# about WHICH ids are owed — the staged-record condition below is untouched — only that the answer
+# is derived from a read that actually succeeded.
+if ! TARGETS="$(published_targets)"; then
+  echo "::error title=release gate::expected-ids: could not read the published targets out of ${CONTRACT} (jq exited non-zero). The per-target ids cannot be derived, so the list this script would print is SHORT and every 'did not run' verdict derived from it would be vacuous. Refusing to print a partial contract. Fix: check ${CONTRACT} parses as JSON and carries .targets[] with published==true entries, and that jq is installed." >&2
+  exit 1
+fi
+
 # THE STAGED-COMPARISON IDS ARE OWED EXACTLY WHEN A RECORD WAS SUPPLIED, AND THAT IS NOT A LOOPHOLE.
 #
 # `sha256:<target>`, `docker:staged-digest` and `docker:staged-armv8-digest` diff the PUBLISHED
@@ -56,7 +75,7 @@ while read -r t; do
   emit "binfmt:${t}"  "the shipped binary is the declared architecture and object format"
   emit "pubkey:${t}"  "the shipped binary embeds the release public key (#52)"
   emit "plugin:${t}"  "a REAL signed first-party plugin loads as first-party/ready (#52, functionally)"
-done < <(published_targets)
+done <<< "$TARGETS"
 
 # ── Release-level ───────────────────────────────────────────────────────────────────────────────
 emit "release:exists"         "the GitHub Release for the tag exists and is not a draft"
