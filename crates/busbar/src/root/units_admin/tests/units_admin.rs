@@ -133,6 +133,26 @@ async fn a_walk_dropped_before_its_answer_still_releases_the_drain_it_asked_for(
         "the drop released the ask, so there is nothing left for a later exit to release — \
          which is the leak: without the guard this would still be standing"
     );
+
+    // CONTROL: `release()` returning `false` above cannot, on its own, be told apart from "this
+    // unit never asked for a drain at all" — both read identically. A unit that asks for one and
+    // is released through the ordinary path (no early drop in between) must report `true` the
+    // first time and `false` the second, which is what proves `release()` observes a real event
+    // rather than merely a default.
+    let asked_unit = a_fresh_unit();
+    busbar_core::admin::restart::UnitDrain::of_unit(asked_unit)
+        .scoping(async {
+            busbar_core::admin::restart::begin_drain();
+        })
+        .await;
+    assert!(
+        busbar_core::admin::restart::UnitDrain::of_unit(asked_unit).release(),
+        "a unit that asked for a drain must report release() == true when it is released"
+    );
+    assert!(
+        !busbar_core::admin::restart::UnitDrain::of_unit(asked_unit).release(),
+        "and a second release of the same unit finds nothing left to release"
+    );
 }
 
 /// A body this wrap cannot read is refused, and one too big for the operator's cap is not read
