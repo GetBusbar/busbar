@@ -126,6 +126,26 @@ impl Kernel {
         TransportKeyToken::mint(&self.seal)
     }
 
+    /// The trust unit's token, as the composition root lends it to a leg it assembles.
+    ///
+    /// The loop already mints one of these for the length of the Verify step, and that is where a
+    /// destination is SEALED. What this is for is the other half of the same seam: a leg whose
+    /// bindings are assembled BEFORE the loop starts — because the bindings carry the facts an
+    /// arrival decided — has a `trust_token` field the Verify step reads, and until now the only
+    /// thing in the tree that could fill it was a test spelling `KernelSeal::acquire_for_kernel()`.
+    /// A composition root that had to spell the seal to compose a plane is a composition root that
+    /// can mint anything, which is the one property the seal exists to deny it.
+    ///
+    /// It widens nothing. The token seals a `VerifiedDestination` and does nothing else, and the
+    /// Verify step is the only step that takes one — so a leg holding one can say where a unit may
+    /// go and can still say nothing about who it is, what it costs or how it ended.
+    ///
+    /// Kept beside `admit_token` and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn trust_token(&self) -> TrustToken {
+        TrustToken::mint(&self.seal)
+    }
+
     /// The verbs unit's token, as the composition root lends it.
     ///
     /// The second token minted outside the loop, and for the same reason as the first: a kernel
