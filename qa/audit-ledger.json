@@ -3520,17 +3520,18 @@
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
-   "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
-   "round": 2,
+   "tree_hash": "b84282b4d5d7eb63734a051aced041e8affae6fd809e91b1ead454a7be455a6b",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 19,
-    "MEDIUM": 34,
-    "LOW": 24
+    "HIGH": 5,
+    "MEDIUM": 10,
+    "LOW": 7,
+    "NIT": 1
    },
-   "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree",
-   "auditor": "opus-xtask-auditor-a",
+   "report": "ten lens finders at this hash; 35 raw -> 33 distinct -> 22 confirmed (5 HIGH), 15 percent reject rate, 0 quote mismatches; a mistyped gate flag is ignored so a release arm reports green having checked less; three walks read a failed or empty scan as a clean tree; two sites abort the process where the design says refuse; a corrupt register makes ledger sync overwrite the audit history on exit 0; four defects are repeats from earlier rounds; NOT CONVERGED, no lens retired, the four largest gates unread",
+   "auditor": "opus-gates-auditor-c",
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
@@ -3561,6 +3562,20 @@
       "LOW": 24
      },
      "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-gates-auditor-c",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "b84282b4d5d7eb63734a051aced041e8affae6fd809e91b1ead454a7be455a6b",
+     "counts": {
+      "HIGH": 5,
+      "MEDIUM": 10,
+      "LOW": 7,
+      "NIT": 1
+     },
+     "report": "ten lens finders at this hash; 35 raw -> 33 distinct -> 22 confirmed (5 HIGH), 15 percent reject rate, 0 quote mismatches; a mistyped gate flag is ignored so a release arm reports green having checked less; three walks read a failed or empty scan as a clean tree; two sites abort the process where the design says refuse; a corrupt register makes ledger sync overwrite the audit history on exit 0; four defects are repeats from earlier rounds; NOT CONVERGED, no lens retired, the four largest gates unread"
     }
    ]
   },
