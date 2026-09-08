@@ -8624,7 +8624,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: unknown overlay section (expected one of `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`, `tools`, `agents`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
+            "description": "`invalid_request`: unknown overlay section (expected `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`, `tools`, or `agents`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
           },
           "401": {
             "content": {

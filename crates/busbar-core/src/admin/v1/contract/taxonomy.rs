@@ -237,10 +237,14 @@ impl Cond {
                 // DERIVED, never restated: the hand-written four-name list here outlived the
                 // arrival of the `named_maps` overlay section, so the API's own error taxonomy
                 // asserted `export` was not a section while it was becoming one.
+                //
+                // Owner ruling F-013 (2026-09-07): 1.6.0 keeps the 1.5.5 message WORDING, so the
+                // documented condition prose renders through the same `valid_names_oxford` the
+                // wire response uses — never `expected one of`, never restated by hand here.
                 static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
                     format!(
-                        "unknown overlay section (expected one of {})",
-                        crate::config::overlay::OverlaySection::valid_names()
+                        "unknown overlay section (expected {})",
+                        crate::config::overlay::OverlaySection::valid_names_oxford()
                     )
                 });
                 PROSE.as_str()
