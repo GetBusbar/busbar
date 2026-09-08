@@ -235,17 +235,21 @@ tier   = "live-mock"
 # figures, which is the right strength for a measurement instrument — a wall-clock number on a shared
 # CI runner is not a thing to fail a release on.
 #
-# OWED — the asserted twin this segment used to invoke is gone. `plane-abi-spike`'s
-# `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate` asserted the
-# vtable-hop wall-clock budget and the no-allocation property of the POD host-call paths; the crate
-# was deleted per docs/design/PLUGIN-TREE.md §7 (it was held to no plugin-kind gate row and its
-# fixtures could not reach the Deny/Throttle branches). Nothing asserts those two properties on the
-# PRODUCTION vtable (crates/busbar-plugin/src/hot/host.rs) today. Re-land the assertion against the
-# production seam rather than against a spike copy of it.
+# RE-LANDED (was OWED): `plane-abi-spike`'s asserted twin,
+# `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate`, is back — now
+# against the PRODUCTION vtable/POD types (`crates/busbar-plugin/src/hot/host.rs`,
+# `crates/busbar-plugin/src/hot/pod.rs`), not a spike copy of them. It asserts the vtable-hop
+# fn-pointer wall-clock budget and the no-allocation property of the POD host-call paths, using this
+# crate's own per-thread `CountingAlloc` (`crates/busbar-plugin/src/lib.rs`, `#[cfg(test)]`-only —
+# the same idiom as `busbar-llm`'s `CountingJemalloc` alloc gates). `--ignored` because it measures
+# wall clock and a per-thread allocation count, both only meaningful alone; `--test-threads=1` for
+# the same reason. `--release` because the budget it checks (1000ns/call) is calibrated against an
+# optimized build — an unoptimized vtable hop is dominated by missing inlining that has nothing to
+# do with the ABI cost being measured, and would flake this gate on debug noise.
 #
 # WHY THIS TIER. Compiling criterion for the bench targets is minutes of build the per-push suite
 # should not be paying; that is the qa cadence, not the per-push one.
-run    = "cargo bench --workspace --no-run"
+run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-plugin --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate"
 
 [[segment]]
 id     = "core-data-plane"
