@@ -45,6 +45,7 @@
 
 pub mod claims;
 pub mod codec;
+pub mod envelope;
 pub mod generated;
 pub mod meta;
 pub mod refusal;

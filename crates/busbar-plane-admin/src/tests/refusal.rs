@@ -47,7 +47,11 @@ fn the_envelope_survives_a_message_a_caller_wrote() {
             .get("error")
             .and_then(serde_json::Value::as_object)
             .expect("the envelope's one key");
-        assert_eq!(error.len(), 2, "the envelope is code and message and nothing else");
+        assert_eq!(
+            error.len(),
+            2,
+            "the envelope is code and message and nothing else"
+        );
         assert_eq!(error["code"], "invalid_request");
         assert_eq!(
             error["message"].as_str(),
