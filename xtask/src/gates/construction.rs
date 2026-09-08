@@ -83,6 +83,20 @@ const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
     ),
 ];
 
+/// The two halves of the `forbid-unsafe` rule: the ceilings-file key listing the kinds each holds,
+/// the key listing the tracked debt it ratchets, and the row-id prefix it emits under.
+///
+/// A RATCHETED ROW IS PASS BY CONSTRUCTION, and that is why this table is shared with
+/// [`ConstructionGate::informational_ids`]. The rule measures `1` for a crate missing the attribute
+/// and `0` for one carrying it, against a ceiling of `1` for every crate on `known_missing_*` — so
+/// no plant can drive such a row red, and demanding a RED proof for it would be demanding a proof
+/// of something that is not true. The self-test proves the ratchet instead: under the SAME plant
+/// that reds every held crate of the kind, the tracked ones stay green.
+pub const UNSAFE_HALVES: [(&str, &str, &str); 2] = [
+    ("forbid_kinds", "known_missing_forbid", "forbid-unsafe"),
+    ("deny_kinds", "known_missing_deny", "forbid-unsafe-deny"),
+];
+
 pub struct ConstructionGate;
 
 impl ConstructionGate {
@@ -114,8 +128,39 @@ impl ConstructionGate {
                     .into_iter()
                     .map(|(k, _)| format!("legacy-reach:{k}")),
             );
+            for (kinds_key, missing_key, prefix) in UNSAFE_HALVES {
+                let (_, tracked) = ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key);
+                ids.extend(tracked.iter().map(|c| format!("{prefix}:{c}")));
+            }
         }
         ids
+    }
+
+    /// Split one half of the `forbid-unsafe` rule's crates into the ones the rule HOLDS to the
+    /// attribute and the ones its ratchet TRACKS, both derived — the kinds from
+    /// `[gate.plugin_kinds]`, the debt from the rule's own `known_missing_*` list, the membership
+    /// from the crate directories on disk. Nothing here is a list maintained beside the rule, so
+    /// closing a debt by deleting a name from the ceilings file moves that crate back under the
+    /// rule and back under the self-test's RED proof in the same edit.
+    pub fn unsafe_split(
+        cx: &Ctx,
+        cfg: &Cfg,
+        kinds_key: &str,
+        missing_key: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        let Ok(rule) = cfg.rule("forbid-unsafe") else {
+            return (Vec::new(), Vec::new());
+        };
+        let tracked_names = rule.list_of(missing_key);
+        let mut here: Vec<String> = rule
+            .list_of(kinds_key)
+            .iter()
+            .flat_map(|k| dirs_for_globs(cx, &cfg.kind_globs(k)))
+            .map(|d| crate_name_of_dir(&d))
+            .collect();
+        here.sort();
+        here.dedup();
+        here.into_iter().partition(|c| !tracked_names.contains(c))
     }
 
     fn ids(cx: &Ctx) -> Result<Vec<String>, String> {
