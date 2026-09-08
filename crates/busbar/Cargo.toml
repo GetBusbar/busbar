@@ -241,6 +241,15 @@ root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
 # neutrality cells answering the same on both legs. The leg stays switchable — off, it costs one
 # unbuilt module and nothing else.
 root-a2a = []
+# THE A2A PLANE'S OWN PRODUCER, DEFAULT OFF. Not a third A2A switch over the protocol: `plane-a2a`
+# decides whether this binary speaks A2A and `root-a2a` decides whether the root's leg is built. This
+# one decides whether the leg has a PRODUCER — whether `A2aDraft` can be assembled from what the
+# plane's decode step said about a real arrival, rather than only from a test's literal. Default-off
+# because it is the first half of a cut and not the whole of one: the producer is built and checked
+# against the plane's own op-keyed tables while the serving path stays untouched, which is what makes
+# the feature-off binary byte-identical by construction rather than by measurement. It carries no
+# config key, no environment variable and no boot line; off, it costs one uncompiled impl block.
+root-a2a-serve = []
 # THE MCP PLANE'S KERNEL BINDINGS, DEFAULT ON. Not a second MCP switch: `plane-mcp` above still
 # decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
 # bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
