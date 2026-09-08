@@ -1292,3 +1292,48 @@ fn a_posting_settles_the_priced_amount_and_not_the_sum_of_the_quantities() {
         "settling above the reservation is an overdraft even when the hold's own counter is quiet"
     );
 }
+
+/// Every value in this crate whose loss is money carries `#[must_use]`.
+///
+/// The crate's own honesty table lists `#[must_use]` as one of the four partial mechanisms standing
+/// in for linear types: Rust cannot say "this value must be consumed by exactly this function", so
+/// the attribute is what catches the accident. A carrier without one is a hole in that mechanism the
+/// size of one type, and the way it goes missing is that a new carrier is written next to seven that
+/// have it and nobody notices the eighth does not. `Posted` -- the proof a hold was settled, and the
+/// value the record is written from -- was that eighth.
+///
+/// The scan is over this crate's own sources rather than over a list, so a carrier added tomorrow is
+/// asked the same question.
+#[test]
+fn every_carrier_whose_loss_is_money_must_be_used() {
+    const SOURCES: [(&str, &str); 2] = [
+        ("hold.rs", include_str!("hold.rs")),
+        ("decision.rs", include_str!("decision.rs")),
+    ];
+    // The carriers: a value whose existence is a permission, or whose loss is a figure nobody can
+    // reconstruct. Spelled out, because "every public type" would sweep in the plain data beside
+    // them and say nothing about either.
+    const CARRIERS: [&str; 5] = [
+        "pub struct Hold {",
+        "pub struct HoldAccrual {",
+        "pub struct AdmitRejected {",
+        "pub struct Posted {",
+        "pub enum Admission {",
+    ];
+
+    for carrier in CARRIERS {
+        let (file, before) = SOURCES
+            .iter()
+            .find_map(|(name, body)| body.split_once(carrier).map(|(before, _)| (name, before)))
+            .unwrap_or_else(|| panic!("{carrier} is not in this crate any more"));
+        // The attributes of a declaration are the lines between it and the blank line above it.
+        let attributes = before
+            .rsplit("\n\n")
+            .next()
+            .expect("the declaration has something above it");
+        assert!(
+            attributes.contains("#[must_use"),
+            "{carrier} in {file} carries no #[must_use]: dropping one compiles silently"
+        );
+    }
+}
