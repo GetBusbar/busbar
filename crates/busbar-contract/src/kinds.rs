@@ -298,6 +298,50 @@ impl fmt::Display for StoreError {
 
 impl std::error::Error for StoreError {}
 
+/// WHERE A PLANE'S KERNEL-HELD DURABLE RECORDS GO: the three verbs, and nothing else.
+///
+/// The narrow half of [`Store`], standing on its own because it is bound on its own. A record leg
+/// is run by the kernel and lands in these three verbs; the backend that answers them is a
+/// store-kind plugin, and a store-kind plugin may not name `busbar-kernel`. So the trait that names
+/// the sink has to live HERE, in the contract both halves are allowed to name — a store implements
+/// it, and the composition root hands it to the kernel's runner. A second copy of these three verbs
+/// declared anywhere else would be a second protocol, and the node would have two answers to "what
+/// is a record sink".
+///
+/// [`Store`] declares them by BEING one, so a full store backend is a record sink without saying so
+/// twice and without the node re-wrapping it.
+///
+/// # Errors
+/// Every method returns [`StoreError`] on failure; see the enum for what each variant means.
+pub trait RecordSink: Send + Sync {
+    /// Write one of a plane's kernel-held durable records.
+    fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), StoreError>;
+
+    /// Read one of a plane's kernel-held durable records.
+    fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, StoreError>;
+
+    /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
+    ///
+    /// `limit` 0 means NOTHING, not everything: a caller that wants the whole prefix names a
+    /// number, and reading zero as unbounded would make a miscomputed bound the one case that
+    /// returns the entire schema.
+    fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
+}
+
 /// The durable store behind the journal.
 ///
 /// Every method here runs on a bounded blocking pool under a per-kind deadline, and a call that
@@ -310,7 +354,7 @@ impl std::error::Error for StoreError {}
 /// Every method returns [`StoreError`] on failure (unavailable, timeout, a fencing race, a gap
 /// between what was written and what read back, or an outright rejection); see the enum for what
 /// each variant means. A method's own doc only adds words when its failure mode is distinctive.
-pub trait Store: Plugin + Send + Sync + 'static {
+pub trait Store: Plugin + RecordSink + Send + Sync + 'static {
     /// Append a batch of journal records.
     fn append_batch(&self, stream: &str, records: &[RecordBytes]) -> Result<Head, StoreError>;
 
@@ -364,28 +408,10 @@ pub trait Store: Plugin + Send + Sync + 'static {
     fn sessions_for(&self, principal: &PrincipalId)
         -> Result<Vec<(SessionId, String)>, StoreError>;
 
-    /// Write one of a plane's kernel-held durable records.
-    fn record_put(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-        value: &RecordBytes,
-    ) -> Result<(), StoreError>;
-
-    /// Read one of a plane's kernel-held durable records.
-    fn record_get(
-        &self,
-        schema: RecordSchemaId,
-        key: &[u8],
-    ) -> Result<Option<RecordBytes>, StoreError>;
-
-    /// Walk a plane's records under a prefix.
-    fn record_scan(
-        &self,
-        schema: RecordSchemaId,
-        prefix: &[u8],
-        limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, StoreError>;
+    // The record half — `record_put`, `record_get`, `record_scan` — is [`RecordSink`] above, which
+    // this trait requires. Declared there and not here because the node binds it there: the kernel
+    // runs a record leg into a sink, and the sink it is handed must be nameable by a store-kind
+    // plugin, which may not name the kernel.
 
     /// Read the previous release's own cells, for a migrating deployment.
     fn legacy_cells_read(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError>;

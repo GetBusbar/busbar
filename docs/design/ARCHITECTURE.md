@@ -74,7 +74,10 @@ them). Each axis is blind to the other two; only the kernel composes them.
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
   (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  `surface-ceiling:contract+caps`. The pair is where each plugin kind's ONE entry lives, and
+  `busbar_contract::RecordSink` — the three verbs a plane's kernel-held durable records land in,
+  standing on their own because they are bound on their own and a store-kind plugin may not name
+  `busbar-kernel` — is one of them. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
