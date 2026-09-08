@@ -23,4 +23,9 @@ busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-contract-transport = { path = "../busbar-contract-transport" }
 
+[dev-dependencies]
+# The kind's shared `Unit` conformance battery. A test edge, not a kind edge: the kind-isolation
+# gate scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["unit"] }
+
 # Temporary standalone root while the workspace members land in parallel.
