@@ -384,13 +384,13 @@ pub(crate) fn base_data_router(
         // confines that bypass to this router: the admin plane, which does not mount the route,
         // does not inherit its bypass.
         .route(
-            crate::auth::exchange::AUTH_TOKEN_PATH,
+            busbar_unit_auth::exchange::AUTH_TOKEN_PATH,
             RouteMethod::Get,
             RouteAuth::None,
             crate::auth::token::browser,
         )
         .route(
-            crate::auth::exchange::AUTH_TOKEN_PATH,
+            busbar_unit_auth::exchange::AUTH_TOKEN_PATH,
             RouteMethod::Post,
             RouteAuth::None,
             crate::auth::exchange::exchange,
