@@ -636,6 +636,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-grammar",
+ "zeroize",
 ]
 
 [[package]]
