@@ -854,6 +854,51 @@ pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::poli
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE ONE SEAM THIS PLANE'S MOUNTED SURFACE IS REACHED THROUGH
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// What one operation of this plane answered: a status, its headers, and its body.
+///
+/// The three together, because a caller reads all three and this root may not re-derive any of them.
+/// It is the plane's own answer travelling back OUT of the loop — the exact shape the administrative
+/// plane's seam carries for the same reason, and for the same reason it is a record of BYTES rather
+/// than of anything this file could reconstruct.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct A2aAnswer {
+    /// The status the surface answered with.
+    pub status: u16,
+    /// The headers it emitted, in emission order.
+    pub headers: Vec<(String, String)>,
+    /// The body it wrote. For a streamed operation this is the run of events, exactly as framed.
+    pub body: Vec<u8>,
+}
+
+/// THE ONE SEAM between this plane's units and the surface that already answers its operations.
+///
+/// ## Why there is exactly one, and why it takes no request
+///
+/// The units are the GATE and the surface is the ANSWER. Everything the loop decides — who is
+/// calling, where the unit may go, whether the caller may ask, whether it is paid for — happens
+/// before this seam is touched, and a unit refused at any of those steps never reaches it. What is on
+/// the far side is the operation's own body, which this root does not hold and may not reimplement:
+/// the whole value of the seam is that the answer a caller reads is the one the surface wrote.
+///
+/// It takes no request because the seam is bound to one. A unit of this plane is assembled per
+/// arrival — [`A2aUnits`] is built from what that arrival decided — so the thing that carries the
+/// arrival across is per-arrival too, and a request passed through the call would be the same request
+/// travelling twice. The administrative plane's seam is long-lived and takes its request as an
+/// argument because ITS units are long-lived; the shape follows the lifetime rather than the other
+/// way round.
+///
+/// The operation class IS passed, because it is the one thing the seam's far side may legitimately
+/// branch on and the one thing this file has already decided: the plane read the bytes and named the
+/// class, and handing it over is what makes "the loop chose the path" checkable from the seam.
+pub trait A2aDispatch: Send + Sync {
+    /// Hand one operation to the surface it is mounted on, and take back its whole answer.
+    fn execute(&self, op: OpClassId) -> A2aAnswer;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE BINDINGS
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
@@ -955,6 +1000,17 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// arrival, the same shape the voice plane's node gives its units — a unit does not read clocks,
     /// and one that read this one here would be reading it per step rather than per unit.
     pub mono: u64,
+    /// THE ONE WAY THIS UNIT REACHES THE SURFACE THAT ANSWERS ITS OPERATION.
+    ///
+    /// `None` is a unit that runs the ten steps and produces no bytes, which is exactly the posture
+    /// every unit of this plane had before a mount existed: the loop decides, the exit reports zero
+    /// bytes, and nothing is served. It is an `Option` rather than a required binding because that
+    /// posture is a real one and not a missing source — a build without the serving switch composes
+    /// no dispatch, and the boot assembly must not refuse for the absence of a thing it deliberately
+    /// did not build.
+    ///
+    /// Bound per arrival, because a unit of this plane is. See [`A2aDispatch`].
+    pub dispatch: Option<&'r dyn A2aDispatch>,
     /// The sealed origin the audit record is written under.
     ///
     /// Sealed by the kernel and carried here for the same reason the trust token is: `Origin::seal`
@@ -998,6 +1054,12 @@ struct Progress {
     audit_hash: Option<String>,
     /// The bytes the encode step reported.
     encoded: u64,
+    /// WHAT THE SURFACE ANSWERED, where the route step reached it.
+    ///
+    /// `None` on every unit that ended before Route, which is the property the gate rests on: a
+    /// refusal at Verify, Approve or Admit leaves this empty because the seam was never touched, and
+    /// an empty answer is what the mount reads to know the surface was never asked.
+    answer: Option<A2aAnswer>,
 }
 
 /// One unit of the A2A plane, driven through the kernel's ten steps and its one exit.
@@ -1028,6 +1090,21 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     #[must_use]
     pub fn draft(&self) -> &A2aDraft {
         &self.draft
+    }
+
+    /// WHAT THE SURFACE ANSWERED, for the mount that has to write it back out.
+    ///
+    /// `None` is a unit whose Route step was never reached — refused at Verify, Approve or Admit —
+    /// and therefore a unit for which no surface was asked anything. The mount renders the loop's own
+    /// refusal for that case rather than sending a request back down to be refused a second time,
+    /// which is the rule the administrative mount states: a refusal path may not execute anything.
+    ///
+    /// The status and the headers are read HERE and not off the encoded frame, because a frame
+    /// carries neither. That is the seam's shape rather than a gap: the exit path carries the whole
+    /// answer, the Encode step carries the bytes it is measured on, and neither re-derives the other.
+    #[must_use]
+    pub fn answer(&self) -> Option<A2aAnswer> {
+        read_through_poison(&self.progress).answer.clone()
     }
 
     /// The balance one unit of this plane settles into: the caller's own attribution bucket, in
@@ -1615,6 +1692,27 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
                 return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
             }
         }
+
+        // THE DISPATCH SEAM, and it is the LAST thing this step does. Every gate this plane has is
+        // already behind it: a unit refused at Verify, Approve or Admit never arrives here, and a
+        // unit whose plan did not fit, whose record legs refused or whose capability was revoked
+        // returned above. So the surface is asked exactly once, for a unit that has been decided.
+        //
+        // THE LOOP DECIDES THE PATH; THE BYTES ARE THE SURFACE'S. No status is computed here, no
+        // header is added and no body is touched — the whole answer is recorded and the exit path
+        // carries it out. That is the property a mount can be measured on: an answer this file could
+        // have re-derived is an answer that can differ from the one the caller used to get.
+        //
+        // The MONEY does not move through here. The metering step reads the draft's own figures and
+        // the settlement reads the same evidence it always did; what this records is the bytes the
+        // Encode step reports on, which is the answer's size and not a priced quantity.
+        if let (Some(dispatch), Some(op)) = (self.bindings.dispatch, self.draft.op) {
+            let answer = dispatch.execute(op);
+            let mut progress = read_through_poison(&self.progress);
+            progress.encoded = answer.body.len() as u64;
+            progress.answer = Some(answer);
+        }
+
         Decision::proceed(token, plan)
     }
 
@@ -1715,13 +1813,29 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // nor the plane's draft, so the bytes are written where the borrow lives and this step
         // reports what left. That is a statement about the seam, not a shortcut: a root that
         // allocated a second buffer here would be writing the wire format twice.
-        let bytes = read_through_poison(&self.progress).encoded;
+        //
+        // WHAT THE SURFACE WROTE, where the Route step reached one. The body travels on the frame
+        // because the frame is what a driver hands a transport; the STATUS and the HEADERS do not,
+        // because a frame has no field for either — they leave through [`A2aUnits::answer`], read by
+        // the mount, which is the same division the administrative plane's exit path has. Reporting
+        // the status here as well would be the one answer written down twice.
+        //
+        // Empty for a unit that never reached the seam. That is not a body this file invented for a
+        // refusal: it is the honest statement that nothing answered, and the mount renders the loop's
+        // own refusal from the ending instead.
+        let progress = read_through_poison(&self.progress);
+        let bytes = progress.encoded;
+        let body: Arc<[u8]> = progress
+            .answer
+            .as_ref()
+            .map_or_else(|| Arc::from(&[][..]), |answer| Arc::from(&answer.body[..]));
+        drop(progress);
         Decision::proceed(
             token,
             busbar_contract::wire::Frame {
                 direction: busbar_contract::wire::Direction::Outbound,
                 stream: busbar_contract::ids::StreamId(0),
-                bytes: busbar_contract::bounded::SlabBytes::new(Arc::from(&[][..])),
+                bytes: busbar_contract::bounded::SlabBytes::new(body),
                 meta: busbar_contract::wire::FrameMeta {
                     bytes,
                     transport_units: None,

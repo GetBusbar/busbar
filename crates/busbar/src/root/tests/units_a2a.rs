@@ -1718,6 +1718,9 @@ impl Deployment {
                 // One reading per unit, off the node's own counter, exactly as the root would
                 // take it at arrival.
                 mono: self.mono.fetch_add(1, Ordering::AcqRel),
+                // No surface behind these cells: they are about what the loop DECIDES, and a seam
+                // here would make every one of them also a cell about what a router answered.
+                dispatch: None,
                 origin: self.origin,
             },
             draft(ops::OP_MESSAGE_SEND),
