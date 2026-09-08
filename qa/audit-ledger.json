@@ -425,12 +425,15 @@
     "crates/busbar-a2a-codec/src"
    ],
    "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "zero",
-   "counts": {},
-   "report": "zero; every production file read fully",
-   "auditor": "opus-pass2",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 7,
+   "result": "findings",
+   "counts": {
+    "LOW": 1,
+    "NIT": 1
+   },
+   "report": "the crate does not forbid unsafe while every plane crate does; one wire error code is declared twice, once here in the shared table and once again in the plane module that reads this table by identity",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-a2a-codec/src/tests"
@@ -467,6 +470,18 @@
      "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
      "counts": {},
      "report": "zero; every production file read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
+     "counts": {
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "the crate does not forbid unsafe while every plane crate does; one wire error code is declared twice, once here in the shared table and once again in the plane module that reads this table by identity"
     }
    ]
   },
@@ -912,16 +927,16 @@
    "paths": [
     "crates/busbar-llm-codec/src"
    ],
-   "tree_hash": "0a6238586d970b53cf4a42c5e3735b8b8eb1b2085d8b3a36695d67b97ab68654",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 7,
+   "tree_hash": "c9dbf628379a71ddd4163ebcda50a031b83e2f36993462dd614916ee8eee8392",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 5,
-    "MEDIUM": 5
+    "HIGH": 1,
+    "LOW": 1
    },
-   "report": "3 fixed (gemini tail toolUse tokens, openai cache_write tier, gemini open_tools product cap), 8 HIGH/MEDIUM unfixed handed to a follow-up wave; conformance 255/260 unchanged",
-   "auditor": "opus-p3-llm-codec",
+   "report": "a detected provider usage shortfall is computed and threaded through the whole streaming fold and then read by nobody, so a unit whose provider reported more tokens than the buckets account for is metered on the smaller number and the note saying so goes nowhere; the crate does not forbid unsafe",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm-codec/src/tests"
@@ -974,6 +989,18 @@
       "MEDIUM": 5
      },
      "report": "3 fixed (gemini tail toolUse tokens, openai cache_write tier, gemini open_tools product cap), 8 HIGH/MEDIUM unfixed handed to a follow-up wave; conformance 255/260 unchanged"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "c9dbf628379a71ddd4163ebcda50a031b83e2f36993462dd614916ee8eee8392",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 1
+     },
+     "report": "a detected provider usage shortfall is computed and threaded through the whole streaming fold and then read by nobody, so a unit whose provider reported more tokens than the buckets account for is metered on the smaller number and the note saying so goes nowhere; the crate does not forbid unsafe"
     }
    ]
   },
@@ -1032,13 +1059,16 @@
    "paths": [
     "crates/busbar-mcp-codec/src"
    ],
-   "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "zero",
-   "counts": {},
-   "report": "zero; every production file read fully",
-   "auditor": "opus-pass2",
+   "tree_hash": "83e9793543bff14b7620caca98f41d6aaeba6f02255cefcff3b397aaf6cf9764",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "the markup-normalisation floor is applied by the retiring engine and by nothing in the plane crate that replaces it, so the migration drops a control the module header calls universal and security-critical; the crate does not forbid unsafe",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-mcp-codec/src/tests"
@@ -1075,6 +1105,18 @@
      "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
      "counts": {},
      "report": "zero; every production file read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "83e9793543bff14b7620caca98f41d6aaeba6f02255cefcff3b397aaf6cf9764",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the markup-normalisation floor is applied by the retiring engine and by nothing in the plane crate that replaces it, so the migration drops a control the module header calls universal and security-critical; the crate does not forbid unsafe"
     }
    ]
   },
@@ -1084,17 +1126,18 @@
    "paths": [
     "crates/busbar-plane-a2a/src"
    ],
-   "tree_hash": "6e4248149e6ae8af8c4a6a179ba702b39841ef75bbc19d5144af5bc0e0494760",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 7,
+   "tree_hash": "113e10ea52291da00b19034073f7952af0396cd12412387c22fb2be34e7af75a",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
+    "HIGH": 2,
+    "MEDIUM": 4,
     "LOW": 1,
     "NIT": 1
    },
-   "report": "push-config create decoded before its body arrived (fixed); DELETE /a2a/tasks/{id} decodes as a read",
-   "auditor": "opus-pass3",
+   "report": "an ordinary non-streaming answer never ends its unit (the terminal test asks only whether the result carries a kind discriminator, so every Task and Message answer reads as a mid-stream frame and an envelope with neither result nor error reads as complete); refusals outside the first twenty reasons all render as internal error; a message with no identifier is answered; approve names the first configured agent whatever the unit asked for and never the task",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a/src/tests"
@@ -1144,6 +1187,20 @@
       "NIT": 1
      },
      "report": "push-config create decoded before its body arrived (fixed); DELETE /a2a/tasks/{id} decodes as a read"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "113e10ea52291da00b19034073f7952af0396cd12412387c22fb2be34e7af75a",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 4,
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "an ordinary non-streaming answer never ends its unit (the terminal test asks only whether the result carries a kind discriminator, so every Task and Message answer reads as a mid-stream frame and an envelope with neither result nor error reads as complete); refusals outside the first twenty reasons all render as internal error; a message with no identifier is answered; approve names the first configured agent whatever the unit asked for and never the task"
     }
    ]
   },
@@ -1211,17 +1268,16 @@
    "paths": [
     "crates/busbar-plane-llm/src"
    ],
-   "tree_hash": "df2d3d5c22c0dfaa6602fa06c09f1bc8c5be3278575f1d87e0ad2b9f98cebde1",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "2b8c22a9427515307b077e736454485006c154b9446183941d9b7c6053ff29af",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
     "MEDIUM": 2,
-    "LOW": 3,
-    "NIT": 1
+    "LOW": 1
    },
-   "report": "same-dialect answer relay parsed the answer it relayed (fixed, gate added); request-relay alloc gate red on protocol_for's boxed handle; two money-shaped coverage gaps named",
-   "auditor": "opus-p3-plane-llm",
+   "report": "the crate carries none of the kind skeleton (no conformance module, no src tests directory, the plane implementation lives in the codec file, every submodule is public) and it names its own dialect crate as a dependency; a comment claims an allocation gate holds the answer-relay borrow and the only gate in the crate measures the request direction",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
@@ -1273,6 +1329,18 @@
       "NIT": 1
      },
      "report": "same-dialect answer relay parsed the answer it relayed (fixed, gate added); request-relay alloc gate red on protocol_for's boxed handle; two money-shaped coverage gaps named"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "2b8c22a9427515307b077e736454485006c154b9446183941d9b7c6053ff29af",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "the crate carries none of the kind skeleton (no conformance module, no src tests directory, the plane implementation lives in the codec file, every submodule is public) and it names its own dialect crate as a dependency; a comment claims an allocation gate holds the answer-relay borrow and the only gate in the crate measures the request direction"
     }
    ]
   },
@@ -1282,18 +1350,17 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "6cebc296f647d07fb7ff5737035c29b561d638216be1b83dd2cdeea59f7b7c56",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 7,
+   "tree_hash": "2dfbaad176b7b8f051090da7e8e22da4ed5029f3a2d00ecabac9ef9fd84b6477",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 1,
-    "LOW": 1,
-    "NIT": 2
+    "HIGH": 1,
+    "MEDIUM": 5,
+    "LOW": 1
    },
-   "report": "caller could send server notices into the catalogue write (fixed), server notices never reached their route (fixed), non-object result lost the discriminator (fixed)",
-   "auditor": "opus-pass3",
+   "report": "refusals outside the first twenty reasons all render as internal error, so a rate limit, an open breaker and a drain reach the caller as a node fault; an answer carrying neither result nor error is reported and billed as complete; the markup-normalisation floor the retiring engine applies has no call site here; the plane names another plane as a string literal; the round cap the session counter exists for has no reader",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
@@ -1344,6 +1411,19 @@
       "NIT": 2
      },
      "report": "caller could send server notices into the catalogue write (fixed), server notices never reached their route (fixed), non-object result lost the discriminator (fixed)"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "2dfbaad176b7b8f051090da7e8e22da4ed5029f3a2d00ecabac9ef9fd84b6477",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 5,
+      "LOW": 1
+     },
+     "report": "refusals outside the first twenty reasons all render as internal error, so a rate limit, an open breaker and a drain reach the caller as a node fault; an answer carrying neither result nor error is reported and billed as complete; the markup-normalisation floor the retiring engine applies has no call site here; the plane names another plane as a string literal; the round cap the session counter exists for has no reader"
     }
    ]
   },
@@ -1354,16 +1434,16 @@
     "crates/busbar-plane-voice/src"
    ],
    "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 7,
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 8,
-    "LOW": 3
+    "HIGH": 1,
+    "MEDIUM": 3,
+    "NIT": 1
    },
-   "report": "unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding",
-   "auditor": "opus-streams-auditor-a",
+   "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-voice/src/tests"
@@ -1416,6 +1496,19 @@
       "LOW": 3
      },
      "report": "unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "NIT": 1
+     },
+     "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency"
     }
    ]
   },
@@ -4293,14 +4386,29 @@
    "paths": [
     "crates/busbar-plane-a2a/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "dcb8b5fb9cec33e769ee94c0cf1fcbbcdf5c06586ce10d8b18a82761d837c256",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow",
+   "auditor": "opus-plane-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "dcb8b5fb9cec33e769ee94c0cf1fcbbcdf5c06586ce10d8b18a82761d837c256",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-a2a/tests",
@@ -4308,13 +4416,15 @@
    "paths": [
     "crates/busbar-plane-a2a/tests"
    ],
-   "tree_hash": "b9e93945fae157395cd4f3d0124da766887c2b0ad6d6cf501bcf4a1cedbd8217",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "f32359e0115a71a690893451672b8fe11cdf68c625e64bd596fb75f6339fbecb",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the only allocation gate measures the request direction, so nothing holds the per-frame relay path the arena reset is pinned for; no test feeds an ordinary successful answer through the response decoder, which is what let the terminal test ship wrong in both directions",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4325,6 +4435,17 @@
      "tree_hash": "b9e93945fae157395cd4f3d0124da766887c2b0ad6d6cf501bcf4a1cedbd8217",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "f32359e0115a71a690893451672b8fe11cdf68c625e64bd596fb75f6339fbecb",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the only allocation gate measures the request direction, so nothing holds the per-frame relay path the arena reset is pinned for; no test feeds an ordinary successful answer through the response decoder, which is what let the terminal test ship wrong in both directions"
     }
    ]
   },
@@ -4349,13 +4470,16 @@
    "paths": [
     "crates/busbar-plane-llm/tests"
    ],
-   "tree_hash": "de96fdf3ddb0bab81363dcf97ba0e9f8f937f7276de4e69a8df1a8ee93341997",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "9a185c356d0e0a6bad5f14a7204c7a565fa9ff565b47d80c619e95c5f9f523b7",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
+   "counts": {
+    "LOW": 1,
+    "NIT": 1
+   },
+   "report": "the only allocation gate measures the request direction while a comment in the source claims it holds the answer relay; the dialect-envelope test covers six of forty-two refusal reasons, which is coverage only because the mapping it guards is exhaustive",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4366,6 +4490,18 @@
      "tree_hash": "de96fdf3ddb0bab81363dcf97ba0e9f8f937f7276de4e69a8df1a8ee93341997",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "9a185c356d0e0a6bad5f14a7204c7a565fa9ff565b47d80c619e95c5f9f523b7",
+     "counts": {
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "the only allocation gate measures the request direction while a comment in the source claims it holds the answer relay; the dialect-envelope test covers six of forty-two refusal reasons, which is coverage only because the mapping it guards is exhaustive"
     }
    ]
   },
@@ -4375,14 +4511,29 @@
    "paths": [
     "crates/busbar-plane-mcp/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "3d8170989b9f8491d418a2a5daf2d732e99c04ac5ac705a7a2caa9fadbeed794",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow",
+   "auditor": "opus-plane-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "3d8170989b9f8491d418a2a5daf2d732e99c04ac5ac705a7a2caa9fadbeed794",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-mcp/tests",
@@ -4390,17 +4541,15 @@
    "paths": [
     "crates/busbar-plane-mcp/tests"
    ],
-   "tree_hash": "56342b88ee8fb65b1ecd3f343114e02fa25e214500b25a6e6294a6a1334bb4cc",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "aeed184d77afa725528a0a40e6762942f94caa2dd948b7cb375bf6b8ec4484c8",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 3,
-    "LOW": 5
+    "LOW": 1
    },
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
+   "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4415,6 +4564,17 @@
       "LOW": 5
      },
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "aeed184d77afa725528a0a40e6762942f94caa2dd948b7cb375bf6b8ec4484c8",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for"
     }
    ]
   },
