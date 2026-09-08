@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use busbar_api::{ScopeRef, VirtualKey};
 
-use crate::trust::validate::{Generations, Grant, Refusal};
+use busbar_substrate::trust::validate::{Generations, Grant, Refusal};
 
 // ══ THE THIRD PLANE ══════════════════════════════════════════════════════════════════════════════
 //
@@ -115,12 +115,11 @@ impl CatalogueItem for Leaflet {
     /// what it holds, and whether a leaflet is worth reading is not a question about the reader.
     /// It is one line, and it is the whole of what the plane says about entitlement.
     fn admit(&self, caller: &Caller<'_>, grants: &[Grant<'_>]) -> Result<(), Unavailable> {
-        crate::trust::validate::validate_visibility(caller.key, caller.now, grants).map_err(|r| {
-            match r {
+        busbar_substrate::trust::validate::validate_visibility(caller.key, caller.now, grants)
+            .map_err(|r| match r {
                 Refusal::IdentityNotLive { .. } => Unavailable::ReaderGone,
                 _ => Unavailable::NoTicket,
-            }
-        })
+            })
     }
 
     fn fit(&self, reader: &Reader) -> Result<String, Unavailable> {
