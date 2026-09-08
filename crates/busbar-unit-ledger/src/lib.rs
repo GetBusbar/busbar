@@ -79,6 +79,7 @@ pub mod legacy;
 pub mod migration;
 pub mod recompute;
 pub mod settle;
+pub mod tick;
 pub mod totals;
 pub mod verify;
 
@@ -106,6 +107,7 @@ pub use recompute::{
     SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };
 pub use settle::{adjusting_entries, Ledger, Overdraft, Repricing, Settlement};
+pub use tick::{Retirement, TickAt, Tock, ALL_TIME_WINDOW};
 pub use totals::{
     totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,
     TotalsKey, Unpriced, WindowStart,
