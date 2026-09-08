@@ -2862,3 +2862,47 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
+
+/// `answered_by` is the same eight the integration pin measures against a running surface.
+///
+/// The two halves of one claim, deliberately kept apart. `crates/busbar/tests/admin_verb_ownership.rs`
+/// serves the administrative surface and asks it which of the eighty-eight it has a route for; it
+/// cannot reach this function, because this crate mounts no library. This one can reach the function
+/// and cannot serve a router. So the integration pin measures the WORLD and names the eight it found,
+/// and this one checks that the production predicate — the one a future crossing will edit — names the
+/// same eight.
+///
+/// Written as the set rather than as a count for the reason the pin beside it gives: a count lets one
+/// verb leave the loop as another arrives.
+#[test]
+fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
+    let mut owned: Vec<String> = busbar_plane_admin::verbs::table()
+        .into_iter()
+        .filter(|row| {
+            // The plane spells a row `get_ledger_totals` and the unit spells it `GetLedgerTotals`;
+            // `kernel_verb` is the composition root's own join between the two, so asking it here is
+            // asking the same question the route step asks.
+            kernel_verb(row).is_some_and(|verb| answered_by(verb) == AnsweredBy::Loop)
+        })
+        .map(|row| row.verb.to_string())
+        .collect();
+    owned.sort();
+    assert_eq!(
+        owned,
+        vec![
+            "chain_break",
+            "get_ledger_checkpoints",
+            "get_ledger_migration",
+            "get_ledger_openapi_json",
+            "get_ledger_reconciliation",
+            "get_ledger_totals",
+            "reseal_epoch_floor",
+            "store_restore",
+        ],
+        "the composition root answers a different set of operations than the served surface pin \
+         measured; one of the two has moved without the other"
+    );
+    // The complement is not empty and is not the whole table: eighty of the eighty-eight are still
+    // produced by the surface underneath, which is the fact the migration exists to change.
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 80);
+}
