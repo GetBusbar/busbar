@@ -35,7 +35,7 @@
 //! 3. a `fields:` list that omits a **pinned** field, or names a field this release does not
 //!    produce.
 
-use busbar_plugin_loader::{ExportField, ExportStream};
+use busbar_plugin::cold::export::{ExportField, ExportStream};
 use serde_json::Value;
 
 // ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -51,14 +51,14 @@ use serde_json::Value;
 ///
 /// What produces each entry TODAY (open these before changing this list — the rule is only worth
 /// what the citations are worth):
-/// - `metrics` — the recorder + emit sites in `crate::metrics`, rendered by
-///   `crate::export::prometheus`.
-/// - `logs` — [`crate::export::build_request_log`], from the request-finish path
-///   (`crate::ingress::finish_inner`). PARTIAL: it produces a subset of the stream's documented
+/// - `metrics` — the recorder + emit sites in `busbar_core::metrics`, rendered by
+///   `busbar_core::export::prometheus`.
+/// - `logs` — `busbar_core::export::build_request_log`, from the request-finish path
+///   (`busbar_core::ingress::finish_inner`). PARTIAL: it produces a subset of the stream's documented
 ///   default fields (see [`produced_fields`]).
-/// - `traces` — the OpenTelemetry span pipeline (`crate::observability`), exported by the `otlp`
+/// - `traces` — the OpenTelemetry span pipeline (`busbar_core::observability`), exported by the `otlp`
 ///   module.
-/// - `events` — the hash-chained admin records in `crate::admin::audit` (`busbar_api::AuditRecord`:
+/// - `events` — the hash-chained admin records in `busbar_core::admin::audit` (`busbar_api::AuditRecord`:
 ///   `seq`/`ts`/`action`/`resource`/`outcome`/`principal`/`prev_hash`/`hash`). PARTIAL: admin
 ///   mutations only; config applies, plugin loads/refusals, boot and shutdown are a later unit.
 ///
@@ -66,7 +66,7 @@ use serde_json::Value;
 /// `decisions` is the one to protect hardest — core ALREADY computes exclusion reasons and hook
 /// verdicts and then DISCARDS them, so it is tempting to call it "nearly there". It is not a
 /// producer until the records exist.
-pub(crate) const PRODUCED_STREAMS: &[ExportStream] = &[
+pub const PRODUCED_STREAMS: &[ExportStream] = &[
     ExportStream::Metrics,
     ExportStream::Logs,
     ExportStream::Traces,
@@ -74,7 +74,7 @@ pub(crate) const PRODUCED_STREAMS: &[ExportStream] = &[
 ];
 
 /// True when this release has a producer for `stream` (see [`PRODUCED_STREAMS`]).
-pub(crate) fn stream_produced(stream: ExportStream) -> bool {
+pub fn stream_produced(stream: ExportStream) -> bool {
     PRODUCED_STREAMS.contains(&stream)
 }
 
@@ -86,15 +86,15 @@ pub(crate) fn stream_produced(stream: ExportStream) -> bool {
 /// but an EXPLICIT request for a field is a promise, and a promise this release cannot keep is a
 /// loud error rather than a permanently-absent key in the operator's SIEM.
 ///
-/// `logs` is kept honest by `crate::export::tests::projection_tests` — it asserts this list equals
-/// the keys [`crate::export::build_request_log`] actually emits, so the table cannot drift from the
+/// `logs` is kept honest by `busbar_core::export::tests::projection_tests` — it asserts this list equals
+/// the keys `busbar_core::export::build_request_log` actually emits, so the table cannot drift from the
 /// producer it describes.
-pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
+pub fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
     use ExportField as F;
     match stream {
         // Aggregate: the unit is the documented metric CATALOG (families), not record fields.
         ExportStream::Metrics => &[],
-        // `crate::export::build_request_log` — the five fields today's request log carries. The rest
+        // `busbar_core::export::build_request_log` — the five fields today's request log carries. The rest
         // of the stream's documented default set (correlation_id, model_requested, model_served,
         // provider, status) is the producer unit that follows this one.
         ExportStream::Logs => &[F::Ts, F::IngressProtocol, F::Pool, F::Outcome, F::LatencyMs],
@@ -129,12 +129,12 @@ pub(crate) fn produced_fields(stream: ExportStream) -> &'static [ExportField] {
 /// validates and receives nothing: the module is the transport, the projection is what rides it, and
 /// a projection the transport cannot carry is a configuration mistake, not an empty subscription.
 /// `None` for a module this build does not know (the unknown-module diagnostic owns that case).
-pub(crate) fn module_streams(module: &str) -> Option<&'static [ExportStream]> {
+pub fn module_streams(module: &str) -> Option<&'static [ExportStream]> {
     match module {
-        crate::config::EXPORT_MODULE_PROMETHEUS => Some(&[ExportStream::Metrics]),
-        crate::config::EXPORT_MODULE_REQUEST_LOG_WEBHOOK
-        | crate::config::EXPORT_MODULE_REQUEST_LOG_FILE => Some(&[ExportStream::Logs]),
-        crate::config::EXPORT_MODULE_OTLP => Some(&[ExportStream::Traces]),
+        super::sections::EXPORT_MODULE_PROMETHEUS => Some(&[ExportStream::Metrics]),
+        super::sections::EXPORT_MODULE_REQUEST_LOG_WEBHOOK
+        | super::sections::EXPORT_MODULE_REQUEST_LOG_FILE => Some(&[ExportStream::Logs]),
+        super::sections::EXPORT_MODULE_OTLP => Some(&[ExportStream::Traces]),
         _ => None,
     }
 }
@@ -149,7 +149,7 @@ pub(crate) fn module_streams(module: &str) -> Option<&'static [ExportStream]> {
 /// The field mask is a GRANT, not a filter: [`ProjectedRecord`] can only write a field the mask
 /// holds, so an ungranted field is never serialized and never reaches a sink.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub(crate) struct Projection {
+pub struct Projection {
     streams: u16,
     fields: u64,
 }
@@ -169,37 +169,37 @@ impl Projection {
         p
     }
 
-    /// A projection minted directly from parts, for tests only. Deliberately `#[cfg(test)]`: in a
+    /// A projection minted directly from parts, for tests only. Deliberately test-only: in a
     /// real build the ONLY way to obtain a projection is [`resolve_projection`], which is what makes
     /// "the operator grants, nothing else does" a structural property rather than a convention.
-    #[cfg(test)]
-    pub(crate) fn for_test(streams: &[ExportStream], fields: &[ExportField]) -> Projection {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(streams: &[ExportStream], fields: &[ExportField]) -> Projection {
         Projection::from_parts(streams, fields)
     }
 
     /// Does this sink subscribe to `stream`?
     #[inline]
-    pub(crate) fn wants_stream(self, stream: ExportStream) -> bool {
+    pub fn wants_stream(self, stream: ExportStream) -> bool {
         self.streams & (1u16 << stream_bit(stream)) != 0
     }
 
     /// Is `field` of `stream` granted to this sink? BOTH halves must hold — a field granted for one
     /// stream must not leak in through another the sink did not subscribe to.
     #[inline]
-    pub(crate) fn grants(self, stream: ExportStream, field: ExportField) -> bool {
+    pub fn grants(self, stream: ExportStream, field: ExportField) -> bool {
         self.wants_stream(stream) && self.fields & (1u64 << field.bit()) != 0
     }
 
     /// Nothing subscribed — the zero-cost default generation (no `export:` block at all).
     #[inline]
-    pub(crate) fn is_empty(self) -> bool {
+    pub fn is_empty(self) -> bool {
         self.streams == 0
     }
 
     /// The UNION of two projections. Used to build the compute gate; never to build a sink's own
     /// projection (a sink's grant is exactly what its own config says).
     #[inline]
-    pub(crate) fn union(self, other: Projection) -> Projection {
+    pub fn union(self, other: Projection) -> Projection {
         Projection {
             streams: self.streams | other.streams,
             fields: self.fields | other.fields,
@@ -208,7 +208,7 @@ impl Projection {
 
     /// The granted fields of `stream`, in the frozen catalog order — for diagnostics and tests.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn granted_fields(self, stream: ExportStream) -> Vec<ExportField> {
+    pub fn granted_fields(self, stream: ExportStream) -> Vec<ExportField> {
         ExportField::ALL
             .iter()
             .copied()
@@ -229,17 +229,17 @@ fn stream_bit(stream: ExportStream) -> u16 {
 /// The config generation's UNION-OF-PROJECTIONS — "what does ANYTHING configured on this generation
 /// want". Computed ONCE per config apply, read per request.
 ///
-/// THE COMPUTE GATE. This is the SAME mechanism `crate::hooks::requested_signals` already uses for
+/// THE COMPUTE GATE. This is the SAME mechanism `busbar_core::hooks::requested_signals` already uses for
 /// hook signals, at stream+field granularity: the read runs ONLY when declared, never
 /// call-then-discard. It supersedes the one-off `export::request_log_configured()` boolean — one
 /// mechanism, not two. If no sink's projection includes a stream, core never assembles a payload for
 /// it and there is no hot-path cost.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct ProjectionUnion(Projection);
+pub struct ProjectionUnion(Projection);
 
 impl ProjectionUnion {
     /// Fold every configured instance's projection into the generation's union.
-    pub(crate) fn of<'a>(projections: impl IntoIterator<Item = &'a Projection>) -> ProjectionUnion {
+    pub fn of<'a>(projections: impl IntoIterator<Item = &'a Projection>) -> ProjectionUnion {
         ProjectionUnion(
             projections
                 .into_iter()
@@ -250,14 +250,14 @@ impl ProjectionUnion {
     /// Does ANY configured sink subscribe to `stream`? The single check the hot path makes before
     /// building a record for it.
     #[inline]
-    pub(crate) fn wants_stream(self, stream: ExportStream) -> bool {
+    pub fn wants_stream(self, stream: ExportStream) -> bool {
         self.0.wants_stream(stream)
     }
 
     /// Nothing subscribed anywhere — the zero-cost default.
     #[inline]
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn is_empty(self) -> bool {
+    pub fn is_empty(self) -> bool {
         self.0.is_empty()
     }
 }
@@ -273,14 +273,14 @@ impl ProjectionUnion {
 /// projection is a CONSTRUCTOR ARGUMENT and [`ProjectedRecord::set`] is the only writer: the field
 /// key is an [`ExportField`] (so a producer cannot invent a key as a string), the value is dropped
 /// unless the projection grants it, and the inner map is private with no way in. Writing the wrong
-/// thing is not merely untested — it does not typecheck. Same discipline as `config::migrate`'s
+/// thing is not merely untested — it does not typecheck. Same discipline as `busbar_core::config::migrate`'s
 /// `Taken<T>` (take-on-match, no `unwrap_or_default`) and the cache's generation guard.
 ///
 /// A dropped write is NOT a silent failure of the kind this release keeps finding: the operator
 /// asked for exactly this by writing `fields:`, validation already refused every combination that
 /// would under-deliver a field they DID ask for (see [`resolve_projection`]), and the whole point of
 /// an exhaustive override is that what is not listed does not arrive.
-pub(crate) struct ProjectedRecord {
+pub struct ProjectedRecord {
     projection: Projection,
     stream: ExportStream,
     /// Private, and there is no constructor from a `Value`, no `DerefMut`, and no accessor — so
@@ -290,7 +290,7 @@ pub(crate) struct ProjectedRecord {
 
 impl ProjectedRecord {
     /// Start a record for `stream`, bounded by `projection`.
-    pub(crate) fn new(projection: Projection, stream: ExportStream) -> ProjectedRecord {
+    pub fn new(projection: Projection, stream: ExportStream) -> ProjectedRecord {
         ProjectedRecord {
             projection,
             stream,
@@ -302,7 +302,7 @@ impl ProjectedRecord {
     /// otherwise the value is dropped here and never serialized. The value is computed by the caller
     /// — this is the DISCLOSURE gate, not the COMPUTE gate (that one is [`ProjectionUnion`], read
     /// before the producer runs at all).
-    pub(crate) fn set(&mut self, field: ExportField, value: impl Into<Value>) -> &mut Self {
+    pub fn set(&mut self, field: ExportField, value: impl Into<Value>) -> &mut Self {
         if self.projection.grants(self.stream, field) {
             self.fields
                 .insert(field.as_token().to_string(), value.into());
@@ -311,7 +311,7 @@ impl ProjectedRecord {
     }
 
     /// Finish the record. Consumes the builder, so nothing can be added after the payload is taken.
-    pub(crate) fn finish(self) -> Value {
+    pub fn finish(self) -> Value {
         Value::Object(self.fields)
     }
 }
@@ -330,7 +330,7 @@ impl ProjectedRecord {
 ///
 /// Returns the projection to enforce. On error the returned projection is EMPTY — a config that
 /// failed validation never boots, and an empty projection grants nothing if it somehow did.
-pub(crate) fn resolve_projection(
+pub fn resolve_projection(
     name: &str,
     module: &str,
     streams: Option<&[String]>,
@@ -599,7 +599,3 @@ fn subscribed_field_tokens(subscribed: &[ExportStream]) -> String {
         .collect::<Vec<_>>()
         .join(" | ")
 }
-
-#[cfg(test)]
-#[path = "tests/projection_tests.rs"]
-mod tests;
