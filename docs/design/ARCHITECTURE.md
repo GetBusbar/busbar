@@ -92,7 +92,9 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
 - **Manifest allow-list**: `busbar-contract`, the closed grammar it is written on and re-exports
   (`busbar-grammar`), plus reviewed third-party crates; any dependency on `busbar-kernel`,
   `busbar-caps`, `busbar-contract-transport`, a `busbar-unit-*`, another plane or a transport is a
-  CI failure.
+  CI failure. **The one exception, and the only cross-crate edge in the whole plugin tree:** a
+  DIALECT crate `busbar-plane-<p>-<d>` names its own plane `busbar-plane-<p>`, for the plane's IR
+  type and nothing else; naming any other plane, any dialect, or a transport is a CI failure.
 - **Source denylist** (transitive via `cargo metadata`), scoped to the **pure kinds**: plane, hook,
   static auth schemes that are pure, egress-auth-scheme, and the FFI transform crate: any path under
   `std::{net, fs, process, os, env}`, `tokio::{net, fs, process}`, `async_std::*`, `libc`, `reqwest`,
@@ -171,14 +173,24 @@ and `/usage`, `/audit`; "dialect" as the design term for a plane's wire vocabula
 plane's name; "codec", "transform", "media", "emission clock", "pacing", "turn" — generic
 names of plane-side byte transforms, the kernel's rate-shaped write path and the duplex unit boundary;
 store and transport keys are out of
-scope.
+scope. The plane key `streams` (formerly `voice`) is matched by the scan as the EXACT token
+`streams` only, so it does not collide with the allow-listed transport-grammar term `stream`.
 <!-- /doc-scan -->
 
 ### 1.4 Plugin kinds
 
+**`docs/design/PLUGIN-TREE.md` is normative for this table.** It states, per kind, the ONE trait in
+`busbar-contract`, the compile boundary in both directions, the ceiling row, the testkit battery, the
+uniform crate skeleton, the single registration seam, the naming rule, and the procedure for adding a
+kind. There are **nine plugin kinds** — plane, dialect, transport, auth, egress-auth, store, secret,
+hook, export — and one core row, `unit`, which is never loadable. `loader` and `abi` are TCB crates,
+not kinds. "Rate card" below is CONFIG, not a kind: it has no trait, no `Kind` variant and no crate,
+and is listed here only because the pricing surface is read alongside them.
+
 | Kind | Closed shape (kernel calls) | Open vocabulary (plugin declares) |
 |---|---|---|
 | Plane | 7 codec, 7 fact, 2 introspection methods; `SessionPlane::open_session` / `open_upstream` — **18 call sites** | `KEY`, `CLAIMS`, `OP_CLASSES`, `METER_CLASSES` (each entry: key, `family`, `direction: Input | Response | CacheRead | CacheWrite | Kernel`, default divisor — the card may price but never re-family; "class family" everywhere means this field), `SESSION_FACTS`, `CONTENT_FACTS`, `RECORD_SCHEMAS`, `INTROSPECTION_VERBS`, `INTERRUPT_FACT`, `EGRESS_PACING_FACT`, `CONFIG_SCHEMA` |
+| Dialect | 4 codec methods over its plane's IR (decode-to-IR, encode-from-IR, decode-response-to-IR, encode-response); pure, no I/O, no clock | `KEY`, `PLANE`, `CLAIMS` (compile-time constants of this crate; the plane's `CLAIMS` is the union of its own and its registered dialects'), `LOCATIONS`, `SCHEME_ALT`, `EGRESS_SCHEME`, `STREAMING_CONTENT_TYPE`, `HEAD_KEYS`, `VERBS`, meter-locator pointers |
 | Transport (in-tree) | `arrival / listen / accept / dial / frames / write / upgrade / close / unit0_refusal` (async, boxed futures) | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD` |
 | Auth (ingress) | `verify(credential, arrival, clock, prior: Option<ChallengeState>) → CredentialFacts | Challenge { bytes, state, rounds_left } | Pass` (`Pass` = abstain, 1.5.5's chain continuation; the migrated `auth.chain` runs through `run_chain_cached` semantics, the credential cache applying to EXTERNAL modules only — the `keys` arm is cache-exempt — PB-35) (the proof of round n arrives with the state of round n−1); `refresh(clock) → KeyMaterial` (Tick-driven) | `KEY`, `LOCATIONS` (arrival forms), issuer config, `IO: bool` |
 | Egress-auth scheme | `decorate(cfg, &EgressBody, signer) → AuthDecoration`; `continue_handshake(state, &Frame, signer) → AuthDecoration` for multi-round schemes (the upstream challenge reaches round 2 here) | `KEY` |
@@ -476,9 +488,13 @@ busbar-caps          capability types + tokens                                  
                      trusted base: `std` and `busbar-contract` — a capability is keyed on the contract's own objects, so it names them rather than restating them
 busbar-kernel        registry + generations, Teller, pump, in-flight table, sessions, Ticks, recovery, slices/leases, drain, grammars
 busbar-unit-*        auth · trust · scope · admission · cost · egress (pool) · breaker · egress-auth · transport-key · usage · ledger · audit · wal · verbs
-busbar-plane-*       (one per plane)         busbar-transport-*   (one per transport, in-tree, incl. peer)
+busbar-plane-*       (one per plane; owns its semantic IR, dialect-neutral)
+busbar-plane-<p>-<d> (one per DIALECT; workspace deps are exactly busbar-contract + busbar-plane-<p>)
+busbar-transport-*   (one per WIRE, in-tree, incl. peer; never named for a plane)
 busbar-*-plugin      auth / egress-auth-scheme / store / secret / hook / export (static or dynamic); auth-lease and secret-local in-tree, mandatory
 ```
+The `busbar-<kind>-<name>` naming rule, the full rename table and the compile boundary in both
+directions are normative in `docs/design/PLUGIN-TREE.md` §§4, 7.
 **Bounded types** (constants in the contract crate): `ArenaBytes<'u>` (`bytes::Bytes` is banned);
 `ArrayVec<Leg, 8>` with ≤ 2 leg replies pinned; a `Vec<VerifiedDestination>` in the in-flight table (1.5.5 pools are unbounded, so the candidate set is unbounded — no `CandidateSetTooLarge`; parity clause); arena `Facts`
 with `MAX_KEYS = 32`; `Ir` borrowing the frame buffer; `steps ≤ 16`; `usage_lines ≤ 16`;
@@ -529,6 +545,10 @@ fold; `Metered` carries the usage AND the disputes · `Ledger::settle(Hold, Usag
 `Verbs::execute(KernelVerb, &AdminToken)` · `Recovery::materialize(&HoldRecord, &RecoveryToken) → Hold`.
 
 ### 3.2 Plane
+
+*(`PLUGIN-TREE.md` is normative for the plane kind's compile boundary, crate skeleton, registration
+seam and testkit battery; the trait below is the contract's own shape. A plane owns its plane's
+semantic IR and carries no dialect: no vendor name, no wire-format reader, no per-dialect branch.)*
 
 ```rust
 pub trait PlaneMeta { const KEY; const CLAIMS; const OP_CLASSES; const METER_CLASSES; const SESSION_FACTS; const CONTENT_FACTS;
@@ -589,13 +609,21 @@ form: span forms → same-length fill; `ClientCert` → nothing masked; `Signed`
 grammar**: a zero-copy, non-allocating span scanner (M1) resolves pointers over the scanned prefix up to
 the deepest pointer; its cost is a §10 row.
 
-**A claim's selector is a compile-time constant, never a registration-time value derived from config.**
+**A claim's selector is a compile-time constant of the crate that declares it, never a
+registration-time value derived from config.** A plane's `CLAIMS` is the union of its own and its
+registered dialects' compile-time claim constants — union at registration is COMPOSITION, not
+configuration, and every selector in it is still a literal in a `busbar-plane-<p>-<d>` crate.
 Where a plane's mount is fixed to a single canonical address by design, that address is the literal in
 its `Selector`, and an operator-configured canonical address is checked against it at config validation:
 naming any other path is a boot refusal, not a silent rebind. There is no selector form that resolves a
 configured string at registration.
 
 ### 3.4 Transport (in-tree, async)
+
+*(`PLUGIN-TREE.md` is normative for the transport kind's compile boundary — contract,
+contract-transport and strictly lower transports, and nothing else — its crate skeleton, its
+registration seam and its battery. A transport is a WIRE: it is never named for a plane, never names
+a unit, and mounts any plane generically from the plane's declared route data.)*
 
 ```rust
 pub trait TransportMeta { const KEY; const SELECTOR_FORMS; const EGRESS_SELECTOR_FORMS; const COMPOSES_OVER: &[&str]; const HANDOFF: Option<Handoff>;
@@ -1094,7 +1122,7 @@ A plane is CLAIMED only when its config block is present: a 1.5.5 config claims 
 | `mcp` | mcp (JSON-RPC) | http, sse, stdio | JSON-RPC request; sampling as provider `OneShot`; outbound sessions | tool_calls, bytes | tool catalogue, approvals, settings | |
 | `a2a` | a2a | http, grpc | task ops; push events as provider units | bytes | tasks, push configs, pins | |
 | `admin` | busbar admin v1 | http | one kernel verb = one unit (codec only; `busbar-unit-verbs` executes) | count | — | mints via `SecretOnce` |
-| `voice` | openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts | ws, webrtc, twilio-media, http | a turn; tool calls as provider `OneShot` requests (`Client(AwaitReply)` or `NestedPlane(mcp)`, result as a `SessionUpstream` leg); interrupt fact; pacing fact; one-shot transcribe/TTS | audio_tokens_in/out (`Locator`), text_tokens_in/text_tokens_out (`Locator`), cached_tokens, audio_seconds_in (`TransportUnits` on twilio and webrtc; cross-checked by `KernelElapsedMono`; `Locator` on ws), tool_calls | — | OpenAI Realtime ingress/egress; Gemini Live egress; μ-law↔PCM16 in `encode_ingress_frame`; **raw SIP out of scope** (owner decision); only the FIRST decoded IR event per wire frame is acted on; uplink audio is ASSUMED PCM16 for the `audio_seconds_in` estimate; model-emitted text in a duplex turn prices under `text_tokens_out` — an OUTPUT class, never the input one — because §4.5 clause 2 makes the class a money question and emitted text is output, not input; the `webrtc` leg and the one-shot transcribe/TTS wire shape are §9.3 Phase 0.5 work, not Phase 0 |
+| `streams` (was `voice`; its config section is already `streams:` — the unrelated 1.5.5-frozen `export.<n>.streams` key is a different field and never moves) | openai-realtime, gemini-live, twilio-media-streams, one-shot transcribe/tts | ws, webrtc, twilio-media, http | a turn; tool calls as provider `OneShot` requests (`Client(AwaitReply)` or `NestedPlane(mcp)`, result as a `SessionUpstream` leg); interrupt fact; pacing fact; one-shot transcribe/TTS | audio_tokens_in/out (`Locator`), text_tokens_in/text_tokens_out (`Locator`), cached_tokens, audio_seconds_in (`TransportUnits` on twilio and webrtc; cross-checked by `KernelElapsedMono`; `Locator` on ws), tool_calls | — | OpenAI Realtime ingress/egress; Gemini Live egress; μ-law↔PCM16 in `encode_ingress_frame`; **raw SIP out of scope** (owner decision); only the FIRST decoded IR event per wire frame is acted on; uplink audio is ASSUMED PCM16 for the `audio_seconds_in` estimate; model-emitted text in a duplex turn prices under `text_tokens_out` — an OUTPUT class, never the input one — because §4.5 clause 2 makes the class a money question and emitted text is output, not input; the `webrtc` leg and the one-shot transcribe/TTS wire shape are §9.3 Phase 0.5 work, not Phase 0 |
 | `blob` (acid test) | s3-style multipart | http | streaming multipart as an open unit | bytes_in/out, objects (`PlaneCount`, no same-unit companion → `estimated` under the implausibility bound) | — | |
 | `msg` (acid test) | line-delimited pub/sub | stdio | one message; fan-out across two nodes (aggregate + `peer`, by locator when oversize) | messages, bytes, recipients | subscriptions | |
 | `smtp` (acid test) | smtp, esmtp | tcp-line | one message; SMTP AUTH inbound as a challenge-response Handshake unit; STARTTLS as a Handshake unit inbound and an `Upgrade` leg upstream; AUTH to the MX via `Handshake` decoration | messages, bytes, recipients | — | |
@@ -1104,8 +1132,17 @@ planes per unit with per-frame accrual; flow planes (VPN) per flow — destinati
 a flow whose destination changes is a NEW flow: the plane emits `Close` + `Open` on the same frames and the new unit runs all seven steps (plane-side; no per-frame Verify seat exists and none is needed — a
 flow re-open costs one unit; measured as the §10 latency row); broker planes per message.
 
-**Adding a transport** = one in-tree transport crate (planes do no I/O, so a new wire protocol is a new transport crate — the expected path); a line in an EXISTING transport or in the kernel is the finding. **Adding a plane** = one crate from `plane-template`. If it needs a kernel or transport line, the kernel
-is wrong and that is the finding. **Plane-X litmus**: SMTP · blob · embeddings · image generation · SQL
+**Wire is not dialect.** A **wire protocol** is how bytes move (framing, sockets, upgrade, close); a
+**dialect** is what bytes mean (a vendor's request shape, a JSON-RPC method vocabulary, a media
+envelope). They are different kinds and they are never one crate. **Adding a WIRE** = one in-tree
+transport crate, named for the wire and never for a plane: `busbar-transport-<plane-key>` is a
+finding, ceiling 0, and a plane's serving logic moved into a transport crate is the plane-transport
+fusion this architecture exists to forbid. **Adding a DIALECT** = one crate
+`busbar-plane-<plane>-<dialect>` whose only workspace dependencies are `busbar-contract` and its own
+plane; a plane declares its wire surface as data and a transport mounts any plane generically
+(`PLUGIN-TREE.md` §5). **Adding a plane** = one crate from `plane-template`. If any of the three
+needs a kernel line, or a line in an EXISTING transport, the kernel is wrong and that is the finding.
+`docs/design/PLUGIN-TREE.md` is normative for every kind boundary named here. **Plane-X litmus**: SMTP · blob · embeddings · image generation · SQL
 proxy (SCRAM as a challenge-response Handshake unit) · Kafka/MQTT (cross-node fan-out; SASL handshake;
 message-level) · video · SSH/git · webhook fan-out · vector DB · VPN (Noise handshake; flow-level) · DNS.
 
@@ -1113,6 +1150,14 @@ message-level) · video · SSH/git · webhook fan-out · vector DB · VPN (Noise
 
 ## 7. Other kinds
 
+*(`docs/design/PLUGIN-TREE.md` is normative for every kind below: the ONE trait each implements, what
+it may depend on and what may depend on it, its ceiling row, its testkit battery, and the migration
+of the six kinds that today have gate rules but no implementor of their `busbar-contract` trait.)*
+
+- **Dialect**: one crate per wire vocabulary, `busbar-plane-<plane>-<dialect>`; pure; declares its
+  claims, locations, schemes, streaming content type, head keys, verbs and meter-locator pointers;
+  translates bytes ↔ its plane's IR; its only workspace dependencies are `busbar-contract` and its
+  own plane.
 - **Auth**: `LOCATIONS` (arrival forms) + `verify` (pure, or `IO: true` for LDAP/OIDC with a deadline and
   `Access` entries) returning facts or a `Challenge` inside a Handshake unit; `refresh` on the node Tick
   for key material; `auth-lease` mandatory.
@@ -1127,7 +1172,8 @@ message-level) · video · SSH/git · webhook fan-out · vector DB · VPN (Noise
   rewrite / permutation); `HookView` declared-key; `HookFacts { permutation, restrict, veto, rewrite, tap }`;
   `on_failure` default closed for 1.6.0-native hooks only; a migrated 1.5.5 hook keeps `on_error` default `nothing` (the failing gate does not participate — §4.7, PB-1); `HookFailed`; `max_priced_delta`; `may_change_destination`.
 - **Export**: at-least-once with ack for 1.6.0-native export plugins; the 1.5.5 `export:` sink subsystem (prometheus, request-log-webhook, request-log-file, otlp) stays fire-and-forget at-most-once with its admission gate and `durable: true` refusal (PB-12); `Segment` export for retention; `ANCHOR`; owns sink and retention.
-- **Dynamic ABI**: auth/secret/hook/export/store; adapters; mandatory signatures; `Load` entries.
+- **Dynamic ABI** (not a kind — the loader is a TCB crate): auth/secret/hook/export/store; adapters;
+  mandatory signatures; `Load` entries.
 
 ---
 
@@ -1547,6 +1593,45 @@ the unit they entitle. Totality and type-level step order are what the surface c
   mutations are reachable only on the admin listener, never composed into a plane's own route
   table. Together these are the hub-and-spoke shape already enforced; this row names it in the
   owner's words so it is legible as one decision rather than five independent rules.
+
+### Decisions 2026-09-07 (owner) — THE PLUGIN TREE
+
+*(Normative spec: `docs/design/PLUGIN-TREE.md`. Where a row below and a sentence in §1–§7 disagree
+about a kind boundary, this register and that spec win.)*
+
+- **"busbar = core + plugins. ~10 plugin KINDS. Kinds never cross-contaminate: no plane-transport,
+  no one-offs; build it into compilation and CI. Dialects can't call transport willy nilly. All
+  dialects are siblings using traits; one dialect must not look different in shape from another;
+  same for planes and every kind. It's a TREE: they all integrate with core the same way."** Nine
+  plugin kinds — plane, dialect, transport, auth, egress-auth, store, secret, hook, export — plus
+  the core `unit` row, which is never loadable. `loader` and `abi` are TCB crates, not kinds; "rate
+  card" is config, not a kind. Enforced by `cargo xtask gate kind-isolation` (`PLUGIN-TREE.md`
+  Appendix G) with six rows: `:name :deps :vocab :registry :shape :testkit`.
+- **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
+  `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
+  `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"
+  edge expressed in the name. The gate reads the kind from segment two, so directory name and
+  `package.name` must agree.
+- **DIALECT is its own kind.** One crate per wire vocabulary, under its plane. The plane owns the
+  IR and is dialect-neutral; a dialect's only workspace dependencies are `busbar-contract` and its
+  own plane. This SUPERSEDES the 2026-09-06 row "one crate per plane: the codec folds into its
+  plane" — **D36 becomes the SPLIT of each codec into dialect crates, not a fold.**
+- **The voice plane is renamed `streams`** (its config section is already `streams:`). The
+  1.5.5-frozen `export.<n>.streams` field is a different key, coexists unchanged, and never moves.
+- **`busbar-caps` → `busbar-core-capabilities`**, with the rest of the core rename table in
+  `PLUGIN-TREE.md` §7.
+- **The token signer lands in `busbar-unit-auth`** — not in the capability crate and not in a
+  plugin. (This closes the third open question of the wave-3 execution plan.)
+- **Transports are WIRES only** — `http`, `ws`, `sse`, `grpc`, `stdio`, `tcp`, `tls`, and the new
+  generic WebRTC and telephony wires. **A transport is never named for a plane;
+  `busbar-transport-<plane-key>` is a finding at ceiling 0.** This REVERSES the reading of §6 that
+  authorised `busbar-transport-a2a` / `-mcp` / `-voice`; that work is a dialect and a plane's
+  declared route data, not a transport crate, and the execution plan's §2 and §5 are repriced
+  against it.
+- **Planes DECLARE routes as data; transports mount any plane generically.** The six declarations
+  the contract lacks (request method, content type, streaming kind, body-pointer routing, ingress
+  service/method descriptor, refusal→wire-code mapping) are specified kind-agnostically in
+  `PLUGIN-TREE.md` §5; none of them names a transport or a plane.
 
 **Proposal awaiting the owner (not a decision):** the admin "plane" is a codec for the admin wire
 whose only destination is core (`busbar-unit-verbs` executes; scope always checked; admin listener
