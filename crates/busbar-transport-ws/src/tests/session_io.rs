@@ -22,7 +22,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::{Transport, TransportKeyHandle};
+use busbar_contract::Transport;
 use busbar_contract_transport::driver::Outcome;
 use busbar_contract_transport::registry::facts as tfacts;
 use busbar_contract_transport::session::{
@@ -295,15 +295,10 @@ async fn the_close_code_reaches_the_peer() {
 
 // ── the whole accept path, against a client that is a library ───────────────────────────────────
 
-fn test_key_handle() -> TransportKeyHandle {
-    struct Seal;
-    impl busbar_contract::plugin::KernelSeal for Seal {
-        fn seal_origin(&self) -> &'static str {
-            "test"
-        }
-    }
-    TransportKeyHandle::issue(&Seal, 0, "test")
-}
+/// The battery beside this one already forges a seal, and there is exactly one in this crate's test
+/// tree on purpose: a second implementation of the contract's sealing trait is a second place a
+/// forged seal can be written, which is what the construction gate counts.
+use crate::battery::test_key_handle;
 
 /// One upgrade request, as a client library builds one.
 fn upgrade_request(
