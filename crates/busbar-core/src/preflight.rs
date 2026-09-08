@@ -35,6 +35,22 @@ fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
+/// THE ENGINE'S trust policy for a `plugins:` block — [`busbar_plugin_loader::trust_policy`] with
+/// the ENGINE BINARY's version supplied.
+///
+/// The resolver takes `binary_version` as a parameter rather than reading its own
+/// `CARGO_PKG_VERSION`, because the version that belongs on the policy is the one an operator sees
+/// in a refusal and in telemetry — this crate's, not the loader's, which versions on its own line.
+/// This is the ONE place that answer is given, so every automatic path (boot / config reload /
+/// config apply / admin plugin reload / the admin catalog / `--list-plugins`) states the same
+/// version. The one caller that does NOT use it is the plugin ROLLBACK, which deliberately passes
+/// the artifact's own version instead.
+pub fn engine_trust_policy(
+    plugins_cfg: &config::PluginsCfg,
+) -> Result<busbar_plugin_sign::TrustPolicy, String> {
+    busbar_plugin_loader::trust_policy(plugins_cfg, env!("CARGO_PKG_VERSION"))
+}
+
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
 /// (`prior = None`) and the config plane's apply/reload (`prior = Some(current)`). On apply,
 /// process-lifetime state is REUSED from the prior snapshot (HTTP client pool, governance key DB,
@@ -186,9 +202,8 @@ pub fn plugins_preflight(
     //    leaves the floor empty on purpose — it is an observed fact, not a config value — so this is
     //    the one seam that arms it, and it is the seam every automatic path (boot / config reload /
     //    config apply / admin plugin reload) runs through.
-    let mut policy = plugins_cfg
-        .to_policy()
-        .map_err(|e| format!("plugins.trust is invalid: {e}"))?;
+    let mut policy =
+        engine_trust_policy(plugins_cfg).map_err(|e| format!("plugins.trust is invalid: {e}"))?;
     let data_dir = fleet_data_dir();
     let (mut high_water, hw_note) = busbar_plugin_loader::HighWaterMarks::load(data_dir.as_deref());
     if let Some(note) = hw_note {

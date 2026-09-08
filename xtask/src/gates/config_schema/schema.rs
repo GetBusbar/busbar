@@ -107,6 +107,12 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // the snapshot it produces is byte-identical. Tracked as a DIRECTORY so a future file split
         // under it is automatically covered.
         "crates/busbar-substrate-values/src/config".to_string(),
+        // The `plugins:` block is not the substrate's at all: its one reader is the plugin
+        // subsystem, so the grammar is declared in `busbar-plugin-loader` beside the resolution of
+        // it, and `busbar_core::config` re-exports it at its historical path. Tracked as a FILE
+        // because the grammar is one module; a split under it must be added here, which is the
+        // point — a source silently leaving this set is how a frozen grammar silently un-freezes.
+        "crates/plugin-loader/src/config.rs".to_string(),
         "crates/secret-ref/src/lib.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.
