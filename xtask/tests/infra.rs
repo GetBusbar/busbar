@@ -564,6 +564,42 @@ fn strip_comment_line_keeps_string_literals_intact() {
 
 // ── planes ──────────────────────────────────────────────────────────────────────────────────────
 
+/// EVERY KEY THE DIRECTORY-RESOLVED GREP GATES SCAN IS PUT TO THE TREE, not trusted.
+///
+/// `blocking-ffi`, `response-header` and `settings-leak` add the resolved plane homes to their scan
+/// roots, and they now read one list to do it. A list is only worth sharing if it cannot be wrong,
+/// and the one way it can be wrong is a key `PlaneRoots::resolve` cannot find a home for: `llm` and
+/// `voice` declare their grammar in `src/lib.rs`, whose directory is `src`, so naming either here
+/// resolves to `Missing` and turns all three gates RED. That mistake is one edit away from
+/// `plane_keys_protocol()`, which DOES include `voice`.
+///
+/// What this case cannot do is notice a plane added to the tree and NOT to the list. Nothing can;
+/// the extraction turns four edits into one, it does not make the one edit mandatory. Said here
+/// rather than left for a reader to assume.
+#[test]
+fn every_key_the_grep_gates_resolve_by_directory_has_a_home_on_this_tree() {
+    let roots = PlaneRoots::at(repo_root().join("crates"));
+    for k in planes::PLANE_SCAN_KEYS {
+        assert!(
+            planes::PLANE_KEYS.contains(k),
+            "`{k}` is not a plane this repository has at all"
+        );
+        let home = roots.resolve(k);
+        assert!(
+            home.is_ok(),
+            "`{k}` has no directory-resolvable home, so every gate reading this list scans zero \
+             files of it — and zero files is the passing answer to every ban: {home:?}"
+        );
+    }
+    // The pairing the structure-lint gate's own two-element list is locked to, stated as an
+    // assertion so the two declarations cannot drift apart unnoticed.
+    assert_eq!(
+        planes::PLANE_SCAN_KEYS,
+        xtask::gates::structure_lint::roots::PLANES,
+        "structure-lint's plane list and the grep gates' must name the same planes"
+    );
+}
+
 #[test]
 fn the_plane_key_contract_matches_plane_keys_sh() {
     assert_eq!(planes::PLANE_KEYS, ["llm", "mcp", "a2a", "voice"]);
