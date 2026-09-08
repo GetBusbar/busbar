@@ -80,7 +80,10 @@ them). Each axis is blind to the other two; only the kernel composes them.
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
   `surface-ceiling:grammar`; `busbar-contract-transport` — the transport-facing contract: the
   connection and listener handles, the detached stream, the closed transport failure and close
-  codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
+  codes, the arrival record, the upstream address, the reserved transport fact keys, the DUPLEX
+  SESSION SEAM (a session crosses ONCE at the open and what comes back is a handle, so the state
+  lives on the driver's side and the transport holds an integer; frames are driven one at a time
+  and infallibly; every ending closes, and the ending names which side went first), the kind's ABI
   generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
