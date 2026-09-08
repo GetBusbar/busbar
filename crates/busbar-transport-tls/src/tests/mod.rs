@@ -508,6 +508,7 @@ fn every_io_error_kind_maps_through_the_table() {
             TransportError::AddressRefused,
         ),
         (io::ErrorKind::InvalidInput, TransportError::AddressRefused),
+        (io::ErrorKind::UnexpectedEof, TransportError::Reset),
         (io::ErrorKind::BrokenPipe, TransportError::Closed),
         (io::ErrorKind::NotFound, TransportError::Closed),
     ] {
@@ -517,6 +518,58 @@ fn every_io_error_kind_maps_through_the_table() {
             "io::ErrorKind::{kind:?} maps to {expected:?}"
         );
     }
+}
+
+/// A peer that vanishes without the close alert did not end the stream; it was cut.
+///
+/// This crate is careful about the send side — `send_close_notify` exists so this transport never
+/// leaves a peer guessing — and the receive side owes the same honesty. rustls reports a peer that
+/// went away with no `close_notify` as `UnexpectedEof` rather than as end of stream, because that
+/// is exactly what a truncation attack looks like from the inside, and a reader that files it
+/// under the same word as a broken pipe has thrown the distinction away before anyone above could
+/// use it. A clean close is already told apart at this seam — it ends the frame stream rather than
+/// erroring — so what this cell pins is that the CUT is named as a cut.
+///
+/// The peer here is a real rustls server rather than another `TlsTransport`, because this
+/// transport's own `close` sends the alert: the fixture has to be something that can decline to.
+#[tokio::test]
+async fn a_peer_that_vanishes_without_the_close_alert_is_a_reset_not_a_close() {
+    let (server_cfg, client_cfg) = self_signed();
+    let raw = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = raw.local_addr().unwrap().to_string();
+    let acceptor = tokio_rustls::TlsAcceptor::from(server_cfg);
+    let peer = tokio::spawn(async move {
+        let (sock, _) = raw.accept().await.unwrap();
+        let mut tls = acceptor.accept(sock).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut tls, b"one frame, and then nothing")
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::flush(&mut tls).await.unwrap();
+        // And vanish. Dropping the stream closes the socket under it without writing the alert,
+        // which is the shape a truncation has and a shutdown does not.
+        drop(tls);
+    });
+
+    let client = StdArc::new(TlsTransport::new());
+    client.register_client_config(0, client_cfg);
+    let conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let mut frames = client.frames(conn);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"one frame, and then nothing");
+
+    let end = frames
+        .next()
+        .await
+        .expect("a truncated stream reports the cut rather than ending as if the peer was done");
+    assert_eq!(
+        end.unwrap_err(),
+        TransportError::Reset,
+        "a stream that ended without the close alert is a connection cut mid-stream"
+    );
+    peer.await.unwrap();
 }
 
 #[tokio::test]
