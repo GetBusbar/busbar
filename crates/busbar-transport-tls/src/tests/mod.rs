@@ -288,6 +288,86 @@ async fn byte_exact_round_trip_over_a_real_handshake() {
     assert_eq!(frame.meta.bytes, payload.len() as u64);
 }
 
+/// Frame meta is honest on frames a REAL `TlsTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The round-trip cell above asserts one correct byte count against one fixture, which a metering
+/// regression returning a constant that happens to equal that fixture's length ships straight
+/// through. The metering path reads `FrameMeta.bytes` as the bytes meter class, so a dishonest one
+/// is a figure somebody is charged, not a cosmetic slip.
+///
+/// This transport frames a BYTE STREAM, so a write is not a frame: the record layer and the read
+/// budget between them decide where the frames fall, and one payload here is deliberately longer
+/// than a single read so the frames under test include ones carved out of a partly filled buffer.
+/// The loop therefore runs on the total rather than on a frame count, and the total is checked
+/// against what the fixture wrote — `meta.bytes == bytes.len()` alone is only the frame agreeing
+/// with itself, since both come off the same read.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &busbar_contract::wire::Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &busbar_contract::wire::Frame, by: i64) -> busbar_contract::wire::Frame {
+        busbar_contract::wire::Frame {
+            meta: busbar_contract::wire::FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
+
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    let payloads: [Vec<u8>; 2] = [
+        vec![b'L'; READ_CHUNK_BYTES + 1024],
+        b"and a short one".to_vec(),
+    ];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        client
+            .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut frames = server.frames(server_conn);
+    let mut metered = 0_u64;
+    let mut carried = 0_u64;
+    while metered < on_the_wire {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        metered += frame.meta.bytes;
+        carried += frame.bytes.len() as u64;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+    assert_eq!(carried, on_the_wire, "every byte the fixture wrote arrived");
+    assert_eq!(
+        metered, on_the_wire,
+        "and the figure the meter would read is that same number, not a constant that fits one read"
+    );
+}
+
 #[tokio::test]
 async fn half_close_and_cancel_mid_frame() {
     let (server, listener, client) = bound_pair().await;
