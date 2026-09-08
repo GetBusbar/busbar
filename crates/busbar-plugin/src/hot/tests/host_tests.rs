@@ -352,7 +352,7 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
     /// verbatim (`git show 527bdbf96:crates/plane-abi-spike/src/tests/lib_tests.rs`).
     const BUDGET_NS: f64 = 1000.0;
     const N: u64 = 200_000;
-    const ROUNDS: usize = 5;
+    const REPEATS: usize = 5;
 
     let (name, tokens, budget, tenant, prio, flags) = bench_sample();
     let g = Facts::new(tokens, budget, tenant, prio, flags, &name);
