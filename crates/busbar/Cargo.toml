@@ -249,7 +249,12 @@ root-a2a = []
 # against the plane's own op-keyed tables while the serving path stays untouched, which is what makes
 # the feature-off binary byte-identical by construction rather than by measurement. It carries no
 # config key, no environment variable and no boot line; off, it costs one uncompiled impl block.
-root-a2a-serve = []
+#
+# `tower` is this feature's own edge, for the reason it is `root-admin`'s: wrapping a mounted router
+# means calling it as the service it already is, which is the one thing that guarantees the inner
+# surface answers exactly as it did. It costs the shipped binary nothing — `root-admin` is in
+# `default` and already carries the same edge — and a build with neither feature drops it.
+root-a2a-serve = ["dep:tower"]
 # THE MCP PLANE'S KERNEL BINDINGS, DEFAULT ON. Not a second MCP switch: `plane-mcp` above still
 # decides whether this binary speaks the protocol at all. This one decides whether the MCP plane's
 # bindings to the fourteen units are compiled and sealed at boot, which is the step BEFORE any byte
