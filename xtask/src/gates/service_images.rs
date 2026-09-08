@@ -31,10 +31,18 @@
 //! 7. [`ROW_EVERY_PIN_USED`] — every row of the table is used by at least one workflow. An unused
 //!    pin is a pin nobody bumps, and it is how the table starts describing a world that stopped
 //!    existing while still reading as authoritative.
-//! 8. [`ROW_RELEASE_CHECK`] — THE SCAN SET IS WIDER THAN THE WORKFLOWS. The container tags
-//!    `scripts/release-check.sh` names in its own `docker run` lines resolve to rows in the SAME
-//!    table. That script is where the drift was found, and a lint that reads only
-//!    `.github/workflows/` would have declared the tree clean on the day the hole was open.
+//! 8. [`ROW_RELEASE_CHECK`] — THE SCAN SET IS WIDER THAN THE WORKFLOWS, and the SHELL SIDE IS HELD
+//!    TO THE SAME BAR. Every container any script under [`SCRIPT_DIR`] starts with `docker run` is
+//!    named in the table, PINNED BY DIGEST, and pinned to the digest that row carries — rules 5, 4
+//!    and 6 again, on the other side of the fence.
+//!
+//!    Both halves of that sentence were holes. The scan set was the single literal path
+//!    `scripts/release-check.sh`, so any other script starting a container was outside everything
+//!    the gate read — the original defect (`.github/workflows/` only) one directory down. And the
+//!    rule asked ONLY whether the image was NAMED in the table: `postgres:16` has a row, so
+//!    `docker run … postgres:16` satisfied it and went green. Having a row is not being pinned by
+//!    one. That is the exact drift the table was created to end, reported as success by the rule
+//!    written to catch it.
 //!
 //! THE ESCAPE HATCH, ported exactly as the shell had it: an `image:` whose value is a workflow
 //! expression (`${{ … }}`) with no image literal in it is exempt. The value is not knowable from
@@ -58,6 +66,12 @@ use crate::ledger::{Row, Verdict};
 pub const IMAGES_TSV: &str = "testing/fleet-fixtures/service-images.tsv";
 pub const WORKFLOW_DIR: &str = ".github/workflows";
 pub const RELEASE_CHECK: &str = "scripts/release-check.sh";
+
+/// THE SCAN SET FOR THE SHELL SIDE, and it is a DIRECTORY on purpose. Naming
+/// `scripts/release-check.sh` literally made every other script that starts a container invisible —
+/// the same defect as reading `.github/workflows/` alone, one directory down. A gate that has to be
+/// told about each new file is a gate that is silently narrow between edits.
+pub const SCRIPT_DIR: &str = "scripts";
 
 pub const ROW_TABLE: &str = "images|table-readable";
 pub const ROW_SHAPE: &str = "images|table-digest-shape";
@@ -336,9 +350,73 @@ impl Gate for ServiceImagesGate {
             self,
             "release-check.sh runs a container the table does not pin",
             &[ROW_RELEASE_CHECK],
-            Some(("postgres:16 >/dev/null", "ghostdb:9 >/dev/null")),
+            Some((&pinned_postgres(), "ghostdb:9 >/dev/null")),
             &["ghostdb:9", "is not named in"],
         ));
+
+        // THE HOLE THIS ROW USED TO HAVE. `postgres:16` HAS a row in the table, so under the old
+        // "is it named?" rule this plant was GREEN — and it is the literal text the script shipped.
+        // A row in the table is not a pin; the floating tag resolves to whatever the registry
+        // serves, which is the drift the table was written to end.
+        report.push(plant_release_check(
+            cx,
+            self,
+            "release-check.sh runs a container on a FLOATING tag that the table does name",
+            &[ROW_RELEASE_CHECK],
+            Some((&pinned_postgres(), "postgres:16 >/dev/null")),
+            &["postgres:16", "FLOATING tag"],
+        ));
+
+        report.push(plant_release_check(
+            cx,
+            self,
+            "release-check.sh pins a digest the table disagrees with",
+            &[ROW_RELEASE_CHECK],
+            Some((
+                &pinned_postgres(),
+                &format!("postgres:16@{PLANTED_DIGEST} >/dev/null"),
+            )),
+            &["postgres:16", PLANTED_DIGEST],
+        ));
+
+        // THE WIDENED SCAN SET, as its own plant: a container started by SOME OTHER script under
+        // scripts/. Under the old shape — which named `scripts/release-check.sh` literally — this
+        // file was outside everything the gate read, and a new script running an unpinned service
+        // was invisible until someone thought to add its path.
+        {
+            let mut ov = Overlay::new();
+            ov.set(
+                "scripts/zz-planted-service.sh",
+                "#!/usr/bin/env bash\ndocker run -d --rm --name planted -p 1:1 postgres:16\n",
+            );
+            report.push(prove_red(
+                cx,
+                self,
+                "a container started by a script OTHER than release-check.sh",
+                &[ROW_RELEASE_CHECK],
+                ov,
+                &["zz-planted-service.sh", "FLOATING tag"],
+            ));
+        }
+
+        // AND THE TWO FALSE POSITIVES THE WIDENING WOULD OTHERWISE HAVE INTRODUCED, kept green on
+        // purpose: a lint with false positives is a lint somebody adds an allowlist to, and the
+        // allowlist is where the real one hides.
+        {
+            let mut ov = Overlay::new();
+            ov.set(
+                "scripts/zz-planted-prose.sh",
+                "#!/usr/bin/env bash\n\
+                 emit \"docker:boot-bare\" \"the bare documented docker run boots and answers ok\"\n\
+                 run_it -e ORG=\"Example Org\" \"$SOME_IMAGE\"\n",
+            );
+            report.push(prove_green(
+                &cx.with_overlay(ov),
+                self,
+                "prose naming `docker run`, and a quoted value containing a space, are not containers",
+                &[ROW_RELEASE_CHECK],
+            ));
+        }
 
         report.push(plant_release_check(
             cx,
@@ -533,6 +611,14 @@ const OWED: &[&str] = &[
     ROW_RELEASE_CHECK,
 ];
 
+/// The exact `docker run` tail the qa gate's script carries for postgres, rebuilt from the table so
+/// the plants below cannot drift away from the text they plant over: a plant that no longer matches
+/// is a self-test case that silently stops running.
+fn pinned_postgres() -> String {
+    "postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b >/dev/null"
+        .to_string()
+}
+
 /// A well-formed digest that pins nothing real, for the plants that need one.
 const PLANTED_DIGEST: &str =
     "sha256:0000000000000000000000000000000000000000000000000000000000000000";
@@ -542,6 +628,10 @@ const PLANTED_DIGEST: &str =
 /// clean.
 fn workflow_spec() -> WalkSpec {
     WalkSpec::new([WORKFLOW_DIR]).min_files(1)
+}
+
+fn script_spec() -> WalkSpec {
+    WalkSpec::new([SCRIPT_DIR]).min_files(1)
 }
 
 // ── the readers ─────────────────────────────────────────────────────────────────────────────────
@@ -724,19 +814,74 @@ fn is_well_formed_digest(d: &str) -> bool {
     })
 }
 
-/// Every container tag `scripts/release-check.sh` names in a `docker run`.
+/// Every container a shell script starts with `docker run`, as an [`ImageRef`] — so a reference
+/// carrying no `@sha256:` arrives with `digest: None` and is a FLOATING pin, exactly as a workflow's
+/// would be.
 ///
-/// The tags sit at the END of backslash-continued invocations, so the lines are joined first. The
-/// image is the first token after `docker run` that is neither a flag nor a flag's value; a token
-/// carrying a `$` is a shell expansion this reader cannot resolve and is left alone, the same way
-/// a `${{ … }}` workflow expression is.
-fn release_check_tags(text: &str) -> Vec<String> {
+/// The reference sits at the END of backslash-continued invocations, so the lines are joined first.
+/// The image is the first token after `docker run` that is neither a flag nor a flag's value; a
+/// token carrying a `$` is a shell expansion this reader cannot resolve and is left alone, the same
+/// way a `${{ … }}` workflow expression is.
+/// The arguments of a `docker run` INVOCATION, or `None` when the text merely mentions the phrase.
+///
+/// Command position is the discriminator, and it is needed: `scripts/release-gate/expected-ids.sh`
+/// carries the row label `"the bare documented docker run boots and answers ok on /healthz"`, whose
+/// next word is `boots` — a valid image name. A reader that accepted any occurrence reported that
+/// prose as a container this repository starts. A real invocation is preceded by nothing, or by a
+/// command separator: `$( `, a backtick, `;`, `&&`, `||`, `|`, `(`, or `&`.
+fn docker_run_args(joined: &str) -> Option<&str> {
+    const NEEDLE: &str = "docker run";
+    let mut from = 0usize;
+    while let Some(rel) = joined[from..].find(NEEDLE) {
+        let at = from + rel;
+        let head = joined[..at].trim_end();
+        let in_command_position =
+            head.is_empty() || head.ends_with(['(', '`', ';', '|', '&']) || head.ends_with("$(");
+        if in_command_position {
+            return Some(&joined[at + NEEDLE.len()..]);
+        }
+        from = at + NEEDLE.len();
+    }
+    None
+}
+
+/// Split on whitespace OUTSIDE quotes, and drop the quote characters. Not a shell parser — it does
+/// not expand anything — just enough to keep a quoted value that contains a space as ONE token.
+fn shell_tokens(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in s.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c.is_whitespace() => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            None => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn script_images(f: &SourceFile) -> Vec<ImageRef> {
+    let name = basename(&f.rel_str()).to_string();
     let mut out = Vec::new();
     let mut logical = String::new();
-    for raw in text.lines() {
+    let mut start_line = 0usize;
+    for (n, raw) in f.text.lines().enumerate() {
         let line = raw.trim();
         if line.starts_with('#') && logical.is_empty() {
             continue;
+        }
+        if logical.is_empty() {
+            start_line = n + 1;
         }
         if let Some(head) = line.strip_suffix('\\') {
             logical.push_str(head.trim_end());
@@ -745,10 +890,15 @@ fn release_check_tags(text: &str) -> Vec<String> {
         }
         logical.push_str(line);
         let joined = std::mem::take(&mut logical);
-        let Some(rest) = joined.split_once("docker run").map(|(_, r)| r) else {
+        let Some(rest) = docker_run_args(&joined) else {
             continue;
         };
-        let mut tokens = rest.split_whitespace();
+        // QUOTE-AWARE, and it has to be. `-e LDAP_ORGANISATION="Example Org"` splits on whitespace
+        // into three tokens, the third of which (`Org"`) is a perfectly well-formed image NAME —
+        // so a whitespace splitter reports `scripts/release-check-1.5.2.sh` as running a container
+        // called `Org`. A lint with false positives is a lint somebody adds an allowlist to.
+        let toks = shell_tokens(rest);
+        let mut tokens = toks.iter().map(String::as_str);
         while let Some(token) = tokens.next() {
             if token.starts_with('>') || token.starts_with('|') || token.starts_with('&') {
                 break;
@@ -770,9 +920,25 @@ fn release_check_tags(text: &str) -> Vec<String> {
                 }
                 continue;
             }
-            let token = token.trim_matches(['"', '\'']);
-            if !token.contains('$') && is_image_name(token) {
-                out.push(token.to_string());
+            if token.contains('$') {
+                break;
+            }
+            let loc = format!("{name}:{start_line}");
+            // A digest-pinned reference reads exactly as a workflow's does, so it is parsed by the
+            // same function — one answer to "what is a pinned reference", not two.
+            let pinned = pinned_refs(token);
+            if let Some((reference, digest)) = pinned.into_iter().next() {
+                out.push(ImageRef {
+                    loc,
+                    reference,
+                    digest: Some(digest),
+                });
+            } else if is_image_name(token) {
+                out.push(ImageRef {
+                    loc,
+                    reference: token.to_string(),
+                    digest: None,
+                });
             }
             break;
         }
@@ -949,44 +1115,96 @@ fn rule_every_pin_used(found: &[ImageRef], pins: &[Pin], scanned: bool) -> Row {
     }
 }
 
+/// THE SCRIPT SIDE, AND IT ASKS THE WORKFLOW SIDE'S THREE QUESTIONS, NOT ONE.
+///
+/// TWO HOLES, and they were the same hole at two scales.
+///
+///  1. THE SCAN SET WAS ONE FILE. `scripts/release-check.sh` was named literally, so any OTHER
+///     script that starts a container was outside everything this gate reads — the same shape as
+///     the original defect (a lint that read `.github/workflows/` only) one directory down. The
+///     scan is now [`SCRIPT_DIR`], every `*.sh` in it, and a new script that runs a container is
+///     covered on the day it is written rather than on the day someone remembers to add its path.
+///
+///  2. AND IT ONLY ASKED WHETHER THE IMAGE WAS *NAMED*. A row exists in the table for
+///     `postgres:16`, so `docker run … postgres:16` — a FLOATING tag — satisfied "named in the
+///     pinned table" and the gate went green. That is precisely the drift the table was created to
+///     end: four workflows agreed on a digest while the script the QA GATE runs resolved
+///     `postgres:16` to whatever the registry served that morning. The table pinned bytes the qa
+///     gate never used, and this rule reported success over it.
+///
+/// So a script's container is now held to the workflow side's bar, verbatim: named in the table,
+/// PINNED BY DIGEST, and pinned to the digest the table carries.
 fn rule_release_check(cx: &Ctx, pins: &[Pin]) -> Row {
-    let text = match cx.read(RELEASE_CHECK) {
-        Ok(t) => t,
+    let files = match cx.walk(&script_spec()) {
+        Ok(files) => files,
         Err(e) => {
             return Row::fail(
                 ROW_RELEASE_CHECK,
-                "the qa gate's own script could not be read",
-                format!("{RELEASE_CHECK}: {e}"),
+                "the script directory could not be scanned",
+                format!("{SCRIPT_DIR}: {e}"),
             )
         }
     };
-    let tags = release_check_tags(&text);
-    if tags.len() < MIN_RELEASE_CHECK_TAGS {
+    let found: Vec<ImageRef> = files
+        .iter()
+        .filter(|f| f.rel_str().ends_with(".sh"))
+        .flat_map(script_images)
+        .collect();
+
+    if found.len() < MIN_RELEASE_CHECK_TAGS {
         return Row::fail(
             ROW_RELEASE_CHECK,
-            format!(
-                "only {} container tag(s) found in {RELEASE_CHECK}",
-                tags.len()
-            ),
+            format!("only {} container(s) found under {SCRIPT_DIR}", found.len()),
             format!(
                 "floor is {MIN_RELEASE_CHECK_TAGS}; the drift this gate exists to stop was found \
-                 in this script, and a reader that finds no containers in it clears it vacuously"
+                 in {RELEASE_CHECK}, and a reader that finds no containers there clears it \
+                 vacuously"
             ),
         );
     }
-    let offenders: Vec<&String> = tags
-        .iter()
-        .filter(|tag| !pins.iter().any(|p| &&p.image == tag))
-        .collect();
-    if offenders.is_empty() {
+
+    let mut problems: Vec<String> = Vec::new();
+    for img in &found {
+        let Some(pin) = pins.iter().find(|p| p.image == img.reference) else {
+            problems.push(format!(
+                "{}: {} is not named in {IMAGES_TSV}, so the gate that decides a release is not \
+                 pinned to the bytes CI is pinned to",
+                img.loc, img.reference
+            ));
+            continue;
+        };
+        let Some(digest) = &img.digest else {
+            problems.push(format!(
+                "{}: {} is a FLOATING tag. Having a ROW in the table is not being PINNED by it — \
+                 the tag resolves to whatever the registry serves, which is exactly the drift the \
+                 table was written to end",
+                img.loc, img.reference
+            ));
+            continue;
+        };
+        match &pin.digest {
+            Some(want) if want == digest => {}
+            Some(want) => problems.push(format!(
+                "{}: {} is pinned to {digest}, but {IMAGES_TSV} pins {want}",
+                img.loc, img.reference
+            )),
+            None => problems.push(format!(
+                "{}: {} carries a digest, but its row in {IMAGES_TSV} pins none",
+                img.loc, img.reference
+            )),
+        }
+    }
+
+    if problems.is_empty() {
         Row::pass(
             ROW_RELEASE_CHECK,
-            "every container the qa gate's script runs is named in the pinned table",
+            "every container a script runs is pinned by the table's own digest",
             format!(
-                "{} tag(s): {}",
-                tags.len(),
-                tags.iter()
-                    .map(String::as_str)
+                "{} container(s): {}",
+                found.len(),
+                found
+                    .iter()
+                    .map(|i| format!("{} ({})", i.reference, i.loc))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
@@ -994,16 +1212,8 @@ fn rule_release_check(cx: &Ctx, pins: &[Pin]) -> Row {
     } else {
         Row::fail(
             ROW_RELEASE_CHECK,
-            "the qa gate's script runs a container the pinned table does not name",
-            format!(
-                "{} — it is not named in {IMAGES_TSV}, so the gate that decides a release is not \
-                 pinned to the bytes CI is pinned to",
-                offenders
-                    .iter()
-                    .map(|t| t.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+            "a script runs a container that is not pinned to the table's digest",
+            problems.join("; "),
         )
     }
 }
@@ -1164,16 +1374,78 @@ mod tests {
         assert!(extract_images(&[file]).is_empty());
     }
 
-    #[test]
-    fn the_qa_gate_script_names_its_containers() {
+    fn read_script(rel: &str) -> SourceFile {
         let cx = Ctx::workspace().expect("workspace context");
-        let text = cx.read(RELEASE_CHECK).expect("release-check.sh");
-        let tags = release_check_tags(&text);
+        SourceFile {
+            rel: rel.into(),
+            abs: cx.abs(rel),
+            text: cx.read(rel).expect("script"),
+        }
+    }
+
+    #[test]
+    fn the_qa_gate_script_pins_its_containers_by_digest() {
+        let found = script_images(&read_script(RELEASE_CHECK));
         assert!(
-            tags.len() >= MIN_RELEASE_CHECK_TAGS,
-            "the docker-run reader found {tags:?}"
+            found.len() >= MIN_RELEASE_CHECK_TAGS,
+            "the docker-run reader found {found:?}"
         );
-        assert!(tags.iter().any(|t| t == "postgres:16"), "{tags:?}");
-        assert!(tags.iter().any(|t| t == "hashicorp/vault"), "{tags:?}");
+        for want in ["postgres:16", "hashicorp/vault"] {
+            let img = found
+                .iter()
+                .find(|i| i.reference == want)
+                .unwrap_or_else(|| panic!("{want} not found in {found:?}"));
+            // A ROW in the table is not a PIN. This is the assertion the rule used to be missing.
+            assert!(
+                img.digest.is_some(),
+                "{want} is on a floating tag: {found:?}"
+            );
+        }
+    }
+
+    /// The two false positives the widened scan set would otherwise have introduced, both taken
+    /// from real text in this tree.
+    #[test]
+    fn prose_and_quoted_values_are_not_containers() {
+        // `scripts/release-gate/expected-ids.sh` describes a row as "the bare documented docker run
+        // boots and answers ok" — `boots` is a valid image name in the wrong position.
+        let prose = SourceFile {
+            rel: "scripts/x.sh".into(),
+            abs: "scripts/x.sh".into(),
+            text: "emit \"docker:boot-bare\" \"the documented docker run boots and answers ok\"\n"
+                .to_string(),
+        };
+        assert!(
+            script_images(&prose).is_empty(),
+            "{:?}",
+            script_images(&prose)
+        );
+
+        // `scripts/release-check-1.5.2.sh` passes `-e LDAP_ORGANISATION="Example Org"`; a
+        // whitespace splitter reads `Org` as the image.
+        let quoted = SourceFile {
+            rel: "scripts/y.sh".into(),
+            abs: "scripts/y.sh".into(),
+            text: "cid=\"$(docker run -d --rm -e LDAP_ORGANISATION=\"Example Org\" \"$IMG\")\"\n"
+                .to_string(),
+        };
+        assert!(
+            script_images(&quoted).is_empty(),
+            "{:?}",
+            script_images(&quoted)
+        );
+    }
+
+    #[test]
+    fn a_floating_script_container_is_read_as_floating() {
+        let f = SourceFile {
+            rel: "scripts/z.sh".into(),
+            abs: "scripts/z.sh".into(),
+            text: "docker run -d --rm -p 1:1 postgres:16 >/dev/null\n".to_string(),
+        };
+        let found = script_images(&f);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].reference, "postgres:16");
+        assert!(found[0].digest.is_none(), "{found:?}");
     }
 }
