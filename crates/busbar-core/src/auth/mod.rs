@@ -487,7 +487,9 @@ impl AuthMiddleware {
             // providers backed by the same module are DIFFERENT verifiers with different settings, so
             // sharing a cache row between them would let one provider's verdict admit the other's
             // credential. The name is the instance, so the cache key must be the name.
-            let outcome = match cache_here.and_then(|(c, cred)| c.get(provider, cred, now)) {
+            let hit = cache_here.and_then(|(c, cred)| c.get(provider, cred, now));
+            let was_hit = hit.is_some();
+            let outcome = match hit {
                 Some(hit) => hit,
                 None => {
                     let o = module.authenticate(candidate);
@@ -503,7 +505,13 @@ impl AuthMiddleware {
                         for name in &pending_pass {
                             c.put(name, cred, &AuthOutcome::Pass, now, g);
                         }
-                        if cache_here.is_some() {
+                        // Only a MISS commits, the way the buffered `Pass`es above already do. A HIT
+                        // re-`put` here would reset the row's `expires_at` on every request, so a
+                        // credential presented more often than its own TTL would never be
+                        // re-verified against its module and an upstream revocation would never
+                        // land — the door would stay open for exactly as long as the traffic kept
+                        // flowing. See the "A cache HIT is never re-`put`" rule above.
+                        if cache_here.is_some() && !was_hit {
                             c.put(
                                 provider,
                                 cred,
