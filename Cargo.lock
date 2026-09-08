@@ -814,6 +814,7 @@ dependencies = [
  "busbar-kernel",
  "busbar-plugin",
  "busbar-plugin-sign",
+ "busbar-substrate-values",
  "busbar-unit-ledger",
  "busbar-unit-verbs",
  "busbar-unit-wal",
