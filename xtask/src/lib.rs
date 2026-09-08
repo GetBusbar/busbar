@@ -44,6 +44,7 @@ pub mod ledger;
 pub mod manifest;
 pub mod parity;
 pub mod planes;
+pub mod proc;
 pub mod rx;
 pub mod scan;
 pub mod selftest;
