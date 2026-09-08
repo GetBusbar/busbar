@@ -155,6 +155,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate workspace-deps --selftest",
     "cargo xtask gate workspace-deps",
     "cargo xtask full-gate --selftest",
+    "cargo xtask gate audit-ledger --selftest",
+    "cargo xtask gate audit-ledger",
     "cargo xtask gate release-order --format=tsv",
     "cargo xtask teller-steps --root-legs",
     "cargo xtask teller-steps --root-legs-gating",
@@ -240,18 +242,6 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          workspace test run already executes on every push. Invoking it a second time through \
          the gate runner would run the same assertions in the same process for no extra signal.",
         Excuse::XtaskTest("run(&[\"gate\", \"segregation\"])"),
-    ),
-    (
-        "audit-ledger",
-        "the audit register has never been a CI job, and no test executes the gate either: its RED \
-         proof and its verdict are both release-time, in scripts/verify-1.6.0-done.sh, where a red \
-         means 'not finished yet'. That is the whole coverage this gate has — per push it is \
-         unguarded, and this entry is the place that says so rather than the place that implies \
-         otherwise.",
-        Excuse::ReleaseScript(
-            "scripts/verify-1.6.0-done.sh",
-            "cargo xtask gate audit-ledger --selftest",
-        ),
     ),
     (
         "plane-purity-strict",
