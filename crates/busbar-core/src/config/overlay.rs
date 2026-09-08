@@ -17,11 +17,12 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::diagnostics::{
-    diag_error, diag_warn, CONFIG_OVERLAY_CORRUPT_BASE_ONLY, CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
+use busbar_substrate::diagnostics::{
+    CONFIG_OVERLAY_CORRUPT_BASE_ONLY, CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
     CONFIG_OVERLAY_NOT_WRITABLE, CONFIG_OVERLAY_PATCH_UNPARSABLE, CONFIG_OVERLAY_PROBE_LEAK,
     CONFIG_OVERLAY_VERSION_TOO_NEW, CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
 };
+use busbar_substrate::{diag_error, diag_warn};
 
 use super::{
     ConfigMgmtCfg, DeployCfg, GroupCfg, HookCfg, OverlayCfg, RateEntryCfg, RootCfg, StoreCfg,
@@ -114,8 +115,8 @@ pub(crate) fn resolve_backend_with_env(
     probe_fs: bool,
 ) -> Result<OverlayResolution, String> {
     if env_override.is_some() {
-        crate::diagnostics::diag_warn!(
-            crate::diagnostics::DEPRECATED_ENV_VAR_HONORED,
+        busbar_substrate::diag_warn!(
+            busbar_substrate::diagnostics::DEPRECATED_ENV_VAR_HONORED,
             "BUSBAR_CONFIG_OVERLAY is DEPRECATED and will be removed in a future release; set \
              `config.overlay.file` in config.yaml instead. It is honored for now only when \
              `config.overlay` is not set."
