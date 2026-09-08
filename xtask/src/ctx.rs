@@ -68,6 +68,11 @@ impl Overlay {
     pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.files.keys()
     }
+
+    /// A derived input this overlay stands in for, by its key.
+    pub fn command(&self, key: &str) -> Option<&String> {
+        self.commands.get(key)
+    }
 }
 
 /// A planted edit. `apply` reads through the [`Ctx`] it is given, so an edit is always expressed
@@ -335,6 +340,13 @@ impl Ctx {
 
     pub fn overlay(&self) -> Option<&Overlay> {
         self.overlay.as_deref()
+    }
+
+    /// A canned derived input, when one has been planted. The gates that delegate a measurement to
+    /// another instrument read it through here, so a self-test can plant that instrument's ANSWER
+    /// — an overlay lives in this process and a subprocess cannot see it.
+    pub fn overlay_command(&self, key: &str) -> Option<String> {
+        self.overlay().and_then(|o| o.command(key)).cloned()
     }
 
     pub fn abs(&self, rel: impl AsRef<Path>) -> PathBuf {
