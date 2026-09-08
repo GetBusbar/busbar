@@ -337,7 +337,7 @@ free_port_pair() {
   python3 - <<'PYEOF' 2>/dev/null
 import socket, random
 for _ in range(200):
-    base = random.randrange(30000, 45000, 2)
+    base = random.randrange(46000, 46998, 2)
     socks = []
     try:
         for port in (base, base + 1):
@@ -387,10 +387,13 @@ PYEOF
 # anything, which is the state the gate was silently in.
 #
 # The verdict for plane P is then a DIFFERENCE against that control, which is the only form in which
-# a 404 carries information:
-#     control[P] != 404   the probe reaches a real route when P is compiled in  (the positive control)
-#     subject[P] == 404   and the same request 404s once P's crate is gone      (the deletion)
-#     subject[Q] != 404   while every neighbour Q that the control mounted still serves
+# an absence code carries information. `absent` is ITSELF measured per boot, by probing a path no
+# plane can own (404 on the open boot; 401 on the closed one, where the auth middleware refuses an
+# unlisted path before routing) — spelling it "404" everywhere reads a correctly-deleted MCP route
+# as a surviving one:
+#     control[P] != absent   the probe reaches a real route when P is compiled in (the positive control)
+#     subject[P] == absent   and the same request reads absent once P's crate is gone (the deletion)
+#     subject[Q] != absent   while every neighbour Q that the control mounted still serves
 # The third line is the neighbour control: it separates "P's route left with P's crate" from "this
 # boot mounted nothing / the server is broken / the config was rejected", which produce 404 for
 # every plane at once and used to be indistinguishable from a pass.
@@ -402,6 +405,36 @@ PYEOF
 # behind "the request wasn't authenticated". So MCP is probed on its own closed boot via its one
 # unauthenticated route (the protected-resource metadata), and every other plane is probed on an
 # OPEN boot where auth cannot be the reason for anything. `plane_probe_boot` says which is which.
+#
+# ── AND THE THIRD THING THIS LEG GOT WRONG: IT BOOTED THE DELETED PLANE'S OWN CONFIG ─────────────
+#
+# The boot fixture above is a SHARED config that NAMES EVERY PLANE — `mcp:` on the closed boot,
+# `agents:` on the open one — and it was handed unchanged to the mutated binary. But busbar refuses,
+# fail-closed at config resolve, to boot a config that configures a plane the build was compiled
+# WITHOUT ("`agents:` is configured, but this build was compiled without the plane that owns it",
+# "an endpoint block is configured for a plane this build was compiled without"). So for mcp and a2a
+# the subject binary never came up at all and the leg reported "the binary did not come up" — a gate
+# failing for a reason other than the property it measures, and worse, failing on the product doing
+# EXACTLY the right thing.
+#
+# The product is not the defect here; the fixture is. The gate's own subject is a build with the
+# plane compiled out, and an operator running `git rm -r crates/busbar-<P>` also removes the `<P>:`
+# blocks from their config — leaving them in is a misconfiguration the product is supposed to refuse.
+# So the SUBJECT boot for plane P is the same fixture MINUS the sections plane P owns
+# (`plane_config_sections`), and the refusal itself is promoted from an accident into EVIDENCE:
+#
+#   REFUSAL WITNESS (`refusal_witness`): the mutated binary is ALSO booted on the UNSTRIPPED
+#   fixture — the one that still names P's section — and it must REFUSE, naming a plane the build
+#   was compiled without. The control binary boots that identical config fine. That pair is a far
+#   sharper presence/absence discriminator than any status code: the config the plane's own build
+#   accepts is the config the plane-less build rejects, at the plane's own section.
+#
+#   Because P's routes MOUNT FROM P's config section (a2a's routes exist only with `agents:` +
+#   `public_url`; mcp's are derived from the `mcp:` endpoint), P's 404 on the STRIPPED subject boot
+#   is a NECESSARY condition and not, on its own, a sufficient one — the refusal witness is what
+#   makes it sufficient. For a plane that owns no section in the fixture (llm, voice) the subject
+#   config is byte-identical to the control's and the 404 carries the whole verdict by itself, which
+#   is why `refusal_witness` reports "not applicable" rather than inventing a section to strip.
 
 # ── THE PER-PLANE PROBE TABLE ────────────────────────────────────────────────────────────────────
 # The ONLY per-plane knowledge in this leg: which boot mounts the plane, and the exact request that
@@ -427,6 +460,14 @@ plane_probe_body() {
     llm | mcp) printf '' ;;
   esac
 }
+# WHICH TOP-LEVEL CONFIG KEYS IN THE BOOT FIXTURE BELONG TO THIS PLANE — the sections a `git rm -r`
+# of the plane crate obliges the operator to delete from their config too, and therefore the sections
+# the SUBJECT boot must not carry. Space-separated; empty for a plane the fixture does not configure.
+# This is the same fail-closed pairing the product enforces at resolve: the section exists only while
+# the plane that owns it is compiled in.
+plane_config_sections() { case "$1" in mcp) echo "mcp" ;; a2a) echo "agents" ;; *) echo "" ;; esac; }
+# section_omitted <section> <omit-list> → 0 when <section> is in the space-separated <omit-list>.
+section_omitted() { case " ${2:-} " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ── WHAT THE CALIBRATION FOUND THE FIRST TIME IT RAN, and why the llm probe is the shape it is ────
 #
@@ -451,39 +492,51 @@ plane_probe_body() {
 # by `control_codes` on every run, and a probe that has drifted back to 404 fails the positive
 # control instead of quietly passing the gate.
 
-# write_boot_config <mode> <dir> <port> <admin_port> — the two configs, written into <dir>.
+# write_boot_config <mode> <dir> <port> <admin_port> [omit-sections] — the two configs, into <dir>.
 #   mcp   closed chain (`auth.chain: [keys]`), `mcp:` mounted. Only the metadata route is open.
 #   open  no chain at all; `agents:`/`public_url` (A2A) and the realtime block (voice) mounted, so
 #         a 404 on this boot can never be an auth refusal in disguise.
 # Both name ZERO providers and ZERO models: a plane's ROUTE must mount from its crate being
 # compiled in, never from a pool happening to be configured.
+#
+# [omit-sections] is the space-separated list of PLANE SECTIONS to leave out — `plane_config_sections`
+# for the plane being deleted, empty for the control. The config is therefore assembled from a
+# plane-free BASE plus one appended block per plane section, rather than printed as one literal, so
+# "omit this plane's section" is a decision the writer takes once per section instead of a second
+# copy of the fixture that can drift from the first.
 write_boot_config() {
-  local mode="$1" dir="$2" port="$3" admin_port="$4"
+  local mode="$1" dir="$2" port="$3" admin_port="$4" omit="${5:-}" f="$2/config.yaml"
   printf '{}\n' >"$dir/providers.yaml"
+  # BASE — plane-free, and identical in both modes bar the auth posture below.
+  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\n' \
+    "$port" "$admin_port" >"$f"
   case "$mode" in
     mcp)
-      printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\nmcp:\n  canonical_uri: https://busbar.example.com/mcp\n  authorization_servers:\n    - https://login.example.com\n' \
-        "$port" "$admin_port" >"$dir/config.yaml"
+      printf 'identity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\n' \
+        >>"$f"
+      section_omitted mcp "$omit" || \
+        printf 'mcp:\n  canonical_uri: https://busbar.example.com/mcp\n  authorization_servers:\n    - https://login.example.com\n' >>"$f"
       ;;
     open)
-      printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nagents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' \
-        "$port" "$admin_port" >"$dir/config.yaml"
+      section_omitted agents "$omit" || \
+        printf 'agents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' >>"$f"
       ;;
   esac
 }
 
-# boot_and_probe <bin> <mode> <label> <outfile>
-#   Boot <bin> on the <mode> config, probe EVERY plane whose `plane_probe_boot` is <mode>, and append
-#   one `<plane>=<http-code>` line per plane to <outfile>. Returns non-zero only if the binary never
-#   came up — the codes themselves are data for the caller to judge, never a verdict taken here.
+# boot_and_probe <bin> <mode> <label> <outfile> [omit-sections]
+#   Boot <bin> on the <mode> config (minus [omit-sections]), probe EVERY plane whose
+#   `plane_probe_boot` is <mode>, and append one `<plane>=<http-code>` line per plane to <outfile>.
+#   Returns non-zero only if the binary never came up — the codes themselves are data for the caller
+#   to judge, never a verdict taken here.
 boot_and_probe() {
-  local bin="$1" mode="$2" label="$3" out="$4"
+  local bin="$1" mode="$2" label="$3" out="$4" omit="${5:-}"
   local ports port admin_port fix pid up probe code p method path body
 
   ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  boot leg ($label/$mode): no free port pair"; return 1; }
   port="$ports"; admin_port=$((port + 1))
   fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-boot.XXXXXX")" || { red "  boot leg ($label/$mode): mktemp failed"; return 1; }
-  write_boot_config "$mode" "$fix" "$port" "$admin_port"
+  write_boot_config "$mode" "$fix" "$port" "$admin_port" "$omit"
 
   MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
   BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-boot \
@@ -491,16 +544,18 @@ boot_and_probe() {
   exec "$bin" >"$fix/boot.log" 2>&1 &
   pid=$!
 
-  # The up-signal is a route no plane owns, so waiting for it never presumes the answer to the
-  # question this leg is asking. `/stats` on the open boot; the MCP metadata route on the closed one
-  # (the only unauthenticated route that boot has).
-  case "$mode" in
-    mcp)  probe="http://127.0.0.1:$port/.well-known/oauth-protected-resource/mcp" ;;
-    open) probe="http://127.0.0.1:$port/stats" ;;
-  esac
+  # THE UP-SIGNAL IS "THE SERVER ANSWERED AT ALL", NOT "THIS ROUTE SUCCEEDED", and on one route no
+  # plane owns — so waiting for it can never presume the answer to the question this leg is asking.
+  # It used to wait on `curl -f` against the MCP METADATA ROUTE for the closed boot, which is both
+  # circular (that route is also mcp's probe) and unreachable the moment the `mcp:` section is
+  # omitted for the mcp subject boot: a live server would have been declared dead. `/stats` behind a
+  # closed chain answers 401 — a refusal is still an answer, and only a socket that is not listening
+  # yet gives curl no status code at all (`000`).
+  probe="http://127.0.0.1:$port/stats"
   up=""
   for _ in $(seq 1 60); do
-    if curl -fsS "$probe" >/dev/null 2>&1; then up=1; break; fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$probe" 2>/dev/null)"
+    if [ -n "$code" ] && [ "$code" != "000" ]; then up=1; break; fi
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.5
   done
@@ -510,6 +565,19 @@ boot_and_probe() {
     kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
     return 1
   fi
+
+  # ── THE ABSENCE CALIBRATION ────────────────────────────────────────────────────────────────────
+  # WHAT DOES "THERE IS NO SUCH ROUTE" ANSWER, ON THIS BOOT? The leg used to answer "404" from first
+  # principles, and that is wrong on the CLOSED boot: with `auth.chain: [keys]` the auth middleware
+  # refuses a path that is not in the route table with **401**, before routing is ever consulted. So
+  # deleting the MCP plane moved its probe 200 -> 401, and a judge that spelled absence "404" read a
+  # correctly-deleted route as a surviving one — the mirror image of the unfalsifiable green this leg
+  # exists to prevent, and a gate failing for a reason other than the property it measures.
+  # It is measured for exactly the same reason every other code here is: one GET, on this same boot,
+  # to a path NO plane can own. Whatever that answers IS what absence looks like on this boot.
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    "http://127.0.0.1:$port/.plane-delete-test/no-such-route-any-plane-could-own")"
+  printf '__absent-%s=%s\n' "$mode" "$code" >>"$out"
 
   for p in $PLANES; do
     [ "$(plane_probe_boot "$p")" = "$mode" ] || continue
@@ -546,13 +614,86 @@ build_bin() {
   printf '%s\n' "$kept"
 }
 
-# probe_codes <bin> <label> <outfile> — both boots, every plane, one file of `<plane>=<code>` lines.
+# probe_codes <bin> <label> <outfile> [omit-sections] — both boots, every plane, one file of
+# `<plane>=<code>` lines. [omit-sections] is empty for the control and `plane_config_sections <P>`
+# for a subject binary with plane P's crate deleted (see the refusal note above): a build compiled
+# without P refuses, by design, to boot a config that still names P's section.
 probe_codes() {
-  local bin="$1" label="$2" out="$3" fail=0
+  local bin="$1" label="$2" out="$3" omit="${4:-}" fail=0
   : >"$out"
-  boot_and_probe "$bin" mcp  "$label" "$out" || fail=1
-  boot_and_probe "$bin" open "$label" "$out" || fail=1
+  boot_and_probe "$bin" mcp  "$label" "$out" "$omit" || fail=1
+  boot_and_probe "$bin" open "$label" "$out" "$omit" || fail=1
   return "$fail"
+}
+
+# ── THE REFUSAL WITNESS ──────────────────────────────────────────────────────────────────────────
+# judge_refusal <boot-log> <exit-code> <plane> → 0 (the refusal is the RIGHT refusal) / 1.
+#
+# A pure function over a captured log and an exit status, for the same reason `judge_codes` is one:
+# the judgement is the part that must be RED-provable without a cargo build or a boot. Two ways this
+# goes red, and the second is the one that matters — a binary that fails to start for an unrelated
+# reason (port taken, unreadable config, a panic) also "refuses", and counting that as evidence
+# would make the witness pass on a build that still carries the plane.
+judge_refusal() {
+  local log="$1" rc="$2" p="$3"
+  if [ "$rc" -eq 0 ]; then
+    red "  refusal witness ($p): the binary ACCEPTED a config naming busbar-$p's section with the crate GONE"
+    note "    A build compiled without a plane must refuse the config that configures it (fail-closed at"
+    note "    resolve). Accepting it means either the plane is still compiled in, or the refusal was lost."
+    return 1
+  fi
+  if ! grep -q "compiled without" "$log" 2>/dev/null; then
+    red "  refusal witness ($p): the binary failed to start, but NOT with a compiled-out-plane refusal"
+    note "    An exit for an unrelated reason (a taken port, an unreadable config, a panic) is not"
+    note "    evidence about the plane. The log's last lines:"
+    tail -10 "$log" 2>/dev/null | sed 's/^/      /'
+    return 1
+  fi
+  return 0
+}
+
+# refusal_witness <bin> <plane> → 0/1. Boot the MUTATED binary on the UNSTRIPPED fixture — the very
+# config the control booted clean — and require it to refuse, naming a plane this build was compiled
+# without. Not applicable (and reported as such, never silently skipped) for a plane the fixture
+# configures no section for.
+refusal_witness() {
+  local bin="$1" p="$2" mode secs ports port admin_port fix pid rc waited
+  secs="$(plane_config_sections "$p")"
+  if [ -z "$secs" ]; then
+    note "refusal witness ($p): not applicable — the boot fixture configures no section this plane owns,"
+    note "    so its subject config is byte-identical to the control's and the 404 above stands alone"
+    return 0
+  fi
+  mode="$(plane_probe_boot "$p")"
+  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  refusal witness ($p): no free port pair"; return 1; }
+  port="$ports"; admin_port=$((port + 1))
+  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-refuse.XXXXXX")" || { red "  refusal witness ($p): mktemp failed"; return 1; }
+  write_boot_config "$mode" "$fix" "$port" "$admin_port" ""    # NO omission: the section stays in
+
+  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
+  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-boot \
+  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
+  exec "$bin" >"$fix/boot.log" 2>&1 &
+  pid=$!
+
+  # A refusal happens at config resolve, long before the listener binds, so it is a fast exit. A
+  # process still alive at the deadline has ACCEPTED the config — that is the rc=0 verdict, reached
+  # by stopping the child this function itself started.
+  rc=""; waited=0
+  while [ "$waited" -lt 60 ]; do
+    if ! kill -0 "$pid" 2>/dev/null; then wait "$pid" 2>/dev/null; rc=$?; break; fi
+    sleep 0.5; waited=$((waited + 1))
+  done
+  if [ -z "$rc" ]; then
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rc=0    # it was still serving: the config was ACCEPTED
+  fi
+
+  if judge_refusal "$fix/boot.log" "$rc" "$p"; then
+    grn "  refusal witness ($p): the same config the control boots is REFUSED (\`$secs:\` names a compiled-out plane)"
+    rm -rf "$fix"; return 0
+  fi
+  rm -rf "$fix"; return 1
 }
 
 code_for() { # code_for <file> <plane> → the recorded code, or the empty string
@@ -585,43 +726,71 @@ control_codes() {
 judge_codes() {
   local ctl="$1" sub="$2" p="$3" fail=0 q cc sc
 
-  # THE POSITIVE CONTROL. If the probe for this plane is 404 on a tree where the plane's crate is
-  # PRESENT, the probe cannot tell presence from absence and its 404 below would mean nothing.
+  # WHAT ABSENCE LOOKS LIKE ON THIS BOOT, measured by `boot_and_probe`'s absence calibration against
+  # a path no plane can own — 404 on the open boot, 401 on the closed one (where the auth middleware
+  # refuses an unlisted path before routing). Never assumed: a judge that spells absence "404"
+  # everywhere reads a correctly-deleted MCP route (401) as a surviving one.
+  local ab
+  ab="$(code_for "$ctl" "__absent-$(plane_probe_boot "$p")")"
+  if [ -z "$ab" ]; then
+    red "  boot leg ($p): the control run recorded no ABSENCE CALIBRATION for the $(plane_probe_boot "$p") boot"
+    note "    Without it there is no measured answer to \"what does a route that does not exist say here?\","
+    note "    and every verdict below would be taken against a guess."
+    return 1
+  fi
+
+  # THE POSITIVE CONTROL. If the probe for this plane already reads as ABSENT on a tree where the
+  # plane's crate is PRESENT, the probe cannot tell presence from absence and its verdict below
+  # would mean nothing.
   cc="$(code_for "$ctl" "$p")"
   if [ -z "$cc" ]; then
     red "  boot leg ($p): the control run recorded no code for this plane — the probe never ran"
     return 1
   fi
-  if [ "$cc" = "404" ]; then
-    red "  boot leg ($p): POSITIVE CONTROL FAILED — $(plane_probe_method "$p") $(plane_probe_path "$p") is 404"
-    note "    on the UNMUTATED tree, where crates/busbar-$p is present and compiled in. A probe that"
-    note "    404s whether or not the plane exists proves nothing about the deletion; the 404 assertion"
-    note "    below would be unfalsifiable. Fix the probe (path/method/body) or the boot config that"
-    note "    is supposed to mount this plane — do not read a 404 here as a pass."
+  if [ "$cc" = "$ab" ]; then
+    red "  boot leg ($p): POSITIVE CONTROL FAILED — $(plane_probe_method "$p") $(plane_probe_path "$p") is $cc"
+    note "    on the UNMUTATED tree, where crates/busbar-$p is present and compiled in — and $ab is exactly"
+    note "    what a route that DOES NOT EXIST answers on this boot. A probe that reads absent whether or"
+    note "    not the plane exists proves nothing about the deletion; the assertion below would be"
+    note "    unfalsifiable. Fix the probe (path/method/body) or the boot config that is supposed to mount"
+    note "    this plane — do not read this as a pass."
     return 1
   fi
-  note "positive control ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (non-404)"
+  note "positive control ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (absence on this boot reads $ab)"
 
-  # THE DELETION: the byte-identical request must now 404.
+  # THE DELETION: the byte-identical request must now read as ABSENT.
+  #
+  # For a plane whose section the subject boot had to OMIT (`plane_config_sections`, because the
+  # product refuses a config naming a compiled-out plane), this is NECESSARY but not sufficient on
+  # its own — P's routes mount from P's section, so an omitted section makes the probe read absent
+  # too. The sufficient half is `refusal_witness`, which `boot_serve` requires alongside this. Said
+  # out loud here so a reader of the green line never reads more into it than it carries.
   sc="$(code_for "$sub" "$p")"
-  if [ "$sc" = "404" ]; then
-    note "boot leg ($p): the same request now answers 404 — the plane's route left with the crate"
+  if [ "$sc" = "$ab" ]; then
+    if [ -n "$(plane_config_sections "$p")" ]; then
+      note "boot leg ($p): the same request now answers $sc — absent on this boot (necessary; the subject boot omits \`$(plane_config_sections "$p"):\`, so the refusal witness carries sufficiency)"
+    else
+      note "boot leg ($p): the same request now answers $sc — absent on this boot; the plane's route left with the crate"
+    fi
   else
     fail=1
-    red "  boot leg ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answered ${sc:-<no answer>}, not 404 — the route survived deletion"
+    red "  boot leg ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answered ${sc:-<no answer>}, not the measured absence code $ab — the route survived deletion"
   fi
 
   # THE NEIGHBOUR CONTROL: every OTHER plane the control mounted must still serve on this binary.
-  # Without it, a boot that mounted nothing at all 404s everything and reads as a clean deletion.
+  # Without it, a boot that mounted nothing at all reads absent everywhere and looks like a clean
+  # deletion. Each neighbour is judged against ITS OWN boot's absence code, not this plane's.
+  local qab
   for q in $PLANES; do
     [ "$q" = "$p" ] && continue
+    qab="$(code_for "$ctl" "__absent-$(plane_probe_boot "$q")")"
     cc="$(code_for "$ctl" "$q")"
-    [ "$cc" = "404" ] || [ -z "$cc" ] && continue   # the control never mounted it; it controls nothing
+    [ -z "$cc" ] || [ -z "$qab" ] || [ "$cc" = "$qab" ] && continue   # the control never mounted it; it controls nothing
     sc="$(code_for "$sub" "$q")"
-    if [ "$sc" = "404" ] || [ -z "$sc" ]; then
+    if [ -z "$sc" ] || [ "$sc" = "$qab" ]; then
       fail=1
-      red "  boot leg ($p): neighbour $q answered ${sc:-<no answer>} (control: $cc) — this boot lost a plane it did not delete"
-      note "    Every plane 404ing at once is a boot that mounted nothing, not a clean deletion."
+      red "  boot leg ($p): neighbour $q answered ${sc:-<no answer>} (control: $cc, absence: $qab) — this boot lost a plane it did not delete"
+      note "    Every plane reading absent at once is a boot that mounted nothing, not a clean deletion."
     else
       note "boot leg ($p): neighbour $q still serves ($sc, control $cc)"
     fi
@@ -633,13 +802,18 @@ judge_codes() {
 # boot_serve <scratch> <plane> → 0/1. The whole leg for one plane: measure the control (once per
 # run), build and boot the mutated bin, then hand both code files to `judge_codes`.
 boot_serve() {
-  local s="$1" p="$2" bin ctl sub
+  local s="$1" p="$2" bin ctl sub fail=0
   ctl="$(control_codes)" || { red "  boot leg ($p): the CONTROL build/boot failed — no verdict is possible"; return 1; }
   bin="$(build_bin "$s" "delete-$p")" || return 1
   sub="$CACHE_TARGET/.plane-delete-$p-codes.txt"
-  probe_codes "$bin" "delete-$p" "$sub" || return 1
-  if judge_codes "$ctl" "$sub" "$p"; then
-    grn "  boot leg ($p): binary BOOTS with busbar-$p physically gone; its route 404s, every neighbour still serves"
+  # The SUBJECT boots on the fixture MINUS the sections plane P owns — a build compiled without P
+  # refuses, by design, to boot a config that still configures P (see the refusal note above).
+  probe_codes "$bin" "delete-$p" "$sub" "$(plane_config_sections "$p")" || return 1
+  judge_codes     "$ctl" "$sub" "$p" || fail=1
+  # …and that same fail-closed refusal, on the UNSTRIPPED config, IS the presence/absence evidence.
+  refusal_witness "$bin" "$p"        || fail=1
+  if [ "$fail" -eq 0 ]; then
+    grn "  boot leg ($p): binary BOOTS with busbar-$p physically gone; its route reads ABSENT, every neighbour still serves"
     return 0
   fi
   return 1
@@ -983,19 +1157,25 @@ run_selftest() {
   jd="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-judge.XXXXXX")" || { red "mktemp failed"; return 1; }
   ctl="$jd/control.txt"; sub="$jd/subject.txt"
 
-  # (5a) GREEN: the plane was mounted (200), is now gone (404), neighbours untouched.
-  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
-  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  # EVERY planted control below carries the ABSENCE CALIBRATION the real runs measure — what a route
+  # that does not exist answers on each boot. The open boot 404s; the CLOSED one 401s, because its
+  # auth middleware refuses an unlisted path before routing is consulted. Planting the real pair is
+  # what makes these fixtures the same shape the gate actually judges.
+  local CAL='__absent-open=404\n__absent-mcp=401\n'
+
+  # (5a) GREEN: the plane was mounted (200), is now gone (404 = absent here), neighbours untouched.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
-    note "PASS  boot-judge GREEN: mounted-then-404 with neighbours serving is a clean deletion"
+    note "PASS  boot-judge GREEN: mounted-then-absent with neighbours serving is a clean deletion"
   else
     fail=1; note "FAIL  boot-judge GREEN: refused a textbook clean deletion"
   fi
 
   # (5b) RED — THE VACUOUS PROBE. The control itself 404s, i.e. the request never reached a route
   #      even with the plane compiled in. The old leg had no such check, so this state read as PASS.
-  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
-  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1
     note "FAIL  boot-judge POSITIVE CONTROL: a probe that 404s on the UNMUTATED tree was accepted."
@@ -1006,17 +1186,17 @@ run_selftest() {
   fi
 
   # (5c) RED — the control never ran for this plane at all (no line recorded).
-  printf 'mcp=200\na2a=200\nvoice=200\n' >"$ctl"
-  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  printf "${CAL}mcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: accepted a verdict with no control measurement for the plane"
   else
     note "PASS  boot-judge: a plane the control never probed is refused, not assumed"
   fi
 
-  # (5d) RED — THE ROUTE SURVIVED: the deleted plane still answers non-404.
-  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
-  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  # (5d) RED — THE ROUTE SURVIVED: the deleted plane still answers, i.e. not the absence code.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1; note "FAIL  boot-judge: a route that still serves after its crate was deleted was accepted"
   else
@@ -1025,23 +1205,128 @@ run_selftest() {
 
   # (5e) RED — THE NEIGHBOUR CONTROL: a boot that mounted NOTHING 404s every plane at once, which
   #      under the old single-assertion shape is indistinguishable from a clean deletion.
-  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
-  printf 'llm=404\nmcp=404\na2a=404\nvoice=404\n' >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=401\na2a=404\nvoice=404\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     fail=1
-    note "FAIL  boot-judge NEIGHBOUR CONTROL: a boot where EVERY plane 404s was read as a clean deletion."
+    note "FAIL  boot-judge NEIGHBOUR CONTROL: a boot where EVERY plane read absent was a clean deletion."
     note "      That is a server that mounted nothing, not a plane whose route left with its crate."
   else
-    note "PASS  boot-judge NEIGHBOUR CONTROL: every-plane-404 is refused, not read as a deletion"
+    note "PASS  boot-judge NEIGHBOUR CONTROL: every-plane-absent is refused, not read as a deletion"
   fi
 
   # (5f) a neighbour the CONTROL never mounted controls nothing, and must not manufacture a failure.
-  printf 'llm=200\nmcp=200\na2a=200\nvoice=404\n' >"$ctl"
-  printf 'llm=404\nmcp=200\na2a=200\nvoice=404\n' >"$sub"
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=404\n" >"$ctl"
+  printf "${CAL}llm=404\nmcp=200\na2a=200\nvoice=404\n" >"$sub"
   if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
     note "PASS  boot-judge: a neighbour the control never mounted is excluded from the neighbour control"
   else
     fail=1; note "FAIL  boot-judge: an unmounted neighbour was treated as a lost plane"
+  fi
+
+  # (5g) THE ABSENCE CALIBRATION IS PER-BOOT, AND THE CLOSED BOOT'S ABSENCE IS 401. This is the
+  #      defect the calibration closes: with `auth.chain: [keys]` the auth middleware refuses a path
+  #      that is not in the route table BEFORE routing, so a deleted MCP route answers 401, not 404.
+  #      Judged against a hard-coded 404 that read as "the route survived deletion" — a gate red on
+  #      the deletion having WORKED. Both directions are proven: 401 is the deletion on that boot,
+  #      and a route still answering 200 there is still not.
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$ctl"
+  printf "${CAL}llm=200\nmcp=401\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
+    note "PASS  boot-judge ABSENCE CALIBRATION: 401 on the CLOSED boot is the deletion, not a survival"
+  else
+    fail=1
+    note "FAIL  boot-judge ABSENCE CALIBRATION: a deleted route answering the closed boot's own"
+    note "      absence code (401) was read as a route that survived — the gate reds on a clean deletion."
+  fi
+  printf "${CAL}llm=200\nmcp=200\na2a=200\nvoice=200\n" >"$sub"
+  if judge_codes "$ctl" "$sub" mcp >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge ABSENCE CALIBRATION: an mcp route still answering 200 was accepted as deleted"
+  else
+    note "PASS  boot-judge ABSENCE CALIBRATION: a closed-boot route still answering 200 is a survival"
+  fi
+
+  # (5h) RED — NO CALIBRATION AT ALL. Without the measured absence code there is no answer to "what
+  #      does a route that does not exist say here?", and every verdict would be taken against a
+  #      guess. Refused, not defaulted to 404.
+  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
+  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge: a verdict was taken with no absence calibration for the boot"
+  else
+    note "PASS  boot-judge: a control with no absence calibration is refused, not defaulted"
+  fi
+  # (5i) THE SUBJECT BOOT MUST NOT CONFIGURE THE PLANE IT JUST DELETED. This is the fixture defect
+  #      the refusal witness exists beside: the shared boot config NAMES every plane, and busbar
+  #      refuses — correctly, fail-closed — to boot a config that configures a plane the build was
+  #      compiled without, so handing the subject binary the unstripped fixture made the gate red on
+  #      the product doing the right thing. Proven on the WRITER, not on a boot: for every plane that
+  #      owns a section, the omitted config must not carry it AND the unomitted one must (a writer
+  #      that omits nothing, or everything, fails one of the two).
+  local cfgdir sec mode secs
+  cfgdir="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-cfg.XXXXXX")" || { red "mktemp failed"; return 1; }
+  for p in $PLANES; do
+    secs="$(plane_config_sections "$p")"
+    [ -n "$secs" ] || continue
+    mode="$(plane_probe_boot "$p")"
+    for sec in $secs; do
+      write_boot_config "$mode" "$cfgdir" 46000 46001 ""
+      if ! grep -q "^$sec:" "$cfgdir/config.yaml"; then
+        fail=1; note "FAIL  boot fixture($p): the CONTROL config does not configure \`$sec:\` — there is nothing for the deletion to remove, and the control never mounted the plane"
+        continue
+      fi
+      write_boot_config "$mode" "$cfgdir" 46000 46001 "$secs"
+      if grep -q "^$sec:" "$cfgdir/config.yaml"; then
+        fail=1
+        note "FAIL  boot fixture($p): the SUBJECT config still configures \`$sec:\` after omission."
+        note "      A build with busbar-$p compiled out REFUSES that config (fail-closed at resolve),"
+        note "      so the subject binary never boots and the leg reds on correct product behaviour."
+      else
+        note "PASS  boot fixture($p): \`$sec:\` is configured for the control and omitted for the subject"
+      fi
+    done
+  done
+  # …and the omission is SURGICAL: everything that is not the omitted section survives it, or the
+  # subject boot is a different experiment from the control rather than the same one minus a plane.
+  write_boot_config open "$cfgdir" 46000 46001 ""
+  local open_full open_stripped
+  open_full="$(grep -c . "$cfgdir/config.yaml")"
+  write_boot_config open "$cfgdir" 46000 46001 "$(plane_config_sections a2a)"
+  open_stripped="$(grep -c . "$cfgdir/config.yaml")"
+  if [ "$open_stripped" -lt "$open_full" ] && grep -q "^listen:" "$cfgdir/config.yaml" \
+     && grep -q "^public_url:" "$cfgdir/config.yaml"; then
+    note "PASS  boot fixture: omitting a plane section shrinks the config and leaves the plane-free base intact"
+  else
+    fail=1; note "FAIL  boot fixture: the omission removed nothing, or took the plane-free base with it ($open_full -> $open_stripped lines)"
+  fi
+  rm -rf "$cfgdir"
+
+  # (5j) THE REFUSAL WITNESS' JUDGEMENT — the evidence that replaces the (now merely necessary) 404
+  #      for a plane whose section the subject boot had to omit. Pure over a log and an exit status,
+  #      so all three verdicts are provable here without building or booting anything.
+  local rl
+  rl="$jd/refusal.log"
+  printf 'error: `agents:` is configured, but this build was compiled without the plane that owns it\n' >"$rl"
+  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+    note "PASS  refusal-judge GREEN: a non-zero exit whose log names a compiled-out plane is the refusal"
+  else
+    fail=1; note "FAIL  refusal-judge GREEN: refused a textbook fail-closed refusal"
+  fi
+  if judge_refusal "$rl" 0 a2a >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  refusal-judge: a binary that ACCEPTED a config naming its own deleted plane was passed."
+    note "      That is the plane still being compiled in, or the fail-closed refusal having been lost."
+  else
+    note "PASS  refusal-judge: accepting the config (exit 0 / still serving) is refused"
+  fi
+  printf 'error: Address already in use (os error 48)\n' >"$rl"
+  if judge_refusal "$rl" 1 a2a >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  refusal-judge: a start failure for an UNRELATED reason counted as the plane's refusal."
+    note "      A taken port, an unreadable config or a panic all exit non-zero and say nothing about"
+    note "      the plane; counting them would green the witness on a build that still carries it."
+  else
+    note "PASS  refusal-judge: a non-zero exit that is not a compiled-out-plane refusal is not evidence"
   fi
   rm -rf "$jd"
 
@@ -1096,10 +1381,13 @@ case "${1:-}" in
     ctl="$(control_codes)" || { red "control build/boot failed"; exit 1; }
     for p in $PLANES; do
       code="$(code_for "$ctl" "$p")"
-      if [ "$code" = "404" ] || [ -z "$code" ]; then
-        red "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> ${code:-<no answer>} (VACUOUS: cannot tell presence from absence)"
+      # Judged against the boot's MEASURED absence code, not a hard-coded 404 — the closed boot's
+      # "no such route" is a 401 from the auth middleware.
+      absent="$(code_for "$ctl" "__absent-$(plane_probe_boot "$p")")"
+      if [ -z "$code" ] || [ -z "$absent" ] || [ "$code" = "$absent" ]; then
+        red "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> ${code:-<no answer>} (VACUOUS: this is also what absence answers on the $(plane_probe_boot "$p") boot, ${absent:-<uncalibrated>})"
       else
-        grn "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> $code (non-404: the probe reaches a real route)"
+        grn "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> $code (absence on the $(plane_probe_boot "$p") boot is $absent: the probe reaches a real route)"
       fi
     done
     exit 0
