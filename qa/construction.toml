@@ -15,6 +15,12 @@
 scan_roots = ["crates/*/src"]
 # The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
 # below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
+#
+# NOTE (PLUGIN-TREE.md): "plane" is defined TWICE in this file, disjointly. This list is the four
+# LEGACY ENGINE crates; `gate.plugin_kinds.plane` below is the five `busbar-plane-*` crates, and the
+# two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
+# another plane" means. The two collapse into one definition when the legacy engines are deleted;
+# until then a reader must not take either as "the plane kind".
 plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
@@ -25,6 +31,21 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 # Shared by manifest-allowlist, source-denylist and forbid-unsafe so the kind boundaries are drawn
 # once. A glob matching no directory today is fine (the kind has no crate yet) — every rule below
 # treats an empty match list as nothing-to-check, not a failure.
+#
+# OWED, per docs/design/PLUGIN-TREE.md (normative for every kind boundary; owner rulings 2026-09-07,
+# ARCHITECTURE.md Appendix A). These are notes for the gate agent, not changes:
+#   * `dialect` is a KIND and has no row here. It lands as `crates/busbar-plane-*-*` once the codec
+#     crates split; its manifest rule is the tightest in the tree — a `busbar-plane-<p>-<d>` crate's
+#     only workspace dependencies are `busbar-contract` and `busbar-plane-<p>`.
+#   * `loader` and `abi` are NOT kinds. They are TCB crates and belong in a separate `tcb_crates`
+#     list; they are here only so they inherit the forbid-unsafe deny row, and counting them is how
+#     this table reaches "10" with a set that is not the owner's ten.
+#   * Kind membership is decided here by DIRECTORY GLOB, and `Plugin::kind()` — the declaration that
+#     should be authoritative — is read by nothing. That is how `crates/secret-ref` (a SecretRef TYPE
+#     crate, no Secret impl) is classified `secret`, and how `crates/hooks-ranking` is classified
+#     `hook` by the directory name while implementing a busbar-api trait. Renaming the fifteen crate
+#     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
+#     correct by construction and is the cheap first half of kind-by-declaration.
 [gate.plugin_kinds]
 plane = ["crates/busbar-plane-*"]
 hook = ["crates/hook*"]
@@ -47,6 +68,14 @@ abi = ["crates/busbar-contract"]
 # This is deliberately NOT `plane_crates`. That list also decides which dependency is a
 # plane-names-another-plane RED in manifest-allowlist, and a plane naming its own pure codec half is
 # the intended shape, already on that rule's reviewed list.
+#
+# OWED (PLUGIN-TREE.md, owner 2026-09-07): these four crates ARE the dialect kind, unnamed. They are
+# the only shipping crate group with no `Kind` variant, no section 1.4 row, no stated contract and no
+# ceiling. The 2026-09-06 decision to FOLD each codec into its plane is superseded: each codec SPLITS
+# into `busbar-plane-<plane>-<dialect>` crates. Sequence, and the order matters — the llm DECLS order
+# (anthropic, openai, gemini, bedrock, responses, cohere) is operator-visible and every metric-family
+# index is a position in it, so pin it with an oracle boot cell BEFORE the split, then name the
+# shared residue's destination, then split.
 [gate.plane_codec_crates]
 busbar-llm = ["busbar-llm-codec"]
 busbar-mcp = ["busbar-mcp-codec"]
@@ -372,6 +401,11 @@ store-example-plugin = ["busbar-store-memory"]
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
 # plane names another plane" coupling section 1.2 forbids. Tracked here, not waved through, until
 # docs/design/1.6.0-protocols-as-plugins.md's codec split lands and the dependency disappears.
+# STALE — verified 2026-09-07: NONE of the four edges below exists at this commit. Every plane crate
+# is exactly `busbar-contract` + its own codec and nothing else; the planes are the cleanest seam in
+# the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
+# is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
+# change is not this commit's business.
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 busbar-plane-a2a = ["busbar-a2a"]
