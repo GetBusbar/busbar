@@ -58,7 +58,6 @@ use crate::gates::{
 };
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
-use crate::planes::PlaneRoots;
 use crate::scan;
 
 pub const ROW_PLANE_ROOTS: &str = "blocking-ffi:plane-roots";
@@ -68,7 +67,6 @@ pub const ROW_NO_INLINE: &str = "blocking-ffi:no-inline-ffi";
 
 const CORE: &str = "crates/busbar-core/src";
 const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src", "crates/busbar-llm/src"];
-const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
@@ -463,23 +461,12 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
 pub struct BlockingFfiGate;
 
 fn scan_roots(cx: &Ctx) -> Result<Vec<String>, String> {
-    let roots = PlaneRoots::at(cx.abs("crates"));
-    let mut out: Vec<String> = FIXED_ROOTS.iter().map(|r| (*r).to_string()).collect();
-    let (ok, errs) = roots.resolve_all(PLANE_KEYS);
-    if !errs.is_empty() {
-        return Err(errs
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(" | "));
-    }
-    for (_, dir) in ok {
-        let rel = dir
-            .strip_prefix(cx.root())
-            .map_err(|_| format!("{} is not under the workspace root", dir.display()))?;
-        out.push(rel.to_string_lossy().replace('\\', "/"));
-    }
-    Ok(out)
+    crate::planes::resolved_scan_roots(
+        &cx.abs("crates"),
+        cx.root(),
+        FIXED_ROOTS,
+        crate::planes::PLANE_SCAN_KEYS,
+    )
 }
 
 /// THE POPULATION IS DERIVED FROM THE TREE (see [`crate::gates::population`]), not from `roots`:

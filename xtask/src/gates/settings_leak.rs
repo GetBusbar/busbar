@@ -41,7 +41,6 @@ use crate::gates::{
 };
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
-use crate::planes::PlaneRoots;
 
 pub const ROW_PLANE_ROOTS: &str = "settings-leak:plane-roots";
 pub const ROW_SCAN_ROOTS: &str = "settings-leak:scan-roots";
@@ -55,8 +54,9 @@ const FIXED_ROOTS: &[&str] = &[
     "crates/busbar-llm/src",
 ];
 
-/// The planes whose source must be in the scan whatever crate they end up in.
-const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
+// The planes whose source must be in the scan whatever crate they end up in are
+// `planes::PLANE_SCAN_KEYS`, shared with the other two directory-resolved grep gates. This gate
+// kept its own copy of that list until adding a plane meant editing four of them.
 
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
@@ -302,23 +302,12 @@ pub struct SettingsLeakGate;
 /// The scan roots for this tree: the three fixed ones plus the resolved plane homes, relative to
 /// the workspace root.
 fn scan_roots(cx: &Ctx) -> Result<Vec<String>, String> {
-    let roots = PlaneRoots::at(cx.abs("crates"));
-    let mut out: Vec<String> = FIXED_ROOTS.iter().map(|r| (*r).to_string()).collect();
-    let (ok, errs) = roots.resolve_all(PLANE_KEYS);
-    if !errs.is_empty() {
-        return Err(errs
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(" | "));
-    }
-    for (_, dir) in ok {
-        let rel = dir
-            .strip_prefix(cx.root())
-            .map_err(|_| format!("{} is not under the workspace root", dir.display()))?;
-        out.push(rel.to_string_lossy().replace('\\', "/"));
-    }
-    Ok(out)
+    crate::planes::resolved_scan_roots(
+        &cx.abs("crates"),
+        cx.root(),
+        FIXED_ROOTS,
+        crate::planes::PLANE_SCAN_KEYS,
+    )
 }
 
 impl Gate for SettingsLeakGate {

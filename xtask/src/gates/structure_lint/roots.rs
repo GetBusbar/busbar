@@ -35,6 +35,14 @@ pub const SUBSTRATE: &str = "crates/busbar-substrate/src";
 pub const SUBSTRATE_VALUES: &str = "crates/busbar-substrate-values/src";
 
 /// The planes whose roots every plane-scoped row is written against.
+///
+/// THE SAME SET AS [`crate::planes::PLANE_SCAN_KEYS`], and deliberately NOT the same declaration.
+/// This one is TYPE-LOCKED to two: [`Addresses`] carries literal `mcp` and `a2a` fields and
+/// `tree()` hand-lists them, so a shared const that later grew to three would still compile here
+/// and silently drop the new plane out of `Addresses` — a wider list producing a narrower scan,
+/// which is the exact failure sharing was meant to prevent. It becomes one declaration on the day
+/// `Addresses` holds a map instead of two fields; until then the pairing is stated here so the
+/// next reader adds the plane in both places.
 pub const PLANES: [&str; 2] = ["mcp", "a2a"];
 
 /// The root every walk in this gate starts from.
