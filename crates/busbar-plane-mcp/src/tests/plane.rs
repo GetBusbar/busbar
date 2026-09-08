@@ -54,7 +54,7 @@ fn every_refusal_reason_has_an_answer() {
         RefusalReason::TierMismatch,
     ];
     for reason in reasons {
-        let (code, message) = refusal_render(reason);
+        let (code, message) = refusal_render(Step::Route, reason);
         assert!(
             crate::jsonrpc::CODES.contains(&code),
             "{reason:?} renders unknown code {code}"
@@ -64,6 +64,63 @@ fn every_refusal_reason_has_an_answer() {
             "{reason:?} renders the retired code {code}"
         );
         assert!(!message.is_empty(), "{reason:?} renders no words");
+    }
+}
+
+/// A METHOD THIS SERVER DOES NOT ANSWER IS A `-32601`, not an internal error.
+///
+/// The gap this cell closes: every decode refusal fell to the catch-all arm and rendered `-32603`
+/// with "the request could not be served at this time". That sentence tells a caller the SERVER
+/// broke, when what happened is that the caller named a method the server does not implement — and
+/// the two are acted on differently by every client written against this protocol, because one is
+/// retried and the other is not.
+///
+/// The code is the one the legacy router answers an unimplemented method with, read from the codec
+/// through `jsonrpc::CODE_METHOD_NOT_FOUND` rather than written here as a number: a code spelled on
+/// both sides of a seam is a code the two sides can come to disagree about.
+#[test]
+fn a_method_this_server_does_not_answer_renders_method_not_found() {
+    let (code, message) = refusal_render(Step::Decode, RefusalReason::DecodeFailed);
+    assert_eq!(
+        code,
+        crate::jsonrpc::CODE_METHOD_NOT_FOUND,
+        "a decode refusal renders {code}, which is not the code this protocol answers an \
+         unimplemented method with"
+    );
+    assert!(
+        !message.is_empty(),
+        "the method-not-found arm renders no words"
+    );
+}
+
+/// THE ARENA BUDGET STAYS INTERNAL, at the same step.
+///
+/// The decode step can refuse for two unrelated things: an address this server does not answer, and
+/// a bound this node reached. Only the first is the caller's to fix, and folding the second into the
+/// method-not-found arm would tell a caller its method does not exist on a node that ran out of
+/// room — which is the same class of lie the `-32603` was, pointing the other way.
+#[test]
+fn a_bound_this_node_reached_is_not_a_method_that_does_not_exist() {
+    let (code, _) = refusal_render(Step::Decode, RefusalReason::ArenaBudget);
+    assert_ne!(code, crate::jsonrpc::CODE_METHOD_NOT_FOUND);
+    assert_eq!(code, crate::jsonrpc::CODE_INTERNAL);
+}
+
+/// The step is read, not ignored: the same reason at a later step is not a method-not-found.
+///
+/// `DecodeFailed` is a reason the loop can carry past its own decode step — the journal keeps it on
+/// the row whatever step ended the unit — and a unit that got as far as Route has already had its
+/// method matched to a row. Rendering `-32601` for one would tell a caller a method it just used
+/// does not exist.
+#[test]
+fn the_same_reason_at_a_later_step_is_not_a_method_that_does_not_exist() {
+    for step in [Step::Route, Step::Meter, Step::Encode] {
+        let (code, _) = refusal_render(step, RefusalReason::DecodeFailed);
+        assert_ne!(
+            code,
+            crate::jsonrpc::CODE_METHOD_NOT_FOUND,
+            "{step:?} renders a decode reason as a method that does not exist"
+        );
     }
 }
 
@@ -77,7 +134,7 @@ fn a_refusal_leaks_nothing_about_the_money() {
         RefusalReason::OverdraftCeiling,
         RefusalReason::StaleSlice,
     ] {
-        let (_, message) = refusal_render(reason);
+        let (_, message) = refusal_render(Step::Route, reason);
         for leak in ["budget", "bucket", "frozen", "price", "slice", "overdraft"] {
             assert!(
                 !message.to_ascii_lowercase().contains(leak),

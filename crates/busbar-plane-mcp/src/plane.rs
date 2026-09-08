@@ -21,7 +21,7 @@ use busbar_contract::plane::{
 };
 use busbar_contract::unit::{
     AdmitFacts, AuditFacts, Ctx, FinishClass, Refusal, RefusalReason, ResourceLocator, ScopeFacts,
-    Unit, UnitEnd, UsageLocator, UsageLocators,
+    Step, Unit, UnitEnd, UsageLocator, UsageLocators,
 };
 use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, TransportEnvelope};
 
@@ -348,24 +348,53 @@ fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
 /// asserted byte for byte in the envelope module's own tests. What is NOT pinned is the message
 /// TEXT, which the composition root must compare against the battery's recorded answers on the day
 /// it switches this plane on. That is stated here rather than left for someone to discover.
-fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
-    match reason {
-        RefusalReason::BodyTooLarge => (jsonrpc::CODE_INVALID_REQUEST, "the request is too large"),
-        RefusalReason::SchemeNotDeclared
-        | RefusalReason::CredentialRejected
-        | RefusalReason::SessionUnbound
-        | RefusalReason::CredentialBudget => (
+fn refusal_render(step: Step, reason: RefusalReason) -> (i64, &'static str) {
+    match (step, reason) {
+        // ── THE METHOD THIS SERVER DOES NOT ANSWER ───────────────────────────────────────────────
+        //
+        // A refusal at the DECODE step is this plane saying the bytes are not a unit it carries, and
+        // on this protocol that is a `-32601` and not an internal error. It used to fall to the `_`
+        // arm below and render `-32603` — "the request could not be served at this time" — which
+        // tells a caller the server broke when what happened is that the caller named a method the
+        // server does not implement. A client retries the first and stops on the second.
+        //
+        // WHICH DECODE REFUSALS ACTUALLY REACH HERE, and why every one of them is a method-not-found
+        // rather than a parse error. A mount claiming this plane's paths asks the SERVED SURFACE
+        // first (`crate::surface::row_on`) and hands anything it does not carry — including a body
+        // with no readable method — to the surface that already answers it, byte for byte. So a body
+        // that reaches the loop at all has already been matched to a row, and the decode refusals
+        // left are the ones about the ADDRESS rather than about the syntax: a method whose row names
+        // the provider as its sender (a caller may not open a unit only a paired server may open), a
+        // notice this plane does not recognise, and a frame that opens no unit. Every one of those
+        // is "this server does not answer that", which is what `-32601` says.
+        //
+        // The ARENA budget is deliberately NOT here: it refuses at the same step and is a bound this
+        // node reached, not an address the caller got wrong, so it keeps the internal rendering.
+        (Step::Decode, RefusalReason::DecodeFailed) => (
+            jsonrpc::CODE_METHOD_NOT_FOUND,
+            "this server does not implement the method the request names",
+        ),
+        (_, RefusalReason::BodyTooLarge) => {
+            (jsonrpc::CODE_INVALID_REQUEST, "the request is too large")
+        }
+        (
+            _,
+            RefusalReason::SchemeNotDeclared
+            | RefusalReason::CredentialRejected
+            | RefusalReason::SessionUnbound
+            | RefusalReason::CredentialBudget,
+        ) => (
             jsonrpc::CODE_INVALID_REQUEST,
             "the request did not carry usable authority",
         ),
         // The caller is known and may not do this. This protocol has its own code for a policy
         // refusal, and it is outside the range the specification reserves for itself.
-        RefusalReason::ScopeMissing | RefusalReason::Vetoed | RefusalReason::Revoked => (
+        (_, RefusalReason::ScopeMissing | RefusalReason::Vetoed | RefusalReason::Revoked) => (
             jsonrpc::CODE_REFUSED,
             "the caller may not perform this operation",
         ),
         // There is nowhere for it to go, which this protocol names specifically.
-        RefusalReason::NoDestination => (
+        (_, RefusalReason::NoDestination) => (
             jsonrpc::CODE_UPSTREAM_UNAVAILABLE,
             "no server is reachable for this request",
         ),
@@ -686,7 +715,7 @@ impl Plane for McpPlane {
             Some(FactValue::Str(text)) => Some(jsonrpc::id_value(text.as_bytes())?),
             _ => None,
         };
-        let (code, message) = refusal_render(refusal.reason);
+        let (code, message) = refusal_render(refusal.step, refusal.reason);
         // A reason that implies a wait says so, under the member a caller can act on. Nothing else
         // about why is disclosed.
         let data = refusal
