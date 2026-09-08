@@ -20,6 +20,7 @@ struct FixtureOp {
     method: String,
     path: String,
     scope: String,
+    operation_id: String,
 }
 
 /// The operations the COMMITTED fixture names, with the scope the fixture itself carries.
@@ -52,10 +53,20 @@ fn fixture_ops() -> Vec<FixtureOp> {
                     )
                 })
                 .to_string();
+            let operation_id = op["operationId"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the fixture operation {m} {path} carries no `operationId`; the id is \
+                         read from the artifact, never inferred"
+                    )
+                })
+                .to_string();
             ops.push(FixtureOp {
                 method: m,
                 path: path.clone(),
                 scope,
+                operation_id,
             });
         }
     }
@@ -69,6 +80,7 @@ fn table_ops() -> Vec<FixtureOp> {
             method: r.method.to_string(),
             path: r.path.to_string(),
             scope: r.scope.as_str().to_string(),
+            operation_id: r.operation_id.to_string(),
         })
         .collect()
 }
@@ -133,6 +145,31 @@ fn every_fixture_operation_is_in_the_table_with_the_same_scope() {
         extra.is_empty(),
         "the table names an operation (or a scope) not in openapi-1.5.5.json: {extra:?}"
     );
+}
+
+/// `verb.rs:74-76` justifies carrying `operation_id` at all as existing "so the conformance test
+/// can report a mismatch by the name an operator would recognise" — but nothing compared it to the
+/// fixture's `operationId` before this. `every_fixture_operation_is_in_the_table_with_the_same_
+/// scope`'s set-diff now also catches a divergent id (it is part of `FixtureOp`), but reports it as
+/// a whole row missing/extra on both sides; this case is the one that reports it BY NAME, keyed on
+/// (method, path), which is the property the field was added for.
+#[test]
+fn every_operations_id_matches_the_fixtures_operation_id() {
+    let fixture: std::collections::BTreeMap<(String, String), String> = fixture_ops()
+        .into_iter()
+        .map(|op| ((op.method, op.path), op.operation_id))
+        .collect();
+    for row in LEGACY_VERBS {
+        let key = (row.method.to_string(), row.path.to_string());
+        let expected = fixture
+            .get(&key)
+            .unwrap_or_else(|| panic!("{} {} is in the table but not the fixture", key.0, key.1));
+        assert_eq!(
+            row.operation_id, expected,
+            "{} {}: the table's operation_id must match the fixture's operationId",
+            key.0, key.1
+        );
+    }
 }
 
 #[test]

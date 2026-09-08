@@ -627,6 +627,61 @@ fn rotate_scoped_idempotency_key_replays_and_does_not_collide_with_create() {
     assert_eq!(second.body(), first.body());
 }
 
+/// `SecretOnce::target()` names the ONE place its secret may appear, and a create and a rotate
+/// must declare DIFFERENT ones — swapping the two literals at the call sites (`verbs.rs:319` and
+/// `:381`) would have a rotate declare its target as the mint's field and passes every other
+/// assertion in this file, since nothing here reads `target()` at all.
+#[test]
+fn create_and_rotate_declare_their_own_distinct_secret_targets() {
+    let gov = FakeGovernance::new().with_key("k1", false);
+    let verbs = make_verbs(gov);
+    let admin = admin();
+
+    let minted = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        minted
+            .minted_outcome()
+            .expect("a fresh mint")
+            .secret
+            .target(),
+        "response.secret",
+        "a mint's secret must be declared at the mint's own response field"
+    );
+
+    let rotated = verbs
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(2),
+            None,
+            "k1",
+        )
+        .unwrap();
+    assert_eq!(
+        rotated
+            .minted_outcome()
+            .expect("a fresh rotation")
+            .secret
+            .target(),
+        "response.token",
+        "a rotation's secret must be declared at the rotation's own response field, not the \
+         mint's"
+    );
+}
+
 #[test]
 fn a_new_verb_refused_by_posture_never_reaches_governance() {
     let verbs = make_verbs(FakeGovernance::new());
