@@ -32,6 +32,7 @@ implements; implementing a second kind's trait in one crate is a kind fusion and
 |---|---|---|---|---|---|---|---|---|
 | **plane** | `busbar-plane-<plane>` | `KEY`, `CLAIMS` (own + union of registered dialects'), `OP_CLASSES`, `METER_CLASSES`, `SESSION_FACTS`, `CONTENT_FACTS`, `RECORD_SCHEMAS`, `INTROSPECTION_VERBS`, `INTERRUPT_FACT`, `EGRESS_PACING_FACT`, `CONFIG_SCHEMA`; owns its semantic IR | nothing — pure; state only in `PlaneSessionState` | `plane::Plane` (+ `SessionPlane` iff a claimed transport declares `SESSION`), consts on `PlaneMeta` | contract, grammar, reviewed 3rd-party | kernel, root, its own dialects | none (planes carry no LOC row) | purity · determinism · object-safety · every-refusal-answered · claim-ladder order |
 | **dialect** | `busbar-plane-<plane>-<dialect>` | `KEY`, `PLANE`, `CLAIMS`, `LOCATIONS`, `SCHEME_ALT`, `EGRESS_SCHEME`, `STREAMING_CONTENT_TYPE`, `HEAD_KEYS`, `VERBS`, meter-locator pointers | nothing — pure; translates bytes ↔ its plane's IR | `dialect::Dialect` (+ consts on `DialectMeta`) | contract + **its own plane, nothing else** | its own plane's registration only | per-crate LOC row (3.8k–6.3k today) | purity · determinism · object-safety · round-trip byte-exactness · claim-rung uniqueness |
+| **control** | `busbar-control-<name>` | `KEY`, `CLAIMS` — its routes, as data — `CONFIG_SCHEMA`, its own request/response bodies, its own UI data | reads node state only through contract traits; changes node state only through the verbs unit; mints credentials only through the auth unit's signer | `control::Control` (+ consts on `ControlMeta`) | contract (+ capabilities if the contract needs it) | kernel, root | none — a control surface is unmetered and carries no metered LOC row | the control battery (claim-table completeness, route uniqueness, unmetered, no-upstream, refusal coverage) |
 | **transport** | `busbar-transport-<wire>` | `KEY`, `SELECTOR_FORMS`, `EGRESS_SELECTOR_FORMS`, `COMPOSES_OVER`, `HANDOFF`, `FRAMING`, `SESSION`, `SESSION_BOUND`, `UNIT0_TRIGGER`, `UPGRADES_TO`, `HANDSHAKE_TRIGGER`, `TRANSPORT_FACTS`, `DECODES_PAYLOAD`, `STATUS_CLASS` | sockets, processes, TLS — all of it | `transport::Transport` (+ consts on `TransportMeta`) | contract, contract-transport, **lower transports only** | kernel, root, transports that compose over it | `surface-ceiling:contract-transport` bounds its seam, not the crate | the transport battery (round-trip, half-close, cancel, backpressure, K writers, honest frame meta, composition, handoff, upgrade) |
 | **auth** (ingress) | `busbar-auth-<name>` | `KEY`, `LOCATIONS`, `IO: bool`, issuer config | I/O only when `does_io()`, on the blocking pool under a deadline | `kinds::AuthScheme` | contract | kernel | — | universal-config · verify-shape · challenge-rounds · deadline |
 | **egress-auth** | `busbar-egress-auth-<name>` | `KEY` | none (pure) | `kinds::EgressAuthScheme` | contract | kernel | — | universal-config · decorate-purity · handshake-round · slot-substitution |
@@ -40,6 +41,22 @@ implements; implementing a second kind's trait in one crate is a kind fusion and
 | **hook** | `busbar-hook-<name>` | `KEY`, kind (`Tap`\|`Gate`), seats, `HOOK_FACTS`, `on_failure`, `max_priced_delta`, `may_change_destination`, `may_rewrite` | none (pure) | `kinds::Hook` | contract | kernel | — | purity · seat composition · veto/restrict/permutation · priced-delta bound |
 | **export** | `busbar-export-<name>` | `KEY`, sink, format, retention | sink I/O | `kinds::Export` (+ `Anchor` extension) | contract | kernel | — | universal-config · at-least-once ack · anchor head round-trip |
 | *(core)* **unit** | `busbar-unit-<name>` | nothing plugin-visible; a sealed unit trait | the rules — decides one step | its sealed unit trait in `busbar-contract::unit` | contract, **capabilities** (`busbar-core-capabilities`), contract-transport where it holds a wire handle | kernel only | `busbar-unit-*` ≤ 45k, union ≤ 56k | the step battery + mutation floor on the seven money files |
+
+**The control kind, in one paragraph.** A control surface is an UNMETERED served surface, and the
+metering is the whole of the split: a plane is the metered path and a control surface is not on it.
+A control crate CAN declare its routes as data (the same claim table a plane declares), own its
+request and response bodies, run the control path — verified by the auth kind, admitted, audited,
+answered — read node state through contract traits, change node state only through the verbs unit,
+mint credentials only through the auth unit's signer, and carry its own UI data. It CANNOT name any
+money, fee, rate or posting vocabulary (the `plane-no-money` list, verbatim); reach an upstream (no
+egress, pool, routing, failover, breaker or provider vocabulary); appear in a plane's step list or be
+called by one (no plane→control edge and no control→plane edge); depend on a transport, plane,
+dialect, unit or another control crate; own key material or process-global state; or serve a route
+absent from its claim table. `busbar-control-admin` is the first member — `busbar-plane-admin` until
+R7 renames it, registered as `control` by an explicit row in `qa/kind-isolation.toml` meanwhile — and
+`busbar-control-oauth2` is the second. The AUTH kind is unchanged: the verifier plugins
+(`busbar-auth-static`, `busbar-auth-admin-tokens`) stay auth, because a verifier answers a question
+about a credential and a control surface serves a route.
 
 Reading of the table: the ceiling column and the testkit column are part of the kind's definition, not
 decoration. **A kind with no ceiling row and no battery is not a kind that can be gated**, and §6
@@ -137,6 +154,7 @@ scope, as the manifest allow-list already is.
 |---|---|---|---|
 | dialect | `busbar-core-contract`, **its own** `busbar-plane-<p>` | every other plane, any dialect, any transport, any unit, capabilities, kernel, core, substrate | the plane owns the IR; that is the whole edge |
 | plane | `busbar-core-contract`, `busbar-core-grammar` | any transport, any unit, any other plane, **any dialect** (dialects register INTO the plane, never the reverse), capabilities, kernel, core, substrate | a plane names a transport only as a claim constant |
+| control | `busbar-core-contract` (+ `busbar-core-capabilities` where the contract needs it) | any transport, any plane, any dialect, any unit, **any other control crate**, kernel, core, substrate | a control surface answers out of node state; the moment it links a wire or a plane it is on the metered path |
 | transport | `busbar-core-contract`, `busbar-core-contract-transport`, **lower** `busbar-transport-*` only | any plane, any dialect, any unit, capabilities, kernel | wires compose over wires; `busbar-transport-tls → busbar-unit-transport-key` is the one live breach (§9 row 6) |
 | unit *(core)* | `busbar-core-contract`, `busbar-core-capabilities`, `busbar-core-contract-transport` | any plane, dialect, transport, store/auth/secret/hook/export crate | units take facts + principal + clock and nothing else |
 | store / auth / egress-auth / secret / hook / export | `busbar-core-contract` (+ the reviewed third-party list) | every other kind's crate, capabilities, kernel, core, substrate, another instance of its own kind | one kind, one crate, no siblings |
@@ -228,6 +246,7 @@ kind from segment two, so directory name and `package.name` must agree.
 | `busbar-grammar` | `busbar-core-grammar` | |
 | `busbar-timing` | `busbar-core-timing` | |
 | `busbar-plane-voice` | `busbar-plane-streams` | §9 row 10 |
+| `busbar-plane-admin` | `busbar-control-admin` | kind `control`, not `plane`; R7. Registered as control by `qa/kind-isolation.toml`'s `[[registered]]` row until the rename lands, and that row is RED the moment the name says `control` on its own |
 | `busbar-llm-codec` | `busbar-plane-llm-{anthropic,openai,gemini,bedrock,responses,cohere}` + residue | kind-last → kind-first; D36/R6 |
 | `busbar-mcp-codec` | `busbar-plane-mcp-mcpv2` | |
 | `busbar-a2a-codec` | `busbar-plane-a2a-a2a` | |
