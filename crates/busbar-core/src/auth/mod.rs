@@ -34,18 +34,12 @@ const AUTH_SCHEME_BEARER: &str = "bearer";
 /// The liveness-probe path, mounted `RouteAuth::None` on every router that serves it (see
 /// [`crate::core_routes`]). One constant so the mount and the reserved-path list cannot drift.
 pub(crate) const HEALTHZ_PATH: &str = "/healthz";
-/// The exact `/api` path (the native-API root — every busbar-own surface mounts under it;
-/// see `admin::v1::contract::API_ROOT`). `pub(crate)` so the config validator derives its
-/// reserved-name segment from THIS constant rather than a copied literal (see
-/// `config_validate::reserved_admin_name`), which is what keeps the reserved name and the
-/// middleware's `is_admin` boundary from drifting apart.
-pub(crate) const ADMIN_PATH: &str = "/api";
-/// The `/api/` prefix that all native-API sub-routes share. A path must match ADMIN_PATH exactly
-/// OR start with ADMIN_PATH_PREFIX to be treated as an admin-plane request — preventing sibling
-/// paths like `/apix/…` from being mis-classified. The WHOLE `/api/` root is admin-classified
-/// (fail-closed): a future area (`events`, `metrics`) mounted under `/api/` is admin-guarded by
-/// default and must explicitly carve out a weaker class if it ever wants one.
-const ADMIN_PATH_PREFIX: &str = "/api/";
+/// The native-API root and its sub-route prefix. Both live on the neutral admin seam
+/// ([`busbar_substrate::admin_verbs`]) because the config validator reserves the first path
+/// segment (`api`) against pool/provider/model names and must derive it from THE SAME constant
+/// this middleware classifies with — the drift between two copies is what once let a lane named
+/// `api` validate cleanly and then be routed to the admin surface.
+pub(crate) use busbar_substrate::admin_verbs::{ADMIN_PATH, ADMIN_PATH_PREFIX};
 /// Fixed dummy secret used when an inbound SigV4 AccessKeyId is unknown: we still run the
 /// full HMAC verification so the timing is indistinguishable from a bad-signature rejection
 /// (no AccessKeyId-enumeration oracle). The `crate::sigv4` test module references this via

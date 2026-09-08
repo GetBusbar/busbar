@@ -29,10 +29,11 @@ pub use groups::GroupCfg;
 pub(crate) use groups::LimitCfg;
 pub use secret::SecretRef;
 
-use crate::diagnostics::{
-    diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
-};
 use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{
+    CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
+};
 
 // Re-export status_class_from_str for config validation. Named at its NEUTRAL home
 // (`busbar_substrate::breaker`, re-exported from `busbar-substrate-values`) rather than through
@@ -444,7 +445,7 @@ pub struct RootCfg {
     /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
     /// `pools.upstream_credentials:` key (1.5.3 — moved off the retired `auth.upstream_credentials:`).
     /// A pool's own `upstream_credentials:` OVERRIDES this (SCALAR combine rule).
-    pub upstream_credentials: crate::auth::UpstreamCreds,
+    pub upstream_credentials: busbar_api::UpstreamCreds,
     /// The RUNTIME hook registry, LOWERED by `resolve` from the top-level `hooks:` NAMED-DEFINITION
     /// map (1.5.3: [`DeployCfg::hooks`] — a hook is DEFINED once and REFERENCED by bare name from
     /// `pools.hooks:` / `pools.<p>.hooks:`). Admin-registered hooks land here too.
@@ -1009,7 +1010,7 @@ pub(crate) struct PoolsCfg {
     /// The ALL-POOLS `upstream_credentials:` default (the reserved `pools.upstream_credentials:`
     /// key). SCALAR ⇒ OVERRIDE: a pool's own value REPLACES this. `None` = absent ⇒ the
     /// built-in default (`own`).
-    pub(crate) all_pool_upstream_credentials: Option<crate::auth::UpstreamCreds>,
+    pub(crate) all_pool_upstream_credentials: Option<busbar_api::UpstreamCreds>,
     /// The real pools, keyed by name (every top-level key except the two reserved section keys).
     pub(crate) pools: HashMap<String, PoolCfg>,
 }
