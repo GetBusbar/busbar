@@ -476,17 +476,17 @@
    "paths": [
     "crates/busbar-caps/src"
    ],
-   "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 8,
+   "tree_hash": "c591d24d45fe9bf7bb217ae9bae4f9ae5e4e42212f03e38be4c3364f7944e48e",
+   "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+   "round": 9,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
-    "LOW": 4,
-    "NIT": 2
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1
    },
-   "report": "challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named",
-   "auditor": "opus-p3-caps-contract-kernel",
+   "report": "the proof that a hold was settled is the one capability in the crate a caller may drop silently; the capability seams, the token mints and the two-sided balance were read in full and held",
+   "auditor": "opus-kernel-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-caps/src/tests"
@@ -538,6 +538,19 @@
       "NIT": 2
      },
      "report": "challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named"
+    },
+    {
+     "round": 9,
+     "result": "findings",
+     "auditor": "opus-kernel-auditor-b",
+     "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+     "tree_hash": "c591d24d45fe9bf7bb217ae9bae4f9ae5e4e42212f03e38be4c3364f7944e48e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1
+     },
+     "report": "the proof that a hold was settled is the one capability in the crate a caller may drop silently; the capability seams, the token mints and the two-sided balance were read in full and held"
     }
    ]
   },
@@ -547,16 +560,17 @@
    "paths": [
     "crates/busbar-contract/src"
    ],
-   "tree_hash": "1399ebd150cd1f1813018cc72a60710bb7424d408711079becde52e827e43c3f",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 8,
-   "result": "findings",
+   "tree_hash": "aa7e2340f54bc1de65b5277433622a0b78f5d1bb0d032dd0dc49f381d1a86979",
+   "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+   "round": 9,
+   "result": "zero",
    "counts": {
-    "MEDIUM": 3,
-    "LOW": 4
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
    },
-   "report": "challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named",
-   "auditor": "opus-p3-caps-contract-kernel",
+   "report": "zero confirmed; every production file was read for reachable panics and none was found, but the closed-vocabulary and per-kind shape reading did not run, so this is a partial reading and not a clean one",
+   "auditor": "opus-kernel-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract/src/tests"
@@ -607,6 +621,19 @@
       "LOW": 4
      },
      "report": "challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named"
+    },
+    {
+     "round": 9,
+     "result": "zero",
+     "auditor": "opus-kernel-auditor-b",
+     "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+     "tree_hash": "aa7e2340f54bc1de65b5277433622a0b78f5d1bb0d032dd0dc49f381d1a86979",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "zero confirmed; every production file was read for reachable panics and none was found, but the closed-vocabulary and per-kind shape reading did not run, so this is a partial reading and not a clean one"
     }
    ]
   },
@@ -616,15 +643,17 @@
    "paths": [
     "crates/busbar-contract-transport/src"
    ],
-   "tree_hash": "97b62ddfb154ce554e9956bd11c186ff347497e271b487b5b58a5d542e7ce4ed",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "findings",
+   "tree_hash": "77282a487bc9f359a1bbc18c28c4fee264502f9ecdd049d6d96302a4b7625813",
+   "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+   "round": 7,
+   "result": "zero",
    "counts": {
-    "HIGH": 1
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
    },
-   "report": "transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully",
-   "auditor": "opus-pass3",
+   "report": "zero confirmed; every production file was read for reachable panics and none was found, but several lenses opened no file in this crate at all, so this is a partial reading and not a clean one",
+   "auditor": "opus-kernel-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract-transport/src/tests"
@@ -663,6 +692,19 @@
       "HIGH": 1
      },
      "report": "transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully"
+    },
+    {
+     "round": 7,
+     "result": "zero",
+     "auditor": "opus-kernel-auditor-b",
+     "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+     "tree_hash": "77282a487bc9f359a1bbc18c28c4fee264502f9ecdd049d6d96302a4b7625813",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "zero confirmed; every production file was read for reachable panics and none was found, but several lenses opened no file in this crate at all, so this is a partial reading and not a clean one"
     }
    ]
   },
@@ -794,16 +836,17 @@
    "paths": [
     "crates/busbar-kernel/src"
    ],
-   "tree_hash": "46d22124c992709e046a8b7cd23cdc7c1dd0ff62afd7bf8b59ef8096d97b39ca",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 8,
+   "tree_hash": "2c406b3e089d534eb1f3b8447c5d5dbb77490d050aea8ca85b8fc13dac094053",
+   "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+   "round": 9,
    "result": "findings",
    "counts": {
-    "MEDIUM": 3,
-    "LOW": 3
+    "HIGH": 0,
+    "MEDIUM": 6,
+    "LOW": 4
    },
-   "report": "challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named",
-   "auditor": "opus-p3-caps-contract-kernel",
+   "report": "the boot-time claim walk reads a server name case-sensitively where the contract reads it case-insensitively, so two claims that collide pass as disjoint; a swept unit and an exited unit post the same figure against different meter classes; the reservation the door opened is discarded unposted when the sweep empties the cell first; the credential slab prints its plaintext and its clear leaves the bytes in place; every unit heap-allocates one usage line on a path a named zero-allocation invariant covers but no instrument measures; a displaced session slot is never closed and the unit table has no matching displacement handling; the exit path carries a durability arm that cannot fire",
+   "auditor": "opus-kernel-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel/src/tests"
@@ -866,6 +909,19 @@
       "LOW": 3
      },
      "report": "challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named"
+    },
+    {
+     "round": 9,
+     "result": "findings",
+     "auditor": "opus-kernel-auditor-b",
+     "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+     "tree_hash": "2c406b3e089d534eb1f3b8447c5d5dbb77490d050aea8ca85b8fc13dac094053",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 6,
+      "LOW": 4
+     },
+     "report": "the boot-time claim walk reads a server name case-sensitively where the contract reads it case-insensitively, so two claims that collide pass as disjoint; a swept unit and an exited unit post the same figure against different meter classes; the reservation the door opened is discarded unposted when the sweep empties the cell first; the credential slab prints its plaintext and its clear leaves the bytes in place; every unit heap-allocates one usage line on a path a named zero-allocation invariant covers but no instrument measures; a displaced session slot is never closed and the unit table has no matching displacement handling; the exit path carries a durability arm that cannot fire"
     }
    ]
   },
