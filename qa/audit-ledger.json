@@ -4210,6 +4210,21 @@
    ]
   },
   {
+   "id": "crates/busbar-transport-grpc/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-transport-http/src/tests",
    "kind": "test",
    "paths": [
@@ -4229,21 +4244,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-http/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-grpc/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-grpc/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4320,6 +4320,21 @@
      "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-transport-ws/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-ws/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-unit-admission/src/tests",
