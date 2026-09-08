@@ -36,9 +36,19 @@ name: CI
 #   gh workflow run ci.yml -R GetBusbar/busbar --ref feat/my-branch
 #
 # `branches:` never matches tag pushes, so the release tag (v1.5.3 et al) still does not run CI here.
+#
+# `keep-**` IS EXCLUDED, AND IT IS NOT AN UNGATING. A `keep-*` branch is an agent's hand-back, and
+# `.github/workflows/keep-proof.yml` is its judge: fmt, clippy -D warnings, the workspace build, the
+# workspace suite across five runners, `cargo xtask gate --all`, `cargo xtask selftest`, the design
+# bindings, the construction gate and the shadow oracle. Before this exclusion a single keep push
+# queued keep-proof's ten jobs AND this workflow's ten AND the three conformance workflows' twenty-
+# nine — fifty jobs for one hand-back, of which ten were a verbatim second opinion. The queue is a
+# shared resource and every agent waits in it, so the duplicate is the one to cut. Nothing that gets
+# PROMOTED skips this workflow: a keep branch is harvested by cherry-pick onto an integration branch,
+# and the integration branch runs the full thing.
 on:
   push:
-    branches: ['**']
+    branches: ['**', '!keep-**']
   pull_request:
   workflow_dispatch:
 
