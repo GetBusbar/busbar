@@ -23,7 +23,10 @@
 //!   of 277 files, and renaming it leaves 127 — which clears a floor of 100 and prints `passed`.
 //! * `settings-leak:scan-floor` — the aggregate floor, which catches a root that moved.
 //! * `settings-leak:no-raw-bag` — the finding: R1, a struct field named `settings`/`*_settings`
-//!   declared as a raw bag type; R2, a hand-built `json!` member named `"settings"`.
+//!   declared as a raw bag type; R2, a hand-built `json!` member named `"settings"` — but NOT the
+//!   head of an inline JSON-SCHEMA sub-schema, which describes the shape of a bag and never carries
+//!   one (see [`opens_schema_fragment`] for how narrowly that is recognised, and the selftest case
+//!   that proves a real bag written beside a schema fragment is still named).
 //!
 //! THE ALLOWLIST is explicit, per-line and self-documenting — `// settings-leak-lint: allow —
 //! <reason>` on the line or the comment block immediately above — and covers exactly the one
@@ -201,16 +204,70 @@ fn is_raw_bag_field(line: &str) -> bool {
     false
 }
 
+/// The JSON-Schema keywords a SUB-SCHEMA can lead with. Closed and small on purpose: this list is
+/// the only thing standing between a schema fragment and the R2 rule, so it names the vocabulary
+/// (draft 2020-12) rather than accepting any object.
+const SCHEMA_KEYWORDS: &[&str] = &[
+    "type",
+    "$ref",
+    "$dynamicRef",
+    "properties",
+    "patternProperties",
+    "additionalProperties",
+    "items",
+    "prefixItems",
+    "required",
+    "oneOf",
+    "anyOf",
+    "allOf",
+    "not",
+    "const",
+    "enum",
+    "format",
+    "pattern",
+    "description",
+    "title",
+    "default",
+    "nullable",
+];
+
+/// Is the text after a `"settings":` the start of an inline JSON-SCHEMA sub-schema, rather than a
+/// value expression?
+///
+/// A schema fragment DESCRIBES the shape of a settings bag; it never carries one. `"settings":
+/// {"type": "object"}` in [`secret_ref::oneof_schema`] is the `x-busbar-secret` field's own
+/// `oneOf` — the schema busbar-ui composes a reference against — and reading it as a leak was R2
+/// mistaking a description of the bag for the bag.
+///
+/// It is recognised as narrowly as it can be and still be recognised: the value must be an INLINE
+/// object literal whose FIRST member is spelled with one of [`SCHEMA_KEYWORDS`]. Nothing else
+/// qualifies — not a bare `{}`, not an identifier, not a call, not `{ "settings": settings }` —
+/// so a real bag written on the same line, or on the next one, is untouched by this.
+fn opens_schema_fragment(after_colon: &str) -> bool {
+    let Some(inner) = after_colon.trim_start().strip_prefix('{') else {
+        return false;
+    };
+    let inner = inner.trim_start();
+    SCHEMA_KEYWORDS.iter().any(|k| {
+        inner
+            .strip_prefix(&format!("\"{k}\""))
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+    })
+}
+
 /// R2 — a hand-built JSON response member named `settings`: `"settings"` then optional whitespace
-/// then `:`.
+/// then `:`, and NOT the head of a JSON-Schema sub-schema (see [`opens_schema_fragment`]).
 fn is_raw_bag_member(line: &str) -> bool {
     let needle = "\"settings\"";
     let mut rest = line;
     while let Some(i) = rest.find(needle) {
-        if rest[i + needle.len()..].trim_start().starts_with(':') {
-            return true;
+        let after = &rest[i + needle.len()..];
+        if let Some(value) = after.trim_start().strip_prefix(':') {
+            if !opens_schema_fragment(value) {
+                return true;
+            }
         }
-        rest = &rest[i + needle.len()..];
+        rest = after;
     }
     false
 }
@@ -511,6 +568,40 @@ impl Gate for SettingsLeakGate {
             &[ROW_NO_RAW_BAG],
             ov,
             &["1 finding(s)", "planted_scope.rs:5"],
+        ));
+
+        // A SCHEMA FRAGMENT IS NOT A BAG, AND THE EXEMPTION IS NOT A MUTE FOR THE LINE BELOW IT.
+        // R2 read `"settings": {"type": "object"}` — the `x-busbar-secret` oneOf, a DESCRIPTION of
+        // a settings bag — as a leak. The exemption is scoped to an inline object literal leading
+        // with a schema keyword, so a raw bag two lines down, and a bare `{}` that names no
+        // keyword, are both still named. Both are planted here BESIDE the fragment: an exemption
+        // proved only on a file that holds nothing else proves nothing about a real tree.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_schema.rs",
+            "fn secret_schema() -> serde_json::Value {\n\
+             \x20   json!({\"properties\": {\n\
+             \x20       \"module\": {\"type\": \"string\"},\n\
+             \x20       \"settings\": {\"type\": \"object\"},\n\
+             \x20       \"either\": {\"settings\": {\"oneOf\": [{\"const\": \"none\"}]}},\n\
+             \x20   }})\n}\n\n\
+             fn hook_status() -> Response {\n\
+             \x20   ok_json(StatusCode::OK, &json!({\n\
+             \x20       \"settings\": settings,\n\
+             \x20       \"also\": {\"settings\": {}},\n\
+             \x20   }))\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a JSON-Schema fragment is exempt and a raw bag beside it is still named",
+            &[ROW_NO_RAW_BAG],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_schema.rs:11",
+                "planted_schema.rs:12",
+            ],
         ));
 
         // THE INSTRUMENT: A ROOT THAT LEFT THE SCAN. `$CORE` is 150 of 277 files; renaming it left
