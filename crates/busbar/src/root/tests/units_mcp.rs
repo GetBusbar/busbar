@@ -8,6 +8,9 @@ use super::*;
 // makes a cell compile is the same import a reader follows to find what it is asserting about.
 use busbar_unit_trust::lane::BreakerQuery;
 use busbar_unit_trust::net::{Denylist, GuardPolicy};
+// The implementation file stopped naming it when the boot seal moved out; the group-table fixture
+// below still builds one, so the import belongs where the construction is.
+use std::collections::BTreeMap;
 
 /// A resolver that answers every name with one public address.
 ///

@@ -94,6 +94,11 @@ pub mod units_mcp;
 pub mod units_mcp_leg;
 #[cfg(feature = "root-mcp")]
 pub mod units_mcp_mount;
+// The BOOT half of the MCP plane's composition, split from the request half by the structural cap
+// and kept split because two lifetimes in one file is how a reader looks for a per-request cost in
+// a function that runs before the first connection.
+#[cfg(feature = "root-mcp")]
+pub mod units_mcp_seal;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;
