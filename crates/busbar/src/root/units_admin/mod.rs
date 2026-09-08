@@ -1648,6 +1648,50 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
     }
 }
 
+/// Where one admin verb's answer is PRODUCED.
+///
+/// Not where the request is admitted — every verb on this surface walks the same twelve steps — but
+/// which side of the last one writes the bytes. The distinction is the whole subject of the admin
+/// leg's migration: an operation crosses when the loop starts producing its answer and the surface
+/// underneath stops, and both halves of that have to be true at once or the same request has two
+/// answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnsweredBy {
+    /// The loop produces the bytes itself, from a seam it holds. The surface underneath is not asked
+    /// and has no route for the path.
+    Loop,
+    /// The loop hands the request to the administrative surface `busbar-core` mounts and returns
+    /// what that answered, unchanged — status, headers and body together.
+    LegacySurface,
+}
+
+/// Which side answers one verb, as DATA rather than as a sentence somebody has to keep true.
+///
+/// The two arms below are the same two closed enumerations [`route`] branches on, read from the one
+/// place each is defined: the three recovery verbs from [`recovery_verb`], and the ledger views from
+/// the executing unit's own `LEDGER_VERBS`. Nothing here is a transcription — a verb added to either
+/// list appears here without this function being edited, which is what makes it safe to join a test
+/// against.
+///
+/// It is deliberately NOT derived from `route`'s control flow, because a table derived from the code
+/// it is meant to check agrees with any code. What checks it is the pin beside this crate's other
+/// admin tests: it serves the surface underneath and asks it, path by path, which of the 88 it has a
+/// route for — and requires that set to be exactly the complement of this function's `Loop`.
+#[must_use]
+pub fn answered_by(verb: KernelVerb) -> AnsweredBy {
+    if recovery_verb(verb).is_some() {
+        // Their effect lands on `Store` through the unit's own per-verb entry points; the governance
+        // seam is never reached and the surface underneath has never had a route for them.
+        return AnsweredBy::Loop;
+    }
+    if busbar_unit_verbs::LEDGER_VERBS.contains(&verb) {
+        // There is no 1.5.5 handler behind a figure 1.5.5 never kept, so `execute_ledger_read`
+        // renders these from the bound `LedgerView` rather than asking the dispatch.
+        return AnsweredBy::Loop;
+    }
+    AnsweredBy::LegacySurface
+}
+
 /// What an operation that changed something and has nothing to say answers with.
 ///
 /// A recovery verb's whole result is its effect: the chain broke, the store restored, the floor
