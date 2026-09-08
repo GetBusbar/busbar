@@ -1369,6 +1369,28 @@ A plugin rollback's rebuild failed AFTER the lowered pin was persisted, and the 
 
 **What to do:** Fix the `plugins.trust` block (the logged error names the problem), then re-run `--list-plugins` or `--validate`.
 
+<a id="plugin-firstparty-floor-unreadable"></a>
+### BUSBAR-6011 — First-party anti-downgrade floor unreadable (booting with NO first-party floor)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-firstparty-floor-unreadable`
+
+The persisted per-plugin-name high-water marks — the automatic first-party anti-downgrade floor — could not be read or were not valid, so busbar booted with NO first-party floor. Security-relevant: while the floor is absent, a validly-signed but OLD first-party artifact planted in the plugins directory would load without being refused as a downgrade. The floor re-establishes itself as plugins load successfully. busbar fails SOFT here on purpose: refusing the boot would let anyone able to corrupt one file take the node down.
+
+**What to do:** Check the data directory is readable and that `plugin-highwater.json` beneath it is intact (the log names the path and the exact problem). Deleting the file is safe — the floor rebuilds from the next successful load — but it does re-open the replay window until it does.
+
+<a id="plugin-firstparty-floor-unwritable"></a>
+### BUSBAR-6012 — First-party anti-downgrade floor could not be persisted (it will not survive a restart)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-firstparty-floor-unwritable`
+
+busbar raised the per-plugin-name high-water marks — the automatic first-party anti-downgrade floor — but could not write them to the data directory. The floor still applies to THIS process; it will not survive a restart, so the replay window reopens at the next boot until a load re-establishes it.
+
+**What to do:** Make the configured data directory writable (the log names the underlying I/O error). A node that cannot write its data directory usually has a larger problem than this notice.
+
 ## 7xxx — Plane protocols
 
 <a id="stateful-plane-ephemeral-store"></a>

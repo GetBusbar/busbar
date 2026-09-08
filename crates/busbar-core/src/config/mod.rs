@@ -1371,16 +1371,19 @@ pub struct PluginsCfg {
     /// the explicit untrusted opt-ins.
     #[serde(default)]
     pub(crate) trust: PluginsTrustCfg,
-    /// ANTI-DOWNGRADE floors: plugin canonical `name` -> minimum acceptable `version`. Third-party
-    /// only in practice — first-party plugins are automatically floored at the running binary's
-    /// version. A floored plugin must prove (trusted signature, version at/above the floor) that it
-    /// meets the floor; nothing else loads it. Sibling of `trust` (a version axis, not a trust axis).
+    /// ANTI-DOWNGRADE floors: plugin canonical `name` -> minimum acceptable `version`. Applies to
+    /// first- and third-party alike, and is SEPARATE from the automatic first-party floor (the
+    /// per-name high-water mark maintained by `busbar_plugin_loader::HighWaterMarks`, which needs no
+    /// configuration). A floored plugin must prove (trusted signature, version at/above the floor)
+    /// that it meets the floor; nothing else loads it. Sibling of `trust` (a version axis, not a
+    /// trust axis).
     #[serde(default)]
     pub(crate) min_versions: std::collections::BTreeMap<String, String>,
     /// RUNTIME-ONLY (never in config, `#[serde(skip)]`): PER-PLUGIN FIRST-PARTY anti-downgrade floor
     /// OVERRIDES for EXPLICIT operator rollbacks (1.5.0). Empty (the default, and the ONLY value the
-    /// automatic boot/reload path ever sees) = every first-party plugin uses the running binary's own
-    /// version — the full automatic floor. An explicit, audited `POST /plugins/rollback` of a
+    /// automatic boot/reload path ever sees) = every first-party plugin faces its own automatic
+    /// floor, the per-name HIGH-WATER MARK (the highest version of that name this deployment has
+    /// seen and loaded — `busbar_plugin_loader::HighWaterMarks`). An explicit, audited `POST /plugins/rollback` of a
     /// FIRST-PARTY plugin adds a `name -> pinned target version` entry so `busbar_plugin_sign::evaluate`
     /// admits the prior artifact for THAT NAME ONLY (an unpinned first-party plugin still faces the full
     /// floor — replacing the earlier single global floor). Derived from the persisted
@@ -1572,20 +1575,15 @@ impl PluginsCfg {
     }
 
     /// Resolve into the `busbar-plugin-sign` trust policy: the EMBEDDED first-party release key +
-    /// the binary's own version (the automatic first-party anti-downgrade floor) + the configured
-    /// third-party publishers/opt-ins/floors. A malformed publisher key is a boot error, not a
-    /// silent skip (a skipped trust anchor could wrongly reject a good plugin).
+    /// the binary's own version (carried for diagnostics — NOT a floor) + the configured third-party
+    /// publishers/opt-ins/floors. A malformed publisher key is a boot error, not a silent skip (a
+    /// skipped trust anchor could wrongly reject a good plugin).
+    ///
+    /// The AUTOMATIC first-party anti-downgrade floor is NOT resolved here: it is the per-name
+    /// high-water mark, an observed fact rather than a config value, and it is injected by
+    /// [`crate::preflight`] from `busbar_plugin_loader::HighWaterMarks`. This resolver leaves
+    /// `first_party_high_water` empty; a caller that skips the injection gets NO automatic floor.
     pub fn to_policy(&self) -> Result<busbar_plugin_sign::TrustPolicy, String> {
-        // The AUTOMATIC anti-downgrade posture: the first-party floor is the running binary's own
-        // version, so a validly-signed but OLD first-party artifact can never be REPLAYED into a newer
-        // binary and silently accepted as "current". This is the policy every automatic path
-        // (boot / config reload / config apply / admin plugin reload) uses — UNLESS an explicit,
-        // audited rollback has set `first_party_floor` (a runtime-only, serde-skip field derived from
-        // the persisted `plugin_versions` pins), in which case the operator's pinned floor stands.
-        // `first_party_floors` is EMPTY on every path except a rebuild carrying persisted rollback
-        // pins, so the automatic guarantee is unchanged by default. Each entry lowers the floor for
-        // ONE named first-party plugin only; every other first-party plugin still faces the
-        // running binary's version.
         self.to_policy_with_floor(env!("CARGO_PKG_VERSION"))
     }
 
@@ -1653,6 +1651,10 @@ impl PluginsCfg {
             first_party_key: busbar_plugin_sign::embedded_release_pubkey(),
             binary_version: binary_version.to_string(),
             first_party_floors: self.first_party_floors.clone(),
+            // The automatic first-party floor is injected by the caller that owns the marks
+            // (`plugins_preflight`, from `busbar_plugin_loader::HighWaterMarks`); config carries no
+            // high-water key and never will — the mark is an observed fact, not an operator setting.
+            first_party_high_water: Default::default(),
             publishers,
             allow_unsigned: self.trust.allow_unsigned,
             allow_third_party: self.trust.allow_third_party,

@@ -7,7 +7,10 @@
 
 use std::sync::Arc;
 
-use crate::diagnostics::{diag_warn, PLUGIN_LOADED_UNVERIFIED, PLUGIN_SKIPPED_TRUST_POLICY};
+use crate::diagnostics::{
+    diag_warn, PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE, PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
+    PLUGIN_LOADED_UNVERIFIED, PLUGIN_SKIPPED_TRUST_POLICY,
+};
 
 #[allow(unused_imports)]
 use crate::{
@@ -17,6 +20,20 @@ use crate::{
     observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
     telemetry, tls, transport, trust,
 };
+
+/// The FLEET DATA DIR the first-party anti-downgrade floor persists under, or `None` when this
+/// deployment has none.
+///
+/// PB-13 pins that a deployment without a data dir performs NO data-dir probe and creates NO
+/// data-dir files, so `None` here means the floor is memory-only and nothing is written or looked
+/// for on disk. `BUSBAR_DATA_DIR` is PB-13's own first probe name; there is no `data_dir` config key
+/// yet, so it is the only source, and reading an absent environment variable touches no filesystem.
+/// When the `data_dir` config key lands this is the one place that has to learn about it.
+fn fleet_data_dir() -> Option<std::path::PathBuf> {
+    let raw = std::env::var_os("BUSBAR_DATA_DIR")?;
+    let path = std::path::PathBuf::from(raw);
+    (!path.as_os_str().is_empty()).then_some(path)
+}
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
 /// (`prior = None`) and the config plane's apply/reload (`prior = Some(current)`). On apply,
@@ -164,10 +181,24 @@ pub fn plugins_preflight(
         ));
     }
 
-    // 2. Policy resolution (embedded first-party key + configured third-party trust).
-    let policy = plugins_cfg
+    // 2. Policy resolution (embedded first-party key + configured third-party trust), then the
+    //    AUTOMATIC first-party anti-downgrade floor: the per-name high-water marks. `to_policy`
+    //    leaves the floor empty on purpose — it is an observed fact, not a config value — so this is
+    //    the one seam that arms it, and it is the seam every automatic path (boot / config reload /
+    //    config apply / admin plugin reload) runs through.
+    let mut policy = plugins_cfg
         .to_policy()
         .map_err(|e| format!("plugins.trust is invalid: {e}"))?;
+    let data_dir = fleet_data_dir();
+    let (mut high_water, hw_note) = busbar_plugin_loader::HighWaterMarks::load(data_dir.as_deref());
+    if let Some(note) = hw_note {
+        diag_warn!(
+            PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE,
+            detail = %note,
+            "the persisted first-party anti-downgrade floor could not be used"
+        );
+    }
+    policy.first_party_high_water = high_water.marks();
 
     // Disabled and nothing referenced: the registry is empty and NOTHING in the directory is even
     // read (drop-is-inert).
@@ -219,6 +250,22 @@ pub fn plugins_preflight(
                 reason = %reason,
                 "plugin validated as UNVERIFIED (permitted by an explicit plugins.trust opt-in)"
             ),
+        }
+    }
+
+    // 3b. RAISE the first-party anti-downgrade floor to what this scan proved loadable. Only a
+    //     VERIFIED first-party verdict counts (a third-party or opted-in-untrusted artifact must
+    //     never set the floor the first-party lane is judged against), and the mark only ever rises.
+    //     A failure to persist is NOT fatal: the in-memory marks still floor this process, and a
+    //     node that cannot write its data dir has a louder problem than this one.
+    if high_water.record_registry(&registry) {
+        if let Err(e) = high_water.persist() {
+            diag_warn!(
+                PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
+                error = %e,
+                "could not persist the first-party anti-downgrade floor; it still applies to this \
+                 process but will not survive a restart"
+            );
         }
     }
 

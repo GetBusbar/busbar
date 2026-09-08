@@ -250,11 +250,33 @@ pub struct TrustPolicy {
     /// automatic "plugin >= binary version" floor would have rejected every correctly-signed
     /// current first-party release and was removed before 1.5.0 shipped.
     pub binary_version: String,
-    /// PER-PLUGIN first-party anti-downgrade floors (1.5.0 rollback pins) — with no automatic
-    /// binary floor these are the ONLY first-party floors (alongside `min_versions`). `name` ->
-    /// the pinned minimum version; a name absent here carries no first-party floor. Scoping per
-    /// name keeps a rollback of plugin A from ever changing what plugin B is allowed to be.
+    /// PER-PLUGIN first-party anti-downgrade OVERRIDES: the explicit, audited rollback pins (1.5.0).
+    /// `name` -> the pinned minimum version. A pin REPLACES that name's automatic high-water floor
+    /// ([`first_party_high_water`](Self::first_party_high_water)) — it is how an operator rolls a
+    /// first-party plugin back on purpose. Scoping per name keeps a rollback of plugin A from ever
+    /// changing what plugin B is allowed to be.
     pub first_party_floors: BTreeMap<String, String>,
+    /// The FIRST-PARTY ANTI-DOWNGRADE FLOOR: per-plugin-name HIGH-WATER MARKS — `name` -> the
+    /// highest `version` of that name this deployment has actually SEEN AND LOADED.
+    ///
+    /// This is the control `docs/plugins.md` security-model item 3 promises. A validly-signed but OLD
+    /// release is still a signed artifact an attacker with write access to `plugins.dir` can replay:
+    /// it verifies against the embedded release key and, with nothing to compare it against, loads as
+    /// `first-party` with no warning. The mark is what it is compared against. A name absent here
+    /// carries NO floor — a FIRST install is not a downgrade, and the mark is only ever raised by a
+    /// load this deployment itself performed.
+    ///
+    /// It is deliberately NOT the binary's version ([`binary_version`](Self::binary_version)): first-
+    /// party plugins version on their own independent lines, so a binary floor rejected every
+    /// correctly-signed current release. The high-water mark couples to the PLUGIN's own line.
+    ///
+    /// [`first_party_floors`](Self::first_party_floors) — the explicit, audited rollback pin —
+    /// REPLACES this floor for the pinned name, and for that name only. That is the documented way
+    /// past it, and it is why an operator can still roll a first-party plugin back on purpose.
+    ///
+    /// Maintained by `busbar_plugin_loader::HighWaterMarks`: persisted under the fleet data dir when
+    /// one is configured, memory-only otherwise (PB-13/15 — no data dir, no files).
+    pub first_party_high_water: BTreeMap<String, String>,
     /// THIRD-PARTY allowlist: publisher name -> ed25519 public key. The first-party publisher
     /// (`busbar`) never resolves here.
     pub publishers: BTreeMap<String, VerifyingKey>,
@@ -670,8 +692,11 @@ enum Untrusted {
 ///
 /// TRUST MODEL:
 ///   * `publisher: busbar` verifies against the EMBEDDED release key -> first-party TRUSTED with
-///     zero config. Anti-downgrade is AUTOMATIC: `version` must be at/above
-///     [`TrustPolicy::binary_version`].
+///     zero config. Anti-downgrade is AUTOMATIC but keyed to the PLUGIN's own version line, not the
+///     binary's: `version` must be at/above [`TrustPolicy::first_party_high_water`], the highest
+///     version of that name this deployment has seen and loaded. An explicit rollback pin
+///     ([`TrustPolicy::first_party_floors`]) replaces that floor for the pinned name.
+///     [`TrustPolicy::binary_version`] is NOT a floor.
 ///   * A publisher in `publishers` whose signature verifies -> TRUSTED (third-party allowlisted).
 ///   * Unsigned/tampered -> [`Verdict::Allowed`] only under `allow_unsigned`; else [`Rejected`].
 ///   * Signed by an unknown publisher -> [`Verdict::Allowed`] only under `allow_third_party`; else
@@ -729,27 +754,43 @@ pub fn evaluate(
         }
     };
 
-    // FIRST-PARTY anti-downgrade: PER-NAME floors only (`first_party_floors`, plus the general
-    // `min_versions` block below). There is deliberately NO automatic binary-version floor:
-    // first-party plugins version on their own independent lines (the stores/auth/hooks ship
-    // 1.0.x and headroom 2.x under a 1.5.0 engine — product decision, 2026-08-02), so "at or
-    // above the binary's version" would reject every correctly-signed current release. The
-    // replay threat the old automatic floor addressed is covered per name: a rollback pin
-    // (`first_party_floors`) or an operator/registry `min_versions` floor, both hard rejects no
-    // opt-in flag can relax. (Future: the plugin registry embeds known per-plugin floors at
-    // release time, restoring zero-config anti-replay without version-line coupling.)
+    // FIRST-PARTY anti-downgrade: PER-NAME floors only. There is deliberately NO automatic
+    // binary-version floor: first-party plugins version on their own independent lines (the
+    // stores/auth/hooks ship 1.0.x and headroom 2.x under a 1.5.0 engine — product decision,
+    // 2026-08-02), so "at or above the binary's version" would reject every correctly-signed
+    // current release.
+    //
+    // The floor that IS applied is the per-name HIGH-WATER MARK (`first_party_high_water`): the
+    // highest version of THIS name this deployment has itself seen and loaded. That couples the
+    // floor to the plugin's own version line instead of the binary's, so it closes the replay
+    // (`docs/plugins.md` security-model item 3) without rejecting current releases. A name with no
+    // mark carries no floor — a first install is not a downgrade.
+    //
+    // An EXPLICIT, audited rollback pin (`first_party_floors`, from `POST /plugins/rollback` via the
+    // persisted `plugin_versions` overlay) REPLACES the mark for the pinned name — that is the
+    // documented override, and it is scoped per name so rolling A back never admits an old B.
+    // `min_versions` (below) floors first- and third-party alike and is checked separately.
     if let Ok(true) = trusted_or_untrusted {
-        let floor = policy
-            .first_party_floors
-            .get(&manifest.name)
+        let pinned = policy.first_party_floors.get(&manifest.name);
+        let floor = pinned
+            .or_else(|| policy.first_party_high_water.get(&manifest.name))
             .map(String::as_str)
             .unwrap_or("");
         if !floor.is_empty() && !version_at_least(&manifest.version, floor) {
+            let why = if pinned.is_some() {
+                "the PINNED first-party rollback floor"
+            } else {
+                "the highest version of this plugin this deployment has seen and loaded"
+            };
             return Err(Rejected::new(
                 RejectKind::AntiDowngrade,
                 format!(
                     "first-party plugin '{}' version {} is below the required first-party floor {} \
-                     (automatic first-party anti-downgrade){}",
+                     ({why}) (first-party anti-downgrade). A validly-signed but OLD release is \
+                     still a signed artifact an attacker can replay, so this is a hard reject no \
+                     trust opt-in can relax. To install this version DELIBERATELY, roll the plugin \
+                     back explicitly (the audited plugins.rollback admin action), which replaces \
+                     the floor for this plugin name only.{}",
                     manifest.name,
                     manifest.version,
                     floor,

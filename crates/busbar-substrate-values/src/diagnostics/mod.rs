@@ -3468,6 +3468,46 @@ pub const CLI_LIST_PLUGINS_TRUST_INVALID: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The persisted first-party anti-downgrade floor could not be READ, so the node boots with none.
+pub const PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE: Diagnostic = Diagnostic {
+    code: 6011,
+    class: Class::Plugins,
+    slug: "plugin-firstparty-floor-unreadable",
+    title: "First-party anti-downgrade floor unreadable (booting with NO first-party floor)",
+    severity: Severity::Actionable,
+    summary: "The persisted per-plugin-name high-water marks — the automatic first-party \
+              anti-downgrade floor — could not be read or were not valid, so busbar booted with NO \
+              first-party floor. Security-relevant: while the floor is absent, a validly-signed but \
+              OLD first-party artifact planted in the plugins directory would load without being \
+              refused as a downgrade. The floor re-establishes itself as plugins load successfully. \
+              busbar fails SOFT here on purpose: refusing the boot would let anyone able to corrupt \
+              one file take the node down.",
+    action: "Check the data directory is readable and that `plugin-highwater.json` beneath it is \
+             intact (the log names the path and the exact problem). Deleting the file is safe — the \
+             floor rebuilds from the next successful load — but it does re-open the replay window \
+             until it does.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The first-party anti-downgrade floor could not be PERSISTED; it still applies to this process.
+pub const PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE: Diagnostic = Diagnostic {
+    code: 6012,
+    class: Class::Plugins,
+    slug: "plugin-firstparty-floor-unwritable",
+    title: "First-party anti-downgrade floor could not be persisted (it will not survive a restart)",
+    severity: Severity::Actionable,
+    summary: "busbar raised the per-plugin-name high-water marks — the automatic first-party \
+              anti-downgrade floor — but could not write them to the data directory. The floor still \
+              applies to THIS process; it will not survive a restart, so the replay window reopens \
+              at the next boot until a load re-establishes it.",
+    action: "Make the configured data directory writable (the log names the underlying I/O error). \
+             A node that cannot write its data directory usually has a larger problem than this \
+             notice.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault.
 pub const GROUP_USAGE_READ_FAILED: Diagnostic = Diagnostic {
     code: 8018,
@@ -3777,6 +3817,8 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &METADATA_PROTECTION_DISABLED,
     &CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED,
     &CLI_LIST_PLUGINS_TRUST_INVALID,
+    &PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE,
+    &PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
     &GROUP_USAGE_READ_FAILED,
     &BOOT_FATAL_ERROR,
     &WORKER_THREADS_INVALID,

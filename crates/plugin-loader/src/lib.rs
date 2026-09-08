@@ -35,6 +35,7 @@ pub mod auth;
 pub mod export;
 pub mod fetch;
 mod ffi_thread;
+pub mod highwater;
 pub mod hook;
 mod hostlog;
 mod legacy_usage;
@@ -56,6 +57,7 @@ pub use export::{load_export_from_bytes, DynExport};
 // rather than taking a second, direct dependency on the ABI crate.
 pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
+pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,

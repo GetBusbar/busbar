@@ -1476,6 +1476,30 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-6011",
+    "number": 6011,
+    "class": "plugins",
+    "slug": "plugin-firstparty-floor-unreadable",
+    "title": "First-party anti-downgrade floor unreadable (booting with NO first-party floor)",
+    "severity": "actionable",
+    "summary": "The persisted per-plugin-name high-water marks — the automatic first-party anti-downgrade floor — could not be read or were not valid, so busbar booted with NO first-party floor. Security-relevant: while the floor is absent, a validly-signed but OLD first-party artifact planted in the plugins directory would load without being refused as a downgrade. The floor re-establishes itself as plugins load successfully. busbar fails SOFT here on purpose: refusing the boot would let anyone able to corrupt one file take the node down.",
+    "action": "Check the data directory is readable and that `plugin-highwater.json` beneath it is intact (the log names the path and the exact problem). Deleting the file is safe — the floor rebuilds from the next successful load — but it does re-open the replay window until it does.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-6012",
+    "number": 6012,
+    "class": "plugins",
+    "slug": "plugin-firstparty-floor-unwritable",
+    "title": "First-party anti-downgrade floor could not be persisted (it will not survive a restart)",
+    "severity": "actionable",
+    "summary": "busbar raised the per-plugin-name high-water marks — the automatic first-party anti-downgrade floor — but could not write them to the data directory. The floor still applies to THIS process; it will not survive a restart, so the replay window reopens at the next boot until a load re-establishes it.",
+    "action": "Make the configured data directory writable (the log names the underlying I/O error). A node that cannot write its data directory usually has a larger problem than this notice.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-7030",
     "number": 7030,
     "class": "plane",

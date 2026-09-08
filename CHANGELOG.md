@@ -54,6 +54,25 @@ named next.
   **fail-closed**, so a deployment on a store that cannot answer refuses the callback rather than
   accepting it. A refused callback meters nothing; the endpoint's answers to a caller are unchanged.
 
+- **The first-party anti-downgrade floor the plugin guide promises now exists.** Item 3 of
+  [the plugin security model](docs/plugins.md) has always said a validly-signed but OLD first-party
+  release cannot be replayed, and the pre-1.5.0 control that backed it — flooring first-party
+  plugins at the running binary's version — was removed before 1.5.0 shipped because first-party
+  plugins version on their own lines and it rejected every correctly-signed current release. Nothing
+  replaced it. On a default deployment there was **no** first-party floor: an attacker with write
+  access to the plugins directory could swap the current tarball for the genuine, busbar-signed
+  1.0.0 carrying a known fixed defect, and it verified against the embedded release key and loaded
+  as `first-party` with no warning.
+
+  The floor is now the **per-plugin-name high-water mark**: the highest version of that plugin this
+  deployment has itself seen and loaded. It needs no configuration, it tracks each plugin's own
+  version line rather than the engine's, and a name busbar has never loaded carries no floor, so a
+  first install is not treated as a downgrade. A genuinely-signed older artifact is refused with a
+  boot refusal that names the floor and the way past it. The way past it is the existing audited
+  `plugins.rollback` action, whose pin replaces the floor for that plugin name and no other. With a
+  fleet data directory the marks persist beneath it; without one busbar writes no file and the floor
+  is held in memory for the process lifetime.
+
 ### Improvements
 
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
