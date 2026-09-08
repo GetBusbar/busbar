@@ -3,6 +3,11 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+// The three the shared view (`crate::root::registrations`) reads and this file's cells still name.
+// Spelled at their definition site rather than through the implementation file, so the import that
+// makes a cell compile is the same import a reader follows to find what it is asserting about.
+use busbar_unit_trust::lane::BreakerQuery;
+use busbar_unit_trust::net::{Denylist, GuardPolicy};
 
 /// A resolver that answers every name with one public address.
 ///
