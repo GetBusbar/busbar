@@ -82,6 +82,12 @@ jobs:
     outputs:
       version: ${{ steps.r.outputs.version }}
       matrix: ${{ steps.r.outputs.matrix }}
+      # THE STAGED RECORD — what qa proved, in the form the checks can diff against.
+      # Empty when this run is verifying a release that has no resolvable record (see the step for
+      # when that is allowed and when it is fatal). The check scripts report their staged-comparison
+      # rows only when it is present, and expected-ids.sh owes those ids only then, so the gate
+      # never claims a comparison it did not make.
+      staged_record: ${{ steps.rec.outputs.staged_record }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: r
@@ -109,6 +115,82 @@ jobs:
           echo "matrix=$m" >> "$GITHUB_OUTPUT"
           echo "Verifying busbar ${V} across $(printf '%s' "$m" | jq 'length') platforms."
 
+      # ── THE STAGED RECORD: THE ONLY THING THAT MAKES THIS FAN-OUT A COMPARISON ─────────────────
+      #
+      # WITHOUT IT, EVERY CHECK BELOW IS SELF-CONSISTENT AND PROVES NOTHING ABOUT THE PROMOTE.
+      # The platform legs downloaded the published archive and never hashed it. The docker legs
+      # compared one digest fetched in this run against another digest fetched in this run, which is
+      # true of any pair of tags that were pushed together and says nothing about whether they are
+      # the bytes qa verified. The boot legs addressed the image by a mutable tag. So the whole
+      # fan-out asserted "the release is internally consistent with itself" — which a release built
+      # from the wrong ref, or an image retagged by hand afterwards, satisfies perfectly.
+      #
+      # release-stage.yml wrote down, on qa, exactly what it verified: every draft asset by name,
+      # size and sha256 (hashed from the bytes downloaded back off the draft, not copied from the
+      # build), plus the manifest digest of the staged image and of the armv8.0 compat image.
+      # release.yml's promote is a manifest retag and an asset-preserving publish, so the published
+      # artifacts must be byte-identical to that record. That is the diff nothing was making.
+      #
+      # HOW IT IS FOUND: the release tag points at the commit that was promoted, main's HEAD is the
+      # qa sha that was staged (qa->main must be a fast-forward, which resolve-staged enforces at
+      # promote time), and release-stage.yml's `staged-manifest` artifact hangs off the successful
+      # stage run for that exact sha. So: tag -> commit -> stage run -> record. Same lookup
+      # release.yml's resolve-staged does, keyed from the tag instead of from HEAD.
+      #
+      # WHEN ABSENT: fatal on `release: published` — that is the release path, the record was
+      # written minutes ago, and its absence there means the published bytes have no provenance to
+      # be checked against. A warning on the rot-cover triggers (schedule/push/pull_request), where
+      # the subject is whatever release is current and the 90-day artifact retention legitimately
+      # runs out. A warning and not a red because "this release is older than the record's
+      # retention" is not a defect in the release, and a permanent red on the required `release
+      # gate` status is how a gate stops being read. What must never happen is a SILENT downgrade,
+      # so the ids simply are not owed, the warning names them, and the gate's summary shows the
+      # smaller set rather than a green over an unmade comparison.
+      - id: rec
+        name: Resolve the staged record this release was promoted from
+        # Through env:, never spliced into the script. `r` above already refused anything that is
+        # not a plain X.Y.Z, so this is belt-and-braces — and it is the rule the rest of the release
+        # path follows for every value that is not a fixed literal.
+        env:
+          V: ${{ steps.r.outputs.version }}
+        run: |
+          set -uo pipefail
+          tag="v${V}"
+          ref="$(gh api "repos/${BUSBAR_REPO}/git/ref/tags/${tag}" 2>/dev/null || echo '{}')"
+          sha="$(printf '%s' "$ref" | jq -r '.object.sha // empty')"
+          # An ANNOTATED tag's ref points at the tag object, not the commit; release.yml pushes a
+          # lightweight tag today, but dereferencing costs one call and a wrong sha here would look
+          # exactly like "this release was never staged".
+          if [ "$(printf '%s' "$ref" | jq -r '.object.type // empty')" = "tag" ]; then
+            sha="$(gh api "repos/${BUSBAR_REPO}/git/tags/${sha}" --jq '.object.sha' 2>/dev/null || true)"
+          fi
+          rec=""
+          if [ -n "$sha" ]; then
+            run_id="$(gh api "repos/${BUSBAR_REPO}/actions/workflows/release-stage.yml/runs?head_sha=${sha}&status=success&per_page=10" \
+              --jq '[.workflow_runs[] | select(.conclusion == "success")] | sort_by(.run_started_at) | last | .id // empty' 2>/dev/null || true)"
+            if [ -n "${run_id:-}" ] && gh run download "$run_id" --repo "$BUSBAR_REPO" -n staged-manifest -D staged >/dev/null 2>&1; then
+              r_version="$(jq -r '.version // empty' staged/staged.json)"
+              if [ "$r_version" = "$V" ]; then
+                rec="$(jq -c . staged/staged.json)"
+                echo "Staged record for ${V}: stage run ${run_id}, image $(jq -r .digest staged/staged.json), $(jq '(.assets // []) | length' staged/staged.json) assets pinned by sha256."
+              else
+                # A record that disagrees with the tag it was found under is worse than none: it
+                # would be diffed against the wrong release's bytes and produce confident nonsense.
+                echo "::error::the staged record on run ${run_id} (the successful stage of ${sha:0:7}, which ${tag} points at) says version '${r_version}', not '${V}'. Refusing to compare the published artifacts against a record for a different release."
+                exit 1
+              fi
+            fi
+          fi
+          if [ -z "$rec" ]; then
+            why="no staged record could be resolved for ${V} (tag ${tag} -> commit ${sha:-<unresolved>} -> successful 'Release stage' run -> staged-manifest artifact)."
+            if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+              echo "::error title=release gate::${why} This run is verifying a release that was JUST published, so the record was written minutes ago and must be there. Without it nothing compares the published bytes to what qa verified: the archives are not hashed against anything, the registry digests are only compared to each other, and the image is booted by tag. Fix: confirm the promote came from a fast-forward of a green qa commit and that its 'Release stage' run is still present."
+              exit 1
+            fi
+            echo "::warning title=release gate::${why} The staged-comparison rows (sha256:<target>, docker:staged-digest, docker:staged-armv8-digest) are therefore NOT OWED and NOT REPORTED by this run — they are not passes. This is expected when verifying a release older than the 90-day artifact retention, or one that predates the staged-record design; it is NOT expected on a release run, where it is fatal."
+          fi
+          echo "staged_record=${rec}" >> "$GITHUB_OUTPUT"
+
   # ── The platform fan-out: the shipped bytes, EXECUTED, on a native runner. fail-fast:false is
   # ── load-bearing — #52 broke one of five targets, and one broken leg must not take four legs'
   # ── evidence with it.
@@ -130,6 +212,9 @@ jobs:
           BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
           VERSION: ${{ needs.resolve.outputs.version }}
           TARGET: ${{ matrix.target }}
+          # What qa recorded, so `sha256:<target>` has something to compare the downloaded bytes
+          # against. Empty means the row is not owed and is not reported — see `resolve`.
+          STAGED_RECORD: ${{ needs.resolve.outputs.staged_record }}
         run: scripts/release-gate/platform-checks.sh "$VERSION" "$TARGET"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -151,6 +236,9 @@ jobs:
         env:
           LEDGER: ${{ runner.temp }}/ledger-docker.tsv
           VERSION: ${{ needs.resolve.outputs.version }}
+          # The staged manifest digests, so the registry rows compare the published tags against
+          # what qa verified rather than against each other.
+          STAGED_RECORD: ${{ needs.resolve.outputs.staged_record }}
         run: scripts/release-gate/docker-checks.sh "$VERSION"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -232,6 +320,11 @@ jobs:
         env:
           LEDGER_DIR: ${{ runner.temp }}/ledgers
           VERSION: ${{ needs.resolve.outputs.version }}
+          # expected-ids.sh owes the staged-comparison ids exactly when the checks were given a
+          # record to compare against, so the SAME value reaches the aggregator and the legs. If it
+          # reached only one of them the gate would either demand rows nothing could report, or
+          # accept rows nothing asked for — both of which are the drift this list exists to stop.
+          STAGED_RECORD: ${{ needs.resolve.outputs.staged_record }}
         run: |
           set -uo pipefail
           # FAIL HERE, DO NOT CALL THE GATE. `resolve` produces no version only when it failed or
@@ -244,7 +337,7 @@ jobs:
           # GREEN on rows about some other release. The ::error:: without an exit was the whole
           # defect: it annotated and then continued.
           if [ -z "${VERSION:-}" ]; then
-            echo "::error title=release gate::RED — the resolve job produced NO version, so nothing was verified about any release. The gate is not run at all rather than run against an empty name: a verdict needs a subject. Fix: look at the resolve job above — a bad `version` input, or the latest-release redirect it falls back to failing."
+            echo "::error title=release gate::RED — the resolve job produced NO version, so nothing was verified about any release. The gate is not run at all rather than run against an empty name: a verdict needs a subject. Fix: look at the resolve job above — a bad 'version' input, or the latest-release redirect it falls back to failing."
             exit 1
           fi
           scripts/release-gate/gate.sh "$VERSION"

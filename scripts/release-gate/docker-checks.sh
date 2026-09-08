@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # scripts/release-gate/docker-checks.sh — the container half of the fan-out.
 #
+# THREE KINDS OF ASSERTION. The third — is this the image qa verified? — is an EXTERNAL anchor, and
+# without it the other two are a closed loop: every digest they compare is fetched in this same run,
+# so they establish that the four published names AGREE and can never establish what they agree ON.
+# An image built from the wrong ref, or pushed by a workflow on a branch, or retagged by hand after
+# the release, satisfies all of them. `docker:staged-digest` and `docker:staged-armv8-digest` diff
+# the published tags against the manifest digests release-stage.yml recorded on qa before any
+# user-facing name existed; the promote is a manifest retag of exactly those digests, so a
+# difference means something outside the release path moved the tag. Those two rows are owed only
+# when a staged record was supplied (see expected-ids.sh and release-fleet.yml's `resolve`), and the
+# BOOT rows below address the image by digest rather than by the tag they used to pull.
+#
 # TWO KINDS OF ASSERTION, AND THE SECOND IS THE ONE THAT WAS MISSING.
 #
 # EXISTENCE (digests): the version tag resolves, `latest` is the SAME manifest digest as the version
@@ -111,6 +122,32 @@ else
     "expected ${ghcr_ver}, observed ${ghcr_latest:-<nothing>}. Users pulling from GHCR without a tag get a different release. Same fix as the Docker Hub case."
 fi
 
+# ── docker:staged-digest — the published tag IS the digest qa verified ─────────────────────────
+#
+# EVERY DIGEST COMPARISON ABOVE IS BETWEEN TWO VALUES FETCHED IN THIS RUN.
+# :latest == :X.Y.Z, ghcr == hub, and so on: all true of any set of tags that were pushed together,
+# and all equally true of an image built from the wrong ref, or pushed by a workflow on a branch, or
+# retagged by hand after the release. They prove the four names AGREE; they cannot prove what the
+# names agree ON. The one external fact that can is the digest release-stage.yml recorded on qa,
+# before any user-facing name existed, and which release.yml's promote merely RETAGS — the promote
+# touches no compiler and builds no image, so "the published X.Y.Z is the staged digest" is a
+# property the design guarantees and therefore one worth checking, because if it is false something
+# outside the design moved the tag.
+if [ -n "${STAGED_RECORD:-}" ]; then
+  staged_digest="$(printf '%s' "$STAGED_RECORD" | jq -r '.digest // empty' 2>/dev/null || true)"
+  if [ -z "$staged_digest" ]; then
+    record "docker:staged-digest" FAIL "the staged record carries no image digest" \
+      "a record without a digest cannot say which bytes were verified, and the promote's strongest check is a no-op against it. Fix: re-run 'Release stage' on the qa sha this release was promoted from."
+  elif [ -z "$hub_ver" ]; then
+    record "docker:staged-digest" FAIL "cannot compare against the staged digest — :${V} did not resolve" "see docker:hub-version."
+  elif [ "$hub_ver" = "$staged_digest" ]; then
+    record "docker:staged-digest" PASS "${DOCKERHUB_IMAGE}:${V} is exactly the digest qa staged" "$staged_digest"
+  else
+    record "docker:staged-digest" FAIL "${DOCKERHUB_IMAGE}:${V} is NOT the image qa verified" \
+      "the staged record says ${staged_digest}; :${V} resolves to ${hub_ver}. The promote is a manifest RETAG of the staged digest — it builds nothing — so these cannot differ unless the version tag was moved by something other than the promote, or the release was promoted from a different staged record than the one this tag's commit was staged under. Every other docker row in this gate still passes, because they only compare the published names to each other. Fix: re-run release.yml's promote for v${V}, and find out what else pushed this tag."
+  fi
+fi
+
 # ── docker:armv8 — the armv8.0-compatible arm64 variant, four names, its own digest ────────────
 # The compat image (armv8.0 boards, RPi4-class) is a DIFFERENT digest from the main manifest by
 # construction: a single-arch baseline image vs the two-arch (+lse arm64) index. So it gets its
@@ -173,12 +210,51 @@ else
     "expected ${ghcr_v8_pin}, observed ${ghcr_v8_float:-<nothing>}. Same fix as the Docker Hub case."
 fi
 
+# The compat image is a first-class release artifact on its own digest, so it gets the same external
+# anchor rather than only the four-names-agree treatment above.
+if [ -n "${STAGED_RECORD:-}" ]; then
+  staged_compat="$(printf '%s' "$STAGED_RECORD" | jq -r '.compat_digest // empty' 2>/dev/null || true)"
+  if [ -z "$staged_compat" ]; then
+    record "docker:staged-armv8-digest" FAIL "the staged record carries no armv8.0 compat digest" \
+      "the compat arm64 image is promoted by the same run as the default one; a record without it means the promote had nothing to verify the compat name against. Fix: re-run 'Release stage' on the qa sha this release was promoted from."
+  elif [ -z "$v8_pin" ]; then
+    record "docker:staged-armv8-digest" FAIL "cannot compare against the staged compat digest — :${V}-armv8.0 did not resolve" "see docker:hub-armv8-pin."
+  elif [ "$v8_pin" = "$staged_compat" ]; then
+    record "docker:staged-armv8-digest" PASS "${DOCKERHUB_IMAGE}:${V}-armv8.0 is exactly the compat digest qa staged" "$staged_compat"
+  else
+    record "docker:staged-armv8-digest" FAIL "${DOCKERHUB_IMAGE}:${V}-armv8.0 is NOT the compat image qa verified" \
+      "the staged record says ${staged_compat}; :${V}-armv8.0 resolves to ${v8_pin}. The compat name exists for armv8.0 boards that SIGILL on the default (+lse) build, so a compat tag carrying bytes nobody staged is the one failure that is invisible on every machine the gate runs on. Fix: re-run release.yml's promote for v${V}."
+  fi
+fi
+
+# ── THE IMAGE THE REMAINING ROWS ACTUALLY RUN, ADDRESSED BY DIGEST ─────────────────────────────
+#
+# A TAG IS A MOVING POINTER, AND EVERY ROW BELOW USED ONE.
+# `docker pull getbusbar/busbar:X.Y.Z` resolves the name at the instant of the pull, so the label
+# row, the bare-boot row and the read-only-mount row each verified whatever that name meant when
+# they happened to run — three separate resolutions, minutes apart, none of them tied to the digest
+# the rows above just finished checking. That is not a hypothetical: the whole reason those rows
+# exist is that `latest` once served a different release for six days while every workflow was
+# green, which is precisely a name and a digest coming apart.
+#
+# So the boot rows address `<repo>@<digest>`. The digest is the STAGED one when a record was
+# supplied — the bytes qa verified and the promote retagged, which is the strongest available
+# subject — and otherwise the digest :X.Y.Z resolved to in the rows above, which is at minimum a
+# pin taken once rather than three times. If neither exists there is no image to boot and the rows
+# say so rather than falling back to the tag.
+BOOT_DIGEST="${staged_digest:-}"
+[ -n "$BOOT_DIGEST" ] || BOOT_DIGEST="$hub_ver"
+BOOT_REF="${DOCKERHUB_IMAGE}@${BOOT_DIGEST}"
+
 # ── docker:label — the image's own claim about which version it is ─────────────────────────────
-# Pulled fresh, by DIGEST-backed tag, with any local copy removed first: a cached layer set for the
-# same tag name would let a stale image answer for a fresh one.
-docker rmi -f "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1
-if retry 3 20 docker pull "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1; then
-  label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${DOCKERHUB_IMAGE}:${V}" 2>/dev/null)"
+# Pulled fresh, BY DIGEST, with any local copy removed first: a cached layer set for the same tag
+# name would let a stale image answer for a fresh one, and a digest cannot be stale by construction.
+docker rmi -f "${DOCKERHUB_IMAGE}:${V}" "$BOOT_REF" >/dev/null 2>&1
+if [ -z "$BOOT_DIGEST" ]; then
+  record "docker:label" FAIL "cannot read the image label: ${DOCKERHUB_IMAGE}:${V} resolves to no digest" \
+    "see docker:hub-version. The label is read from an image addressed by digest rather than by tag, so with no digest there is nothing to inspect — and inspecting the tag instead would be reading whatever the name means right now, which is the failure these rows exist to catch."
+elif retry 3 20 docker pull "$BOOT_REF" >/dev/null 2>&1; then
+  label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$BOOT_REF" 2>/dev/null)"
   if [ "$label" = "$V" ]; then
     record "docker:label" PASS "image label org.opencontainers.image.version == ${V}" ""
   else
@@ -186,8 +262,8 @@ if retry 3 20 docker pull "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1; then
       "expected '${V}', observed '${label:-<unset>}'. The tag says one version and the image says another, so anything reading the label (SBOM tooling, admission controllers, artifacthub) reports the wrong release. Fix: check docker/metadata-action's version resolution in docker.yml."
   fi
 else
-  record "docker:label" FAIL "could not pull ${DOCKERHUB_IMAGE}:${V}" \
-    "\`docker pull\` failed after retries. Fix: see docker:hub-version."
+  record "docker:label" FAIL "could not pull ${BOOT_REF}" \
+    "\`docker pull\` failed after retries on the digest ${DOCKERHUB_IMAGE}:${V} resolves to. Fix: see docker:hub-version."
 fi
 
 # ── The two BOOT checks (#50) ───────────────────────────────────────────────────────────────────
@@ -213,11 +289,23 @@ container_state() { docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}
 
 # --- form 1: the bare `docker run` from the Dockerfile header / README, on the image's own baked
 # --- /etc/busbar/config.yaml. This is the exact form that exited 1 on 1.5.3.
-docker rm -f busbar-gate-bare >/dev/null 2>&1
-docker run -d --name busbar-gate-bare -p 18080:8080 \
-  -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1
-if probe_healthz 18080; then
-  record "docker:boot-bare" PASS "the bare documented \`docker run\` boots and answers ok on /healthz" ""
+# The invocation is the documented one in every respect except that the image is named by digest
+# instead of by tag: what a user types is `docker run getbusbar/busbar:X.Y.Z`, and what this row must
+# assert is that the specific bytes the version tag stands for boot. Those are the same statement
+# only while the tag resolves to that digest, which is what docker:hub-version and
+# docker:staged-digest establish separately — so the rows compose instead of each re-resolving a
+# name and hoping.
+boot_bare() {
+  docker rm -f busbar-gate-bare >/dev/null 2>&1
+  docker run -d --name busbar-gate-bare -p 18080:8080 \
+    -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN "$BOOT_REF" >/dev/null 2>&1
+  probe_healthz 18080
+}
+if [ -z "$BOOT_DIGEST" ]; then
+  record "docker:boot-bare" FAIL "cannot boot ${DOCKERHUB_IMAGE}:${V}: it resolves to no digest" \
+    "see docker:hub-version. Booting the tag instead would verify whatever the name means at this instant, which is the failure mode these rows exist to catch."
+elif boot_bare; then
+  record "docker:boot-bare" PASS "the bare documented \`docker run\` boots and answers ok on /healthz" "${BOOT_REF}"
 else
   st="$(container_state busbar-gate-bare)"
   logs="$(docker logs busbar-gate-bare 2>&1 | tail -20 | tr '\n' '|')"
@@ -249,13 +337,19 @@ pools:
     members:
       - model: claude-sonnet
 YAML
-docker rm -f busbar-gate-ro >/dev/null 2>&1
-docker run -d --name busbar-gate-ro -p 18081:8080 \
-  -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
-  -v "${work}/config.yaml:/etc/busbar/config.yaml:ro" \
-  "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1
-if probe_healthz 18081; then
-  record "docker:boot-ro-mount" PASS "the documented read-only config mount boots and answers ok on /healthz" ""
+boot_ro() {
+  docker rm -f busbar-gate-ro >/dev/null 2>&1
+  docker run -d --name busbar-gate-ro -p 18081:8080 \
+    -e ANTHROPIC_KEY -e BUSBAR_ADMIN_TOKEN \
+    -v "${work}/config.yaml:/etc/busbar/config.yaml:ro" \
+    "$BOOT_REF" >/dev/null 2>&1
+  probe_healthz 18081
+}
+if [ -z "$BOOT_DIGEST" ]; then
+  record "docker:boot-ro-mount" FAIL "cannot boot ${DOCKERHUB_IMAGE}:${V}: it resolves to no digest" \
+    "see docker:hub-version."
+elif boot_ro; then
+  record "docker:boot-ro-mount" PASS "the documented read-only config mount boots and answers ok on /healthz" "${BOOT_REF}"
 else
   st="$(container_state busbar-gate-ro)"
   logs="$(docker logs busbar-gate-ro 2>&1 | tail -20 | tr '\n' '|')"

@@ -85,6 +85,52 @@ else
   esac
 fi
 
+# ── sha256: the bytes a user downloads ARE the bytes qa verified ────────────────────────────────
+#
+# THE ONE ROW THAT MAKES THIS FILE A COMPARISON RATHER THAN A SELF-CONSISTENCY CHECK.
+#
+# Every other row above and below reads the published artifact and asks whether it is internally
+# plausible: it exists, it is big enough, it unpacks, it says the right version, its object header
+# matches its name, it carries the key. All of that is true of an artifact built from the WRONG REF
+# by a re-run of the build, or of one re-uploaded by hand over the top of the verified one — the
+# archive would be a real busbar of the right version for the right platform, and not the archive
+# anybody verified. The release model's whole claim is "the promote ships the exact bytes qa
+# proved", and nothing anywhere was hashing the published bytes to find out.
+#
+# release-stage.yml's `record-staged` job hashed every draft asset by DOWNLOADING IT BACK off the
+# draft rather than copying the build's own artifact.sha256 (a digest over bytes that may not be the
+# bytes on the release page is worth nothing), and wrote name/size/sha256 into the record the
+# promote consumes. This row re-hashes what the CDN just served and diffs it against that record.
+#
+# Not owed when no record was supplied: see the comment in expected-ids.sh — absence is announced by
+# release-fleet.yml's `resolve`, and is fatal on a release run.
+if [ -n "${STAGED_RECORD:-}" ]; then
+  want_sha="$(printf '%s' "$STAGED_RECORD" | jq -r --arg n "$ASSET" \
+    'first((.assets // [])[] | select(.name == $n) | .sha256) // empty' 2>/dev/null || true)"
+  if [ ! -s "${WORK}/${ASSET}" ]; then
+    record "sha256:${TARGET}" FAIL "cannot hash ${ASSET}: it was never downloaded" \
+      "see asset:${TARGET}. Reported as FAIL rather than skipped: an artifact whose bytes nobody could read is not an artifact anybody verified."
+  elif [ -z "$want_sha" ]; then
+    record "sha256:${TARGET}" FAIL "the staged record names no sha256 for ${ASSET}" \
+      "the record for this version pins $(printf '%s' "$STAGED_RECORD" | jq -r '(.assets // []) | length') assets and ${ASSET} is not among them, so this platform's download was never bound to anything qa verified. Fix: confirm release-stage.yml's record-staged job saw this asset on the draft — an asset uploaded after the record was written is exactly the untracked-bytes case this row exists to catch."
+  else
+    # python rather than sha256sum/shasum: this script runs on ubuntu, macOS and Windows runners and
+    # the three do not agree on which of those exists. binfmt.py is here for the same reason.
+    got_sha="$("$PY" -c 'import hashlib,sys
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as fh:
+    for chunk in iter(lambda: fh.read(1 << 20), b""):
+        h.update(chunk)
+print(h.hexdigest())' "${WORK}/${ASSET}" 2>&1)"
+    if [ "$got_sha" = "$want_sha" ]; then
+      record "sha256:${TARGET}" PASS "${ASSET} is byte-for-byte the artifact qa staged" "sha256 ${got_sha}"
+    else
+      record "sha256:${TARGET}" FAIL "${ASSET} is NOT the artifact qa verified" \
+        "the staged record says sha256 ${want_sha}; the bytes github.com serves right now hash to ${got_sha}. The promote is supposed to publish the exact artifacts release-stage.yml built and verified on qa — it uploads no new bytes — so a difference means the asset was replaced after it was verified, or the draft this release was published from is not the one the record describes. Nothing else in this gate can see it: the replacement is a real busbar binary of the right version for the right platform and passes every other row. Fix: re-run 'Release stage' on the qa sha and re-promote; do not re-upload assets by hand."
+    fi
+  fi
+fi
+
 # ── extract: the archive really contains the declared executable ────────────────────────────────
 BIN=""
 if [ -s "${WORK}/${ASSET}" ]; then
