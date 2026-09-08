@@ -54,6 +54,27 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# ── EVERY JOB IS BOUNDED ───────────────────────────────────────────────────────────────────────────
+# A job without `timeout-minutes` inherits the runner's SIX-HOUR default. That is not a ceiling, it
+# is the absence of one: `structure lint` hung for six hours on 2026-09-07 and the only signal was a
+# spinner. Seventeen of this file's jobs were unbounded; every one of them is bounded now, and a new
+# job without a bound should not pass review.
+#
+# THE NUMBER IS MEASURED, NOT GUESSED. Each ceiling is `p95 x 1.5`, floored at 10 minutes, over the
+# green runs of that job in the last ten CI runs (`gh run list --workflow=ci.yml` then
+# `gh run view --json jobs`). p95 rather than max so one cold-cache outlier does not set the ceiling
+# for everyone; x1.5 so a cold cache, a slow runner and normal growth all still fit; floor 10 so a
+# job that takes eight seconds today is not strangled by a 15-second ceiling the first time GitHub is
+# slow. Each job carries its measured p95 in a comment above its ceiling, so raising one is an
+# argument about a number somebody wrote down and not a shrug.
+#
+# A ceiling is a HANG guard, not a flake knob. When one fires, read the job: either the work grew
+# (re-measure, raise deliberately, update the comment) or something is stuck (fix the something).
+# Jobs already bounded before this pass keep their own reasoned ceilings, documented at each job:
+# `check` 75 (cold-cache headroom on the primary suite), `shadow-oracle` 60, `proof-manifest` 30,
+# `teller-steps` 30, `llm-conformance` 20, `construction-gate` 15, `design-bindings` 10,
+# `ci-umbrella` 5.
+
 jobs:
   # WHICH TIER RAN, SAID OUT LOUD. A green check mark is read as "the gate passed", and after this
   # change a green check on a feature branch means something WEAKER than a green check on a PR.
@@ -64,6 +85,9 @@ jobs:
   gate-tier:
     name: gate tier (what this run actually proved)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.1 min
+    # over the last 18 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - name: Declare the tier
         # Ref and event come in as ENV, not as `${{ }}` spliced into the script text. A branch name
@@ -116,6 +140,9 @@ jobs:
   structure-lint:
     name: structure lint
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 14.5 min
+    # over the last 20 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 22
     steps:
       # FULL HISTORY, for the `audit-ledger` step at the end of this job: every record in
       # qa/audit-ledger.json stamps the COMMIT it read, and the gate resolves each one. A depth-1
@@ -791,6 +818,9 @@ jobs:
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 3.9 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -840,6 +870,9 @@ jobs:
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -870,6 +903,9 @@ jobs:
   config-stability:
     name: config-stability gate (frozen grammar · additive-only)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.0 min
+    # over the last 19 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -926,6 +962,9 @@ jobs:
   generated-artifact-drift:
     name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.7 min
+    # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
@@ -987,6 +1026,9 @@ jobs:
   public-hygiene:
     name: docs hygiene (public prose describes the software, not the process)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.2 min
+    # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Public-hygiene self-test (every rule proven RED, every twin proven GREEN)
@@ -1040,6 +1082,9 @@ jobs:
   service-image-pins:
     name: service image pins (one pinned list, every workflow reads it)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.6 min
+    # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Service-image lint self-test (every rule proven RED)
@@ -1074,6 +1119,9 @@ jobs:
   executable-config-lint:
     name: executable-config gate (heredocs · test literals · shipped yaml)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1118,6 +1166,9 @@ jobs:
   no-default-features:
     name: no-default-features build · clippy · test
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 22.0 min
+    # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 33
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1193,6 +1244,9 @@ jobs:
   deletion-test-matrix:
     name: deletion-test (neutral crates compile with a plane removed)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.6 min
+    # over the last 15 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY (same axis + cost profile as no-default-features). Skipped on pushes to
     # non-promotion branches; runs on every pull request, on dev/qa/main, and on workflow_dispatch.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1248,6 +1302,9 @@ jobs:
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.9 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1268,6 +1325,9 @@ jobs:
   txn-guards:
     name: txn compile fence · loom model
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 12.1 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 18
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1287,6 +1347,9 @@ jobs:
   timing:
     name: timing gate (release)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.1 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 27
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1324,6 +1387,9 @@ jobs:
   windows:
     name: windows build · clippy · test
     runs-on: windows-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.3 min
+    # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 27
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1456,6 +1522,9 @@ jobs:
   coverage:
     name: coverage (llvm-cov · codecov)
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 6.4 min
+    # over the last 9 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     services:
       postgres:
@@ -1545,6 +1614,9 @@ jobs:
   perf-build-gate:
     name: perf + build-parity gate
     runs-on: ubuntu-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 9.9 min
+    # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 15
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
