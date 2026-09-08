@@ -39,7 +39,7 @@ use serde::de::{DeserializeSeed, Deserializer, Error as _, IntoDeserializer, Map
 use serde::Deserialize;
 
 use super::DeployCfg;
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire the carrier TYPE names recorded verbatim in config-schema.snapshot.json
+use crate::planes::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire the carrier TYPE names recorded verbatim in config-schema.snapshot.json
 
 /// The TOP-LEVEL keys that exist only in 1.6.0 and must never reach the frozen top-level struct.
 ///
@@ -51,12 +51,11 @@ use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, To
 /// In order: busbar's OWN endpoint as an OAuth 2.1 resource server; busbar AS an OAuth 2.1
 /// authorization server; the MCP upstream registry; the A2A agent registry; the live-voice
 /// session section.
-pub(crate) const LIFTED_TOP_LEVEL_KEYS: &[&str] =
-    &["mcp", "oauth_as", "tools", "agents", "streams"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
+pub const LIFTED_TOP_LEVEL_KEYS: &[&str] = &["mcp", "oauth_as", "tools", "agents", "streams"]; // plane-purity: frozen-wire the frozen top-level wire KEYS this pass lifts
 
 /// The keys lifted out of the `auth:` block. `policy:` is a 1.6.0 addition (token-mint caps); the
 /// five keys around it are 1.5.5's and stay in the frozen struct.
-pub(crate) const LIFTED_AUTH_KEYS: &[&str] = &["policy"];
+pub const LIFTED_AUTH_KEYS: &[&str] = &["policy"];
 
 /// The top-level key whose VALUE carries a nested lift of its own.
 const NESTED_TOP_LEVEL_KEY: &str = "auth";
@@ -66,7 +65,7 @@ const NESTED_WATCH: &[&str] = &[NESTED_TOP_LEVEL_KEY];
 
 /// Everything the pre-pass pulled out of one document.
 #[derive(Default)]
-pub(crate) struct Lifted {
+pub struct Lifted {
     mcp: Option<McpEndpointSection>, // plane-purity: frozen-wire the frozen carrier field + its snapshot TYPE
     oauth_as: Option<Option<busbar_substrate::config::oauth_as::OauthAsCfg>>,
     tools: Option<ToolsSection>,

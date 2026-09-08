@@ -44,9 +44,14 @@ const MIGRATED_FILES: &[&str] = &[
     "src/preflight.rs",
     "src/telemetry.rs",
     "src/tls.rs",
-    "src/config/overlay.rs",
-    "src/config/mod.rs",
-    "src/config_validate/mod.rs",
+    // The CONFIG LAYER moved to the sibling `busbar-core-config` crate (it is the product's config
+    // grammar, not engine residue, so it got a home rather than a deletion). Core scans it by its
+    // path from here — a sibling CORE crate, not a plane crate, so there is no plane path named and
+    // no purity rule crossed — because the migrated-file floor is a property of the diagnostic
+    // catalog these files emit codes from, and that catalog is still core's.
+    "../busbar-core-config/src/config/overlay.rs",
+    "../busbar-core-config/src/config/mod.rs",
+    "../busbar-core-config/src/config_validate/mod.rs",
     // The A2A and MCP plane sources moved to the sibling `busbar-a2a` / `busbar-mcp` crates (the plane
     // extraction). Core does NOT scan a plane crate's tree — a neutral crate must name no plane path
     // (the plane-purity lint enforces this); each plane crate enforces its own uncoded-diagnostic floor. So neither the

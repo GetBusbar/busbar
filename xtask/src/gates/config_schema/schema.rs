@@ -3,7 +3,7 @@
 //! Every serde-`Deserialize` struct and enum in the TRACKED SOURCE SET, plus each hand-written
 //! `Deserialize` impl's accepted wire keys / declared member types / REFUSED input forms, plus the
 //! named-definition-map type aliases, rendered as canonical JSON. That rendering is what
-//! `crates/busbar-core/src/config/config-schema.snapshot.json` freezes, and the freeze is worth
+//! `crates/busbar-core-config/src/config/config-schema.snapshot.json` freezes, and the freeze is worth
 //! nothing unless the two generators agree BYTE FOR BYTE, so the port keeps the Python's shape down
 //! to the `_meta` prose and the sorted-key two-space emitter.
 //!
@@ -19,14 +19,22 @@ use serde_json::{Map, Value};
 use super::scan;
 use crate::ctx::{Ctx, WalkSpec};
 
-/// Every tracked grammar source lives in the engine library crate root.
+/// THE CONFIG LAYER'S CRATE ROOT. The grammar left the engine library for a home of its own
+/// (`busbar-core-config`) so the engine can retire out from under it; the tracked set follows the
+/// grammar, which is the whole point of resolving these paths in one place.
+const CONFIG: &str = "crates/busbar-core-config/src";
+
+/// The engine library crate root. Two of the tracked grammar sources are still engine-side: the
+/// `upstream_credentials:` chain shape under `auth/` and the `tool_pools:`/`agent_pools:` value
+/// grammar under `failover/`. They are named separately from the config crate above so a later move
+/// of either one is a one-line edit here rather than a silent drop out of the tracked set.
 const CORE: &str = "crates/busbar-core/src";
 
 /// The committed fingerprint. DATA: it stays where the config module keeps it.
-pub const SNAPSHOT: &str = "crates/busbar-core/src/config/config-schema.snapshot.json";
+pub const SNAPSHOT: &str = "crates/busbar-core-config/src/config/config-schema.snapshot.json";
 
 /// The committed per-path break-waiver file, beside it.
-pub const WAIVERS: &str = "crates/busbar-core/src/config/config-schema.waivers";
+pub const WAIVERS: &str = "crates/busbar-core-config/src/config/config-schema.waivers";
 
 /// The `_meta` block, verbatim. It names the generator, and the generator's name is part of the
 /// frozen bytes: moving it is a snapshot rewrite and belongs in a commit whose whole diff is that
@@ -97,10 +105,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
     let mcp = plane_dir(cx, "crates", "mcp", "config.rs")?;
     let a2a = plane_dir(cx, "crates", "a2a", "config.rs")?;
     Ok(vec![
-        format!("{CORE}/config"),
+        format!("{CONFIG}/config"),
         // The bulk of the config GRAMMAR's PURE SHAPES moved DOWN to `busbar-substrate` in the
-        // 1.6.0 config-seam migration; the loaders and resolvers that consume them stayed in
-        // `busbar-core`, which re-exports every moved item at its historical `config::` path.
+        // 1.6.0 config-seam migration; the loaders and resolvers that consume them live in
+        // `busbar-core-config`, which `busbar-core` re-exports at its historical `config::` path.
         // Tracked as a DIRECTORY so a future file split under it is automatically covered.
         "crates/busbar-substrate/src/config".to_string(),
         // The `plugins:` block sits one layer FURTHER down, in the substrate's PURE half, because

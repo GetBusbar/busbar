@@ -1063,7 +1063,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // `.subject_noun`) — the endpoint plane's own vocabulary — so this neutral rule carries no
         // plane token literal while the error still names the exact `<key>:` block and `auth.chain`
         // the operator must fix.
-        let decl = crate::plane::registry::plane_decl_for_config_section(endpoint_section);
+        let decl = crate::planes::plane_decl_for_config_section(endpoint_section);
         let key = decl.map(|d| d.key).unwrap_or("endpoint");
         let noun = decl.map(|d| d.subject_noun).unwrap_or("endpoint");
         errors.push(format!(
@@ -1771,7 +1771,7 @@ fn resolve_fallback_target(cfg: &RootCfg, pool_name: &str) -> Option<String> {
 /// value must be a BARE ORIGIN (`scheme://host[:port]`, optional trailing `/`) with no path, query,
 /// or fragment; and it must not target a cloud-metadata host. Uses the SAME host normalization the
 /// provider SSRF guard uses so the check sees the authority the connecting stack will.
-pub(crate) fn validate_public_url(url: &str, blocked: &[String], errors: &mut Vec<String>) {
+pub fn validate_public_url(url: &str, blocked: &[String], errors: &mut Vec<String>) {
     let is_https = scheme_is(url, "https");
     let is_http = scheme_is(url, "http");
     if !is_https && !is_http {
@@ -1862,7 +1862,7 @@ pub fn metadata_denylist_entries() -> Vec<String> {
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
-pub(crate) use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
+pub use secret_refs::{boot_resolved_secret_refs, keyless_credential_allowed, secret_refs};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way
@@ -2241,6 +2241,50 @@ fn validate_provider_protocol_with(
             known.join(", ")
         ));
     }
+}
+
+/// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
+///
+/// This module proves a reference is well-FORMED; it cannot prove the variable is set or the
+/// file is readable, because it runs before anything touches the environment. Without this,
+/// `--validate` reported a config VALID while boot would warn and then serve a gateway whose every
+/// upstream request fails on a missing credential: success reported for something that cannot work.
+///
+/// DELIBERATELY NOT IN the engine's `preflight_plugins_and_secrets`. That pre-flight is SHARED with
+/// boot and with the admin apply/reload path, where an unresolvable secret is a WARNING by design,
+/// not a refusal (`test_admin_v1_config_settings_unresolvable_store_secret_warns_not_rejects` pins
+/// that). A live config change must not be rejected for a secret that may resolve on the next
+/// deploy. The operator asking `--validate` is asking a different question, and deserves the strict
+/// answer.
+///
+/// It lives HERE, with the config layer, because it reads nothing else: the config layer's own
+/// `SecretResolver` and its own [`boot_resolved_secret_refs`] walk. `busbar-core` re-exports it at
+/// its historical `busbar_core::preflight::validate_builtin_secrets_resolve` spelling, which is what
+/// the binary's `--validate` arm calls.
+///
+/// Returns the FIRST unresolvable reference's error, naming the field so it is actionable.
+///
+/// Walks the references boot RESOLVES, not every reference the config can hold: an
+/// `identity-providers:` definition's `token:` is only read through the resolved auth chains, so a
+/// defined-but-unreferenced provider whose token env var is unset boots fine and must pass here too
+/// (see [`boot_resolved_secret_refs`]). The exhaustive walk stays in use for the structural and
+/// module-existence checks, which cost nothing to run over a reference boot never reads.
+pub fn validate_builtin_secrets_resolve(cfg: &crate::config::RootCfg) -> Result<(), String> {
+    let builtins = crate::config::secret::SecretResolver::builtins_only();
+    for (what, r) in boot_resolved_secret_refs(cfg) {
+        if r.module != crate::config::secret::SECRET_MODULE_ENV
+            && r.module != crate::config::secret::SECRET_MODULE_FILE
+        {
+            // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
+            // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
+            // be loadable here, and pre-flight covers it.
+            continue;
+        }
+        if let Err(e) = builtins.resolve(r) {
+            return Err(format!("{what}: {e}"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

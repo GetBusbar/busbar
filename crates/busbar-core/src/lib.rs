@@ -141,8 +141,13 @@ pub mod boot;
 pub mod calllog;
 pub use busbar_substrate::breaker;
 pub mod catalogue;
-pub mod config;
-pub mod config_validate;
+// THE CONFIG LAYER — the document grammar, the loader, the migrator, the overlay, the named-map, the
+// prepass, the `SecretResolver` and the validator — now lives in its own crate,
+// `busbar-core-config`, which depends on the neutral substrate and never on this one. It is not
+// engine residue with a replacement elsewhere; it is the product's own config grammar, and it needed
+// a HOME so the engine can retire out from under it. Re-exported here at both historical spellings so
+// every `busbar_core::config::…` / `busbar_core::config_validate::…` caller resolves unchanged.
+pub use busbar_core_config::{config, config_validate};
 pub mod core_routes;
 pub mod cost;
 pub mod diagnostics;

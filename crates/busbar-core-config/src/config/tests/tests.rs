@@ -39,7 +39,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 
 /// An all-default DeployCfg for struct-literal resolve() tests (DeployCfg has no Default because
 /// providers/models are required in YAML).
-pub(crate) fn base_deploy() -> DeployCfg {
+pub fn base_deploy() -> DeployCfg {
     DeployCfg {
         tools: Default::default(),
         agents: Default::default(),
@@ -855,11 +855,15 @@ fn test_shipped_providers_catalog_valid() {
     let defs: HashMap<String, ProviderDef> =
         serde_yaml::from_str(&raw).expect("parse providers.yaml");
     assert!(defs.len() >= 10, "catalog should be non-trivial");
+    // The shipped dialect declarations are a PLUGIN's data, and this binary's composition root
+    // (`tests/planes.rs`) installs them the way the real one does; ask the registry through the same
+    // forward every other read in this crate goes through, so the install cannot be missed.
+    crate::planes::plane_decls();
     for (name, def) in &defs {
         assert!(
-            // Neutral registry seam: a protocol is KNOWN iff it has a registered declaration
-            // (`decl_for`), reached without naming the witnessed codec (`protocol_for`).
-            crate::proto::decl_for(&def.protocol).is_some(),
+            // Neutral registry seam: a protocol is KNOWN iff it is in the registered set, reached
+            // without naming the witnessed codec (`protocol_for`).
+            busbar_substrate_values::proto::known_protocols().contains(&def.protocol.as_str()),
             "provider '{name}' names unknown protocol '{}'",
             def.protocol
         );
@@ -1827,7 +1831,10 @@ models:
         DEFAULT_MAX_HONORED_RETRY_AFTER_SECS
     );
     assert_eq!(l.default_max_tokens, DEFAULT_DEFAULT_MAX_TOKENS);
-    assert_eq!(l.default_max_tokens, crate::proto::DEFAULT_MAX_TOKENS);
+    assert_eq!(
+        l.default_max_tokens,
+        busbar_substrate::config::limits::DEFAULT_MAX_TOKENS
+    );
     assert_eq!(
         l.max_inflight_webhook_deliveries,
         DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES
@@ -2883,7 +2890,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
         enabled: true,
         ..Default::default()
     };
-    let mut automatic = crate::preflight::engine_trust_policy(&cfg).expect("automatic policy");
+    let mut automatic = busbar_plugin_loader::trust_policy(&cfg, env!("CARGO_PKG_VERSION"))
+        .expect("automatic policy");
     automatic.first_party_key = Some(release.verifying_key());
     // DEFAULT policy: no per-name floor pins this artifact, so its 0.9.0 version line is its own
     // business — a verified first-party plugin loads regardless of the binary's version.
@@ -2900,7 +2908,8 @@ fn to_policy_floor_distinguishes_automatic_from_explicit_downgrade() {
 
     // EXPLICIT per-name floor (the rollback-pin seam): pinned exactly at the artifact's version,
     // it loads; the pin binds and nothing older passes (asserted below).
-    let mut explicit = crate::preflight::engine_trust_policy(&cfg).expect("explicit policy");
+    let mut explicit = busbar_plugin_loader::trust_policy(&cfg, env!("CARGO_PKG_VERSION"))
+        .expect("explicit policy");
     explicit.first_party_floors.insert(
         "busbar-store-valkey-plugin".to_string(),
         "0.9.0".to_string(),
@@ -2956,14 +2965,15 @@ fn to_policy_honors_runtime_first_party_floor_override() {
         ..Default::default()
     };
     // Default: the automatic floor equals the binary version and there are no per-name overrides.
-    let auto = crate::preflight::engine_trust_policy(&cfg).expect("policy");
+    let auto = busbar_plugin_loader::trust_policy(&cfg, env!("CARGO_PKG_VERSION")).expect("policy");
     assert_eq!(auto.binary_version, env!("CARGO_PKG_VERSION"));
     assert!(auto.first_party_floors.is_empty());
     // With an explicit per-name override (as a persisted rollback pin sets): only that name is lowered;
     // the global binary_version floor (what every OTHER first-party plugin uses) is untouched.
     cfg.first_party_floors
         .insert("acme-hook".to_string(), "0.9.0".to_string());
-    let pinned = crate::preflight::engine_trust_policy(&cfg).expect("policy");
+    let pinned =
+        busbar_plugin_loader::trust_policy(&cfg, env!("CARGO_PKG_VERSION")).expect("policy");
     assert_eq!(pinned.binary_version, env!("CARGO_PKG_VERSION"));
     assert_eq!(
         pinned
@@ -2989,7 +2999,7 @@ fn to_policy_still_returns_ok_for_a_malformed_floor() {
     cfg.min_versions
         .insert("p".to_string(), "v1.6.0".to_string());
     assert!(
-        crate::preflight::engine_trust_policy(&cfg).is_ok(),
+        busbar_plugin_loader::trust_policy(&cfg, env!("CARGO_PKG_VERSION")).is_ok(),
         "a malformed floor must not fail the boot — it is refused at the comparator instead"
     );
 }
@@ -3516,10 +3526,10 @@ fn pools_upstream_credentials_is_a_scalar_override() {
     )
     .expect("parses");
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolves");
-    assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
+    assert_eq!(cfg.upstream_credentials, busbar_api::UpstreamCreds::Own);
     assert_eq!(
         cfg.pools["fast"].upstream_credentials,
-        Some(crate::auth::UpstreamCreds::Passthrough),
+        Some(busbar_api::UpstreamCreds::Passthrough),
         "a pool's own value REPLACES the all-pools default"
     );
     assert_eq!(
@@ -3529,7 +3539,7 @@ fn pools_upstream_credentials_is_a_scalar_override() {
 
     // Omitted at both levels ⇒ the built-in default, unchanged from pre-1.5.3 behavior.
     let cfg = resolve(&base_deploy(), &HashMap::new()).expect("resolves");
-    assert_eq!(cfg.upstream_credentials, crate::auth::UpstreamCreds::Own);
+    assert_eq!(cfg.upstream_credentials, busbar_api::UpstreamCreds::Own);
 }
 
 /// FREEZE BLOCKER — `secrets:` stays MODULE-KEYED, a deliberate exemption from the
@@ -3642,7 +3652,7 @@ fn export_named_map_allows_two_instances_of_one_module() {
 #[test]
 fn root_settings_doc_lists_only_fields_that_exist() {
     let src = include_str!("../overlay.rs");
-    let anchor = "pub(crate) struct RootSettings {";
+    let anchor = "pub struct RootSettings {";
     let at = src.find(anchor).expect("RootSettings struct");
 
     // The struct's real field set.
@@ -3650,7 +3660,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
     let body = &body[..body.find("\n}").expect("struct end")];
     let fields: Vec<&str> = body
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("pub(crate) "))
+        .filter_map(|l| l.trim().strip_prefix("pub "))
         .filter_map(|l| l.split(':').next())
         .collect();
     assert!(
@@ -3710,7 +3720,7 @@ other:
     .expect("both servers are individually valid");
 
     let mut deploy = base_deploy();
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
+    deploy.tools = busbar_substrate::plane::config::ToolsSection(Box::new(tools));
     let errors = resolve(&deploy, &HashMap::new())
         .expect_err("resolve must refuse a config whose published names are not unique");
     assert!(
@@ -3733,7 +3743,7 @@ other:
     )
     .unwrap();
     let mut deploy = base_deploy();
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(ok));
+    deploy.tools = busbar_substrate::plane::config::ToolsSection(Box::new(ok));
     resolve(&deploy, &HashMap::new()).expect("distinct published names must resolve");
 }
 
@@ -3770,7 +3780,7 @@ fn a_tool_pool_member_that_names_no_server_is_refused() {
         serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
             .expect("a minimal server"),
     );
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
+    deploy.tools = busbar_substrate::plane::config::ToolsSection(Box::new(tools));
     deploy.pools.pools.insert(
         "search".to_string(),
         serde_yaml::from_str::<crate::config::PoolCfg>("{members: [search-eu, search-us]}")
@@ -3795,14 +3805,14 @@ fn a_pool_may_not_straddle_two_planes() {
         serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
             .expect("a minimal agent"),
     );
-    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
+    deploy.agents = busbar_substrate::plane::config::AgentsSection(Box::new(agents));
     let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
     tools.servers.insert(
         "search-eu".to_string(),
         serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
             .expect("a minimal server"),
     );
-    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
+    deploy.tools = busbar_substrate::plane::config::ToolsSection(Box::new(tools));
     deploy.pools.pools.insert(
         "mixed".to_string(),
         serde_yaml::from_str::<crate::config::PoolCfg>("{members: [planner, search-eu]}")
@@ -3827,7 +3837,7 @@ fn a_failover_pool_needs_two_members() {
         serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
             .expect("a minimal agent"),
     );
-    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
+    deploy.agents = busbar_substrate::plane::config::AgentsSection(Box::new(agents));
     deploy.pools.pools.insert(
         "planner".to_string(),
         serde_yaml::from_str::<crate::config::PoolCfg>("{members: [only-one]}")
@@ -3845,22 +3855,22 @@ fn a_failover_pool_needs_two_members() {
 /// turned into the answer, and a default that drifted here would be invisible there.
 #[test]
 fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::failover::CandidatePoolCfg {
+    let pool = busbar_substrate::config::pools::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
     };
     assert_eq!(
         pool.repeatability("search_code"),
-        crate::failover::Repeatable::Yes
+        busbar_substrate::failover::Repeatable::Yes
     );
     assert_eq!(
         pool.repeatability("send_email"),
-        crate::failover::Repeatable::No,
+        busbar_substrate::failover::Repeatable::No,
         "an operation nobody spoke about is NEVER repeated"
     );
     assert_eq!(
-        crate::failover::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::failover::Repeatable::No,
+        busbar_substrate::config::pools::CandidatePoolCfg::default().repeatability("search_code"),
+        busbar_substrate::failover::Repeatable::No,
         "and an empty declaration repeats nothing at all"
     );
 }

@@ -1,0 +1,80 @@
+[package]
+name = "busbar-core-config"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "busbar's config layer: the 1.5.5 document grammar (RootCfg/DeployCfg/PluginsCfg/ExportCfg), the loader and env interpolation, the 1.4.x->1.5.0 migrator, the overlay, the named-definition map, the byte-identity prepass, the SecretResolver and the validator. Depends on the neutral substrate and NEVER on busbar-core, so the engine can retire out from under it."
+license = "Apache-2.0"
+
+[dependencies]
+# THE NEUTRAL SUBSTRATE, and the only structural edge this crate has. It carries the config
+# grammar's PURE SHAPES (the leaf sections, the `pools:` value grammar, `plugins:` via the values
+# crate) AND — since the registry's population half moved down with them — the plane registry this
+# layer asks "which planes exist, and which one owns this section". Never `busbar-core`: the whole
+# reason this crate exists is that the config layer must outlive the engine.
+busbar-substrate = { path = "../busbar-substrate" }
+# The plugin CONTRACTS: `SecretRef` (through `busbar-secret-ref`) and `UpstreamCreds` — the two value
+# grammars a config document embeds that every plugin kind also reads.
+busbar-api = { path = "../api" }
+busbar-secret-ref = { path = "../secret-ref" }
+# The `plugins:` grammar's home, one layer below the substrate: its consumers (busbar-plugin-sign,
+# busbar-plugin-loader) sit outside the substrate's closure and must read the grammar without an edge
+# to the engine substrate, so the block lives in the values crate and is named from here.
+busbar-substrate-values = { path = "../busbar-substrate-values" }
+# The built-in `admin-tokens` auth module's principal id, which the validator compares a configured
+# role against. Optional on exactly the terms busbar-core carries it on, and forwarded by the feature
+# below so a build that drops the module drops this edge too.
+busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The document is YAML, and every parse/serialize in this crate rides the same maintained fork the
+# rest of the tree reads YAML with.
+serde_yaml = { workspace = true }
+# The loader and the validator warn through `tracing` on the paths where a refusal would be too
+# strong (a retired key that is still honoured, a deprecated spelling).
+tracing = { workspace = true }
+# TYPE-NAME ONLY, and deliberately so: the validator's inbound-concurrency ceiling is
+# `tokio::sync::Semaphore::MAX_PERMITS`, because the number an operator may configure is bounded by
+# what the runtime will actually admit — a limit derived from the thing that enforces it rather than
+# restated as a literal that can drift away from it. No runtime, no task, no timer.
+tokio = { workspace = true, features = ["sync"] }
+# The named-definition-map read view derives `schemars::JsonSchema` under `openapi-schema` — the same
+# CI-only derive core and the plane crates gate on.
+schemars = { workspace = true, optional = true }
+
+[dev-dependencies]
+# THE PLANE CRATES, for the config layer's OWN tests only. A config test that writes a `tools:` or
+# `agents:` block needs the plane that OWNS that section registered, exactly as a shipped binary
+# does — the plane's `testkit` registers its `PlaneDecl` through the substrate's neutral seam, so the
+# production source here still names no plane. `busbar-mcp`/`busbar-a2a` normal-depend on
+# `busbar-core`, which depends on this crate; a DEV-dependency the other way is not a cycle (Cargo
+# resolves dev edges separately) and is the same shape `busbar-core` already uses for them.
+busbar-mcp = { path = "../busbar-mcp", features = ["test-support"] }
+busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
+# The FALLBACK plane owns `pools:` — the section this crate's own grammar splits — so its declaration
+# is needed for any test that reads a pool, which is most of them.
+busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
+# The `plugins:` block's two CONSUMERS. The grammar is this crate's; the resolution of it is theirs,
+# and the tests that pin "this document resolves to these specs / this trust policy" belong beside
+# the grammar they read.
+busbar-plugin-loader = { path = "../plugin-loader" }
+busbar-plugin-sign = { path = "../plugin-sign" }
+# The neutral WARN-capture tracing layer the validator's diagnostic tests assert through, and the
+# subscriber they install it into: a diagnostic is a REFUSAL an operator reads, so the tests that pin
+# one assert the emitted event rather than the return value.
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = ["auth-admin-tokens", "hooks-ranking"]
+# The built-in `admin-tokens` auth module is compiled in. Mirrors busbar-core's feature of the same
+# name, which forwards to this one, so a build that drops the module drops it in both crates at once.
+auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
+# The built-in ranking strategies are compiled in. NO dependency edge here: this crate only needs to
+# know WHETHER they are present, because the validator refuses a hook naming a strategy the binary
+# was built without. busbar-core's feature of the same name forwards to this one, so the validator's
+# answer and the binary's contents can never disagree.
+hooks-ranking = []
+# The CI-only OpenAPI schema derive, mirroring core and the plane crates.
+openapi-schema = ["dep:schemars"]

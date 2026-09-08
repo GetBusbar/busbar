@@ -159,8 +159,8 @@ ALLOWLIST="responses|crates/busbar-core/src/admin/|
 responses|crates/busbar-mcp/src/|
 responses|crates/busbar-a2a/src/|
 anthropic|crates/busbar-substrate/src/config/providers.rs|DEFAULT_PROTOCOL
-mcp|crates/busbar-core/src/config/mod.rs|mcp: McpEndpointSection
-mcp|crates/busbar-core/src/config/mod.rs|deploy.mcp.0"
+mcp|crates/busbar-core-config/src/config/mod.rs|mcp: McpEndpointSection
+mcp|crates/busbar-core-config/src/config/mod.rs|deploy.mcp.0"
 
 # ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
 # Emits the file/subtree prefixes of every brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES

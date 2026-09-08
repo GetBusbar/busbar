@@ -65,6 +65,11 @@ pub fn plane_src_roots() -> Vec<String> {
 pub fn neutral_src_roots() -> Vec<String> {
     vec![
         "crates/busbar-core/src".to_string(),
+        // The config layer split off busbar-core into a home of its own. It carries the config
+        // DOCUMENT ROOT — the grammar every plane's section hangs off — so it is exactly the kind of
+        // source a plane name must never appear in, and it is listed here in the same diff as the
+        // split (which is what `plane-purity:core-split-covered` refuses a split without).
+        "crates/busbar-core-config/src".to_string(),
         "crates/busbar-substrate/src".to_string(),
         "crates/busbar-substrate-values/src".to_string(),
         "crates/api/src".to_string(),

@@ -72,7 +72,11 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 # but absent means the gate scans zero files of it and reports the passing answer to every ban. The
 # consumer (scripts/plane-purity-lint.sh) therefore treats a listed-but-missing root as RED and refuses
 # a zero-file scan outright — so the only way a root leaves the set is through this line.
-NEUTRAL_ROOTS_LIST="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
+# `busbar-core-config` is the config layer, split off busbar-core into a home of its own so the engine
+# can retire out from under the product's config grammar. It carries the config DOCUMENT ROOT — the
+# grammar every plane's section hangs off — so it is precisely the kind of source a plane name must
+# never appear in, and it is listed here in the same diff as the split.
+NEUTRAL_ROOTS_LIST="crates/busbar-core/src crates/busbar-core-config/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
 
 neutral_src_roots() { printf '%s' "$NEUTRAL_ROOTS_LIST"; }
 

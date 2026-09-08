@@ -188,10 +188,18 @@ def surface_lines(path: Path) -> int:
 
 
 def is_proof_path(rel: Path) -> bool:
+    # A `tests` directory is proofs wherever it sits, not only directly under `src/`. The tree keeps
+    # a module's tests BESIDE the module (`src/config/tests/`, `src/plane/tests/`, …), and reading
+    # only the top-level `src/tests/` counted every one of those nested trees as SURFACE — so a
+    # ceiling measured a crate's proofs along with its product and a crate could breach its budget by
+    # writing tests. Match the `tests` COMPONENT at any depth, which is the rule the docstring above
+    # has always stated and the same rule the purity lints already apply.
     parts = rel.parts
-    if parts[0] == "tests":
+    if "tests" in parts[:-1]:
         return True
-    return len(parts) == 1 and rel.name == "tests.rs"
+    # `tests.rs` — Rust's `#[cfg(test)] mod tests;` file convention — is proofs at any depth too, for
+    # exactly the same reason.
+    return rel.name == "tests.rs"
 
 
 def measure_crate(crate_dir: Path) -> tuple[int, list[tuple[str, int]]]:
@@ -418,11 +426,18 @@ def selftest() -> int:
         (crate / "lib.rs").write_text("pub fn one() -> u32 { 1 }\n", encoding="utf-8")
         (crate / "tests.rs").write_text("fn t1() {}\nfn t2() {}\n", encoding="utf-8")
         (crate / "tests" / "more.rs").write_text("fn t3() {}\n", encoding="utf-8")
+        # A NESTED tests tree and a nested `tests.rs` are proofs too — the shape this tree actually
+        # uses (a module's tests beside the module). Counting them as surface let a crate breach its
+        # own ceiling by writing tests, which is the opposite of what a ceiling is for.
+        (crate / "config" / "tests").mkdir(parents=True)
+        (crate / "config" / "mod.rs").write_text("pub fn two() -> u32 { 2 }\n", encoding="utf-8")
+        (crate / "config" / "tests.rs").write_text("fn t4() {}\n", encoding="utf-8")
+        (crate / "config" / "tests" / "deep.rs").write_text("fn t5() {}\nfn t6() {}\n", encoding="utf-8")
         total, per_file = measure_crate(root / "crate")
-        say(total == 1, f"the tests tree is not surface (wanted 1, measured {total})")
+        say(total == 2, f"the tests tree is not surface (wanted 2, measured {total})")
         say(
-            [rel for rel, _ in per_file] == ["lib.rs"],
-            f"only lib.rs is measured (measured {[rel for rel, _ in per_file]})",
+            sorted(rel for rel, _ in per_file) == ["config/mod.rs", "lib.rs"],
+            f"only the production files are measured (measured {[rel for rel, _ in per_file]})",
         )
 
         # THE CEILING ITSELF, through the real main(): a crate over its limit is refused, the same

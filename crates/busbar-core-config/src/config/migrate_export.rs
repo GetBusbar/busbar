@@ -26,7 +26,7 @@ use serde_yaml::{Mapping, Value};
 /// rewritten into the 1.5.3 NAMED map. Chosen to read as an instance (what it IS) rather than as the
 /// module (what backs it), so the migrated config teaches the pattern: `metrics: { module: prometheus }`.
 /// Shared with the migrator tests so the goldens cannot drift from the rewrite.
-pub(crate) const EXPORT_TYPE_KEY_TO_INSTANCE_NAME: &[(&str, &str, &str)] = &[
+pub const EXPORT_TYPE_KEY_TO_INSTANCE_NAME: &[(&str, &str, &str)] = &[
     // (retired type key, new instance name, `module:` value)
     ("prometheus", "metrics", "prometheus"),
     ("request-log-webhook", "req-log", "request-log-webhook"),

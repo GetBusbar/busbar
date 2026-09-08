@@ -109,22 +109,29 @@ measure() {
   # themselves live in qa/construction.toml's [gate.surface_ceilings] (owner decisions, never
   # ratcheted by the tree) — read from there, not restated here, so --calibrate can also produce a
   # green value for them in a scratch copy without this script itself carrying two sources of truth.
-  local surface_ceilings sc_contract_caps sc_grammar sc_contract_transport
+  local surface_ceilings sc_contract_caps sc_grammar sc_contract_transport sc_core_config
   surface_ceilings="$(python3 - "$TOML" <<'PYEOF'
 import sys, tomllib
 with open(sys.argv[1], "rb") as fh:
     cfg = tomllib.load(fh)
 sc = cfg.get("gate", {}).get("surface_ceilings", {})
-for key, default in (("contract_caps", 3500), ("grammar", 500), ("contract_transport", 1000)):
+for key, default in (
+    ("contract_caps", 3500),
+    ("grammar", 500),
+    ("contract_transport", 1000),
+    ("core_config", 11000),
+):
     print(sc.get(key, default))
 PYEOF
 )"
-  { read -r sc_contract_caps; read -r sc_grammar; read -r sc_contract_transport; } <<<"$surface_ceilings"
+  { read -r sc_contract_caps; read -r sc_grammar; read -r sc_contract_transport
+    read -r sc_core_config; } <<<"$surface_ceilings"
   local surface_spec surface_id surface_crates surface_limit surface_what
   for surface_spec in \
     "contract+caps|busbar-contract,busbar-caps|$sc_contract_caps|the contract pair's plugin-visible surface" \
     "grammar|busbar-grammar|$sc_grammar|the closed span grammar's surface" \
-    "contract-transport|busbar-contract-transport|$sc_contract_transport|the transport-facing contract's surface"
+    "contract-transport|busbar-contract-transport|$sc_contract_transport|the transport-facing contract's surface" \
+    "core-config|busbar-core-config|$sc_core_config|the config layer's surface"
   do
     IFS='|' read -r surface_id surface_crates surface_limit surface_what <<<"$surface_spec"
     surface_id="surface-ceiling:$surface_id"
@@ -347,7 +354,8 @@ case "${1:-}" in
     for surface_spec in \
       "contract_caps|busbar-contract,busbar-caps" \
       "grammar|busbar-grammar" \
-      "contract_transport|busbar-contract-transport"
+      "contract_transport|busbar-contract-transport" \
+      "core_config|busbar-core-config"
     do
       IFS='|' read -r surface_key surface_crates <<<"$surface_spec"
       surface_now="$(python3 "$ROOT/scripts/loc-surface.py" --ceiling "$surface_crates=999999999" 2>/dev/null \
