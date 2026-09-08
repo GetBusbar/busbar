@@ -33,10 +33,10 @@
 //!   It is a ratchet at today's count that may only go DOWN, and the sites are printed either way.
 
 use crate::ctx::{Ctx, Edit, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Case, Expect, Gate, Report};
+use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
-use crate::planes::PLANE_KEYS;
+use crate::planes::{PLANE_GRAMMAR, PLANE_KEYS};
 
 pub const ROW_MANDATE: &str = "plane-abi-neutrality:mandate-document";
 pub const ROW_BAN_LIST: &str = "plane-abi-neutrality:ban-list-complete";
@@ -179,6 +179,47 @@ fn scan(files: &[crate::ctx::SourceFile]) -> (Vec<String>, Vec<String>) {
     (prod, test)
 }
 
+/// The plane keys THIS TREE DECLARES, read off the crates that carry a plane declaration.
+///
+/// The totality row used to compare `PLANE_KEYS` with `BANNED` — two `const`s in this runner. Two
+/// literals agreeing is not a fact about the tree, and no tree could falsify it: the row was green
+/// by construction, which is the one shape a ledger row must never have. What the ban list actually
+/// has to cover is the planes that EXIST, so they are counted where they are declared. A fifth
+/// plane crate landing with a noun nobody banned is the defect this row names, and reading the
+/// declarations is what lets it see one.
+///
+/// The key is the crate directory's name without its `busbar-` prefix, which is how every plane
+/// crate in this tree is spelled (`busbar-llm` → `llm`). A plane whose crate is named otherwise
+/// reads here as an unbanned key — loud, and in the direction that asks a human to look.
+fn declared_plane_keys(cx: &Ctx) -> Result<Vec<String>, String> {
+    let files = cx
+        .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(1))
+        .map_err(|e| e.to_string())?;
+    let mut keys: Vec<String> = Vec::new();
+    for f in &files {
+        if !f
+            .text
+            .lines()
+            .any(|l| l.trim_start().starts_with(PLANE_GRAMMAR))
+        {
+            continue;
+        }
+        let rel = f.rel_str();
+        let Some(krate) = rel
+            .strip_prefix("crates/")
+            .and_then(|r| r.split('/').next())
+        else {
+            continue;
+        };
+        let key = krate.strip_prefix("busbar-").unwrap_or(krate).to_string();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    keys.sort();
+    Ok(keys)
+}
+
 /// The mandated token list, READ FROM THE DOCUMENT that issues it: the backticked alternation after
 /// `banned set` in the taxonomy's neutrality-witness section.
 fn mandated(cx: &Ctx) -> Result<Vec<String>, String> {
@@ -276,26 +317,41 @@ impl Gate for PlaneAbiNeutralityGate {
             )),
         }
 
-        let missing_keys: Vec<&str> = PLANE_KEYS
-            .iter()
-            .copied()
-            .filter(|k| !BANNED.contains(k))
-            .collect();
-        rows.push(if missing_keys.is_empty() {
-            Row::pass(
+        rows.push(match declared_plane_keys(cx) {
+            Err(why) => Row::fail(
                 ROW_PLANE_KEYS,
-                "every canonical plane key is in the ban list",
-                CLEAN,
-            )
-        } else {
-            Row::fail(
-                ROW_PLANE_KEYS,
-                "a canonical plane key is not in the ban list",
-                format!(
-                    "{} — the witness cannot catch a leak of a plane noun it does not list",
-                    missing_keys.join(", ")
-                ),
-            )
+                "the planes this tree declares could not be read",
+                format!("{why} — {DID_NOT_RUN}"),
+            ),
+            Ok(declared) => {
+                let mut keys: Vec<String> = PLANE_KEYS.iter().map(|k| (*k).to_string()).collect();
+                for k in declared {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+                let missing_keys: Vec<&str> = keys
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|k| !BANNED.contains(k))
+                    .collect();
+                if missing_keys.is_empty() {
+                    Row::pass(
+                        ROW_PLANE_KEYS,
+                        "every plane key this tree declares is in the ban list",
+                        CLEAN,
+                    )
+                } else {
+                    Row::fail(
+                        ROW_PLANE_KEYS,
+                        "a plane key this tree declares is not in the ban list",
+                        format!(
+                            "{} — the witness cannot catch a leak of a plane noun it does not list",
+                            missing_keys.join(", ")
+                        ),
+                    )
+                }
+            }
         });
 
         let files = cx.walk(&WalkSpec::new([HOT_LANE]).ext("rs").min_files(1));
@@ -474,27 +530,28 @@ impl Gate for PlaneAbiNeutralityGate {
             )),
         }
 
-        // THE TOTALITY ROW. Every canonical plane key must be banned; the day a plane lands whose
-        // noun is not listed, this row lands with it. Driven over the CONSTANTS rather than a plant,
-        // because the ban list is a `const` and an overlay cannot edit compiled source — which is
-        // itself the point: the only way to drop a token is a reviewable source edit.
-        let uncovered: Vec<&str> = PLANE_KEYS
-            .iter()
-            .copied()
-            .filter(|k| !BANNED.contains(k))
-            .collect();
-        report.push(Case {
-            name: "every canonical plane key is covered by the ban list".to_string(),
-            covers: vec![ROW_PLANE_KEYS.to_string()],
-            expected: Expect::Green,
-            got: if uncovered.is_empty() {
-                Expect::Green
-            } else {
-                Expect::Red {
-                    naming: uncovered.iter().map(|s| (*s).to_string()).collect(),
-                }
-            },
-        });
+        // THE TOTALITY ROW, PLANTED. It reads the planes this tree DECLARES, so a fifth plane crate
+        // whose noun nobody added to the ban list is a plant like any other — which is the whole
+        // reason the row stopped comparing two `const`s. The witness that cannot see a plane cannot
+        // catch a leak of that plane's nouns, and it would have said "every key is covered" while
+        // saying it about a list that no longer described the tree.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-quantum/src/lib.rs",
+            format!(
+                "//! A planted plane crate, declaring a plane whose noun the ban list does not \
+                 carry.\n{PLANE_GRAMMAR}: busbar_substrate::plane::registry::PlaneDecl =\n    \
+                 busbar_substrate::plane::registry::PlaneDecl {{ key: \"quantum\" }};\n"
+            ),
+        );
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "a plane this tree declares whose noun is not in the ban list is a finding",
+            &[ROW_PLANE_KEYS],
+            ov,
+            &["quantum"],
+        ));
 
         report
     }
