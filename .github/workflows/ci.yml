@@ -48,7 +48,7 @@ name: CI
 # and the integration branch runs the full thing.
 on:
   push:
-    branches: ['**', '!keep-**']
+    branches: ['integration/**', 'dev', 'qa', 'main']
   pull_request:
   workflow_dispatch:
 

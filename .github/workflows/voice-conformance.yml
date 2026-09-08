@@ -44,7 +44,7 @@ name: Voice conformance
 
 on:
   push:
-    branches: ['**']
+    branches: ['integration/**', 'dev', 'qa', 'main']
   pull_request:
   workflow_dispatch:
 

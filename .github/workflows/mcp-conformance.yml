@@ -51,7 +51,7 @@ name: MCP conformance
 # 53-package third-party TypeScript workspace, which has no business on the per-commit fast tier.
 on:
   push:
-    branches: ['**']
+    branches: ['integration/**', 'dev', 'qa', 'main']
   pull_request:
   workflow_dispatch:
 
