@@ -836,11 +836,13 @@ fn the_committed_waiver_register_parses_exactly_as_the_gate_reads_it() {
     )
     .expect("the committed waiver register");
     let w = classify::load_waivers(schema::WAIVERS, &text).expect("it must parse");
-    assert!(
-        w.contains_key("manual-de SecretRef::visit_str"),
-        "the registered F-016 waiver is the register's one line: {:?}",
-        w.keys().collect::<Vec<_>>()
-    );
+    // The register is EMPTY today: the one waiver it carried excused a widening the committed
+    // baseline now carries, and a dead waiver is what `:waivers` refuses. What this test pins is
+    // that the committed file parses under the gate's own reader and that every key it does carry
+    // is an exact path with a reason -- not that any particular line is present.
+    for (path, reason) in &w {
+        assert!(!path.trim().is_empty() && !reason.trim().is_empty(), "{path:?} = {reason:?}");
+    }
 }
 
 #[test]
