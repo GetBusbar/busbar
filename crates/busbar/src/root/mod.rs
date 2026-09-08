@@ -28,6 +28,9 @@
 //! - [`adapters`] — the seams where two units name the same object at two widths, plus the boot
 //!   assertion that the two hand-kept metric label banks still agree.
 //! - [`policy`] — the values the units take from configuration rather than from a `Default`.
+//! - [`registrations`] — the trust unit's two views over a plane's registered peers, written ONCE.
+//!   `busbar_plane_mcp::Server` and `busbar_plane_a2a::Agent` are the same four fields, so the pool
+//!   view and the per-kind facts are one generic and not two copies of a guard.
 //! - [`units_voice`] — one plane, switched over: a live voice session as a sequence of ordinary
 //!   units. The handshake that opens it, the per-frame turns the pump dispatches, the hold that is
 //!   the session's metering lease, and four seams to the half of the plane that owns sockets.
@@ -63,10 +66,13 @@ pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
 pub mod policy;
+pub mod registrations;
 pub mod registry;
 pub mod transports;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a;
+#[cfg(feature = "root-a2a")]
+pub mod units_a2a_leg;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
 #[cfg(feature = "root-llm")]
