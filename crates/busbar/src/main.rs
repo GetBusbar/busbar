@@ -617,7 +617,7 @@ fn register_protocols() {
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
-        // THE ROOT-DRIVEN URL-MODEL SURFACE (composition-root switch-over S2), default off — the
+        // THE ROOT-DRIVEN URL-MODEL SURFACE (composition-root switch-over S2), DEFAULT ON — the
         // path-axis twin of the `BODY_INGRESS` swap below. The table is the same two dialects under
         // the same two names and the answers are the plane's own; what the swap changes is the PATH a
         // request takes to reach one. Off, this arm does not exist and the surface is the one it was.
@@ -643,7 +643,7 @@ fn register_protocols() {
     )> = Vec::new();
     #[cfg(all(feature = "proto-llm", not(feature = "root-llm")))]
     body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
-    // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), default off. The table is the
+    // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), DEFAULT ON. The table is the
     // same six dialects under the same six names and the answers are the plane's own; what the swap
     // changes is the PATH a request takes to reach one — through the kernel's loop, over the plane's
     // nine step files, past the two audit doors and out through the one exit, instead of through the
