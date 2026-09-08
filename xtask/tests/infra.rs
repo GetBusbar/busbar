@@ -1203,13 +1203,25 @@ fn cfg_all_test_arms_and_an_unresolvable_attribute_fails_closed() {
     );
 }
 
+/// A literal-bearing line keeps its literal AND loses its trailer — the two halves of one rule.
+///
+/// This case used to assert the second half backwards. `code_of` gave up and handed back the WHOLE
+/// line whenever the line held a `"` anywhere, and the test pinned that as the contract ("a line
+/// holding a literal keeps its raw text"). It is the behaviour `scan: the trailing comment is
+/// stripped at the position the blanker found it` removed: a `// }` in a trailer closed a scope
+/// that was never opened, and a `#[cfg(test)]` written in one armed the test-scope machine. The
+/// literal was never the problem — not knowing where it ENDED was — so both halves hold at once,
+/// and a test that can only see one of them cannot tell the fix from the defect.
 #[test]
-fn the_code_of_a_line_keeps_a_slash_slash_that_lives_inside_a_string_literal() {
+fn the_code_of_a_line_keeps_a_literals_slash_slash_and_still_drops_the_real_trailer() {
     let lines = scan::test_scope("let u = \"https://x\"; // trailer\nlet v = 1; // trailer\n");
-    assert!(lines[0].code.contains("https://x"));
     assert!(
-        lines[0].code.contains("trailer"),
-        "a line holding a literal keeps its raw text"
+        lines[0].code.contains("https://x"),
+        "the `//` inside the literal is not a comment marker, so the literal survives"
+    );
+    assert!(
+        !lines[0].code.contains("trailer"),
+        "the line's REAL trailer goes, literal or not"
     );
     assert!(
         !lines[1].code.contains("trailer"),
