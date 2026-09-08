@@ -32,13 +32,21 @@ use crate::ops;
 use crate::records as rec;
 use crate::A2aPlane;
 
-/// The per-connection codec state this plane keeps.
+/// The codec state this plane keeps for one hop, or for one half of a session.
 ///
-/// It holds a COUNT and nothing else. This protocol's framing is one document per frame, so there
-/// is no partial document to carry across a call; what a connection does need to remember is how far
-/// into a streamed answer it is, because a stream's last event is the one that ends the unit.
+/// It holds two facts and nothing else. This protocol's framing is one document per frame, so
+/// there is no partial document to carry across a call; what a hop does need to remember is
+/// whether the unit it belongs to was opened as a STREAMING one, and how far into that stream it
+/// is. The first of those is the fact that separates a complete answer from a run's first event —
+/// they are the same bytes — and the answer decode reads it from here or reads it nowhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Codec {
+    /// Whether the unit's answer arrives as a run of events rather than as one document.
+    ///
+    /// False is the safe default and the common case: every method in the vocabulary but two is
+    /// answered with a single document, and a state that never learned otherwise reads an answer
+    /// as complete rather than holding a finished unit open.
+    pub streaming: bool,
     /// How many event frames of a streamed answer this half has read.
     pub events_read: u32,
 }
@@ -590,6 +598,17 @@ impl Plane for A2aPlane {
         }
     }
 
+    fn open_unit_state<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> Option<PlaneSessionState> {
+        // The one fact the answer decode cannot read off the bytes: whether this unit's answer is
+        // a run of events. It is the unit's operation class that says so — the same row the
+        // request decode read it from when it chose between OPEN and ONESHOT — and this is the
+        // only place on the outbound path that holds the unit.
+        Some(PlaneSessionState::new(Codec {
+            streaming: Self::row_for_op(u.op()).is_some_and(|row| row.streaming),
+            events_read: 0,
+        }))
+    }
+
     fn encode_egress<'u>(
         &self,
         u: &Unit<'u>,
@@ -724,7 +743,25 @@ impl Plane for A2aPlane {
         // also the last one, whatever it says about itself: an agent does not keep streaming after
         // it has reported that it failed.
         let final_event = read_raw(body, "/result/final") == Some(b"true".as_slice());
-        let terminal = is_error || final_event || !has(body, "/result/kind");
+        // WHAT THE UNIT WAS OPENED AS, not what the body looks like. Every ordinary answer of this
+        // protocol carries a `kind` — a Task is `{"kind":"task",…}`, a Message is
+        // `{"kind":"message",…}` — and a streamed run OPENS with exactly the task snapshot a
+        // `message/send` is answered with. The two are byte-identical, so asking the body which
+        // one it is has no answer to give: a predicate over `kind` read every complete answer as a
+        // frame in the middle of a run, the unit never reached its ending, and the egress attempt
+        // read that as a body that never arrived — refunding the destination's budget unit and
+        // posting a compensating transient against an agent that answered perfectly well.
+        //
+        // So a unit whose answer is ONE DOCUMENT ends on that document, and a unit whose answer is
+        // a RUN ends on the event that says it is the last one (or on the stream ending, which is
+        // the loop's to notice, not this step's). A hop that opened no state reads as the first:
+        // holding a finished unit open costs a caller money and ending an unfinished one costs
+        // them at most the rest of a run they can ask for again.
+        let streaming = st
+            .as_ref()
+            .and_then(|state| state.get::<Codec>())
+            .is_some_and(|codec| codec.streaming);
+        let terminal = is_error || final_event || !streaming;
         if let Some(state) = st {
             if let Some(codec) = state.get_mut::<Codec>() {
                 codec.events_read = codec.events_read.saturating_add(1);
@@ -982,6 +1019,9 @@ impl Plane for A2aPlane {
     }
 }
 
+/// The two halves a session transport opens are per CONNECTION and outlive any one unit, so
+/// neither can carry a unit's streaming fact: both open with the unary default, and the state a
+/// hop reads that fact out of is the unit's own ([`Plane::open_unit_state`]).
 impl SessionPlane for A2aPlane {
     fn open_session<'u>(&self, _ctx: &Ctx<'u>) -> PlaneSessionState {
         PlaneSessionState::new(Codec::default())

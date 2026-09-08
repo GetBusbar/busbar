@@ -328,6 +328,196 @@ fn an_error_answer_is_terminal() {
     }
 }
 
+/// A unit whose answer this plane is about to read, for the state opener.
+fn hop_unit<'u>(op: busbar_contract::ids::OpClassId) -> busbar_contract::unit::Unit<'u> {
+    busbar_contract::unit::Unit::new(
+        &common::TestSeal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        op,
+        busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
+        None,
+    )
+}
+
+/// The ordinary answer — the one every caller gets — ends its unit.
+///
+/// This is the shape the plane's own fixture already carries, and the shape a `message/send` or a
+/// `tasks/get` is answered with. A unit that never reaches its ending is a unit the loop is still
+/// holding open on a connection whose work is finished, and the egress attempt reads that as a
+/// body that never arrived intact: it refunds the destination budget and posts a compensating
+/// transient against the breaker.
+///
+/// The bytes of this answer are IDENTICAL to the bytes of the first event of a streamed run — a
+/// `message/stream` opens with the same task snapshot — so no predicate over the body alone can
+/// tell them apart, and this plane does not try. It reads what the unit was OPENED as out of the
+/// state the egress attempt opened for the hop, which is what `open_unit_state` puts there.
+#[test]
+fn a_plain_answer_ends_its_unit() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let unit = hop_unit(ops::OP_MESSAGE_SEND);
+    let mut st = plane
+        .open_unit_state(&unit, &ctx)
+        .expect("this plane carries state across a hop");
+    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"id":"t1","kind":"task"}}"#;
+    let frames = vec![response_frame(answer)];
+    let mut cursor = FrameCursor::new(&frames);
+    let sealed = sealed_destination();
+    match plane
+        .decode_response(&mut cursor, &sealed, Some(&mut st), &ctx)
+        .expect("a successful answer decodes")
+    {
+        Progress::Terminal { for_, r } => {
+            assert_eq!(r.finish, busbar_contract::unit::FinishClass::Complete);
+            assert_eq!(
+                for_.expect("it correlates").value,
+                busbar_contract::ids::CorrelationValue::Num(1)
+            );
+        }
+        other => panic!("an ordinary answer decoded as {other:?}"),
+    }
+}
+
+/// An answer read with no state at all is read as a complete one.
+///
+/// A hop that opened no state is not licence to hold the unit open for ever. The default is the
+/// one that costs nobody anything: the answer ends its unit, which is what the answer to every
+/// non-streaming method in the vocabulary does. A streamed run is the case that has to say so, and
+/// it says so through the state.
+#[test]
+fn an_answer_read_with_no_state_ends_its_unit() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"id":"t1","kind":"task"}}"#;
+    let frames = vec![response_frame(answer)];
+    let mut cursor = FrameCursor::new(&frames);
+    let sealed = sealed_destination();
+    assert!(
+        matches!(
+            plane
+                .decode_response(&mut cursor, &sealed, None, &ctx)
+                .expect("a successful answer decodes"),
+            Progress::Terminal { .. }
+        ),
+        "an answer read with no state ends its unit"
+    );
+}
+
+/// The twin: the same bytes under a streamed run are a frame in the middle of it, and the run ends
+/// on the event that says it is the last one.
+///
+/// `message/stream` opens with exactly the task snapshot the unary answer above carries. Reading
+/// that as the end of the unit would cut a run at its first event, relay one snapshot as the whole
+/// answer and report it as a completed exchange. The separating fact is the unit's, not the body's.
+#[test]
+fn a_streamed_run_ends_on_its_last_event_and_not_before() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let unit = hop_unit(ops::OP_MESSAGE_STREAM);
+    let mut st = plane
+        .open_unit_state(&unit, &ctx)
+        .expect("this plane carries state across a hop");
+    let sealed = sealed_destination();
+
+    // The opening event: the same bytes the ordinary answer above is made of.
+    let opening = br#"{"id":1,"jsonrpc":"2.0","result":{"id":"t1","kind":"task"}}"#;
+    let frames = vec![response_frame(opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed, Some(&mut st), &ctx)
+        .expect("the opening event decodes")
+    {
+        Progress::Frame { r, .. } => assert_eq!(
+            r.finish,
+            busbar_contract::unit::FinishClass::TurnComplete,
+            "the run is not over"
+        ),
+        other => panic!("a streamed run's opening event decoded as {other:?}"),
+    }
+
+    // The event that says it is the last one.
+    let last = br#"{"id":1,"jsonrpc":"2.0","result":{"final":true,"kind":"status-update","status":{"state":"completed"},"taskId":"t1"}}"#;
+    let frames = vec![response_frame(last)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_response(&mut cursor, &sealed, Some(&mut st), &ctx)
+        .expect("the last event decodes")
+    {
+        Progress::Terminal { r, .. } => assert_eq!(
+            r.finish,
+            busbar_contract::unit::FinishClass::Complete,
+            "the run ended"
+        ),
+        other => panic!("a streamed run's last event decoded as {other:?}"),
+    }
+}
+
+/// An envelope that states neither a result nor an error is not an answer, and is not reported as
+/// a completed one.
+///
+/// A truncated write or a buggy agent produces exactly this. Calling it complete tells the caller
+/// their request succeeded, hands them nothing, and — because the fee is decided from the finish
+/// the plane reports — charges them for it. The unit still ENDS here, and it ends as an error: a
+/// decode failure would leave the loop with no finish at all, which is the one answer the fee
+/// evidence reads as a completed exchange.
+#[test]
+fn an_envelope_stating_neither_result_nor_error_ends_the_unit_as_an_error() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    for empty in [
+        br#"{"id":7,"jsonrpc":"2.0"}"#.as_slice(),
+        // A stated but empty result is the same nothing, written the other way.
+        br#"{"id":7,"jsonrpc":"2.0","result":null}"#.as_slice(),
+    ] {
+        let frames = vec![response_frame(empty)];
+        let mut cursor = FrameCursor::new(&frames);
+        let sealed = sealed_destination();
+        match plane
+            .decode_response(&mut cursor, &sealed, None, &ctx)
+            .expect("an empty envelope decodes")
+        {
+            Progress::Terminal { r, .. } => assert_eq!(
+                r.finish,
+                busbar_contract::unit::FinishClass::Error,
+                "an empty envelope was reported as a completed answer"
+            ),
+            other => panic!("an empty envelope decoded as {other:?}"),
+        }
+    }
+}
+
+/// A message that asked for no answer is not answered, and is not metered.
+///
+/// The specification is explicit that a server must not reply to a notification. Composing a reply
+/// to one puts `{"id":null,…}` on the wire and opens a priced unit for a message that should have
+/// produced none.
+#[test]
+fn a_message_with_no_identifier_is_not_answered() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let notice = br#"{"jsonrpc":"2.0","method":"message/send","params":{}}"#;
+    let frames = vec![frame(notice)];
+    let mut cursor = FrameCursor::new(&frames);
+    match plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("a notification decodes")
+    {
+        Ingress::Discard { .. } => {}
+        other => panic!("a notification decoded as {other:?}"),
+    }
+}
+
 /// A refusal is rendered as this dialect's own error envelope, with the caller's identifier.
 #[test]
 fn a_refusal_is_rendered_in_this_dialect() {
