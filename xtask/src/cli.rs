@@ -17,12 +17,34 @@ usage:
   cargo xtask gate <name> [--selftest] [--report] [--strict] [--write] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
-  cargo xtask gate <name> --parity -- <legacy argv...>
+  cargo xtask gate changelog [--require-dated-top] [--require-version=<v>]
+  cargo xtask gate <name> --parity [--root-flag=<flag>] -- <legacy argv...>
   cargo xtask selftest [<name>]
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
   cargo xtask ledger {sync|status|next|record|fixed} | --check
   cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]";
+
+/// EVERY FLAG `gate` UNDERSTANDS, DECLARED BESIDE THE CODE THAT READS THEM.
+///
+/// The register's own argument parser already works this way ([`crate::audit_cmd`]'s `OPTIONS` /
+/// `SWITCHES`), and for the same reason: a flag filed under a name nothing reads is a caller who
+/// believes they asked for something they did not get. Here the consequence is worse than a wrong
+/// value, because the flags that are missed are the ones that make a gate STRICTER — see
+/// [`reject_unknown_args`].
+const GATE_SWITCHES: [&str; 8] = [
+    "--format=tsv",
+    "--report",
+    "--selftest",
+    "--list",
+    "--write",
+    "--all",
+    "--parity",
+    "--require-dated-top",
+];
+
+/// The flags that carry a value after `=`. Matched by prefix; the value is read where it is used.
+const GATE_VALUED: [&str; 2] = ["--require-version=", "--root-flag="];
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -89,7 +111,58 @@ fn open_ctx() -> Result<Ctx, i32> {
     }
 }
 
+/// AN ARGUMENT THIS DISPATCHER DOES NOT UNDERSTAND IS AN ARGUMENT ERROR, never a quietly looser
+/// run. Returns the exit code to give up with, or `None` to carry on.
+///
+/// A few gates run a stricter form at release time than on every push, selected by a flag. Scanning
+/// for the flags this function's caller recognises and discarding the rest means ONE TRANSPOSED
+/// LETTER selects the ordinary arm and reports green: `--require-verison=99.99.99` ran the changelog
+/// gate's push arm, exited 0, and owed two fewer rows than the release arm the caller asked for.
+/// Nothing downstream can notice, because the owed set is computed from the same gate object that
+/// was built WITHOUT the release arm — so the reconciliation is internally consistent and wrong.
+/// `--selftests` is the same slip with a worse ending: it turns a RED-ability proof into an ordinary
+/// run, and an ordinary run over a clean tree exits 0.
+///
+/// A SECOND BARE TOKEN is the same silent-ignore wearing different clothes: the gate name is the
+/// first non-`--` token and every one after it was discarded, so `gate changelog 1.6.0` ran the push
+/// arm having been handed a version.
+///
+/// EVERYTHING AFTER A BARE `--` BELONGS TO THE LEGACY SCRIPT, not to this dispatcher. The parity arm
+/// hands that tail to another program, whose flags are its own and must not be judged here.
+fn reject_unknown_args(args: &[String]) -> Option<i32> {
+    let ours = args.iter().position(|a| a == "--").unwrap_or(args.len());
+    let mut named = false;
+    for a in &args[..ours] {
+        if let Some(stripped) = a.strip_prefix("--") {
+            if GATE_SWITCHES.contains(&a.as_str()) || GATE_VALUED.iter().any(|p| a.starts_with(p)) {
+                continue;
+            }
+            eprintln!("xtask gate: unknown flag `--{stripped}`");
+            eprintln!(
+                "flags: {}{}",
+                GATE_SWITCHES.join(" "),
+                GATE_VALUED
+                    .iter()
+                    .map(|p| format!(" {p}<value>"))
+                    .collect::<String>()
+            );
+            eprintln!("{USAGE}");
+            return Some(2);
+        }
+        if named {
+            eprintln!("xtask gate: `{a}` is a second gate name, and only one gate runs per call");
+            eprintln!("{USAGE}");
+            return Some(2);
+        }
+        named = true;
+    }
+    None
+}
+
 fn gate(args: &[String]) -> i32 {
+    if let Some(code) = reject_unknown_args(args) {
+        return code;
+    }
     let tsv = args.iter().any(|a| a == "--format=tsv");
     let report_only = args.iter().any(|a| a == "--report");
     let want_selftest = args.iter().any(|a| a == "--selftest");
