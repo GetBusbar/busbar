@@ -90,7 +90,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
   codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
   generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
-  ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
+  ≤ 15k) — each of the fourteen carrying its `impl Unit for` at the same file position, so that two
+  siblings of the kind are the same shape and no rule has to guess what a unit is; union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —

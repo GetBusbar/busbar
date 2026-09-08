@@ -38,6 +38,7 @@ pub mod classify;
 pub mod clock;
 pub mod journal;
 pub mod port;
+pub mod unit;
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
