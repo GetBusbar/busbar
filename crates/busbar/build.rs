@@ -33,10 +33,6 @@
 // EXACTLY the misdiagnosis this whole file exists to make impossible. A plain
 // `cargo build --release` carries no -Cprofile-use, so it reports `pgo=false` — the whole point.
 //
-// The env var is still watched by `rerun-if-env-changed` and, when set truthily without the flag,
-// raises a build WARNING: silently ignoring a signal an operator deliberately set is its own way of
-// misleading them.
-//
 // The derivation itself lives in src/build_stamp.rs, `include!`d below and mounted by main.rs under
 // `#[cfg(test)]`, so the functions that decide what the stamp says are unit-testable rather than
 // reachable only through a release build.
@@ -62,14 +58,6 @@ fn main() {
 
     // PGO: the presence of -Cprofile-use in the rustflags cargo applied, and nothing else.
     let pgo = pgo_from_flags(&flags);
-    if env::var("BUSBAR_PGO").map(|v| v == "1" || v == "true") == Ok(true) && !pgo {
-        println!(
-            "cargo:warning=BUSBAR_PGO is set but no -Cprofile-use reached the compiler, so this \
-             build is NOT profile-guided and its provenance stamp will say pgo=false. The stamp \
-             records what rustc was given, never what the environment asserts. Build through \
-             scripts/pgo-build.sh to get a real PGO binary."
-        );
-    }
 
     // target-cpu, if pinned via RUSTFLAGS (`-Ctarget-cpu=<x>` or `target-cpu=<x>`); else the rustc
     // default for the target.
