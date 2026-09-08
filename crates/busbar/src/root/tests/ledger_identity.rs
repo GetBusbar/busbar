@@ -8,7 +8,8 @@ use busbar_caps::{Admit, AdmitToken};
 use busbar_caps::{Hold, LedgerToken, Usage, UsageToken};
 use busbar_caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
 use busbar_unit_cost::{
-    derive_spend_micros, price, LaneClass, RateCard, RateCardVersion, STANDARD_TIER_BP,
+    derive_spend_micros, price, CurrencyCode, History, LaneClass, Posting, RateCard,
+    STANDARD_TIER_BP,
 };
 use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_unit_ledger::settle::Ledger;
@@ -25,7 +26,6 @@ const FEE_CENTS: i64 = 3;
 /// rate is a different number rather than the same one.
 fn card() -> RateCard {
     RateCard::from_micro_rates(
-        RateCardVersion::new("identity-test-1"),
         [
             (LaneClass::new("lane-a", "input"), 40.0),
             (LaneClass::new("lane-a", "output"), 90.0),
@@ -136,8 +136,11 @@ fn drive(
     LegacySnapshot,
     Vec<busbar_unit_ledger::legacy::LegacyPosting>,
 ) {
-    let card = card();
-    let pinned = card.pin();
+    // The card, as the migration seals it: a SINGLE-ENTRY history effective from instant zero,
+    // so `card_at` resolves to that entry for every posting and the lookup is arithmetically
+    // the pinned card it replaces.
+    let history = History::opening(card(), 0);
+    let view = history.current();
     let rows = RecordingRows::new();
     let mut ledger = Ledger::dual_writing(Box::new(rows.clone()) as Box<dyn LegacyRows>);
     let token = ledger_token();
@@ -152,13 +155,15 @@ fn drive(
         let usage = Usage::report(&usage_token(), lines(s.input, s.output))
             .expect("the usage report is within the line limit");
         let fee_count = u64::from(s.billable);
-        let posting = price(&pinned, s.lane, &usage, fee_count, STANDARD_TIER_BP);
+        let quantities = Posting::from_usage(s.lane, &usage, fee_count, STANDARD_TIER_BP, 0, 0);
+        let posting = price(&view, &quantities, CurrencyCode::USD)
+            .expect("the opening entry covers instant zero and names USD");
 
         // The books move whatever the snapshot does: the red proof below drops a posting from
         // what the CHECK sees, not from what the ledger did, because the defect it stands in
         // for is a reconciliation that missed a posting and not a settlement that never
         // happened.
-        let reserved = posting.priced_amount().min(u128::from(u64::MAX)) as u64;
+        let reserved = posting.priced_nanos.min(u128::from(u64::MAX)) as u64;
         ledger.record_draw(&totals_key(s.bucket), DAY, i128::from(reserved));
         ledger.record_hold_opened(&totals_key(s.bucket), DAY, reserved);
         ledger.record_slice_spent(&totals_key(s.bucket), DAY, i128::from(reserved));
@@ -170,7 +175,7 @@ fn drive(
             &totals_key(s.bucket),
             DAY,
             Hold::open(&admit_token(), PrincipalId::new(s.bucket), reserved),
-            posting.priced_amount(),
+            posting.priced_nanos,
             &usage,
             &token,
         );
@@ -189,7 +194,9 @@ fn drive(
         .map(|(row, (input, output, billable))| {
             let l = lines(input, output);
             let spend_micros = derive_spend_micros(
-                &card,
+                view.card_at(0)
+                    .expect("the opening entry covers instant zero")
+                    .1,
                 [(row.lane.as_str(), l.as_slice())].into_iter(),
                 billable,
                 true,
@@ -225,20 +232,26 @@ fn every_dual_written_row_carries_the_figures_its_posting_moved() {
         "the dual write must put every settlement onto the previous release's rows"
     );
 
-    let card = card();
-    let pinned = card.pin();
+    // The card, as the migration seals it: a SINGLE-ENTRY history effective from instant zero,
+    // so `card_at` resolves to that entry for every posting and the lookup is arithmetically
+    // the pinned card it replaces.
+    let history = History::opening(card(), 0);
+    let view = history.current();
     let mut reserved_per_row: BTreeMap<RowKey, u128> = BTreeMap::new();
     for (i, (posting, settlement)) in written.iter().zip(s.iter()).enumerate() {
         let usage = Usage::report(&usage_token(), lines(settlement.input, settlement.output))
             .expect("the usage report is within the line limit");
-        let priced = price(
-            &pinned,
+        let quantities = Posting::from_usage(
             settlement.lane,
             &usage,
             u64::from(settlement.billable),
             STANDARD_TIER_BP,
+            0,
+            0,
         );
-        let reserved = priced.priced_amount().min(u128::from(u64::MAX)) as u64;
+        let priced = price(&view, &quantities, CurrencyCode::USD)
+            .expect("the opening entry covers instant zero and names USD");
+        let reserved = priced.priced_nanos.min(u128::from(u64::MAX)) as u64;
 
         assert_eq!(
             posting.principal, settlement.bucket,
