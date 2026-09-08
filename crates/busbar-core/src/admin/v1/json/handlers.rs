@@ -5,27 +5,13 @@ use busbar_substrate::diagnostics::{
 };
 use busbar_substrate::{diag_error, diag_warn};
 
-/// `GET /api/v1/admin/pools` — pool topology read. `?detail=true` inlines each member's LIVE status
-/// (same row shape as `GET /pools/{name}`) so a dashboard reads the whole topology-with-health in
-/// ONE call instead of an M+1 fan-out.
-pub(crate) async fn list_pools(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    match q.get("detail").map(String::as_str) {
-        Some("true") => {
-            return respond(StatusCode::OK, service(&handle).list_pools_detailed().await)
-        }
-        // Strict: an unrecognized value is a loud 400, never a silently-ignored flag.
-        Some(other) if other != "false" => {
-            return err_json(&AdminError::Validation(
-                "invalid `detail`: expected true|false".into(),
-            ))
-        }
-        _ => {}
-    }
-    respond(StatusCode::OK, service(&handle).list_pools().await)
-}
+// NO `list_pools` HANDLER HERE. `GET /api/v1/admin/pools` CROSSED to the composition root's loop in
+// 1.6.0's admin Cut 2 — BOTH of its halves, the summary and the `?detail=true` topology-with-health,
+// because they are one operation and a crossing that took only one of them would leave one query
+// string answered by each side. The loop reads the same tables through the substrate's neutral
+// projection and the same live cells through this node's own health seam, and renders the bytes; the
+// strictness of the flag — an unrecognized value is a loud refusal, never a silently-ignored flag —
+// crossed with it. What is left on the path is a refusal, so the `405` and its `Allow` stay.
 
 /// `GET /api/v1/admin/pools/{name}` — live per-member status of one pool (404 if unknown).
 pub(crate) async fn get_pool(
@@ -116,15 +102,12 @@ pub(crate) async fn hook_health(
     respond(StatusCode::OK, service(&handle).hook_health(&name).await)
 }
 
-/// `GET /api/v1/admin/plugins?type=auth|hooks` — the plugin catalog for one type. A missing/unknown
-/// `type` is an `invalid_request` (the two types are distinct engine contracts).
-pub(crate) async fn list_plugins(
-    State(handle): State<Arc<AppHandle>>,
-    Query(q): Query<std::collections::HashMap<String, String>>,
-) -> Response {
-    let ptype = q.get("type").map(String::as_str).unwrap_or("");
-    respond(StatusCode::OK, service(&handle).list_plugins(ptype).await)
-}
+// NO `list_plugins` HANDLER HERE. `GET /api/v1/admin/plugins` CROSSED to the composition root's loop
+// in 1.6.0's admin Cut 2. The catalog itself did NOT move: the compiled-in proof, the live auth
+// chain, the hook registry and the cached, single-flighted `plugins.dir` scan are all still read
+// here, and what crosses the seam is the node's own neutral ROWS. The loop writes their bytes, and
+// it writes the refusal an unknown kind has always answered with, off the same condition this crate
+// still raises. The `POST` on this path did not cross and is still mounted beside the refusal.
 
 /// The `POST /api/v1/admin/plugins` request body: install a SIGNED plugin tarball. The tarball
 /// bytes ride as base64 (`tarball_b64`): a plugin artifact is opaque binary, so base64 keeps it a

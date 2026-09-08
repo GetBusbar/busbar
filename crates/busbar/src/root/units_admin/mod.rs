@@ -638,7 +638,7 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         // produces the answer for is the composition's question, not the unit's — so the branch is
         // here, before the seam that asks the surface underneath. There is nothing to ask: the route
         // was deleted in the commit that crossed the verb.
-        if let Some(answer) = render_crossed_view(verb, self.facts.as_ref()) {
+        if let Some(answer) = render_crossed_view(verb, self.facts.as_ref(), &self.request) {
             return Ok(answer.pack());
         }
         Ok(self.run())

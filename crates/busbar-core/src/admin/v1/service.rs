@@ -21,6 +21,11 @@ use busbar_substrate::diagnostics::{
     USAGE_BLOCKING_TASK_JOIN_FAILED,
 };
 use busbar_substrate::{diag_debug, diag_error, diag_warn};
+// THE NEUTRAL FACT ROWS this crate folds its live readings into, and the refusal that comes back
+// when there are no rows to fold. Named from the substrate rather than declared here because the
+// composition root's loop names the same two shapes — it renders the bytes the crossed reads answer
+// with — and a shape two crates name lives in a third one they both may depend on.
+use busbar_substrate::facts::{CatalogRefusal, PluginFacts};
 
 use super::contract::{
     AdminError, AuthView, ConfigValidateView, EffectiveConfigView, GroupView, HookHealthView,
@@ -163,7 +168,7 @@ struct CatalogCacheEntry {
     /// Fingerprint of the directory's contents (`plugins_dir_fingerprint`) folded together with
     /// the trust config in effect when `rows` was computed. Either changing invalidates the entry.
     key: u64,
-    rows: Vec<PluginView>,
+    rows: Vec<PluginFacts>,
     /// Number of times this directory's entry has been (re)computed from a full
     /// `inventory_tarballs` scan — a cache HIT never touches this. Cheap bookkeeping, exercised by
     /// `catalog_repeat_gets_reuse_the_cached_scan` below; harmless outside tests too.
@@ -198,38 +203,161 @@ fn catalog_cache() -> &'static Mutex<HashMap<PathBuf, CatalogCacheEntry>> {
     CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The bound on CONCURRENT catalog re-scans (the single-flight half):
-/// `spawn_blocking` alone is not a fix for a hot cache-miss path — this codebase's own established
-/// doctrine, per `auth::AUTH_OFFLOAD_PERMITS`'s doc comment and
+/// The bound on CONCURRENT catalog re-scans OF ONE PLUGINS DIRECTORY (the single-flight half).
+///
+/// Offloading a hot cache-miss path onto a blocking thread is not on its own a fix for it — this
+/// codebase's own established doctrine, per `auth::AUTH_OFFLOAD_PERMITS`'s doc comment and
 /// `governance::revocation::RevocationSync`'s `inflight` bound. Unlike those two (which bound
 /// concurrent *offloads* of an operation every caller pays for independently), this gate makes N
 /// concurrent misses single-flight into exactly ONE real `inventory_tarballs` scan: the caller that
 /// wins the gate scans and populates `CATALOG_CACHE`; every caller that queues behind it re-runs
 /// `store_plugin_catalog`'s cheap fingerprint+cache check under the gate and finds the entry the
 /// winner just wrote, rather than each independently unpacking every tarball. Same single-permit
-/// shape as the governance budget flusher's `flush_gate`, for the same reason (serialize an expensive operation
-/// callers would otherwise duplicate) — and, like that gate, this also serializes cache HITS behind
-/// whichever call currently holds it, trading a little request-path throughput for the simplicity of
-/// one lock with no separate fast path. That trade is deliberate: the work under the gate is either
-/// a cheap fingerprint compare (hit) or the scan this gate exists to de-duplicate (miss), never
-/// anything slower.
-static CATALOG_SCAN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
-    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+/// shape as the governance budget flusher's `flush_gate`, for the same reason (serialize an expensive
+/// operation callers would otherwise duplicate) — and, like that gate, this also serializes cache
+/// HITS behind whichever call currently holds it, trading a little request-path throughput for the
+/// simplicity of one lock with no separate fast path. That trade is deliberate: the work under the
+/// gate is either a cheap fingerprint compare (hit) or the scan this gate exists to de-duplicate
+/// (miss), never anything slower.
+///
+/// ## Per DIRECTORY, like the cache it protects
+///
+/// It was one process-wide gate, and that was a mistake the wedge argument below makes plain: what
+/// two callers duplicate is a scan of the SAME directory, and what one wedged mount must not be
+/// allowed to do is refuse reads of a directory that is perfectly healthy. A single gate made a hung
+/// `plugins.dir` on one path answer `unavailable` for every other path in the process — the exact
+/// cascade the timeout exists to stop, reintroduced one level up. `CATALOG_CACHE` is already keyed
+/// this way, for the same reason, and now the two agree.
+///
+/// ## `std`, not `tokio`
+///
+/// It was a `tokio::sync::Mutex` while the only caller was an `async fn`. Every caller is
+/// synchronous now — the catalog listing crossed to the composition root's loop and is answered on a
+/// blocking thread — so a gate that can only be waited on from inside a runtime is a gate that has
+/// to be bridged back into one. A `Condvar` is the primitive this actually wants: a bounded wait,
+/// available to any thread, with no runtime to be present or absent and nothing to panic about.
+struct ScanGate {
+    /// Whether some caller currently holds this directory's gate.
+    held: std::sync::Mutex<bool>,
+    /// Signalled when a holder releases it.
+    free: std::sync::Condvar,
+}
 
-/// How long a caller will wait to ACQUIRE [`CATALOG_SCAN_GATE`] before giving up. Mirrors
+/// The gate for one directory, held for as long as the guard lives.
+struct ScanGateGuard<'a> {
+    gate: &'a ScanGate,
+}
+
+impl Drop for ScanGateGuard<'_> {
+    fn drop(&mut self) {
+        // RELEASED ON EVERY WAY OUT, including an unwind: a scan that panicked while holding the
+        // gate must not leave every later reader of that directory answering `unavailable` for the
+        // life of the process. The `Mutex` is poisoned by that unwind, and this deliberately clears
+        // the flag through the poison rather than propagating it — a poisoned flag is still just a
+        // boolean, and refusing to reset it would turn one panicking scan into the permanent wedge
+        // the whole bound exists to prevent.
+        let mut held = self
+            .gate
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *held = false;
+        self.gate.free.notify_one();
+    }
+}
+
+impl ScanGate {
+    /// Take this directory's gate, or `None` if it could not be taken within `wait`.
+    ///
+    /// A bounded wait and not a `try`: the point of the gate is that a caller who arrives during
+    /// somebody else's scan WAITS for it and then finds the cache populated, which is the whole of
+    /// the single-flight. The bound is what stops that wait from being unbounded — see
+    /// [`CATALOG_SCAN_GATE_WAIT`].
+    ///
+    /// The loop around the timed wait is not decoration: a condition variable may wake spuriously,
+    /// and a wake is only this caller's turn if the flag it wakes to says so.
+    fn acquire(&self, wait: std::time::Duration) -> Option<ScanGateGuard<'_>> {
+        let deadline = std::time::Instant::now() + wait;
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *held {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            let (next, timed_out) = self
+                .free
+                .wait_timeout(held, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            held = next;
+            if timed_out.timed_out() && *held {
+                return None;
+            }
+        }
+        *held = true;
+        Some(ScanGateGuard { gate: self })
+    }
+}
+
+/// Every plugins directory's scan gate, minted on first use.
+///
+/// The same shape and the same lifetime as `CATALOG_CACHE`'s map, and unbounded for the same reason
+/// it is: a running node serves one plugins directory, and the entries beyond it belong to tests.
+/// A gate is two words, so unlike a cached scan there is nothing here worth ageing out.
+static CATALOG_SCAN_GATES: OnceLock<Mutex<HashMap<PathBuf, &'static ScanGate>>> = OnceLock::new();
+
+/// This directory's gate, minted on first use and never removed.
+///
+/// The `&'static` is a deliberate leak of two words per distinct directory: a guard borrows the gate
+/// for the length of a scan, and a gate held in the map behind a lock could not be borrowed across
+/// the scan without holding that lock for the whole of it — which would make the map itself the
+/// process-wide serialization this change exists to remove.
+fn catalog_scan_gate(dir: &Path) -> &'static ScanGate {
+    let mut gates = CATALOG_SCAN_GATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    gates.entry(dir.to_path_buf()).or_insert_with(|| {
+        Box::leak(Box::new(ScanGate {
+            held: std::sync::Mutex::new(false),
+            free: std::sync::Condvar::new(),
+        }))
+    })
+}
+
+/// How long a caller will wait to ACQUIRE a directory's [`ScanGate`] before giving up. Mirrors
 /// `auth::AUTH_OFFLOAD_PERMITS`'s own `AUTH_OFFLOAD_WAIT` idiom exactly, same
-/// value and same reasoning: `GET /plugins?type=store` is deliberately unmetered by the admin rate
-/// limiter (see [`Self::store_plugin_catalog_async`]'s doc comment), so an ungated wait here is a
+/// value and same reasoning: the catalog read is deliberately unmetered by the admin
+/// rate limiter, so an ungated wait here is a
 /// PERMANENT-until-restart wedge, not a self-healing one — a stale/hung `plugins_dir` mount (e.g. a
 /// wedged NFS read) never returns from `inventory_tarballs`, so the caller that won the gate never
 /// releases it, and every subsequent caller would otherwise queue behind it forever. A call that
-/// cannot even START the scan within this bound is answered with a clear, retryable error
-/// ([`AdminError::Unavailable`]) rather than left to hang — the same fail-fast posture
+/// cannot even START the scan within this bound is answered with a clear, retryable refusal
+/// rather than left to hang — the same fail-fast posture
 /// `AUTH_OFFLOAD_WAIT` documents for its own gate. This does NOT fix the underlying hang (the
 /// thread that actually won the gate is still parked on the wedged read, same as a wedged auth
 /// plugin still burns one blocking-pool thread forever) — it only stops the wedge from cascading
 /// into every OTHER caller of this endpoint.
 const CATALOG_SCAN_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The wait one directory's callers take. [`CATALOG_SCAN_GATE_WAIT`] always, outside tests.
+///
+/// A function rather than the constant read directly, so a test can shorten the bound FOR ITS OWN
+/// DIRECTORY. The claim under test is "a caller that cannot acquire the gate is refused rather than
+/// left to hang", and five real seconds of hanging is the one part of that claim nothing is learned
+/// from waiting out — while a test that really waited them would hold its gate throughout, which is
+/// exactly the starvation the per-directory gate above exists to prevent.
+#[cfg(not(test))]
+fn catalog_scan_gate_wait(_dir: &Path) -> std::time::Duration {
+    CATALOG_SCAN_GATE_WAIT
+}
+
+#[cfg(test)]
+fn catalog_scan_gate_wait(dir: &Path) -> std::time::Duration {
+    catalog_scan_test_hooks::gate_wait_for(dir).unwrap_or(CATALOG_SCAN_GATE_WAIT)
+}
 
 /// Cheap, order-independent fingerprint of a directory's immediate entries (filename + size +
 /// mtime of each, hashed together). NOT a security boundary — only a cache-freshness heuristic for
@@ -319,6 +447,34 @@ mod catalog_scan_test_hooks {
         Panic,
     }
     static SLOT: Mutex<Option<(PathBuf, Armed)>> = Mutex::new(None);
+
+    /// The shortened gate wait a test has armed for one directory, if any.
+    ///
+    /// A SECOND slot rather than a third `Armed` variant: the two are read at different moments —
+    /// this one before the gate is taken, `SLOT` inside the scan — and a test that wanted both would
+    /// otherwise have to choose. Scoped to a directory for the same reason `SLOT` is.
+    static GATE_WAIT: Mutex<Option<(PathBuf, Duration)>> = Mutex::new(None);
+
+    pub(super) fn gate_wait_for(dir: &std::path::Path) -> Option<Duration> {
+        let armed = GATE_WAIT.lock().unwrap();
+        let (armed_dir, wait) = armed.as_ref()?;
+        (armed_dir == dir).then_some(*wait)
+    }
+
+    /// RAII guard: clears the armed gate wait on drop, for the reason [`HookGuard`] clears `SLOT`.
+    #[must_use]
+    pub(super) struct GateWaitGuard;
+    impl Drop for GateWaitGuard {
+        fn drop(&mut self) {
+            *GATE_WAIT.lock().unwrap() = None;
+        }
+    }
+
+    /// Arm a shortened gate wait for `dir`, for the life of the returned guard.
+    pub(super) fn set_gate_wait(dir: std::path::PathBuf, wait: Duration) -> GateWaitGuard {
+        *GATE_WAIT.lock().unwrap() = Some((dir, wait));
+        GateWaitGuard
+    }
 
     pub(super) fn maybe_delay_or_panic(dir: &std::path::Path) {
         let armed = SLOT.lock().unwrap();
@@ -515,11 +671,97 @@ fn pool_known(app: &App, p: &str) -> bool {
         .any(|(n, _)| *n == p)
 }
 
-/// The lane at `idx`'s model name projected through the neutral view; empty if the handle is stale.
-fn lane_model(view: &dyn busbar_substrate::plane_host::EngineTablesView, idx: usize) -> String {
-    view.lane_view(idx)
-        .map(|l| l.model.to_string())
-        .unwrap_or_default()
+// NO `lane_model` HELPER HERE ANY MORE. Both readings that walked a lane index to its model name —
+// the pool topology and the pool's live health — now take that step inside the NEUTRAL projections
+// they share with the composition root's loop (`EngineTablesView::pools_by_member`,
+// `App::pool_health_of`), so the fold that used to be written twice is written once, on the far side
+// of the seam both readers reach through.
+
+/// One member's live status, as the per-pool read renders the node's own health row.
+///
+/// The projection and NOTHING else: field for field off [`busbar_substrate::facts::LaneHealth`],
+/// which is the carrier the node answers with and the composition root's loop renders its bytes
+/// from. Written here rather than as a `From` on the carrier because the carrier is neutral by
+/// construction — it may not name a view of a surface — and this is the one surface that has a view
+/// of it.
+/// A plugin row with NO artifact behind it — the compiled-in, dynamically-chained and
+/// runtime-registered plugins, which carry a name, a kind, a loader and at most an activation flag
+/// and a target.
+///
+/// Named rather than spelled out at each of its six call sites: eleven of the row's fifteen fields
+/// are `None` for every one of them, and eleven `None`s written six times is six chances to write a
+/// `Some` into one of them by accident.
+fn plugin_basic(
+    name: String,
+    kind: &'static str,
+    loader: &'static str,
+    active: Option<bool>,
+    target: Option<String>,
+) -> PluginFacts {
+    PluginFacts {
+        name,
+        kind,
+        loader,
+        active,
+        target,
+        file: None,
+        has_schema: false,
+        version: None,
+        publisher: None,
+        interface_version: None,
+        trust: None,
+        valid: None,
+        error: None,
+        schema_url: None,
+        schema_error: None,
+    }
+}
+
+/// One catalog row, as the surface that still embeds a catalog renders it.
+///
+/// The projection and nothing else, field for field off the node's own row — the plugin half of what
+/// [`pool_member_status`] is for the health half, and here for the same reason: the carrier is
+/// neutral by construction and may not name a view of a surface, so the one surface that has a view
+/// of it writes the mapping.
+///
+/// ONE READER LEFT. The catalog LISTING crossed to the composition root's loop, which writes its
+/// bytes from the row directly; what still needs a view is the plugin re-scan's result, whose
+/// operation did not cross.
+fn plugin_view(facts: PluginFacts) -> PluginView {
+    PluginView {
+        name: facts.name,
+        r#type: facts.kind,
+        loader: facts.loader,
+        active: facts.active,
+        target: facts.target,
+        file: facts.file,
+        has_schema: facts.has_schema,
+        version: facts.version,
+        publisher: facts.publisher,
+        interface_version: facts.interface_version,
+        trust: facts.trust,
+        valid: facts.valid,
+        error: facts.error,
+        schema_url: facts.schema_url,
+        schema_error: facts.schema_error,
+    }
+}
+
+fn pool_member_status(health: busbar_substrate::facts::LaneHealth) -> PoolMemberStatusView {
+    PoolMemberStatusView {
+        model: health.model,
+        weight: health.weight,
+        usable: health.usable,
+        cooldown_remaining_seconds: health.cooldown_remaining_seconds,
+        available_concurrency: health.available_concurrency,
+        inflight: health.inflight,
+        latency_ms: health.latency_ms,
+        ok: health.ok,
+        err: health.err,
+        dead: health.dead,
+        trip_count: health.trip_count,
+        last_trip_at: health.last_trip_at,
+    }
 }
 
 pub fn build_with_hook(current: &App, name: &str, cfg: HookCfg) -> Result<App, AdminError> {
@@ -913,102 +1155,53 @@ impl AdminService {
     // NOTHING IN THIS CRATE RENDERS THOSE FIELDS ANY MORE, so `InfoView` and its two nested views
     // moved to `contract::schema`, where the shapes this crate documents without producing live.
 
-    /// `GET /api/v1/admin/pools` — the pool topology (name + member models/weights). Read scope. Sorted
-    /// by name for a stable, diff-friendly listing. Live per-member
-    /// status is an additive follow-up.
-    pub(crate) async fn list_pools(&self) -> Result<Page<PoolView>, AdminError> {
-        let view = self.app.engine_tables_view();
-        let mut pools: Vec<PoolView> = view
-            .pools()
-            .iter()
-            .map(|(name, _)| PoolView {
-                name: name.to_string(),
-                members: view
-                    .pool_members(name)
-                    .iter()
-                    .map(|&(idx, weight)| PoolMemberView {
-                        model: lane_model(view, idx),
-                        weight,
-                    })
+    /// The pool topology as the effective-config read embeds it: each pool with its member models
+    /// and their weights, in pool-name order.
+    ///
+    /// NO LONGER A ROUTE'S ANSWER. `GET /api/v1/admin/pools` CROSSED to the composition root's loop
+    /// in 1.6.0's admin Cut 2 — both halves of it, the summary and the `?detail=true` topology-with-
+    /// health — so what is left here is the rendering into the view type the effective-config read
+    /// still embeds.
+    ///
+    /// THE PROJECTION IS THE SUBSTRATE'S, not this method's, exactly as it is for the two topology
+    /// reads that crossed before it: the walk over the pools and their members lives once, where both
+    /// readings reach it, so the list this crate embeds and the bytes the loop writes can never
+    /// describe different nodes.
+    pub(crate) fn pool_views(&self) -> Vec<PoolView> {
+        self.app
+            .engine_tables_view()
+            .pools_by_member()
+            .into_iter()
+            .map(|(name, members)| PoolView {
+                name,
+                members: members
+                    .into_iter()
+                    .map(|(model, weight)| PoolMemberView { model, weight })
                     .collect(),
             })
-            .collect();
-        pools.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Page::single(pools))
+            .collect()
     }
 
     /// `GET /api/v1/admin/pools/{name}` — the LIVE per-member status of one pool (breaker/concurrency/
     /// latency/tallies), from the same store signals the routing seam ranks on. Read scope.
     /// `not_found` if the pool is unknown.
+    ///
+    /// THE READINGS ARE THE NODE'S, not this method's. `App::pool_health_of` is the one walk over the
+    /// store's cells, and it is one walk because the OTHER reader of it is the composition root's
+    /// loop: `GET /pools?detail=true` crossed in 1.6.0's admin Cut 2 and renders these very rows as
+    /// bytes, while this per-pool read did not cross and renders them into a view here. A second walk
+    /// would be a second chance for one node to report two healths for one member.
     pub(crate) async fn get_pool(&self, name: &str) -> Result<PoolDetailView, AdminError> {
-        let view = self.app.engine_tables_view();
         // A pool is known iff it appears in the neutral pool label space (distinct from `pool_members`
-        // returning empty, which an unknown pool also does).
-        if !view.pools().iter().any(|(n, _)| *n == name) {
-            return Err(AdminError::not_found(format!("pool `{name}`")));
-        }
-        let members = view.pool_members(name);
-        Ok(self.pool_detail(name, &members))
-    }
-
-    /// Project one pool's LIVE member status — the shared core of `GET /pools/{name}` and
-    /// `GET /pools?detail=true` (one projection, two readers — the shapes can never diverge). Takes the
-    /// NEUTRAL `(lane idx, weight)` projection ([`EngineTablesView::pool_members`]), naming no plane type.
-    fn pool_detail(&self, name: &str, members: &[(usize, u32)]) -> PoolDetailView {
-        let view = self.app.engine_tables_view();
-        let now = busbar_substrate::store::now();
-        let members = members
-            .iter()
-            .map(|&(idx, weight)| {
-                // `snapshot` is the same release-exposed live summary `/stats` reads (ok/err/trips/
-                // dead/inflight — genuinely lane-GLOBAL counters); `available_permits` +
-                // `lane_latency_ms` round it out. `usable`/`cooldown_remaining_seconds` are NOT lane
-                // counters, though — routing ranks a member per-POOL (`select_weighted_in`), so this
-                // endpoint reports the per-pool breaker cell via `ready_in`/`cooldown_remaining_in`,
-                // NOT `snapshot`'s any-cell/max-cell lane aggregates (which would mislabel a member
-                // as usable in a pool where its OWN cell is tripped, or vice versa).
-                let snap = self.app.store.snapshot(idx, now);
-                PoolMemberStatusView {
-                    model: lane_model(view, idx),
-                    weight,
-                    // `ready_in`, NOT `usable_in`: `usable_in` delegates to the MUTATING `usable_for`,
-                    // which can transition an expired-Open cell to HalfOpen and CAS-steal the
-                    // single-flight recovery probe. `ready_in` is `select_weighted_in`'s own
-                    // side-effect-free predicate — exactly what this read-only endpoint must report.
-                    usable: self.app.store.ready_in(name, idx, now),
-                    cooldown_remaining_seconds: self
-                        .app
-                        .store
-                        .cooldown_remaining_in(name, idx, now),
-                    available_concurrency: self.app.store.available_permits(idx),
-                    inflight: snap.inflight,
-                    latency_ms: self.app.store.lane_latency_ms(idx),
-                    ok: snap.ok,
-                    err: snap.err,
-                    dead: snap.dead,
-                    trip_count: snap.trips,
-                    last_trip_at: (snap.last_trip_at > 0).then_some(snap.last_trip_at),
-                }
-            })
-            .collect();
-        PoolDetailView {
+        // returning empty, which an unknown pool also does) — the `None` this seam answers with.
+        let members = self
+            .app
+            .pool_health_of(name)
+            .ok_or_else(|| AdminError::not_found(format!("pool `{name}`")))?;
+        Ok(PoolDetailView {
             name: name.to_string(),
-            members,
-        }
-    }
-
-    /// `GET /api/v1/admin/pools?detail=true` — the WHOLE topology with live member status in ONE
-    /// call (the summary + per-pool detail split forced an M+1 fan-out per dashboard refresh).
-    /// Same row shape as `GET /pools/{name}` via the shared projection. Sorted by name.
-    pub(crate) async fn list_pools_detailed(&self) -> Result<Page<PoolDetailView>, AdminError> {
-        let view = self.app.engine_tables_view();
-        let mut pools: Vec<PoolDetailView> = view
-            .pools()
-            .iter()
-            .map(|(name, _)| self.pool_detail(name, &view.pool_members(name)))
-            .collect();
-        pools.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(Page::single(pools))
+            members: members.into_iter().map(pool_member_status).collect(),
+        })
     }
 
     /// `GET /api/v1/admin/models` — every model lane + its upstream provider. Read scope. Sorted by
@@ -1245,17 +1438,30 @@ impl AdminService {
         })
     }
 
-    /// `GET /api/v1/admin/plugins?type=auth|hooks|store|secret` — the plugin catalog for one TYPE.
-    /// Read scope. Lists COMPILED-IN plugins (feature-gated, from the binary — the same source as
-    /// `info`'s build proof), EXTERNAL plugins (registered over socket/webhook), and DYNAMIC-LIBRARY
-    /// plugins from `plugins.dir` (`store`/`secret`, and `auth` rows installed on disk, so every
-    /// kind has a real, manifest-backed row to carry `trust`/`schema_url`/`schema_error` on). An
-    /// unknown/absent `type` is an `invalid_request` (there is no unified cross-kind list; a caller
-    /// must pick one — busbar-ui makes up to FOUR separate `GET /plugins?type=X`
-    /// calls to build a full picture).
-    pub(crate) async fn list_plugins(&self, ptype: &str) -> Result<Page<PluginView>, AdminError> {
-        let mut plugins: Vec<PluginView> = Vec::new();
-        match ptype {
+    /// THE PLUGIN CATALOG for one KIND, as the node's own neutral rows.
+    ///
+    /// Lists COMPILED-IN plugins (feature-gated, from the binary — the same source as the `info`
+    /// read's build proof), EXTERNAL plugins (registered over socket/webhook), and the DYNAMIC-LIBRARY
+    /// artifacts in `plugins.dir` (`store`/`secret`, and `auth` rows installed on disk, so every kind
+    /// has a real, manifest-backed row to carry `trust`/`schema_url`/`schema_error` on). An
+    /// unknown/absent kind is a REFUSAL (there is no unified cross-kind list; a caller must pick one
+    /// — busbar-ui makes up to FOUR separate catalog calls to build a full picture).
+    ///
+    /// NEUTRAL ROWS, NOT A VIEW. `GET /api/v1/admin/plugins` CROSSED to the composition root's loop
+    /// in 1.6.0's admin Cut 2, so nothing here renders these rows onto a wire any more: the loop
+    /// writes the bytes, and the ONE surface in this crate that still embeds a catalog — the plugin
+    /// re-scan result, whose operation did not cross — projects the same rows into its own view.
+    /// One fold, two renderings, exactly as the topology reads that crossed before it.
+    ///
+    /// SYNCHRONOUS, and that is a property of the callers rather than a narrowing of them: the two
+    /// that remain both run OFF the reactor — the crossed read is answered on the blocking pool the
+    /// administrative mount hands a unit to, and the re-scan runs inside its transaction's blocking
+    /// closure — which is the exact context [`Self::store_plugin_catalog`]'s own contract names as
+    /// the safe one. The async wrapper that existed for the request path went with the route; what
+    /// it did for the request path, [`Self::store_plugin_catalog_gated`] still does here.
+    pub(crate) fn plugin_catalog(&self, kind: &str) -> Result<Vec<PluginFacts>, CatalogRefusal> {
+        let mut plugins: Vec<PluginFacts> = Vec::new();
+        match kind {
             "auth" => {
                 // Compiled-in auth modules (feature-gated). Active = wired into its chain: `keys`
                 // is engine-handled (a flag, not a boxed module), `admin-tokens` lives on the
@@ -1269,7 +1475,7 @@ impl AdminService {
                     } else {
                         chain.contains(&name)
                     };
-                    plugins.push(PluginView::basic(
+                    plugins.push(plugin_basic(
                         name.to_string(),
                         "auth",
                         "compiled-in",
@@ -1285,7 +1491,7 @@ impl AdminService {
                 let compiled = auth_modules_compiled_in();
                 for name in &chain {
                     if !compiled.contains(name) {
-                        plugins.push(PluginView::basic(
+                        plugins.push(plugin_basic(
                             name.to_string(),
                             "auth",
                             "plugin",
@@ -1306,18 +1512,17 @@ impl AdminService {
                 // "installed on disk", not necessarily "currently wired into the live chain" — the
                 // `active: true` "plugin" rows above (from `chain_names()`) are the currently-active
                 // signal; correlating the two by manifest name is a real follow-on, not solved here.
-                let mut dynamic_auth: Vec<PluginView> = self
-                    .store_plugin_catalog_async()
-                    .await?
+                let mut dynamic_auth: Vec<PluginFacts> = self
+                    .store_plugin_catalog_gated()?
                     .into_iter()
-                    .filter(|p| p.r#type == "auth")
+                    .filter(|p| p.kind == "auth")
                     .collect();
                 plugins.append(&mut dynamic_auth);
             }
             "hooks" => {
                 // The weighted SWRR floor is compiled in unconditionally (the non-removable default
                 // hook); activation is the per-pool default, not summarized here.
-                plugins.push(PluginView::basic(
+                plugins.push(plugin_basic(
                     "weighted".to_string(),
                     "hooks",
                     "compiled-in",
@@ -1325,7 +1530,7 @@ impl AdminService {
                     None,
                 ));
                 for name in hook_plugins_compiled_in() {
-                    plugins.push(PluginView::basic(
+                    plugins.push(plugin_basic(
                         name.to_string(),
                         "hooks",
                         "compiled-in",
@@ -1335,13 +1540,13 @@ impl AdminService {
                 }
                 // External hooks = the configured registry entries (socket/webhook). Configured ⇒
                 // active; the transport target is projected (operator config, not a secret).
-                let mut externals: Vec<PluginView> = self
+                let mut externals: Vec<PluginFacts> = self
                     .app
                     .hook_registry
                     .iter()
                     .map(|(name, cfg)| {
                         let target = Some(cfg.plugin.clone());
-                        PluginView::basic(name.clone(), "hooks", "external", Some(true), target)
+                        plugin_basic(name.clone(), "hooks", "external", Some(true), target)
                     })
                     .collect();
                 externals.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1360,10 +1565,9 @@ impl AdminService {
             // nothing filtered the scan's mixed-kind output by the requested type).
             "store" | "db" => {
                 plugins.extend(
-                    self.store_plugin_catalog_async()
-                        .await?
+                    self.store_plugin_catalog_gated()?
                         .into_iter()
-                        .filter(|p| p.r#type == "store"),
+                        .filter(|p| p.kind == "store"),
                 );
             }
             // DYNAMIC-LIBRARY `kind: secret` plugins: previously the ONLY accepted `type` values
@@ -1373,19 +1577,21 @@ impl AdminService {
             // that needs a catalog row; `env`/`file` are handled inline by the engine, not as plugins.
             "secret" => {
                 plugins.extend(
-                    self.store_plugin_catalog_async()
-                        .await?
+                    self.store_plugin_catalog_gated()?
                         .into_iter()
-                        .filter(|p| p.r#type == "secret"),
+                        .filter(|p| p.kind == "secret"),
                 );
             }
             other => {
-                return Err(AdminError::Validation(format!(
+                // THE NODE'S OWN SENTENCE, naming the kinds this node actually keeps a catalog for.
+                // Which stable code and which status it renders under is the answerer's question,
+                // and the carrier deliberately does not decide it — see `CatalogRefusal`.
+                return Err(CatalogRefusal::UnknownKind(format!(
                     "unknown plugin type `{other}`: expected `auth`, `hooks`, `secret`, or `store`"
                 )));
             }
         }
-        Ok(Page::single(plugins))
+        Ok(plugins)
     }
 
     /// The DYNAMIC plugin catalog (`GET /api/v1/admin/plugins?type=store`): the compiled-in
@@ -1427,11 +1633,11 @@ impl AdminService {
     /// either way: the cache is a pure performance layer over a deterministic scan, so the worst
     /// case is one extra rescan on the next call, never a wrong answer served indefinitely (the
     /// fingerprint fix below is what actually prevents a wrong answer being served indefinitely).
-    fn store_plugin_catalog(&self) -> Vec<PluginView> {
+    fn store_plugin_catalog(&self) -> Vec<PluginFacts> {
         // The compiled-in RAM default is always present. Which store backend is ACTIVE is a
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
-        let mut out = vec![PluginView::basic(
+        let mut out = vec![plugin_basic(
             "memory".to_string(),
             "store",
             "compiled-in",
@@ -1554,7 +1760,7 @@ impl AdminService {
     fn scan_store_plugin_rows(
         dir: &Path,
         policy: &busbar_plugin_sign::TrustPolicy,
-    ) -> Vec<PluginView> {
+    ) -> Vec<PluginFacts> {
         // TEST-ONLY injection point: expands to nothing outside
         // `#[cfg(test)]`, so the release path carries zero indirection. See
         // `catalog_scan_test_hooks` above for what it does and why.
@@ -1598,9 +1804,9 @@ impl AdminService {
                 Some(m) => manifest_schema_url_and_error(&name, m.settings_schema.as_deref()),
                 None => (None, None),
             };
-            rows.push(PluginView {
+            rows.push(PluginFacts {
                 name,
-                r#type,
+                kind: r#type,
                 loader: "dynamic-library",
                 active: None,
                 target: Some(row.file.clone()),
@@ -1619,73 +1825,50 @@ impl AdminService {
         rows
     }
 
-    /// The `GET /plugins?type=store` REQUEST-PATH entry point — the async, reactor-safe wrapper
-    /// around [`Self::store_plugin_catalog`]. The synchronous version
-    /// performs blocking filesystem I/O on EVERY call, not just a cache miss: the fingerprint
-    /// read(s) alone are a `read_dir` + a `metadata()`/`modified()` per entry, and a miss adds the
-    /// full `inventory_tarballs` unpack on top — none of it safe to run inline in an `async fn` on a
-    /// Tokio worker thread, on an endpoint this codebase deliberately leaves unmetered by the admin
-    /// rate limiter (see the doc comment above). Mirrors [`Self::get_usage`]'s `spawn_blocking`
-    /// wrapper shape.
+    /// THE SINGLE-FLIGHT ENTRY to [`Self::store_plugin_catalog`] — the same bound the request path
+    /// has always had, kept after the request path stopped being an `async fn` in this crate.
+    ///
+    /// The scan underneath performs blocking filesystem I/O on EVERY call, not just a cache miss:
+    /// the fingerprint read alone is a `read_dir` plus a `metadata()`/`modified()` per entry, and a
+    /// miss adds the full `inventory_tarballs` unpack on top. Both remaining callers already run OFF
+    /// the reactor — see [`Self::plugin_catalog`] — so the `spawn_blocking` hop that used to be here
+    /// is gone; what is NOT gone is the reason the gate exists.
     ///
     /// Serialized through [`CATALOG_SCAN_GATE`] (see its doc comment for why, and for the
-    /// acknowledged hit-path throughput trade-off): N callers that all miss at the same instant
-    /// (e.g. right after boot or a config reload, before any entry exists) single-flight into
-    /// exactly one real scan, and every other caller wakes up to find the cache already populated
-    /// rather than each independently unpacking every tarball.
+    /// acknowledged hit-path throughput trade-off): N callers that all miss at the same instant —
+    /// right after boot or a config reload, before any entry exists — single-flight into exactly one
+    /// real scan, and every other caller wakes to find the cache already populated rather than each
+    /// independently unpacking every tarball. The catalog read is deliberately unmetered by the admin
+    /// rate limiter, so nothing else bounds how often it can be asked.
     ///
-    /// `reload_store_plugins` is UNCHANGED and does not go through here — it already runs inside a
-    /// `txn.read_store` closure on `spawn_blocking` (see `admin/v1/json/txn.rs`'s `apply()`), so it
-    /// calls the synchronous [`Self::store_plugin_catalog`] directly.
+    /// GATE TIMEOUT, unchanged: acquiring the gate is bounded by [`CATALOG_SCAN_GATE_WAIT`] — see
+    /// that constant for why an unbounded wait is a permanent-until-restart wedge rather than a
+    /// self-healing one. A caller that cannot even START the scan within the bound is refused with
+    /// the retryable condition rather than left to hang.
     ///
-    /// GATE TIMEOUT: acquiring [`CATALOG_SCAN_GATE`] is bounded by
-    /// [`CATALOG_SCAN_GATE_WAIT`] — see that constant's doc comment for why an unbounded wait here
-    /// would be a permanent wedge, not a self-healing one, on an endpoint this rate limiter never
-    /// meters. A caller that cannot even START the scan within the bound gets a clear
-    /// [`AdminError::Unavailable`] rather than a hang.
-    async fn store_plugin_catalog_async(&self) -> Result<Vec<PluginView>, AdminError> {
-        let _gate = match tokio::time::timeout(CATALOG_SCAN_GATE_WAIT, CATALOG_SCAN_GATE.lock())
-            .await
-        {
-            Ok(guard) => guard,
-            Err(_elapsed) => {
-                diag_warn!(
-                    PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
-                    operation = "list_plugins.store",
-                    wait = ?CATALOG_SCAN_GATE_WAIT,
-                    "catalog scan gate could not be acquired within the wait bound; a prior scan \
-                     is not returning (e.g. a stale/hung plugins_dir mount). Answering with a \
-                     retryable error rather than hanging this request too."
-                );
-                return Err(AdminError::Unavailable(
-                    "the plugin catalog scan is taking too long; try again shortly".to_string(),
-                ));
-            }
+    /// PER DIRECTORY, so a wedged mount on one path cannot refuse a read of another — see the gate's
+    /// own note. It is also what makes the bound below testable without one test's held gate
+    /// starving every other test in this file that wants a scan.
+    fn store_plugin_catalog_gated(&self) -> Result<Vec<PluginFacts>, CatalogRefusal> {
+        let dir = &self.app.plugins_dir;
+        let Some(_gate) = catalog_scan_gate(dir).acquire(catalog_scan_gate_wait(dir)) else {
+            diag_warn!(
+                PLUGIN_CATALOG_SCAN_GATE_TIMEOUT,
+                operation = "list_plugins.store",
+                wait = ?CATALOG_SCAN_GATE_WAIT,
+                "catalog scan gate could not be acquired within the wait bound; a prior scan \
+                 is not returning (e.g. a stale/hung plugins_dir mount). Answering with a \
+                 retryable error rather than hanging this request too."
+            );
+            return Err(CatalogRefusal::Unavailable(
+                "the plugin catalog scan is taking too long; try again shortly".to_string(),
+            ));
         };
-        let app = self.app.clone();
-        match tokio::task::spawn_blocking(move || AdminService::new(app).store_plugin_catalog())
-            .await
-        {
-            Ok(rows) => Ok(rows),
-            Err(join_err) => {
-                diag_warn!(
-                    PLUGIN_CATALOG_BLOCKING_TASK_FAILED,
-                    operation = "list_plugins.store",
-                    error = %join_err,
-                    "admin blocking task failed"
-                );
-                // Fail soft to the always-true compiled-in row rather than an admin 500 for what is
-                // just a plugin CATALOG read — same posture `store_plugin_catalog` itself takes on
-                // an unparseable `plugins_cfg` (`to_policy()` failing) just above.
-                Ok(vec![PluginView::basic(
-                    "memory".to_string(),
-                    "store",
-                    "compiled-in",
-                    None,
-                    None,
-                )])
-            }
-        }
+        // NO `spawn_blocking` AND THEREFORE NO JOIN TO FAIL. The hop existed to get the scan off a
+        // worker thread, and with it gone so is the join error the old wrapper had to fail SOFT on —
+        // a scan that panics now unwinds the caller's own blocking thread, which is the same thing
+        // that happens to every other blocking step on this path. One fewer invented answer.
+        Ok(self.store_plugin_catalog())
     }
 
     /// `POST /api/v1/admin/plugins` — INSTALL a plugin: the caller uploads a SIGNED plugin tarball
@@ -1955,6 +2138,7 @@ impl AdminService {
             .store_plugin_catalog()
             .into_iter()
             .filter(|p| p.loader == "dynamic-library")
+            .map(plugin_view)
             .collect();
         Ok(crate::admin::v1::contract::PluginReloadView {
             plugins,
@@ -2046,7 +2230,7 @@ impl AdminService {
         Ok(EffectiveConfigView {
             version: self.app.config_version,
             auth: self.get_auth().await?,
-            pools: self.list_pools().await?.items,
+            pools: self.pool_views(),
             models: self.list_models().await?.items,
             providers: self.list_providers().await?.items,
             hooks: self.list_hooks().await?.items,

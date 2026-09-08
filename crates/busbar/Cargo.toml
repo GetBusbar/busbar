@@ -116,6 +116,13 @@ rustls = { workspace = true }
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.
 arc-swap = { workspace = true }
+# THE ONE NUMBER THE CROSSED READS CANNOT WRITE BY HAND. Everything else an administrative answer
+# carries is a name, a count, a word or a flag, and this crate writes all of those itself — but one
+# reading is a `f64` latency, and the bytes a `f64` has always gone out as are the bytes
+# `serde_json`'s printer chose. `zmij` IS that printer; naming it is how the loop's rendering and the
+# retired serializer's stay identical by construction rather than by resemblance. See the workspace
+# manifest's own note for why "shortest round-trip" is not enough to pin a byte.
+zmij = { workspace = true }
 # Behind `root-admin` only. The root-driven admin surface wraps the router the operations are already
 # mounted on and calls it as the tower service it is, so the inner surface answers exactly as it did
 # and no status, header or byte is re-derived on the way out.
@@ -307,6 +314,12 @@ futures = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 serde_json = { workspace = true }
+# THE DERIVE THE CROSSED CATALOG'S PROOF NEEDS, and a dev-dependency on purpose: the composition root
+# carries no serializer on the request path, and this is not on it. The renderer that crossed has to
+# write what a `#[derive(Serialize)]` view wrote, nine `skip_serializing_if` attributes and all — so
+# the proof declares that view's field list again and asks the same serializer to render it, which is
+# the only comparison that measures the omissions rather than restating them.
+serde = { workspace = true }
 # tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 # The admin leg's PUT-then-GET coherence cell drives a REAL config-plane write through the
