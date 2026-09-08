@@ -10,7 +10,7 @@ docs/design/inventory/1.5.5-ops-observability.md, each either pinned by a shadow
 and the two rows the design calls CONTRADICTED carrying the CODE's behaviour as the parity target.
 
 WHY THIS FILE EXISTS. The register was cited as a `gate` by the design-bindings ledger, and the
-register's own header said "scripts/design-bindings.sh --check verifies the `cell` ids referenced
+register's own header said "the design bindings gate verifies the `cell` ids referenced
 below still exist". Neither was true: nothing opened the file. A data file compares nothing --
 it is an INPUT to a gate, never a gate -- so the claims it records were unasserted, and a cell id
 could be renamed away or a claim silently dropped with every check in the tree still green.

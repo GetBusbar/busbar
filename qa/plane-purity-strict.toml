@@ -29,7 +29,7 @@ BACKWARDS = 33
 # [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
 # the plane keys in xtask::planes), test scope only: how many lines under crates/busbar-<key>/src's OWN test
 # code (files under /tests/, *_tests.rs, or a #[cfg(test)] mod block) name `busbar_core::`. This is
-# the same measurement scripts/construction-gate.sh reports per crate as `ports-only-tests:<crate>`
+# the same measurement `cargo xtask gate construction` reports per crate as `ports-only-tests:<crate>`
 # (qa/construction.toml carries llm=565, mcp=1, a2a=3, voice=0); this file's llm figure differs by
 # one measured method (the xtask line-scan here vs. the python tree-scanner there) — both agree to
 # within a single line and neither claims exactness beyond "test code reaching busbar_core:: is
