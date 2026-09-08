@@ -258,6 +258,24 @@ from = 939
 to = 941
 because = """DECLARED: `[[cell]] busbar x transport` 939 -> 941. Two hits, both in the arrival record the producer's cells hand in -- `transport_chain: vec!["tcp", "http"]` -- because a producer that is handed no arrival is a producer tested against nothing. The composition root is where a transport is named by construction; no dependency edge is added and `kind-isolation:transport-registration` is untouched."""
 
+[gate.ceiling_raises."cell.71.count"]
+file = "qa/kind-isolation.toml"
+from = 1
+to = 4
+because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it. The dead `ir/` re-export shims are DELETED from `busbar-core` rather than aliased, so the spellings that used to reach through core now name the crate that actually holds them. The falls are in this same diff and are re-pinned with it -- `busbar-core x dialect` 1196 -> 1195 and `busbar-core x plane` 3067 -> 3049 -- which is what makes this a move and not a growth; `ceiling-slack` holds every ratcheted row to what it measures, so an un-re-pinned fall would be drift hiding as slack. This row is `[[cell]] busbar-core x substrate`, 1 -> 4: `src/ir/mod.rs` and `src/diagnostics/mod.rs` name `busbar-substrate-values` where a shim used to stand between them. Core naming the substrate BY ITS NAME is the drain working -- it is the direction the retirement runs in."""
+
+[gate.ceiling_raises."cell.226.count"]
+file = "qa/kind-isolation.toml"
+from = 31
+to = 32
+because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it. The dead `ir/` re-export shims are DELETED from `busbar-core` rather than aliased, so the spellings that used to reach through core now name the crate that actually holds them. The falls are in this same diff and are re-pinned with it -- `busbar-core x dialect` 1196 -> 1195 and `busbar-core x plane` 3067 -> 3049 -- which is what makes this a move and not a growth; `ceiling-slack` holds every ratcheted row to what it measures, so an un-re-pinned fall would be drift hiding as slack. This row is `[[cell]] busbar-substrate-values x api`, 31 -> 32: the crate that received `subscribe` receives with it the one `busbar-api` spelling that came along. Nothing new is reached -- one symbol changed which crate holds it."""
+
+[gate.ceiling_raises."cell.230.count"]
+file = "qa/kind-isolation.toml"
+from = 162
+to = 168
+because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it. The dead `ir/` re-export shims are DELETED from `busbar-core` rather than aliased, so the spellings that used to reach through core now name the crate that actually holds them. The falls are in this same diff and are re-pinned with it -- `busbar-core x dialect` 1196 -> 1195 and `busbar-core x plane` 3067 -> 3049 -- which is what makes this a move and not a growth; `ceiling-slack` holds every ratcheted row to what it measures, so an un-re-pinned fall would be drift hiding as slack. This row is `[[cell]] busbar-substrate-values x plane`, 162 -> 168: the same six plane spellings, on the side that now owns the code. Core's `plane` row falls 3067 -> 3049 in this same diff."""
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
