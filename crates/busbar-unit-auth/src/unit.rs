@@ -3,7 +3,7 @@
 
 //! The sealed answer: the unit the loop calls at the authenticate step.
 
-use busbar_caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, UnitToken};
+use busbar_caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, Unit, UnitToken};
 
 use crate::cache::CredentialCache;
 use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
@@ -29,6 +29,50 @@ pub struct AuthRequest<'a> {
     pub now: u64,
     /// Whether this is a NEW unit, and therefore whether the revocation set applies.
     pub new_unit: bool,
+}
+
+/// Everything the loop hands this unit at the authenticate step.
+///
+/// One struct rather than five arguments, because [`Unit::Input`] is the shape every sibling of the
+/// kind declares its inputs in — the five arguments are still the five arguments, moved to where
+/// the trait can name them.
+pub struct AuthInput<'a> {
+    /// The request as [`Auth::resolve`] reads it.
+    pub req: &'a AuthRequest<'a>,
+    /// The credential cache, where the deployment has one.
+    pub cache: Option<&'a CredentialCache>,
+    /// The built-in signed-key arm, where the deployment has one.
+    pub keys: Option<&'a dyn KeyVerifier>,
+    /// The revocation set the kernel derives from the journal tail.
+    pub revocations: Option<&'a dyn RevocationView>,
+    /// The challenge the scheme wants to ask, inside a handshake unit only.
+    pub pending: Option<Challenge>,
+}
+
+/// The auth unit OWNS the authenticate step: it answers with a sealed `Decision<Authenticate>`.
+///
+/// A pure delegation to [`Auth::resolve`] — the rule is unchanged, and the trait is the shape the
+/// rule is now reachable through.
+impl Unit for Auth {
+    type Step = Authenticate;
+    type Input<'a> = AuthInput<'a>;
+    type Answer<'a> = Decision<Authenticate>;
+    const OWNS_ITS_STEP: bool = true;
+
+    fn decide<'a>(
+        &'a mut self,
+        token: &'a UnitToken<Authenticate>,
+        input: AuthInput<'a>,
+    ) -> Decision<Authenticate> {
+        self.resolve(
+            input.req,
+            input.cache,
+            input.keys,
+            input.revocations,
+            input.pending,
+            token,
+        )
+    }
 }
 
 /// The authenticate unit.

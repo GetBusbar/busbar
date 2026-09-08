@@ -60,6 +60,7 @@ mod history;
 mod posting;
 mod project;
 mod rate;
+pub mod unit;
 
 pub use currency::CurrencyCode;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
