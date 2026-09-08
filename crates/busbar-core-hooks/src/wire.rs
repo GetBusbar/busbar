@@ -9,14 +9,14 @@
 //! The REQUEST-side projection (`HookRequest`/`build`/the op constants/the reject clamp+sanitize) lives
 //! in the NEUTRAL substrate at [`busbar_substrate::hooks::wire`] so the LLM model plane names it
 //! without reaching back into core; it is RE-EXPORTED below so every core-internal
-//! `crate::hooks::wire::…` path (proxy_vocab, plugin, auth, admin, the tests) is unchanged. The
+//! `crate::wire::…` path (proxy_vocab, plugin, auth, admin, the tests) is unchanged. The
 //! reply-side normalizers + the settings-bag-carrying [`StatusReply`] stay HERE — inside the
 //! settings-leak-lint scan root that must keep watching any raw operator-settings bag.
 
 use super::{Candidate, RoutingDecision};
 use serde::Deserialize;
 
-// RE-EXPORT the substrate request-side contract so `crate::hooks::wire::{…}` resolves by-identity for
+// RE-EXPORT the substrate request-side contract so `crate::wire::{…}` resolves by-identity for
 // every historical core caller (proxy_vocab builds `HookRequest`; plugin.rs calls `build`; auth/admin
 // name `HookStageProjection`; the tests exercise `build`) and for the reject clamp/sanitize the
 // reply-side normalizers below share with the forward seam.
@@ -28,9 +28,9 @@ pub use busbar_substrate::hooks::wire::{
 
 /// The describe reply envelope, parsed liberally.
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct DescribeReply {
+pub struct DescribeReply {
     #[serde(default)]
-    pub(crate) schema: Option<serde_json::Value>,
+    pub schema: Option<serde_json::Value>,
 }
 
 /// One hook-reported metric entry — a Prometheus/OpenMetrics-shaped observation (parsed liberally;
@@ -46,29 +46,29 @@ pub(crate) struct DescribeReply {
 /// (label values, `help`, `label`, `unit`) is sanitized + length-bounded, and every number must be
 /// finite — a `prompt: ro` hook cannot smuggle content into a scrape.
 #[derive(Debug, Clone, Deserialize)]
-pub(crate) struct HookMetric {
+pub struct HookMetric {
     /// The series name: `^[a-z][a-z0-9_]{0,63}$` (counters SHOULD end `_total`).
-    pub(crate) name: String,
+    pub name: String,
     /// `counter` (monotonic over the hook's lifetime), `gauge` (a point-in-time level), or
     /// `histogram` (a distribution reported via `quantiles`).
     #[serde(rename = "type")]
-    pub(crate) kind: String,
+    pub kind: String,
     /// The scalar value. Required for counter/gauge; for a histogram it is the observation COUNT
     /// (the distribution rides `quantiles`). Defaults to 0 when absent so a pure-histogram entry
     /// need not send it.
     #[serde(default)]
-    pub(crate) value: f64,
+    pub value: f64,
     /// PROMETHEUS-STYLE DIMENSIONS (the per-strategy / per-model breakdown a dashboard drills into).
     /// Several entries may share `name` and differ here. Keys `^[a-z][a-z0-9_]{0,63}$`, values
     /// sanitized ≤ 64 chars; ≤ [`MAX_METRIC_LABELS`] pairs (excess/invalid pairs dropped).
     #[serde(default)]
-    pub(crate) labels: Option<std::collections::BTreeMap<String, String>>,
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
     /// A `type: histogram` reported as a SUMMARY — precomputed quantiles (p50/p95/p99, what a mean
     /// hides). Keys are quantiles in `[0,1]` as strings (`"0.95"`), values finite. The alternative,
     /// for a hook that can bucket its samples, is `buckets` (a native Prometheus histogram). A hook
     /// sends whichever it can produce; both render on the Prometheus scrape.
     #[serde(default)]
-    pub(crate) quantiles: Option<std::collections::BTreeMap<String, f64>>,
+    pub quantiles: Option<std::collections::BTreeMap<String, f64>>,
     /// A `type: histogram` reported as a native PROMETHEUS HISTOGRAM — keys are `le` upper bounds as
     /// strings (`"0.5"`, `"0.01"`, `"+Inf"`), values are the CUMULATIVE observation count at or below
     /// that bound (monotonic non-decreasing, the top bound holding `value`). Rendered as
@@ -77,30 +77,30 @@ pub(crate) struct HookMetric {
     /// upstream tool (e.g. a compression tool's own `*_bucket` panels) work unchanged against busbar.
     /// Preferred over `quantiles` when both are present.
     #[serde(default)]
-    pub(crate) buckets: Option<std::collections::BTreeMap<String, f64>>,
+    pub buckets: Option<std::collections::BTreeMap<String, f64>>,
     /// PROVENANCE: `true` marks this value an ESTIMATE (e.g. Headroom's holdout-control savings)
     /// rather than a directly measured fact — a dashboard renders it distinctly.
     #[serde(default)]
-    pub(crate) estimated: Option<bool>,
+    pub estimated: Option<bool>,
     /// Confidence interval for an estimated value (finite; `ci_low ≤ ci_high` or both dropped).
     #[serde(default)]
-    pub(crate) ci_low: Option<f64>,
+    pub ci_low: Option<f64>,
     #[serde(default)]
-    pub(crate) ci_high: Option<f64>,
+    pub ci_high: Option<f64>,
     /// Human display name (a UI falls back to `name`).
     #[serde(default)]
-    pub(crate) help: Option<String>,
+    pub help: Option<String>,
     #[serde(default)]
-    pub(crate) label: Option<String>,
+    pub label: Option<String>,
     /// Display unit token (`"ms"`, `"$"`, `"%"`, `"req/s"`, …) — max 16 chars, sanitized.
     #[serde(default)]
-    pub(crate) unit: Option<String>,
+    pub unit: Option<String>,
     /// Rendering hint: `number` | `gauge` | `counter` | `sparkline` | `histogram` (else dropped).
     #[serde(default)]
-    pub(crate) viz: Option<String>,
+    pub viz: Option<String>,
     /// Gauge normalization ceiling (finite number, else dropped).
     #[serde(default)]
-    pub(crate) max: Option<f64>,
+    pub max: Option<f64>,
     // Time SERIES are the CONSUMER's job in 1.3 (a dashboard samples `status` and accumulates); an
     // engine-retained `series` member is the reserved append-only path (a future release). A hook
     // may send unknown members today — they are ignored, not an error.
@@ -110,17 +110,17 @@ pub(crate) struct HookMetric {
 /// deserialized into the shared `busbar_api::HookStatus` shape. `metrics` is the raw array of entry
 /// objects (validated downstream by [`parse_status_metrics`]).
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct StatusReply {
+pub struct StatusReply {
     #[serde(default)]
-    pub(crate) settings_version: Option<u64>,
+    pub settings_version: Option<u64>,
     #[serde(default)]
     // settings-leak-lint: allow — INBOUND wire reply the engine only consumes: the hook's echo of
     // the RESOLVED bag. It is never serialized to a reader (`hook_status` projects `settings_keys`
     // from it; `settings_drift_keys` compares key names), and this is the exact type whose leak
     // — historical #3 — the widened scan root exists to keep caught.
-    pub(crate) settings: Option<serde_json::Map<String, serde_json::Value>>,
+    pub settings: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default)]
-    pub(crate) metrics: Option<Vec<serde_json::Value>>,
+    pub metrics: Option<Vec<serde_json::Value>>,
 }
 
 impl From<StatusReply> for busbar_api::HookStatus {
@@ -136,25 +136,25 @@ impl From<StatusReply> for busbar_api::HookStatus {
 /// The `status` reply envelope (`{"status": {...}}`); `None`/absent = the hook doesn't speak it
 /// (per the unknown-op contract rule, `{}` = unsupported → busbar fails open).
 #[derive(Debug, Default, Deserialize)]
-pub(crate) struct StatusEnvelope {
+pub struct StatusEnvelope {
     #[serde(default)]
-    pub(crate) status: Option<StatusReply>,
+    pub status: Option<StatusReply>,
 }
 
 /// Per-reply cap on hook-reported metric entries (excess dropped — bounded registry).
-pub(crate) const MAX_HOOK_METRICS: usize = 64;
+pub const MAX_HOOK_METRICS: usize = 64;
 /// Per-entry cap on label pairs (a labeled series stays small — cardinality guard).
-pub(crate) const MAX_METRIC_LABELS: usize = 8;
+pub const MAX_METRIC_LABELS: usize = 8;
 /// Metric-help length cap (chars), sanitized through `sanitize_reject_message` before exposure.
-pub(crate) const MAX_METRIC_HELP_CHARS: usize = 200;
+pub const MAX_METRIC_HELP_CHARS: usize = 200;
 /// Display-hint + label-value caps (same sanitize rule as help).
-pub(crate) const MAX_METRIC_LABEL_CHARS: usize = 64;
-pub(crate) const MAX_METRIC_UNIT_CHARS: usize = 16;
+pub const MAX_METRIC_LABEL_CHARS: usize = 64;
+pub const MAX_METRIC_UNIT_CHARS: usize = 16;
 
 /// Validate a hook-reported metric NAME or LABEL KEY: `^[a-z][a-z0-9_]{0,63}$`. Anything else is
 /// dropped — names/keys become Prometheus identifiers, so the charset is enforced structurally (a
 /// hook granted `prompt: ro` physically cannot smuggle content into a scrape).
-pub(crate) fn valid_metric_name(name: &str) -> bool {
+pub fn valid_metric_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b'a'..=b'z'))
         && name.len() <= 64
@@ -187,7 +187,7 @@ fn sanitize_cap(raw: &str, n: usize) -> String {
 /// Within an entry, malformed OPTIONAL members (an out-of-charset label key, a non-finite quantile,
 /// an inverted CI, an out-of-vocabulary viz) are dropped INDIVIDUALLY — the metric survives. Every
 /// exposed string is sanitized + length-bounded; every number is finite.
-pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
+pub fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric> {
     let mut out = Vec::new();
     for v in raw {
         if out.len() >= MAX_HOOK_METRICS {
@@ -273,11 +273,11 @@ pub(crate) fn parse_status_metrics(raw: &[serde_json::Value]) -> Vec<HookMetric>
 /// are optional so an empty `{}` deserializes to Abstain. Unknown JSON fields are ignored, so a hook
 /// may attach extra diagnostics without breaking the contract.
 #[derive(Debug, Deserialize, Default)]
-pub(crate) struct HookResponse {
+pub struct HookResponse {
     #[serde(default)]
-    pub(crate) order: Option<Vec<usize>>,
+    pub order: Option<Vec<usize>>,
     #[serde(default)]
-    pub(crate) abstain: bool,
+    pub abstain: bool,
     /// REJECT the request outright: no upstream is dispatched, the caller gets a dialect-native
     /// error. Takes precedence over `order`/`abstain` — a hook that says both meant reject. The
     /// verb that makes a content-seeing hook (`policy.send_prompt`) a guardrail, not just a router.
@@ -290,7 +290,7 @@ pub(crate) struct HookResponse {
     /// which maps to absent) is the one explicit "not rejecting" shape; anything else present
     /// rejects.
     #[serde(default)]
-    pub(crate) reject: Option<serde_json::Value>,
+    pub reject: Option<serde_json::Value>,
     /// RESTRICT the surviving candidate set to members carrying ANY of these tags
     /// (`{"restrict": {"tags_any": [...]}}`). A compliance gate ("only BAA-covered lanes"). Untyped +
     /// FAIL-CLOSED like `reject`: a malformed restrict must fall to the gate's `on_error`/`on_empty`,
@@ -298,28 +298,28 @@ pub(crate) struct HookResponse {
     /// by `normalize`, and re-applied on every downstream failover hop by
     /// `proxy::select::enforce_restricts`.
     #[serde(default)]
-    pub(crate) restrict: Option<serde_json::Value>,
+    pub restrict: Option<serde_json::Value>,
     /// REWRITE the request body (`{"rewrite": {"messages": [...], "tools": [...]}}`) — the
     /// compression/redaction arm (Headroom). Untyped + FAIL-CLOSED: a malformed/oversize rewrite must
     /// proceed with the UNMODIFIED body, never a corrupted one. Requires the hook's `prompt: rw` grant.
     /// Parsed by `parse_rewrite` and applied by the priority-ordered transform pass at the `parsed.rewrite` read below.
     #[serde(default)]
-    pub(crate) rewrite: Option<serde_json::Value>,
+    pub rewrite: Option<serde_json::Value>,
 }
 
 /// A parsed, validated `restrict` reply: the set of tags a surviving candidate must carry at least
 /// one of. FAIL-CLOSED — `parse_restrict` returns `None` for a malformed/empty restrict so the caller
 /// routes it to `on_error`, never to an accidental allow-all.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RestrictReply {
-    pub(crate) tags_any: Vec<String>,
+pub struct RestrictReply {
+    pub tags_any: Vec<String>,
 }
 
 /// Parse the untyped `restrict` value fail-closed. A well-formed restrict is `{"tags_any": [non-empty
 /// strings]}`; anything else (not an object, missing/empty/non-array `tags_any`, no usable string
 /// entries) yields `None` — the caller treats that as the gate's `on_error`, never allow-all. Tag
 /// strings are trimmed; empty/whitespace-only entries are dropped.
-pub(crate) fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply> {
+pub fn parse_restrict(value: &serde_json::Value) -> Option<RestrictReply> {
     let tags_any: Vec<String> = value
         .get("tags_any")?
         .as_array()?
@@ -343,7 +343,7 @@ pub use busbar_api::RewriteReply;
 /// Parse the untyped `rewrite` value fail-closed. A well-formed rewrite is `{"messages": [...],
 /// "tools"?: [...]}` with a NON-EMPTY messages array; anything else yields `None` (proceed with the
 /// original body). `tools` is optional (defaults empty).
-pub(crate) fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
+pub fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
     let messages: Vec<serde_json::Value> = value.get("messages")?.as_array()?.clone();
     if messages.is_empty() {
         return None;
@@ -360,7 +360,7 @@ pub(crate) fn parse_rewrite(value: &serde_json::Value) -> Option<RewriteReply> {
 /// else — absent, non-integer, 0, 200, 302, 500, 70000, -1 — becomes 403), message sanitized +
 /// capped. ONE extraction for both the decide path (`normalize`) and the transform path (a `rw`
 /// gate's reject) so the two can never diverge.
-pub(crate) fn parse_reject_detail(reject: &serde_json::Value) -> (u16, String) {
+pub fn parse_reject_detail(reject: &serde_json::Value) -> (u16, String) {
     let status = reject
         .get("status")
         .and_then(|s| s.as_i64())
@@ -375,7 +375,7 @@ pub(crate) fn parse_reject_detail(reject: &serde_json::Value) -> (u16, String) {
 /// Normalize a parsed reply on the TRANSFORM path: reject > rewrite > abstain. `restrict`/`order`
 /// are decide-path verbs and are ignored here (documented in the contract). Shared by both
 /// transports so they can never diverge.
-pub(crate) fn transform_outcome(parsed: HookResponse) -> busbar_api::TransformOutcome {
+pub fn transform_outcome(parsed: HookResponse) -> busbar_api::TransformOutcome {
     use busbar_api::TransformOutcome;
     if let Some(reject) = &parsed.reject {
         if *reject != serde_json::Value::Bool(false) {
@@ -392,7 +392,7 @@ pub(crate) fn transform_outcome(parsed: HookResponse) -> busbar_api::TransformOu
 /// Normalize a parsed hook reply into a decision: `reject` (clamped + sanitized) wins over
 /// everything; then explicit abstain / absent order → `Abstain`; otherwise the shared liberal
 /// normalizer (drop unknown idxs, dedup, empty → Abstain). One normalization for every transport.
-pub(crate) fn normalize(parsed: HookResponse, candidates: &[Candidate<'_>]) -> RoutingDecision {
+pub fn normalize(parsed: HookResponse, candidates: &[Candidate<'_>]) -> RoutingDecision {
     // FAIL-CLOSED: any `reject` value except an explicit `false` is a rejection (see the field
     // doc). Details are extracted best-effort; anything missing or out-of-shape falls back to the
     // safe defaults rather than downgrading the verb.

@@ -91,6 +91,15 @@ busbar-voice = ["busbar-voice-codec"]
 contract_caps = 3500
 grammar = 500
 contract_transport = 1000
+# busbar-core-hooks — THE HOOK POLICY ENGINE, extracted from busbar-core by the owner's ruling of
+# 2026-09-08 (kind: core). Measured at 1,672 surface lines on the day it landed; the ceiling is the
+# next 500 above that, so the first line that grows the engine by a third has to justify itself, and
+# a body that arrives here from somewhere else is visible rather than absorbed.
+#
+# This is NOT a plugin-author budget like the three above it — nobody outside the engine reads it —
+# it is a RATCHET on a crate whose whole claim is that it stayed small enough to be one thing. The
+# ceiling moves by the owner's hand, as every figure in this table does.
+core_hooks = 2000
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
