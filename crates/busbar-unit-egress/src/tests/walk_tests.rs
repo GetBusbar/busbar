@@ -153,6 +153,37 @@ fn a_truncated_answer_gives_the_request_budget_unit_back() {
     );
 }
 
+/// The plane reads every response frame with the unit's own codec state in hand.
+///
+/// `decode_response` is handed frames, a destination and a context — never the unit. So the only
+/// place a plane can learn anything about the request its frames are answering is the state
+/// parameter, and this unit is the one that opens it. Handing `None` there does not merely lose a
+/// counter: a dialect whose streamed answer opens with the same bytes as its complete one cannot
+/// tell the two apart without it, reports every complete answer as a frame in the middle of a run,
+/// and this loop then reads the end of a finished answer as a truncated one — refunding the
+/// destination's budget unit and posting a compensating transient against a member that did
+/// nothing wrong.
+#[test]
+fn the_plane_reads_every_response_frame_with_the_units_state_in_hand() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    node.transport.script("a", Script::Frames(ok_frames()));
+
+    assert!(node.route("primary").is_delivered());
+    let seen = node
+        .plane
+        .state_seen
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    assert_eq!(
+        seen,
+        vec![Some(1), Some(2)],
+        "every decode_response of the attempt was handed the SAME state, carrying what the \
+         frames before it wrote into it"
+    );
+}
+
 #[test]
 fn a_whole_answer_keeps_the_request_budget_unit() {
     let mut node = two_lane_pool();

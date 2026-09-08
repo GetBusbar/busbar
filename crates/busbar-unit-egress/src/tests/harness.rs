@@ -1008,6 +1008,24 @@ pub struct TestPlane {
     /// The envelope field the lane name goes in, where the test wants one written.
     pub lane_field: Mutex<Option<String>>,
     pub decoded: Mutex<usize>,
+    /// What the attempt handed this plane as its codec state, one entry per `decode_response`
+    /// call: the count the state carried in, or `None` where the call was handed no state at all.
+    ///
+    /// A plane whose answers stream reads the unit's own facts out of this state, and a plane
+    /// handed `None` on every frame has no way to tell an answer that is complete from the first
+    /// event of a run that is not — which is a money question, not a cosmetic one.
+    pub state_seen: Mutex<Vec<Option<u32>>>,
+}
+
+/// The codec state this plane carries across one hop.
+///
+/// It holds a count, which is what makes the state observable: a state opened once per hop and
+/// lent to every call reaches the last frame carrying every earlier frame's mark, and a state
+/// re-opened per call does not.
+#[derive(Debug, Default)]
+pub struct TestCodec {
+    /// How many response frames of this hop the plane has read.
+    pub events_read: u32,
 }
 
 impl TestPlane {
@@ -1038,6 +1056,14 @@ impl busbar_contract::Plane for TestPlane {
         _ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
         Ok(Ingress::NeedMore)
+    }
+
+    fn open_unit_state<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::PlaneSessionState> {
+        Some(busbar_contract::PlaneSessionState::new(TestCodec::default()))
     }
 
     fn encode_egress<'u>(
@@ -1097,10 +1123,19 @@ impl busbar_contract::Plane for TestPlane {
         &self,
         frames: &mut busbar_contract::FrameCursor<'u>,
         _dest: &VerifiedDestination,
-        _st: Option<&mut busbar_contract::PlaneSessionState>,
+        st: Option<&mut busbar_contract::PlaneSessionState>,
         _ctx: &Ctx<'u>,
     ) -> Result<Progress<'u>, Decode> {
         *self.decoded.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        let carried = st.and_then(|state| {
+            let codec = state.get_mut::<TestCodec>()?;
+            codec.events_read = codec.events_read.saturating_add(1);
+            Some(codec.events_read)
+        });
+        self.state_seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(carried);
         let Some(frame) = frames.next_frame() else {
             return Ok(Progress::NeedMore);
         };
