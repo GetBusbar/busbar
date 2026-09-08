@@ -59,6 +59,20 @@ pub use busbar_contract_transport::surface::{
 pub use busbar_contract_transport::driver;
 pub use busbar_contract_transport::driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 
+/// The seam a DUPLEX transport hands a session across, frame by frame.
+///
+/// Re-exported for exactly the reader the one-shot seam above is re-exported for, and the reason is
+/// the same one: the composition root IMPLEMENTS it and reaches the transport contract through this
+/// crate. Without this line a root that wanted to serve a duplex surface would have to name
+/// `busbar-contract-transport` in its own manifest — which is the edge the whole re-export exists to
+/// keep it from having — and the two seams would then be reached by two different routes for no
+/// reason anybody could state.
+pub use busbar_contract_transport::session;
+pub use busbar_contract_transport::session::{
+    Cut, DetachedSession, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
+    SessionReply,
+};
+
 /// Everything a transport declares about itself.
 pub trait TransportMeta {
     /// The transport's registry key.

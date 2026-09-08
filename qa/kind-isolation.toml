@@ -1564,7 +1564,7 @@ count = "2"
 [[cell]]
 crate = "busbar-contract"
 kind = "contract-transport"
-count = "16"
+count = "19"
 
 [[cell]]
 crate = "busbar-contract"
