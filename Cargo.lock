@@ -5233,6 +5233,21 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "busbar-caps",
+ "busbar-unit-admission",
+ "busbar-unit-audit",
+ "busbar-unit-auth",
+ "busbar-unit-breaker",
+ "busbar-unit-cost",
+ "busbar-unit-egress",
+ "busbar-unit-egress-auth",
+ "busbar-unit-ledger",
+ "busbar-unit-scope",
+ "busbar-unit-transport-key",
+ "busbar-unit-trust",
+ "busbar-unit-usage",
+ "busbar-unit-verbs",
+ "busbar-unit-wal",
  "serde_json",
 ]
 
