@@ -713,6 +713,113 @@ impl A2aDraft {
     }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE PRODUCER
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// What the plane's own decode step said about one arrival, copied out by value.
+///
+/// ## Why this type exists at all
+///
+/// The plane answers `decode_ingress` with a `UnitDraft<'u>` whose every field BORROWS — from the
+/// arena the context carries and from the frame the transport still owns. Neither outlives the call
+/// the borrow was taken in. [`A2aDraft`] is by-value precisely so that it can, so something has to
+/// carry the scalars across that boundary, and this is that something: the driver reads the plane's
+/// answer ONCE, where the borrow is live, and copies out the handful of facts the ten steps go on to
+/// need. A step that re-scanned the body to recover one of them would be doing the allocation the
+/// arena exists to make impossible.
+///
+/// ## What is here and what is deliberately not
+///
+/// Only what the DECODE step and the TRANSPORT know. The destination, the resource, the legs and the
+/// streaming flag are absent because the plane answers those from its own op-keyed tables, and
+/// [`A2aDraft::from_decoded`] asks it rather than being told — one table, asked twice, never copied.
+#[cfg(feature = "root-a2a-serve")]
+#[derive(Debug, Clone, Default)]
+pub struct Decoded {
+    /// The operation class the plane recognised. `None` is a body this plane does not carry.
+    pub op: Option<OpClassId>,
+    /// The whole request document's length, which is what this plane prices its input on.
+    pub request_bytes: u64,
+    /// The credential the transport masked out of the frame, where one arrived.
+    pub credential: Option<String>,
+    /// The audience an audience-bound ingress requires.
+    pub expected_aud: Option<String>,
+    /// Whether the principal is the bound session's rather than these bytes'.
+    pub from_session: bool,
+    /// The scheme alternative the claim was narrowed to. `None` on the three open surfaces.
+    pub narrowing: Option<&'static str>,
+    /// The alternatives the matched claim declared. Empty on an open surface.
+    pub declared_schemes: &'static [&'static str],
+}
+
+#[cfg(feature = "root-a2a-serve")]
+impl A2aDraft {
+    /// THE PRODUCTION PRODUCER: one arrival the plane has read, as the record the ten steps consume.
+    ///
+    /// This is the leg the root was missing. `A2aDraft` and [`A2aBindings`] described a unit of this
+    /// plane precisely and completely, and nothing on any serving path built one — every construction
+    /// in the workspace was a test's, which is the same sentence as "the plane's decode reaches no
+    /// step". This function is that sentence removed.
+    ///
+    /// ## Every plane-owned field is ASKED, never restated
+    ///
+    /// The destination, the resource, the legs and the streaming flag come from
+    /// `A2aPlane::{destination_for, resource_for, route_plan_for, streaming_for}` — the very tables
+    /// the plane's own `verify`, `approve`, `route` and `audit` steps answer from. They are asked
+    /// here rather than restated because a restatement is a second opinion: the root's producer and
+    /// the kernel's steps would drift, and the one that drifted quietly is the one that reaches a
+    /// customer. The plane's steps read those tables off a `Unit`, which only the kernel's seal can
+    /// mint and which this file may not name; the tables themselves need no unit, which is why they
+    /// are sayable here at all.
+    ///
+    /// ## What the ending has not happened yet
+    ///
+    /// `response_bytes` is zero and `finish` is [`FinishClass::Complete`]. Both are properties of an
+    /// ANSWER, and at the moment an arrival is decoded there is not one: the metering step fills the
+    /// first from the locator the plane's `meter` returns, and the audit step fills the second from
+    /// the ending the loop reached. A producer that guessed either would be writing down a result
+    /// before the unit ran.
+    #[must_use]
+    pub fn from_decoded(
+        plane: &busbar_plane_a2a::A2aPlane,
+        decoded: &Decoded,
+        arrival: ArrivalRecord,
+    ) -> Self {
+        // ASKED, in all four cases, and asked of the plane. A body whose operation the plane did not
+        // recognise names no agent, reaches no record and walks no leg — so it gets the destination
+        // the plane itself calls unreachable, which the trust unit refuses, rather than a
+        // destination this file invented for it.
+        let destination = decoded
+            .op
+            .map_or_else(busbar_plane_a2a::A2aPlane::unreachable_destination, |op| {
+                plane.destination_for(op)
+            });
+        let legs = decoded.op.map_or_else(Vec::new, |op| {
+            plane.route_plan_for(op).legs.as_slice().to_vec()
+        });
+        let resource = decoded.op.and_then(|_| plane.resource_for());
+        let streaming = decoded.op.is_some_and(|op| plane.streaming_for(op));
+        A2aDraft {
+            op: decoded.op,
+            narrowing: decoded.narrowing,
+            declared_schemes: decoded.declared_schemes,
+            from_session: decoded.from_session,
+            credential: decoded.credential.clone(),
+            expected_aud: decoded.expected_aud.clone(),
+            destination,
+            resource,
+            legs,
+            request_bytes: decoded.request_bytes,
+            // The answer has not been written yet; the metering and audit steps fill these two.
+            response_bytes: 0,
+            finish: FinishClass::Complete,
+            streaming,
+            arrival,
+        }
+    }
+}
+
 /// Which scope one operation class of this plane requires.
 ///
 /// Read-only for the projections a caller may take of state it already owns, full for everything
