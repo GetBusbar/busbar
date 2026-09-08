@@ -11,6 +11,11 @@ use busbar_api::{
     PlaneRecord, PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger,
     VirtualKey,
 };
+// The record half of the store protocol: the three verbs a `PlaneRecord` leg is run over, at the
+// contract's own spelling. `StoreError` is imported under a second name because the two protocols
+// each carry one and this crate answers both.
+use busbar_contract::ids::RecordSchemaId;
+use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -57,6 +62,20 @@ pub struct MemoryStore {
     /// APPENDED child kinds (a chain is `(parent, seq)`) and its `id` for the upserted ones, which
     /// take `seq` 0 — one map serves both because the child kinds never point-read by id.
     plane_records: RwLock<HashMap<(String, String, u64), PlaneRecord>>,
+    /// KERNEL-HELD DURABLE RECORDS, under the contract's own three verbs, keyed by
+    /// `(schema, key)`.
+    ///
+    /// A SECOND map beside `plane_records` and deliberately not a re-keying of it. The eight
+    /// kind-tagged verbs above are the PUBLISHED store protocol the previous release's callers still
+    /// drive, byte for byte; these three are what `busbar_contract::kinds::Store` declares for a
+    /// record leg, and they key on an opaque byte string rather than on the `(kind, id, seq)`
+    /// columns. Folding them onto one map would make every record leg a change to the published
+    /// path's key shape, which is precisely the thing that has to stay identical.
+    ///
+    /// A `BTreeMap` because `record_scan` walks a PREFIX and answers in key order: a hash map would
+    /// have to sort on every scan, and "the order a scan answers in" is a promise a caller reads a
+    /// chain by.
+    records: RwLock<std::collections::BTreeMap<(String, Vec<u8>), RecordBytes>>,
     /// The durable admin AUDIT log, by `seq`. EPHEMERAL like every other map here — this backend is
     /// RAM — but append-only and fork-detecting within the process's life, which is what the
     /// engine's write-through actually asks of a store. Ordered reads come from the `BTreeMap`.
@@ -82,6 +101,83 @@ pub struct MemoryStore {
 impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Write one of a plane's kernel-held durable records.
+    ///
+    /// The signature is `busbar_contract::kinds::Store::record_put`'s, verb for verb, and the three
+    /// below are its siblings. They are INHERENT rather than a trait implementation for one reason,
+    /// and it is a rule rather than a preference: the manifest allow-list refuses a store-kind crate
+    /// that names `busbar-kernel`, so the kernel's own record sink is not a trait this crate may
+    /// implement; and the contract's `Store` is the whole twenty-two-verb protocol, of which this
+    /// backend answers the published half through [`Store`] above. What is here is the record half,
+    /// at the contract's own spelling, so the adapter that binds a loaded store to the kernel's sink
+    /// has one shape to forward to rather than two.
+    ///
+    /// The value arrives as a [`RecordBytes`], which is where the record ceiling is enforced: a body
+    /// over it cannot be constructed, so this method cannot be handed one.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend: there is nothing under it to be unavailable. The result is the
+    /// contract's shape so a durable backend can answer in the same place.
+    pub fn record_put(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        value: &RecordBytes,
+    ) -> Result<(), ContractStoreError> {
+        self.records
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((schema.as_str().to_string(), key.to_vec()), value.clone());
+        Ok(())
+    }
+
+    /// Read one of a plane's kernel-held durable records.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend. An absent record is `Ok(None)` and not an error: a plane asking
+    /// for a row it has not written yet is an ordinary answer, not a fault.
+    pub fn record_get(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+    ) -> Result<Option<RecordBytes>, ContractStoreError> {
+        Ok(self
+            .records
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(schema.as_str().to_string(), key.to_vec()))
+            .cloned())
+    }
+
+    /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
+    ///
+    /// `limit` 0 means NOTHING, not everything. A caller that wants the whole prefix names a number;
+    /// reading zero as unbounded would make a miscomputed bound the one case that returns the entire
+    /// schema.
+    ///
+    /// # Errors
+    ///
+    /// Never, for a RAM backend.
+    pub fn record_scan(
+        &self,
+        schema: RecordSchemaId,
+        prefix: &[u8],
+        limit: u32,
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
+        let schema = schema.as_str();
+        Ok(self
+            .records
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
+            .take(limit as usize)
+            .map(|((_, k), v)| (k.clone(), v.clone()))
+            .collect())
     }
     fn keys(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, VirtualKey>> {
         self.keys.write().unwrap_or_else(|e| e.into_inner())
