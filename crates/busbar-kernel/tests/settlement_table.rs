@@ -10,8 +10,8 @@ use busbar_caps::OriginKind;
 use busbar_caps::{Outcome, PostingFlags, ReasonCode, StepName};
 use busbar_contract::{DestinationFacts, LaneId, UpstreamAddress, UpstreamIdx};
 use busbar_kernel::teller::{
-    fee_count, requests_drawn, requests_settled, settle_amount, Evidence, FeeEvidence, FinishClass,
-    StatusAt, StatusClass,
+    accrual_line, fee_count, requests_drawn, requests_settled, settle_amount, Evidence,
+    FeeEvidence, FinishClass, StatusAt, StatusClass, KERNEL_ACCRUAL_CLASS,
 };
 
 fn live_end() -> Outcome {
@@ -902,4 +902,33 @@ fn a_provider_push_and_a_unit_with_no_upstream_draw_no_slot() {
     assert_eq!(requests_drawn(OriginKind::Provider, true), 0);
     assert_eq!(requests_drawn(OriginKind::Client, false), 0);
     assert_eq!(requests_drawn(OriginKind::Tick, true), 0);
+}
+
+/// THE CLASS THE SETTLED FIGURE IS REPORTED AGAINST IS THE UNIT'S, NOT THE END'S.
+///
+/// `Evidence` carries the class the settled amount is reported against, and a unit has two ends by
+/// design: its own exit and the node's sweep. Either may arrive first. If the two ends read that
+/// field differently, the same unit's settled line lands on a different meter — and therefore a
+/// different price row and a different cap dimension — depending on which end got there, with
+/// nothing flagged either way. Under the ledger standard that is one unit with two answers.
+///
+/// The class constant's own doc says the exit path, the sweep and the recovery path all post the
+/// same figure against the same class. This is the function that makes that true by construction
+/// rather than by three sites being kept in step by hand.
+#[test]
+fn the_settled_line_is_reported_against_the_class_the_evidence_names() {
+    let named = busbar_caps::MeterClassId::new("audio_seconds");
+    let evidence = Evidence {
+        class: Some(named),
+        ..Evidence::default()
+    };
+    let line = accrual_line(&evidence, 42, false);
+    assert_eq!(line.class, named, "the unit's own class was not honoured");
+    assert_eq!(line.quantity, 42, "the money figure moved");
+    assert!(!line.estimated);
+
+    // A unit whose evidence names nothing falls back to the one constant, as it always has.
+    let line = accrual_line(&Evidence::default(), 42, true);
+    assert_eq!(line.class, KERNEL_ACCRUAL_CLASS);
+    assert!(line.estimated);
 }

@@ -1352,8 +1352,8 @@ fn a_posting_settles_the_priced_amount_and_not_the_sum_of_the_quantities() {
 #[test]
 fn every_carrier_whose_loss_is_money_must_be_used() {
     const SOURCES: [(&str, &str); 2] = [
-        ("hold.rs", include_str!("hold.rs")),
-        ("decision.rs", include_str!("decision.rs")),
+        ("hold.rs", include_str!("../hold.rs")),
+        ("decision.rs", include_str!("../decision.rs")),
     ];
     // The carriers: a value whose existence is a permission, or whose loss is a figure nobody can
     // reconstruct. Spelled out, because "every public type" would sweep in the plain data beside

@@ -319,6 +319,36 @@ pub struct Evidence {
 /// settled unit on a meter nobody prices.
 pub const KERNEL_ACCRUAL_CLASS: MeterClassId = MeterClassId::new("nano_units");
 
+/// The kernel's own usage line, built in ONE place.
+///
+/// A unit has two ends by design — its own exit and the node's sweep — and a third way in, the
+/// recovery path after a crash. All three settle the same figure, and the constant above says in
+/// its own doc that all three post it against the same class. They did not: the exit path read the
+/// class the unit's evidence named and the sweep spelled the fallback outright, so a unit whose
+/// evidence names a class landed on that class if its own end won the race for the hold cell and on
+/// `nano_units` if the node's sweep won. One unit, two answers, on a different meter and therefore a
+/// different price row and a different cap dimension — and neither answer flagged.
+///
+/// The rule is one function rather than three struct literals for the same reason the class is one
+/// constant: the sites cannot be kept in step by anyone remembering to. The recovery path builds its
+/// evidence with no class and so has always agreed with the fallback; it reads the rule here anyway,
+/// because a site that agrees by coincidence is a site that can stop agreeing.
+///
+/// The MONEY is not here. The amount is the settlement table's, and every caller passes it to
+/// `Posted::settle` itself; what this decides is which meter the quantity is reported against.
+#[must_use]
+pub fn accrual_line(evidence: &Evidence, quantity: u64, estimated: bool) -> UsageLine {
+    UsageLine {
+        class: evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS),
+        quantity,
+        // Every one of the three sites reports what the kernel itself counted, never a figure a
+        // destination reported: the exit path counts the accrual meter, the sweep counts the
+        // settlement table's answer, and the recovery path counts what the journal recorded.
+        source: QuantitySource::Count,
+        estimated,
+    }
+}
+
 /// The settlement table, as one pure function.
 ///
 /// Every row of it says the same thing in a different situation: **post the lower evidence, mark
@@ -1179,15 +1209,11 @@ pub fn exit<U: Units>(
             // carried out as an overdraft. There is no arm on this path that refuses — value was
             // delivered, so the only question left is which column it lands in.
             let _spend = hold.spend(run.meter.total(), run.meter.headroom());
-            let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
-            let lines = vec![UsageLine {
-                class,
-                quantity: amount,
-                // The exit path settles what the accrual meter counted while the unit ran, which
-                // is the kernel's own figure, not one a destination reported.
-                source: QuantitySource::Count,
-                estimated: flags.contains(PostingFlags::ESTIMATED),
-            }];
+            let lines = vec![accrual_line(
+                &evidence,
+                amount,
+                flags.contains(PostingFlags::ESTIMATED),
+            )];
             let usage_token = UsageToken::mint(seal);
             let usage = if flags.contains(PostingFlags::ESTIMATED) {
                 Usage::estimate(&usage_token, lines)
