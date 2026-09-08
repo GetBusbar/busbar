@@ -53,6 +53,7 @@ use std::sync::Arc;
 
 use busbar_contract::grammar::{PathSeg, Selector};
 
+use crate::root::data_plane::PlaneChain;
 use crate::root::units_a2a::A2aAnswer;
 use crate::root::units_a2a_leg::A2aLeg;
 
@@ -323,17 +324,12 @@ pub fn mount(
     inner: axum::Router,
     leg: Arc<A2aLeg>,
     kernel: busbar_kernel::teller::Kernel,
+    chain: Arc<PlaneChain>,
     request_body_max_bytes: usize,
 ) -> axum::Router {
     let runtime = tokio::runtime::Handle::current();
     let errands = drive(inner.clone(), &runtime);
-    let node = Arc::new(MountedNode {
-        leg,
-        kernel,
-        gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-        canary: busbar_caps::Canary::new(),
-        next_key: std::sync::atomic::AtomicU64::new(1),
-    });
+    let node = Arc::new(MountedNode { leg, kernel, chain });
 
     axum::Router::new().fallback(axum::routing::any(
         move |req: axum::http::Request<axum::body::Body>| {
@@ -347,7 +343,7 @@ pub fn mount(
                 // routes that are deliberately outside it, and walking those through a loop whose
                 // decode reads a table they were never in would refuse a route that has always
                 // answered.
-                if !claims_the_path(req.uri().path()) {
+                if !node.claims(req.uri().path(), req.method().as_str()) {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
 
@@ -509,55 +505,38 @@ fn with_arrival<T>(
 struct MountedNode {
     leg: Arc<A2aLeg>,
     kernel: busbar_kernel::teller::Kernel,
-    gauge: busbar_kernel::slice::ConcurrencyGauge,
-    canary: busbar_caps::Canary,
-    next_key: std::sync::atomic::AtomicU64,
+    /// THE NODE'S OWN PARTS, and this plane's declared surface, composed once and shared. Not this
+    /// mount's: a gauge or a canary made here would count this plane's traffic against an empty
+    /// node, and a second plane doing the same would make two nodes out of one process.
+    chain: Arc<PlaneChain>,
 }
 
 impl MountedNode {
+    /// **Whether these bytes are addressed to THIS PLANE**, asked of both declarations it has.
+    ///
+    /// The claim table is what the kernel routes on and is asked first; the declared surface is what
+    /// a transport serves with, and is asked as well. Two tables of one protocol's addresses exist
+    /// because they answer two different questions, and an address either of them names is an
+    /// address this protocol owns — so a request is handed to the surface below only when NEITHER
+    /// claims it. A mount that asked one would hand away every address the other had that it did
+    /// not, silently, and the symptom is a route answering around the loop.
+    fn claims(&self, path: &str, method: &str) -> bool {
+        claims_the_path(path) || self.chain.claims_the_target(path, method)
+    }
+
     /// Walk one arrival through the loop and answer with what it produced.
     fn answer(
         &self,
         arrival: &busbar_contract::transport::Arrival<'_>,
         dispatch: &dyn crate::root::units_a2a::A2aDispatch,
     ) -> axum::http::Response<axum::body::Body> {
-        let key = busbar_caps::UnitKey::new(
-            self.next_key
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        );
-        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
-            &self.kernel.admit_token(),
-            busbar_caps::PrincipalId::new(""),
-            0,
-        ));
-        let leases = busbar_kernel::slice::LeaseCell::new();
-        let meter = busbar_kernel::teller::AccrualMeter::new();
-        let ctx = busbar_kernel::teller::UnitCtx {
-            key,
-            origin: busbar_caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            // A data listener, and a unit of an ordinary plane. Both are answered with what is true
-            // for this mount rather than derived: a node that served this on its administrative
-            // listener would be running these units as kernel verbs, which is the wrong answer
-            // arrived at silently.
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        let (ended, answer) = self.leg.serve(
-            arrival,
-            &self.kernel,
-            &ctx,
-            busbar_kernel::teller::Run {
-                cell: &cell,
-                parent: None,
-                leases: &leases,
-                gauge: &self.gauge,
-                canary: &self.canary,
-                meter: &meter,
-            },
-            Some(dispatch),
-        );
+        // THE NODE'S PARTS, composed by the thing that owns them. This mount supplies the leg and
+        // the seam; the unit key, the hold cell, the leases, the meter and the two node-wide
+        // counters are the chain's, which is what makes one process one node however many planes
+        // are mounted on it.
+        let (ended, answer) = self.chain.run(&self.kernel, |ctx, run| {
+            self.leg.serve(arrival, &self.kernel, ctx, run, Some(dispatch))
+        });
         // THE ANSWER IS THE SURFACE'S WHERE THERE IS ONE. A unit that reached Route carries the
         // status, the headers and the body the operation's own surface wrote, and every one of them
         // reaches the wire unchanged.

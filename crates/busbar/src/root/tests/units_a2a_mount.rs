@@ -41,6 +41,58 @@ fn every_claim_of_the_plane_is_claimed_by_the_mount() {
     );
 }
 
+/// **And every address the plane's declared SURFACE names is claimed too.**
+///
+/// This protocol declares its addresses twice, because the two declarations answer two different
+/// questions: the claim table is what the kernel routes on, and the surface is what a transport
+/// serves with. A mount that asked only one would hand away every address the other had and it did
+/// not — silently, and the symptom is a route answering around the loop while the plane still says
+/// it owns it. So both are asked, and this cell walks the surface's own dispatch table to say so.
+#[test]
+fn every_address_the_declared_surface_names_is_claimed_by_the_mount() {
+    use busbar_contract::transport::surface::Dispatch;
+
+    let chain = a_chain();
+    let mut checked = 0;
+    for operation in busbar_plane_a2a::surface::SURFACE.operations {
+        for dispatch in operation.dispatch {
+            let Dispatch::Target { path, method, .. } = dispatch else {
+                // A document member and a framed call are not addressed by a request line, so
+                // there is no target for this cell to walk. They are claimed by the mount the
+                // binding declares, which the cell above already reads.
+                continue;
+            };
+            let example = concrete_target(path);
+            assert!(
+                claims_the_path(&example) || chain.claims_the_target(&example, method),
+                "the surface declares `{method} {path}` and the mount would have handed it \
+                 straight to the router below"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 6,
+        "this protocol addresses more than a handful of operations by request line; a cell that \
+         walked one or two would pass for a mount that had stopped claiming the rest"
+    );
+}
+
+/// One concrete request target that a declared template addresses.
+fn concrete_target(template: &str) -> String {
+    template
+        .split('/')
+        .map(|seg| {
+            if seg.starts_with('{') && seg.ends_with('}') {
+                "an-identifier"
+            } else {
+                seg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// One concrete path that a segment pattern matches.
 fn example_path(pattern: &[PathSeg]) -> String {
     let mut out = String::new();
@@ -198,6 +250,14 @@ fn a_mounted_surface(calls: Arc<SurfaceCalls>) -> axum::Router {
 const THIS_NODES_AUDIENCE: &str = "http://127.0.0.1:8080/a2a";
 
 /// Every source the leg needs, with the auth chain the caller asks for.
+/// The node's parts over THIS plane's own declared surface, which is what a mount is composed on.
+fn a_chain() -> Arc<PlaneChain> {
+    Arc::new(
+        PlaneChain::over(&busbar_plane_a2a::surface::SURFACE)
+            .expect("this plane's declared surface passes the contract's own check"),
+    )
+}
+
 /// This deployment's rates, at one flat figure and with no card — the shape a deployment that
 /// configured no `rate_card:` resolves. Declared here as well as beside the leg's own cells because
 /// a fixture shared between two test modules would be a production item existing for tests.
@@ -364,6 +424,7 @@ async fn a_unit_of_this_plane_travels_through_the_loop_and_the_surfaces_answer_r
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        a_chain(),
         1024 * 1024,
     );
 
@@ -403,6 +464,7 @@ async fn a_body_this_plane_does_not_name_goes_around_the_loop() {
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        a_chain(),
         1024 * 1024,
     );
 
@@ -425,6 +487,7 @@ async fn a_path_outside_the_claim_reaches_the_surface_unchanged() {
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        a_chain(),
         1024 * 1024,
     );
 
@@ -452,6 +515,7 @@ async fn a_bearer_for_another_audience_is_refused_and_the_surface_is_never_asked
         a_mounted_surface(Arc::clone(&calls)),
         a_leg_that_checks_the_audience(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        a_chain(),
         1024 * 1024,
     );
 
@@ -493,6 +557,7 @@ async fn a_bearer_for_this_mount_is_admitted_and_the_surface_answers() {
         a_mounted_surface(Arc::clone(&calls)),
         a_leg_that_checks_the_audience(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        a_chain(),
         1024 * 1024,
     );
 
@@ -523,6 +588,7 @@ async fn a_body_over_the_operators_cap_is_the_surfaces_to_refuse() {
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        a_chain(),
         8,
     );
 
