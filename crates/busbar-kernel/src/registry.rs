@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use crate::grammar::{Selector, SelectorFamily};
+use crate::grammar::Selector;
 
 /// Which generation of the registry a lookup is against.
 ///
@@ -443,63 +443,19 @@ pub fn precedence_order(claims: &[PlaneClaim]) -> Vec<usize> {
 
 /// Could these two selectors both match the same bytes?
 ///
-/// Total over the cross-product: every pair of forms has an answer, and where the two forms read
-/// different axes — a path pattern and a port, say — the answer is YES, because a request has both
-/// a path and a port and nothing here proves they cannot coincide. Refusing to boot on that is the
-/// conservative direction: an operator sees it once, at boot, with both claims named.
+/// The rule is READ here rather than spelled a second time, for every family and not just one of
+/// them. It used to be transcribed — the same arms, one crate down — and a transcription is exactly
+/// where a boot that proves two claims disjoint and a request that matches both come apart: the
+/// contract is what a plane writes its claims in, so the contract's reading IS what a declaration
+/// means. The path family was read here already; the header family and the transport family were
+/// still copies, and the transport copy compared a handshake name byte for byte where the contract
+/// compares it case-insensitively. What the kernel keeps of the overlap question is what the
+/// contract has no business knowing: how specific one selector is against another, which is the
+/// precedence order and not part of what a selector IS.
 ///
-/// Reflexive and symmetric by construction, and both are asserted by the battery.
+/// Total over the cross-product, reflexive and symmetric — all three by the contract's
+/// construction, and all three asserted by the battery against this spelling.
 pub fn overlaps(left: &Selector, right: &Selector) -> bool {
-    if crate::grammar::family(left) != crate::grammar::family(right) {
-        // Different axes. Nothing here can prove they do not coincide, so they might.
-        return true;
-    }
-    match crate::grammar::family(left) {
-        SelectorFamily::Header => header_overlaps(left, right),
-        SelectorFamily::Path => path_overlaps(left, right),
-        SelectorFamily::Transport => transport_overlaps(left, right),
-    }
-}
-
-/// Header forms: different headers never collide; the same header collides unless two exact values
-/// differ, or a prefix rules the value out.
-fn header_overlaps(left: &Selector, right: &Selector) -> bool {
-    let (ln, rn) = (left.header_name(), right.header_name());
-    if !matches!((ln, rn), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b)) {
-        return false;
-    }
-    match (left, right) {
-        (Selector::HeaderExact(_, a), Selector::HeaderExact(_, b)) => a == b,
-        (Selector::HeaderExact(_, v), Selector::HeaderPrefix(_, p))
-        | (Selector::HeaderPrefix(_, p), Selector::HeaderExact(_, v)) => v.starts_with(p),
-        (Selector::HeaderPrefix(_, a), Selector::HeaderPrefix(_, b)) => {
-            a.starts_with(b) || b.starts_with(a)
-        }
-        // Presence matches every value of that header, so it overlaps anything on it.
-        _ => true,
-    }
-}
-
-/// Path forms, as the contract decides them.
-///
-/// The rule is READ here rather than spelled a second time. It used to be transcribed — the same
-/// arms, one crate down — and a transcription is exactly where a boot that proves two claims
-/// disjoint and a request that matches both come apart: the contract is what a plane writes its
-/// claims in, so the contract's reading is the one the declaration means. What the kernel keeps of
-/// the path question is what the contract has no business knowing: how specific one selector is
-/// against another, which is the precedence order and not part of what a selector IS.
-fn path_overlaps(left: &Selector, right: &Selector) -> bool {
-    left.overlaps(right)
-}
-
-/// Transport forms, as the contract decides them.
-///
-/// Read here for the same reason the path family is, and the reading it replaces is why the rule
-/// matters: the transcription compared a handshake name with `==` while the contract compares it
-/// with `eq_ignore_ascii_case`, so two planes claiming one name in two capitalisations sealed as
-/// disjoint and a connection presenting either matched both. Which one served it fell to the
-/// precedence order rather than to a decision an operator was ever shown.
-fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
     left.overlaps(right)
 }
 
