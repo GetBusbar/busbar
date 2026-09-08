@@ -289,10 +289,22 @@ impl SlabBytes {
 /// fallible because the arena is fixed size: exhaustion ends the unit at the step that asked, it
 /// does not grow the arena.
 ///
+/// # Threading
+/// An arena is PER UNIT. The task running the unit owns it for the length of that unit and hands
+/// it to no other thread while a borrow it produced is alive, so the bound here is `Send` alone.
+///
+/// `Sync` was here and could not be honoured. These allocators take `&self` and return slices
+/// borrowed FROM `self`, which is exactly a bump allocator's signature, and a bump allocator is not
+/// `Sync`: sharing one across threads means two threads carving the same cursor. A lock does not
+/// rescue it either — a borrow cannot escape the guard that made it. So the two clauses together
+/// were unsatisfiable in safe Rust, and every implementor in the tree was a double that leaked its
+/// allocations to fake a lifetime it could not produce. Removing the clause the design never needed
+/// is what makes a real one implementable; `busbar-kernel`'s `UnitArena` is that one.
+///
 /// # Errors
 /// Both allocation methods return [`ArenaBudget`] when the request does not fit in what is left
 /// of the arena.
-pub trait Arena: Send + Sync {
+pub trait Arena: Send {
     /// Copy bytes into the arena.
     fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget>;
 
