@@ -46,6 +46,10 @@ use crate::toml_lite::Document;
 /// The construction config, workspace-relative — read through the `Ctx` so a plant can change it.
 const CONFIG_REL: &str = "qa/construction.toml";
 
+/// The workspace manifest the resolved closure is read from, as a path RELATIVE to the workspace
+/// root — which is what [`Ctx::cargo_metadata`] takes, and what the overlay key is written against.
+const MANIFEST_REL: &str = "Cargo.toml";
+
 pub struct Hit {
     pub crate_name: String,
     pub offender: String,
@@ -259,48 +263,40 @@ struct Metadata {
     feature_defs: BTreeMap<String, BTreeMap<String, Vec<String>>>,
 }
 
-fn run_cargo_metadata(manifest_path: &Path) -> Value {
-    // OFFLINE FIRST, BUT NEVER OFFLINE-ONLY. The lockfile is already resolved (checked in) and a
-    // denylist audit reads it, so the ordinary run has no reason to touch the network and a flaky
-    // registry must not turn a source audit into a network-dependent step.
-    //
-    // It cannot be the ONLY attempt, though, and that is not a preference. `cargo metadata` with no
-    // `--filter-platform` resolves for EVERY target platform, so it wants the `.crate` files of
-    // packages this workspace never builds on any host it is built on -- the android and windows
-    // shims a transitive dependency declares. `cargo build` and `cargo test` never download those,
-    // so a machine's registry cache is missing them until something asks for the whole graph, and
-    // `--offline` then fails hard. On a runner that installs a toolchain but has no warm registry
-    // this is DETERMINISTIC: every run panicked, the caller read the panic as "the tool did not
-    // answer", and all nine source-denylist rows reported UNPROVEN -- an audit reporting silence as
-    // an absence of findings, which is the one outcome a gate must never produce.
-    //
-    // `--filter-platform` would silence the download by narrowing the audit to one platform, which
-    // changes what "the transitive closure" means. So the closure stays whole and the fetch is
-    // allowed exactly when the cache cannot answer.
+/// THE FIXTURE-WORKSPACE ENTRY. The twelve-fixture battery drives whole cargo workspaces that live
+/// outside `cx.root()`, so it cannot go through the `Ctx` seam and reaches `cargo metadata` here.
+///
+/// The offline-first-then-online sequence this used to carry now lives on [`Ctx::cargo_metadata`],
+/// beside the incident that earned it, so the run the GATE makes and the run a fixture makes agree
+/// about when the network is allowed.
+fn fixture_cargo_metadata(manifest_path: &Path) -> Result<Value, String> {
     let run = |offline: bool| {
         let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
         cmd.arg("metadata").arg("--format-version=1");
         if offline {
             cmd.arg("--offline");
         }
-        cmd.arg("--manifest-path")
-            .arg(manifest_path)
-            .output()
-            .unwrap_or_else(|e| panic!("xtask denylist: failed to run `cargo metadata`: {e}"))
+        cmd.arg("--manifest-path").arg(manifest_path).output()
     };
-    let mut out = run(true);
+    let mut out = run(true).map_err(|e| format!("`cargo metadata` would not run: {e}"))?;
     if !out.status.success() {
-        out = run(false);
+        out = run(false).map_err(|e| format!("`cargo metadata` would not run: {e}"))?;
     }
     if !out.status.success() {
-        panic!(
-            "xtask denylist: `cargo metadata` exited {}: {}",
+        return Err(format!(
+            "`cargo metadata` exited {}: {}",
             out.status,
-            String::from_utf8_lossy(&out.stderr)
-        );
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
     }
-    serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("xtask denylist: cargo metadata produced invalid JSON: {e}"))
+    parse_metadata_json(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// A CLOSURE THIS TOOL CANNOT READ IS NOT AN EMPTY CLOSURE. Invalid JSON out of `cargo metadata`
+/// used to abort the process; it is now a message the caller turns into a refusal row, because an
+/// unparsed graph carries no banned crate and carrying no banned crate is the passing answer.
+fn parse_metadata_json(text: &str) -> Result<Value, String> {
+    serde_json::from_str(text).map_err(|e| format!("`cargo metadata` produced invalid JSON: {e}"))
 }
 
 fn parse_metadata(v: &Value) -> Metadata {
@@ -654,15 +650,30 @@ impl AllowEntry {
     }
 }
 
+pub const ALLOWLIST_REL: &str = "qa/denylist-allow.toml";
+
 /// The load-bearing allow-list check. Any `[[allow]]` entry missing `reason` or `owner` refuses the
 /// ENTIRE run rather than silently accepting a half-filled waiver. Whether each entry still has
 /// anything to waive is the other half, and is decided by [`stale_waivers`] once the hits are known.
-fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
-    let path = root.join("qa/denylist-allow.toml");
-    if !path.exists() {
-        return Vec::new();
+///
+/// A REFUSAL IS A FAIL ROW, NOT AN ABORTED RUN. These four checks used to `panic!`, which is right
+/// about the verdict and wrong about the mechanism: a panic is exit 101, which is neither "the gate
+/// failed" nor "the gate could not run", and it takes every OTHER gate in a batched `gate --all`
+/// down with it. A committer iterating on a waiver got a stack trace across the whole run instead of
+/// one red line naming their entry. They are `Err` now, and the caller turns each into the refusal
+/// row it always meant.
+///
+/// AND IT READS THROUGH THE `Ctx`, so a malformed entry can be PLANTED and the refusal proven. Read
+/// off the disk it could not be, which is how four load-bearing checks reached this round with no
+/// case behind any of them.
+fn load_allowlist(cx: &Ctx) -> Result<Vec<AllowEntry>, String> {
+    if !cx.exists(ALLOWLIST_REL) {
+        return Ok(Vec::new());
     }
-    let doc = toml_lite::parse(&path);
+    let text = cx
+        .read(ALLOWLIST_REL)
+        .map_err(|e| format!("{ALLOWLIST_REL} could not be read ({e}), so no waiver was judged"))?;
+    let doc = toml_lite::parse_text(&text);
     let mut allowed = Vec::new();
     for entry in doc.array_table("allow") {
         let crate_name = entry.get_one("crate").unwrap_or_default().to_string();
@@ -675,11 +686,11 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
         let reason = entry.get_one("reason").unwrap_or("").trim().to_string();
         let owner = entry.get_one("owner").unwrap_or("").trim().to_string();
         if reason.is_empty() || owner.is_empty() {
-            panic!(
-                "qa/denylist-allow.toml: entry for crate={crate_name:?} dep/path={offender:?} is \
-                 missing a reason and/or an owner — an allow-list entry without both is a refusal, \
-                 not a waiver. Fix the entry or remove it."
-            );
+            return Err(format!(
+                "{ALLOWLIST_REL}: entry for crate={crate_name:?} dep/path={offender:?} is missing \
+                 a reason and/or an owner — an allow-list entry without both is a refusal, not a \
+                 waiver. Fix the entry or remove it."
+            ));
         }
         let via_raw = entry
             .get_one("via")
@@ -694,20 +705,20 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
         });
         if let Some(v) = &via {
             if !is_dep_entry {
-                panic!(
-                    "qa/denylist-allow.toml: entry for crate={crate_name:?} carries `via = {v:?}` \
-                     on a `path` (own-src) waiver — `via` only narrows a `dep` (dependency-graph) \
+                return Err(format!(
+                    "{ALLOWLIST_REL}: entry for crate={crate_name:?} carries `via = {v:?}` on a \
+                     `path` (own-src) waiver — `via` only narrows a `dep` (dependency-graph) \
                      waiver, since it is computed over the resolved dependency graph. Remove `via` \
                      or change this to a `dep` entry."
-                );
+                ));
             }
             if offender.contains("::") || offender.contains("(feature:") {
-                panic!(
-                    "qa/denylist-allow.toml: entry for crate={crate_name:?} dep={offender:?} \
-                     carries `via = {v:?}`, but {offender:?} is not a plain dependency-graph crate \
-                     name — `via` is only meaningful for a `dep` entry that bans a crate name \
-                     (e.g. `libc`), not a std-path or a `tokio (feature: ...)` offender."
-                );
+                return Err(format!(
+                    "{ALLOWLIST_REL}: entry for crate={crate_name:?} dep={offender:?} carries \
+                     `via = {v:?}`, but {offender:?} is not a plain dependency-graph crate name — \
+                     `via` is only meaningful for a `dep` entry that bans a crate name (e.g. \
+                     `libc`), not a std-path or a `tokio (feature: ...)` offender."
+                ));
             }
         }
         allowed.push(AllowEntry {
@@ -716,7 +727,7 @@ fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
             via,
         });
     }
-    allowed
+    Ok(allowed)
 }
 
 /// Is there a normal-dependency path from `root_id` to a node named `target_name` that never
@@ -847,6 +858,18 @@ pub(crate) fn stale_waivers(allowed: &[AllowEntry], hits: &[Hit]) -> Vec<String>
 /// it — which is a proof about a fixture, and drifts from the tree the gate actually judges. The
 /// one input still read outside the `Ctx` is `cargo metadata`, which needs a real manifest on a
 /// real disk; that is why the resolve-graph half keeps its fixture workspaces.
+/// The one shape a run that could not read its own input takes. `crates_scanned: 0` plus a named
+/// defect is what `denylist_gate` turns into a RED `denylist:scan` row — the answer a refusal owes,
+/// as opposed to a process that stopped.
+fn refused(defect: String) -> Report {
+    Report {
+        hits: Vec::new(),
+        crates_scanned: 0,
+        defects: vec![defect],
+        stale_waivers: Vec::new(),
+    }
+}
+
 pub fn run(cx: &Ctx) -> Report {
     let root = cx.root();
     let config = match cx.read(CONFIG_REL) {
@@ -864,7 +887,10 @@ pub fn run(cx: &Ctx) -> Report {
         }
     };
     let banned = banned_lists_of(&config);
-    let allowed = load_allowlist(root);
+    let allowed = match load_allowlist(cx) {
+        Ok(allowed) => allowed,
+        Err(defect) => return refused(defect),
+    };
     let crates = match pure_crates(cx, &config) {
         Ok(crates) if crates.is_empty() => {
             // Every pure kind's glob matched nothing. On a tree that has planes, hooks and auth
@@ -892,7 +918,25 @@ pub fn run(cx: &Ctx) -> Report {
         }
     };
 
-    let meta_json = run_cargo_metadata(&root.join("Cargo.toml"));
+    // THE RESOLVED CLOSURE, THROUGH THE SEAM. This used to build its own `std::process::Command`,
+    // which had two consequences and both were structural: a failure — a spawn error, a non-zero
+    // exit, unparseable output — aborted the whole process on exit 101 instead of refusing on a row,
+    // and the `cargo-metadata:<manifest>` overlay key was unreachable, so the metadata half of the
+    // one gate whose entire subject is the dependency closure could never be planted and therefore
+    // never RED-proved.
+    let meta_json = match cx
+        .cargo_metadata(MANIFEST_REL)
+        .and_then(|text| parse_metadata_json(&text))
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return refused(format!(
+                "the resolved dependency closure could not be read ({e}) — a closure this tool \
+                 cannot read carries no banned crate, and carrying no banned crate is the passing \
+                 answer to every dependency ban"
+            ))
+        }
+    };
     let meta = parse_metadata(&meta_json);
     let fragments = config.table("gate").get_list("test_path_fragments");
 
@@ -952,7 +996,8 @@ pub fn run_on_with_allow(
     fragments: &[String],
     allow: Vec<(&str, &str, Option<&str>)>,
 ) -> Vec<Hit> {
-    let meta_json = run_cargo_metadata(manifest_path);
+    let meta_json = fixture_cargo_metadata(manifest_path)
+        .expect("the fixture workspace's `cargo metadata` resolves");
     let meta = parse_metadata(&meta_json);
     let allowed: Vec<AllowEntry> = allow
         .into_iter()
@@ -994,7 +1039,8 @@ pub fn run_on(
     fragments: &[String],
 ) -> Vec<Hit> {
     let root = manifest_path.parent().unwrap();
-    let meta_json = run_cargo_metadata(manifest_path);
+    let meta_json = fixture_cargo_metadata(manifest_path)
+        .expect("the fixture workspace's `cargo metadata` resolves");
     let meta = parse_metadata(&meta_json);
     let mut hits = Vec::new();
     for pc in &crates {

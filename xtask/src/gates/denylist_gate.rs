@@ -126,6 +126,44 @@ impl Gate for DenylistGate {
             &["scanned"],
         ));
 
+        // THE RESOLVED CLOSURE, PLANTED. The metadata half of this gate used to build its own
+        // `std::process::Command`, so the `cargo-metadata:` overlay key was unreachable and the one
+        // input the whole rule is about could not be moved by any plant — the half of the gate with
+        // the most to prove had no case behind it. A closure that will not parse now reaches the
+        // scan row as a named refusal; before the routing it aborted the process on exit 101, and
+        // before that it simply ignored this plant and reported green.
+        let mut unreadable = Overlay::new();
+        unreadable.set_command("cargo-metadata:Cargo.toml", "{ this is not json");
+        report.push(prove_red(
+            cx,
+            self,
+            "a dependency closure that will not parse is a refusal, not an empty closure",
+            &[ROW_SCAN],
+            unreadable,
+            &["closure"],
+        ));
+
+        // THE ALLOW-LIST'S OWN REFUSALS, PLANTED. A `[[allow]]` entry missing its reason or its
+        // owner is a refusal and always was — but it was a `panic!`, which is exit 101 and takes
+        // every other gate in a batched run down with it, and which no case could drive because the
+        // file was read off the disk. Read through the `Ctx`, the entry is plantable and the refusal
+        // is a row.
+        for (label, entry) in [
+            (
+                "an allow-list entry with no reason is a refusal, not a waiver",
+                "[[allow]]\ncrate = \"busbar-mcp\"\ndep = \"libc\"\nowner = \"nobody\"\n",
+            ),
+            (
+                "a `via` narrowing on an own-src waiver is refused, not quietly widened",
+                "[[allow]]\ncrate = \"busbar-mcp\"\npath = \"std::fs\"\nreason = \"a reason long \
+                 enough to be one\"\nowner = \"somebody\"\nvia = \"tokio\"\n",
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(denylist::ALLOWLIST_REL, entry);
+            report.push(prove_red(cx, self, label, &[ROW_SCAN], ov, &["allow"]));
+        }
+
         // Two REAL red proofs, driven through `Gate::run` over fixture trees whose input is gone:
         // "0 crates scanned, 0 hits" printed as OK is a proof of nothing dressed as a proof of
         // purity. The renamed-table fixture carries a genuinely libc-dependent plane crate
