@@ -117,7 +117,7 @@ Licences of everything fetched at run time: `a2a-tck/LICENSING.md`.
 
 `docs/design/ARCHITECTURE.md` Appendix B is the one part of the design written as testable rules
 (the parity bindings, PB-0 and one table row per binding). `qa/design-bindings.json` maps each
-binding to the checks that prove it today, and `scripts/design-bindings.sh --check` proves those
+binding to the checks that prove it today, and `cargo xtask gate design-bindings` proves those
 checks still exist (one ledger row per binding through `fleet-fixtures/lib.sh`, decided by
 `fleet-fixtures/verdict.sh`; zero rows is red). `--check --strict` makes an unmapped binding red and
 is what `scripts/verify-1.6.0-done.sh` runs. `--write` regenerates the JSON and

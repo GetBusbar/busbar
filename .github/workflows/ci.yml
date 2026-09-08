@@ -2390,13 +2390,13 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Construction gate self-test (every rule proves it sees its planted violation)
-        run: scripts/construction-gate.sh --selftest
+        run: cargo xtask gate construction --selftest
       - name: Construction gate (RED by design today; see the job comment for the flip)
         id: check
         run: |
           set -uo pipefail
           mkdir -p target/construction
-          scripts/construction-gate.sh --check; rc=$?
+          cargo xtask gate construction | tee target/construction/report.md; rc="${PIPESTATUS[0]}"
           echo "$rc" > target/construction/rc
           exit "$rc"
       - name: Name the verdict for the umbrella
@@ -2422,14 +2422,16 @@ jobs:
   # DESIGN BINDINGS — "is what we built compliant with what we designed?" qa/design-bindings.json maps
   # every ARCHITECTURE.md Appendix B binding to the checks that prove it (tests, oracle cells, lints,
   # gates). Two things are asserted here, no toolchain needed (stdlib python + bash):
-  #   1. EXISTENCE (`--check`, plain mode): every referenced check still exists in the tree. A
-  #      vanished test or cell is RED. An UNMAPPED binding is a named gap — listed, not red; the
-  #      strict form that makes gaps red is scripts/verify-1.6.0-done.sh's, the DONE claim.
-  #   2. REGEN-CLEAN: the committed qa/design-bindings.json + qa/DESIGN-BINDINGS.md are what
-  #      `design-bindings.py --write` derives from Appendix B today. Same class as the openapi,
-  #      config-schema and inventory drift guards: a hand-edit that skips the regen lands a stale
-  #      generated artifact. The derivation writes into target/ and is diffed against the committed
-  #      files; the script has no --check flag, so the diff IS the check.
+  #   1. EXISTENCE (the plain run): every referenced check still exists in the tree. A vanished
+  #      test or cell is RED. An UNMAPPED binding is a named gap — listed, not red, and only a gap
+  #      the committed ledger already records may skip; the strict form that makes any gap red is
+  #      `--strict`, which scripts/verify-1.6.0-done.sh runs as the DONE claim.
+  #   2. REGEN-CLEAN: the committed qa/design-bindings.json + qa/DESIGN-BINDINGS.md are what the
+  #      gate derives from Appendix B today. Same class as the openapi, config-schema and inventory
+  #      drift guards: a hand-edit that skips the regen lands a stale generated artifact. This used
+  #      to be a second step that regenerated into target/ and diffed; it is now the owed ledger row
+  #      `design-bindings:regen-clean`, reconciled with every other row rather than folded into an
+  #      exit code no ledger names. Regenerate with `cargo xtask gate design-bindings --write`.
   # Self-test FIRST, as everywhere else in this file.
   design-bindings:
     name: design bindings (every Appendix B binding proven by a check that exists · regen-clean)
@@ -2443,25 +2445,9 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Design bindings self-test (the gate proves itself before it judges the tree)
-        run: scripts/design-bindings.sh --selftest
-      - name: Design bindings check (existence; unmapped bindings listed as named gaps)
-        run: scripts/design-bindings.sh --check
-      - name: Design bindings regen-clean (committed ledger == fresh derivation from Appendix B)
-        run: |
-          set -euo pipefail
-          mkdir -p target/design-bindings
-          python3 scripts/design-bindings.py --write --out-json target/design-bindings/fresh.json --out-md target/design-bindings/fresh.md
-          stale=0
-          diff -u qa/design-bindings.json target/design-bindings/fresh.json || stale=1
-          diff -u qa/DESIGN-BINDINGS.md target/design-bindings/fresh.md || stale=1
-          if [ "$stale" -ne 0 ]; then
-            # The regen command is spelled without its directory on purpose: cargo xtask full-gate
-            # discovers gates from this file's run lines, and a literal path here would make it run
-            # the --write (rewriting the committed ledger locally) as if it were a gate.
-            echo "::error::qa/design-bindings.json or qa/DESIGN-BINDINGS.md is stale. Regenerate with design-bindings.sh --write (under scripts/) and commit both files."
-            exit 1
-          fi
-          echo "design bindings: committed ledger matches a fresh derivation"
+        run: cargo xtask gate design-bindings --selftest
+      - name: Design bindings (existence; unmapped bindings listed as named gaps; regen-clean)
+        run: cargo xtask gate design-bindings
 
   ci-umbrella:
     name: ci umbrella

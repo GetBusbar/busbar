@@ -9,7 +9,7 @@ zero.
 
 `scripts/plane-purity-lint.sh --strict` counts, per plane crate, the lines of that crate's OWN test
 code that name `busbar_core::`. The same number is `ports-only-tests:<crate>` in
-`scripts/construction-gate.sh`. For `busbar-llm` the walk is `877 → 565 → 23 → 20`.
+`cargo xtask gate construction`. For `busbar-llm` the walk is `877 → 565 → 23 → 20`.
 
 The twenty lines that remain are not a long tail of sloppiness. They are four distinct shapes, and
 each shape has a different reason for existing. Counting them as one number hides that, which is why

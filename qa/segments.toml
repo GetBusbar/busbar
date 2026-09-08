@@ -386,16 +386,16 @@ run    = "bash testing/llm-conformance/selftest.sh && bash testing/llm-conforman
 id     = "construction-gate"
 status = "active"
 tier   = "fast"
-# THE CONSTRUCTION GATE (scripts/construction-gate.sh) — how the tree is BUILT measured against
+# THE CONSTRUCTION GATE (cargo xtask gate construction) — how the tree is BUILT measured against
 # docs/design/ARCHITECTURE.md with the ceilings in qa/construction.toml (one attempt seam, request-path
 # function size, ports-only plane→kernel reaches, no uninstalled seam, neutral-no-dialect, single
-# terminal). RUNS REPORT-ONLY here (`--summary`: prints STATUS rule current/ceiling per row plus the
-# verdict line, exits 0), the same posture as plane-grep/secret-hygiene above, because `--check` is RED
-# by design on HEAD (three rows over their ceilings) while the construction work it measures is in
-# flight; ci.yml runs the real `--check` in its own job with continue-on-error for the same reason.
-# Arming is a one-token change (`--summary` -> `--check`) once every row is within its ceiling — no code
-# edit. The --selftest (each rule proves it sees its own planted violation; zero rows is red) runs FIRST.
-run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --summary"
+# terminal). RUNS REPORT-ONLY here (`--report`: prints every row and the verdict line, exits 0), the
+# same posture as plane-grep/secret-hygiene above, because the verdict is RED by design on HEAD (rows
+# over their ceilings) while the construction work it measures is in flight; ci.yml runs the scored
+# form in its own job with continue-on-error for the same reason. Arming is a one-token change
+# (`--report` -> nothing) once every row is within its ceiling — no code edit. The --selftest (each
+# rule proves it sees its own planted violation; zero rows is red) runs FIRST.
+run    = "cargo xtask gate construction --selftest && cargo xtask gate construction --report"
 
 [[segment]]
 id     = "documented-claims"
@@ -417,14 +417,15 @@ run    = "scripts/documented-claims-check.sh --selftest && scripts/documented-cl
 id     = "design-bindings"
 status = "active"
 tier   = "fast"
-# THE DESIGN BINDINGS GATE (scripts/design-bindings.sh) — "is what we built compliant with what we
-# designed?" qa/design-bindings.json maps every ARCHITECTURE.md Appendix B binding to the checks that
-# prove it (tests, oracle cells, lints, gates); `--check` proves every referenced check still EXISTS in
+# THE DESIGN BINDINGS GATE (cargo xtask gate design-bindings) — "is what we built compliant with what
+# we designed?" qa/design-bindings.json maps every ARCHITECTURE.md Appendix B binding to the checks that
+# prove it (tests, oracle cells, lints, gates); the run proves every referenced check still EXISTS in
 # the tree (a renamed-away test or dropped cell is RED) and lists every UNMAPPED binding as a named gap
 # (plain mode: reported, not red — the strict form that makes a gap red is verify-1.6.0-done.sh's DONE
-# claim). Regen-cleanliness of the committed ledger is asserted in ci.yml's design-bindings job. The
-# --selftest (one bogus ref exactly one FAIL, empty table vacuous-red, strict vs plain on a gap) runs FIRST.
-run    = "scripts/design-bindings.sh --selftest && scripts/design-bindings.sh --check"
+# claim). Regen-cleanliness of the committed ledger is no longer a separate CI step: it is the owed row
+# `design-bindings:regen-clean`, reconciled here with all the others. The --selftest (one bogus ref
+# exactly one FAIL, an emptied table leaving every owed binding unrecorded, a stale ledger) runs FIRST.
+run    = "cargo xtask gate design-bindings --selftest && cargo xtask gate design-bindings"
 
 [[segment]]
 id     = "kernel-token-wire-purity"
