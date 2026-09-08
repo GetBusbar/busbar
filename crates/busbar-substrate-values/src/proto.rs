@@ -924,6 +924,65 @@ pub struct ProtocolDecl {
 }
 
 impl ProtocolDecl {
+    /// A NAME-ONLY DECLARATION: this key, and the neutral zero for every other field.
+    ///
+    /// The declaration has forty-odd fields and almost every one of them is "no". A caller that
+    /// needs a decl in order to exercise a fold over `name`/`has_model_in_url` had to write all
+    /// forty out, and two copies of that literal already existed — one here, one on the crate that
+    /// holds the fold. Two copies of a struct literal is two places a NEW field has to be added,
+    /// and the second one is the one that gets missed.
+    ///
+    /// So the neutral row is written ONCE, beside the struct whose fields it names, and a caller
+    /// states only what is true of its own case:
+    ///
+    /// ```ignore
+    /// static URL_MODEL: ProtocolDecl = ProtocolDecl { has_model_in_url: true, ..ProtocolDecl::named("telex") };
+    /// ```
+    ///
+    /// `const`, so it composes into a `static` without a lock or a lazy cell.
+    pub const fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            codec: None,
+            handler: None,
+            verbs: &[],
+            head_keys: &[],
+            streaming_content_type: None,
+            array_stream_shim_key: None,
+            native_tool_id_prefix: None,
+            ingress_auth: IngressAuth::Bearer,
+            egress_auth_headers: None,
+            egress_auth_lane_constant: false,
+            stream_usage_requires_opt_in: false,
+            requires_max_tokens: false,
+            stop_sequence_cap: None,
+            cache_markers_model_gated: false,
+            fills_thought_signature: false,
+            frame_after_message_start: None,
+            reshapes_body_at_path_base: false,
+            max_cache_control_breakpoints: None,
+            quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+            ingress_is_eventstream: false,
+            emits_sse_done_terminator: false,
+            max_citations_per_delta: None,
+            egress_user_agent: crate::proxy::EGRESS_UA_DEFAULT,
+            has_model_in_url: false,
+            auth_failure_status_and_kind: (http::StatusCode::UNAUTHORIZED, ERR_TYPE_AUTHENTICATION),
+            ingress_relays_amzn_headers: false,
+            ingress_relayed_response_header_names: &[],
+            auth_failure_message: "authentication failed",
+            uses_array_stream_shim: false,
+            has_native_path_not_found: false,
+            egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
+            models_list_envelope: None,
+            claims: None,
+            residual_claims: None,
+            residual_default: false,
+            vendor_response_metadata: None,
+            list_models_fingerprint_headers: &[],
+        }
+    }
+
     /// True when this protocol authenticates INBOUND requests with AWS SigV4 rather than a bearer
     /// token. The auth layer's one consumer of [`ProtocolDecl::ingress_auth`], kept as a predicate
     /// so the front door reads a QUESTION rather than comparing an enum it would then have to
