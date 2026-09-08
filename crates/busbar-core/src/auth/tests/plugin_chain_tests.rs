@@ -1080,3 +1080,125 @@ fn an_identified_chain_still_caches_the_leading_pass() {
         "an identified chain must still cache both the leading Pass and the Identify"
     );
 }
+
+/// The `Identify` TTL the revocable module below suggests, seconds. Well under
+/// `auth_cache::MAX_IDENTIFY_TTL_SECS`, so `put` stores it unclamped and the arithmetic in the test
+/// is the arithmetic the cache does.
+const REVOCABLE_TTL_SECS: u64 = 300;
+
+/// A cacheable module that `Identify`s a fixed credential until it is REVOKED at the module (after
+/// which it `Reject`s), and counts how many times the chain actually consulted it. The counter is
+/// the only way to observe "was this a cache hit or a real verification", and revocability is what
+/// makes the cached-allow window visible: the module has already said no while the cache is still
+/// saying yes.
+struct RevocableIdentify {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    revoked: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl busbar_api::AuthModule for RevocableIdentify {
+    fn name(&self) -> &'static str {
+        "revocable-identify-module"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.revoked.load(std::sync::atomic::Ordering::Relaxed) {
+            return busbar_api::AuthOutcome::Reject;
+        }
+        busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+            id: "test:alice".to_string(),
+            name: None,
+            roles: vec![],
+            ttl_secs: Some(REVOCABLE_TTL_SECS),
+        })
+    }
+    fn cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// A cache HIT must NOT be re-`put`. Re-inserting on a hit refreshes `expires_at`, so a credential
+/// presented more often than its own TTL is never re-verified against its module and an upstream
+/// revocation NEVER lands — the door stays open for as long as the traffic keeps flowing, which is
+/// precisely the traffic a revocation is issued about. `run_chain_cached`'s own comment already
+/// states the rule ("A cache HIT is never re-`put`"); this proves the code obeys it.
+///
+/// The chain reads `busbar_substrate::store::now()` itself, so the elapsed time is expressed by SEEDING the row
+/// at a past instant rather than by advancing a clock: a row inserted `TTL/2` ago is exactly the row
+/// a credential used every `TTL/2` presents, and `CredentialCache::get`'s explicit `now` lets the
+/// test ask when that row expires without waiting for it.
+#[test]
+fn a_cache_hit_does_not_extend_the_row_so_a_revocation_still_lands() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let revoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![(
+            "idp".to_string(),
+            Box::new(RevocableIdentify {
+                calls: calls.clone(),
+                revoked: revoked.clone(),
+            }) as Box<dyn crate::auth::AuthModule>,
+        )],
+        /* has_plugin_module = */ false,
+    );
+    let consulted = || calls.load(std::sync::atomic::Ordering::Relaxed);
+    // The verdict the module minted when it still recognised the credential — what the cache holds.
+    let cached_verdict = busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+        id: "test:alice".to_string(),
+        name: None,
+        roles: vec![],
+        ttl_secs: Some(REVOCABLE_TTL_SECS),
+    });
+    let cache = crate::auth_cache::CredentialCache::new();
+    let t0 = busbar_substrate::store::now();
+
+    // The admit that happened HALF A TTL AGO: the row expires at `t0 + TTL/2` and is live now.
+    cache.put(
+        "idp",
+        "cred",
+        &cached_verdict,
+        t0 - REVOCABLE_TTL_SECS / 2,
+        cache.generation(),
+    );
+    // The operator revokes the credential upstream. The module now refuses it.
+    revoked.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    // This use is inside the cached window, so it is admitted from the cache without consulting the
+    // module. That much is the cache working as designed — the row has not expired yet.
+    assert!(
+        matches!(
+            auth.run_chain_cached(Some("cred"), Some(&cache), None, None),
+            ChainVerdict::Identified { .. }
+        ),
+        "a live cached Identify still admits"
+    );
+    assert_eq!(consulted(), 0, "a hit does not consult the module");
+
+    // THE DEFECT: the hit must not have moved the row's expiry. Re-`put` on a hit pushes it to
+    // `t0 + TTL`, and since every subsequent use does the same, the row never expires at all.
+    assert!(
+        cache.get("idp", "cred", t0 + REVOCABLE_TTL_SECS / 2 + 1).is_none(),
+        "a cache HIT must not push the row's expiry out — a credential in continuous use would \
+         then never be re-verified and the revocation would never land"
+    );
+
+    // One TTL later the row is gone, so the same use goes back to the module — which now refuses.
+    // This is the arrival the defect postponed forever.
+    cache.put(
+        "idp",
+        "cred",
+        &cached_verdict,
+        t0 - REVOCABLE_TTL_SECS - 1,
+        cache.generation(),
+    );
+    assert_eq!(
+        auth.run_chain_cached(Some("cred"), Some(&cache), None, None),
+        ChainVerdict::Denied,
+        "once the row expires the credential is re-verified and the revocation lands"
+    );
+    assert_eq!(
+        consulted(),
+        1,
+        "the expired row sent the credential back to the module exactly once"
+    );
+}
