@@ -59,11 +59,10 @@ use std::future::Future;
 use busbar_caps::{
     Abort, AdminToken, Admission, Admit, AdmitRejected, AdmitToken, Approve, Arrival, Audit,
     Authenticate, Authenticated, Canary, CellError, Decision, Decode, DurabilityLost, Encode,
-    ExitToken, Hold, HoldAccrual,
-    HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin, OriginKind, Outcome, Posted,
-    PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal, Route, SessionId, StepName,
-    TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage, UsageLine, UsageToken,
-    VerifiedDestination, Verify,
+    ExitToken, Hold, HoldAccrual, HoldCell, KernelSeal, LedgerToken, Meter, MeterClassId, Origin,
+    OriginKind, Outcome, Posted, PostingFlags, PrincipalId, QuantitySource, ReasonCode, Refusal,
+    Route, SessionId, StepName, TransportKeyToken, TrustToken, UnitEnd, UnitKey, UnitToken, Usage,
+    UsageLine, UsageToken, VerifiedDestination, Verify,
 };
 
 use crate::registry::Generation;
