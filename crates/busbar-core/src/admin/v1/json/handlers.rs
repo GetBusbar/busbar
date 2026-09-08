@@ -4697,8 +4697,9 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     use crate::admin::v1::contract::{
         AdminAuthView, AuthView, ConfigValidateView, EffectiveConfigView, GroupView,
-        HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PluginInstallView,
-        PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView, UsageView,
+        HookHealthView, HookView, InfoView, ModelView, NamedDefView, Page, PlaneNamedDefView,
+        PluginInstallView, PluginReloadView, PluginView, PoolDetailView, PoolView, ProviderView,
+        UsageView,
     };
 
     // Info & topology.
@@ -4997,10 +4998,25 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         let root = section.path_root();
         let item = format!("{root}/{{name}}");
         let settings = format!("{root}/{{name}}/settings");
-        typed!(root.as_ref(), "get", "200", Page<NamedDefView>);
-        typed!(&item, "get", "200", NamedDefView);
-        typed!(&item, "put", "200", NamedDefView);
-        typed!(&settings, "patch", "200", NamedDefView);
+        // WHICH VIEW THIS SECTION SERVES, off the same predicate that decides which view the
+        // handler BUILDS (`named_def_views::unparseable_def_view`, and the plane seam's return
+        // type). A plugin-instance section documents the frozen 1.5.5 `NamedDefView`, whose
+        // `required` still carries `module`; a plane section documents `PlaneNamedDefView`, where
+        // `module` is genuinely optional. Documenting one shared view for both is what narrowed
+        // `NamedDefView.required` in 1.6.0 and broke the PB-75 byte-for-byte bind on twelve
+        // operations that shipped in 1.5.5 — the split is what keeps that bind true while leaving
+        // the plane sections free to grow.
+        if section.requires_module() {
+            typed!(root.as_ref(), "get", "200", Page<NamedDefView>);
+            typed!(&item, "get", "200", NamedDefView);
+            typed!(&item, "put", "200", NamedDefView);
+            typed!(&settings, "patch", "200", NamedDefView);
+        } else {
+            typed!(root.as_ref(), "get", "200", Page<PlaneNamedDefView>);
+            typed!(&item, "get", "200", PlaneNamedDefView);
+            typed!(&item, "put", "200", PlaneNamedDefView);
+            typed!(&settings, "patch", "200", PlaneNamedDefView);
+        }
         body_raw!(
             &item,
             "put",

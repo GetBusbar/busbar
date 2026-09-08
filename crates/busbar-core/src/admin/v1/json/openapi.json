@@ -1843,17 +1843,10 @@
         "type": "object"
       },
       "NamedDefView": {
-        "description": "ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD\n(`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and\n`tools:`/`agents:` when they land).\n\nDeliberately ONE view for every section rather than one per kind: the sections share the frozen\n`{module, settings}` spine and differ only by optional kind-specific fields, which are\n`skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly\n`{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,\nand a new section adds fields here (additive) instead of a parallel view + a parallel handler.\n\nSECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,\nwhich is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET\nREFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator\nlegitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),\nso projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets\nthrough `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps\nthe introspection the read surface exists for (\"what is configured here?\") with no field a value\ncould ride out on: the same discipline `token_configured` already applies to the reference.",
+        "description": "ONE definition of ONE 1.5.3 PLUGIN-INSTANCE named-DEFINITION map: the read shape of the generic\nnamed-map CRUD for the two sections that shipped in 1.5.5 —\n`GET /api/v1/admin/identity-providers[/{name}]` and `GET /api/v1/admin/export[/{name}]`.\n\nONE view for both rather than one per kind: they share the frozen `{module, settings}` spine and\ndiffer only by optional kind-specific fields, which are `skip_serializing_if`-omitted for the\nsection that has none. So `/export` serves exactly `{name, module, settings_keys}` while\n`/identity-providers` additionally carries its ceiling.\n\nTHIS TYPE IS FROZEN TO ITS 1.5.5 SHAPE and is not the place a new section adds a field. PB-75\nbinds the served `openapi.json` to 1.5.5 byte-for-byte except for additive endpoints, and this\nschema is referenced by twelve operations that all shipped in 1.5.5. 1.6.0 briefly widened it to\ncover the two NEW plane sections (`tools:`, `agents:`) as well, and that cost real contract\nground: `agents:` entries name no plugin, so `module` acquired a `skip_serializing_if` and\nschemars duly dropped it from `required` — narrowing the contract for `/export` and\n`/identity-providers`, whose bodies had never once omitted it. A section whose entries are not\nplugin instances belongs on [`PlaneNamedDefView`] instead; the two schemas are separate precisely\nso neither can drag the other's guarantees down.\n\nSECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,\nwhich is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET\nREFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator\nlegitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),\nso projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets\nthrough `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps\nthe introspection the read surface exists for (\"what is configured here?\") with no field a value\ncould ride out on: the same discipline `token_configured` already applies to the reference.",
         "properties": {
           "browser_login_configured": {
             "description": "`identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that\nputs a button on the hosted login page.",
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
-          "fingerprint_pinned": {
-            "description": "`agents` ONLY: whether an approved card FINGERPRINT is pinned yet. A registration with a\nroot but no fingerprint is the normal state of a fresh entry awaiting approval, and it is\nthe state an operator most needs to be able to see.",
             "type": [
               "boolean",
               "null"
@@ -1867,26 +1860,12 @@
             ]
           },
           "module": {
-            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nOMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today\n`agents:`, whose entries describe endpoints somebody else runs\n(`NamedMapSection::requires_module`).\nEvery section that HAS a module requires it to be non-empty, so this can never be omitted\nfor one that does.",
+            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nALWAYS SERIALIZED, and therefore always in the schema's `required` list — the 1.5.5\nguarantee, restored. Both sections this view serves demand a non-empty `module:` on every\nwrite path (`NamedMapSection::requires_module`), so the only way to reach an empty one is an\n`unparseable` overlay entry whose raw document had no `module` key; that case emits\n`\"module\":\"\"`, exactly as 1.5.5 did, rather than dropping the key. A section whose entries\nlegitimately have no module is not modelled here at all — see [`PlaneNamedDefView`].",
             "type": "string"
           },
           "name": {
             "description": "The instance NAME: the map key, and the token every reference site uses.",
             "type": "string"
-          },
-          "pin_mechanism": {
-            "description": "`agents` ONLY: which authenticity root this registration is pinned to (`jws_issuer_key` |\n`cert_spki` | `mtls` | `unpinned`). Projected because an operator scanning a registration\nlist needs to SEE which entries have no root; a mechanism that could only be discovered by\nreading the config file is a mechanism nobody audits.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "reverify_ttl": {
-            "description": "`agents` ONLY: the re-verification cadence this registration carries, as written. The\nbackend `url:` is deliberately NOT projected here: it is the real remote endpoint and is\nnever client-visible.",
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "settings_keys": {
             "description": "The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the\nredacted projection of `settings:`. Operator/API-owned and never interpreted here, but also\nnever a place a VALUE can leak from: a settings value may be a credential (see the type doc),\nand this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The\nvalues are readable only where they are writable: the config file and the config overlay.",
@@ -1912,6 +1891,7 @@
         },
         "required": [
           "name",
+          "module",
           "settings_keys"
         ],
         "type": "object"
@@ -2041,6 +2021,28 @@
         ],
         "type": "object"
       },
+      "Page_PlaneNamedDefView": {
+        "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PlaneNamedDefView"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "Page_PluginView": {
         "description": "A cursor-paginated list envelope. `items` is this page; `next_cursor` is `Some` when more remain.\nGeneric over the item view so every list endpoint shares one shape.",
         "properties": {
@@ -2117,6 +2119,62 @@
         },
         "required": [
           "settings"
+        ],
+        "type": "object"
+      },
+      "PlaneNamedDefView": {
+        "description": "The read shape of a PLANE named-definition map: the 1.6.0-NEW sections\n(`GET /api/v1/admin/tools[/{name}]`, `GET /api/v1/admin/agents[/{name}]`), whose entries describe\na REMOTE ENDPOINT somebody else runs rather than a plugin instance this node loads.\n\nA separate type from [`NamedDefView`] because the two answer different questions and carry\ndifferent guarantees, and collapsing them cost the older one its contract. The distinction is\nalready a first-class property of the section table — `NamedMapSection::requires_module()` is\n`false` for exactly the `Plane(_)` sections — so this type is that predicate's wire counterpart:\nthe sections that need no `module:` are the sections that serve THIS view. That keeps\n`NamedDefView` frozen at its 1.5.5 shape (PB-75) while these paths, which no 1.5.5 client has\never seen, stay free to grow: a new plane field lands here and is additive by construction.\n\nThe secret rule is unchanged and unconditional: a credential REFERENCE collapses to a boolean\nand a `settings:` bag to its KEY NAMES, on this view exactly as on the other one.",
+        "properties": {
+          "fingerprint_pinned": {
+            "description": "`agents` ONLY: whether an approved card FINGERPRINT is pinned yet. A registration with a\nroot but no fingerprint is the normal state of a fresh entry awaiting approval, and it is\nthe state an operator most needs to be able to see.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "module": {
+            "description": "What is behind this entry, when the plane has a single word for it — OMITTED, not\nempty-stringed, when it does not.\n\n`agents:` omits it: an agent registration names no module, and an empty string would be a\nblank column asserting a fact that does not exist. `tools:` fills it with the authenticity\nroot the server is bound to (`McpPinMechanism::token`), because for a remote endpoint that\nIS \"what is behind this entry\", and an operator scanning the list needs to spot an\n`unpinned` registration.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The registration NAME: the map key, and the token every reference site uses.",
+            "type": "string"
+          },
+          "pin_mechanism": {
+            "description": "`agents` ONLY: which authenticity root this registration is pinned to (`jws_issuer_key` |\n`cert_spki` | `mtls` | `unpinned`). Projected because an operator scanning a registration\nlist needs to SEE which entries have no root; a mechanism that could only be discovered by\nreading the config file is a mechanism nobody audits.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reverify_ttl": {
+            "description": "`agents` ONLY: the re-verification cadence this registration carries, as written. The\nbackend `url:` is deliberately NOT projected here: it is the real remote endpoint and is\nnever client-visible.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settings_keys": {
+            "description": "The KEY NAMES of this registration's opaque bag, sorted, WITHOUT their values — for `tools:`\nthe APPROVED CAPABILITY NAMES. Names only, never their hashes or schemas: this surface is\nreachable at READ-ONLY admin scope, the same rule [`NamedDefView::settings_keys`] follows.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unparseable": {
+            "description": "Set ONLY on an entry STORED in the config overlay that this binary could NOT parse; the\nvalue is the parse error. The plane twin of [`NamedDefView::unparseable`], and it carries\nthe same warning: such an entry is dropped at every rebuild, so `module`/`settings_keys` are\nthe raw stored document's best-effort projection, not a resolved registration.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "settings_keys"
         ],
         "type": "object"
       },
@@ -3111,7 +3169,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_NamedDefView"
+                  "$ref": "#/components/schemas/Page_PlaneNamedDefView"
                 }
               }
             },
@@ -3285,7 +3343,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/PlaneNamedDefView"
                 }
               }
             },
@@ -3381,7 +3439,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/PlaneNamedDefView"
                 }
               }
             },
@@ -3691,7 +3749,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/PlaneNamedDefView"
                 }
               }
             },
@@ -9647,7 +9705,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_NamedDefView"
+                  "$ref": "#/components/schemas/Page_PlaneNamedDefView"
                 }
               }
             },
@@ -9821,7 +9879,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/PlaneNamedDefView"
                 }
               }
             },
@@ -9917,7 +9975,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/PlaneNamedDefView"
                 }
               }
             },
@@ -10284,7 +10342,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NamedDefView"
+                  "$ref": "#/components/schemas/PlaneNamedDefView"
                 }
               }
             },
