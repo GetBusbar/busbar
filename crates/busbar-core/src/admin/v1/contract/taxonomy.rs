@@ -238,13 +238,20 @@ impl Cond {
                 // arrival of the `named_maps` overlay section, so the API's own error taxonomy
                 // asserted `export` was not a section while it was becoming one.
                 //
-                // Owner ruling F-013 (2026-09-07): 1.6.0 keeps the 1.5.5 message WORDING, so the
-                // documented condition prose renders through the same `valid_names_oxford` the
-                // wire response uses — never `expected one of`, never restated by hand here.
+                // Owner ruling F-013 (2026-09-07): 1.6.0 keeps the 1.5.5 WORDING; the key list is
+                // free to grow, the template is not. THIS IS THE DOCUMENT'S SPELLING, NOT THE
+                // MESSAGE'S. 1.5.5 spelled the two surfaces differently — the wire 400 body used an
+                // Oxford list, openapi.json used a bare-pipe list — so rendering both through
+                // `valid_names_oxford` rewrote a published document string instead of preserving it.
+                // Owner ruling PB-75 (2026-09-08): openapi descriptions are verbatim except
+                // REGISTERED factual corrections, and an Oxford rewrite is neither. So the taxonomy
+                // renders `valid_names_piped` and the wire response renders `valid_names_oxford`;
+                // both derive from `OverlaySection::all`, so only the SPELLING differs per surface
+                // and the SET cannot drift.
                 static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
                     format!(
                         "unknown overlay section (expected {})",
-                        crate::config::overlay::OverlaySection::valid_names_oxford()
+                        crate::config::overlay::OverlaySection::valid_names_piped()
                     )
                 });
                 PROSE.as_str()
