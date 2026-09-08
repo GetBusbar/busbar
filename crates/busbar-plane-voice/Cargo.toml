@@ -4,16 +4,17 @@
 # extension) for busbar's duplex/live-voice surface (§6 of ARCHITECTURE.md): the openai-realtime,
 # gemini-live, twilio-media-streams and one-shot transcribe/tts dialects, with a turn as the unit,
 # a provider tool call as `Progress::OneShot`, an interrupt fact and a pacing fact. It calls
-# `busbar-voice`'s own dialect codecs to read and write bytes; it invents no wire shape of its own.
+# `busbar-voice-codec`'s dialect codecs to read and write bytes; it invents no wire shape of its own.
 #
-# THE SEAM, STATED HONESTLY. `busbar-voice` (Plane 4) is built against ITS OWN plane-declaration
-# surface (`busbar_substrate::PlaneDecl` / `ProtocolDecl`) rather than against `busbar-contract`'s
-# `Plane` trait — its own header says core/substrate/api "never learn the word audio", and it depends
-# on `busbar-substrate` and `busbar-api`, never on `busbar-contract`. This crate is the adapter that
-# closes that gap for the 1.6.0 contract world: it depends on `busbar-voice` for its dialect codecs
-# and IR types alone (the OpenAI Realtime / Gemini Live event readers and writers, the μ-law↔PCM16
-# transform, the tool-call and interrupt/pacing vocabulary) and never touches `PlaneDecl` or the T2
-# session runtime, which stay behind `busbar-voice`'s own `runtime` feature and its own mount path.
+# THE SEAM, STATED HONESTLY — AND CHECKED. This header used to say the crate depends on
+# `busbar-voice`, twenty-five lines above a dependency comment saying it depends on
+# `busbar-voice-codec`, NOT `busbar-voice`. The second one is the true one, and cargo agrees: adding
+# the edge this header described is a dependency CYCLE, because `busbar-voice` depends on
+# `busbar-plane-voice` and not the reverse. That inversion is the point — the retiring crate consumes
+# this plane's `governed`/`tools` ports, which is what lets a pure kind stay pure while the legacy T2
+# session runtime, the axum mount, the WebSocket accept and the telephony dial stay on the far side
+# of it. `tests/dependency_seam.rs` pins the five direct edges below so this paragraph cannot drift
+# again.
 [package]
 name = "busbar-plane-voice"
 version = "1.6.0"

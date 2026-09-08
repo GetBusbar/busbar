@@ -31,15 +31,30 @@
 //!
 //! ## The dependency seam, stated honestly
 //!
-//! `busbar-voice`'s own plane machinery (`PLANE_DECL`, `mount`, `runtime`, `topology`) is built
-//! against a different, older plane architecture (`busbar_substrate::plane::registry::PlaneDecl`,
-//! the same shape `busbar-mcp`/`busbar-a2a` use) and is gated behind busbar-voice's `runtime` cargo
-//! feature. This crate depends on `busbar-voice` with `default-features = false` and never turns
-//! `runtime` on, so none of that machinery, and none of the async runtime it would pull in
-//! (`tokio`, `async-trait`, `futures`), is ever part of this crate's build. What this crate DOES use
-//! is `busbar_voice_codec::ir` — the plane-4 duplex/session intermediate representation and both dialect
-//! codecs — which is unconditional in `busbar-voice`'s own manifest (no feature gate at all) and is
-//! pure, sync, and free of any async surface. `cargo tree -p busbar-plane-voice` is the proof.
+//! This crate names FIVE direct dependencies and no others: `busbar-contract`, `busbar-voice-codec`,
+//! `serde_json`, `bytes` and `async-trait`. `tests/dependency_seam.rs` is the top level of
+//! `cargo tree -p busbar-plane-voice`, pinned as a set — this paragraph stops being true the moment
+//! that test stops passing, which is the arrangement the paragraph is worth having under.
+//!
+//! Three things that arrangement corrects, because this header stated all three the other way round
+//! and none of them was checked:
+//!
+//! * **There is no `busbar-voice` edge.** `busbar-voice`'s own plane machinery (`PLANE_DECL`,
+//!   `mount`, `runtime`, `topology`) is built against a different, older plane architecture
+//!   (`busbar_substrate::plane::registry::PlaneDecl`) and would drag an async runtime behind it. This
+//!   crate does not depend on it at all, with or without features: what it names is
+//!   `busbar-voice-codec` — the plane-4 duplex/session IR and both dialect codecs, split out of the
+//!   plugin precisely so a PURE kind could name them, and pure, sync and free of any async surface.
+//!   No dependency line here carries a `default-features` flag, because none needs one.
+//! * **The edge runs the OTHER WAY.** `crates/busbar-voice/src/runtime/session.rs` reads
+//!   `use busbar_plane_voice::governed::GovernedSession;` — the retiring crate depends on this
+//!   plane. That inversion is what lets the plane stay pure while the legacy runtime consumes its
+//!   ports ([`governed`], [`tools`]); a plane crate that named its own composition root would be the
+//!   actual violation.
+//! * **`async-trait` IS part of this crate's build.** It is a direct, non-dev dependency, for
+//!   [`tools`]'s `ToolExecutor` port. It is a proc macro that expands to boxed futures and pulls no
+//!   I/O into the closure, and it sits on the reviewed allow-list a pure kind may name — which is
+//!   the honest defence of it, rather than a claim that it is not here.
 //!
 //! ## What it holds across calls
 //!
