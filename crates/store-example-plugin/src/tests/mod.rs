@@ -14,6 +14,10 @@
 
 use super::*;
 
+/// Mutation-testing hardening, added after a `cargo-mutants` run on this crate surfaced gaps this
+/// module's ABI-round-trip coverage didn't pin. Kept in its own file rather than folded in here.
+mod mutation_hardening;
+
 /// A throwaway task body. The store never decodes it; the tests use it only to prove a body written
 /// through the envelope reads back byte-for-byte.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug, Clone)]
