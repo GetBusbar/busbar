@@ -151,6 +151,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   conflict. Both are PB-75 registered corrections (`description_corrections` on the
   `admin.ops|GetOpenapiJson|ok` / `neutrality|routes|admin-openapi-paths` accepted-difference
   entry); every other openapi.json description stays verbatim.
+- The overlay-section not-found message lists the four 1.6.0 sections. `DELETE
+  /api/v1/admin/overlay/{section}` on an unrecognized `section` keeps 1.5.5's exact wording
+  (`` expected `a`, `b`, ..., or `d` ``, the Oxford comma before the last item) with the four
+  named-map sections (`identity-providers`, `export`, `tools`, `agents`) appended after 1.5.5's
+  original four (`groups`, `hooks`, `root`, `plugin_versions`). Same status, same code, same
+  template; only the list grew.
 - **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
   (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
   (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,
