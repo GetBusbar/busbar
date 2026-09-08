@@ -165,12 +165,35 @@ pub fn scan(cx: &Ctx, a: &Addresses, t: &Tables, f: &mut Findings) {
     let mut module_homes: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
 
     for (key, dir) in &planes {
-        let Ok(files) = cx.walk(
+        // A PLANE THIS RULE COULD NOT READ TAKES THE WHOLE COMPARISON DOWN WITH IT, and saying so
+        // is the fix. A name counts as duplicated only when it is seen in TWO planes, so losing one
+        // plane's file set makes every cross-plane duplicate involving it disappear and the BAN row
+        // passes over a comparison that never happened.
+        //
+        // The gate did go red — but on the wrong row and with the wrong instruction. Every ledger
+        // row for a name in the lost plane fell out of `seen` and was reported STALE-LEDGER, whose
+        // remedy reads "If you unified it — thank you — DELETE its row". So a developer whose mcp
+        // root moved was told to delete thirteen signed claims about duplication that is still
+        // there. And that incidental red is not a floor: on the day the ledger is empty — every
+        // duplication unified, which is what the ledger exists to drive towards — a lost plane is a
+        // clean green on all three rows.
+        let files = match cx.walk(
             &crate::ctx::WalkSpec::new([(*dir).to_string()])
                 .ext("rs")
                 .exclude(["/tests/"]),
-        ) else {
-            continue;
+        ) {
+            Ok(files) => files,
+            Err(e) => {
+                let why = format!(
+                    "the `{key}` plane's source would not list ({e}), so no name could be compared \
+                     ACROSS planes at all — and a comparison that did not happen names no \
+                     duplicate, which is the passing answer to this ban"
+                );
+                for id in [ROW_UNLEDGERED, ROW_LEDGER_INTEGRITY, ROW_STALE_LEDGER] {
+                    f.did_not_run.push((id, why.clone()));
+                }
+                return;
+            }
         };
         for s in files {
             let rel = s.rel_str();

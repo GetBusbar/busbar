@@ -140,6 +140,26 @@ pub fn run(gate: &StructureLintGate, cx: &Ctx) -> Report {
                 ov,
                 &["PLANE-ROOT-MISSING", "mcp"],
             ));
+
+            // THE SAME PLANT, READ OFF THE BAN ROW. The plane-root row above going red says the
+            // plane could not be LOCATED; it says nothing about what the cross-plane duplication
+            // ban did with that fact, and that ban is the rule with something to lose. A name is a
+            // duplicate only when it is seen in TWO planes, so one lost plane leaves the ban with
+            // nothing to find and its own row PASSing over a comparison that never happened. This
+            // case reads only `plane-duplicates`, so the plane-root row's red cannot discharge it.
+            let mut ov = Overlay::new();
+            ov.set(
+                &rel,
+                text.replace(crate::planes::PLANE_GRAMMAR, "pub const MOVED_AWAY"),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "a cross-plane comparison missing one of its planes did not run, and did not pass",
+                &[plane_dups::ROW_UNLEDGERED],
+                ov,
+                &["did not run"],
+            ));
         }
         None => report.note_infra_failure(
             "structure-lint selftest: no file declares the mcp plane's grammar, so the plane-root \
