@@ -137,6 +137,45 @@ pub trait EngineTablesView {
         counts.into_iter().collect()
     }
 
+    /// Every configured pool with its members as `(model, weight)`, in pool-name order and in the
+    /// members' own config order.
+    ///
+    /// The same one-projection-two-readings rule [`Self::providers_by_lane_count`] states, for the
+    /// third topology read that crossed: `GET /pools` is produced by the composition root's loop and
+    /// the `pools` member of the effective-config read is produced by the surface underneath, off
+    /// the same tables. Two folds over [`Self::pool_members`] and [`Self::lane_view`] would be two
+    /// chances for those answers to disagree about the same node.
+    ///
+    /// THE POOLS ARE SORTED AND THE MEMBERS ARE NOT, which is the order the surface has always
+    /// answered in and therefore the order that belongs to the projection rather than to either
+    /// caller: a pool listing is diff-friendly by name, and a pool's membership is the operator's
+    /// own, weights included, so reordering it would be this fold editing the config it reports.
+    fn pools_by_member(&self) -> Vec<(String, Vec<(String, u32)>)> {
+        let mut pools: Vec<(String, Vec<(String, u32)>)> = self
+            .pools()
+            .iter()
+            .map(|(name, _)| {
+                let members = self
+                    .pool_members(name)
+                    .into_iter()
+                    .map(|(lane, weight)| {
+                        // An index the lane table cannot resolve renders as the EMPTY model name,
+                        // which is what the reading that has always answered this does. It is not a
+                        // condition either reader may invent a different answer for.
+                        let model = self
+                            .lane_view(lane)
+                            .map(|view| view.model.to_string())
+                            .unwrap_or_default();
+                        (model, weight)
+                    })
+                    .collect();
+                ((*name).to_string(), members)
+            })
+            .collect();
+        pools.sort_by(|a, b| a.0.cmp(&b.0));
+        pools
+    }
+
     /// Every configured lane as `(model, provider)`, in model-name order.
     ///
     /// The same one-projection-two-readings rule [`Self::providers_by_lane_count`] states, for the

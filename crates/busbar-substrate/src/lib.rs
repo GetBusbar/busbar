@@ -112,7 +112,10 @@ pub mod ingress {
         }
     }
 }
-pub use busbar_substrate_values::{billing, breaker};
+// `facts` rides beside them for the same reason every other re-export here does: the definition site
+// moved down into the pure half, and the historical spelling still has to resolve for the crates
+// that name this one.
+pub use busbar_substrate_values::{billing, breaker, facts};
 // The one notification that a live apply changed the deployment's configured rates, so a holder that
 // prices against them swaps rather than keeping the boot reading forever.
 pub mod rate_apply;
