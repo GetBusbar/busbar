@@ -579,8 +579,26 @@ impl ProductionUnits {
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     ) -> Self {
+        // BOOT, ONCE, BEFORE ANYTHING LISTENS. The ledger replays what this node settled and hands
+        // back one figure per balance; the door is bound to that figure and adds its own post-boot
+        // accrual to it. Without this the cells start empty and a restart is a clean sheet — a key
+        // that spent its whole cap yesterday is admissible again this morning, which is the hazard
+        // the previous release's `hydrate_budgets` existed to close and which nothing on the unit
+        // chain closed at all.
+        //
+        // A chain that will not read back is a boot failure and not an empty answer, for the reason
+        // the previous release's hydrate states at length: answering "nothing spent" to a record
+        // nobody could read is how a maxed-out key spends its whole cap again. The supervisor
+        // restarting is the correct response and the only one available here.
+        let carried = {
+            let mut book = durability.lock().unwrap_or_else(|p| p.into_inner());
+            let hydration = book
+                .hydrate_ledger()
+                .expect("the ledger could not restore its spend from this node's own chain");
+            crate::root::durability::HydratedSpend::of(&hydration)
+        };
         ProductionUnits {
-            door: Door::new(InMemoryCells::new()),
+            door: Door::new(InMemoryCells::new()).carrying(Arc::new(carried)),
             // The breaker unit's one diagnostic reaches the node's own logging rather than the
             // noop the crate defaults to. What an operator gets out of the binding is the line
             // saying an `error_map` entry they wrote names a class that does not exist; what the

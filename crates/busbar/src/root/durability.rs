@@ -95,6 +95,7 @@ use std::path::{Path, PathBuf};
 use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
 use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_unit_ledger::checkpoint::Checkpoint;
+use busbar_unit_ledger::hydrate::{HydratedPosting, Hydration, HydrationError, SpendSource};
 use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_unit_ledger::settle::{Ledger, Settlement};
@@ -338,6 +339,54 @@ impl Durability {
         })
     }
 
+    /// **The settled postings this node's chain holds, decoded back into the ledger's vocabulary.**
+    ///
+    /// The read half of [`Posting::body`], and it lives beside it for the reason
+    /// [`migration_marker_from`] does: the encoding is the composition root's, the log unit frames
+    /// bytes it cannot parse, and the ledger unit knows nothing about a chain. One writer and one
+    /// reader, in one file, is what keeps the two from drifting.
+    ///
+    /// # Errors
+    ///
+    /// The chain could not be read, or a record on it could not be understood as a posting. Both
+    /// are errors and neither is an empty answer: a boot that answers "nothing settled" to a chain
+    /// it could not read is a boot that hands every maxed-out key its whole cap again.
+    pub fn replay_postings(&self) -> Result<JournalSpend, HydrationError> {
+        let replayed = self
+            .journal
+            .replay()
+            .map_err(|e| HydrationError::RecordUnavailable(e.to_string()))?
+            .map_err(|e| HydrationError::RecordUnavailable(e.to_string()))?;
+        let mut postings = Vec::new();
+        for record in &replayed {
+            if record.class != RecordClass::Transaction {
+                continue;
+            }
+            // The audit records share this class, so the discriminator is the body itself: a
+            // posting's first field is a balance key, and an audit record's is a hex digest. A body
+            // that is not a posting is passed over rather than reported, because it is not one and
+            // never claimed to be; a body that IS one and will not decode is the error arm.
+            match posting_from(&record.body) {
+                Some(posting) => postings.push(posting),
+                None => continue,
+            }
+        }
+        Ok(JournalSpend { postings })
+    }
+
+    /// **Restore the ledger's settled spend from this node's own chain.**
+    ///
+    /// Boot only. What comes back is what each balance carried into this process, which is what the
+    /// door is bound to — see `busbar_unit_admission::CarriedSpend`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::replay_postings`].
+    pub fn hydrate_ledger(&mut self) -> Result<Hydration, HydrationError> {
+        let source = self.replay_postings()?;
+        self.ledger.hydrate(&source)
+    }
+
     /// The ledger's own records, on the journal.
     ///
     /// This is what the migration step binds its marker to. It replaces the store adapter's
@@ -440,6 +489,155 @@ impl Posting {
         body.num(self.rate_card_version);
         body.finish()
     }
+}
+
+/// **The settled postings a chain replay found, as the ledger's boot seam takes them.**
+///
+/// A value rather than a borrow of the journal, because the ledger folds them into the same
+/// `Durability` the journal lives in and a boot that held the chain open while it wrote to the book
+/// would be a boot that could not compile. Collected once, at boot, and dropped.
+#[derive(Debug, Clone, Default)]
+pub struct JournalSpend {
+    postings: Vec<HydratedPosting>,
+}
+
+impl JournalSpend {
+    /// Nothing settled: the answer for a chain with no postings on it.
+    #[must_use]
+    pub fn nothing() -> Self {
+        JournalSpend::default()
+    }
+
+    /// How many postings were found.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.postings.len()
+    }
+
+    /// Whether the chain held none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.postings.is_empty()
+    }
+}
+
+impl SpendSource for JournalSpend {
+    fn postings(&self) -> Result<Vec<HydratedPosting>, HydrationError> {
+        Ok(self.postings.clone())
+    }
+}
+
+/// **The door's carried-spend seam, answered out of what the ledger restored at boot.**
+///
+/// The one place the two vocabularies meet in production. The door names a bucket and a window; the
+/// ledger names a balance — a bucket in one dimension at one scope — and the mapping between them is
+/// the composition root's, because it is the root that decided what a principal's bucket is called
+/// in each of them.
+///
+/// A window of zero is the all-time bucket, the one that never rolls. Its settlements land in
+/// whichever dated window they happened in, so the answer for it is every window's carry; any other
+/// window is answered by itself alone.
+///
+/// Frozen at boot, deliberately: see [`busbar_unit_admission::CarriedSpend`] for why a live view of
+/// the book would count every settlement twice.
+#[derive(Debug, Clone, Default)]
+pub struct HydratedSpend {
+    carried: busbar_unit_ledger::hydrate::Carried,
+}
+
+impl HydratedSpend {
+    /// What one hydration restored, as the door reads it.
+    #[must_use]
+    pub fn of(hydration: &Hydration) -> Self {
+        HydratedSpend {
+            carried: hydration.carried.clone(),
+        }
+    }
+
+    /// Nothing carried — the posture of a node whose chain held no postings, and the one that makes
+    /// the door's comparison the one it made before this seam existed.
+    #[must_use]
+    pub fn nothing() -> Self {
+        HydratedSpend::default()
+    }
+}
+
+impl busbar_unit_admission::CarriedSpend for HydratedSpend {
+    fn carried_cents(&self, bucket_id: &str, window: u64) -> i64 {
+        self.carried
+            .bucket_cents(bucket_id, (window != 0).then_some(window))
+    }
+}
+
+/// How many bytes a posting record carries beyond its balance key's name: the key's own length
+/// prefix, the window, the three figures, and the card version. Fixed, because every one of them is.
+const POSTING_BYTES_BESIDE_KEY: usize = 8 + 8 + 16 + 16 + 16 + 8;
+
+/// Read a settled posting back off the journal, or `None` for a body that is not one.
+///
+/// `None` rather than a partial value, for the reason [`migration_marker_from`] gives: a body this
+/// build cannot read is not a posting it may guess at. The `Transaction` class carries sealed audit
+/// records too, and the discriminator is structural — an audit record's first field is a hex digest
+/// and a posting's is a balance key, which a digest can never parse as.
+#[must_use]
+pub fn posting_from(body: &[u8]) -> Option<HydratedPosting> {
+    if body.len() < 8 {
+        return None;
+    }
+    let key_len = usize::try_from(u64::from_le_bytes(body[0..8].try_into().ok()?)).ok()?;
+    if body.len() != key_len + POSTING_BYTES_BESIDE_KEY {
+        return None;
+    }
+    let key = totals_key_from(std::str::from_utf8(body.get(8..8 + key_len)?).ok()?)?;
+    let at = 8 + key_len;
+    let num = |off: usize| -> Option<u64> {
+        Some(u64::from_le_bytes(body.get(off..off + 8)?.try_into().ok()?))
+    };
+    let figure = |off: usize| -> Option<i128> {
+        Some(i128::from_le_bytes(
+            body.get(off..off + 16)?.try_into().ok()?,
+        ))
+    };
+    Some(HydratedPosting {
+        key,
+        window: num(at)?,
+        // `reserved` at `at + 8` is deliberately not read: what a hold reserved is closed by the
+        // restart, and restoring it would hold budget against a request that will never arrive.
+        settled: figure(at + 8 + 16)?,
+        overdraft: figure(at + 8 + 32)?,
+    })
+}
+
+/// Read a balance key back out of the name [`TotalsKey`]'s own `Display` writes.
+///
+/// Parsed from the RIGHT, because the two trailing fields are drawn from closed vocabularies and
+/// the leading one — the bucket — is a name an operator chose and may contain anything at all. A
+/// name that does not end in a recognised scope and dimension is not a balance key, which is
+/// exactly the test that tells a posting body from a sealed audit record's.
+fn totals_key_from(text: &str) -> Option<TotalsKey> {
+    use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension};
+
+    let (head, scope) = match text.strip_suffix("/all") {
+        Some(head) => (head, BucketScope::All),
+        None => {
+            let (head, pool) = text.rsplit_once("/pool:")?;
+            (head, BucketScope::Pool(std::sync::Arc::from(pool)))
+        }
+    };
+    let (bucket, dimension) = if let Some(b) = head.strip_suffix("/nano-units") {
+        (b, CapDimension::NanoUnits)
+    } else if let Some(b) = head.strip_suffix("/requests") {
+        (b, CapDimension::Requests)
+    } else if let Some(b) = head.strip_suffix("/concurrent") {
+        (b, CapDimension::Concurrent)
+    } else {
+        let (b, class) = head.rsplit_once("/class ")?;
+        (b, CapDimension::Class(std::sync::Arc::from(class)))
+    };
+    if bucket.is_empty() {
+        return None;
+    }
+    Some(TotalsKey::new(BucketId::new(bucket), dimension, scope))
 }
 
 /// The journal body of a sealed audit record.

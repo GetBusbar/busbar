@@ -68,8 +68,9 @@ pub use posting::{
     Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
 };
 pub use project::{
-    cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in, derive_spend_minor,
-    micros_of, minor_of,
+    budget_remaining_cents, cents_of, derive_spend_cents, derive_spend_micros,
+    derive_spend_micros_in, derive_spend_minor, micros_of, minor_of, over_budget,
+    spend_total_cents,
 };
 pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,

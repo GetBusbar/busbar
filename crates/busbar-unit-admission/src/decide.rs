@@ -211,25 +211,76 @@ impl Gauges {
     }
 }
 
+/// **What a balance already carried before this process started.**
+///
+/// The door's cells are node-local and start empty, so without this a restart hands every bucket a
+/// clean sheet: a key that had spent its whole cap yesterday is admissible again this morning. The
+/// figure comes from the ledger, which replayed what it settled at boot — see
+/// `busbar_unit_ledger::hydrate` — and it is a VALUE, frozen at that moment, never a live read.
+///
+/// In whole cents, because that is the scale a spend cap is configured in and the projection from
+/// nano-units is the cost unit's to make. The door does not divide anything.
+///
+/// A door with no implementation bound answers zero everywhere, which is precisely the comparison
+/// the previous release made.
+pub trait CarriedSpend: std::fmt::Debug + Send + Sync {
+    /// What this bucket carried into this process for this window, in whole cents. Zero for a
+    /// bucket the durable record held nothing for.
+    fn carried_cents(&self, bucket_id: &str, window: u64) -> i64;
+}
+
 /// The door.
 ///
 /// Holds the two pieces of node-local state the decision needs — the in-flight gauges, and the
-/// store the ledger cells come through — and nothing else. The rate table and the chain arrive per
-/// request, because both can change under a config reload and a request must be judged against the
-/// table current when it arrived.
+/// store the ledger cells come through — plus, where a deployment binds one, what each balance
+/// carried into this process. The rate table and the chain arrive per request, because both can
+/// change under a config reload and a request must be judged against the table current when it
+/// arrived.
 #[derive(Debug)]
 pub struct Door<S: CellStore> {
     cells: S,
     gauges: Gauges,
+    carried: Option<Arc<dyn CarriedSpend>>,
 }
 
 impl<S: CellStore> Door<S> {
     /// A door over a cell store.
+    ///
+    /// Nothing carried. That is the right default and not a placeholder: a door with no carried
+    /// spend bound compares exactly the figure it compared before the seam existed, so binding one
+    /// is a deployment's decision to make its budgets survive a restart rather than something a
+    /// caller can be silently opted into.
     pub fn new(cells: S) -> Self {
         Door {
             cells,
             gauges: Gauges::new(),
+            carried: None,
         }
+    }
+
+    /// **Bind what each balance already carried, as the ledger restored it at boot.**
+    ///
+    /// The half of the restart story the door owns. The ledger replays what it settled and hands
+    /// back one figure per balance; this is where that figure joins the decision. What the door adds
+    /// to it is its own cells' post-boot accrual, and the addition is the cost unit's — see
+    /// [`busbar_unit_cost::spend_total_cents`].
+    ///
+    /// It is a value taken at boot and never a live view of the ledger's book. A live view would
+    /// count every settlement twice, once as carried and once in the cell that recorded the same
+    /// request, and a budget cap that halved itself on the second request is worse than one that
+    /// forgets on restart.
+    #[must_use]
+    pub fn carrying(mut self, carried: Arc<dyn CarriedSpend>) -> Self {
+        self.carried = Some(carried);
+        self
+    }
+
+    /// What one bucket already carried into this process, in whole cents. Zero where no carried
+    /// spend is bound, which is the figure the tag compared.
+    fn carried_cents(&self, bucket_id: &str, window: u64) -> i64 {
+        self.carried
+            .as_ref()
+            .map_or(0, |c| c.carried_cents(bucket_id, window))
     }
 
     /// The cell store, for the ledger's own reads.
@@ -356,17 +407,35 @@ impl<S: CellStore> Door<S> {
                             0
                         },
                         if bucket.budget_cap.is_some() {
-                            pricer.derive_spend_cents(
-                                cell.model_views(),
-                                cell.billable_requests,
-                                true,
+                            busbar_unit_cost::spend_total_cents(
+                                self.carried_cents(&bucket.bucket_id, window),
+                                pricer.derive_spend_cents(
+                                    cell.model_views(),
+                                    cell.billable_requests,
+                                    true,
+                                ),
                             )
                         } else {
                             0
                         },
                     ),
-                    // stale or absent cell = fresh window = nothing used
-                    _ => (0, 0, 0, 0, 0, 0, 0),
+                    // A stale or absent cell means this process has accrued nothing into this
+                    // window — which is not the same as the balance having spent nothing. What it
+                    // carried is still carried: that is the whole of the restart case, where every
+                    // cell is absent and the durable record is the only thing that remembers.
+                    _ => (
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        if bucket.budget_cap.is_some() {
+                            self.carried_cents(&bucket.bucket_id, window)
+                        } else {
+                            0
+                        },
+                    ),
                 };
             let blocked_metric = if bucket
                 .requests_cap
@@ -391,7 +460,13 @@ impl<S: CellStore> Door<S> {
                 Some(Metric::TokensCacheWrite)
             } else if bucket
                 .budget_cap
-                .is_some_and(|cap| derived >= cap || derived.saturating_add(fee) > cap)
+                // The comparison itself is the COST UNIT'S, for the reason the rate conversion and
+                // the cent projection already are: `spent >= cap || spent + fee > cap` was written
+                // here and `cap - spent` was written again in the headroom read below, and two
+                // spellings of one subtraction is how the figure a request is judged against and the
+                // figure an operator is shown drift apart. It is the same predicate, rearranged
+                // around the subtraction and not otherwise.
+                .is_some_and(|cap| busbar_unit_cost::over_budget(cap, derived, fee))
             {
                 Some(Metric::Budget)
             } else {
@@ -462,13 +537,19 @@ impl<S: CellStore> Door<S> {
                 continue;
             };
             let window = budget_window(bucket.window, now);
-            let derived = match cells.get(&bucket.bucket_id) {
+            let accrued = match cells.get(&bucket.bucket_id) {
                 Some(cell) if cell.window_start >= window => {
                     pricer.derive_spend_cents(cell.model_views(), cell.billable_requests, true)
                 }
                 _ => 0,
             };
-            let left = cap.saturating_sub(derived).max(0);
+            // The same two figures the check pass reads, summed the same way, so the headroom an
+            // operator is shown is the headroom the door acted on.
+            let derived = busbar_unit_cost::spend_total_cents(
+                self.carried_cents(&bucket.bucket_id, window),
+                accrued,
+            );
+            let left = busbar_unit_cost::budget_remaining_cents(cap, derived);
             tightest = Some(tightest.map_or(left, |t: i64| t.min(left)));
         }
         tightest
