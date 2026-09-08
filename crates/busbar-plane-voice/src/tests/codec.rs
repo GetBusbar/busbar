@@ -27,6 +27,17 @@ fn openai_plane() -> VoicePlane {
     VoicePlane::new(UPSTREAMS)
 }
 
+/// A plane whose only upstream speaks the ATOMIC dialect — so both halves of the session speak it
+/// and what comes back is rendered in it, which is what the parallel-call fixture needs.
+fn gemini_plane() -> VoicePlane {
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("live"),
+        host: "generativelanguage.googleapis.com",
+        dialect: Dialect::GeminiLive,
+    }];
+    VoicePlane::new(UPSTREAMS)
+}
+
 fn open_client_session(
     plane: &VoicePlane,
     ctx: &busbar_contract::unit::Ctx<'_>,
@@ -261,38 +272,37 @@ fn downlink_audio_frames_carry_the_declared_pacing_fact() {
     );
 }
 
+/// A whole tool call is its own unit — minted where the call is whole, at its close.
 #[test]
-fn a_tool_call_open_surfaces_as_progress_one_shot() {
+fn a_closed_tool_call_surfaces_as_progress_one_shot() {
     let plane = openai_plane();
     let arena = LeakArena;
     let config = EmptyConfig;
     let transport = WsStack::new("/v1/realtime");
     let labels = Labels::new();
     let c = ctx(&arena, &config, &transport, &labels);
-    let mut upstream_state = SessionPlane::open_upstream(
-        &plane,
-        &destination("api.openai.com", LaneId::new("realtime")),
-        &c,
-    );
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut upstream_state = SessionPlane::open_upstream(&plane, &dest, &c);
 
     let opened = serde_json::to_vec(&json!({
         "type": "response.output_item.added",
         "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
     }))
     .unwrap();
-    let frames = [frame(&opened)];
-    let mut cursor = FrameCursor::new(&frames);
-    let progress = plane
-        .decode_response(
-            &mut cursor,
-            &destination("api.openai.com", LaneId::new("realtime")),
-            Some(&mut upstream_state),
-            &c,
-        )
-        .expect("tool-call open decodes");
-    let Progress::OneShot(draft) = progress else {
-        panic!("expected Progress::OneShot, got {progress:?}");
-    };
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_1",
+        "arguments": "{\"q\":1}",
+    }))
+    .unwrap();
+    let (opened, done) = ([frame(&opened)], [frame(&done)]);
+
+    assert!(
+        minted(&plane, &dest, &mut upstream_state, &c, &opened).is_none(),
+        "the announcement is not yet the call"
+    );
+    let draft =
+        minted(&plane, &dest, &mut upstream_state, &c, &done).expect("the close mints the call");
     assert_eq!(draft.op.as_str(), "tool_call");
     assert_eq!(
         draft.facts.get(crate::meta::FACT_TOOL_NAME),
@@ -328,16 +338,29 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
         }))
         .unwrap()
     };
+    let close_call = |call_id: &str| {
+        serde_json::to_vec(&json!({
+            "type": "response.function_call_arguments.done",
+            "call_id": call_id,
+            "arguments": "{}",
+        }))
+        .unwrap()
+    };
 
     let mut waits_on = |call_id: &str| {
-        let opened = open_call(call_id);
-        let frames = [frame(&opened)];
-        let mut cursor = FrameCursor::new(&frames);
+        let (opened, closed) = (open_call(call_id), close_call(call_id));
+        let (opened, closed) = ([frame(&opened)], [frame(&closed)]);
+        let mut cursor = FrameCursor::new(&opened);
+        let announced = plane
+            .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+            .expect("tool-call open decodes");
+        assert!(matches!(announced, Progress::Frame { .. }));
+        let mut cursor = FrameCursor::new(&closed);
         let Progress::OneShot(draft) = plane
             .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
-            .expect("tool-call open decodes")
+            .expect("tool-call close decodes")
         else {
-            panic!("a tool-call open is its own unit");
+            panic!("a whole tool call is its own unit");
         };
         let out = draft
             .correlation_out
@@ -376,6 +399,210 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
         waits_on("call_2"),
         "the same call named two different correlations"
     );
+}
+
+// ── tool arguments: the streamed call reaches its executor whole ─────────────────────────────────
+
+/// Drive one frame through `decode_response` and hand back the `tool_call` unit it minted, if it
+/// minted one. The frames live in the caller so the answer may borrow them.
+fn minted<'a>(
+    plane: &VoicePlane,
+    dest: &busbar_contract::dest::VerifiedDestination,
+    state: &mut PlaneSessionState,
+    ctx: &busbar_contract::unit::Ctx<'a>,
+    frames: &'a [busbar_contract::wire::Frame],
+) -> Option<Box<busbar_contract::plane::UnitDraft<'a>>> {
+    let mut cursor = FrameCursor::new(frames);
+    match plane
+        .decode_response(&mut cursor, dest, Some(state), ctx)
+        .expect("the fixture decodes")
+    {
+        Progress::OneShot(draft) => Some(draft),
+        _ => None,
+    }
+}
+
+/// A STREAMED TOOL CALL REACHES ITS EXECUTOR WITH THE ARGUMENTS THE MODEL ASKED FOR.
+///
+/// The call arrives as three events — the announcement, the streamed JSON fragments, and the close
+/// that ends them. Only the announcement was ever read: the fragments and the close fell to a
+/// catch-all and became an empty frame, so the unit was minted at the announcement with an EMPTY
+/// body and the arguments the codec had carefully assembled were dropped on the floor. A tool
+/// dispatched without its arguments is a different call from the one the model made.
+///
+/// So the unit is minted where the call is COMPLETE — at the close — and its body is the call as the
+/// CLIENT's own dialect states it.
+#[test]
+fn a_streamed_tool_call_carries_its_arguments_into_its_unit() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let opened = serde_json::to_vec(&json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
+    }))
+    .expect("fixture serializes");
+    let delta = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.delta",
+        "call_id": "call_1",
+        "delta": "{\"city\":",
+    }))
+    .expect("fixture serializes");
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_1",
+        "arguments": "{\"city\":\"SF\"}",
+    }))
+    .expect("fixture serializes");
+
+    let (opened, delta, done) = ([frame(&opened)], [frame(&delta)], [frame(&done)]);
+    // The announcement mints nothing on its own: the call is not yet a call anyone can run.
+    assert!(
+        minted(&plane, &dest, &mut state, &c, &opened).is_none(),
+        "an announced call is not yet a dispatchable one"
+    );
+    assert!(
+        minted(&plane, &dest, &mut state, &c, &delta).is_none(),
+        "an argument fragment is not a call either"
+    );
+
+    let draft =
+        minted(&plane, &dest, &mut state, &c, &done).expect("the close mints the tool call");
+    assert_eq!(draft.op.as_str(), "tool_call");
+    assert_eq!(
+        draft.facts.get(crate::meta::FACT_TOOL_NAME),
+        Some(FactValue::Str("lookup")),
+        "the name is remembered from the announcement and stated on the unit the close mints"
+    );
+    let body: serde_json::Value = serde_json::from_slice(draft.body_ir.body())
+        .expect("the unit's body is the client dialect");
+    assert_eq!(body["call_id"], json!("call_1"));
+    assert_eq!(
+        body["arguments"],
+        json!(r#"{"city":"SF"}"#),
+        "the assembled arguments are the unit's body"
+    );
+}
+
+/// A ZERO-ARGUMENT TOOL IS ONE UNIT, NOT NONE.
+///
+/// The close states an empty argument string, so no fragment is ever accumulated and the session's
+/// `take_call_args` answers `None`. That is a tool that takes no arguments — the call still happened
+/// and still has to be dispatched, priced and audited. One unit, stating the empty arguments object.
+#[test]
+fn a_zero_argument_tool_call_mints_one_unit_stating_the_empty_arguments_object() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let opened = serde_json::to_vec(&json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_now", "name": "now" },
+    }))
+    .expect("fixture serializes");
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_now",
+        "arguments": "",
+    }))
+    .expect("fixture serializes");
+
+    let (opened, done) = ([frame(&opened)], [frame(&done)]);
+    assert!(minted(&plane, &dest, &mut state, &c, &opened).is_none());
+    let draft = minted(&plane, &dest, &mut state, &c, &done).expect("a zero-argument call is one");
+    assert_eq!(draft.op.as_str(), "tool_call");
+    let body: serde_json::Value = serde_json::from_slice(draft.body_ir.body())
+        .expect("the unit's body is the client dialect");
+    assert_eq!(body["call_id"], json!("call_now"));
+    assert_eq!(body["arguments"], json!("{}"));
+    assert_eq!(
+        draft.facts.get(crate::meta::FACT_TOOL_NAME),
+        Some(FactValue::Str("now"))
+    );
+}
+
+/// N CALLS IN ONE FRAME ARE N UNITS, AND NEITHER WEARS THE OTHER'S ARGUMENTS.
+///
+/// The atomic dialect can put several complete calls in a single frame, and the reader expands each
+/// into its own announce → arguments → close triple. Reading only the FIRST event of a frame lost
+/// every call but one; accumulating them against anything coarser than the call's own handle would
+/// have spliced their arguments together. Each close takes only its own accumulation.
+#[test]
+fn parallel_tool_calls_in_one_frame_mint_a_unit_each_without_cross_talk() {
+    let plane = gemini_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/live");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("generativelanguage.googleapis.com", LaneId::new("live"));
+    let mut state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let both = serde_json::to_vec(&json!({
+        "toolCall": { "functionCalls": [
+            { "id": "c1", "name": "alpha", "args": { "x": 1 } },
+            { "id": "c2", "name": "beta", "args": { "y": 2 } },
+        ]},
+    }))
+    .expect("fixture serializes");
+
+    // The frame is handed over once; every later answer comes from what that frame is still
+    // carrying, so the cursor is empty from here on.
+    let frames = [frame(&both)];
+    let mut cursor = FrameCursor::new(&frames);
+    let mut drafts = Vec::new();
+    for _ in 0..8 {
+        let Ok(progress) = plane.decode_response(&mut cursor, &dest, Some(&mut state), &c) else {
+            break;
+        };
+        if let Progress::OneShot(draft) = progress {
+            drafts.push(draft);
+        }
+    }
+
+    assert_eq!(drafts.len(), 2, "two calls in one frame are two units");
+    let seen: Vec<(String, serde_json::Value)> = drafts
+        .iter()
+        .map(|d| {
+            let body: serde_json::Value =
+                serde_json::from_slice(d.body_ir.body()).expect("the unit's body is JSON");
+            let call = body["toolCall"]["functionCalls"][0].clone();
+            (
+                call["name"].as_str().unwrap_or_default().to_string(),
+                call["args"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("alpha".to_string(), json!({ "x": 1 })),
+            ("beta".to_string(), json!({ "y": 2 })),
+        ],
+        "each unit wears its own call's name and its own call's arguments"
+    );
+    for d in &drafts {
+        let body: serde_json::Value = serde_json::from_slice(d.body_ir.body()).expect("JSON");
+        assert_eq!(
+            body["toolCall"]["functionCalls"]
+                .as_array()
+                .map(Vec::len)
+                .unwrap_or_default(),
+            1,
+            "one unit states one call — never both"
+        );
+    }
 }
 
 /// A tool reply names the call it answers, not the turn it arrived on.

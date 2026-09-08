@@ -34,13 +34,15 @@
 //!   default. Twilio's own uplink is unambiguous (G.711 µ-law, priced from the raw payload before this
 //!   plane's `encode_ingress_frame` transforms it), so this assumption is scoped to the two WS
 //!   dialects only.
-//! - **A provider tool call's `CallArgs`/`CallClose` frames relay under the still-open duplex turn**,
-//!   not under the `tool_call` `OneShot` unit `CallOpen` mints. Modelling a tool call as its own
-//!   fully-correlated open unit across a streamed argument delta would need a second correlation
-//!   table this plane does not build in this pass; `CallOpen` mints the `OneShot` (so a tool call is
-//!   visible, priced and audited as its own unit at its `tool_call` operation class) and increments
-//!   [`crate::session::TurnCounters::tool_calls`], and the delta/close frames that follow are folded
-//!   into the turn's own frame stream. Stated as a finding, not hidden.
+//! - **A provider tool call is minted where it is WHOLE — at its close.** The three events a call
+//!   arrives as divide cleanly: `CallOpen` announces it and is where the quantity is located (it is
+//!   the one event every call has exactly one of, so a call the upstream announces and abandons is
+//!   still counted); `CallArgs` accumulates the streamed argument fragments against the call's own
+//!   handle on the session; `CallClose` mints the `tool_call` `OneShot`, with the call as the
+//!   CLIENT's own dialect states it — framed through that dialect's writer — as the unit's body.
+//!   The counter is touched at the announcement and nowhere else, so a call is never counted twice.
+//!   Only `CallOpen` was ever read before, which minted an empty unit and dropped the arguments the
+//!   model asked for: a tool dispatched without them is a different call from the one it made.
 //! - **`encode_response` is a passthrough of bytes `decode_response` already rendered**, mirroring
 //!   `busbar-plane-admin`'s pattern. `decode_response` reads the open turn's own client dialect off
 //!   `Ctx::session()`'s declared `dialect` session fact (the one fact this plane's `SESSION_FACTS`
@@ -310,19 +312,44 @@ impl Plane for VoicePlane {
         let upstream_dialect = upstream_dialect_for(self, dest);
         let client_dialect = client_dialect_from_session(ctx).unwrap_or(upstream_dialect);
 
-        let frame = frames.next_frame().ok_or(Decode::Malformed)?;
-        // The reader is handed the frame WHERE IT IS. It parses the bytes and keeps none of them, so
-        // buying them a second home first bought nothing — and a duplex session reads fifty frames a
-        // second in each direction for the length of a call.
-        let reader = reader_for(upstream_dialect);
-        let events = reader.read_down_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
-        let Some(event) = events.into_iter().next() else {
-            return Ok(Progress::Discard {
-                reason: DiscardCode::Unsupported,
-            });
+        // WHAT THE LAST FRAME STILL MEANS COMES FIRST. One frame can decode to several events and
+        // this step answers one thing per call, so a frame's remainder waits on the session and is
+        // drained, in order, before another frame is read. Reading only a frame's FIRST event lost
+        // every event after it: the close that ends a streamed tool call, and every call but one of
+        // an atomic dialect's parallel batch.
+        let events: Vec<IrServerEvent> = if state.pending_down.is_empty() {
+            let frame = frames.next_frame().ok_or(Decode::Malformed)?;
+            // The reader is handed the frame WHERE IT IS. It parses the bytes and keeps none of
+            // them, so buying them a second home first bought nothing — and a duplex session reads
+            // fifty frames a second in each direction for the length of a call.
+            let reader = reader_for(upstream_dialect);
+            reader.read_down_ref(WireRef(frame.bytes.as_slice()), &mut state.codec)
+        } else {
+            core::mem::take(&mut state.pending_down).into()
         };
 
-        progress_from_server_event(event, state, client_dialect, ctx)
+        // An announcement and an argument fragment are bookkeeping: they carry nothing to the client
+        // and mint nothing, and the frame that carries one usually carries what completes it. Fold
+        // them in place rather than spend a whole answer on each — otherwise the unit a close mints
+        // would wait for however many frames the events ahead of it took, and a call that closed on
+        // the session's last frame would never be minted at all.
+        let mut rest = events.into_iter();
+        while let Some(event) = rest.next() {
+            let bookkeeping = matches!(
+                event,
+                IrServerEvent::Tool(IrDuplexTool::CallOpen { .. } | IrDuplexTool::CallArgs { .. })
+            );
+            let progress = progress_from_server_event(event, state, client_dialect, ctx)?;
+            if bookkeeping && !rest.as_slice().is_empty() {
+                continue;
+            }
+            state.hold_pending_down(rest);
+            return Ok(progress);
+        }
+
+        Ok(Progress::Discard {
+            reason: DiscardCode::Unsupported,
+        })
     }
 
     fn encode_response<'u>(
@@ -1067,8 +1094,69 @@ fn progress_from_server_event<'u>(
         IrServerEvent::SessionCreated { .. } | IrServerEvent::RateLimits => Ok(Progress::Discard {
             reason: DiscardCode::Unsupported,
         }),
-        IrServerEvent::Tool(IrDuplexTool::CallOpen { call_id, name, .. }) => {
+        // THE ANNOUNCEMENT COUNTS THE CALL. A call the upstream announced is a call the turn asked
+        // for, whatever becomes of it: the quantity is located here, at the one event every call has
+        // exactly one of, so a call the upstream announces and never closes still counts. It mints
+        // nothing — an announced call has no arguments yet, and a tool dispatched without the
+        // arguments the model asked for is a different call from the one it made.
+        IrServerEvent::Tool(IrDuplexTool::CallOpen { .. }) => {
             state.turn.tool_calls = state.turn.tool_calls.saturating_add(1);
+            Ok(Progress::Frame {
+                for_,
+                r: Box::new(Response {
+                    ir: Ir::empty(),
+                    finish: FinishClass::Partial,
+                    facts: Facts::new(),
+                }),
+            })
+        }
+        // THE FRAGMENTS ACCUMULATE. The arguments arrive in pieces against the call's own handle,
+        // which is what keeps two calls open at once from wearing each other's arguments. They are
+        // held on the session until the call closes and are read exactly once, there.
+        IrServerEvent::Tool(IrDuplexTool::CallArgs {
+            call_ref,
+            json_delta,
+            ..
+        }) => {
+            state.codec.push_call_args(call_ref, &json_delta);
+            Ok(Progress::Frame {
+                for_,
+                r: Box::new(Response {
+                    ir: Ir::empty(),
+                    finish: FinishClass::Partial,
+                    facts: Facts::new(),
+                }),
+            })
+        }
+        // THE CLOSE MINTS THE CALL. Here and nowhere else is the call whole, so here is where it
+        // becomes a unit its executor can run: the body is the call as the CLIENT's own dialect
+        // states it, framed through that dialect's writer, which is the one place that knows whether
+        // this dialect streams a call or delivers it atomically. The counter is NOT touched — it was
+        // located at the announcement, and counting the same call twice would price it twice.
+        IrServerEvent::Tool(IrDuplexTool::CallClose { call_ref, call_id }) => {
+            // Read, not taken: the name is remembered for the RESULT leg as well, and a call whose
+            // name was consumed to mint it could not be answered afterwards.
+            let name = state.codec.call_name(&call_id).to_string();
+            let writer = writer_for(client_dialect);
+            let framed = writer.write_down(
+                IrServerEvent::Tool(IrDuplexTool::CallClose {
+                    call_ref,
+                    call_id: call_id.clone(),
+                }),
+                &mut state.codec,
+            );
+            // A dialect with no word for a tool call frames nothing, and the call is still a call:
+            // the unit is minted either way, carrying the name and the identifier it always did.
+            let body_ir = match framed {
+                Some(w) => {
+                    let bytes = ctx
+                        .arena()
+                        .alloc_bytes(&w.0)
+                        .map_err(|_| Decode::Oversize)?;
+                    view(bytes.as_slice(), ctx)?
+                }
+                None => Ir::empty(),
+            };
             let mut facts = Facts::new();
             let name_arena = ctx.arena().alloc_str(&name).map_err(|_| Decode::Oversize)?;
             let call_id_arena = ctx
@@ -1083,7 +1171,7 @@ fn progress_from_server_event<'u>(
                 .map_err(|_| Decode::Oversize)?;
             Ok(Progress::OneShot(Box::new(UnitDraft {
                 op: OpClassId::new("tool_call"),
-                body_ir: Ir::empty(),
+                body_ir,
                 correlates: None,
                 // The call identifier travels as itself. It is a string on the wire and it is a
                 // string here, allocated in the unit's own arena — a fold into sixty four bits

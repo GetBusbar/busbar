@@ -4,10 +4,24 @@
 //! holds one half of per connection: one for the client, one more per upstream a session dials. This
 //! module is the concrete type this plane wraps in it.
 
+use std::collections::VecDeque;
+
 use busbar_contract::ids::{CorrelationRef, CorrelationValue};
-use busbar_voice_codec::ir::{DecodeState, IrClientEvent};
+use busbar_voice_codec::ir::{DecodeState, IrClientEvent, IrServerEvent};
 
 use crate::claims::Dialect;
+
+/// The ceiling on [`VoiceSessionState::pending_down`].
+///
+/// One downlink frame can decode to SEVERAL events — the atomic dialect states every tool call a
+/// turn asked for in one frame, and each expands to a triple — while the plane's answer shape says
+/// exactly one thing per call. What one frame decoded to and the plane has not answered for yet
+/// waits here.
+///
+/// The queue is refilled only from a frame whose events have all been drained, so its natural bound
+/// is the event count of a single frame, which the frame's own size bounds. The ceiling is stated
+/// anyway: a bound that holds only because of how the one caller is written is not a bound.
+pub const MAX_PENDING_SERVER_EVENTS: usize = 64;
 
 /// One pending, already-decoded IR event, stashed across the two-call boundary a step pair leaves
 /// open.
@@ -76,6 +90,14 @@ pub struct VoiceSessionState {
     pub twilio_stream_sid: Option<String>,
     /// The one already-decoded event a two-call step pair is carrying across (see [`Pending`]).
     pub pending: Option<Pending>,
+    /// What the last downlink frame decoded to and the plane has not answered for yet, oldest first.
+    ///
+    /// The plane answers one thing per call and a frame can mean several — a turn that asked for
+    /// three tools arrives, on the atomic dialect, as one frame stating all three. Reading only the
+    /// first event of a frame lost every call but one; the rest wait here and are drained, in order,
+    /// before any further frame is read, so no answer overtakes an earlier one. Bounded by
+    /// [`MAX_PENDING_SERVER_EVENTS`].
+    pub pending_down: VecDeque<IrServerEvent>,
     /// The buffer one downlink audio frame is rendered into, held across frames.
     ///
     /// The renderer this crate carries for the carrier dialect clears and refills a buffer the
@@ -112,6 +134,21 @@ impl VoiceSessionState {
         self.turn_open = true;
         self.turn_correlation = Some(correlation);
         correlation
+    }
+
+    /// Hold the events of one frame the plane has not answered for yet, oldest first.
+    ///
+    /// Past [`MAX_PENDING_SERVER_EVENTS`] the excess is dropped rather than held: the queue is the
+    /// tail of ONE frame, so a frame that decodes past the ceiling is a frame the plane cannot
+    /// answer for whatever it does, and growing without bound to hold it is the one answer that
+    /// costs the session its memory as well.
+    pub fn hold_pending_down(&mut self, events: impl IntoIterator<Item = IrServerEvent>) {
+        for ev in events {
+            if self.pending_down.len() >= MAX_PENDING_SERVER_EVENTS {
+                return;
+            }
+            self.pending_down.push_back(ev);
+        }
     }
 
     /// Close the current turn, snapshotting and resetting its counters.
