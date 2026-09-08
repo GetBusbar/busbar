@@ -51,8 +51,7 @@ pub use crate::plane_host::build_input::{
     TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
-    models_by_lane, providers_by_lane_count, EmptyEngineTablesView, EngineTablesView, LaneView,
-    EMPTY_VIEW,
+    EmptyEngineTablesView, EngineTablesView, LaneView, EMPTY_VIEW,
 };
 pub use crate::plane_host::scope::{DispatchScope, DurableScope, SessionScope};
 use crate::store::Unavailable;
