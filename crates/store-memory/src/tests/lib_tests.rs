@@ -753,3 +753,105 @@ fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
         "the two lapsed rows must be swept by the redemption that came after them"
     );
 }
+
+/// THE `records` MAP IS BOUNDED, LIKE EVERY OTHER MAP IN THIS FILE.
+///
+/// It was the only one that was not. `usage`/`metering` sweep against `MAX_RETENTION_SECS` on a
+/// `SWEEP_INTERVAL` ticker, tombstoned `keys` and revoked `creds` likewise, and `plane_tokens` drops
+/// lapsed rows on every redemption — each with a sweep cell above. The map added for the contract's
+/// record leg had no sweep, no ticker and no TTL, and the contract declares NO delete verb at all
+/// (`busbar_contract::kinds::Store` gives `record_put`/`record_get`/`record_scan`, and this crate
+/// does not implement the stream-keyed `purge_before`), so no caller — internal or external — could
+/// ever prune it. `MemoryStore` is the DEFAULT `db` backend of a long-lived proxy process, so
+/// sustained record-leg traffic under ever-new `(schema, key)` pairs grew it for the life of the
+/// process.
+///
+/// The bound is the SAME one the sibling maps use: rows past the 31-day ceiling go, on an amortized
+/// pass every `SWEEP_INTERVAL` writes. It keys on the row's own WRITE time (there is no timestamp
+/// column in a record's key or body — the value is opaque bytes), so a row rewritten by a later
+/// `record_put` is fresh again, which is the correct reading of "still in use".
+#[test]
+fn record_put_sweeps_stale_records() {
+    const SCHEMA: RecordSchemaId = RecordSchemaId::new("task");
+    let body = |b: &[u8]| RecordBytes::new(b.to_vec()).expect("inside the record ceiling");
+
+    let s = MemoryStore::new();
+    let n = now();
+    // Written 40 days ago — past the 31-day ceiling.
+    s.pin_clock(n.saturating_sub(40 * 86_400));
+    s.record_put(SCHEMA, b"stale", &body(b"old")).unwrap();
+    // …and one written a day ago, comfortably inside it.
+    s.pin_clock(n.saturating_sub(86_400));
+    s.record_put(SCHEMA, b"fresh", &body(b"recent")).unwrap();
+
+    s.pin_clock(n); // back to "now" — this governs the sweep's ceiling
+    assert_eq!(
+        s.record_get(SCHEMA, b"stale").unwrap(),
+        Some(body(b"old")),
+        "sanity: nothing has swept yet, the ticker has not come round"
+    );
+
+    // Fire the amortized sweep, exactly as the usage/metering/keys/creds cells do: SWEEP_INTERVAL
+    // writes guarantee the ticker comes round at least once.
+    for i in 0..SWEEP_INTERVAL {
+        s.record_put(SCHEMA, format!("filler-{i}").as_bytes(), &body(b"f"))
+            .unwrap();
+    }
+
+    assert_eq!(
+        s.record_get(SCHEMA, b"stale").unwrap(),
+        None,
+        "a record past the 31-day ceiling must be swept — this map has no delete verb, so the \
+         sweep is its ONLY shrink path"
+    );
+    assert_eq!(
+        s.record_get(SCHEMA, b"fresh").unwrap(),
+        Some(body(b"recent")),
+        "the sweep must not over-prune: a row well inside the ceiling survives a pass triggered \
+         by unrelated writes"
+    );
+}
+
+/// The sweep boundary is EXACT and the same `>` the sibling maps use: a row written exactly
+/// `MAX_RETENTION_SECS` ago sits AT the ceiling and goes; one second fresher stays. And a stale row
+/// REWRITTEN before the pass survives, because `record_put` REPLACES and the freshness rides the
+/// write rather than the key.
+#[test]
+fn record_put_sweep_boundary_is_exact_and_a_rewrite_refreshes_the_row() {
+    const SCHEMA: RecordSchemaId = RecordSchemaId::new("task");
+    let body = |b: &[u8]| RecordBytes::new(b.to_vec()).expect("inside the record ceiling");
+
+    let s = MemoryStore::new();
+    let n = now();
+    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS));
+    s.record_put(SCHEMA, b"at-ceiling", &body(b"v")).unwrap();
+    s.record_put(SCHEMA, b"rewritten", &body(b"v1")).unwrap();
+    s.pin_clock(n.saturating_sub(MAX_RETENTION_SECS - 1));
+    s.record_put(SCHEMA, b"one-inside", &body(b"v")).unwrap();
+
+    // The rewrite lands at "now", so its row is fresh again even though its first write was not.
+    s.pin_clock(n);
+    s.record_put(SCHEMA, b"rewritten", &body(b"v2")).unwrap();
+
+    // Three writes are already on the ticker, so SWEEP_INTERVAL more guarantees a pass.
+    for i in 0..SWEEP_INTERVAL {
+        s.record_put(SCHEMA, format!("f-{i}").as_bytes(), &body(b"f"))
+            .unwrap();
+    }
+
+    assert_eq!(
+        s.record_get(SCHEMA, b"at-ceiling").unwrap(),
+        None,
+        "written_at + MAX_RETENTION_SECS == now is AT the ceiling and must go (`>`, not `>=`)"
+    );
+    assert_eq!(
+        s.record_get(SCHEMA, b"one-inside").unwrap(),
+        Some(body(b"v")),
+        "one second inside the ceiling must survive"
+    );
+    assert_eq!(
+        s.record_get(SCHEMA, b"rewritten").unwrap(),
+        Some(body(b"v2")),
+        "a rewrite refreshes the row: freshness rides the write, not the key"
+    );
+}
