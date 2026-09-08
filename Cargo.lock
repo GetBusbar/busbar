@@ -524,6 +524,7 @@ dependencies = [
  "busbar-plugin",
  "busbar-plugin-loader",
  "busbar-plugin-sign",
+ "busbar-plugin-testkit",
  "busbar-secret-ref",
  "busbar-store-example-plugin",
  "busbar-store-memory",
@@ -862,6 +863,8 @@ name = "busbar-plugin-testkit"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-plugin-loader",
+ "busbar-plugin-sign",
  "serde",
  "serde_json",
 ]

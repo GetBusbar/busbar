@@ -815,72 +815,14 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
     assert!(v.get("error").is_some());
 }
 
-/// Helpers for the plugin pre-flight regression tests: a fresh temp plugins dir and an in-memory
-/// signed/unsigned tarball builder.
-pub(crate) fn tmp_plugin_dir(tag: &str) -> std::path::PathBuf {
-    // A monotonic counter, NOT a timestamp. Several helpers call this with the same `tag` from
-    // different tests running concurrently, and a clock read is not guaranteed to differ between
-    // two threads. Colliding on the path made two tests share one directory: one wrote its tarball
-    // while the other scanned it, or removed the directory out from under it — surfacing as an
-    // unrelated hooks test failing on "corrupt tar.gz archive" roughly one run in three.
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    // AND a once-per-process token, because the pid alone is not a process identity over time.
-    // These dirs are deliberately never cleaned up, and under process churn (a full workspace
-    // build spawning thousands of compiler processes while several copies of this binary run) the
-    // OS reuses pids within a session — at which point a fresh run's `create_dir_all` happily
-    // adopts a PREVIOUS run's leftover dir, stale manifests, stale cdylib copies and all. A stale
-    // plugin dir reads exactly like an ABI or staleness defect, which is the worst possible way
-    // for a fixture to fail. One clock read per PROCESS (not per call — see the counter note
-    // above), so two calls in one process still can't collide and two processes with one pid
-    // can't either.
-    static PROC_TOKEN: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
-    let token = PROC_TOKEN.get_or_init(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    });
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-boot-plugins-{}-{token:x}-{tag}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-pub(crate) fn plugin_manifest(
-    name: &str,
-    alias: &str,
-    publisher: &str,
-) -> busbar_plugin_sign::Manifest {
-    busbar_plugin_sign::Manifest {
-        name: name.into(),
-        alias: alias.into(),
-        kind: "store".into(),
-        version: "1.5.0".into(),
-        publisher: publisher.into(),
-        abi_version: *busbar_plugin_loader::supported_abi("store")
-            .iter()
-            .max()
-            .expect("store abi"),
-        sha256: String::new(),
-        signature: String::new(),
-        description: String::new(),
-        homepage: String::new(),
-        license: String::new(),
-        needs: Default::default(),
-        settings_schema: None,
-        schema_derived: false,
-        host: None,
-    }
-}
-
-/// An UNSIGNED (but structurally valid) tarball: sha256 set, signature empty.
-pub(crate) fn unsigned_tarball(mut m: busbar_plugin_sign::Manifest, lib: &[u8]) -> Vec<u8> {
-    m.sha256 = busbar_plugin_sign::sha256_hex(lib);
-    busbar_plugin_loader::tarball::package(&m, "lib.so", lib).unwrap()
-}
+// THE PLUGIN TARBALL FIXTURE moved to `busbar_plugin_testkit::loader_fixtures` (the crate whose
+// stated job is exactly this: a shared helper written once instead of hand-copied per repo), because
+// the hook engine's battery now drives the same real loader from its own crate and two copies of
+// "how a test builds a plugin archive" would be two answers to what the loader accepts. Re-exported
+// here so every call site in this battery is unchanged.
+pub(crate) use busbar_plugin_testkit::loader_fixtures::{
+    plugin_manifest, tmp_plugin_dir, unsigned_tarball,
+};
 
 fn plugins_cfg(dir: &std::path::Path, enabled: bool) -> crate::config::PluginsCfg {
     crate::config::PluginsCfg {
