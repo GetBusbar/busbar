@@ -282,7 +282,6 @@ const PENDING_KINDS: &[(&str, &str)] = &[(
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
 const PENDING_EDGES: &[(&str, &str)] = &[
     ("dialect", "plane"),
-    ("dialect", "contract"),
     ("dialect", "grammar"),
     ("dialect", "substrate"),
     ("dialect", "api"),
@@ -341,6 +340,18 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 // the measured dependency graph
 // ------------------------------------------------------------------------------------------------
 
+/// THE SINK EVERY KIND MAY NAME, BY SPEC AND NOT BY MEASUREMENT (`PLUGIN-TREE.md` §4).
+///
+/// Every row of the §4 table gives its kind `busbar-core-contract`: the contract IS the thing a
+/// plugin is written against, and a kind that may not name it cannot be a plugin. Keeping those
+/// edges in the measured snapshot below made them look like nine separate observations that
+/// happened to be true, so the day `busbar-store-memory` became the first implementor of the record
+/// contract the gate reported `store -> contract` as a NEW kind-to-kind edge class — a kind
+/// learning about another kind — over a dependency the spec grants outright, and the green baseline
+/// failed on the real tree. An edge to this sink is therefore never a new class and never a dead
+/// allowance. The snapshot keeps what is genuinely a measurement: the non-contract edges.
+const SPEC_SINK: &str = "contract";
+
 /// THE KIND-TO-KIND EDGE CLASSES THIS TREE HAS TODAY, measured and then written down.
 ///
 /// This is deliberately a MEASUREMENT rather than the ideal graph §3.1 describes. The ideal is
@@ -354,11 +365,13 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 ///
 /// `root` is not a source: the composition root exists to depend on everything (§3.1), so an edge
 /// out of it is not news. `legacy` is not a source either — see the module header's ratchet.
+///
+/// The one sink it does NOT hold is `contract`: that edge is the spec's, not a measurement — see
+/// [`SPEC_SINK`].
 const MEASURED_EDGES: &[(&str, &str)] = &[
     ("api", "secret"),
     ("auth", "api"),
     ("auth", "plugin-tooling"),
-    ("caps", "contract"),
     ("codec", "api"),
     ("codec", "grammar"),
     ("codec", "substrate"),
@@ -369,10 +382,8 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     ("hooks", "api"),
     ("hooks", "plugin-tooling"),
     ("kernel", "caps"),
-    ("kernel", "contract"),
     ("kernel", "grammar"),
     ("plane", "codec"),
-    ("plane", "contract"),
     ("plugin-abi", "api"),
     ("plugin-tooling", "api"),
     ("plugin-tooling", "caps"),
@@ -387,24 +398,16 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     // carries (PLUGIN-TREE §4), first taken by store-memory when the kernel record store landed.
     ("store", "contract"),
     ("store", "api"),
-    // `busbar-store-memory` — the first implementor of the record contract's
-    // `record_put`/`record_get`/`record_scan`. PLUGIN-TREE.md §4 gives every store/auth/secret/hook/
-    // export crate `busbar-core-contract` as an allowed edge, so this is the table catching up with
-    // a measurement the tree took after the graph was first written, not a new allowance.
-    ("store", "contract"),
     ("store", "plugin-tooling"),
     ("store", "store"),
     ("substrate", "api"),
-    ("substrate", "contract"),
     ("substrate", "plugin-abi"),
     ("substrate", "substrate"),
     ("substrate", "timing"),
-    ("transport", "contract"),
     ("transport", "contract-transport"),
     ("transport", "transport"),
     ("transport", "unit"),
     ("unit", "caps"),
-    ("unit", "contract"),
     ("unit", "contract-transport"),
     ("unit", "unit"),
 ];
@@ -1016,6 +1019,11 @@ fn rule_deps(crates: &[CrateInfo]) -> Row {
             }
             let edge = (from.to_string(), to.to_string());
             seen.insert(edge.clone());
+            // The one edge the SPEC grants every kind, so it is never a new class and never a dead
+            // allowance: see [`SPEC_SINK`].
+            if to == SPEC_SINK {
+                continue;
+            }
             if !allowed.contains(&edge) {
                 offenders.push(format!(
                     "new-edge-class\t{}\t{from} -> {to} ({} -> {dep}) is not in the measured graph \
@@ -1407,8 +1415,51 @@ struct SourceIndex {
     impls: BTreeMap<String, BTreeMap<String, usize>>,
     /// dir -> whether it has a `src/lib.rs` at all.
     has_lib: BTreeSet<String>,
-    /// dir -> whether it carries a `tests/*conformance*.rs` battery file.
+    /// dir -> it carries a `tests/*conformance*.rs` battery file WITH AT LEAST ONE LIVE ENTRY.
     conformance: BTreeSet<String>,
+    /// dir -> it carries a battery file whose every entry is `#[ignore]`d, or which has no entry at
+    /// all. A file, not a battery: see [`live_battery_entries`].
+    conformance_dead: BTreeSet<String>,
+}
+
+/// `(live, ignored)` `#[test]` entries in a battery file.
+///
+/// A BATTERY THAT DOES NOT RUN IS NOT A BATTERY. The rule keyed on the file EXISTING and on a
+/// `testkit` dev-dependency being declared, neither of which executes anything: a conformance file
+/// whose every entry is `#[ignore = "not yet on busbar-contract: …"]` satisfied both, and its crate
+/// read as green while `cargo test` ran none of it. The reason in the ignore string is exactly the
+/// work the battery is supposed to be gating.
+///
+/// Attributes are read off the BLANKED line, so `#[ignore]` inside a string in the file's own prose
+/// is not an attribute, and an entry's attribute block is the contiguous run of `#[…]` lines around
+/// it — which is where rustfmt puts `#[ignore]`, above or below the `#[test]`.
+fn live_battery_entries(text: &str) -> (usize, usize) {
+    let mut lex = scan::LexState::default();
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| scan::blank_code(l, &mut lex))
+        .collect();
+    let is_attr = |l: &String| l.trim_start().starts_with("#[");
+    let (mut live, mut ignored) = (0usize, 0usize);
+    for (i, l) in lines.iter().enumerate() {
+        if !l.trim_start().starts_with("#[test]") {
+            continue;
+        }
+        let mut lo = i;
+        while lo > 0 && is_attr(&lines[lo - 1]) {
+            lo -= 1;
+        }
+        let mut hi = i;
+        while hi + 1 < lines.len() && is_attr(&lines[hi + 1]) {
+            hi += 1;
+        }
+        if lines[lo..=hi].iter().any(|a| a.contains("#[ignore")) {
+            ignored += 1;
+        } else {
+            live += 1;
+        }
+    }
+    (live, ignored)
 }
 
 /// The `<…>` immediately after `impl`, skipped as a BALANCED group: `impl<S: CellStore>` and
@@ -1469,6 +1520,7 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         impls: BTreeMap::new(),
         has_lib: BTreeSet::new(),
         conformance: BTreeSet::new(),
+        conformance_dead: BTreeSet::new(),
     };
     for f in &files {
         let rel = f.rel_str();
@@ -1476,7 +1528,13 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
             continue;
         };
         if rel.starts_with(&format!("{dir}/tests/")) && rel.contains(CONFORMANCE_MARKER) {
-            idx.conformance.insert(dir.clone());
+            let (live, _ignored) = live_battery_entries(&f.text);
+            if live > 0 {
+                idx.conformance.insert(dir.clone());
+                idx.conformance_dead.remove(&dir);
+            } else if !idx.conformance.contains(&dir) {
+                idx.conformance_dead.insert(dir.clone());
+            }
         }
         if !is_shipped_source(&rel) {
             continue;
@@ -1641,7 +1699,9 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             })
             .collect();
         checked += members.len();
-        if runners.is_empty() {
+        let want_trait = entry_trait(kind);
+        let no_battery = runners.is_empty();
+        if no_battery {
             offenders.push(format!(
                 "no-battery\tkind:{kind}\tno battery for kind {kind} — none of its {} crate(s) \
                  runs a shared conformance battery (no `{BATTERY_MARKER}` dev-dependency, no \
@@ -1653,10 +1713,37 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
                     batteries.join(", ")
                 }
             ));
-            continue;
         }
         for c in members {
-            if !runners.iter().any(|r| r.name == c.name) {
+            // A BATTERY WITH NO SUBJECT PROVES NOTHING. The battery's whole content is the kind's
+            // trait exercised through the crate's own implementor (`PLUGIN-TREE.md` §3: `let _: &dyn
+            // <KindTrait> = &P;`), so a crate of the kind that implements the trait ZERO times has
+            // nothing for its battery to be about — and a file that compiles anyway is a file that
+            // asserts about something else. Read off the same trait-impl index `:shape` counts with.
+            let implementors = idx
+                .impls
+                .get(&c.dir)
+                .and_then(|m| m.get(&want_trait))
+                .copied()
+                .unwrap_or(0);
+            if implementors == 0 {
+                offenders.push(format!(
+                    "no-implementor\t{}\t{} is kind `{kind}` and implements `{want_trait}` nowhere \
+                     in shipped source, so its battery has no subject — a conformance file that \
+                     passes over no implementor is not evidence about this crate",
+                    c.dir, c.name
+                ));
+            }
+            if idx.conformance_dead.contains(&c.dir) {
+                offenders.push(format!(
+                    "battery-ignored\t{}\t{} carries a tests/*{CONFORMANCE_MARKER}*.rs whose every \
+                     entry is `#[ignore]`d (or which has none). `cargo test` runs nothing of it; \
+                     the file exists and the battery does not.",
+                    c.dir, c.name
+                ));
+                continue;
+            }
+            if !no_battery && !runners.iter().any(|r| r.name == c.name) {
                 offenders.push(format!(
                     "not-run\t{}\t{} does not run kind `{kind}`'s shared battery, which {} of its \
                      siblings do",
@@ -1926,15 +2013,35 @@ impl Gate for KindIsolationGate {
             &["cross-instance", "busbar-plane-llm"],
         ));
 
-        // A DEAD EDGE CLASS: strip the only crate that carries `caps -> contract` and the allowance
-        // must be reported as the line it has become.
+        // A DEAD EDGE CLASS: strip the only crate that carries `contract -> grammar` and the
+        // allowance must be reported as the line it has become. (It read `caps -> contract` until
+        // the contract sink stopped being a measured line — see `SPEC_SINK`; an edge the spec
+        // grants can never be a dead allowance, so it can no longer prove this rule.)
         report.push(prove_rows_red(
             cx,
             self,
             "an edge class no crate has any more is reported as a dead allowance",
             &[ROW_DEPS],
-            manifest_plant("crates/busbar-caps", "busbar-caps", &[]),
-            &["dead-edge-class", "caps -> contract"],
+            manifest_plant("crates/busbar-contract", "busbar-contract", &[]),
+            &["dead-edge-class", "contract -> grammar"],
+        ));
+
+        // THE CONTRACT SINK IS THE SPEC'S, NOT A MEASUREMENT. `hooks -> contract` is in no snapshot
+        // and never was; §4 grants it, as it grants every kind the contract. This case plants that
+        // dependency and requires the row to stay GREEN — it was RED before the sink was read off
+        // the spec, which is what made `store -> contract` a "new kind-to-kind edge class" the day
+        // busbar-store-memory implemented the record contract, and failed the green baseline on the
+        // real tree.
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a kind naming the contract is the spec's edge, not a new class",
+            &[ROW_DEPS],
+            manifest_plant(
+                "crates/busbar-export-planted",
+                "busbar-export-planted",
+                &["busbar-contract"],
+            ),
         ));
 
         // THE VOCABULARY, BOTH DIRECTIONS.
@@ -2105,6 +2212,59 @@ impl Gate for KindIsolationGate {
             &[ROW_TESTKIT],
             manifest_plant("crates/busbar-store-planted", "busbar-store-planted", &[]),
             &["not-run", "busbar-store-planted"],
+        ));
+
+        // A BATTERY FILE IS NOT A BATTERY. This crate carries `tests/conformance.rs` and a `testkit`
+        // dev-dependency — everything the rule used to ask — and every entry in it is `#[ignore]`d,
+        // so `cargo test` runs none of it. The rule detected the FILE and the DEV-DEPENDENCY, and
+        // neither of those executes; a whole kind's conformance can be switched off with one
+        // attribute per test and a reason that names the very work being gated.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-ignored",
+            "busbar-store-ignored",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-ignored/src/lib.rs",
+            "pub struct P;\nimpl Store for P {}\n",
+        );
+        ov.set(
+            "crates/busbar-store-ignored/tests/conformance.rs",
+            "#[test]\n#[ignore = \"not yet on busbar-contract: the battery is owed\"]\n\
+             fn kind_is_declared_once() {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a conformance battery whose every entry is ignored is not a battery",
+            &[ROW_TESTKIT],
+            ov,
+            &["battery-ignored", "busbar-store-ignored"],
+        ));
+
+        // A BATTERY WITH NO SUBJECT. The same crate, with a live battery and no implementor of its
+        // kind's trait anywhere in shipped source: the file compiles, the battery passes, and it is
+        // evidence about nothing this crate ships.
+        let mut ov = manifest_plant(
+            "crates/busbar-store-subjectless",
+            "busbar-store-subjectless",
+            &["busbar-contract"],
+        );
+        ov.set(
+            "crates/busbar-store-subjectless/src/lib.rs",
+            "pub struct P;\n",
+        );
+        ov.set(
+            "crates/busbar-store-subjectless/tests/conformance.rs",
+            "#[test]\nfn kind_is_declared_once() {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a crate of a kind that implements its kind's trait nowhere has no subject to conform",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-implementor", "busbar-store-subjectless", "Store"],
         ));
 
         report
