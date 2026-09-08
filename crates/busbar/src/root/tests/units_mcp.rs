@@ -1592,3 +1592,143 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
         .expect("verifies");
     assert_eq!(replayed.len(), 2, "the posting, then the carry");
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The seal — the checks that are about THIS NODE and not about this build
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One well-formed registration, which every case below varies exactly one field of.
+static ONE_GOOD: &[Server] = &[Server {
+    id: "fs",
+    lane: LaneId::new("fs-lane"),
+    host: "127.0.0.1:9",
+    transport: claims::TRANSPORT_HTTP,
+}];
+
+/// A deployment with nothing registered seals, and so does one with a good registration.
+///
+/// The green case first, because every red case below is only meaningful if the green one passes:
+/// a seal that refused everything would satisfy all four refusal tests and serve nobody.
+#[test]
+fn a_well_formed_node_seals() {
+    let scopes = seal(&McpPlane::EMPTY).expect("a plane with nothing registered seals");
+    assert!(!scopes.is_empty(), "the seal answers with the scope table");
+    assert_eq!(
+        scopes.len(),
+        <McpPlane as PlaneMeta>::OP_CLASSES.len(),
+        "every declared class has a required scope"
+    );
+    seal(&McpPlane::new(ONE_GOOD)).expect("one good registration seals");
+}
+
+/// Two registrations under one name are refused at boot.
+///
+/// The name is the pool key, the breaker key and the scope resource all three, so two rows under one
+/// name is a deployment where a grant written for one authorizes the other.
+#[test]
+fn two_registrations_under_one_name_are_refused() {
+    static SERVERS: &[Server] = &[
+        Server {
+            id: "fs",
+            lane: LaneId::new("a"),
+            host: "127.0.0.1:9",
+            transport: claims::TRANSPORT_HTTP,
+        },
+        Server {
+            id: "fs",
+            lane: LaneId::new("b"),
+            host: "127.0.0.1:10",
+            transport: claims::TRANSPORT_HTTP,
+        },
+    ];
+    assert_eq!(
+        seal(&McpPlane::new(SERVERS)),
+        Err(MountRefusal::DuplicateRegistration("fs"))
+    );
+}
+
+/// A registration reached over a transport no claim declares is refused at boot.
+///
+/// The arrival step refuses a unit on an undeclared transport, so this registration is one nothing
+/// could ever answer from. The check is the CLAIM TABLE's own question, asked by name, not a list
+/// kept here.
+#[test]
+fn a_registration_on_an_unclaimed_transport_is_refused() {
+    static SERVERS: &[Server] = &[Server {
+        id: "fs",
+        lane: LaneId::new("fs-lane"),
+        host: "127.0.0.1:9",
+        transport: "grpc",
+    }];
+    assert_eq!(
+        seal(&McpPlane::new(SERVERS)),
+        Err(MountRefusal::UnclaimedTransport {
+            server: "fs",
+            transport: "grpc",
+        })
+    );
+    // And each of the three the claims DO declare is accepted, so the check is the claim table's
+    // answer rather than one transport that happens to pass.
+    for transport in [
+        claims::TRANSPORT_HTTP,
+        claims::TRANSPORT_SSE,
+        claims::TRANSPORT_STDIO,
+    ] {
+        assert!(claims::declares(transport));
+    }
+}
+
+/// A registration with no priced lane is refused at boot.
+///
+/// The lane is what a rate hangs on and what the breaker keys its cells by. Every dialled unit would
+/// be refused as unpriced — the right refusal, in the wrong place, for a reason no request caused.
+#[test]
+fn a_registration_with_no_lane_is_refused() {
+    static SERVERS: &[Server] = &[Server {
+        id: "fs",
+        lane: LaneId::new(""),
+        host: "127.0.0.1:9",
+        transport: claims::TRANSPORT_HTTP,
+    }];
+    assert_eq!(
+        seal(&McpPlane::new(SERVERS)),
+        Err(MountRefusal::UnpricedRegistration("fs"))
+    );
+}
+
+/// The seal READS its argument, which is the property the three cases above rest on.
+///
+/// Stated as its own assertion rather than left implied: the three refusals are all about the
+/// registrations, so a seal that discarded the plane would return `Ok` for all three — and each of
+/// those tests would then be asserting something about a value nothing looked at.
+#[test]
+fn the_seal_reads_the_node_and_not_only_the_build() {
+    static BAD: &[Server] = &[Server {
+        id: "fs",
+        lane: LaneId::new(""),
+        host: "",
+        transport: "grpc",
+    }];
+    assert!(
+        seal(&McpPlane::new(BAD)).is_err(),
+        "the seal answered the same for a node whose registration is wrong three ways"
+    );
+    assert!(seal(&McpPlane::EMPTY).is_ok());
+}
+
+/// Every class the plane says it answers is one it declares, and its surface will mount.
+///
+/// Both are checks over the BUILD rather than over the node, and both are here because a served set
+/// naming a class the plane does not declare, or a surface with two rows at one address, is a
+/// deployment that boots and then answers the wrong thing.
+#[test]
+fn the_served_set_and_the_surface_are_checked() {
+    for op in busbar_plane_mcp::served::ANSWERED {
+        assert!(
+            <McpPlane as PlaneMeta>::OP_CLASSES.contains(op),
+            "{op} is answered and not declared"
+        );
+    }
+    busbar_contract::transport::check_surface(&busbar_plane_mcp::surface::SURFACE)
+        .expect("the served surface mounts");
+}
