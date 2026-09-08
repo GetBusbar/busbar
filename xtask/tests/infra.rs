@@ -584,6 +584,52 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
     );
 }
 
+/// A CANDIDATE THIS RESOLVER COULD NOT READ IS NOT A CANDIDATE THAT DOES NOT DECLARE THE PLANE.
+///
+/// `resolve` counts the directories that OWN a plane and answers on the count: one is the home,
+/// zero is `Missing`, two is `Ambiguous`. Every read behind that count used to be discarded —
+/// `read_dir` failing, an individual `DirEntry` erroring, `read_to_string` failing on the file that
+/// carries the grammar. Each of those UNDERCOUNTS, and undercounting is the one direction that
+/// turns a refusal into a pass: two homes minus one unreadable candidate is `Ok(one home)`, and the
+/// half-finished move or duplicated plane that `Ambiguous` exists to report is resolved silently to
+/// whichever directory happened to be readable.
+///
+/// The premise is arranged at runtime — git cannot store a mode-`0o000` directory, and this
+/// resolver takes its search root as a parameter exactly so its refusals are proven on purpose.
+#[cfg(unix)]
+#[test]
+fn a_candidate_directory_that_cannot_be_read_is_refused_rather_than_undercounted() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tmpdir("plane-roots-unreadable");
+    // TWO declaring homes — the real `Ambiguous` case — with one of them made unreadable.
+    for crate_dir in ["plane-w", "plane-w-fork"] {
+        let d = tmp.join(crate_dir).join("src/w");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("mod.rs"), "pub const PLANE_DECL: Foo = Foo;\n").unwrap();
+    }
+    let locked = tmp.join("plane-w-fork/src/w");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let still_readable = std::fs::read_dir(&locked).is_ok();
+    let got = PlaneRoots::at(&tmp).resolve("w");
+    let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
+    std::fs::remove_dir_all(&tmp).unwrap();
+
+    if still_readable {
+        eprintln!(
+            "SKIPPED: this process can read a 0o000 directory, so the unreadable-candidate case \
+             could not be set up"
+        );
+        return;
+    }
+    assert!(
+        got.is_err(),
+        "a candidate that could not be read must not lower the count into a single silent home; \
+         got {got:?}"
+    );
+}
+
 #[test]
 fn plane_root_resolution_ports_the_four_shell_selftest_cases() {
     let tmp = tmpdir("plane-roots");
