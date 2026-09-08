@@ -57,6 +57,15 @@ busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # grant satisfies a requirement is what a unit DOES); core names it and keeps its own call sites
 # spelling `Scope` exactly as they always did.
 busbar-unit-scope = { path = "../busbar-unit-scope" }
+# THE MONEY-NAMING ADMIN VIEWS, named once. The admin read shapes that carry a figure — the usage
+# rollup (`spend_micros`), the group's derived bucket usage (`spend_cents`, `budget_cap`,
+# `budget_remaining_cents`) and the key metering mirror — are the cost unit's types now, on the
+# owner's ruling: a view that names money belongs to the crate that owns the money vocabulary, so the
+# admin plane can render the document without naming a figure at all. This edge carries SHAPES only.
+# No arithmetic moved: every number in them is still derived exactly where it was (the governance
+# bucket read, the metering rollup), and this crate's contract module re-exports each type under the
+# name every in-core call site already spells.
+busbar-unit-cost = { path = "../busbar-unit-cost" }
 # THE ADMIN ENVELOPE. The plane already owns the 1.5.5 error envelope's frozen wire shape
 # (`refusal::envelope_of`) and renders the composition root's refusals through it; core rendered the
 # same two keys a second time out of its own `json!`. Core → plugin is the sanctioned direction (the
@@ -227,7 +236,9 @@ egress-auth-gate = []
 # FORWARDS to substrate: the relocated `admin::v1` data helpers (`NamedDefView`'s `schemars` derive
 # and `set_response_schema`) live behind substrate's matching feature, and core re-exports them, so
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
-openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
+# Same reason for the cost unit: the money-naming admin views (`UsageView`, `GroupUsageView` and the
+# rest of `busbar_unit_cost::view`) carry the `schemars` derive behind that crate's matching feature.
+openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema", "busbar-unit-cost/openapi-schema", "busbar-llm/openapi-schema", "busbar-mcp/openapi-schema", "busbar-a2a/openapi-schema"]
 loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
