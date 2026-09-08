@@ -469,6 +469,39 @@ fn a_result_that_asks_for_something_is_a_turn() {
     }
 }
 
+/// An envelope that states neither a result nor an error ends the unit as an error.
+///
+/// A truncated write or a buggy server produces exactly this. Reporting it as a completed answer
+/// tells the caller their request succeeded, hands them nothing, and — because the fee a unit
+/// draws is read off the finish this step reports — charges them for it. The unit still ENDS: a
+/// decode failure would leave the loop with no finish at all, which is the one answer the fee
+/// evidence reads as a completed exchange.
+#[test]
+fn an_envelope_stating_neither_result_nor_error_ends_the_unit_as_an_error() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    for empty in [
+        br#"{"jsonrpc":"2.0","id":3}"#.as_slice(),
+        // A stated but empty result is the same nothing, written the other way.
+        br#"{"jsonrpc":"2.0","id":3,"result":null}"#.as_slice(),
+    ] {
+        let frames = vec![response_frame(empty)];
+        let mut cursor = FrameCursor::new(&frames);
+        match plane
+            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+            .expect("an empty envelope decodes")
+        {
+            Progress::Terminal { r, .. } => assert_eq!(
+                r.finish,
+                busbar_contract::unit::FinishClass::Error,
+                "an empty envelope was reported as a completed answer"
+            ),
+            other => panic!("an empty envelope decoded as {other:?}"),
+        }
+    }
+}
+
 /// A refusal is rendered as this dialect's error envelope, with the caller's identifier.
 #[test]
 fn a_refusal_is_rendered_in_this_dialect() {

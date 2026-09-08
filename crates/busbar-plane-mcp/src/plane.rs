@@ -154,6 +154,16 @@ fn has(body: &[u8], pointer: &str) -> bool {
     read_raw(body, pointer).is_some()
 }
 
+/// Whether a body STATES something at one pointer — the member is there and it is not the null
+/// literal.
+///
+/// Presence alone is not a statement. A server that writes `"result":null` beside nothing else has
+/// told the caller as little as one that omitted the member, and the two spellings of the same
+/// nothing must be read the same way or the emptier one slips through as an answer.
+fn states(body: &[u8], pointer: &str) -> bool {
+    read_raw(body, pointer).is_some_and(|raw| raw != b"null")
+}
+
 /// The facts a request body yields, read once.
 fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> {
     let mut facts = Facts::new();
@@ -588,7 +598,8 @@ impl Plane for McpPlane {
         }
 
         let id = read_raw(body, jsonrpc::PTR_ID);
-        let is_error = has(body, jsonrpc::PTR_ERROR);
+        let is_error = states(body, jsonrpc::PTR_ERROR);
+        let has_result = states(body, jsonrpc::PTR_RESULT);
         let mut facts = Facts::new();
         if let Some(raw) = id {
             if let Ok(text) = core::str::from_utf8(raw) {
@@ -605,6 +616,24 @@ impl Plane for McpPlane {
             if let Ok(text) = core::str::from_utf8(code) {
                 let _ = facts.set(f::FACT_ERROR_CODE, FactValue::Str(text));
             }
+        }
+        // AN ANSWER STATES SOMETHING. This protocol's answers state a result or state an error, and
+        // an envelope that states neither is a truncated write or a server that got it wrong. It
+        // was read as a COMPLETED answer: an empty body handed back to the caller as their result,
+        // and the fee a unit draws is decided from the finish this step reports, so the caller paid
+        // for it. It ends the unit here, and it ends it as an error — the honest finish for "the
+        // server said nothing" — rather than as a decode failure, which would leave the loop with
+        // no finish at all and is the one answer the fee evidence reads as a completed exchange.
+        // Before anything counts it: an envelope that is not an answer is not an event read.
+        if !is_error && !has_result {
+            return Ok(Progress::Terminal {
+                for_: id.and_then(|raw| f::correlation_for(raw, ctx.arena())),
+                r: Box::new(Response {
+                    ir: view(body, jsonrpc::RESPONSE_PTRS, ctx)?,
+                    finish: FinishClass::Error,
+                    facts,
+                }),
+            });
         }
         if let Some(state) = st {
             if let Some(codec) = state.get_mut::<Codec>() {
