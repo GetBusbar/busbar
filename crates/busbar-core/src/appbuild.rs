@@ -728,7 +728,8 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
-        let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
+        let Some(protocol) = busbar_substrate::proto::lane_protocol_name(&provider_cfg.protocol)
+        else {
             // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
             // hand-maintained literal that names the six LLM dialects core no longer owns: the codec
             // protocols are whatever the linked plane crates registered, so a build with the LLM plane
@@ -738,7 +739,7 @@ pub fn build_app_from_config(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.provider,
                 provider_cfg.protocol,
-                crate::proto::known_protocols().join(", ")
+                busbar_substrate::proto::known_protocols().join(", ")
             ));
         };
         // Reuse the single env read captured in the lanes_data loop above (same source of truth as

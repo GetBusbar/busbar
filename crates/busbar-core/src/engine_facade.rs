@@ -75,4 +75,4 @@ pub use crate::egress_auth::{prebuild_auth, resolve, CredentialProvider, Metadat
 // relocation, rather than through core's `crate::state::…` shim.
 pub use busbar_substrate::topology::UpstreamClients;
 // ── the neutral lane-protocol-name resolver the lowering keys egress targets on (proto) ──────────
-pub use crate::proto::lane_protocol_name;
+pub use busbar_substrate::proto::lane_protocol_name;

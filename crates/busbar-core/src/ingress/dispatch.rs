@@ -59,7 +59,7 @@ pub(crate) async fn protocol_dispatch(
     // operation (its registry arm) and that operation dies HERE while everything else keeps working.
     // (`resolve_operation` = the RequestHandler naming the operation; `None` falls through to the
     // protocol arms, which own their native unknown-action envelopes.)
-    if let Some(rh) = crate::handlers::request_handler(proto) {
+    if let Some(rh) = busbar_substrate::handlers::request_handler(proto) {
         if let Some(op) = rh.resolve_operation(&path, &body) {
             if rh.operation_handler(op).is_none() {
                 return crate::proxy::ingress_error(

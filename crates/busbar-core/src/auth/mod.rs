@@ -737,18 +737,18 @@ fn ingress_for_path(app: &crate::state::App, path: &str) -> crate::plane::Ingres
 }
 
 /// The auth-failure wire message for an inferred ingress protocol — a THIN delegation to the
-/// CANONICAL `crate::proto::vendor_auth_failure_message` so the auth path and any other site that
-/// shapes a native bad-credential body cannot drift on the vendor copy. The string lands verbatim in
-/// the native error body (`error.message` for anthropic/openai/gemini/responses, the bare top-level
-/// `message` for cohere, the `message` field alongside `__type` for bedrock — every writer echoes
-/// it unchanged), so it MUST read like the copy the REAL vendor returns for a bad/missing credential
-/// and carry NO busbar-internal vocabulary ("virtual key", "client token", "allowlist", "disabled",
-/// "passthrough", …). The wording is chosen PURELY from the inferred protocol and is deliberately
-/// independent of WHY auth failed (missing token vs. wrong token vs. disabled virtual key vs.
-/// admin-token mismatch) — surfacing that distinction on the wire is itself an oracle. Call sites
-/// therefore pass no reason string.
+/// CANONICAL `busbar_substrate::proto::vendor_auth_failure_message` so the auth path and any other
+/// site that shapes a native bad-credential body cannot drift on the vendor copy. The string lands
+/// verbatim in the native error body (`error.message` for anthropic/openai/gemini/responses, the
+/// bare top-level `message` for cohere, the `message` field alongside `__type` for bedrock — every
+/// writer echoes it unchanged), so it MUST read like the copy the REAL vendor returns for a
+/// bad/missing credential and carry NO busbar-internal vocabulary ("virtual key", "client token",
+/// "allowlist", "disabled", "passthrough", …). The wording is chosen PURELY from the inferred
+/// protocol and is deliberately independent of WHY auth failed (missing token vs. wrong token vs.
+/// disabled virtual key vs. admin-token mismatch) — surfacing that distinction on the wire is itself
+/// an oracle. Call sites therefore pass no reason string.
 fn vendor_auth_failure_message(proto: &str) -> &'static str {
-    crate::proto::vendor_auth_failure_message(proto)
+    busbar_substrate::proto::vendor_auth_failure_message(proto)
 }
 
 /// The HTTP status and protocol-agnostic error `kind` a bad/missing credential yields for an
