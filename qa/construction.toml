@@ -925,7 +925,14 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 92
+#
+# 92 -> 91 (1.6.0, after the two lane projections became provided methods on the substrate's view).
+# The ratchet is only a ratchet if it is taken in: a measured figure left a symbol under the ceiling
+# is a symbol of headroom the next change can spend without anything saying so. Admin Cut 1b crossed
+# three more operations to the loop and spent NONE of it — every fact those reads answer from is
+# reached as a method on a value the root already holds, not as a new name — which is what makes
+# taking the slack in now safe rather than optimistic.
+ceiling = 91
 
 # Each sub-row below is INFORMATIONAL. `figure` is the last calibrated per-crate count -- a drift
 # marker for the report, never a gate. Nothing fails on it.
