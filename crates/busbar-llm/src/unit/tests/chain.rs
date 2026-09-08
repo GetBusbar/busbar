@@ -50,6 +50,15 @@ enum Fixture {
     /// An admitted streamed answer — the same loop with the accrual landing at stream end rather
     /// than at the buffered tap.
     StreamedOk,
+    /// A CLIENT THAT ASKED TO STREAM, ANSWERED BY AN UPSTREAM THAT DID NOT. The upstream ignored
+    /// `stream` and returned one JSON body, so the engine buffers it whole, translates it into the
+    /// client's own stream framing, and the BUFFERED tap fires before the response is handed back.
+    ///
+    /// It is the one delivered end whose figures exist at step 6: every other admitted fixture here
+    /// is a same-protocol relay whose tap fills while the CLIENT drains the body, which is after the
+    /// unit has ended. So this is the fixture that reaches the Meter step's accrual/report/row arm
+    /// at all, and it is why the arm's reachability could not be shown on the two above.
+    BufferedStreamOut,
     /// A key whose group budget is spent: the door refuses, nothing is charged, nothing is
     /// refunded.
     OverBudget,
@@ -87,7 +96,10 @@ impl Fixture {
     fn streamed(self) -> bool {
         matches!(
             self,
-            Fixture::StreamedOk | Fixture::StreamCut | Fixture::StreamFailedTransfer
+            Fixture::StreamedOk
+                | Fixture::StreamCut
+                | Fixture::StreamFailedTransfer
+                | Fixture::BufferedStreamOut
         )
     }
 
@@ -839,6 +851,12 @@ async fn drive(
     };
 
     // ---- STEP 5, ROUTE ----------------------------------------------------------------------
+    // THE READER'S COPY of the meter half, taken before the walk takes it — the same move the
+    // production carry makes, for the same reason: the walk MOVES the half into its taps, so after
+    // the await there is nothing left to bind the Meter step's accrual/report/row arm with. The
+    // rehearsal takes it here so this driver and `Walk::route` bind step 6 identically; a rehearsal
+    // that fed the step a `None` the root does not feed it would be rehearsing a different unit.
+    let meter_half = admitted.sink.clone();
     let routed = route::route(
         &UnitToken::mint(seal),
         route::RouteInput {
@@ -878,6 +896,8 @@ async fn drive(
     // here rather than inside the facts.
     let tables = crate::engine::EngineTables::new(rt);
     let lane = facts.lane.and_then(|i| tables.lanes().get(i));
+    // The half the walk handed BACK where it never dispatched, and the reader's copy where it did.
+    let meter_sink = meter_sink.or(meter_half);
     let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
     // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
     // question it cannot answer: it holds no card, and inventing one here would be this crate
@@ -932,9 +952,14 @@ async fn drive(
 // The rehearsal
 // ---------------------------------------------------------------------------------------------
 
-const CASES: [Fixture; 6] = [
+const CASES: [Fixture; 7] = [
     Fixture::BufferedOk,
     Fixture::StreamedOk,
+    // The one delivered end whose buffered tap has already fired when step 6 runs, so the Meter
+    // step's accrual/report/row arm is REACHED on this case and on no other here. It is compared
+    // against the legacy drive like every other case, which is what holds the arm being live to the
+    // same money the shipped plane leaves behind.
+    Fixture::BufferedStreamOut,
     Fixture::OverBudget,
     Fixture::PoolAcl,
     Fixture::UnknownModel,
@@ -1163,6 +1188,9 @@ async fn every_fixture_reaches_the_end_it_names() {
         vec![
             (Fixture::BufferedOk, "200".to_string()),
             (Fixture::StreamedOk, "200".to_string()),
+            // The upstream ignored `stream` and answered one JSON body: delivered, and buffered
+            // whole before it was framed for the client — which is why its tap has fired by step 6.
+            (Fixture::BufferedStreamOut, "200".to_string()),
             // The exhausted budget: the door's own 429.
             (Fixture::OverBudget, "429".to_string()),
             // The pre-admission guard's 403, before pricing is asked about.
@@ -1172,7 +1200,7 @@ async fn every_fixture_reaches_the_end_it_names() {
             // The failed transfer: the upstream's own 502, relayed to the client.
             (Fixture::UpstreamFailure, "502".to_string()),
         ],
-        "the fixtures do not reach the six distinct ends they are named for"
+        "the fixtures do not reach the ends they are named for"
     );
 }
 
@@ -1217,6 +1245,27 @@ async fn the_chain_leaves_the_money_where_the_legacy_plane_leaves_it() {
     assert_eq!(
         field(&delivered, "metering_rows"),
         format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1")
+    );
+
+    // THE ONE END THAT REACHES THE METER STEP'S ACCRUAL ARM. Its buffered tap fires before the
+    // response is handed back, so the step is bound with a meter half AND a serving lane and its
+    // accrual/report/row arm runs — on every other delivered fixture here the tap fills while the
+    // client drains the body, which is after the unit ended.
+    //
+    // The arm SEALS: `MeterFacts::accrued` says the walk's tap already posted, so the row and the
+    // report are reported and the ledger is not touched a second time. That is what this asserts —
+    // the figures are the 1.5.5 figures, once, with the arm live.
+    let buffered_stream_out = leg_chain(Fixture::BufferedStreamOut).await;
+    assert_eq!(field(&buffered_stream_out, "ledger_requests"), "1");
+    assert_eq!(
+        field(&buffered_stream_out, "ledger_tokens"),
+        (INPUT + OUTPUT).to_string(),
+        "the accrual arm ran and sealed: the tokens are on the ledger ONCE, not twice"
+    );
+    assert_eq!(
+        field(&buffered_stream_out, "metering_rows"),
+        format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1"),
+        "one row for one unit, with the arm reachable"
     );
 
     // The door refused: nothing was charged, so there is nothing on the key's own bucket at all.
@@ -1325,6 +1374,187 @@ async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
             "{fixture:?}: the tokens are accrued once, not twice"
         );
     }
+}
+
+/// THE METER STEP'S ACCRUAL ARM, ON THE CARRY THE COMPOSITION ROOT ACTUALLY DRIVES.
+///
+/// Every other test in this file drives the step files through the rehearsal's own driver above.
+/// This one drives [`crate::unit::walk::Walk`] — the production carry, the value the root holds and
+/// calls `route` and `meter` on — because the two used to differ in exactly the way that mattered.
+///
+/// # What was wrong
+///
+/// The Meter step's accrual/report/row arm is behind `(Some(sink), Some(lane))`. The walk MOVES the
+/// admission's meter half into its taps, and `route_parts` hands the half back on exactly one arm —
+/// the candidate miss, where no lane answered and `lane` is therefore `None`. So on every unit that
+/// reached a lane the step was bound with `sink = None`, and the arm was unreachable in the shipped
+/// binary: no metering row, no report, and nothing handed to the holder of the card. The [`Worth`]
+/// seam the root supplies was never invoked on a production unit, because the only `worth(..)` call
+/// sat inside a `hold.map(..)` and this loop keeps the unit's reservation in the kernel's cell from
+/// the door to the exit — so the step is handed `None` and the closure never ran.
+///
+/// # What this pins
+///
+/// A delivered unit, driven through the real carry: the card IS asked, exactly once; what it is
+/// asked about is the SERVING lane, its provider and the tap's own tier split; and the step SEALS
+/// rather than posts, so the one accrual is still the walk's tap's and the money is unmoved. The
+/// money identity itself is [`the_walks_tap_and_the_meter_step_make_one_posting_between_them`] and
+/// [`the_chain_leaves_the_money_where_the_legacy_plane_leaves_it`]; this is the reachability.
+///
+/// [`Worth`]: crate::unit::meter::Worth
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // THE ONE DELIVERED END WHOSE FIGURES EXIST AT STEP 6 — see the fixture's own doc. A
+    // same-protocol relay's tap fills while the CLIENT drains the body, which is after the unit has
+    // ended, so binding the step with a meter half is necessary for this arm and not sufficient: the
+    // LANE has to be knowable too, and only a buffered end knows it this early.
+    let fixture = Fixture::BufferedStreamOut;
+    let rig = rig(fixture).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let headers = json_headers();
+    let body = request_body(fixture);
+    let seal = kernel_seal();
+
+    let arrived = arrival::arrival_body(&headers, &body).expect("the fixture's body arrives");
+    let model = fixture.model().to_string();
+
+    // THE CARRY THE ROOT OPENS, with the arrival the root keeps on it.
+    let walk = crate::unit::walk::Walk::open(crate::unit::walk::WalkArrival {
+        host: Arc::clone(&host),
+        gov: gov.clone(),
+        proto: PROTO,
+        operation: busbar_api::operation::Operation::CHAT,
+        caller_token: None,
+        headers: headers.clone(),
+        body: body.clone(),
+        path: None,
+    });
+    walk.keep_arrival(arrived);
+
+    let principal: PrincipalId = {
+        let token: UnitToken<Authenticate> = UnitToken::mint(&seal);
+        authenticate::authenticate(&token, &gov)
+            .into_result(&seal)
+            .ok()
+            .and_then(|facts| facts.principal().cloned())
+            .expect("this plane opens no handshake unit")
+    };
+    let configured_lane = rt
+        .lane_view(0)
+        .expect("the fixture configures one lane")
+        .model
+        .to_string();
+    let destinations = sealed_destinations(&seal, &configured_lane);
+
+    // THE DOOR. Its answer's plane half — the meter half, the charge flag, the effective pool —
+    // stays on the carry, exactly as the root's Admit step leaves it. The kernel half carries the
+    // unit's reservation and is what the loop puts in its own cell, so it is dropped here: this test
+    // is not a loop and has no cell to put one in.
+    let admitted = admit::admit(
+        &UnitToken::mint(&seal),
+        &AdmitToken::mint(&seal),
+        &admit::AdmitCtx {
+            host: &host,
+            gov: &gov,
+            proto: PROTO,
+            destination: &model,
+            charged_at: rig.charged_at,
+        },
+        &principal,
+        &destinations,
+    );
+    assert!(
+        admitted.charged,
+        "the governed fixture is admitted with the charge landed, or this pins nothing"
+    );
+    let _admission = walk.take_admission(admitted);
+
+    // STEP 5 and STEP 6, through the carry.
+    let routed = walk.route(&UnitToken::mint(&seal), &model).await;
+    assert!(
+        routed.into_result(&seal).is_ok(),
+        "the fixture's destination resolves and the walk dispatches"
+    );
+    assert_eq!(
+        walk.served_status(),
+        Some(200),
+        "the fixture delivers, so the step below is bound to a lane that answered"
+    );
+
+    // THE HOLDER OF THE CARD, standing where the composition root stands. It counts its own calls,
+    // which is the whole instrument: a seam that is never invoked answers zero and a seam that is
+    // invoked twice answers one report two ways.
+    let asked = AtomicUsize::new(0);
+    let seen: std::sync::Mutex<Option<crate::unit::walk::LateReport>> = std::sync::Mutex::new(None);
+    const WORTH: u64 = 4_242;
+    let decision = walk.meter(
+        &UnitToken::mint(&seal),
+        &UsageToken::mint(&seal),
+        &|report| {
+            asked.fetch_add(1, Ordering::SeqCst);
+            *seen.lock().expect("no panic on this path") = Some(report.clone());
+            WORTH
+        },
+    );
+    assert!(decision.into_result(&seal).is_ok(), "the step proceeds");
+
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        1,
+        "the Meter step asks the holder of the card what this unit is worth, exactly once — a zero \
+         here is the step bound with no meter half, which is the arm that was unreachable"
+    );
+    let report = seen
+        .lock()
+        .expect("no panic on this path")
+        .clone()
+        .expect("the ask carries the report it is about");
+    assert_eq!(
+        (report.lane.as_str(), report.provider.as_str()),
+        (LANE, "test"),
+        "the report names the SERVING lane and its provider — the two names the 1.5.5 row is keyed \
+         by, and the key space the rates are written in"
+    );
+    assert_eq!(
+        report.fee_count, 1,
+        "a delivered client request that reached an upstream is one billable request"
+    );
+    // The tier split, by the neutral reserved-unit keys. Sparse by construction — a zero tier is not
+    // an entry — so the two cache sides are absent rather than zero on this fixture.
+    assert_eq!(
+        report
+            .usage
+            .usage_units
+            .iter()
+            .map(|(k, v)| (k.as_str(), *v))
+            .collect::<Vec<_>>(),
+        vec![
+            (busbar_api::UNIT_INPUT, INPUT),
+            (busbar_api::UNIT_OUTPUT, OUTPUT)
+        ],
+        "and the split is the tap's own, not a figure the step invented"
+    );
+
+    // WHAT THE CARRY KEPT. The step's products used to be dropped on the floor here, which is what
+    // made the dead arm indistinguishable from a live one.
+    assert_eq!(
+        walk.reported_at_step().as_ref(),
+        Some(&report),
+        "the carry keeps the reading the card was asked about"
+    );
+    assert_eq!(walk.priced_at_step(), WORTH, "and the answer it was given");
+
+    // ONE ACCRUAL. The walk's tap made it; the step sealed it. Making the arm reachable must not
+    // make it POST — that would be this unit's tokens on the ledger twice.
+    assert!(
+        !walk.posted_here(),
+        "the walk's tap holds this unit's accrual, so the step seals rather than posts"
+    );
+
+    rig.server.shutdown().await;
 }
 
 /// GAP 3, CLOSED — the VERIFY step hands its named refusal back with the decision.

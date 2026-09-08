@@ -298,6 +298,16 @@ pub struct Metered {
     /// disagree about what it consumed. `None` where there was no lane, no meter half, or nothing
     /// billable to report — which is the honest statement that there is nothing to price.
     pub report: Option<crate::unit::walk::LateReport>,
+    /// WHAT THAT REPORT IS WORTH, in nano-units, as the holder of the card answered it.
+    ///
+    /// Carried rather than left inside the hold, because the two are different questions with
+    /// different answers: this is what the unit consumed valued at the card the door pinned, and the
+    /// hold's `accrued` is what a reservation this step may not even have been handed has absorbed
+    /// of it. A caller that read the hold for the price got zero on every unit the loop kept its
+    /// reservation in the cell for — which is every unit the composition root drives.
+    ///
+    /// Zero where there was nothing to report.
+    pub priced: u64,
 }
 
 impl Metered {
@@ -434,6 +444,25 @@ pub fn meter(
     }
     let usage = Usage::report(usage_token, lines).expect("four tiers fit any record");
 
+    // WHAT THE HOLDER OF THE CARD SAYS THIS UNIT IS WORTH — asked ONCE, and asked whether or not
+    // this unit is carrying its reservation through the step.
+    //
+    // The ask used to be written inside the `hold.map(..)` below, which made it a question only a
+    // unit handed a hold ever got asked. On the composition root's loop no unit is: the reservation
+    // goes into the kernel's own cell at the door and the exit is the one place it comes out again,
+    // so the step is handed `None` on every live path and `None.map(..)` never runs the closure.
+    // The [`Worth`] seam the root supplies was therefore never invoked on a production unit, and the
+    // figure it answers did not exist anywhere in the shipped binary.
+    //
+    // It is hoisted because what a report is worth is a fact about the REPORT. Whether the unit is
+    // also carrying its hold through this step is a fact about the loop driving it, and one plane
+    // asking the card a different number of questions depending on which loop drives it is two
+    // answers to what one request cost.
+    //
+    // A unit with nothing to report is worth zero, which is the honest figure for one that reached
+    // no lane and for one that billed none.
+    let priced = report.as_ref().map(worth).unwrap_or(0);
+
     // The hold, spent against and handed straight back. Nothing settles here.
     let hold = hold.map(|mut h| {
         // Nano-units against a reservation in nano-units. The report's own quantity sum is still
@@ -453,10 +482,10 @@ pub fn meter(
         // budget nobody checked. So the whole shortfall is carried, which is the conservative half
         // of the same accounting.
         //
-        // WHAT IS SPENT IS WHAT THE HOLDER OF THE CARD SAID, and nothing this file worked out. A
-        // unit with nothing to report spends zero, which is the honest figure for one that reached
-        // no lane and for one that billed none.
-        h.spend(report.as_ref().map(worth).unwrap_or(0), 0);
+        // WHAT IS SPENT IS WHAT THE HOLDER OF THE CARD SAID, and nothing this file worked out. It is
+        // the one figure above, asked once: a second `worth(..)` here would be the card asked twice
+        // about one report, and two asks are two answers waiting to differ.
+        h.spend(priced, 0);
         h
     });
 
@@ -470,6 +499,7 @@ pub fn meter(
         refund: ctx.charged && !delivered,
         posted,
         report,
+        priced,
     }
 }
 

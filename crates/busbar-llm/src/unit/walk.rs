@@ -91,10 +91,30 @@ struct Carry {
     pending: Option<Served>,
     /// What the Route step observed, for the Meter step to be bound to.
     facts: Option<MeterFacts>,
-    /// The meter half the walk handed back unspent.
+    /// THE METER HALF, AS THE METER STEP READS IT.
+    ///
+    /// Two arms fill this and they are not the same value. A walk that never ran handed the half
+    /// straight BACK — nothing dispatched, nothing took it — and that is the half the Meter step
+    /// posts through. A walk that RAN took it into its taps, and what stands here is the reader's
+    /// copy taken before the move: the same key, the same pool and the same pinned window, held so
+    /// that the step which has to SEAL the tap's accrual can name the row it is sealing.
+    ///
+    /// It used to be the first arm only, so on every unit that reached a lane the step was bound to
+    /// `None` — and the whole of its accrual/report/row arm is behind `(Some(sink), Some(lane))`.
+    /// The arm was therefore unreachable on every production path: the step produced no metering
+    /// row, no report, and told the card-holder nothing to price.
     meter_sink: Option<crate::engine::UsageSink>,
     /// Whether the Meter step made the accrual itself rather than sealing the walk's.
     posted_here: bool,
+    /// WHAT THE UNIT CONSUMED, as the Meter step assembled it at step 6.
+    ///
+    /// The step's own report, kept rather than dropped. It is the reading the card-holder was asked
+    /// to price, and holding it is what lets the seam be observed at all: a report the step builds
+    /// and the carry throws away is a report no test can tell apart from one that was never built.
+    step_report: Option<LateReport>,
+    /// WHAT THE HOLDER OF THE CARD ANSWERED over that report, in nano-units. Zero where there was
+    /// nothing to price, which is the honest figure for a unit that reached no lane.
+    priced: u64,
     /// What the Meter step said about the fee and the refund.
     fee_count: u32,
     refund: bool,
@@ -375,6 +395,27 @@ impl Walk {
         self.lock().posted_here
     }
 
+    /// WHAT THE METER STEP REPORTED at step 6 — the reading the card-holder was asked to price.
+    ///
+    /// `None` where the step had no lane or no meter half to attribute the unit to, which is the
+    /// honest statement that there was nothing to report. It is the SAME shape
+    /// [`Walk::reported_after_terminal`] hands back, deliberately: one unit reports one shape,
+    /// whether it is read at the step or after its body drained.
+    #[must_use]
+    pub fn reported_at_step(&self) -> Option<LateReport> {
+        self.lock().step_report.clone()
+    }
+
+    /// WHAT THAT REPORT WAS WORTH, as the holder of the card answered it, in nano-units.
+    ///
+    /// The plane holds no rate and works out no amount: this is the answer the composition root's
+    /// own pricing expression gave, carried back so the figure the step was told is a figure the
+    /// unit can be asked about. Zero where nothing was reported.
+    #[must_use]
+    pub fn priced_at_step(&self) -> u64 {
+        self.lock().priced
+    }
+
     /// Whether the Audit step owes a refund of the fee base.
     #[must_use]
     pub fn refund(&self) -> bool {
@@ -581,6 +622,18 @@ impl Walk {
         );
 
         let BodyArrival { body, parsed, .. } = arrived;
+        // THE READER'S COPY OF THE METER HALF, taken before the walk takes it.
+        //
+        // The walk MOVES the half into its taps — that is where a streamed answer's usage becomes
+        // known and where the accrual is made — so after the await there is nothing left to hand the
+        // Meter step, and the step's whole accrual/report/row arm is behind having one. Cloning it
+        // here is what makes that arm reachable on a unit that reached a lane: the sink is built to
+        // be cloned (the engine clones it once per failover attempt) and every field it carries is a
+        // shared handle, so this is a refcount bump on the same key, the same pool and the same
+        // pinned window the tap accrues against — never a second admission and never a second
+        // accrual. Which of the two arms posts is still `MeterFacts::accrued`'s answer, and the walk
+        // having run is what sets it.
+        let meter_half = sink.clone();
         // THE AWAIT. Everything the walk needs is borrowed straight off the carry — there is no task
         // to move it into and no channel to carry it back — so a cancelled request drops this future
         // and, with it, the upstream leg it was in the middle of.
@@ -610,7 +663,10 @@ impl Walk {
         {
             let mut carry = self.lock();
             carry.facts = Some(routed.facts);
-            carry.meter_sink = routed.meter_sink;
+            // The half the walk handed BACK where it never dispatched, and the reader's copy where
+            // it did. `or` rather than a branch, because the two arms are exclusive by construction:
+            // `route_parts` returns the half on exactly the arm that did not take it.
+            carry.meter_sink = routed.meter_sink.or(meter_half);
             carry.pending = Some(Served::of(routed.response));
         }
         routed.decision
@@ -680,6 +736,16 @@ impl Walk {
         carry.posted_here = metered.posted;
         carry.fee_count = metered.fee_count;
         carry.refund = metered.refund;
+        // WHAT THE STEP REPORTED AND WHAT IT WAS TOLD IT WAS WORTH, kept rather than dropped. Both
+        // used to fall on the floor here, which is what made the whole seam unobservable: a report
+        // the step assembles and the carry discards cannot be told apart from one it never built.
+        carry.step_report = metered.report;
+        carry.priced = metered.priced;
+        // The hold rides back out exactly as it arrived plus its accrual. On this loop the step is
+        // handed none — the kernel put the unit's reservation in its own cell at the door and the
+        // exit is the one place it comes out again — so there is nothing here to settle and nothing
+        // to drop. See this method's header.
+        drop(metered.hold);
         metered.decision
     }
 }
