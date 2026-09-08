@@ -12,6 +12,7 @@ use busbar_caps::{KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
 
 use crate::{LaneClass, RateCard, RateCardVersion};
 
+mod budget_tests;
 mod derive_tests;
 mod identity_tests;
 mod posting_tests;
