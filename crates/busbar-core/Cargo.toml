@@ -49,6 +49,21 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
+# THE SCOPE MODEL, named once. `Scope`, `Grants` and the method+path authorization matrix used to
+# exist twice — here, in the admin contract, and again in the unit, whose own doc comment says it was
+# "ported verbatim from 1.5.5's `busbar_core::admin::v1::contract::required_scope`". Two encodings of
+# one authorization rule is a rule that can be tightened in one place and not the other, on the one
+# surface where that is least survivable. The unit is the copy that stays (deciding whether a held
+# grant satisfies a requirement is what a unit DOES); core names it and keeps its own call sites
+# spelling `Scope` exactly as they always did.
+busbar-unit-scope = { path = "../busbar-unit-scope" }
+# THE ADMIN ENVELOPE. The plane already owns the 1.5.5 error envelope's frozen wire shape
+# (`refusal::envelope_of`) and renders the composition root's refusals through it; core rendered the
+# same two keys a second time out of its own `json!`. Core → plugin is the sanctioned direction (the
+# two optional plugin crates above are named the same way), so the shape and the code/status/message
+# taxonomy that feeds it live in the plane, and the axum glue that turns them into a `Response` stays
+# here where the transport is.
+busbar-plane-admin = { path = "../busbar-plane-admin" }
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
