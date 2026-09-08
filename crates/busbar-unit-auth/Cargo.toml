@@ -37,5 +37,8 @@ sha256 = ["dep:sha2", "dep:hex"]
 # Test-only, and only exercised under `--features sha256`: the reference `sha256_hex` the
 # `Sha256Digest` jitter-parity test compares against. Never a default-build dependency.
 busbar-api = { path = "../api" }
+# The kind's shared `Unit` conformance battery. A test edge, not a kind edge: the kind-isolation
+# gate scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["unit"] }
 
 # Temporary standalone root while the workspace members land in parallel.

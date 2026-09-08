@@ -861,6 +861,7 @@ name = "busbar-plugin-testkit"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-caps",
  "serde",
  "serde_json",
 ]
@@ -1109,6 +1110,7 @@ name = "busbar-unit-admission"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-plugin-testkit",
  "busbar-unit-cost",
 ]
 
@@ -1118,6 +1120,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-plugin-testkit",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -1130,6 +1133,7 @@ dependencies = [
  "busbar-api",
  "busbar-caps",
  "busbar-contract",
+ "busbar-plugin-testkit",
  "hex",
  "sha2 0.11.0",
 ]
@@ -1140,6 +1144,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-plugin-testkit",
 ]
 
 [[package]]
@@ -1147,6 +1152,7 @@ name = "busbar-unit-cost"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-plugin-testkit",
  "busbar-unit-admission",
 ]
 
@@ -1157,6 +1163,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "busbar-unit-breaker",
  "futures",
 ]
@@ -1166,6 +1173,7 @@ name = "busbar-unit-egress-auth"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-plugin-testkit",
  "hex",
  "hmac",
  "sha2 0.11.0",
@@ -1176,6 +1184,7 @@ name = "busbar-unit-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-plugin-testkit",
  "sha2 0.11.0",
 ]
 
@@ -1185,6 +1194,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-plugin-testkit",
 ]
 
 [[package]]
@@ -1194,6 +1204,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "rcgen",
  "rustls",
 ]
@@ -1205,6 +1216,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
 ]
 
 [[package]]
@@ -1213,6 +1225,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-plugin-testkit",
 ]
 
 [[package]]
@@ -1220,6 +1233,7 @@ name = "busbar-unit-verbs"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-plugin-testkit",
  "serde_json",
 ]
 
@@ -1228,6 +1242,7 @@ name = "busbar-unit-wal"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-plugin-testkit",
  "sha2 0.11.0",
 ]
 

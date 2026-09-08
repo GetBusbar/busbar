@@ -36,3 +36,6 @@ busbar-caps = { path = "../busbar-caps" }
 # the compiled crate still depends on `busbar-caps` and nothing else.
 [dev-dependencies]
 busbar-unit-admission = { path = "../busbar-unit-admission" }
+# The kind's shared `Unit` conformance battery. A test edge, not a kind edge: the kind-isolation
+# gate scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["unit"] }

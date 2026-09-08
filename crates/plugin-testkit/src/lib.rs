@@ -122,3 +122,16 @@ mod tests;
 /// feature so only store plugins pay for the `busbar-api` dependency.
 #[cfg(feature = "store")]
 pub mod store_conformance;
+
+/// The `busbar_caps::Unit` contract conformance suite — see the module doc. Behind the `unit`
+/// feature so only unit crates pay for the `busbar-caps` dependency.
+#[cfg(feature = "unit")]
+pub mod unit_conformance;
+
+/// The `transport` kind's shared conformance suite — see the module doc. Feature-free on purpose:
+/// its helpers take plain values and closures, so it adds no workspace edge to this crate.
+pub mod transport_conformance;
+
+/// The shared suites for the four kinds whose `busbar-contract` trait has zero implementors — see
+/// the module doc. Feature-free for the same reason as `transport_conformance`.
+pub mod contract_kind_conformance;
