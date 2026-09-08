@@ -47,6 +47,12 @@ busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
+# THE AUDIT UNIT. `legacy::chain` is the append-only hash chain, moved there rather than rewritten:
+# the framing, the field order, the sequence allocation, the linkage and the walk are the ones every
+# deployed store was written with. Core's `crate::audit` is now a re-export of it, so the one
+# canonicaliser is in one crate. The unit depends only on busbar-caps/busbar-contract/sha2/serde and
+# never back on core, so this edge cannot cycle.
+busbar-unit-audit = { path = "../busbar-unit-audit" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 axum = { workspace = true }
