@@ -590,6 +590,8 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     fn decode_ingress(&self, frames: &mut FrameCursor, st: Option<&mut PlaneSessionState>, ctx: &Ctx) -> Result<Ingress, Decode>;
     fn encode_egress(&self, u: &Unit, dest: &VerifiedDestination, st: Option<&mut PlaneSessionState>, ctx: &Ctx) -> Result<EgressBody, Encode>;
     fn encode_ingress_frame(&self, u: &Unit, f: &Frame, dest: &VerifiedDestination, st: Option<&mut PlaneSessionState>, ctx: &Ctx) -> Result<Option<ArenaBytes>, Encode>;
+    fn open_unit_state(&self, u: &Unit, ctx: &Ctx) -> Option<PlaneSessionState> { None }   // the `st` one outbound hop of this unit carries: `decode_response` is handed frames, a destination and a context and never the unit,
+                                                                                           // so a dialect whose complete answer and whose first streamed event are the same bytes reads what the unit was OPENED as from here or not at all
     fn decode_response(&self, frames: &mut FrameCursor, dest: &VerifiedDestination, st: Option<&mut PlaneSessionState>, ctx: &Ctx) -> Result<Progress, Decode>;
     fn encode_response(&self, r: &Response, st: Option<&mut PlaneSessionState>, ctx: &Ctx) -> Result<ArenaBytes, Encode>;
     fn encode_refusal(&self, refusal: &Refusal, draft: Option<&UnitDraft>, st: Option<&PlaneSessionState>, ctx: &Ctx) -> Result<ArenaBytes, Encode>;   // deliberately &: a refusal never mutates codec state (a sequence-numbered protocol cannot advance its counter on a refusal — a stated constraint of the litmus)
