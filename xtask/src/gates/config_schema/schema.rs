@@ -242,6 +242,11 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         // `busbar-core`, which re-exports every moved item at its historical `config::` path.
         // Tracked as a DIRECTORY so a future file split under it is automatically covered.
         "crates/busbar-substrate/src/config".to_string(),
+        // The `plugins:` block sits one layer FURTHER down, in the substrate's PURE half, because
+        // its consumers (`busbar-plugin-sign`, `busbar-plugin-loader`) are outside
+        // `busbar-substrate`'s dependency closure and must read the grammar without an edge to the
+        // engine substrate. Tracked as a DIRECTORY for the same reason the one above is.
+        "crates/busbar-substrate-values/src/config".to_string(),
         "crates/secret-ref/src/lib.rs".to_string(),
         // `UpstreamCreds` — the `upstream_credentials:` value grammar — moved to the neutral
         // contracts crate in the plane extraction, exactly as `SecretRef` did to `secret-ref`.

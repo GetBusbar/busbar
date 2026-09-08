@@ -434,7 +434,12 @@ fn list_plugins_command() -> i32 {
             )
         }
     };
-    let policy = match plugins_cfg.to_policy() {
+    // The ROOT supplies the binary version itself: `env!("CARGO_PKG_VERSION")` HERE is the shipped
+    // binary's own version, which is exactly what a `TrustPolicy` carries it for (the string an
+    // operator reads in a plugin refusal and in telemetry). The in-core automatic paths have no
+    // root to ask, so they go through `preflight::engine_trust_policy`, which answers with the
+    // engine crate's — the same 1.6.0, from the one workspace version.
+    let policy = match busbar_plugin_loader::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
