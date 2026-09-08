@@ -1944,6 +1944,13 @@ jobs:
       # "conformant" cannot move because a parser release did.
       - name: PyYAML (pinned) for the first parse of the YAML specs
         run: python3 -c "import yaml" 2>/dev/null || pip install --quiet 'pyyaml==6.0.2'
+      # THE PINNED TOOL, INSTALLED THE SAME WAY THE SHADOW ORACLE INSTALLS IT. validate.py rebuilds a
+      # request body from the tool's build-request.py for any cell whose recording lacks
+      # raw/<cell>/request.body. The tool is a separate product now, so it is fetched through
+      # testing/shadow-oracle/oracle.pin (tag + sha256, refused on a mismatch) rather than read from
+      # this tree. Python-only — no Rust toolchain, so this job stays in the fast tier.
+      - name: Install the pinned oracle tool (build-request.py, for cells with no recorded request)
+        run: ./bin/oracle tool-dir
       - name: LLM spec conformance self-test (the rig cannot pass vacuously)
         run: bash testing/llm-conformance/selftest.sh
       - name: LLM spec conformance — HEAD recording vs the published specs

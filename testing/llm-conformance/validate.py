@@ -7,7 +7,7 @@ For every LLM cell in a recording (testing/shadow-oracle/record.sh layout) this 
 against the ingress dialect's specification, and writes ONE ledger row per cell x direction:
 
   <cell-id>#request    the client request the oracle sent busbar (raw/<cell>/request.body, or the
-                       same bytes rebuilt by testing/shadow-oracle/build-request.py) against the
+                       same bytes rebuilt by the pinned oracle tool's build-request.py) against the
                        dialect's REQUEST schema. This proves the harness speaks the spec, so a busbar
                        refusal in the response row is busbar's, not the harness's.
   <cell-id>#response   what busbar answered: a JSON body against the RESPONSE schema (2xx) or the
@@ -784,12 +784,35 @@ def owed_ids(cells):
     return out
 
 
+# REBUILDING A REQUEST IS THE FALLBACK, AND IT BELONGS TO THE TOOL, NOT TO THIS TREE.
+# build-request.py is part of the pinned shadow-oracle TOOL (it is what the recorder used to make
+# the bytes in the first place); only this repository's oracle DATA lives under testing/shadow-oracle.
+# So it is resolved the way every cell driver here resolves a tool file -- through the tool directory
+# bin/oracle exports, falling back to the data directory for the old in-tree layout.
+#
+# LOADED ON DEMAND, NEVER AT STARTUP. A recording that carries raw/<cell>/request.body for every
+# cell -- which is what the recorder writes and what CI hands this gate -- needs no rebuild at all,
+# and eagerly importing the tool made a missing tool kill the validator before it recorded its FIRST
+# row. That is the worst possible failure shape for this gate: the run reports VACUOUS ("zero probes
+# reported a result") and the real reason sits in a log nobody reads. A rebuild that cannot happen is
+# a fact about ONE row, so it is reported as one -- see the request direction below.
+def build_request_dir():
+    return os.environ.get("BUSBAR_ORACLE_TOOL_DIR") or ORACLE
+
+
 def load_build_request():
-    p = os.path.join(ORACLE, "build-request.py")
-    spec = importlib.util.spec_from_file_location("oracle_build_request", p)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Import the tool's build-request module, or return (None, why) if it is not installed."""
+    p = os.path.join(build_request_dir(), "build-request.py")
+    if not os.path.exists(p):
+        return None, (f"the pinned shadow-oracle tool is not installed ({p} does not exist); "
+                      "run bin/oracle to install it, or record with raw/<cell>/request.body present")
+    try:
+        spec = importlib.util.spec_from_file_location("oracle_build_request", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:  # a tool that will not import is a fact about the rebuild, not a crash
+        return None, f"the pinned shadow-oracle tool at {p} failed to import: {e}"
+    return mod, ""
 
 
 # ── the per-dialect judgement ───────────────────────────────────────────────────────────────────
@@ -1054,7 +1077,7 @@ def main():
         return 1
 
     judge = Judge(read_digests(args.digests), args.spec_cache, os.path.join(HERE, "schemas"))
-    build = load_build_request()
+    build, build_why = load_build_request()
 
     violations = []  # (id, direction, dialect, Violation)
     per_dialect = {}
@@ -1079,22 +1102,31 @@ def main():
         if outcome != "malformed":
             body = rec.raw(safe, "request.body")
             src = "raw/request.body"
-            if body is None:
-                body = build.request_for(c)["body"].encode("utf-8")
-                src = "build-request.py"
-            viols, schema_name = judge.judge_request(dialect, outcome, body)
             rid = f"{cid}#request"
-            viols, covered = gaps.partition(rid, viols)
-            if not viols and covered:
-                ledger.record(rid, "SKIP", f"{dialect} request vs {schema_name} ({src})", gap_detail(covered))
-                pd["request"]["SKIP"] += 1
-            elif viols:
-                ledger.record(rid, "FAIL", f"{dialect} request vs {schema_name} ({src})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
+            if body is None and build is None:
+                # The recording did not keep the request bytes AND the tool that could rebuild them
+                # is absent, so this ROW cannot be judged. It is a FAIL, not a skip and not a crash:
+                # a request the gate never saw is not a request it approved, and the row names which
+                # of the two halves is missing.
+                ledger.record(rid, "FAIL", f"{dialect} request: not recorded and not rebuildable", build_why)
                 pd["request"]["FAIL"] += 1
-                violations += [(cid, "request", dialect, v) for v in viols]
+                violations.append((cid, "request", dialect, build_why))
             else:
-                ledger.record(rid, "PASS", f"{dialect} request vs {schema_name} ({src})", "")
-                pd["request"]["PASS"] += 1
+                if body is None:
+                    body = build.request_for(c)["body"].encode("utf-8")
+                    src = "build-request.py"
+                viols, schema_name = judge.judge_request(dialect, outcome, body)
+                viols, covered = gaps.partition(rid, viols)
+                if not viols and covered:
+                    ledger.record(rid, "SKIP", f"{dialect} request vs {schema_name} ({src})", gap_detail(covered))
+                    pd["request"]["SKIP"] += 1
+                elif viols:
+                    ledger.record(rid, "FAIL", f"{dialect} request vs {schema_name} ({src})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
+                    pd["request"]["FAIL"] += 1
+                    violations += [(cid, "request", dialect, v) for v in viols]
+                else:
+                    ledger.record(rid, "PASS", f"{dialect} request vs {schema_name} ({src})", "")
+                    pd["request"]["PASS"] += 1
 
         # response direction
         status = int(cell.get("status") or 0)
