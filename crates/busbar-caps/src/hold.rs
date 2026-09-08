@@ -634,6 +634,7 @@ impl PostingFlags {
 /// The proof that a unit was settled: the ledger unit turned a hold and a usage report into one
 /// posting, and there is exactly one per hold because settling consumes the hold by value.
 #[derive(Debug)]
+#[must_use = "a posting is the record the settled unit leaves behind; dropping it loses the figures the reconciliation reads"]
 pub struct Posted {
     principal: PrincipalId,
     reserved: u64,
