@@ -96,6 +96,12 @@ fn request<'r>(target: &'r str, method: &'r str) -> Request<'r> {
         method,
         authority: Some("node.example"),
         peer: "203.0.113.7:51234",
+        // The base fixture presents NONE of the three a request carries about itself, so every cell
+        // that is not about them reads the same four reserved keys it always did — and the cells
+        // that ARE about them say so by putting one there.
+        credential: None,
+        accepts: None,
+        media: None,
         body: b"{}",
     }
 }
@@ -267,6 +273,83 @@ fn an_absent_authority_is_absent_rather_than_empty() {
     };
     let facts = published_facts(&r, &[]);
     assert!(!facts.iter().any(|(k, _)| *k == tfacts::AUTHORITY));
+}
+
+/// **What a request carries ABOUT ITSELF is published, whole, and after the four about where it
+/// went.**
+///
+/// RED FIRST. A mounted arrival published where a request was SENT and nothing about what it
+/// PRESENTED — so a plane driven over this mount saw no credential, whatever the caller had sent, and
+/// the only honest posture available to it was the anonymous one. The credential in particular is
+/// published UNSTRIPPED: the scheme word is part of what arrived, and a transport that removed one
+/// would be interpreting a credential it may not read.
+#[test]
+fn a_request_publishes_the_three_it_carries_about_itself() {
+    let r = Request {
+        credential: Some("Bearer eyJ.a.b"),
+        accepts: Some("text/event-stream"),
+        media: Some("application/json"),
+        ..request("/things/t-7", "GET")
+    };
+    let facts = published_facts(&r, &[]);
+    assert_eq!(
+        facts,
+        vec![
+            (tfacts::PATH, "/things/t-7"),
+            (tfacts::METHOD, "GET"),
+            (tfacts::AUTHORITY, "node.example"),
+            (tfacts::PEER, "203.0.113.7:51234"),
+            // WHOLE, scheme word included. Stripping it here would put a reading of the credential
+            // in the one layer that is not allowed to have one.
+            (tfacts::CREDENTIAL, "Bearer eyJ.a.b"),
+            (tfacts::ACCEPTS, "text/event-stream"),
+            (tfacts::MEDIA, "application/json"),
+        ]
+    );
+}
+
+/// **A request that presented none publishes none, rather than an empty one.**
+///
+/// The same distinction the authority already makes, and here it is a security one: a plane handed an
+/// empty credential is being told a credential was presented and is blank, which is not what
+/// happened. An anonymous caller must be representable, because "an anonymous caller is refused with
+/// a usable challenge" is a rule a protocol can state and a node has to be able to obey.
+#[test]
+fn an_absent_credential_is_absent_rather_than_empty() {
+    let r = request("/things/summary", "GET");
+    let facts = published_facts(&r, &[]);
+    assert!(!facts.iter().any(|(k, _)| *k == tfacts::CREDENTIAL));
+    assert!(!facts.iter().any(|(k, _)| *k == tfacts::ACCEPTS));
+    assert!(!facts.iter().any(|(k, _)| *k == tfacts::MEDIA));
+}
+
+/// **A capture cannot shadow the credential either.**
+///
+/// The ordering rule applied to the field where it matters most. A declaration is free to name a
+/// capture `credential`, and a unit authenticated against a template capture instead of against what
+/// the caller sent would be a door opened by whoever wrote the route.
+#[test]
+fn a_capture_cannot_shadow_the_credential() {
+    let r = Request {
+        credential: Some("Bearer real"),
+        ..request("/things/t-7", "GET")
+    };
+    let facts = published_facts(
+        &r,
+        &[Capture {
+            name: tfacts::CREDENTIAL,
+            value: "Bearer forged",
+        }],
+    );
+    let arrival = Arrival {
+        facts: &facts,
+        body: r.body,
+        transport: "http",
+        chain: &["http"],
+        operation: None,
+        bar: Bar::Open,
+    };
+    assert_eq!(arrival.fact(tfacts::CREDENTIAL), Some("Bearer real"));
 }
 
 /// A capture named as a reserved key cannot shadow it.
