@@ -18,13 +18,23 @@ impl ProtocolReader for GeminiReader {
         // thinking count as the reasoning sub-bucket (pure attribution; it is already folded into
         // `output_tokens`).
         let thoughts = v.get(FIELD_THOUGHTS_TOKEN_COUNT).and_then(|x| x.as_u64());
+        // THE TOOL-USE PROMPT TERM IS ADDITIVE — mirror `gemini_usage` exactly here too. It is not a
+        // slice of `promptTokenCount` (`GEMINI_USAGE_ADDITIVE_TERMS` records the recording that
+        // proves it: 32 tool-use tokens against an 18-token prompt) and Google charges it at the
+        // input rate. Reading only `promptTokenCount` here billed a grounded turn 32 tokens less
+        // when it was large enough to be truncated than when it was not — the same under-count the
+        // buffered path shed in 1.6.0, surviving on exactly the responses nobody can inspect.
+        let tool_use = v
+            .get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT)
+            .and_then(|x| x.as_u64());
         Some(
             crate::ir::IrUsage {
                 input_tokens: v
                     .get("promptTokenCount")
                     .and_then(|x| x.as_u64())
                     .unwrap_or(0)
-                    .saturating_sub(cached.unwrap_or(0)),
+                    .saturating_sub(cached.unwrap_or(0))
+                    .saturating_add(tool_use.unwrap_or(0)),
                 output_tokens: v
                     .get("candidatesTokenCount")
                     .and_then(|x| x.as_u64())
@@ -34,6 +44,9 @@ impl ProtocolReader for GeminiReader {
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail {
                     reasoning_tokens: thoughts,
+                    // Attribution only — the tokens themselves are already inside `input_tokens`
+                    // above; this records HOW MANY of them were server-side tool use.
+                    tool_use_prompt_tokens: tool_use,
                     ..Default::default()
                 },
             }

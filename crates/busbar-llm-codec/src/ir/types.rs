@@ -997,10 +997,13 @@ pub struct IrUsageDetail {
     /// entire `promptTokenCount` is **18**, and Google's stated `totalTokenCount` reconciles only
     /// when it is ADDED as a fourth term. See `gemini/mod.rs::GEMINI_USAGE_ADDITIVE_TERMS`.
     ///
-    /// It is nonetheless STILL excluded from `billable_tokens`, so busbar under-counts a grounded
-    /// Gemini turn by exactly this amount. Correcting that changes a bill and is a registered money
-    /// change; until it is made, `usage_identity_note` reports the shortfall on every affected turn
-    /// rather than letting it reconcile silently.
+    /// IT IS THEREFORE BILLED (busbar 1.6.0, a registered money change with its own CHANGELOG line):
+    /// the Gemini reader adds it to `input_tokens` — Google charges it at the input rate — so a
+    /// grounded turn now bills Google's own stated total instead of under-counting by exactly this
+    /// amount. This field keeps the ATTRIBUTION: how many of those input tokens were server-side
+    /// tool use, which is also what lets the Gemini writer put the term back BESIDE
+    /// `promptTokenCount` on the wire instead of inside it. Like every other field on this struct it
+    /// is invisible to `billable_tokens`, so reading it can never double-count the charge.
     pub tool_use_prompt_tokens: Option<u64>,
     // ADDED (cohere field-carry, 2026-08-30): Cohere reports usage TWICE — a raw `tokens` bucket and
     // a separately-metered `billed_units` bucket that ROUNDS/attributes the charge (e.g. a short

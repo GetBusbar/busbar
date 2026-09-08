@@ -277,8 +277,9 @@ const FIELD_TOTAL_TOKEN_COUNT: &str = "totalTokenCount";
 const FIELD_THOUGHTS_TOKEN_COUNT: &str = "thoughtsTokenCount";
 /// JSON key for the context-cache token count inside `usageMetadata`.
 const FIELD_CACHED_CONTENT_TOKEN_COUNT: &str = "cachedContentTokenCount";
-/// JSON key for the tool-use slice of the prompt tokens inside `usageMetadata`. Despite the name,
-/// this is NOT a slice of `promptTokenCount` — see [`GEMINI_USAGE_ADDITIVE_TERMS`].
+/// JSON key for the server-side tool-use prompt tokens inside `usageMetadata`. Despite the name,
+/// this is NOT a slice of `promptTokenCount` but a FOURTH ADDITIVE TERM beside it, charged at the
+/// input rate and billed as such since 1.6.0 — see [`GEMINI_USAGE_ADDITIVE_TERMS`].
 const FIELD_TOOL_USE_PROMPT_TOKEN_COUNT: &str = "toolUsePromptTokenCount";
 
 /// THE MEASURED GEMINI USAGE IDENTITY — the four counters inside `usageMetadata` that are ADDITIVE
@@ -307,12 +308,19 @@ const FIELD_TOOL_USE_PROMPT_TOKEN_COUNT: &str = "toolUsePromptTokenCount";
 ///   IR field's own doc-comment, `docs/design/billing-usage-units.md` and
 ///   `docs/design/billing-unified.md` all called it `⊂ prompt`; the wire says otherwise.
 ///
-/// THE MONEY CONSEQUENCE IS REPORTED, NOT SILENTLY APPLIED. Because busbar folds only prompt +
-/// candidates + thoughts into `IrUsage`, a Gemini turn that used a server-side tool is under-counted
-/// by exactly `toolUsePromptTokenCount` (32 of 222 tokens — 14% — on the recording above). Folding
-/// it in would change what busbar bills, so it is NOT done here: that is a registered money change
-/// needing its own CHANGELOG line and owner sign-off. What the decoder does instead is REPORT the
-/// shortfall through [`crate::ir::UsageIdentityNote`], so the gap is loud instead of invisible.
+/// THE MONEY CONSEQUENCE, APPLIED IN 1.6.0. busbar used to fold only prompt + candidates + thoughts
+/// into `IrUsage`, so a Gemini turn that used a server-side tool was under-counted by exactly
+/// `toolUsePromptTokenCount` (32 of 222 tokens — 14% — on the recording above). All four terms are
+/// now billed: `gemini_usage` adds the tool-use term to `input_tokens` (Google charges it at the
+/// input rate) and `GeminiReader::recover_truncated_usage` does the same for a response too large to
+/// reassemble. This is a REGISTERED money change — see the CHANGELOG line and
+/// `testing/shadow-oracle/accepted-differences.json`.
+///
+/// THIS TABLE IS ALSO THE GUARD. Because the billed figure is now exactly the sum of the terms
+/// listed here, [`gemini_usage_identity_note`] reduces to a DISCREPANCY METRIC over
+/// `totalTokenCount`: it fires when Google's stated total cannot be reached from this table, i.e.
+/// when Google is reporting a counter this dialect does not model yet. It never corrects, clamps or
+/// zeroes a bucket to make the sum close.
 const GEMINI_USAGE_ADDITIVE_TERMS: &[&str] = &[
     FIELD_PROMPT_TOKEN_COUNT,
     FIELD_CANDIDATES_TOKEN_COUNT,
@@ -327,12 +335,14 @@ const GEMINI_USAGE_IDENTITY: &str = "gemini.usageMetadata";
 /// Cross-check what busbar will BILL for this turn against the total Google itself stated, and
 /// report a disagreement instead of hiding one.
 ///
-/// `billed` is `IrUsage::billable_tokens` for the usage just decoded. The comparison is deliberately
-/// against the BILLED figure rather than against the sum of the wire's own terms: the wire always
-/// reconciles with itself (that is what [`GEMINI_USAGE_ADDITIVE_TERMS`] records), so a check of the
-/// wire against the wire can only ever return "fine" and would have caught nothing. The number that
-/// matters is the one on the invoice, and the gap this exists to surface is precisely that busbar
-/// folds three of Google's four additive terms into the bill and drops the fourth.
+/// `billed` is `IrUsage::billable_tokens` for the usage just decoded. Since 1.6.0 busbar bills every
+/// term in [`GEMINI_USAGE_ADDITIVE_TERMS`], so that figure IS the sum of the modelled terms and this
+/// check is a DATA-DRIVEN DISCREPANCY METRIC over `totalTokenCount`: it can only fire when Google's
+/// stated total cannot be reached from the table — a counter this dialect does not model at all, or
+/// a term whose meaning has changed. Either way the answer is a new recording and a table entry, not
+/// an adjustment here. `wire_sum`/`unmodelled_term` on the log line say which of the two it is: the
+/// table failing to close against the total is the "new counter on the wire" signal, while a gap
+/// that appears only against `billed` means the normalization (cache subtraction) moved the money.
 ///
 /// Returns `None` in the ordinary case — no `totalTokenCount` on the block (Gemini omits the
 /// counters entirely on the early SSE frames, which carry a `usageMetadata` object with nothing in
@@ -355,28 +365,30 @@ fn gemini_usage_identity_note(
     }
     let unaccounted = i64::try_from(reported_total).unwrap_or(i64::MAX)
         - i64::try_from(summed_total).unwrap_or(i64::MAX);
-    // WHICH KIND OF SHORTFALL IS THIS? Sum the terms busbar KNOWS are additive. If that sum closes
-    // against Google's total, every token is accounted for on the wire and the gap is entirely in
-    // what busbar chooses to bill (today: the tool-use term). If it does NOT close, Google is
-    // reporting a term this dialect does not model at all, and the const table needs a new entry
-    // backed by a new recording. The two demand completely different responses, so an operator
+    // WHICH KIND OF SHORTFALL IS THIS? Sum the terms busbar KNOWS are additive, straight from the
+    // const table. If that sum does NOT close against Google's total, Google is reporting a counter
+    // this dialect does not model at all and the table needs a new entry backed by a new recording —
+    // that is the case this metric exists for. If it DOES close while `billed` still disagrees, the
+    // gap is in the normalization rather than on the wire (e.g. an upstream that reports more cached
+    // tokens than prompt tokens). The two demand completely different responses, so an operator
     // reading this line should not have to guess which one they are looking at.
     let wire_sum: u64 = GEMINI_USAGE_ADDITIVE_TERMS
         .iter()
         .map(|k| u.get(*k).and_then(|v| v.as_u64()).unwrap_or(0))
         .sum();
-    let unmodeled_term = wire_sum != reported_total;
+    let unmodelled_term = wire_sum != reported_total;
     tracing::warn!(
         identity = GEMINI_USAGE_IDENTITY,
         reported_total,
         summed_total,
         unaccounted,
         wire_sum,
-        unmodeled_term,
+        unmodelled_term,
         "gemini usageMetadata does not reconcile: the stated totalTokenCount disagrees with what \
-         busbar bills. unmodeled_term=false means the known additive terms account for the wire and \
-         the gap is a billing choice; true means Google reports a counter this dialect does not \
-         model. Buckets are reported as received; nothing was zeroed."
+         busbar bills. unmodelled_term=true means Google reports a counter this dialect does not \
+         model and GEMINI_USAGE_ADDITIVE_TERMS needs a new entry backed by a recording; false means \
+         the wire's own terms close and the gap is in normalization. Buckets are reported as \
+         received; nothing was zeroed, clamped or back-filled."
     );
     Some(crate::ir::UsageIdentityNote {
         reported_total,
@@ -1682,12 +1694,28 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let billed = prompt.saturating_add(candidates).saturating_add(thoughts);
+    // THE FOURTH ADDITIVE TERM. `toolUsePromptTokenCount` is not a slice of `promptTokenCount` —
+    // see [`GEMINI_USAGE_ADDITIVE_TERMS`] for the recording that settles it — and Google charges it
+    // at the INPUT rate, so it belongs in `input_tokens` beside the uncached prompt.
+    let tool_use = u
+        .and_then(|u| u.get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT))
+        .and_then(|v| v.as_u64());
+    let billed = prompt
+        .saturating_add(candidates)
+        .saturating_add(thoughts)
+        .saturating_add(tool_use.unwrap_or(0));
     crate::ir::IrUsage {
         // NORMALIZE to the additive-cache convention: Gemini's `promptTokenCount` is a TOTAL that
         // already INCLUDES `cachedContentTokenCount`, so subtract the cached tokens to leave only
         // the uncached input. `saturating_sub` guards an odd upstream where cached > prompt.
-        input_tokens: prompt.saturating_sub(cached.unwrap_or(0)),
+        //
+        // Then ADD the tool-use prompt term, which `promptTokenCount` does NOT include (busbar
+        // 1.6.0 money change — see the CHANGELOG line "Gemini `toolUsePromptTokenCount` is billed").
+        // Dropping it under-counted every grounded/server-tool turn by exactly that many tokens
+        // (32 of 222 — 14% — on the grounding recording).
+        input_tokens: prompt
+            .saturating_sub(cached.unwrap_or(0))
+            .saturating_add(tool_use.unwrap_or(0)),
         // THINKING TOKENS ARE OUTPUT TOKENS. `candidatesTokenCount` counts only the VISIBLE answer;
         // the 2.5-series models' reasoning tokens arrive in the separate, ADDITIVE
         // `thoughtsTokenCount` (Google's own `totalTokenCount` is prompt + candidates + thoughts).
@@ -1728,21 +1756,19 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
             reasoning_tokens: u
                 .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
                 .and_then(|v| v.as_u64()),
-            // Gemini's `toolUsePromptTokenCount`, recorded so a Gemini-backed request can answer
-            // "how many tool-use tokens?" and so a same-protocol read→write re-emits it.
+            // Gemini's `toolUsePromptTokenCount`, kept here as ATTRIBUTION: it answers "how many of
+            // those input tokens were server-side tool use?" and it is what lets the Gemini writer
+            // put the term back BESIDE `promptTokenCount` on the wire instead of inside it.
             //
-            // CORRECTED 2026-09-07 FROM A REAL RECORDING: this was carried as "a sub-bucket of the
-            // prompt total, pure attribution". It is not. `GEMINI_USAGE_ADDITIVE_TERMS` documents
-            // the measurement — the grounding recording reports 32 tool-use tokens against a
+            // IT IS NOT A SUB-BUCKET, and unlike every other field on this struct it is NOT free of
+            // the bill. `GEMINI_USAGE_ADDITIVE_TERMS` records the measurement that overturned the
+            // old reading: the grounding recording reports 32 tool-use tokens against a
             // `promptTokenCount` of 18, so it cannot be a slice of the prompt, and Google's stated
-            // `totalTokenCount` only reconciles when it is ADDED.
-            //
-            // It is still not folded into `input_tokens` here, and that is deliberate: doing so
-            // changes what busbar bills, which is a registered money change and not this commit's
-            // to make. The under-count is instead REPORTED through `usage_identity_note` below.
-            tool_use_prompt_tokens: u
-                .and_then(|u| u.get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT))
-                .and_then(|v| v.as_u64()),
+            // `totalTokenCount` reconciles only when it is ADDED. Since 1.6.0 it therefore rides in
+            // `input_tokens` above (a registered money change with its own CHANGELOG line) and is
+            // recorded here as well, so the attribution survives without being double-counted:
+            // `billable_tokens` reads the totals, never this struct.
+            tool_use_prompt_tokens: tool_use,
             // The cross-check that makes the paragraph above impossible to lose again: Google's own
             // `totalTokenCount` versus the counters busbar decoded. `None` when they agree.
             usage_identity_note: gemini_usage_identity_note(u, billed),

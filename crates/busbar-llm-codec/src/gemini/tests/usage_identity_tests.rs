@@ -22,8 +22,9 @@
 //! 2. `toolUsePromptTokenCount` is NOT a slice of the prompt (32 tool-use tokens against an
 //!    18-token prompt — a sub-bucket cannot exceed its bucket).
 //! 3. The billed figures the real decoder produces for each recording, pinned exactly.
-//! 4. The decoder REPORTS the resulting shortfall instead of reconciling silently, and reports it
-//!    on the streaming path too.
+//! 4. The decoder BILLS the fourth term (1.6.0 money change) — a grounded turn now reconciles
+//!    against Google's own stated total instead of falling 14% short of it — and the identity
+//!    cross-check stays as a DISCREPANCY METRIC for whatever the table does not model yet.
 
 use super::super::proto_codec::Protocol;
 
@@ -181,12 +182,13 @@ fn thoughts_tokens_are_additive_not_a_slice_of_candidates() {
 fn billed_figures_for_every_recording_are_pinned() {
     let reader = Protocol::gemini();
     let reader = reader.reader();
-    // (recording, input_tokens, output_tokens) — output folds thoughts in; input is uncached prompt.
+    // (recording, input_tokens, output_tokens) — output folds thoughts in; input is uncached prompt
+    // PLUS the additive tool-use prompt term (Google charges it at the input rate).
     for (name, body, want_in, want_out) in [
         ("tool_call", RESP_TOOL_CALL, 47u64, 74u64), // 7 visible + 67 thinking
         ("tool_result", RESP_TOOL_RESULT, 137, 19),  // no thinking on this turn
         ("thinking", RESP_THINKING, 42, 518),        // 146 visible + 372 thinking
-        ("grounding", RESP_GROUNDING, 18, 172),      // 89 visible + 83 thinking
+        ("grounding", RESP_GROUNDING, 50, 172),      // 18 prompt + 32 tool-use; 89 + 83 out
     ] {
         let v: serde_json::Value = serde_json::from_str(body).expect("parses");
         let ir = reader.read_response(&v).expect("read");
@@ -204,30 +206,115 @@ fn billed_figures_for_every_recording_are_pinned() {
     }
 }
 
-/// The under-count, stated as money. busbar bills 18 + 172 = 190 tokens for the grounding turn.
-/// Google counted 222. The 32-token difference is `toolUsePromptTokenCount`, which
-/// `billable_tokens` still excludes.
+/// THE 1.6.0 MONEY CHANGE, stated as arithmetic. busbar used to bill 18 + 172 = 190 tokens for the
+/// grounding turn while Google counted 222 — a 14% under-count on every grounded turn, and the
+/// 32-token difference was exactly `toolUsePromptTokenCount`.
 ///
-/// This test does NOT assert that busbar bills 222 — folding the term in is a registered money
-/// change with its own CHANGELOG line, and is not made here. It pins the size of the gap so that
-/// closing it is a deliberate, visible edit.
+/// It is now BILLED: the term is an additive input-rate charge, so it lands in `input_tokens`
+/// (18 uncached prompt + 32 tool-use = 50) and `billable_tokens` reaches Google's own stated total.
+/// The identity cross-check therefore has nothing left to report on this recording — which is the
+/// only honest end state, because a note that fires on every grounded turn forever is not a signal.
 #[test]
-fn a_grounded_turn_is_under_counted_by_exactly_the_tool_use_term() {
+fn a_grounded_turn_bills_the_tool_use_term() {
     let v: serde_json::Value = serde_json::from_str(RESP_GROUNDING).expect("parses");
     let ir = Protocol::gemini().reader().read_response(&v).expect("read");
-    assert_eq!(ir.usage.billable_tokens(), 190, "what busbar bills today");
+    assert_eq!(
+        ir.usage.input_tokens, 50,
+        "18 uncached prompt + the 32-token additive tool-use term"
+    );
+    assert_eq!(
+        ir.usage.billable_tokens(),
+        222,
+        "what busbar bills now == what Google counted (was 190)"
+    );
+    assert_eq!(
+        ir.usage.detail.usage_identity_note, None,
+        "every term Google stated is now billed, so there is no shortfall left to report"
+    );
+    // The term itself is still carried as attribution, exactly as received. Nothing was zeroed.
+    assert_eq!(ir.usage.detail.tool_use_prompt_tokens, Some(32));
+    // And the money projection the ledger reads carries it at the INPUT rate, not as a lost bucket.
+    let billed = ir.usage.to_token_usage();
+    assert_eq!(billed.input, 50, "the ledger's input tier carries the term");
+    assert_eq!(billed.output, 172);
+}
+
+/// THE GUARD IS A DISCREPANCY METRIC, NOT A CORRECTION. If Google states a `totalTokenCount` that
+/// the modelled terms cannot reach, the buckets stay exactly as sent and the gap is REPORTED — the
+/// decoder never zeroes, clamps or back-fills a bucket to make the sum close.
+///
+/// The term here (`someFutureTokenCount`) is deliberately one `GEMINI_USAGE_ADDITIVE_TERMS` does not
+/// model: that is the case the metric exists for now that the tool-use term is billed.
+#[test]
+fn an_unmodelled_term_is_reported_never_absorbed() {
+    let body = serde_json::json!({
+        "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]}, "finishReason": "STOP"}],
+        "usageMetadata": {
+            "promptTokenCount": 10,
+            "candidatesTokenCount": 5,
+            "someFutureTokenCount": 7,
+            "totalTokenCount": 22
+        }
+    });
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(&body)
+        .expect("read");
+    // Buckets exactly as sent — the 7 unknown tokens were NOT folded into any of them.
+    assert_eq!(ir.usage.input_tokens, 10);
+    assert_eq!(ir.usage.output_tokens, 5);
     let note = ir
         .usage
         .detail
         .usage_identity_note
         .as_ref()
-        .expect("the decoder must REPORT the discrepancy, not reconcile silently");
-    assert_eq!(note.reported_total, 222, "what Google counted");
-    assert_eq!(note.summed_total, 190, "what busbar decoded");
-    assert_eq!(note.unaccounted, 32, "the shortfall, positive = unbilled");
+        .expect("a total the modelled terms cannot reach must be REPORTED");
+    assert_eq!(note.reported_total, 22);
+    assert_eq!(note.summed_total, 15);
+    assert_eq!(
+        note.unaccounted, 7,
+        "positive = tokens busbar did not decode"
+    );
     assert_eq!(note.identity, "gemini.usageMetadata");
-    // The term itself is still carried as attribution, exactly as received. Nothing was zeroed.
-    assert_eq!(ir.usage.detail.tool_use_prompt_tokens, Some(32));
+}
+
+/// THE TRUNCATED PATH BILLS THE SAME. A response too large to reassemble is metered through
+/// `recover_truncated_usage`, which parses the trailing `usageMetadata` on its own. It read three of
+/// Google's four terms, so a grounded turn that overflowed the reassembly cap billed 32 tokens less
+/// than the identical turn that did not — the under-count would have survived the fix on exactly the
+/// responses nobody can inspect.
+#[test]
+fn a_truncated_grounded_turn_bills_the_tool_use_term_too() {
+    let recovered = Protocol::gemini()
+        .reader()
+        .recover_truncated_usage(RESP_GROUNDING.as_bytes())
+        .expect("the trailing usageMetadata is recoverable");
+    assert_eq!(
+        recovered.input, 50,
+        "18 uncached prompt + the 32-token additive tool-use term — same as the buffered path"
+    );
+    assert_eq!(recovered.output, 172, "89 visible + 83 thinking");
+}
+
+/// THE WRITER IS THE READER'S INVERSE. `input_tokens` now carries the tool-use term, so a
+/// cross-protocol Gemini egress must NOT re-emit that term inside `promptTokenCount` as well — the
+/// wire shape puts it beside the prompt, and double-counting it would hand a native google-genai
+/// client a `usageMetadata` that no longer reconciles with its own `totalTokenCount`.
+#[test]
+fn the_writer_reconstructs_the_recorded_wire_shape() {
+    let v: serde_json::Value = serde_json::from_str(RESP_GROUNDING).expect("parses");
+    let ir = Protocol::gemini().reader().read_response(&v).expect("read");
+    let out = Protocol::gemini().writer().write_response(&ir);
+    let meta = &out["usageMetadata"];
+    assert_eq!(
+        meta["promptTokenCount"], 18,
+        "the prompt term, not 50: {out}"
+    );
+    assert_eq!(meta["toolUsePromptTokenCount"], 32, "beside it: {out}");
+    assert_eq!(
+        meta["totalTokenCount"], 222,
+        "and Google's own total is reproduced exactly: {out}"
+    );
 }
 
 /// The quiet case must stay quiet. A turn whose counters reconcile against Google's stated total

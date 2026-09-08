@@ -1091,12 +1091,20 @@ impl ProtocolWriter for GeminiWriter {
                 // present (native shape — no spurious field otherwise). `totalTokenCount` is the
                 // full prompt total + candidates.
                 let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+                // The tool-use prompt term rides INSIDE `input_tokens` in the IR (1.6.0 money
+                // change) but sits BESIDE `promptTokenCount` on the wire, where it is re-emitted as
+                // its own field below. Subtract it back out here or a native google-genai client
+                // would count it twice and read a `usageMetadata` that no longer reconciles.
+                let tool_use = usage.detail.tool_use_prompt_tokens.unwrap_or(0);
                 // cache_creation is ALSO part of the TOTAL prompt count (cross-protocol ingress only).
                 let prompt_total = usage
                     .input_tokens
+                    .saturating_sub(tool_use)
                     .saturating_add(cache_read)
                     .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
-                let total = prompt_total.saturating_add(usage.output_tokens);
+                let total = prompt_total
+                    .saturating_add(usage.output_tokens)
+                    .saturating_add(tool_use);
                 let mut usage_metadata = serde_json::Map::new();
                 usage_metadata.insert(
                     FIELD_PROMPT_TOKEN_COUNT.to_string(),
@@ -1302,10 +1310,15 @@ impl ProtocolWriter for GeminiWriter {
         // `cache_read` back. Emit `cachedContentTokenCount` only when a cache read is present (native
         // shape — no spurious field on a no-cache roundtrip).
         let cache_read = resp.usage.cache_read_input_tokens.unwrap_or(0);
+        // The tool-use prompt term rides INSIDE `input_tokens` in the IR (1.6.0 money change) but
+        // sits BESIDE `promptTokenCount` on the wire, where it is re-emitted as its own field below.
+        // Subtract it back out here or the reconstructed prompt count double-counts it.
+        let tool_use = resp.usage.detail.tool_use_prompt_tokens.unwrap_or(0);
         // cache_creation is ALSO part of the TOTAL prompt count (cross-protocol ingress only).
         let prompt_total = resp
             .usage
             .input_tokens
+            .saturating_sub(tool_use)
             .saturating_add(cache_read)
             .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
         let mut usage_metadata = serde_json::Map::new();
@@ -1334,7 +1347,11 @@ impl ProtocolWriter for GeminiWriter {
             );
         }
         if resp.created.is_some() || resp.model.is_some() {
-            let total = prompt_total.saturating_add(resp.usage.output_tokens);
+            // Four additive terms, exactly as Google states them: prompt (cache-inclusive) +
+            // candidates + the tool-use prompt term. Thinking is already inside `output_tokens`.
+            let total = prompt_total
+                .saturating_add(resp.usage.output_tokens)
+                .saturating_add(tool_use);
             usage_metadata.insert(
                 FIELD_TOTAL_TOKEN_COUNT.to_string(),
                 serde_json::json!(total),
