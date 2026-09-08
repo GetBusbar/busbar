@@ -914,7 +914,7 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
 
 #[async_trait::async_trait]
 impl busbar_substrate::plane_host::IdentityHost for EngineHostImpl {
-    fn quarantine_settle(&self, subject: &str, state: crate::trust::TrustState) -> bool {
+    fn quarantine_settle(&self, subject: &str, state: busbar_substrate::trust::TrustState) -> bool {
         trust::quarantine_settle_over(&self.app, subject, state)
     }
 
