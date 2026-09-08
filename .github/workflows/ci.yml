@@ -116,6 +116,23 @@ jobs:
   structure-lint:
     name: structure lint
     runs-on: ubuntu-latest
+    # A HANG IS NOT RED, AND THAT IS THE PROBLEM THIS BOUND SOLVES. Without an explicit
+    # `timeout-minutes` a job inherits GitHub's 360-minute default, so a step that never returns
+    # leaves this job — a REQUIRED check — sitting `in_progress` for six hours. The umbrella never
+    # resolves, the run reports neither pass nor fail, and the honest reading of "CI is red" becomes
+    # indistinguishable from "CI never finished". Measured on this branch: the `Audit-ledger
+    # self-test` step sat over two hours with no output while every other job in the run had long
+    # since reported.
+    #
+    # This bound does NOT fix a hang and does not hide one — it makes one RED, in under an hour
+    # instead of six, with the step name in the log. The cause of any hang it catches is still owed;
+    # what changes is that the owner learns about it the same day.
+    #
+    # 45 minutes is set against this job's OWN worst honest run (18m47s, dominated by the
+    # `Plane deletion test` step's four per-plane builds), not against a round number: roughly two
+    # and a half times the real figure, so a slow runner or a cold cache never trips it, and a step
+    # that has genuinely stopped does.
+    timeout-minutes: 45
     steps:
       # FULL HISTORY, for the `audit-ledger` step at the end of this job: every record in
       # qa/audit-ledger.json stamps the COMMIT it read, and the gate resolves each one. A depth-1
