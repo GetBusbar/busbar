@@ -145,6 +145,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   carry `fires_at` (the resolved stage set), `groups` and `phase`; the overlay-section 404 lists
   the sections that now exist (`identity-providers`, `export`, `tools`, `agents`); `openapi.json`
   describes the MCP and A2A endpoints.
+- **Two `openapi.json` schema descriptions carried factual errors from 1.5.5; both are corrected.**
+  The max_admin_scope description no longer advertises a ceiling token the parser never accepted.
+  Deleting a named definition that another section still references by bare name answers 409
+  conflict. Both are PB-75 registered corrections (`description_corrections` on the
+  `admin.ops|GetOpenapiJson|ok` / `neutrality|routes|admin-openapi-paths` accepted-difference
+  entry); every other openapi.json description stays verbatim.
 - **Validation messages know the new keys.** An `expected one of` list now includes the plane keys
   (`mcp`, `oauth_as`, `tools`, `agents`, `streams`, …) and the four new group-limit metrics
   (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`); the reserved-name,
