@@ -63,6 +63,75 @@ pub mod plane {
     /// — so the card cannot claim a binding the plane does not list, which is the whole reason that
     /// function reads this list rather than writing one of its own.
     pub const WIRE_GRPC: &str = "grpc";
+
+    /// HOW A PLANE'S MESSAGES ARE FRAMED — the DIALECT axis, and deliberately not the transport one.
+    ///
+    /// This is the half that used to be spelled as variants of `transport::Transport`, beside `Http`
+    /// and `Stdio`, and the two do not belong in one closed set. A channel is what carries bytes; a
+    /// framing is what the bytes are shaped as once they arrive. A2A makes the difference impossible
+    /// to ignore: its JSON-RPC and HTTP+JSON bindings ride the SAME HTTP channel, over the same
+    /// socket, at the same path, and differ only in whether a body member or the request line names
+    /// the operation. One enum holding `Http` next to `JsonRpc` cannot say that, because it makes
+    /// "which socket" and "which vocabulary" the same kind of word — which is the exact shape the
+    /// owner ruling calls a plane-transport.
+    ///
+    /// It lives HERE, with the three wire-format names, because a framing is something a PLANE
+    /// declares about itself. The three named framings are exactly the three names above, and
+    /// [`WireFraming::Native`] is the honest fourth: the plane's own body, undeclared on this axis.
+    /// Adding a framing is a change to this enum and touches no transport; adding a channel is a
+    /// change to `transport::TransportFamily` and touches no framing.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum WireFraming {
+        /// THE PLANE'S OWN BODY, undeclared on this axis. What rides an ordinary POST to a plane, a
+        /// streamable-HTTP `/mcp` exchange, an MCP stdio pipe or an open duplex socket: the channel
+        /// carries whatever the plane's codec wrote, and nothing here declares what that is.
+        ///
+        /// Not "no framing" — a framing this axis does not name. The distinction matters because the
+        /// three below exist only where an outside instrument scores the framings of ONE channel as
+        /// separate legs, and nothing scores a plane's own body that way.
+        Native,
+        /// A JSON-RPC 2.0 ENVELOPE — `{jsonrpc, id, method, params}`, where a BODY MEMBER names the
+        /// operation. A2A's `JSONRPC` binding, and the leg its conformance instrument reports as
+        /// `jsonrpc:`. Labelled [`WIRE_JSONRPC`].
+        JsonRpc,
+        /// A2A'S HTTP+JSON BINDING — the same exchange with THE REQUEST LINE naming the operation
+        /// instead of a body member: `POST /message:send` rather than `{"method":"SendMessage"}`.
+        /// A2A section 11.3 makes the REST body the JSON-RPC `params` verbatim and the REST success
+        /// body the `result` verbatim, which is why arming it is re-framing and not translation.
+        /// Labelled [`WIRE_HTTP_JSON`].
+        HttpJson,
+        /// A LENGTH-PREFIXED PROTOBUF FRAME, transcoded to and from the codec's JSON wire, and
+        /// terminated with a `grpc-status` trailer rather than an HTTP status. Labelled
+        /// [`WIRE_GRPC`] — the one place a framing name and a channel name coincide, which is a fact
+        /// about the gRPC specification and not a reason to fuse the axes.
+        Proto,
+    }
+
+    impl WireFraming {
+        /// Every framing, so a site that must cover all of them cannot silently cover some.
+        pub const ALL: &'static [WireFraming] = &[
+            WireFraming::Native,
+            WireFraming::JsonRpc,
+            WireFraming::HttpJson,
+            WireFraming::Proto,
+        ];
+
+        /// The wire-format name a plane declares this framing as, or `None` for the plane's own
+        /// body — which has no name on this axis because the plane never declared one.
+        ///
+        /// Read from the three constants above rather than spelled again, so the metric label, the
+        /// plane's `wire_format_names` list and the `protocolBinding` a served agent card advertises
+        /// stay one vocabulary instead of three that happen to agree today.
+        #[must_use]
+        pub fn wire_format_name(self) -> Option<&'static str> {
+            match self {
+                WireFraming::Native => None,
+                WireFraming::JsonRpc => Some(WIRE_JSONRPC),
+                WireFraming::HttpJson => Some(WIRE_HTTP_JSON),
+                WireFraming::Proto => Some(WIRE_GRPC),
+            }
+        }
+    }
 }
 
 // The value families the money path is written in.
