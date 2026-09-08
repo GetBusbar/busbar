@@ -70,4 +70,4 @@ pub use crate::egress_auth::{prebuild_auth, resolve, CredentialProvider, Metadat
 // surfaces it on the DOWN facade.
 pub use crate::state::UpstreamClients;
 // ── the neutral lane-protocol-name resolver the lowering keys egress targets on (proto) ──────────
-pub use crate::proto::lane_protocol_name;
+pub use busbar_substrate::proto::lane_protocol_name;

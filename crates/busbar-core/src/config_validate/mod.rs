@@ -118,7 +118,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             errors.push(format!(
                 "model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
                 model_name,
-                crate::proto::DEFAULT_MAX_TOKENS
+                busbar_substrate::config::limits::DEFAULT_MAX_TOKENS
             ));
         }
         // A `max_concurrent: 0` lane builds a `Semaphore::new(0)` at startup (main.rs), which never

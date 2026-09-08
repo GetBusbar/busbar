@@ -373,16 +373,15 @@ pub use busbar_substrate::duration::parse_duration_secs;
 mod parse_duration_secs_tests;
 
 /// Error-type taxonomy strings shared with the forward/OpenAI-family DATA-plane vocabulary, aliased
-/// from their canonical home in `proto::openai_family` so the banks cannot drift. `main.rs`
+/// from their canonical home in `busbar_substrate::proto` so the banks cannot drift. `main.rs`
 /// references them via `crate::admin::ERR_TYPE_*`.
 ///
 /// The admin API itself no longer has an error vocabulary of its own: every admin error — keys
 /// included — is an [`AdminError`] projected by `key_err`/`err_json` (design D route 2). The
 /// `internal_error`/`conflict_error`/`version_conflict_error` tokens that used to be re-mapped onto
 /// the frozen `code` enum in a second place are gone with it.
-pub(crate) const ERR_TYPE_NOT_FOUND: &str = crate::proto::openai_family::ERR_TYPE_NOT_FOUND;
-pub(crate) const ERR_TYPE_INVALID_REQUEST: &str =
-    crate::proto::openai_family::ERR_TYPE_INVALID_REQUEST;
+pub(crate) const ERR_TYPE_NOT_FOUND: &str = busbar_substrate::proto::ERR_TYPE_NOT_FOUND;
+pub(crate) const ERR_TYPE_INVALID_REQUEST: &str = busbar_substrate::proto::ERR_TYPE_INVALID_REQUEST;
 
 /// Maximum byte lengths for admin-API path / body fields (defense-in-depth DB/log-bloat guards).
 /// A real minted key id is `vk_` + 16 hex chars (19 chars); 64 is generous headroom.
