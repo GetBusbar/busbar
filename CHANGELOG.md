@@ -370,16 +370,6 @@ identically, and every 1.5.5 key and minted secret carries over.
   for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
   `at` field off a hook view must read `fires_at` instead. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
-- 1.6.0 Changed: a pool member that nothing defines is refused by the resolver, under the
-  `config errors:` frame, naming `models:`, `tools:` and `agents:`. A pool may now hold tools and
-  agents as well as models, so member resolution belongs to the resolver rather than to semantic
-  validation, and the sentence names the config path and all three maps it looked in
-  (`pools.<pool>: member `x` is not defined in any of the top-level `models:`, `tools:`, or
-  `agents:` maps.`) instead of 1.5.5's `pool '<pool>' references unknown model 'x'`. The refusal
-  itself is unchanged: same exit code 1, same empty stdout, same surrounding lines. **Migration:**
-  a CI job or log alert that matches the `config validation failed:` frame line to catch a bad
-  config must also match `config errors:`, which is the frame every resolver refusal already used;
-  no config change is needed.
 - 1.6.0 Improvements: rotate refuses an overlong key id like its siblings. `POST
   /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never enforced the 64-byte
   id bound the read/patch/delete/usage/revoke handlers already share, so an overlong id fell

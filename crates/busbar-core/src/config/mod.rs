@@ -2158,9 +2158,11 @@ pub fn resolve(
     // routed to the plane that owns those members. LLM pools stay in `pools` (their rich members and
     // routing knobs are read by the model plane exactly as before — byte-identical); MCP and A2A
     // pools are projected to the neutral `CandidatePoolCfg` carriers the two non-LLM planes already
-    // consume. HOMOGENEITY is enforced here (a pool whose members span two nouns is refused) and an
-    // unresolvable member is refused — the two checks the design puts before resolution so that a
-    // clean `--validate` is a clean boot. This is the ONLY place a pool's plane is decided.
+    // consume. HOMOGENEITY is enforced here (a pool whose members span two nouns is refused), which
+    // is the check the design puts before resolution so that a clean `--validate` is a clean boot.
+    // An UNRESOLVABLE member is deliberately NOT refused here — see the `None` arm below for the
+    // two checks that own it and why the refusal stays where 1.5.5 put it. This is the ONLY place a
+    // pool's plane is decided.
     let mut tool_pools_derived: std::collections::BTreeMap<
         String,
         crate::failover::CandidatePoolCfg,
@@ -2210,14 +2212,28 @@ pub fn resolve(
             let mut homogeneous = true;
             for m in &pool.members {
                 match member_kind(m.name()) {
-                    None => {
-                        errors.push(format!(
-                            "pools.{pool_name}: member `{}` is not defined in any of the top-level \
-                             `models:`, `tools:`, or `agents:` maps. Define it there, or remove it \
-                             from the pool.",
-                            m.name()
-                        ));
-                    }
+                    // A MEMBER NOTHING DEFINES IS NOT REFUSED HERE, and the narrowing is the
+                    // point. This loop's only job is to decide which plane a pool belongs to, and
+                    // a name that resolves nowhere decides nothing — so refusing it here buys no
+                    // safety and costs the operator the FRAME LINE they matched on: 1.5.5 caught
+                    // an undefined pool member in semantic validation, under `config validation
+                    // failed:`, and a resolve-stage error is framed `config errors:`. A runbook or
+                    // CI grep written against the old frame stops matching a config that is still
+                    // just as broken.
+                    //
+                    // THE MEMBER CANNOT ESCAPE, because taking no plane from it leaves exactly two
+                    // roads and both end in a refusal that runs before any config is served (boot,
+                    // `--validate` and admin apply all resolve, then validate):
+                    //   * the pool's other members give it no plane either, so it STAYS on the LLM
+                    //     lane in `pools` — where `config_validate`'s pool loop refuses the member
+                    //     by name, in 1.5.5's words (`pool '<p>' references unknown model '<m>'`);
+                    //   * or the other members DO name a plane, the pool is projected to
+                    //     `tool_pools_derived` / `agent_pools_derived`, and `check_failover_pool`
+                    //     below refuses this same member against that plane's registry with the
+                    //     message that names the section it looked in.
+                    // There is no third road: `non_llm` is only ever pushed on the two projected
+                    // arms, so a pool leaves `pools` only by entering a map that is checked.
+                    None => {}
                     Some(k) => match kind {
                         None => kind = Some(k),
                         Some(prev) if prev == k => {}
@@ -2256,7 +2272,8 @@ pub fn resolve(
                     );
                     non_llm.push(pool_name.clone());
                 }
-                // LLM pools (or an all-unresolvable pool that already pushed errors) stay in `pools`.
+                // LLM pools — and an all-unresolvable pool, which `config_validate` refuses member
+                // by member once it is resolved — stay in `pools`.
                 _ => {}
             }
         }
