@@ -10,6 +10,11 @@
 //! interprets. This is the *neutral mechanism + opaque payload* pattern applied to per-session state,
 //! exactly like [`crate::plane`]'s type-erased plane slots but keyed by session.
 //!
+//! It lives in the NEUTRAL SUBSTRATE rather than in `busbar-core`, which is the same claim the
+//! paragraph below makes, followed through: a mechanism two or more planes need cannot sit where only
+//! the engine can name it. The header's word "core" reads as "the neutral middle" throughout — every
+//! sentence of it is unchanged and still true. `busbar_core::session` re-exports this.
+//!
 //! It is core (not an LLM feature) by the decision rule — **two or more planes need it:** LLM cache-
 //! affinity and the gate's incremental-scan want an ephemeral per-session set; A2A tasks want durable
 //! per-session state (today `plane::taskstore`, a special case that folds in here); a future protocol
