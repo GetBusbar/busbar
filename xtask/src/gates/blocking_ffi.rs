@@ -42,6 +42,11 @@
 //!   pass over real code and is reported rather than banked as "no findings".
 //! * `blocking-ffi:no-inline-ffi` — the finding.
 //!
+//! ONE CARVE-OUT, and it is a shape no plugin call can wear: a method call whose first argument is
+//! a freshly minted capability token is the KERNEL's sealed step seam, not a plugin handle. See
+//! [`opens_with_capability_token`] for why `busbar_kernel::teller::Units::authenticate` and
+//! `busbar_api::AuthModule::authenticate` share a spelling and nothing else.
+//!
 //! Imprecise about strings and comments in the same way the shell was: a brace inside a string
 //! literal can shift the depth. That is a false-POSITIVE risk — a spurious flag someone must look
 //! at — never a false negative, and the allowlist is how a real one gets recorded.
@@ -214,7 +219,35 @@ fn bare_call(line: &str, name: &str) -> bool {
     false
 }
 
-/// `.name` followed by optional whitespace and `(`. The shell's `\.(a|b)[[:space:]]*\(`.
+/// The kernel's sealed step-trait receipt: a call whose FIRST argument is a freshly minted
+/// capability token.
+///
+/// WHY THIS IS NOT A HOLE. Every seam in [`seams`] is a call into a DLOPENED PLUGIN, and every one
+/// of those is reached through a plugin handle whose method takes plugin arguments —
+/// `busbar_api::AuthModule::authenticate` takes `Option<&str>`, the presented credential, and
+/// nothing else. `busbar_kernel::teller::Units` is a DIFFERENT trait that happens to spell one of
+/// its steps `authenticate`, and the kernel calls it as `units.authenticate(&UnitToken::<
+/// Authenticate>::mint(seal), ctx)`. A `UnitToken` is a capability the kernel mints against its own
+/// `seal` for the length of one call; it is not a type a plugin's ABI can name, and `busbar-kernel`
+/// depends on `busbar-caps`, `busbar-contract` and `busbar-grammar` — it links no plugin loader and
+/// no async runtime at all, so there is no Tokio worker there to park. So the mint spelling is not
+/// "a call we have decided to trust": it is the one textual form a plugin call CANNOT take.
+///
+/// It is recognised on the CALL LINE only, and requires the mint to open the argument list. Split
+/// the call across lines and the exemption stops applying — a false positive somebody must look at,
+/// which is the direction this gate is allowed to be wrong in.
+///
+/// ONE spelling, not a family. `TrustToken` is minted the same way and is never a step's FIRST
+/// argument, so it is deliberately absent: an arm no red proof drives is coverage this gate would
+/// be asserting about itself.
+fn opens_with_capability_token(rest: &str) -> bool {
+    let arg = rest.trim_start();
+    let arg = arg.strip_prefix('&').unwrap_or(arg).trim_start();
+    arg.starts_with("UnitToken::<")
+}
+
+/// `.name` followed by optional whitespace and `(`. The shell's `\.(a|b)[[:space:]]*\(`, plus the
+/// kernel step-seam carve-out in [`opens_with_capability_token`].
 fn method_call(line: &str, name: &str) -> bool {
     let dotted = format!(".{name}");
     let chars: Vec<char> = line.chars().collect();
@@ -235,6 +268,10 @@ fn method_call(line: &str, name: &str) -> bool {
             j += 1;
         }
         if j < chars.len() && chars[j] == '(' {
+            let inside: String = chars[j + 1..].iter().collect();
+            if opens_with_capability_token(&inside) {
+                continue;
+            }
             return true;
         }
     }
@@ -645,6 +682,33 @@ impl Gate for BlockingFfiGate {
                 "secret-plugin FFI",
                 "plugin OPEN",
                 "an App/hook-chain build",
+            ],
+        ));
+
+        // THE KERNEL'S STEP SEAM IS NOT A PLUGIN HANDLE, AND THE CARVE-OUT IS NOT A MUTE FOR THE
+        // LINE BELOW IT. `Units::authenticate` and `AuthModule::authenticate` are two different
+        // traits with one spelling; only the second is a dlopen hop. The pair is planted TOGETHER
+        // in one async fn, because a carve-out proved on a file that holds nothing else proves
+        // nothing: the plugin call one line down must still be named.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_kernel_step.rs"),
+            "pub async fn run_unit_async<U: Units>(units: &U, ctx: &UnitCtx) -> Ended {\n\
+             \x20   let opened = units.authenticate(&UnitToken::<Authenticate>::mint(seal), ctx);\n\
+             \x20   let outcome = module.authenticate(bearer);\n\
+             \x20   opened\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a kernel step reached through a minted capability token is not a plugin call, and the \
+             plugin call beside it still is",
+            &[ROW_NO_INLINE],
+            ov,
+            &[
+                "1 finding(s)",
+                "planted_kernel_step.rs:3",
+                "auth-plugin FFI",
             ],
         ));
 
