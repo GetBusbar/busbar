@@ -28,3 +28,7 @@ mod hook_stage_projection;
 #[cfg(test)]
 #[path = "tests/hook_view_wire_order.rs"]
 mod hook_view_wire_order;
+
+#[cfg(test)]
+#[path = "tests/named_def_view_split.rs"]
+mod named_def_view_split;

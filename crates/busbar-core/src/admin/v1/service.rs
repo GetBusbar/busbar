@@ -22,10 +22,11 @@ use crate::diagnostics::{
 use crate::state::App;
 
 use super::contract::{
-    AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
-    GroupView, HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView,
-    ModelView, NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView,
-    PoolMemberView, PoolView, ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
+    AdminAuthView, AdminError, AnyNamedDefView, AuthView, BuildInfo, ConfigValidateView,
+    EffectiveConfigView, GroupView, HookHealthView, HookTransportView, HookView, InfoView,
+    KeyUsageView, ModelUsageView, ModelView, Page, PlaneNamedDefView, PluginView, PoolDetailView,
+    PoolMemberStatusView, PoolMemberView, PoolView, ProviderView, TopologyInfo, UsageBreakdown,
+    UsageView, UsageWindow,
 };
 use crate::config::named_map::NamedMapSection;
 use crate::config::{
@@ -1075,24 +1076,27 @@ impl AdminService {
     pub(crate) async fn list_named_defs(
         &self,
         section: NamedMapSection,
-    ) -> Result<Page<NamedDefView>, AdminError> {
-        let mut defs: Vec<NamedDefView> = match section {
+    ) -> Result<Page<AnyNamedDefView>, AdminError> {
+        let mut defs: Vec<AnyNamedDefView> = match section {
             NamedMapSection::IdentityProviders => self
                 .app
                 .identity_providers
                 .iter()
-                .map(|(name, cfg)| identity_provider_view(name, cfg))
+                .map(|(name, cfg)| AnyNamedDefView::Instance(identity_provider_view(name, cfg)))
                 .collect(),
             NamedMapSection::Export => self
                 .app
                 .export_defs
                 .iter()
-                .map(|(name, cfg)| export_def_view(name, cfg))
+                .map(|(name, cfg)| AnyNamedDefView::Instance(export_def_view(name, cfg)))
                 .collect(),
             // A plane section reads its registrations through the plane's `named_def_list` seam,
             // so this arm names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view or registry type; the empty vec for
             // a plane compiled out is the seam's own `None`.
-            NamedMapSection::Plane(_) => plane_named_def_list(section, &self.app),
+            NamedMapSection::Plane(_) => plane_named_def_list(section, &self.app)
+                .into_iter()
+                .map(AnyNamedDefView::Plane)
+                .collect(),
         };
         // Plus every overlay entry this binary could not parse, explicitly FLAGGED. They are stored
         // but NOT live (dropped at each rebuild), and listing them here is what makes that
@@ -1102,11 +1106,11 @@ impl AdminService {
             self.app.overlay_path.as_deref(),
             section,
         ) {
-            if !defs.iter().any(|d| d.name == name) {
-                defs.push(unparseable_def_view(&name, &entry));
+            if !defs.iter().any(|d| d.name() == name) {
+                defs.push(unparseable_def_view(section, &name, &entry));
             }
         }
-        defs.sort_by(|a, b| a.name.cmp(&b.name));
+        defs.sort_by(|a, b| a.name().cmp(b.name()));
         Ok(Page::single(defs))
     }
 
@@ -1116,21 +1120,23 @@ impl AdminService {
         &self,
         section: NamedMapSection,
         name: &str,
-    ) -> Result<NamedDefView, AdminError> {
+    ) -> Result<AnyNamedDefView, AdminError> {
         let view = match section {
             NamedMapSection::IdentityProviders => self
                 .app
                 .identity_providers
                 .get(name)
-                .map(|cfg| identity_provider_view(name, cfg)),
+                .map(|cfg| AnyNamedDefView::Instance(identity_provider_view(name, cfg))),
             NamedMapSection::Export => self
                 .app
                 .export_defs
                 .get(name)
-                .map(|cfg| export_def_view(name, cfg)),
+                .map(|cfg| AnyNamedDefView::Instance(export_def_view(name, cfg))),
             // A plane section reads its one registration through the plane's `named_def_get`
             // seam; `None` for a plane compiled out is the seam's own `None`.
-            NamedMapSection::Plane(_) => plane_named_def_get(section, &self.app, name),
+            NamedMapSection::Plane(_) => {
+                plane_named_def_get(section, &self.app, name).map(AnyNamedDefView::Plane)
+            }
         };
         view.or_else(|| {
             // A stored-but-unparseable overlay entry answers the FLAGGED view rather than a 404: a
@@ -1141,7 +1147,7 @@ impl AdminService {
                 section,
             )
             .get(name)
-            .map(|entry| unparseable_def_view(name, entry))
+            .map(|entry| unparseable_def_view(section, name, entry))
         })
         .ok_or_else(|| AdminError::not_found(format!("{} `{name}`", section.singular())))
     }
@@ -2490,7 +2496,10 @@ fn reresolve_plane_gates(next: &mut crate::state::App) {
 /// Project a plane section's registrations onto the shared view through the plane's `named_def_list`
 /// seam — resolved by config section, so the admin read path names no plane view type. Empty for a
 /// section whose plane is compiled out (no decl) or is not a named-definition map.
-fn plane_named_def_list(section: NamedMapSection, app: &crate::state::App) -> Vec<NamedDefView> {
+fn plane_named_def_list(
+    section: NamedMapSection,
+    app: &crate::state::App,
+) -> Vec<PlaneNamedDefView> {
     crate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_list)
         .map_or_else(Vec::new, |f| {
@@ -2504,7 +2513,7 @@ fn plane_named_def_get(
     section: NamedMapSection,
     app: &crate::state::App,
     name: &str,
-) -> Option<NamedDefView> {
+) -> Option<PlaneNamedDefView> {
     crate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.named_def_get)
         .and_then(|f| f(app as &dyn busbar_substrate::plane_host::PlaneSlots, name))

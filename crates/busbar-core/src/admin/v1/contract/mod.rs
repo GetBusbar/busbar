@@ -601,10 +601,16 @@ pub(crate) struct HookView {
     pub(crate) groups: Vec<String>,
 }
 
-/// The shared named-DEFINITION read VIEW — relocated to the neutral substrate
-/// (`busbar_substrate::api`) as pure serde data (no `Scope`, no core reach) so a plane crate names
-/// it directly; re-exported here so every in-core (and a2a) caller is unchanged.
-pub use busbar_substrate::api::NamedDefView;
+/// The named-DEFINITION read VIEWS — relocated to the neutral substrate (`busbar_substrate::api`)
+/// as pure serde data (no `Scope`, no core reach) so a plane crate names them directly;
+/// re-exported here so every in-core (and a2a) caller is unchanged.
+///
+/// TWO views, split by whether the section's entries are plugin instances: [`NamedDefView`] is the
+/// FROZEN 1.5.5 shape (`identity-providers`, `export` — `module` always present, hence `required`),
+/// and [`PlaneNamedDefView`] is the 1.6.0-new plane shape (`tools`, `agents` — `module` omittable).
+/// [`AnyNamedDefView`] is the zero-byte union the ONE generic handler returns; it is not the type
+/// the OpenAPI document references, because each path can serve exactly one of the two.
+pub use busbar_substrate::api::{AnyNamedDefView, NamedDefView, PlaneNamedDefView};
 
 /// A group definition in the registry read (`GET /api/v1/admin/groups`,
 /// `GET /api/v1/admin/groups/{name}`): the limit-tree read surface. Projects the `groups:` config
