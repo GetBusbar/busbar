@@ -33,12 +33,12 @@ const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
 // SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
 // re-exported here so every in-core caller keeps naming `config_validate::{…}` unchanged and the
 // two SSRF guards still single-source their byte-identical atoms.
-pub use crate::net_guard::{
+pub use busbar_substrate::net_guard::{
     extract_normalized_host, host_is_private_or_loopback, scheme_is, ssrf_blocked_host,
 };
 // Test-only: the alternate-IPv4 expander moved with the guards; its unit tests still name it here.
 #[cfg(test)]
-use crate::net_guard::expand_alternate_ipv4;
+use busbar_substrate::net_guard::expand_alternate_ipv4;
 
 /// Validate the loaded configuration and collect all errors at once.
 /// Returns Ok(()) if valid; Err(Vec<String>) with all validation failures otherwise.
@@ -118,7 +118,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
             errors.push(format!(
                 "model '{}' has default_max_tokens: 0; must be > 0 (or omit it to use the {} fallback)",
                 model_name,
-                crate::proto::DEFAULT_MAX_TOKENS
+                busbar_substrate::config::limits::DEFAULT_MAX_TOKENS
             ));
         }
         // A `max_concurrent: 0` lane builds a `Semaphore::new(0)` at startup (main.rs), which never
@@ -862,7 +862,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // Rule (key_ttl): the admin-set default key lifetime must parse (fail boot on garbage rather
         // than silently falling back). Same grammar as the admin `expires_in` duration.
         if let Some(ttl) = auth.key_ttl.as_deref() {
-            if let Err(e) = crate::admin::parse_duration_secs(ttl) {
+            if let Err(e) = busbar_substrate::duration::parse_duration_secs(ttl) {
                 errors.push(format!("auth.key_ttl '{ttl}' is not a valid duration: {e}"));
             }
         }
@@ -873,7 +873,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // isn't a policy). Duration strings share the admin `expires_in` grammar.
         let policy = &auth.policy;
         let parse_policy_ttl = |label: &str, ttl: &str, errors: &mut Vec<String>| -> Option<u64> {
-            match crate::admin::parse_duration_secs(ttl) {
+            match busbar_substrate::duration::parse_duration_secs(ttl) {
                 Ok(secs) => Some(secs),
                 Err(e) => {
                     errors.push(format!("{label} '{ttl}' is not a valid duration: {e}"));
@@ -2153,7 +2153,9 @@ fn validate_providers_with(
                 .unwrap_or_default();
             if !cred.trim().is_empty() {
                 if let Err(e) =
-                    crate::egress_auth::oauth_client_credentials::validate_credential(&cred)
+                    busbar_substrate::egress_auth::oauth_client_credentials::validate_credential(
+                        &cred,
+                    )
                 {
                     errors.push(format!(
                         "provider '{provider_name}' oauth-client-credentials credential (from {}) is invalid: {e}",
@@ -2185,12 +2187,14 @@ fn validate_providers_with(
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
                 // so the token_uri SSRF check is identical at validate and apply time.
-                let ssrf = crate::egress_auth::MetadataSsrfPolicy {
+                let ssrf = busbar_substrate::egress_auth::MetadataSsrfPolicy {
                     allow_overrides: &allow_overrides,
                     allow_all: cfg.allow_all_metadata,
                     blocked_hosts: &cfg.blocked_metadata_hosts,
                 };
-                if let Err(e) = crate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf) {
+                if let Err(e) =
+                    busbar_substrate::egress_auth::jwt_bearer::validate_credential(&cred, &ssrf)
+                {
                     errors.push(format!(
                         "provider '{provider_name}' jwt-bearer credential (from {}) is invalid: {e}",
                         provider_cfg.api_key.describe()
