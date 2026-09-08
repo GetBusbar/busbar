@@ -300,6 +300,21 @@ impl Gate for PlaneTransportNeutralityGate {
             &[ROW_ROOTS, ROW_ZERO_FILES, ROW_NO_NOUN],
         ));
 
+        // THE ROOT GUARD. `Overlay::remove` cannot trip it — the guard asks `cx.abs(r).is_dir()`,
+        // which reads the real disk past the overlay — so the row had no red proof and the guard
+        // could have been deleted with the selftest green. Re-rooting the whole context at a tree
+        // that holds none of the neutral crates is the plant that works, and it is the shape the
+        // guard exists for: a listed root that is not there is scanned as zero files, and zero
+        // files pass every ban in this gate.
+        report.push(crate::gates::prove_rows_red_at(
+            cx,
+            self,
+            "a neutral root that is not on disk is refused, not scanned as zero files",
+            &[ROW_ROOTS],
+            crate::gates::PLANE_ROOT_MISSING_FIXTURE,
+            &["not present on disk"],
+        ));
+
         let neutral = neutral_src_roots();
         let api = neutral
             .iter()
