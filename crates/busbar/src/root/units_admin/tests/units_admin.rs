@@ -2693,7 +2693,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             CoreGovernance::new(
                 Arc::new(CountingDispatch(Arc::clone(&calls))),
                 Arc::new(SeededLedger),
-                Arc::new(UnboundTopology),
+                Arc::new(UnboundFacts),
                 *verb,
                 a_ledger_request("/api/v1/admin/ledger/totals"),
             ),
@@ -2735,7 +2735,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
         CoreGovernance::new(
             Arc::new(CountingDispatch(Arc::clone(&calls))),
             Arc::new(SeededLedger),
-            Arc::new(UnboundTopology),
+            Arc::new(UnboundFacts),
             KernelVerb::Adjust,
             a_ledger_request("/api/v1/admin/adjust"),
         ),
@@ -2918,7 +2918,7 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
 ///
 /// The whole point of the fixture is the provider aggregation: one lane each, so a count that walked
 /// the wrong table (or the same lane twice) is visible rather than plausible. The handle is what the
-/// crossed reads answer THROUGH — see [`HandleTopology`].
+/// crossed reads answer THROUGH — see [`HandleFacts`].
 #[cfg(feature = "root-admin")]
 fn a_composition_over_two_providers() -> axum::Router {
     a_composition_over(&[("model-a", "prov-x"), ("model-b", "prov-y")]).0
@@ -2927,7 +2927,7 @@ fn a_composition_over_two_providers() -> axum::Router {
 /// One node, its administrative surface, the loop in front of it, and the HANDLE both answer off.
 ///
 /// The handle comes back with the router because the crossed reads answer THROUGH it — see
-/// [`HandleTopology`] — so a test about what a config apply does to those reads has to be able to
+/// [`HandleFacts`] — so a test about what a config apply does to those reads has to be able to
 /// put a new generation on the same handle the composition is holding.
 #[cfg(feature = "root-admin")]
 fn a_composition_over(
@@ -2948,7 +2948,7 @@ fn a_composition_over(
         1 << 20,
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only(dispatch)
-                .with_admin_topology(Arc::new(HandleTopology::new(held)))
+                .with_admin_facts(Arc::new(HandleFacts::new(held)))
         },
     );
     (router, handle)
@@ -3133,10 +3133,10 @@ async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys()
     };
 
     assert!(
-        !CROSSED_TOPOLOGY_VERBS.is_empty(),
+        !CROSSED_VERBS.is_empty(),
         "the rule would assert nothing over an empty set"
     );
-    for verb in CROSSED_TOPOLOGY_VERBS {
+    for verb in CROSSED_VERBS {
         let row = busbar_plane_admin::verbs::table()
             .into_iter()
             .find(|row| kernel_verb(row) == Some(*verb))
