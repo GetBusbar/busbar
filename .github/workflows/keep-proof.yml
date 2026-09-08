@@ -16,8 +16,9 @@ name: keep-proof
 # somebody's afternoon.
 #
 # WHAT IS AND IS NOT HERE, AND WHY.
-#   HERE:     fmt, clippy -D warnings, workspace build, the workspace test suite SHARDED across four
-#             runners, `cargo xtask gate --all`, `cargo xtask selftest`, the structure gate, the
+#   HERE:     fmt, clippy -D warnings, workspace build, the workspace test suite SHARDED across five
+#             runners (four index legs plus the 15-minute xtask monolith on its own),
+#             `cargo xtask gate --all`, `cargo xtask selftest`, the structure gate, the
 #             design-bindings gate (existence + regen-clean), the SHADOW ORACLE against the published
 #             1.5.5 binary scoped to the families the branch names, and the construction gate
 #             (report-only, exactly as in ci.yml).
@@ -44,8 +45,8 @@ on:
     branches: ['keep-*']
 
 # One verdict per branch tip. An agent that pushes three fixups in five minutes should pay for the
-# last one, not for all three -- these are four-runner test shards, and the wasted capacity comes
-# straight out of the queue every other agent is waiting in.
+# last one, not for all three -- these are five-runner test shards plus an oracle recording, and
+# the wasted capacity comes straight out of the queue every other agent is waiting in.
 concurrency:
   group: keep-proof-${{ github.ref }}
   cancel-in-progress: true
@@ -64,7 +65,7 @@ env:
   # did not mean what the required check means. `cargo xtask full-gate --selftest` asserts this
   # string against ci.yml's; it is spelled identically here on purpose.
   RUSTFLAGS: "-D warnings"
-  # See ci.yml's "COMPILER CACHE (sccache)" note. The four test shards compile the same workspace at
+  # See ci.yml's "COMPILER CACHE (sccache)" note. The five test shards compile the same workspace at
   # the same moment; without a content-addressed cache under them, sharding buys wall-clock by
   # paying for the same rustc invocations four times.
   SCCACHE_GHA_ENABLED: "true"
@@ -101,7 +102,7 @@ jobs:
       - name: Build
         run: cargo build --workspace --locked
 
-  # ── THE WORKSPACE SUITE, SHARDED ACROSS FOUR RUNNERS ────────────────────────────────────────────
+  # ── THE WORKSPACE SUITE, SHARDED ACROSS FIVE RUNNERS ────────────────────────────────────────────
   # THE SHARD AXIS IS THE TEST BINARY, NOT THE PACKAGE, AND THAT CHOICE IS LOAD-BEARING.
   #
   # The obvious shard is `cargo test -p <group>` per runner. It is wrong here, and ci.yml's own
@@ -112,28 +113,44 @@ jobs:
   # while every shard printed `ok`. A sharding scheme that quietly tests less is worse than no
   # sharding, because it reports faster AND weaker.
   #
-  # So each shard compiles the WHOLE workspace exactly as CI does -- `cargo test --workspace
-  # --locked --no-run`, one feature resolution, identical to the unsharded run -- and then EXECUTES
-  # a deterministic slice of the test binaries that compile produced. The compile is what sccache
-  # deduplicates across the four runners; the execution is what actually parallelises. Membership is
-  # DERIVED (sorted binary list, index modulo four), never a hand-maintained list, so a new test
-  # target joins a shard the day it exists and cannot fall out of all four.
+  # So each shard compiles the WHOLE workspace exactly as CI does -- `cargo build --workspace` then
+  # `cargo test --workspace --locked --no-run`, one feature resolution, identical to the unsharded
+  # run -- and then EXECUTES a deterministic slice of the test binaries that compile produced. The
+  # compile is what sccache deduplicates across the runners; the execution is what parallelises.
+  # Membership is DERIVED (sorted binary list, index modulo four), never a hand-maintained list, so a
+  # new test target joins a shard the day it exists and cannot fall out of all of them.
+  #
+  # `cargo build --workspace` FIRST, AND IT IS NOT REDUNDANT. `--no-run` compiles the test targets
+  # and what they depend on AT COMPILE TIME; it does not build the plugin cdylibs the tests dlopen at
+  # RUN time. The first run of this workflow proved it: sixteen busbar-core tests and four
+  # mcp_stdio_serve tests failed with "SKIP REFUSED UNDER CI: ... static-auth plugin cdylib not
+  # built", which is the tests' own refusal to skip a prerequisite in CI doing exactly its job. The
+  # unsharded `cargo test --workspace` never showed this because it builds every workspace target
+  # before it runs anything. ci.yml's `check` has a Build step ahead of its Test step for the same
+  # reason; this is that step.
+  #
+  # THE xtask BINARY GETS ITS OWN RUNNER. `cargo xtask`'s cli suite drives every registered gate's
+  # RED proof in-process and takes 15-20 minutes ON ITS OWN — measured here at 15 minutes of a
+  # 22-minute shard, i.e. one binary setting the ceiling for a quarter of the workspace. An index
+  # partition cannot split a single binary, so it is lifted out onto its own leg and the other four
+  # legs share what is left. This is the honest form of "shard the slow job": name the monolith.
   #
   # DOCTESTS RIDE SHARD 1. `--no-run` produces no doctest binary, so a pure binary partition would
   # silently drop every doctest from the summed total. Shard 1 runs `--doc` and counts it.
   tests:
-    name: tests (shard ${{ matrix.shard }}/4)
+    name: tests (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     # ci.yml's Test step measures 9.3 min warm for the WHOLE suite; a quarter of the execution plus a
     # full compile lands well inside 20. 30 is that with cold-cache headroom, and it is a ceiling on
-    # a hang, not a target.
+    # a hang, not a target. The `xtask` leg is the one that needs the room: its single binary is a
+    # measured 15 minutes.
     timeout-minutes: 30
     strategy:
-      # A red shard must not cancel the other three: the harvester wants the whole picture of the
-      # hand-back in one pass, not the first failure and three unknowns.
+      # A red shard must not cancel the others: the harvester wants the whole picture of the
+      # hand-back in one pass, not the first failure and four unknowns.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, xtask]
     # The live-DB roundtrip tests read these URLs and HARD-FAIL rather than skip when `CI` is set, so
     # every shard carries the services: the store tests are in whichever binary the partition put
     # them in, and a shard without a database would fail for the wrong reason. Digests pinned for the
@@ -173,6 +190,12 @@ jobs:
       # `json-render-diagnostics`, not plain `json`: the machine-readable stream goes to the file the
       # enumerator reads, and compiler errors are still RENDERED to the log. A compile failure whose
       # only trace is a JSON blob in a temp file is a red nobody can read.
+      # NOT REDUNDANT with the `--no-run` below — see the job header. `--no-run` does not build the
+      # plugin cdylibs the tests dlopen at RUN time, and those tests refuse to skip a missing
+      # prerequisite under CI (correctly). This is ci.yml's `check` Build step, in the same place.
+      - name: Build the workspace (the cdylibs the tests dlopen are not test targets)
+        run: cargo build --workspace --locked
+
       - name: Compile every test binary (one workspace feature resolution, same as CI)
         run: |
           set -euo pipefail
@@ -189,9 +212,28 @@ jobs:
           set -euo pipefail
           jq -r 'select(.reason == "compiler-artifact")
                  | select(.profile.test == true)
-                 | .executable // empty' "$RUNNER_TEMP/compile.json" | sort -u > "$RUNNER_TEMP/bins.txt"
-          count=$(wc -l < "$RUNNER_TEMP/bins.txt")
-          echo "compiled test binaries: ${count}"
+                 | .executable // empty' "$RUNNER_TEMP/compile.json" | sort -u > "$RUNNER_TEMP/all-bins.txt"
+          # THE MONOLITH, SPLIT OUT BY NAME. Cargo names a test binary `<target>-<hash>`, so every
+          # xtask test binary basename starts `xtask-`. It goes to the `xtask` leg and NOWHERE else;
+          # the four index legs partition the remainder. Both lists are written, and the two together
+          # are asserted to be the whole list below — a binary that matched neither would be a
+          # silently untested target, which is the failure mode this whole file is against.
+          grep -E '/deps/xtask-[^/]*$' "$RUNNER_TEMP/all-bins.txt" > "$RUNNER_TEMP/xtask-bins.txt" || true
+          grep -vE '/deps/xtask-[^/]*$' "$RUNNER_TEMP/all-bins.txt" > "$RUNNER_TEMP/other-bins.txt" || true
+          all=$(wc -l < "$RUNNER_TEMP/all-bins.txt")
+          xt=$(wc -l < "$RUNNER_TEMP/xtask-bins.txt")
+          ot=$(wc -l < "$RUNNER_TEMP/other-bins.txt")
+          echo "compiled test binaries: ${all} (xtask leg ${xt}, index legs ${ot})"
+          if [ "$(( xt + ot ))" -ne "$all" ]; then
+            echo "::error::the xtask/other split lost binaries (${xt} + ${ot} != ${all})."
+            exit 1
+          fi
+          if [ "$xt" -eq 0 ]; then
+            echo "::error::no xtask test binary was found. The xtask leg would run nothing, and the"
+            echo "::error::15-minute cli suite would be silently absent from the run."
+            exit 1
+          fi
+          count="$all"
           # THE FLOOR. A partition of an empty list runs nothing and prints a clean pass on every
           # shard -- the exact vacuous-green this whole file exists to stop. The workspace has well
           # over sixty test targets; forty is a floor that a real regression in the enumerator trips
@@ -208,20 +250,34 @@ jobs:
           SHARDS: "4"
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
           VALKEY_URL: redis://localhost:6379
-          # PER-BINARY HANG CEILING, the same instrument ci.yml's watchdog is: the `busbar_core`
-          # lib-test binary alone aggregates ~3900 tests to ~330s, so this bounds a genuine hang
-          # (unbounded) rather than a slow suite. When it fires it NAMES the binary.
-          BINARY_TIMEOUT_SECS: "900"
+          # PER-BINARY HANG CEILING, the same instrument ci.yml's watchdog is. Sized off the two
+          # measured monoliths, not off a wish: `busbar_core`'s lib-test binary aggregates ~3900
+          # tests to ~330s, and the `xtask` cli binary drives every gate's RED proof for a measured
+          # ~15 minutes. 1500s bounds a genuine hang (unbounded) while leaving the slower of the two
+          # real headroom. When it fires it NAMES the binary.
+          BINARY_TIMEOUT_SECS: "1500"
         run: |
           set -uo pipefail
           log="$RUNNER_TEMP/shard.log"
           : > "$log"
+          # The `xtask` leg runs its one monolith; the numbered legs partition everything else.
+          if [ "$SHARD" = "xtask" ]; then
+            list="$RUNNER_TEMP/xtask-bins.txt"
+          else
+            list="$RUNNER_TEMP/other-bins.txt"
+          fi
           i=0
           ran=0
           rc_all=0
           while IFS= read -r bin; do
-            if [ "$(( i % SHARDS ))" -eq "$(( SHARD - 1 ))" ]; then
-              echo "=== shard ${SHARD}/${SHARDS}: ${bin}"
+            mine=0
+            if [ "$SHARD" = "xtask" ]; then
+              mine=1
+            elif [ "$(( i % SHARDS ))" -eq "$(( SHARD - 1 ))" ]; then
+              mine=1
+            fi
+            if [ "$mine" -eq 1 ]; then
+              echo "=== shard ${SHARD}: ${bin}"
               timeout --signal=KILL "$BINARY_TIMEOUT_SECS" "$bin" 2>&1 | tee -a "$log"
               rc=${PIPESTATUS[0]}
               if [ "$rc" -eq 137 ]; then
@@ -234,7 +290,7 @@ jobs:
               ran=$(( ran + 1 ))
             fi
             i=$(( i + 1 ))
-          done < "$RUNNER_TEMP/bins.txt"
+          done < "$list"
 
           # DOCTESTS RIDE SHARD 1: `--no-run` never produced a doctest binary, so without this the
           # summed total silently loses every doctest in the workspace.
@@ -272,11 +328,11 @@ jobs:
 
   # ── THE SHARDS SUMMED ──────────────────────────────────────────────────────────────────────────
   # Sharding's real risk is not a slow shard, it is a shard that quietly stopped running things.
-  # Four green shards that between them ran 900 tests look identical, in the Actions UI, to four
+  # Five green shards that between them ran 900 tests look identical, in the Actions UI, to five
   # green shards that ran 5700. So the counts are summed and floored, exactly as ci.yml floors its
   # unsharded workspace run -- the floor is the same number, because it is the same suite.
   tests-total:
-    name: tests total (the four shards summed against the suite floor)
+    name: tests total (the five shards summed against the suite floor)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs: tests
@@ -304,9 +360,11 @@ jobs:
             total=$(( total + n ))
             files=$(( files + 1 ))
           done
-          echo "shards reporting: ${files}/4; tests passed across the workspace: ${total}"
-          if [ "$files" -ne 4 ]; then
-            echo "::error::${files} of 4 shards reported a count. A missing shard is a missing quarter"
+          # `shard-xtask.count` matches this glob as readily as `shard-3.count`; the leg names are the
+          # matrix's, and the sum does not care which is which.
+          echo "shards reporting: ${files}/5; tests passed across the workspace: ${total}"
+          if [ "$files" -ne 5 ]; then
+            echo "::error::${files} of 5 shards reported a count. A missing shard is a missing slice"
             echo "::error::of the suite, not a pass."
             exit 1
           fi
@@ -329,8 +387,14 @@ jobs:
   gates:
     name: cargo xtask gate --all · selftest
     runs-on: ubuntu-latest
-    # ci.yml's structure-lint (the same registry, run one gate per step) measures p95 14.5 min.
-    timeout-minutes: 25
+    # MEASURED, AND RAISED ONCE ALREADY. ci.yml's structure-lint (the same registry, one gate per
+    # step) measures p95 14.5 min, so 25 looked generous — and this job was CANCELLED at 25 on its
+    # first run, because `cargo xtask selftest` drives EVERY registered gate's RED proof rather than
+    # just running the gates, which ci.yml splits across its own steps. 45 is the raise, made
+    # deliberately against that observation rather than by nudging the number until it stopped
+    # firing. The real fix is to shard this job by gate; that needs the full-gate registry-vs-ci.yml
+    # set-equality rule to learn about a second workflow, which is Rust, not workflow data.
+    timeout-minutes: 45
     steps:
       # FULL HISTORY: the audit-ledger gate resolves the COMMIT each register row stamps, and a
       # depth-1 clone cannot. It is red on a stamp it cannot check rather than passing over it.
@@ -656,10 +720,12 @@ jobs:
   construction-gate:
     name: construction gate (report-only)
     runs-on: ubuntu-latest
-    # Measured: this gate is CANCELLED at ci.yml's 15-minute ceiling on every recent run, i.e. its
-    # true runtime is unknown and >15. 25 is a ceiling that lets it FINISH so its real duration
-    # becomes a measurement instead of a cancellation; the owner item is the gate's runtime itself.
-    timeout-minutes: 25
+    # Measured: this gate is CANCELLED at ci.yml's 15-minute ceiling on every recent run, and it was
+    # cancelled again at 25 here, so its true runtime is still unknown and >25. 40 is a ceiling meant
+    # to let it FINISH ONCE so its real duration becomes a measurement instead of a cancellation.
+    # The gate's runtime is itself an owner item; this only stops the runner burning 25 minutes to
+    # learn nothing.
+    timeout-minutes: 40
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -734,7 +800,7 @@ jobs:
 
           if [ "$fails" -eq 0 ]; then
             state="success"
-            desc="keep-proof GREEN: fmt/clippy/build, 4 test shards, gate --all + selftest, design bindings, shadow oracle"
+            desc="keep-proof GREEN: fmt/clippy/build, 5 test shards, gate --all + selftest, design bindings, shadow oracle"
           else
             state="failure"
             desc="keep-proof RED (${fails}): ${reds}"
