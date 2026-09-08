@@ -7,7 +7,6 @@
 
 use crate::governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 use crate::idempotency::ReplayEncoder;
-use crate::posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
 use crate::rate::CONFIG_CLASS_RULES;
 use crate::store::{Store, StoreError};
 use crate::verb::{KernelVerb, VerbScope};
@@ -233,8 +232,6 @@ fn readonly_caller_is_refused_a_mutation() {
             "alice",
             VerbScope::ReadOnly,
             0,
-            None,
-            ApprovalState::NotYetApproved,
             b"{}",
         )
         .unwrap_err();
@@ -252,8 +249,6 @@ fn readonly_caller_may_read() {
             "alice",
             VerbScope::ReadOnly,
             0,
-            None,
-            ApprovalState::NotYetApproved,
             b"{}",
         )
         .unwrap();
@@ -682,79 +677,6 @@ fn create_and_rotate_declare_their_own_distinct_secret_targets() {
     );
 }
 
-#[test]
-fn a_new_verb_refused_by_posture_never_reaches_governance() {
-    let verbs = make_verbs(FakeGovernance::new());
-    let admin = admin();
-    let ctx = PostureCtx {
-        operator: OperatorState::Unset,
-        dual_control: DualControl::Single,
-    };
-    let err = verbs
-        .execute(
-            KernelVerb::CommitUpgrade,
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            Some(ctx),
-            ApprovalState::NotYetApproved,
-            b"{}",
-        )
-        .unwrap_err();
-    assert_eq!(err.reason, crate::refusal::ReasonCode::OperatorUnset);
-}
-
-#[test]
-fn a_new_verb_admitted_by_posture_reaches_governance() {
-    let verbs = make_verbs(FakeGovernance::new());
-    let admin = admin();
-    let ctx = PostureCtx {
-        operator: OperatorState::Set,
-        dual_control: DualControl::Single,
-    };
-    let out = verbs
-        .execute(
-            KernelVerb::PlaneRecordWrite,
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            Some(ctx),
-            ApprovalState::NotYetApproved,
-            b"{}",
-        )
-        .unwrap();
-    assert_eq!(out, b"ok");
-}
-
-/// A NEW VERB WITH NO POSTURE IS A REFUSAL, NOT A PANIC.
-///
-/// The posture is resolved by the caller and arrives as an `Option`, so "a new verb always has
-/// one" is a claim about a call site rather than a fact this crate can see. A miswired caller, or a
-/// verb newly added to the posture-gated set on one side only, hands `None` past an `admit` that
-/// legitimately passed — and an unwrap there turns an admin request into a downed process. The
-/// answer is the one every other unresolvable precondition gets: refuse the request.
-#[test]
-fn a_new_verb_with_no_resolved_posture_is_refused_rather_than_panicking() {
-    let verbs = make_verbs(FakeGovernance::new());
-    let admin = admin();
-    let err = verbs
-        .execute(
-            KernelVerb::PlaneRecordWrite,
-            &admin,
-            "alice",
-            // The scope is granted, so `admit` passes and the posture branch is genuinely reached.
-            VerbScope::Full,
-            0,
-            None,
-            ApprovalState::NotYetApproved,
-            b"{}",
-        )
-        .expect_err("a new verb with no posture must refuse");
-    assert_eq!(err.reason, crate::refusal::ReasonCode::Validation);
-}
-
 /// A governance whose mint parks inside the call, so a second caller can be observed arriving while
 /// the first one's idempotency reservation is genuinely live.
 ///
@@ -1035,8 +957,6 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
             "alice",
             VerbScope::Full,
             0,
-            None,
-            ApprovalState::NotYetApproved,
             b"{}",
         )
         .unwrap_err();
@@ -1051,11 +971,6 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
             "alice",
             VerbScope::Full,
             0,
-            Some(PostureCtx {
-                operator: OperatorState::Set,
-                dual_control: DualControl::Single,
-            }),
-            ApprovalState::NotYetApproved,
             b"{}",
         )
         .unwrap_err();
@@ -1148,8 +1063,6 @@ fn rate_limit_is_enforced_across_execute_calls() {
                 "alice",
                 VerbScope::Full,
                 0,
-                None,
-                ApprovalState::NotYetApproved,
                 b"{}",
             )
             .unwrap_or_else(|e| panic!("attempt {i} should be admitted, got {e:?}"));
@@ -1161,8 +1074,6 @@ fn rate_limit_is_enforced_across_execute_calls() {
             "alice",
             VerbScope::Full,
             0,
-            None,
-            ApprovalState::NotYetApproved,
             b"{}",
         )
         .unwrap_err();
@@ -1231,76 +1142,6 @@ impl Governance for RoutingGovernance {
     ) -> Result<Vec<u8>, GovernanceError> {
         self.0.lock().unwrap().push((verb, "ledger"));
         Ok(b"ledger".to_vec())
-    }
-}
-
-/// A ledger view reaches the read seam, and reaches it under the posture that refuses every
-/// mutation.
-///
-/// The posture is the part that matters. `operator: unset` with `dual_control: required` is the
-/// state a fleet is in before its ceremony has run, and under it the 17 money-governance verbs are
-/// refused outright. A read answers anyway — there is nothing about looking at a figure for a
-/// maker-checker step to interpose on — and the control below is one of those 17 being refused on
-/// the same executor, so the green is the views being exempt rather than the posture check being
-/// unwired.
-#[test]
-fn a_ledger_view_reaches_the_read_seam_under_a_posture_that_refuses_every_mutation() {
-    let admin = admin();
-    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
-    let posture = Some(PostureCtx {
-        operator: OperatorState::Unset,
-        dual_control: DualControl::Required,
-    });
-
-    for verb in crate::verb::LEDGER_VERBS {
-        let body = verbs
-            .execute(
-                *verb,
-                &admin,
-                "alice",
-                VerbScope::ReadOnly,
-                0,
-                posture,
-                ApprovalState::NotYetApproved,
-                b"",
-            )
-            .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
-        assert_eq!(body, b"ledger", "{verb:?} did not reach the read seam");
-    }
-
-    let refused = verbs
-        .execute(
-            KernelVerb::CommitUpgrade,
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            posture,
-            ApprovalState::NotYetApproved,
-            b"",
-        )
-        .unwrap_err();
-    assert_eq!(refused.reason, crate::refusal::ReasonCode::OperatorUnset);
-
-    let reached = log.lock().unwrap().clone();
-    assert!(
-        reached.iter().all(|(_, seam)| *seam == "ledger"),
-        "a ledger view reached a seam that is not the read one: {reached:?}"
-    );
-    assert_eq!(reached.len(), crate::verb::LEDGER_VERBS.len());
-}
-
-/// A view asks for exactly what the legacy `/usage` read asks for, and no more.
-#[test]
-fn a_ledger_view_requires_what_the_legacy_usage_read_requires() {
-    for verb in crate::verb::LEDGER_VERBS {
-        assert_eq!(
-            crate::verbs::required_scope(*verb),
-            crate::verbs::required_scope(KernelVerb::GetUsage),
-            "{verb:?} does not require what /usage requires"
-        );
-        assert_eq!(crate::verbs::required_scope(*verb), VerbScope::ReadOnly);
     }
 }
 
@@ -1388,16 +1229,7 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     let verbs = make_verbs(NoLedger);
     for verb in crate::verb::LEDGER_VERBS {
         let err = verbs
-            .execute(
-                *verb,
-                &admin,
-                "alice",
-                VerbScope::ReadOnly,
-                0,
-                None,
-                ApprovalState::NotYetApproved,
-                b"",
-            )
+            .execute(*verb, &admin, "alice", VerbScope::ReadOnly, 0, b"")
             .unwrap_err();
         assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
     }
@@ -1422,16 +1254,7 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
     let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
 
     for verb in [KernelVerb::PostKeys, KernelVerb::PostKeysIdRotate] {
-        let Err(err) = verbs.execute(
-            verb,
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            None,
-            ApprovalState::NotYetApproved,
-            b"{}",
-        ) else {
+        let Err(err) = verbs.execute(verb, &admin, "alice", VerbScope::Full, 0, b"{}") else {
             panic!("{verb:?} must not be served by the generic dispatcher");
         };
         assert_eq!(err.reason, crate::refusal::ReasonCode::Internal);
@@ -1450,8 +1273,6 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
             "alice",
             VerbScope::Full,
             0,
-            None,
-            ApprovalState::NotYetApproved,
             b"{}",
         )
         .expect("an ordinary legacy mutation is still served");
@@ -1459,79 +1280,6 @@ fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_doubl
         log.lock().unwrap().clone(),
         vec![(KernelVerb::PostGroups, "legacy")]
     );
-}
-
-/// The two 1.6.0 verbs the design binds as GETs are reads, and a read-only credential is what they
-/// ask for.
-///
-/// `verify` and `plane_facts` are the two of the seventeen the architecture document binds as `GET`
-/// — "GET for the two read-only verbs" — and everything that follows from a verb being a read
-/// follows for them: an operator holding a read-only admin credential is answered, and the
-/// maker-checker gate has no mutation of theirs to interpose on, so `required` posture answers them
-/// too. Demanding `full` of them refuses the operator who was only ever allowed to look; holding
-/// them behind an approval refuses them forever, because there is no pending mutation anyone can
-/// approve.
-///
-/// The control below is a mutating verb on the same executor under the same posture, so the green
-/// above is these two being reads rather than the gates being unwired.
-#[test]
-fn the_two_read_only_new_verbs_answer_a_read_only_credential_under_required_posture() {
-    let admin = admin();
-    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
-    let posture = Some(PostureCtx {
-        operator: OperatorState::Set,
-        dual_control: DualControl::Required,
-    });
-
-    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
-        assert_eq!(
-            crate::verbs::required_scope(verb),
-            VerbScope::ReadOnly,
-            "{verb:?} is bound as a GET and must ask what a read asks"
-        );
-        let body = verbs
-            .execute(
-                verb,
-                &admin,
-                "alice",
-                VerbScope::ReadOnly,
-                0,
-                posture,
-                ApprovalState::NotYetApproved,
-                b"",
-            )
-            .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
-        assert_eq!(body, b"new", "{verb:?} did not reach the new-verb seam");
-    }
-
-    // The control: a mutating new verb still needs `full`, and still waits for its approval.
-    let err = verbs
-        .execute(
-            KernelVerb::PlaneRecordWrite,
-            &admin,
-            "alice",
-            VerbScope::ReadOnly,
-            0,
-            posture,
-            ApprovalState::NotYetApproved,
-            b"",
-        )
-        .unwrap_err();
-    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
-    let err = verbs
-        .execute(
-            KernelVerb::PlaneRecordWrite,
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            posture,
-            ApprovalState::NotYetApproved,
-            b"",
-        )
-        .unwrap_err();
-    assert_eq!(err.reason, crate::refusal::ReasonCode::ApprovalPending);
 }
 
 /// A store that records which recovery primitive it was asked to perform, so a test can say
@@ -1583,200 +1331,84 @@ fn recovery_verbs() -> Verbs<FakeGovernance, RecordingStore, CountingNonceSource
     )
 }
 
-/// The three disaster-recovery verbs are admitted before they reach the store, exactly as every
-/// other new verb is admitted before it reaches governance.
-///
-/// Where a verb's effect lands is not a reason for it to be admitted differently: these three are
-/// new verbs and irreducible ones, so a read-only caller, an unresolved posture and an unfinished
-/// operator ceremony each refuse them — and the store is not touched in any of those cases. Handing
-/// the bound store out and trusting the caller to gate it made every one of these checks optional.
+// ---- the three recovery verbs, after the ceremony was retired ----------------------------------
+//
+// These replace the posture-era tests deleted with `crate::posture`. The claim under test moved:
+// it used to be "the operator gate and dual control hold these three before the store sees them",
+// and it is now "SCOPE holds these three before the store sees them, and nothing else does". The
+// second is the weaker claim, which is exactly why it has to be pinned — a gate that was removed
+// must leave the remaining gate provably load-bearing, or the removal quietly opened the verb.
+
 #[test]
-fn the_recovery_verbs_are_gated_before_anything_reaches_the_store() {
+fn a_recovery_verb_is_refused_a_read_only_credential_before_the_store_is_touched() {
+    let verbs = recovery_verbs();
     let admin = admin();
-    let single = |operator| {
-        Some(PostureCtx {
-            operator,
-            dual_control: DualControl::Single,
-        })
-    };
 
-    // A read-only caller is refused all three.
-    let v = recovery_verbs();
-    for err in [
-        v.chain_break(
-            &admin,
-            "alice",
-            VerbScope::ReadOnly,
-            0,
-            single(OperatorState::Set),
-            ApprovalState::NotYetApproved,
-        )
-        .unwrap_err(),
-        v.store_restore(
-            &admin,
-            "alice",
-            VerbScope::ReadOnly,
-            0,
-            single(OperatorState::Set),
-            ApprovalState::NotYetApproved,
-            "backup-1",
-        )
-        .unwrap_err(),
-        v.reseal_epoch_floor(
-            &admin,
-            "alice",
-            VerbScope::ReadOnly,
-            0,
-            single(OperatorState::Set),
-            ApprovalState::NotYetApproved,
-        )
-        .unwrap_err(),
-    ] {
-        assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
-    }
-    assert!(v.store_for_test().reached().is_empty());
+    let err = verbs
+        .chain_break(&admin, "alice", VerbScope::ReadOnly, 0)
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
+    assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
 
-    // A posture the caller never resolved is refused rather than unwrapped.
-    let v = recovery_verbs();
-    for err in [
-        v.chain_break(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            None,
-            ApprovalState::NotYetApproved,
-        )
-        .unwrap_err(),
-        v.store_restore(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            None,
-            ApprovalState::NotYetApproved,
-            "backup-1",
-        )
-        .unwrap_err(),
-        v.reseal_epoch_floor(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            None,
-            ApprovalState::NotYetApproved,
-        )
-        .unwrap_err(),
-    ] {
-        assert_eq!(err.reason, crate::refusal::ReasonCode::Validation);
-    }
-    assert!(v.store_for_test().reached().is_empty());
+    let err = verbs
+        .store_restore(&admin, "alice", VerbScope::ReadOnly, 0, "backup-1")
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
 
-    // The operator ceremony has not run: an irreducible verb outside the two admitted under
-    // `unset` is refused.
-    let v = recovery_verbs();
-    for err in [
-        v.chain_break(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            single(OperatorState::Unset),
-            ApprovalState::NotYetApproved,
-        )
-        .unwrap_err(),
-        v.store_restore(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            single(OperatorState::Unset),
-            ApprovalState::NotYetApproved,
-            "backup-1",
-        )
-        .unwrap_err(),
-        v.reseal_epoch_floor(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            single(OperatorState::Unset),
-            ApprovalState::NotYetApproved,
-        )
-        .unwrap_err(),
-    ] {
-        assert_eq!(err.reason, crate::refusal::ReasonCode::OperatorUnset);
-    }
-    assert!(v.store_for_test().reached().is_empty());
+    let err = verbs
+        .reseal_epoch_floor(&admin, "alice", VerbScope::ReadOnly, 0)
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
 
-    // Fully admitted, and only then does each one reach its own store primitive.
-    let v = recovery_verbs();
-    v.chain_break(
-        &admin,
-        "alice",
-        VerbScope::Full,
-        0,
-        single(OperatorState::Set),
-        ApprovalState::NotYetApproved,
-    )
-    .expect("admitted");
-    v.store_restore(
-        &admin,
-        "alice",
-        VerbScope::Full,
-        0,
-        single(OperatorState::Set),
-        ApprovalState::NotYetApproved,
-        "backup-1",
-    )
-    .expect("admitted");
-    v.reseal_epoch_floor(
-        &admin,
-        "alice",
-        VerbScope::Full,
-        0,
-        single(OperatorState::Set),
-        ApprovalState::NotYetApproved,
-    )
-    .expect("admitted");
+    assert!(
+        verbs.store_for_test().reached().is_empty(),
+        "a refused recovery verb reached the store anyway"
+    );
+}
+
+#[test]
+fn a_full_credential_carries_each_recovery_verb_through_to_the_store() {
+    let verbs = recovery_verbs();
+    let admin = admin();
+
+    verbs
+        .chain_break(&admin, "alice", VerbScope::Full, 0)
+        .expect("chain_break is admitted on a full credential");
+    verbs
+        .store_restore(&admin, "alice", VerbScope::Full, 0, "backup-1")
+        .expect("store_restore is admitted on a full credential");
+    verbs
+        .reseal_epoch_floor(&admin, "alice", VerbScope::Full, 0)
+        .expect("reseal_epoch_floor is admitted on a full credential");
+
+    // In call order, and each exactly once: the store is reached by the verb that names it and by
+    // no other. A dispatcher that fell through to the wrong primitive would still return `Ok`.
     assert_eq!(
-        v.store_for_test().reached(),
+        verbs.store_for_test().reached(),
         vec!["chain_break", "store_restore", "reseal_epoch_floor"]
     );
 }
 
-/// Dual control applies to a recovery verb like it does to any other mutating new verb.
 #[test]
-fn a_recovery_verb_waits_for_its_approval_under_required_dual_control() {
+fn no_new_verb_is_held_by_anything_but_its_scope() {
+    // The ruling's whole content, as one assertion over the closed set: a `Full` credential reaches
+    // every one of the thirteen. Before the ruling, ten of them were in `IRREDUCIBLE_VERBS` and a
+    // node with no sealed operator key refused all ten regardless of credential.
+    let verbs = make_verbs(FakeGovernance::new());
     let admin = admin();
-    let v = recovery_verbs();
-    let ctx = Some(PostureCtx {
-        operator: OperatorState::Set,
-        dual_control: DualControl::Required,
-    });
-    let err = v
-        .chain_break(
-            &admin,
-            "alice",
-            VerbScope::Full,
-            0,
-            ctx,
-            ApprovalState::NotYetApproved,
-        )
-        .unwrap_err();
-    assert_eq!(err.reason, crate::refusal::ReasonCode::ApprovalPending);
-    assert!(v.store_for_test().reached().is_empty());
-
-    v.chain_break(
-        &admin,
-        "alice",
-        VerbScope::Full,
-        0,
-        ctx,
-        ApprovalState::Approved,
-    )
-    .expect("an approved chain break lands");
-    assert_eq!(v.store_for_test().reached(), vec!["chain_break"]);
+    for verb in crate::verb::NEW_VERBS {
+        // The three recovery verbs land on `Store`, not `Governance`, and have their own entry
+        // points; the generic dispatcher is not their path.
+        if matches!(
+            verb,
+            KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor
+        ) {
+            continue;
+        }
+        verbs
+            .execute(*verb, &admin, "alice", VerbScope::Full, 0, b"{}")
+            .unwrap_or_else(|e| panic!("{verb:?} was refused {:?} on a full credential", e.reason));
+    }
 }
 
 /// The group-lookup adapter and the length-framed rotate slot, in their own file.

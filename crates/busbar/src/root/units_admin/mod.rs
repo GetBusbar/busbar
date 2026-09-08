@@ -54,8 +54,7 @@ use busbar_unit_scope::Scope;
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_unit_verbs::{
-    ApprovalState, KernelVerb, PostureCtx, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
-    NEW_VERBS,
+    KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
 };
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
@@ -1277,73 +1276,21 @@ pub struct AdminBinding {
     pub dispatch: Arc<dyn AdminDispatch>,
     /// The figures the five 1.6.0 ledger views read.
     ///
-    /// A second seam beside the dispatch, not a widening of it. The 66 legacy operations and the 17
+    /// A second seam beside the dispatch, not a widening of it. The 66 legacy operations and the 13
     /// money-governance verbs all reach a surface that already answers them; the views reach
     /// figures that surface never kept, so they need somewhere else to reach, and giving them their
     /// own read-only seam is what stops the dispatch from acquiring a way to read money.
     pub ledger: Arc<dyn LedgerView>,
-    /// The node facts the crossed reads answer from.
-    ///
-    /// A fourth seam, bound to [`UnboundFacts`] until a root hands over its handle. It is beside
-    /// the dispatch rather than behind it for the reason the ledger is: what has crossed must not be
-    /// able to reach the surface underneath, and a seam that could would make that a convention.
-    pub facts: Arc<dyn NodeFacts>,
-    /// Where the money-governance posture is read from.
-    ///
-    /// A third seam, and it has to be one: the two gates the 17 verbs are checked against are sealed
-    /// state, not request state, so nothing on the request can answer them and nothing this file
-    /// holds is entitled to decide them. Bound to [`UnsealedPosture`] until a root binds a reader for
-    /// the journal the ceremony writes.
-    pub posture: Arc<dyn PostureView>,
     /// The requests currently being walked.
     pub units: AdminUnits,
 }
 
-/// Where the two sealed gates a money-governance verb is checked against are read from.
-///
-/// The verbs unit takes both as plain values and says so: resolving them is the integrator's, which
-/// is this file. What the integrator may NOT do is invent them — a posture invented at the call site
-/// is a gate that reports whatever the call site wrote rather than what the fleet sealed, which is
-/// the same thing as no gate at all in one direction and an unliftable refusal in the other.
-///
-/// So the answer is an option, and `None` means "this node cannot read what the fleet sealed". A
-/// verb whose posture is unresolved is refused by the verbs unit rather than admitted under a
-/// guessed one, which is the only safe reading: a reader that has stopped working must not look like
-/// a fleet that never ran a ceremony.
-pub trait PostureView: Send + Sync {
-    /// The posture this verb is checked against, and this actor's approval standing for it.
-    ///
-    /// The actor is named because the approval half is per-maker: whether an `approve` exists for a
-    /// pending mutation, and whether its approver is somebody other than the principal now asking,
-    /// is a question about this caller and not about the node.
-    fn resolve(&self, verb: KernelVerb, actor: &str) -> Option<(PostureCtx, ApprovalState)>;
-}
-
-/// The posture of a node that has sealed no policy at all.
-///
-/// Exactly what the design says a fresh install and an upgrade are, said as data rather than assumed
-/// at the call site: no operator ceremony has run, so the irreducible verbs that need one are
-/// refused, and dual control is single, so every other mutation applies immediately. The approval
-/// standing is `NotYetApproved` because nothing has approved anything — under `Single` it is never
-/// consulted, and stating the true value rather than a convenient one is what stops this default
-/// from becoming a pass the moment a real posture is bound beside it.
-///
-/// This is a statement about a node with no journal, NOT a fallback for one whose journal could not
-/// be read. That case answers `None` and is refused.
-#[derive(Debug, Default)]
-pub struct UnsealedPosture;
-
-impl PostureView for UnsealedPosture {
-    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
-        Some((
-            PostureCtx {
-                operator: busbar_unit_verbs::OperatorState::Unset,
-                dual_control: busbar_unit_verbs::DualControl::Single,
-            },
-            ApprovalState::NotYetApproved,
-        ))
-    }
-}
+// There is no `PostureView` seam.
+//
+// It existed to read two sealed gates — the operator-key ceremony's state and the dual-control
+// posture — that the owner's 2026-09-08 ruling deleted. A seam that resolves a question nobody asks
+// is not neutral: it is a place for a future caller to reintroduce the policy the ruling moved out
+// of busbar, so it goes rather than being left bound to a permissive default.
 
 impl std::fmt::Debug for AdminBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1366,8 +1313,6 @@ impl AdminBinding {
         AdminBinding {
             dispatch,
             ledger: Arc::new(UnopenedLedger),
-            facts: Arc::new(UnboundFacts),
-            posture: Arc::new(UnsealedPosture),
             units: AdminUnits::new(),
         }
     }
@@ -1376,20 +1321,6 @@ impl AdminBinding {
     #[must_use]
     pub fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
         self.ledger = ledger;
-        self
-    }
-
-    /// Bind the crossed reads to the facts a node actually has.
-    #[must_use]
-    pub fn with_facts_view(mut self, facts: Arc<dyn NodeFacts>) -> Self {
-        self.facts = facts;
-        self
-    }
-
-    /// Bind the money-governance gates to the posture a fleet actually sealed.
-    #[must_use]
-    pub fn with_posture_view(mut self, posture: Arc<dyn PostureView>) -> Self {
-        self.posture = posture;
         self
     }
 }
@@ -1439,15 +1370,15 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::Verify => "verify",
         KernelVerb::PlaneFacts => "plane_facts",
         KernelVerb::PlaneRecordWrite => "plane_record_write",
-        KernelVerb::SetOperatorKey => "set_operator_key",
-        KernelVerb::SetEscrow => "set_escrow",
         KernelVerb::ChainBreak => "chain_break",
         KernelVerb::StoreRestore => "store_restore",
         KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
-        KernelVerb::SetDualControl => "set_dual_control",
+        KernelVerb::SetOverdraftCeiling => "set_overdraft_ceiling",
+        KernelVerb::SetDisputeMaxAge => "set_dispute_max_age",
         KernelVerb::CommitUpgrade => "commit_upgrade",
-        KernelVerb::ExportKeyset => "export_keyset",
-        KernelVerb::Approve => "approve",
+        KernelVerb::ResolveDispute => "resolve_dispute",
+        KernelVerb::ResolveSlice => "resolve_slice",
+        KernelVerb::Adjust => "adjust",
         KernelVerb::AmendRateHistory => "amend_rate_history",
         KernelVerb::GetLedgerTotals => "get_ledger_totals",
         KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
@@ -1721,51 +1652,33 @@ pub(crate) fn route(
     // maker half of the maker-checker rule all name one actor. Keying any of them on the credential
     // instead let one principal be two by presenting a second token.
     let actor = actor_of(binding, ctx.key);
-    // Both gates come from the seam, together, because they are one question about one fleet asked
-    // at one moment. An unresolvable posture travels as `None` and the verbs unit refuses the verb
-    // for it: the two gates exist to stop an irreversible money operation, so a node that cannot say
-    // what its fleet sealed must not run one.
-    let resolved_posture = binding.posture.resolve(verb, &actor);
-    let (posture, approval) = match resolved_posture {
-        Some((posture, approval)) => (Some(posture), approval),
-        None => (None, busbar_unit_verbs::ApprovalState::NotYetApproved),
-    };
-
     // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
-    // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
-    // operator ceremony and dual control — but their effect lands on `Store` rather than on a
-    // handler, and the unit gives each of them its own entry point for precisely that reason.
+    // verbs and are admitted exactly as every other new verb is — scope, then rate class — but
+    // their effect lands on `Store` rather than on a handler, and the unit gives each of them its
+    // own entry point for precisely that reason.
     // Sending them through `execute` sent them to `execute_new_verb`, which asks the mounted router
-    // for a path that release never had: the ceremony ran, the gates passed, and the caller got a
+    // for a path that release never had: the gates passed, and the caller got a
     // 404 from the surface underneath. Breaking a journal chain is not an operation that should be
     // able to look like it happened when it did not, nor to look like it did not when it had.
     if let Some(recovery) = recovery_verb(verb) {
         let ran = match recovery {
-            RecoveryVerb::ChainBreak => {
-                verbs.chain_break(admin, &actor, granted, request.at, posture, approval)
-            }
+            RecoveryVerb::ChainBreak => verbs.chain_break(admin, &actor, granted, request.at),
             RecoveryVerb::StoreRestore => {
                 // The backup the operator named. There is no default and no empty one: restoring
                 // "whatever the store thinks" is the single most destructive thing this surface can
                 // be asked to do by accident, so a request that names none is refused before the
                 // ceremony rather than resolved to something.
                 match backup_ref_of(&request.body) {
-                    Some(backup_ref) => verbs.store_restore(
-                        admin,
-                        &actor,
-                        granted,
-                        request.at,
-                        posture,
-                        approval,
-                        &backup_ref,
-                    ),
+                    Some(backup_ref) => {
+                        verbs.store_restore(admin, &actor, granted, request.at, &backup_ref)
+                    }
                     None => {
                         return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
                     }
                 }
             }
             RecoveryVerb::ResealEpochFloor => {
-                verbs.reseal_epoch_floor(admin, &actor, granted, request.at, posture, approval)
+                verbs.reseal_epoch_floor(admin, &actor, granted, request.at)
             }
         };
         return match ran {
@@ -1777,16 +1690,7 @@ pub(crate) fn route(
         };
     }
 
-    match verbs.execute(
-        verb,
-        admin,
-        &actor,
-        granted,
-        request.at,
-        posture,
-        approval,
-        &request.body,
-    ) {
+    match verbs.execute(verb, admin, &actor, granted, request.at, &request.body) {
         Ok(packed) => match AdminAnswer::unpack(&packed) {
             Some(answer) => {
                 binding.units.set_answer(ctx.key, answer);
@@ -1988,10 +1892,6 @@ fn verbs_reason(reason: busbar_unit_verbs::ReasonCode) -> ReasonCode {
         V::Unauthorized => ReasonCode::ScopeDenied,
         V::RateLimited => ReasonCode::RateLimited,
         V::NotFound => ReasonCode::NoDestination,
-        V::InsufficientApprovers | V::SelfApproval | V::PayloadMismatch | V::ApprovalPending => {
-            ReasonCode::HookVeto
-        }
-        V::OperatorUnset => ReasonCode::ScopeDenied,
         V::IdempotencyInFlight | V::Conflict => ReasonCode::OpenSlotBusy,
         V::Validation => ReasonCode::DecodeFailed,
         V::StoreError | V::Internal => ReasonCode::DurabilityUnavailable,
