@@ -879,7 +879,10 @@ async fn transport_meta_matches_the_architecture_row() {
     assert_eq!(<WsTransport as TransportMeta>::STATUS_CLASS, None);
 }
 
-fn test_key_handle() -> busbar_contract::TransportKeyHandle {
+/// `pub(crate)` so the session battery beside this one reuses it rather than writing a second
+/// implementation of the contract's sealing trait. There is ONE forged seal in this crate's test
+/// tree, which is what the construction gate's `kernel-seal-impls` rule is counting.
+pub(crate) fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     struct Seal;
     impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
