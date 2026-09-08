@@ -2937,3 +2937,65 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
     // still produced by the surface underneath, which is the fact the migration exists to change.
     assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 76);
 }
+
+/// `verify` answers the reconciliation question from the ledger, not from the router underneath.
+///
+/// This is the shape every one of the ten scope-checked-then-404 verbs has to reach, so the
+/// assertion is written to catch the failure that was shipping rather than to describe the success:
+/// the dispatch this node is built over answers EVERY verb `{"entries":[]}` with a 200, so a
+/// `verify` that still fell through to `execute_new_verb`'s catch-all would come back 200, JSON,
+/// and wrong. Requiring a body the dispatch cannot produce is what makes the green mean the ledger
+/// was read.
+#[cfg(feature = "root-admin")]
+#[test]
+fn verify_answers_the_identity_from_the_ledger_and_not_from_the_dispatch() {
+    let mut request = a_ledger_request("/api/v1/admin/verify");
+    request.method = "GET".to_string();
+    let answer = answer_over_seeded_ledger(request);
+
+    assert_eq!(answer.status, 200, "verify did not answer");
+    assert_ne!(
+        answer.body, br#"{"entries":[]}"#,
+        "verify fell through to the dispatch"
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&answer.body).expect("verify answers a JSON document");
+
+    // The verb answers the question it was asked even when the answer is bad: the seeded ledger
+    // holds a row whose two sides disagree, so `ok` is false and the 200 stands. A verify that
+    // refused because the books do not balance would be a verify nobody could use to find out.
+    assert_eq!(
+        parsed["ok"],
+        serde_json::Value::Bool(false),
+        "the seeded ledger has a short row, so the identity must not report as closing: {parsed}"
+    );
+    // And the FIGURE, not just the verdict. The fixture's sealed checkpoint carries settled 8,000
+    // against drawn 8,250, so the balance is 250 out — the same 250 the reconciliation view reports
+    // for the same fixture from the other side. Asserting the number is what stops this test from
+    // passing on a `verify` that answered "not ok" for any reason at all.
+    let deltas = parsed["identity"].as_array().expect("the identity array");
+    assert_eq!(
+        deltas.len(),
+        1,
+        "the fixture seals exactly one balance: {parsed}"
+    );
+    assert_eq!(deltas[0]["residual_nanos"], "250", "{parsed}");
+    assert_eq!(deltas[0]["closes"], serde_json::Value::Bool(false));
+    assert_eq!(deltas[0]["bucket"], "key-1", "{parsed}");
+
+    assert!(
+        parsed["checkpoints_resolve"].is_boolean(),
+        "verify reports whether the sealed checkpoints resolve: {parsed}"
+    );
+
+    // Every figure is a decimal STRING, never a JSON number: these are nano-unit i128s and a
+    // consumer that read them as doubles would silently round at 2^53.
+    for delta in parsed["identity"].as_array().expect("an array") {
+        for field in ["delta_drawn", "delta_settlements", "residual_nanos"] {
+            assert!(
+                delta[field].is_string(),
+                "{field} must be a decimal string, not a JSON number: {delta}"
+            );
+        }
+    }
+}
