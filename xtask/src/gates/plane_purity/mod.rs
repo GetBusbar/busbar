@@ -54,6 +54,8 @@ pub const ROW_KEY: &str = "plane-purity:key";
 pub const ROW_DIALECT: &str = "plane-purity:dialect";
 pub const ROW_BACKWARDS: &str = "plane-purity:backwards";
 pub const ROW_FREEZE: &str = "plane-purity:core-llm-family-freeze";
+pub const ROW_CORE_SPLIT: &str = "plane-purity:core-split-covered";
+pub const ROW_PLANE_CRATE_CENSUS: &str = "plane-purity:plane-crate-census";
 
 /// The row id for one strict category, e.g. `plane-purity-strict:category:SYMBOL`.
 pub fn strict_category_row(category: &str) -> String {
@@ -150,6 +152,119 @@ pub fn check_hits_artefact(cx: &Ctx) -> Result<String, String> {
 /// quietly ceasing to exist under a stale entry.
 fn missing_roots(cx: &Ctx, roots: &[String]) -> Vec<String> {
     roots.iter().filter(|r| !cx.exists(r)).cloned().collect()
+}
+
+/// Every directory directly under `crates/` whose name starts with `prefix`, overlay included.
+///
+/// Overlay-aware because the selftest's RED cases arrive as overlay FILES under a crate directory
+/// that does not exist on disk — a census that read only the real filesystem would report the
+/// pristine answer for the sabotaged tree and prove nothing.
+fn crate_dirs_with_prefix(cx: &Ctx, prefix: &str) -> Vec<String> {
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Ok(rd) = std::fs::read_dir(cx.root().join("crates")) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with(prefix) && e.path().is_dir() {
+                out.insert(name);
+            }
+        }
+    }
+    if let Some(ov) = cx.overlay() {
+        for p in ov.paths() {
+            let s = p.to_string_lossy().to_string();
+            if let Some(rest) = s.strip_prefix("crates/") {
+                if let Some(name) = rest.split('/').next() {
+                    if name.starts_with(prefix) {
+                        out.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// THE CONFIG LAYER CANNOT LEAVE THE GATE'S SIGHT BY LEAVING THE CRATE.
+///
+/// The neutral root set is a hand-written list, and `crates/busbar-core/src` is one entry in it.
+/// busbar-core is being drained: the 1.5.5 config document root (`config/`, `config_validate/`,
+/// the migrator, the prepass) is slated to become its own crate, and on the day it does, its
+/// sources move out from under that entry. Nothing about that is visible here — the gate keeps
+/// scanning `crates/busbar-core/src`, finds the config layer gone, and reports the passing answer
+/// to every ban over the files that remain. The config layer would stop being checked for naming a
+/// plane on exactly the day it became a separately-shippable thing that must never name one.
+///
+/// So the census is on the CRATE SET, not on the file list: every `crates/busbar-core*` crate on
+/// disk must have its `src` listed as a neutral root. A split that adds `busbar-core-config` is RED
+/// until the root is added in the same reviewed diff — which is the same disposition
+/// [`ROW_ROOTS`] takes to a listed root that vanished, applied to the other direction.
+fn core_split_row(cx: &Ctx, neutral_roots: &[String]) -> Row {
+    let listed: std::collections::BTreeSet<&str> =
+        neutral_roots.iter().map(String::as_str).collect();
+    let unlisted: Vec<String> = crate_dirs_with_prefix(cx, "busbar-core")
+        .into_iter()
+        .map(|c| format!("crates/{c}/src"))
+        .filter(|r| !listed.contains(r.as_str()))
+        .collect();
+    let detail = format!("neutral_roots={}", neutral_roots.len());
+    if unlisted.is_empty() {
+        Row::pass(
+            ROW_CORE_SPLIT,
+            "every busbar-core* crate's src is a listed neutral root",
+            detail,
+        )
+    } else {
+        Row::fail(
+            ROW_CORE_SPLIT,
+            "a busbar-core* crate's src is not a listed neutral root",
+            format!(
+                "{detail} — unlisted: {}. A crate split off busbar-core carries the config \
+                 document root with it; unlisted, its sources are scanned by nothing and every ban \
+                 answers clean over them. Add the root in the same diff as the split.",
+                unlisted.join(" ")
+            ),
+        )
+    }
+}
+
+/// The SYMBOL row's `busbar_plane_<p>` list is a LITERAL, and a literal beside the directories it
+/// is supposed to enumerate is a rot clock: a sixth plane crate arrives, the list does not grow,
+/// and a neutral crate may bind it with the gate green. Nothing about that is visible at the time.
+/// So the literal is censused against the `crates/busbar-plane-*` directories, both ways — a name
+/// in the list with no crate is a stale entry that launders nothing, and a crate with no entry is
+/// an unwatched plane.
+fn plane_crate_census_row(cx: &Ctx) -> Row {
+    let on_disk: std::collections::BTreeSet<String> = crate_dirs_with_prefix(cx, "busbar-plane-")
+        .into_iter()
+        .filter_map(|c| c.strip_prefix("busbar-plane-").map(str::to_string))
+        // A DIALECT crate is `busbar-plane-<p>-<d>` (PLUGIN-TREE section 7): it is a dialect of a
+        // plane, not a plane, and it is named by its plane's entry.
+        .filter(|k| !k.contains('-'))
+        .collect();
+    let listed: std::collections::BTreeSet<String> = scanner::PLANE_CRATE_ALTERNATION
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let unwatched: Vec<&String> = on_disk.difference(&listed).collect();
+    let stale: Vec<&String> = listed.difference(&on_disk).collect();
+    let detail = format!("crates={} listed={}", on_disk.len(), listed.len());
+    if unwatched.is_empty() && stale.is_empty() {
+        Row::pass(
+            ROW_PLANE_CRATE_CENSUS,
+            "the SYMBOL row's plane-crate list is exactly the plane crates on disk",
+            detail,
+        )
+    } else {
+        Row::fail(
+            ROW_PLANE_CRATE_CENSUS,
+            "the SYMBOL row's plane-crate list is not the plane crates on disk",
+            format!(
+                "{detail} — unwatched: {:?}; stale: {:?}. A plane crate the SYMBOL row does not \
+                 spell may be bound from any neutral crate with this gate green.",
+                unwatched, stale
+            ),
+        )
+    }
 }
 
 fn measure(cx: &Ctx) -> Result<Measurement, String> {
@@ -308,6 +423,8 @@ impl Gate for PlanePurityGate {
             ROW_DIALECT,
             ROW_BACKWARDS,
             ROW_FREEZE,
+            ROW_CORE_SPLIT,
+            ROW_PLANE_CRATE_CENSUS,
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -328,6 +445,8 @@ impl Gate for PlanePurityGate {
         let mut rows = vec![
             roots_row(m.neutral_roots.len(), m.plane_roots.len(), &missing),
             denominator,
+            core_split_row(cx, &m.neutral_roots),
+            plane_crate_census_row(cx),
         ];
         let hits = m.check_hits();
         // A CATEGORY ROW OVER A ZERO-FILE SCAN IS NOT A PASS. Every rule here answers a question
@@ -572,6 +691,61 @@ impl Gate for PlanePurityGate {
             // legacy witness prints and `--parity` compares this row against it. A named site here
             // would be a row the legacy half cannot produce, i.e. a parity diff by construction.
             &[ROW_FREEZE, "count=1"],
+        ));
+
+        // THE 1.6.0 PLANE CRATE, WHICH THE LEGACY SPELLING DID NOT CATCH. `busbar_plane_llm` does
+        // not contain `busbar_llm`, so before the SYMBOL row learned the second spelling this exact
+        // line sat in a neutral crate under a clean report. Planted in the CONFIG layer's own
+        // directory rather than at the root of the walk, because the config document root naming a
+        // plane crate is the specific breach this spelling exists to refuse.
+        report.push(create(
+            cx,
+            self,
+            "a busbar_plane_<plane>:: symbol path in the config layer",
+            &[ROW_SYMBOL],
+            "crates/busbar-core/src/config/planted_plane_crate_reach.rs",
+            "use busbar_plane_llm::PlaneDeclThing;\n",
+            &[ROW_SYMBOL, "planted_plane_crate_reach.rs:1"],
+        ));
+
+        // The same, for the plane whose KEY is legitimate 1.5.5 config vocabulary. `admin` is NOT
+        // in the KEY row's alternation and must not be — `auth.admin_auth:` and `/admin` are frozen
+        // operator-visible words — so the CRATE edge is the only thing that can refuse this, and
+        // this case is what proves the crate edge is refused independently of the word.
+        report.push(create(
+            cx,
+            self,
+            "a plane crate whose key is legitimate config vocabulary",
+            &[ROW_SYMBOL],
+            "crates/busbar-core/src/config_validate/planted_plane_crate_reach.rs",
+            "use busbar_plane_admin::Verb;\n",
+            &[ROW_SYMBOL, "planted_plane_crate_reach.rs:1"],
+        ));
+
+        // THE CONFIG LAYER LEAVING THE GATE'S SIGHT BY LEAVING THE CRATE. A `busbar-core-config`
+        // crate that arrives without its neutral-root entry is not a violation of any ban — it is
+        // the ABSENCE of every ban over the sources it carries away, which is why it needs a row of
+        // its own rather than a hit in one.
+        report.push(create(
+            cx,
+            self,
+            "a crate split off busbar-core with no neutral-root entry",
+            &[ROW_CORE_SPLIT],
+            "crates/busbar-core-config/src/lib.rs",
+            "pub struct RootCfg;\n",
+            &[ROW_CORE_SPLIT, "crates/busbar-core-config/src"],
+        ));
+
+        // A sixth plane crate the SYMBOL row's literal does not spell. Same failure mode one level
+        // up: not a breach, an unwatched surface.
+        report.push(create(
+            cx,
+            self,
+            "a plane crate the SYMBOL row's literal does not spell",
+            &[ROW_PLANE_CRATE_CENSUS],
+            "crates/busbar-plane-telemetry/src/lib.rs",
+            "pub struct TelemetryPlane;\n",
+            &[ROW_PLANE_CRATE_CENSUS, "telemetry"],
         ));
 
         report
