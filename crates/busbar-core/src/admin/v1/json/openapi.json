@@ -1294,12 +1294,12 @@
           "user",
           "priority",
           "at",
-          "phase",
-          "fires_at",
           "on_error",
           "timeout_ms",
           "settings_keys",
           "global",
+          "phase",
+          "fires_at",
           "groups"
         ],
         "type": "object"
