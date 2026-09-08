@@ -164,6 +164,15 @@ fn finding_plane_root(e: &PlaneRootError) -> String {
         PlaneRootError::Ambiguous { plane, candidates } => {
             finding_plane_ambiguous(plane, candidates.len())
         }
+        // This gate reaches `judge` with candidates derived from its own `cx.walk`, which refuses an
+        // unreadable subtree before it gets here — so on this path the variant does not arise. It is
+        // answered rather than dismissed because the answer is one line and a `_ =>` would swallow
+        // the NEXT variant somebody adds, which is how a plane failure becomes an unreported one.
+        PlaneRootError::Unreadable { plane, path, .. } => format!(
+            "PLANE-ROOT-UNREADABLE: resolving `{plane}` could not read {} — the candidate count \
+             this rule answers on was taken over an incomplete search.",
+            path.display()
+        ),
     }
 }
 
