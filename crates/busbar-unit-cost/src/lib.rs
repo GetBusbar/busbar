@@ -41,6 +41,7 @@
 mod posting;
 mod project;
 mod rate;
+pub mod view;
 
 pub use posting::{apply_tier, price, Posting, PricedLine, FEE_CLASS, STANDARD_TIER_BP};
 pub use project::{cents_of, derive_spend_cents, derive_spend_micros, micros_of};
@@ -48,6 +49,7 @@ pub use rate::{
     nano_rate, LaneClass, LaneRates, PinnedCard, RateCard, RateCardVersion, TierRates,
     CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
 };
+pub use view::{IdentityDeltaView, IdentityTerms};
 
 /// Nano-units in one cent. A cent is a hundredth of one abstract cost unit, and a nano-unit is a
 /// billionth of one, so ten million nano-units make a cent.
