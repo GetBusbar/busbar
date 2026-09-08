@@ -84,7 +84,7 @@ pub struct AuditEntry {
 /// here: they are the chain's own business, allocated under the ring lock and sealed by
 /// [`crate::audit::seal`], so no call site can supply a sequence number or a link of its own
 /// choosing.
-pub(crate) struct AuditInput {
+pub struct AuditInput {
     pub(crate) ts: u64,
     pub(crate) action: String,
     pub(crate) resource: String,
