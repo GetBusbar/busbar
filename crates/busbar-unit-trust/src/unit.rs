@@ -4,7 +4,7 @@
 //! The sealed answer: the unit the loop calls at the verify step.
 
 use busbar_caps::VerifiedDestination;
-use busbar_caps::{Decision, Refusal, TrustToken, UnitToken, Verify};
+use busbar_caps::{Decision, Refusal, TrustToken, Unit, UnitToken, Verify};
 
 use crate::destination::{
     kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
@@ -26,6 +26,51 @@ pub struct VerifyRequest<'a> {
     pub now: u64,
     /// The caller-facing text for the unpriced refusal, which names what the caller asked for.
     pub unpriced_message: &'static str,
+}
+
+/// Everything the loop hands this unit at the verify step.
+///
+/// One struct rather than five arguments, because [`Unit::Input`] is the shape every sibling of the
+/// kind declares its inputs in. The trust token is in here rather than beside the unit token
+/// because it is lent for the length of THIS call and nowhere else: sealing a destination takes it,
+/// and no other step may.
+pub struct VerifyInput<'a> {
+    /// The request as [`Trust::verify`] reads it.
+    pub req: &'a VerifyRequest<'a>,
+    /// The pools this deployment configured.
+    pub pools: &'a dyn PoolView,
+    /// The per-kind facts each candidate is checked against.
+    pub facts: &'a dyn KindFacts,
+    /// The breaker unit's view, asked through the pre-walk's own query.
+    pub breaker: &'a dyn BreakerView,
+    /// The token that seals a destination. Lent for this call only.
+    pub trust: &'a TrustToken,
+}
+
+/// The trust unit OWNS the verify step: it answers with a sealed `Decision<Verify>`.
+///
+/// A pure delegation to [`Trust::verify`] — including the empty-set arm, which proceeds rather than
+/// refusing and is the reason a pool with every lane excluded is still charged at the door.
+impl Unit for Trust {
+    type Step = Verify;
+    type Input<'a> = VerifyInput<'a>;
+    type Answer<'a> = Decision<Verify>;
+    const OWNS_ITS_STEP: bool = true;
+
+    fn decide<'a>(
+        &'a mut self,
+        token: &'a UnitToken<Verify>,
+        input: VerifyInput<'a>,
+    ) -> Decision<Verify> {
+        self.verify(
+            input.req,
+            input.pools,
+            input.facts,
+            input.breaker,
+            input.trust,
+            token,
+        )
+    }
 }
 
 /// The verify unit.

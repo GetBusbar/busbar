@@ -128,17 +128,32 @@ because = """DECLARED FACE: the duplex session seam on `busbar-contract-transpor
 [gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
 from = 3478
 to = 3500
-because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: scripts/loc-surface.py 3478 -> 3500 over busbar-contract + busbar-caps, of which +2 is the RecordSink face two commits back and +20 is crates/busbar-caps/src/unit.rs plus its one `pub mod` / `pub use` pair; 3500 is section 1.1's 3.5k exactly and nothing was deleted to make room. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: scripts/loc-surface.py 3478 -> 3500 over busbar-contract + busbar-caps, of which +2 is the RecordSink face and +20 is crates/busbar-caps/src/unit.rs; 3500 is section 1.1's 3.5k exactly. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 [gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
 from = 3480
 to = 3502
 because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: the gate's own call-graph count 3480 -> 3502, busbar-caps 1173 + busbar-contract 2329. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
+[gate.ceiling_raises."rules.loc-ceilings.kernel_ceiling"]
+from = 5379
+to = 5409
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: kernel 3083 own + 2326 reachable-by-name in 10 busbar-unit-* files = 5409, up 30 on the impl blocks in the unit files the Teller loop calls directly; section 1.1's kernel ceiling is 8k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+
+[gate.ceiling_raises."rules.loc-ceilings.unit_total_ceiling"]
+from = 14606
+to = 15020
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: all fourteen busbar-unit-* crates together 14606 -> 15020, +414, which is the fourteen impl blocks and nothing else; section 1.1's unit-* ceiling is 45k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+
+[gate.ceiling_raises."rules.loc-ceilings.verbs_ceiling"]
+from = 1428
+to = 1478
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: busbar-unit-verbs 1428 -> 1478, +50, its own impl block; section 1.1's verbs sub-ceiling is 15k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23465
-to = 23487
-because = """DECLARED FACE: `busbar_caps::Unit` -- the `unit` row of the plugin tree finally has the ONE trait every other kind already had (`impl Unit for` appeared ZERO times in the tree; the fourteen busbar-unit-* crates each exposed an ad-hoc step function under its own name). A unit states its step as an associated type and as a derived `STEP` const, reads a per-step `Input<'_>`, answers once, and is sealed by the `&UnitToken<Self::Step>` the loop mints per call. It lands in busbar-caps rather than busbar-contract because `Decision` and `UnitToken` live there and the measured edge runs caps -> contract, never the reverse. Measured NET: the same +22 read through the kernel + caps/contract + unit-* union, which sums caps/contract and therefore moves with it: 23465 -> 23487, against section 1.1's 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
+to = 23931
+because = """DECLARED FACE, second half: the fourteen `impl Unit for` blocks -- the `unit` kind's ONE entry made real, one per busbar-unit-* crate, each at the same file position so that two siblings of the kind are the same shape, which is the property `kind-isolation:shape` reads. Measured NET: the union 23465 -> 23931, which is the sum of the three rises above plus the caps/contract face already declared; section 1.1's union ceiling is 56k. ARCHITECTURE.md section 1.1 is amended, in the commit that introduces the face, to name it."""
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -364,15 +379,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5379
+kernel_ceiling = 5409
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3502
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14606
+unit_total_ceiling = 15020
 verbs_crate = "busbar-unit-verbs"
-verbs_ceiling = 1428
-union_ceiling = 23487
+verbs_ceiling = 1478
+union_ceiling = 23931
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
