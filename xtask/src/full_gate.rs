@@ -169,27 +169,85 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo test -p busbar-llm --lib alloc_gate -- --nocapture", "the deterministic alloc-count perf gate, invoked BY NAME so a regression reds this one line rather than a 400-test workspace run. The same tests are also executed by 'cargo test --workspace --locked' above, which DOES run locally. (It read '-p busbar-core' here for as long as ci.yml did, matching zero tests in both places — a libtest filter that selects nothing exits 0.)"),
 ];
 
-/// Registered gates deliberately NOT invoked by `ci.yml`, each with a written reason. This is the
-/// escape hatch the set-equality check needs in order to be an equality at all — without it the
-/// only way to land a gate CI does not yet run would be to weaken the check for every gate.
-pub const REGISTRY_NOT_IN_CI: &[(&str, &str)] = &[
+/// WHERE AN EXCUSED GATE IS ACTUALLY RUN — the checkable half of a written reason.
+///
+/// A reason is prose, and prose is not evidence. The `denylist` entry asserted for months that
+/// `ci.yml` invoked it under an older spelling and that it "IS run on every push"; the string
+/// appeared in no workflow. Nothing noticed, because the excuse list was matched by NAME and its
+/// claim was never put to the tree. So every entry now carries the one fact its reason turns on,
+/// as a needle in a named file, and [`Excuse::holds`] goes and looks.
+#[derive(Debug, Clone, Copy)]
+pub enum Excuse {
+    /// `cargo test -p xtask` runs it: the needle must appear under `xtask/tests/`. That test run is
+    /// part of `cargo test --workspace --locked`, which ci.yml executes on every push.
+    XtaskTest(&'static str),
+    /// It is a release-time claim: the needle must appear in the named script.
+    ReleaseScript(&'static str, &'static str),
+}
+
+impl Excuse {
+    /// The claim, checked. `Err` carries the sentence a reader needs to act on it.
+    pub fn holds(&self, cx: &Ctx) -> Result<(), String> {
+        let (where_, needle) = match self {
+            Excuse::XtaskTest(needle) => ("xtask/tests", *needle),
+            Excuse::ReleaseScript(path, needle) => (*path, *needle),
+        };
+        let found = match self {
+            Excuse::XtaskTest(_) => cx
+                .walk(
+                    &crate::ctx::WalkSpec::new(["xtask/tests"])
+                        .ext("rs")
+                        .min_files(1),
+                )
+                .map_err(|e| format!("{e}"))?
+                .iter()
+                .any(|f| f.text.contains(needle)),
+            Excuse::ReleaseScript(path, _) => cx.read(path)?.contains(needle),
+        };
+        if found {
+            Ok(())
+        } else {
+            Err(format!(
+                "the excuse says it runs there, and `{needle}` appears nowhere in {where_}"
+            ))
+        }
+    }
+}
+
+/// Registered gates deliberately NOT invoked by `ci.yml`, each with a written reason AND the fact
+/// that reason rests on. This is the escape hatch the set-equality check needs in order to be an
+/// equality at all — without it the only way to land a gate CI does not yet run would be to weaken
+/// the check for every gate. An entry whose [`Excuse`] no longer holds excuses nothing: the gate is
+/// reported, exactly as if the entry had never been written.
+pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
     (
         "denylist",
-        "ci.yml invokes it by its pre-registry spelling, `cargo xtask denylist`, which is kept \
-         byte-identical so nothing reading its output has to move on the same day the registry \
-         arrives. It IS run on every push; it is only spelled differently.",
+        "no workflow names it — the coverage is `xtask/tests/cli.rs`, which drives the pre-registry \
+         `cargo xtask denylist` spelling through the dispatcher and pins its verdict at 0. That test \
+         runs under `cargo test --workspace --locked` on every push. (The reason this entry carried \
+         until now said ci.yml invoked it under that older spelling. It does not, and never did at \
+         this hash: the string is in no workflow. The route that actually covers the gate is the \
+         one named here.)",
+        Excuse::XtaskTest("run(&[\"denylist\"])"),
     ),
     (
         "segregation",
-        "the oracle-vs-runner segregation gate is proven by `cargo test -p xtask`, which the \
+        "the oracle-vs-runner segregation gate is pinned GREEN by `xtask/tests/cli.rs`, which the \
          workspace test run already executes on every push. Invoking it a second time through \
          the gate runner would run the same assertions in the same process for no extra signal.",
+        Excuse::XtaskTest("run(&[\"gate\", \"segregation\"])"),
     ),
     (
         "audit-ledger",
-        "the audit register has never been a CI job. Its five instrument-soundness rules are \
-         proven by `cargo test -p xtask`; its two audit-completeness rules are the release-time \
-         DONE claim in scripts/verify-1.6.0-done.sh, where a red means 'not finished yet'.",
+        "the audit register has never been a CI job, and no test executes the gate either: its RED \
+         proof and its verdict are both release-time, in scripts/verify-1.6.0-done.sh, where a red \
+         means 'not finished yet'. That is the whole coverage this gate has — per push it is \
+         unguarded, and this entry is the place that says so rather than the place that implies \
+         otherwise.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate audit-ledger --selftest",
+        ),
     ),
     (
         "plane-purity-strict",
@@ -197,6 +255,10 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str)] = &[
          scripts/verify-1.6.0-done.sh (`cargo xtask gate plane-purity-strict`) as part of the DONE \
          oracle, not on every push: its ceilings move with the busbar-core retirement and a per-push \
          red would only restate that the retirement is in flight.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate plane-purity-strict",
+        ),
     ),
     (
         "no-deferral-strict-done",
@@ -204,6 +266,10 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str)] = &[
          DONE claim scripts/verify-1.6.0-done.sh makes at release time (`cargo xtask gate \
          no-deferral-strict-done`); ci.yml runs the per-push `no-deferral` whose waivers name the \
          tracker rows that retire them.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate no-deferral-strict-done",
+        ),
     ),
 ];
 
@@ -270,26 +336,48 @@ pub fn unclassified_cargo(discovered: &[String]) -> Vec<String> {
 pub struct GateSetDiff {
     pub registered_but_absent: Vec<String>,
     pub invoked_but_unregistered: Vec<String>,
+    /// Excused gates whose written reason no longer describes this tree. They are reported
+    /// SEPARATELY from `registered_but_absent` because the fix is a different one: the gate may be
+    /// perfectly well covered by some route nobody wrote down, and the entry is what has to change.
+    pub unproven_excuses: Vec<String>,
 }
 
 impl GateSetDiff {
     pub fn agrees(&self) -> bool {
-        self.registered_but_absent.is_empty() && self.invoked_but_unregistered.is_empty()
+        self.registered_but_absent.is_empty()
+            && self.invoked_but_unregistered.is_empty()
+            && self.unproven_excuses.is_empty()
     }
 }
 
-/// Compare `{cargo xtask gate <name> in ci.yml}` against `{REGISTRY names}`.
-pub fn gate_set_diff(ci_text: &str) -> GateSetDiff {
+/// Compare `{cargo xtask gate <name> in ci.yml}` against `{REGISTRY names}`, and PUT EACH EXCUSE TO
+/// THE TREE.
+///
+/// An excuse used to be a name on a list. A name cannot be wrong, which is why the `denylist`
+/// entry's claim survived being false: nothing it asserted was ever compared with anything. Here an
+/// entry excuses its gate only while the fact it rests on is still findable — the test that runs
+/// it, the release script that runs it — so the excuse rots loudly instead of quietly.
+pub fn gate_set_diff(cx: &Ctx, ci_text: &str) -> GateSetDiff {
     let invoked: BTreeSet<String> = discovery::xtask_gate_names(ci_text).into_iter().collect();
     let registered: BTreeSet<String> = gates::names().into_iter().map(str::to_string).collect();
-    let excused: BTreeSet<&str> = REGISTRY_NOT_IN_CI.iter().map(|(n, _)| *n).collect();
+
+    let mut registered_but_absent = Vec::new();
+    let mut unproven_excuses = Vec::new();
+    for name in registered.difference(&invoked) {
+        match REGISTRY_NOT_IN_CI.iter().find(|(n, _, _)| n == name) {
+            None => registered_but_absent.push(name.clone()),
+            Some((_, _, excuse)) => {
+                if let Err(why) = excuse.holds(cx) {
+                    unproven_excuses.push(format!("{name}: {why}"));
+                }
+            }
+        }
+    }
+
     GateSetDiff {
-        registered_but_absent: registered
-            .difference(&invoked)
-            .filter(|n| !excused.contains(n.as_str()))
-            .cloned()
-            .collect(),
+        registered_but_absent,
         invoked_but_unregistered: invoked.difference(&registered).cloned().collect(),
+        unproven_excuses,
     }
 }
 
@@ -605,8 +693,8 @@ fn selftest(
     );
     let unreasoned: Vec<&str> = REGISTRY_NOT_IN_CI
         .iter()
-        .filter(|(_, r)| r.trim().is_empty())
-        .map(|(n, _)| *n)
+        .filter(|(_, r, _)| r.trim().is_empty())
+        .map(|(n, _, _)| *n)
         .collect();
     ok(
         unreasoned.is_empty(),
@@ -632,7 +720,25 @@ fn selftest(
     );
 
     // THE SET EQUALITY THAT REPLACES `MIN_GATES` FOR THE CONVERTED GATES.
-    let diff = gate_set_diff(text);
+    let diff = gate_set_diff(cx, text);
+    ok(
+        diff.unproven_excuses.is_empty(),
+        format!(
+            "each of the {} registered-but-not-in-ci entries still names a place this tree runs \
+             the gate",
+            REGISTRY_NOT_IN_CI.len()
+        ),
+        format!(
+            "registered-but-not-in-ci entr{y} whose written reason is no longer true of this tree: \
+             {:?} -- an excuse nobody can check is how a gate stops running with nothing red",
+            diff.unproven_excuses,
+            y = if diff.unproven_excuses.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        ),
+    );
     ok(
         diff.registered_but_absent.is_empty(),
         format!(
