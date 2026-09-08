@@ -9,7 +9,8 @@
 //! body is never read, so a caller can never self-scope a key to another subject. The mint rides the
 //! scheme-agnostic [`super::self_keys::SelfServeKeys`] seam.
 //!
-//! This handler is mounted with an EXACT-MATCH middleware bypass (see `AUTH_TOKEN_PATH`): the auth
+//! This handler is mounted with an EXACT-MATCH middleware bypass (see
+//! [`busbar_unit_auth::exchange::AUTH_TOKEN_PATH`]): the auth
 //! middleware does not admit/deny it, because the handler runs the chain ITSELF to establish who the
 //! caller is (an unauthenticated caller gets a 401 from here, not from the middleware).
 
@@ -28,9 +29,10 @@ use super::self_keys::{
 use super::AuthMiddleware;
 use crate::diagnostics::{diag_error, TOKEN_EXCHANGE_MINT_FAILED};
 
-/// The exact path the exchange is mounted at. The auth middleware bypasses this path so the handler
-/// can run the chain itself; the GET browser flow is mounted at the same path.
-pub(crate) const AUTH_TOKEN_PATH: &str = "/auth/token";
+// The exact path the exchange is mounted at is `busbar_unit_auth::exchange::AUTH_TOKEN_PATH` — the
+// unit owns the bypassed path (and, beside it, the exact-match rule that keeps the bypass from
+// opening every sibling). The two mount sites and the reserved-path list name it there directly, so
+// the path the middleware bypasses and the path the handler is mounted at cannot drift apart.
 
 /// `POST /auth/token`: exchange a verified IdP identity for a self-serve busbar key.
 pub(crate) async fn exchange(

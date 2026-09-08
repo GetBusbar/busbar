@@ -73,7 +73,7 @@ fn reserved_exact_paths() -> [&'static str; 6] {
         "/metrics/hooks",
         "/v1/models",
         "/v1beta/models",
-        crate::auth::exchange::AUTH_TOKEN_PATH,
+        busbar_unit_auth::exchange::AUTH_TOKEN_PATH,
     ]
 }
 
