@@ -455,7 +455,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
     // The metering rows: the same day, one balance per lane and provider, and the cache-write
     // column is its own dimension rather than being folded into the input one.
     for provider in ["openai", "azure"] {
-        let pool = BucketScope::Pool(format!("meter:gpt-4/{provider}"));
+        let pool = BucketScope::Pool(format!("meter:gpt-4/{provider}").into());
         assert_eq!(
             opened(
                 totals,

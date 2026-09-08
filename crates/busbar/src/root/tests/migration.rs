@@ -55,7 +55,7 @@ fn rows() -> SeededRows {
             window: 86_400,
             lane: "gpt-4".to_string(),
             provider: String::new(),
-            dimension: CapDimension::Class("input".to_string()),
+            dimension: CapDimension::Class("input".into()),
             amount: 6_000,
         }],
         reads: std::cell::Cell::new(0),

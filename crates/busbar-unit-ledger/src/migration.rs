@@ -114,9 +114,9 @@ impl LegacyFigure {
     pub fn key(&self) -> TotalsKey {
         let scope = match (self.family, self.lane.as_str()) {
             (LegacyFamily::Window, "") => BucketScope::All,
-            (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}")),
+            (LegacyFamily::Window, lane) => BucketScope::Pool(format!("lane:{lane}").into()),
             (LegacyFamily::Meter, lane) => {
-                BucketScope::Pool(format!("meter:{lane}/{}", self.provider))
+                BucketScope::Pool(format!("meter:{lane}/{}", self.provider).into())
             }
         };
         TotalsKey::new(
