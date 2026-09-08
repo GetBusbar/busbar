@@ -1066,6 +1066,44 @@ pub fn load(path: &Path) -> Result<Json, String> {
     json_lite::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// [`load`], with THE ONE ABSENCE THAT IS NOT AN ERROR told apart from every other failure.
+///
+/// A register that does not exist yet has recorded nothing about anything, so a caller deriving the
+/// scope list from the tree is right to treat it as empty. A register that is PRESENT and cannot be
+/// read is the opposite fact — something IS recorded and this tool cannot see it — and collapsing
+/// the two lets one flipped byte read as a clean slate. Only `NotFound` takes the `None` arm; a
+/// permission error, a directory where a file should be, and anything that will not parse are all
+/// errors, because none of them means "nothing has been recorded".
+pub fn load_optional(path: &Path) -> Result<Option<Json>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => json_lite::parse(&text)
+            .map(Some)
+            .map_err(|e| format!("{}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// THE SCOPE LIST, or the reason there is not one. A register that parses but carries no `scopes`
+/// array is as unread as a register that does not parse: the readers all iterate that key, and an
+/// absent or wrongly-typed one yields zero scopes, which is indistinguishable from a register about
+/// a tree with nothing in it. Zero scopes is a refusal here so that it cannot be a clean bill of
+/// health downstream.
+pub fn scopes(doc: &Json) -> Result<&[Json], String> {
+    match doc.get("scopes") {
+        Json::Array(a) => Ok(a),
+        Json::Null => Err(
+            "the register carries no `scopes` list — a register that records no \
+                           scope at all is unread, not clean"
+                .to_string(),
+        ),
+        other => Err(format!(
+            "the register's `scopes` is a {}, not a list — nothing can be counted from it",
+            json_lite::py_type_name(other)
+        )),
+    }
+}
+
 /// Write the register the way Python wrote it, down to the single trailing newline.
 pub fn save(path: &Path, doc: &Json) -> Result<(), String> {
     if let Some(parent) = path.parent() {
@@ -1143,7 +1181,7 @@ pub fn rows(doc: &Json, git: &Git) -> Result<Vec<RowView>, String> {
     let loc_by_oid = git.line_counts(&oids);
 
     let mut out = Vec::new();
-    for sc in doc.get("scopes").as_array().unwrap_or(&[]) {
+    for sc in scopes(doc)? {
         let current = tree_hash(sc, &all);
         let status = status_of(sc, current.as_deref());
         let age = sc
