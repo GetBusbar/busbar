@@ -545,3 +545,201 @@ impl BodySpool {
         budget.give_back(self.bytes.len());
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE RECORD LEGS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// The ceiling on one record's bytes, which is the size half of the `PlaneRecord` rule.
+pub use busbar_contract::bounded::MAX_RECORD_BYTES;
+/// A route plan's leg and where it goes, as the contract crate declares them.
+///
+/// Named here rather than restated for the same reason the frame is: a leg arrives from outside the
+/// kernel, so a kernel-local copy would be the loop deciding about something other than what the
+/// plane handed it.
+pub use busbar_contract::dest::{DestinationFacts, Leg};
+/// The record-schema identity a `PlaneRecord` leg names.
+pub use busbar_contract::ids::RecordSchemaId;
+
+/// What a plane DECLARED about its kernel-held durable records.
+///
+/// The kernel knows no schema and no operation name. What it knows is that a leg may only name a
+/// schema the calling plane declared and an operation that schema declared, and it asks this for
+/// both answers. Two methods rather than one, because "no such schema" and "that schema does not do
+/// that" are different refusals and an operator reading one must not be handed the other.
+pub trait RecordSchemas: Send + Sync {
+    /// Every schema the calling plane declares.
+    fn schemas(&self) -> &'static [RecordSchemaId];
+
+    /// Which operations one schema declares. Empty for a schema this plane does not declare.
+    fn operations_for(&self, schema: RecordSchemaId) -> &'static [&'static str];
+}
+
+/// Everything one record leg carries besides its body.
+///
+/// Typed on purpose: the sink keys, orders and retention-sweeps on these columns and never decodes
+/// the body, so a record whose identity lived inside its own bytes would be a record the sink could
+/// not sweep. The kernel writes none of them — they arrive on the leg — and reads none of them
+/// either; it carries them through so that the one runner is the only runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordKey<'a> {
+    /// The record's identity within its schema.
+    pub id: &'a str,
+    /// The parent an append-only child hangs off. `None` for a top-level schema.
+    pub parent: Option<&'a str>,
+    /// Monotonic sequence within the parent, for the append-only schemas.
+    pub seq: u64,
+    /// The record's timestamp: the axis retention compares against, and the NOW any deadline on
+    /// this key is judged at.
+    pub ts: u64,
+    /// The instant past which a capability carried by this key is dead, whatever else is true.
+    pub expires_at: u64,
+    /// Whether retention may drop the row once it is older than a cutoff.
+    pub terminal: bool,
+}
+
+/// What one record leg came back with.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecordAnswer {
+    /// The body a point read returned, where the leg read one.
+    pub body: Option<Vec<u8>>,
+    /// The bodies a scan returned, in the sink's own order.
+    pub bodies: Vec<Vec<u8>>,
+    /// Whether a capability this leg asked about is STILL LIVE.
+    ///
+    /// `None` from every operation that asked no such question, and that is the whole reason it is
+    /// an option rather than a bool: the kernel stops a plan on a dead capability without knowing
+    /// which of the plane's operations is the one that asks. A `Some(false)` is an answer, not a
+    /// failure — the sink worked perfectly and said no.
+    pub live: Option<bool>,
+}
+
+/// Why a record leg did not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordRefusal {
+    /// The leg named a schema the calling plane does not declare.
+    UndeclaredSchema {
+        /// The schema the leg named.
+        schema: &'static str,
+    },
+    /// The leg named an operation the schema does not declare.
+    UndeclaredOp {
+        /// The schema the leg named.
+        schema: &'static str,
+        /// The operation it asked for.
+        op: &'static str,
+    },
+    /// The body is longer than one record may be.
+    Oversize {
+        /// How many bytes the leg offered.
+        bytes: usize,
+        /// How many a record may hold.
+        cap: usize,
+    },
+    /// The sink refused or failed.
+    Sink(String),
+    /// A capability leg asked whether something was still live and the answer was NO.
+    ///
+    /// Its own variant and not a [`RecordRefusal::Sink`] failure, because nothing failed. Folding
+    /// the two together would render a revoked capability as an outage — telling the operator to go
+    /// and look at a backend that is working perfectly.
+    NotLive,
+}
+
+/// Where a plane's kernel-held durable records actually go.
+///
+/// The kernel binds to one of these and never to a store, exactly as it binds to
+/// [`crate::slice::SliceStore`] for a window and never to the backend behind it. The operation is
+/// passed through as the plane spelled it: the vocabulary is the plane's, the validation is the
+/// kernel's, and the mapping onto whatever verbs the backend publishes is the implementor's.
+pub trait RecordStore: Send + Sync {
+    /// Perform one ALREADY-VALIDATED operation.
+    ///
+    /// # Errors
+    ///
+    /// The backend refused or failed. The string is the backend's own words, carried rather than
+    /// classified: the kernel has no vocabulary for what a store can go wrong about.
+    fn perform(
+        &self,
+        schema: RecordSchemaId,
+        op: &'static str,
+        key: &RecordKey<'_>,
+        body: &[u8],
+    ) -> Result<RecordAnswer, String>;
+}
+
+/// The one runner of a `PlaneRecord` leg: validate, then perform.
+///
+/// The three checks are the architecture's own `PlaneRecord` row, in its order — the schema is
+/// declared by the calling plane, the operation is within the schema's declared operations, and the
+/// body is within the record ceiling. Nothing downstream re-checks them and nothing upstream may
+/// skip them, because this is the only place a record leg is run.
+///
+/// # Errors
+///
+/// The schema is undeclared, the operation is undeclared for it, the body is oversize, or the sink
+/// refused.
+pub fn run_record_leg(
+    store: &dyn RecordStore,
+    schemas: &dyn RecordSchemas,
+    schema: RecordSchemaId,
+    op: &'static str,
+    key: &RecordKey<'_>,
+    body: &[u8],
+) -> Result<RecordAnswer, RecordRefusal> {
+    if !schemas.schemas().contains(&schema) {
+        return Err(RecordRefusal::UndeclaredSchema {
+            schema: schema.as_str(),
+        });
+    }
+    if !schemas.operations_for(schema).contains(&op) {
+        return Err(RecordRefusal::UndeclaredOp {
+            schema: schema.as_str(),
+            op,
+        });
+    }
+    if body.len() > MAX_RECORD_BYTES {
+        return Err(RecordRefusal::Oversize {
+            bytes: body.len(),
+            cap: MAX_RECORD_BYTES,
+        });
+    }
+    store
+        .perform(schema, op, key, body)
+        .map_err(RecordRefusal::Sink)
+}
+
+/// Drive every record leg of a route plan, in the plan's own order.
+///
+/// The order is the plane's and is load-bearing: a plan that reads a row, decides, writes it back
+/// and appends the event is a plan whose reordering would append an event for a state the row never
+/// reached. Legs that are not `PlaneRecord` are skipped here — they belong to other steps.
+///
+/// A leg answering `live: Some(false)` STOPS THE PLAN where it is. The reading has to be acted on
+/// and not merely recorded: a check whose answer is filed beside the write it was supposed to
+/// prevent is not a check.
+///
+/// # Errors
+///
+/// The first leg that refuses stops the run and is returned; the legs before it have already
+/// happened, which is why a plan's record legs are ordered so that a failure leaves the durable
+/// state readable rather than half-written.
+pub fn run_record_plan(
+    store: &dyn RecordStore,
+    schemas: &dyn RecordSchemas,
+    legs: &[Leg],
+    key: &RecordKey<'_>,
+    body: &[u8],
+) -> Result<Vec<RecordAnswer>, RecordRefusal> {
+    let mut answers = Vec::new();
+    for leg in legs {
+        if let DestinationFacts::PlaneRecord { schema, op } = leg.destination {
+            let answer = run_record_leg(store, schemas, schema, op, key, body)?;
+            if answer.live == Some(false) {
+                return Err(RecordRefusal::NotLive);
+            }
+            answers.push(answer);
+        }
+    }
+    Ok(answers)
+}
