@@ -104,54 +104,60 @@ pub trait EngineTablesView {
     /// projection of the plane runtime's `upstream_credentials` field; the empty view returns the
     /// type's default, byte-identical to the always-present-but-empty zero-plane runtime.
     fn upstream_creds(&self) -> busbar_api::UpstreamCreds;
-}
 
-/// Every distinct upstream provider the tables route through, with how many lanes reach each, in
-/// provider-name order.
-///
-/// ONE PROJECTION, TWO RENDERINGS, and that is why it is here rather than at either call site. The
-/// administrative surface answers this fact twice: `GET /providers`, whose answer the composition
-/// root now produces from the loop, and the `providers` member of the effective-config read, which
-/// the surface underneath still produces. Two loops over `lane_view` would be two chances for those
-/// two answers to disagree about the same node — and they are literally the same fact, so a
-/// disagreement would be a defect with no correct side.
-///
-/// Neutral in and neutral out: a `Vec` of names and counts, which is what lets one caller build a
-/// core view struct out of it and the other render bytes, without either naming the other's types.
-#[must_use]
-pub fn providers_by_lane_count(tables: &dyn EngineTablesView) -> Vec<(String, usize)> {
-    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for lane in 0..tables.lane_count() {
-        if let Some(view) = tables.lane_view(lane) {
-            *counts.entry(view.provider.to_string()).or_insert(0) += 1;
+    // ── DERIVED PROJECTIONS ─────────────────────────────────────────────────────────────────────
+    //
+    // PROVIDED, not required, and that is the whole distinction: everything above is a fact only the
+    // plane's own tables can answer, and everything below is a fold over those facts that any two
+    // readers would otherwise write twice. They live on the trait rather than beside it so a reader
+    // holding a `&dyn EngineTablesView` reaches them without naming anything else — which matters
+    // for the composition root, whose reach into these crates is a ratchet.
+
+    /// Every distinct upstream provider the tables route through, with how many lanes reach each, in
+    /// provider-name order.
+    ///
+    /// ONE PROJECTION, TWO RENDERINGS, and that is why it is here rather than at either call site.
+    /// The administrative surface answers this fact twice: `GET /providers`, whose answer the
+    /// composition root produces from the loop, and the `providers` member of the effective-config
+    /// read, which the surface underneath still produces. Two folds over [`Self::lane_view`] would be
+    /// two chances for those answers to disagree about the same node — and they are literally the
+    /// same fact, so a disagreement would be a defect with no correct side.
+    ///
+    /// Neutral out: names and counts, which is what lets one caller build a core view struct out of
+    /// it and the other render bytes, without either naming the other's types.
+    fn providers_by_lane_count(&self) -> Vec<(String, usize)> {
+        let mut counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for lane in 0..self.lane_count() {
+            if let Some(view) = self.lane_view(lane) {
+                *counts.entry(view.provider.to_string()).or_insert(0) += 1;
+            }
         }
+        // A `BTreeMap` is already in provider order, which is the order both readings answer in.
+        counts.into_iter().collect()
     }
-    // A `BTreeMap` is already in provider order, which is the order both readings answer in.
-    counts.into_iter().collect()
-}
 
-/// Every configured lane as `(model, provider)`, in model-name order.
-///
-/// The same one-projection-two-readings rule [`providers_by_lane_count`] states, for the other
-/// topology read that crossed: `GET /models` is produced by the composition root's loop and the
-/// `models` member of the effective-config read is produced by the surface underneath, off the same
-/// lanes.
-///
-/// The sort is STABLE and on the model alone, which is not a detail: two lanes may configure the
-/// same model name against different providers, and the order the surface has always answered them
-/// in is the order they were configured. A sort that ordered by the pair, or a map keyed on the
-/// model, would silently reorder or drop one.
-#[must_use]
-pub fn models_by_lane(tables: &dyn EngineTablesView) -> Vec<(String, String)> {
-    let mut models: Vec<(String, String)> = (0..tables.lane_count())
-        .filter_map(|lane| {
-            tables
-                .lane_view(lane)
-                .map(|view| (view.model.to_string(), view.provider.to_string()))
-        })
-        .collect();
-    models.sort_by(|a, b| a.0.cmp(&b.0));
-    models
+    /// Every configured lane as `(model, provider)`, in model-name order.
+    ///
+    /// The same one-projection-two-readings rule [`Self::providers_by_lane_count`] states, for the
+    /// other topology read that crossed: `GET /models` is produced by the composition root's loop and
+    /// the `models` member of the effective-config read is produced by the surface underneath, off
+    /// the same lanes.
+    ///
+    /// The sort is STABLE and on the model alone, which is not a detail: two lanes may configure the
+    /// same model name against different providers, and the order the surface has always answered
+    /// them in is the order they were configured. A sort that ordered by the pair, or a map keyed on
+    /// the model, would silently reorder or drop one.
+    fn models_by_lane(&self) -> Vec<(String, String)> {
+        let mut models: Vec<(String, String)> = (0..self.lane_count())
+            .filter_map(|lane| {
+                self.lane_view(lane)
+                    .map(|view| (view.model.to_string(), view.provider.to_string()))
+            })
+            .collect();
+        models.sort_by(|a, b| a.0.cmp(&b.0));
+        models
+    }
 }
 
 /// THE ZERO-PLANE EMPTY VIEW: a core/substrate-resident [`EngineTablesView`] with zero pools and zero
