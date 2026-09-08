@@ -41,18 +41,19 @@ use crate::record::{
     QuantitySource, Subject, UsageLine, What,
 };
 
-/// Build an admin entry at a position, sealed with the digest its record type's framing implies.
-fn sealed(
+/// An admin entry at a position, with no hash on it yet.
+fn unsealed(
     seq: u64,
+    ts: u64,
     prev_hash: &str,
     action: &str,
     resource: &str,
     outcome: &str,
     principal: &str,
 ) -> AuditEntry {
-    let mut entry = AuditEntry {
+    AuditEntry {
         seq,
-        ts: 1_700_000_000 + seq,
+        ts,
         action: action.to_string(),
         resource: resource.to_string(),
         outcome: outcome.to_string(),
@@ -60,7 +61,11 @@ fn sealed(
         prev_hash: prev_hash.to_string(),
         hash: String::new(),
         recorded_here: false,
-    };
+    }
+}
+
+/// The same entry, sealed with the digest its record type's framing implies.
+fn sealed(mut entry: AuditEntry) -> AuditEntry {
     entry.hash = digest(&entry);
     entry
 }
@@ -68,24 +73,15 @@ fn sealed(
 /// The admin entry's chained fields, fed into a canonicaliser of the caller's choosing. This is the
 /// same field list and the same order [`AuditEntry::digest_fields`] uses; feeding it under BOTH
 /// framings is how the collision below is demonstrated rather than asserted about.
-fn admin_preimage(
-    framing: Framing,
-    prev_hash: &str,
-    seq: u64,
-    ts: u64,
-    action: &str,
-    resource: &str,
-    outcome: &str,
-    principal: &str,
-) -> String {
+fn admin_preimage(framing: Framing, entry: &AuditEntry) -> String {
     let mut d = Digest::new(framing);
-    d.text(prev_hash)
-        .num(seq)
-        .num(ts)
-        .text(action)
-        .text(resource)
-        .text(outcome)
-        .text(principal);
+    d.text(&entry.prev_hash)
+        .num(entry.seq)
+        .num(entry.ts)
+        .text(&entry.action)
+        .text(&entry.resource)
+        .text(&entry.outcome)
+        .text(&entry.principal);
     d.finish()
 }
 
@@ -107,25 +103,29 @@ fn two_mutations_that_collide_under_the_pipe_join_have_distinct_length_framed_di
     let honest = |framing| {
         admin_preimage(
             framing,
-            "cafe",
-            7,
-            1_700_000_007,
-            "hook.register",
-            "hook:x",
-            OUTCOME_REJECTED,
-            "applied|mallory",
+            &unsealed(
+                7,
+                1_700_000_007,
+                "cafe",
+                "hook.register",
+                "hook:x",
+                OUTCOME_REJECTED,
+                "applied|mallory",
+            ),
         )
     };
     let lie = |framing| {
         admin_preimage(
             framing,
-            "cafe",
-            7,
-            1_700_000_007,
-            "hook.register",
-            "hook:x|rejected",
-            OUTCOME_APPLIED,
-            "mallory",
+            &unsealed(
+                7,
+                1_700_000_007,
+                "cafe",
+                "hook.register",
+                "hook:x|rejected",
+                OUTCOME_APPLIED,
+                "mallory",
+            ),
         )
     };
 
@@ -172,23 +172,11 @@ fn moving_a_caller_supplied_bar_between_adjacent_fields_always_changes_the_diges
     for (left, right) in pairs {
         let a = admin_preimage(
             Framing::LengthPrefixed,
-            "beef",
-            3,
-            1_700_000_003,
-            left.0,
-            left.1,
-            left.2,
-            left.3,
+            &unsealed(3, 1_700_000_003, "beef", left.0, left.1, left.2, left.3),
         );
         let b = admin_preimage(
             Framing::LengthPrefixed,
-            "beef",
-            3,
-            1_700_000_003,
-            right.0,
-            right.1,
-            right.2,
-            right.3,
+            &unsealed(3, 1_700_000_003, "beef", right.0, right.1, right.2, right.3),
         );
         assert_ne!(a, b, "{left:?} and {right:?} share a length-framed digest");
     }
@@ -327,14 +315,15 @@ fn a_chain_sealed_entirely_under_the_legacy_framing_verifies() {
     let mut chain = Vec::new();
     let mut prev = String::new();
     for seq in 1..=5u64 {
-        let e = sealed(
+        let e = sealed(unsealed(
             seq,
+            1_700_000_000 + seq,
             &prev,
             "hook.register",
             "hook:x",
             OUTCOME_APPLIED,
             "alice",
-        );
+        ));
         prev = e.hash.clone();
         chain.push(e);
     }
@@ -388,13 +377,15 @@ fn the_only_construction_path_seals_with_the_chains_own_framing() {
         entry.hash,
         admin_preimage(
             <AuditEntry as ChainedRecord>::FRAMING,
-            "",
-            1,
-            1_700_000_000,
-            "hook.register",
-            "hook:x",
-            OUTCOME_APPLIED,
-            "alice",
+            &unsealed(
+                1,
+                1_700_000_000,
+                "",
+                "hook.register",
+                "hook:x",
+                OUTCOME_APPLIED,
+                "alice",
+            ),
         ),
         "the sealed digest is not the one the record type's framing produces over its own fields"
     );
@@ -428,7 +419,11 @@ fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_len
         fields.push(buf[at..at + len].to_vec());
         at += len;
     }
-    assert_eq!(at, buf.len(), "the preimage did not end on a field boundary");
+    assert_eq!(
+        at,
+        buf.len(),
+        "the preimage did not end on a field boundary"
+    );
     assert_eq!(
         fields,
         vec![

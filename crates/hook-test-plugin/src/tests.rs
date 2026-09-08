@@ -142,8 +142,7 @@ fn fail_decide_reports_err_not_an_abstain() {
     let gate = open(r#"{"fail_decide": "dependency down"}"#).unwrap();
     let err = gate
         .decide_result(&empty_payload())
-        .err()
-        .expect("fail_decide must be an Err, not an Ok abstain");
+        .expect_err("fail_decide must be an Err, not an Ok abstain");
     assert_eq!(err, "dependency down");
 }
 
@@ -172,8 +171,7 @@ fn fail_transform_reports_err_not_an_untouched_forward() {
     let gate = open(r#"{"fail_transform": "classifier down"}"#).unwrap();
     let err = gate
         .transform_result(&empty_payload())
-        .err()
-        .expect("fail_transform must be an Err");
+        .expect_err("fail_transform must be an Err");
     assert_eq!(err, "classifier down");
 }
 
