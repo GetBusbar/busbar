@@ -194,11 +194,63 @@ fn first_difference(committed: &str, fresh: &str) -> String {
 ///    baseline is not a baseline.
 fn row_baseline(state: &BaselineState) -> Row {
     match state {
-        BaselineState::Ok { r, types } => Row::pass(
-            ROW_BASELINE,
-            "the additive-only baseline was read from a git ref, not the working tree",
-            format!("baseline '{r}' carries {} with {types} type(s)", schema::SNAPSHOT),
-        ),
+        BaselineState::Ok {
+            r,
+            types,
+            from_env,
+        } => {
+            // WHERE THE BASELINE CAME FROM IS PART OF WHAT THIS ROW ASSERTS.
+            //
+            // The additive-only check is only as strong as the ref it compares against, and that
+            // ref is settable from the environment. Until now the row said "read from a git ref,
+            // not the working tree" and named it, and stopped — so a run whose baseline had been
+            // repointed looked exactly like a run whose baseline had not. The only refusal lived in
+            // `scripts/verify-1.6.0-done.sh`, entirely outside this crate, so `cargo xtask gate
+            // config-schema` and `gate --all` were green on every other path with nothing said.
+            //
+            // AND THE DEFAULT BASELINE IS ITSELF A NO-OP. `DEFAULT_BASELINE_REF` is `HEAD`: the
+            // comparison is then the working tree against its own last commit, so the check
+            // measures UNCOMMITTED breaks only and proves nothing about the committed surface. That
+            // is a legitimate and DELIBERATE state — `ci.yml` sets the ref to the base branch on a
+            // pull request, where the real comparison happens, and to `HEAD` on a push, where the
+            // additive check has already been made pre-merge and the push run is a declared no-op —
+            // but it must not read as "the config surface changed compatibly".
+            //
+            // So the row stays PASS and SAYS WHAT IT MEASURED, which is the shape `Bootstrap` below
+            // already uses for the other declared no-op in this gate. Making it non-PASS was the
+            // audit's proposal and is refused here: it would turn every push-triggered
+            // `config-stability` run red for doing exactly what its own workflow comment says to do.
+            let source = if *from_env {
+                "CONFIG_SCHEMA_BASELINE_REF"
+            } else {
+                "the default"
+            };
+            if r == DEFAULT_BASELINE_REF {
+                Row::pass(
+                    ROW_BASELINE,
+                    "the baseline is the WORKING TREE'S OWN COMMIT — the additive check saw only \
+                     uncommitted changes",
+                    format!(
+                        "baseline '{r}' (from {source}) carries {} with {types} type(s), and '{r}' \
+                         is this tree's own commit — so the additive-only check compared the tree \
+                         against itself and measured UNCOMMITTED breaks only. It proves nothing \
+                         about whether the COMMITTED config surface changed compatibly. A run that \
+                         must decide that (a pull request, a release) points \
+                         CONFIG_SCHEMA_BASELINE_REF at the base branch.",
+                        schema::SNAPSHOT
+                    ),
+                )
+            } else {
+                Row::pass(
+                    ROW_BASELINE,
+                    "the additive-only baseline was read from a git ref, not the working tree",
+                    format!(
+                        "baseline '{r}' (from {source}) carries {} with {types} type(s)",
+                        schema::SNAPSHOT
+                    ),
+                )
+            }
+        }
         BaselineState::Bootstrap { r } => Row::pass(
             ROW_BASELINE,
             "DECLARED BOOTSTRAP — the additive check DID NOT RUN and nothing was measured",
@@ -255,12 +307,30 @@ fn row_baseline(state: &BaselineState) -> Row {
 }
 
 enum BaselineState {
-    Ok { r: String, types: usize },
-    Bootstrap { r: String },
-    Unresolvable { r: String },
-    NoSnapshot { r: String },
-    Unparseable { r: String, why: String },
-    Empty { r: String, types: usize },
+    Ok {
+        r: String,
+        types: usize,
+        /// The ref came from `CONFIG_SCHEMA_BASELINE_REF` rather than from
+        /// [`DEFAULT_BASELINE_REF`]. Carried so the ROW can say so — see [`row_baseline`].
+        from_env: bool,
+    },
+    Bootstrap {
+        r: String,
+    },
+    Unresolvable {
+        r: String,
+    },
+    NoSnapshot {
+        r: String,
+    },
+    Unparseable {
+        r: String,
+        why: String,
+    },
+    Empty {
+        r: String,
+        types: usize,
+    },
 }
 
 fn row_additive(outcome: &classify::Outcome) -> Row {
@@ -506,6 +576,7 @@ fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
         BaselineState::Ok {
             r: r.to_string(),
             types,
+            from_env: cx.env().config_baseline_ref.is_some(),
         },
         Some(doc),
     )
@@ -520,3 +591,53 @@ pub fn waivers_of(cx: &Ctx) -> Result<BTreeMap<String, String>, String> {
 }
 
 mod selftest;
+
+#[cfg(test)]
+mod baseline_row_tests {
+    use super::*;
+
+    /// THE BASELINE ROW SAYS WHAT IT COMPARED AGAINST AND WHERE THAT CAME FROM.
+    ///
+    /// The additive-only check is only as strong as its baseline ref, and that ref is settable from
+    /// the environment. A row that reports a green without naming the ref's ORIGIN lets a repointed
+    /// baseline read exactly like an unrepointed one, and the only refusal for that lives in a
+    /// release script outside this crate.
+    ///
+    /// And the DEFAULT ref is `HEAD` — the tree against its own last commit — so the ordinary run's
+    /// additive check measures uncommitted breaks only. That is deliberate (`ci.yml` compares
+    /// against the base branch on a pull request and declares the push run a no-op) and it is
+    /// exactly why the row must not read as "the config surface changed compatibly".
+    #[test]
+    fn a_baseline_that_is_the_trees_own_commit_says_it_measured_only_uncommitted_changes() {
+        let noop = row_baseline(&BaselineState::Ok {
+            r: DEFAULT_BASELINE_REF.to_string(),
+            types: 42,
+            from_env: false,
+        });
+        assert_eq!(noop.status, crate::ledger::Status::Pass);
+        assert!(
+            noop.title.contains("WORKING TREE'S OWN COMMIT") && noop.detail.contains("UNCOMMITTED"),
+            "a no-op comparison must say so on its own row: {noop:?}"
+        );
+        assert!(
+            noop.detail.contains("from the default"),
+            "where the ref came from is part of what this row asserts: {noop:?}"
+        );
+
+        let real = row_baseline(&BaselineState::Ok {
+            r: "origin/main".to_string(),
+            types: 42,
+            from_env: true,
+        });
+        assert_eq!(real.status, crate::ledger::Status::Pass);
+        assert!(
+            real.detail.contains("CONFIG_SCHEMA_BASELINE_REF"),
+            "a baseline repointed from the environment must announce itself in the row every \
+             reader and the proof dashboard sees, not only in a release script: {real:?}"
+        );
+        assert!(
+            !real.title.contains("WORKING TREE'S OWN COMMIT"),
+            "a real comparison must not be labelled a no-op: {real:?}"
+        );
+    }
+}
