@@ -62,6 +62,7 @@
 
 pub mod adapters;
 pub mod auth_bindings;
+pub mod data_plane;
 pub mod durability;
 #[cfg(any(test, feature = "test-harness"))]
 pub mod harness;
