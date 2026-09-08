@@ -61,7 +61,7 @@ fn the_identity_holds_over_a_long_run_of_random_postings() {
                         h.record_overdraft(spent - reserved);
                     }
                     let u = usage("tokens", spent);
-                    ledger.settle(&k, window, h, u128::from(spent), &u, &token);
+                    let _ = ledger.settle(&k, window, h, u128::from(spent), &u, &token);
                 }
             }
             let r = residual(&opening, &ledger.book().get(&k, window));
@@ -86,7 +86,7 @@ fn a_hand_corrupted_priced_amount_breaks_the_identity() {
     ledger.record_draw(&k, window, 1_000);
     ledger.record_hold_opened(&k, window, 800);
     ledger.record_slice_spent(&k, window, 800);
-    ledger.settle(
+    let _ = ledger.settle(
         &k,
         window,
         hold("p", 800),
@@ -164,7 +164,7 @@ fn overdraft_is_subtracted_rather_than_added() {
     ledger.record_slice_spent(&k, window, 100);
     let mut h = hold("p", 100);
     h.record_overdraft(40);
-    ledger.settle(&k, window, h, 140, &usage("tokens", 140), &token);
+    let _ = ledger.settle(&k, window, h, 140, &usage("tokens", 140), &token);
 
     let figures = ledger.book().get(&k, window);
     assert_eq!(figures.settled, 140);

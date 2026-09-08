@@ -52,7 +52,7 @@ fn two_dimensions_on_one_bucket_are_two_independent_balances() {
     ledger.record_draw(&money, 1, 500);
     ledger.record_hold_opened(&money, 1, 500);
     ledger.record_slice_spent(&money, 1, 500);
-    ledger.settle(
+    let _ = ledger.settle(
         &money,
         1,
         hold("a", 500),
@@ -78,7 +78,7 @@ fn a_pool_scope_is_a_different_balance_from_the_whole_bucket() {
     ledger.record_draw(&pool, 1, 300);
     ledger.record_hold_opened(&pool, 1, 300);
     ledger.record_slice_spent(&pool, 1, 300);
-    ledger.settle(&pool, 1, hold("a", 300), 300, &usage("tokens", 300), &token);
+    let _ = ledger.settle(&pool, 1, hold("a", 300), 300, &usage("tokens", 300), &token);
 
     assert_eq!(ledger.book().get(&pool, 1).settled, 300);
     assert_eq!(ledger.book().get(&all, 1).settled, 0);
@@ -93,7 +93,7 @@ fn every_settlement_reaches_the_previous_releases_rows() {
     ledger.record_draw(&k, 42, 1_000);
     ledger.record_hold_opened(&k, 42, 700);
     ledger.record_slice_spent(&k, 42, 700);
-    ledger.settle(&k, 42, hold("bob", 700), 690, &usage("tokens", 690), &token);
+    let _ = ledger.settle(&k, 42, hold("bob", 700), 690, &usage("tokens", 690), &token);
 
     assert_eq!(
         rows.written(),
@@ -141,7 +141,7 @@ fn a_ledger_with_no_dual_write_settles_the_same_way() {
         ledger.record_draw(&k, 1, 100);
         ledger.record_hold_opened(&k, 1, 100);
         ledger.record_slice_spent(&k, 1, 100);
-        ledger.settle(&k, 1, hold("a", 100), 80, &usage("tokens", 80), &token);
+        let _ = ledger.settle(&k, 1, hold("a", 100), 80, &usage("tokens", 80), &token);
     }
     assert_eq!(plain.book().get(&k, 1), dual.book().get(&k, 1));
 }
@@ -250,7 +250,7 @@ fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold()
 
     let mut through_hold = Ledger::new();
     through_hold.record_hold_opened(&k, 1, 600);
-    through_hold.settle(
+    let _ = through_hold.settle(
         &k,
         1,
         hold("alice", 600),
