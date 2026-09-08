@@ -15,12 +15,12 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 102,
-  "unproven": 1,
+  "mapped": 103,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
-   "gate": 11,
+   "gate": 13,
    "lint": 5,
    "oracle-cell": 58,
    "oracle-family": 5,
@@ -62,7 +62,7 @@
    "surface": "master rule",
    "binding": "EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in the body needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for the body is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?",
    "inventory": "every row of every inventory file under docs/design/inventory/",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "gate",
@@ -79,8 +79,8 @@
      "proves": "construction-gate `legacy-reach`: ONE ratchet over the composition root's TOTAL count of distinct symbols named through the retiring engine crates, which may only go down, with the per-crate figures kept as informational sub-rows -- so a cut that retargets a core symbol onto the substrate on its way to the kernel counts as the progress it is, and the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/inventory-coverage.sh"
+   "verdict": "PASS",
+   "verdict_detail": "gate:scripts/inventory-coverage.sh, gate:xtask/src/gates/construction.rs"
   },
   {
    "id": "PB-1",
