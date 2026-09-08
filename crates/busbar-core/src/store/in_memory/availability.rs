@@ -1,6 +1,7 @@
 use super::*;
 
-use crate::diagnostics::{diag_warn, LANE_HARD_DOWN_ALL_CELLS};
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::LANE_HARD_DOWN_ALL_CELLS;
 
 impl HealthState {
     /// Aggregate the per-cell [`breaker_verdict`](breaker_verdict) (the SINGLE decoder)

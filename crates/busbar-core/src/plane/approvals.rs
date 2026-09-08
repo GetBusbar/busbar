@@ -214,8 +214,8 @@ impl SpentTokenLedger {
         match store.redeem_plane_token(crate::plane::store::KIND_ASK, nonce, expires_at, now) {
             Ok(fresh) => fresh,
             Err(e) => {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::APPROVAL_LEDGER_UNREACHABLE_REFUSED,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::APPROVAL_LEDGER_UNREACHABLE_REFUSED,
                     error = %e,
                     "the shared spent-approval ledger could not be reached, so this redemption is \
                      REFUSED: a ledger that cannot say whether an approval was already spent must \

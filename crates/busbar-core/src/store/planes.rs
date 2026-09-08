@@ -53,7 +53,8 @@ use busbar_substrate::store::BreakerCfg;
 
 use super::in_memory::{HealthState, LaneData};
 use super::{LaneRuntime, Unavailable};
-use crate::diagnostics::{diag_warn, PLANE_BREAKER_HARD_DOWN, PLANE_BREAKER_TRIPPED};
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{PLANE_BREAKER_HARD_DOWN, PLANE_BREAKER_TRIPPED};
 use std::sync::Arc;
 
 /// One process-lifetime handle: every registered MCP server's and A2A agent's availability cell.
