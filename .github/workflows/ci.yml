@@ -117,7 +117,12 @@ jobs:
     name: structure lint
     runs-on: ubuntu-latest
     steps:
+      # FULL HISTORY, for the `audit-ledger` step at the end of this job: every record in
+      # qa/audit-ledger.json stamps the COMMIT it read, and the gate resolves each one. A depth-1
+      # clone cannot, and the gate is red on a stamp it cannot check rather than passing over it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       # THIS JOB NOW NEEDS A TOOLCHAIN, and that is the one real cost of the conversion: the
       # cheapest job in CI used to install nothing. It is declared rather than assumed. A Rust
@@ -247,6 +252,18 @@ jobs:
       # nothing, so it costs a second.
       - name: Gate registry vs this workflow
         run: cargo xtask full-gate --selftest
+      # THE AUDIT REGISTER. `audit-ledger` judges the instrument that judges everything else — scope
+      # coverage, open HIGH/MEDIUM findings, a `fixed` stamped with nobody confirming it, and a
+      # record's hash against the commit it claims to have read. Until now its only caller was
+      # scripts/verify-1.6.0-done.sh, at release time; per push the register was unguarded and its
+      # own excuse entry said so. It reads a JSON file and asks git for hashes, so it costs a second.
+      # It needs the HISTORY, which is why this job's checkout is unshallow: a record naming a commit
+      # a depth-1 clone cannot resolve is RED, and correctly so — an unresolvable stamp is a stamp
+      # nobody can check.
+      - name: Audit-ledger self-test (the register's judge cannot be lied to)
+        run: cargo xtask gate audit-ledger --selftest
+      - name: Audit-ledger gate (BLOCKING — the audit register is sound)
+        run: cargo xtask gate audit-ledger
       # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
       # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
       # promoted commit's. That has already cost a silent green: measured on qa c736177 the
