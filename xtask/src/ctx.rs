@@ -690,6 +690,15 @@ impl Ctx {
     }
 }
 
+/// A walk failure named against the workspace root where it can be, so the reader sees the path
+/// they would type rather than a machine-local absolute one.
+fn walk_io(dir: &Path, root: &Path, message: &str) -> WalkError {
+    WalkError::Io {
+        path: dir.strip_prefix(root).unwrap_or(dir).to_path_buf(),
+        message: message.to_string(),
+    }
+}
+
 fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkError> {
     if dir.is_file() {
         if let Ok(rel) = dir.strip_prefix(root) {
@@ -697,10 +706,30 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkEr
         }
         return Ok(());
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Ok(());
+    // A DIRECTORY THAT CANNOT BE READ IS NOT AN EMPTY ONE, and this is the line that decides it for
+    // every walk in the crate. An unreadable subtree used to contribute zero files and raise
+    // nothing, and zero files is the passing answer to every ban — the third thing `find` gets
+    // wrong, in the function written to fix the other two.
+    //
+    // `NotFound` is the ONE absence that is not an error, and it is discriminated off the error
+    // itself rather than off a second `exists()` call: a permission-denied ANCESTOR makes
+    // `exists()` answer false, which would silently return `Ok` for exactly the case this refuses,
+    // and a second syscall is a race against a directory deleted mid-walk. `Ctx::walk` reaches here
+    // with a root that does not exist only when an overlay is what puts it there, which is
+    // precisely the case `NotFound` must keep answering `Ok`.
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(walk_io(dir, root, &e.to_string())),
     };
-    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    // AND AN ENTRY THAT CANNOT BE READ IS NOT AN ABSENT ONE. `filter_map(|e| e.ok())` was the same
+    // swallow one level down: a directory that opens but whose entries error yielded a short list
+    // nobody could tell from a short directory.
+    let mut entries: Vec<PathBuf> = Vec::new();
+    for entry in rd {
+        let entry = entry.map_err(|e| walk_io(dir, root, &e.to_string()))?;
+        entries.push(entry.path());
+    }
     entries.sort();
     for path in entries {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
