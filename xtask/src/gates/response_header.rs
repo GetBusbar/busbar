@@ -26,7 +26,9 @@
 //! * one row per rule, so a rule cannot be deleted without an owed row going missing.
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
+};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
 use crate::planes::PlaneRoots;
@@ -471,31 +473,18 @@ impl Gate for ResponseHeaderGate {
 
         // THE PLANE ROOTS, which only this rule catches: a plane that SPLIT away is invisible to
         // every floor, because the floor is still cleared by what is left.
-        let planes = PlaneRoots::at(cx.abs("crates")).grammar("a grammar no source declares");
-        if planes.resolve_all(PLANE_KEYS).1.is_empty() {
-            report.note_infra_failure(
-                "response-header selftest: an impossible grammar still resolved a plane, so the \
-                 unresolved-plane arm proves nothing"
-                    .to_string(),
-            );
-        } else {
-            report.push(crate::gates::Case {
-                name: "a plane that cannot be located is refused, not scanned as a smaller tree"
-                    .to_string(),
-                covers: vec![ROW_PLANE_ROOTS.to_string()],
-                expected: crate::gates::Expect::Red {
-                    naming: vec!["PLANE-ROOT-MISSING".to_string()],
-                },
-                got: crate::gates::Expect::Red {
-                    naming: planes
-                        .resolve_all(PLANE_KEYS)
-                        .1
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect(),
-                },
-            });
-        }
+        //
+        // Driven THROUGH `Gate::run`, over a fixture tree in which no plane declares its grammar.
+        // The plane resolver reads `std::fs` under `cx.abs("crates")`, so no overlay can make a
+        // plane vanish — re-rooting the whole context is what plants this one honestly.
+        report.push(prove_rows_red_at(
+            cx,
+            self,
+            "a plane that cannot be located is refused, not scanned as a smaller tree",
+            &[ROW_PLANE_ROOTS],
+            PLANE_ROOT_MISSING_FIXTURE,
+            &["PLANE-ROOT-MISSING"],
+        ));
 
         report
     }

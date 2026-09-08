@@ -235,14 +235,37 @@ impl Gate for DuplexWsDefaultEdgeGate {
             &["missing where it must exist"],
         ));
 
+        // THE EDGE SURVIVING THE REMOVAL OF VOICE. This is the claim the whole gate is named for,
+        // and it is planted THROUGH the gate like every other one: a resolved no-default tree for
+        // the binary that still names the WS crate is what a default-on `axum/ws` would produce.
+        let mut ov = Overlay::new();
+        ov.set_command(
+            "cargo-tree:-p busbar --no-default-features",
+            format!("busbar v1.6.0\naxum v0.8.0\n{WS_CRATE} v0.24.0\n"),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "the WS edge outliving voice in the no-default binary is a finding",
+            &[ROW_BINARY_NO_DEFAULT],
+            ov,
+            &["leaked into a build that must not carry it"],
+        ));
+
         // THE ARGUMENT LIST THAT ROTTED, driven against the REAL resolver: a feature name that no
         // longer exists is the ordinary way this file goes stale, and it must be RED rather than a
         // quiet "the edge is gone". Nothing is planted here on purpose — an overlay would be
         // proving the overlay.
+        //
+        // IT COVERS NO ROW, deliberately. It never reaches `Gate::run`, so it cannot prove any
+        // rule can still fail; what it proves is the resolver refusal every row above is built on.
+        // Declaring a row here would discharge that row's coverage against a case the gate is not
+        // in.
         let rotted = cx.cargo_tree(&["-p", "busbar", "--features", "no-such-feature"]);
         report.push(Case {
-            name: "a feature name that no longer exists is RED, not a vanished edge".to_string(),
-            covers: vec![ROW_BINARY_NO_DEFAULT.to_string()],
+            name: "the resolver behind every claim refuses a feature name that no longer exists"
+                .to_string(),
+            covers: Vec::new(),
             expected: Expect::Red {
                 naming: vec!["no-such-feature".to_string()],
             },

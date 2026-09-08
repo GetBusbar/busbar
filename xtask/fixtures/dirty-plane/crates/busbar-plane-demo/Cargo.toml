@@ -1,0 +1,11 @@
+# A pure-kind crate (the `plane` glob matches it) with a banned direct dependency, under a rule
+# table that is spelled correctly. Unlike its twin in `renamed-rule-table`, this crate's `libc` edge
+# is meant to be FOUND: it is what makes `denylist:hits` go red through the gate.
+[package]
+name = "busbar-plane-demo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libc = "0.2"
