@@ -19,6 +19,9 @@ futures = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+# The kind's shared conformance battery. A test edge, not a kind edge: the kind-isolation gate
+# scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit" }
 # TEST-ONLY, and only for the seal. The battery needs a kernel-side seal to build the handle and the
 # destination a dial takes; minting the capability crate's own token is the seam a deployment uses,
 # where declaring a private type and implementing the contract's sealing trait on it was a forgery

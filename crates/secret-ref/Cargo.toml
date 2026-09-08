@@ -16,3 +16,6 @@ serde_json = { workspace = true }
 # rename, and why, is stated once in the workspace table.
 serde_yaml = { workspace = true }
 jsonschema = { workspace = true }
+# The kind's shared conformance battery. A test edge, not a kind edge: the kind-isolation gate
+# scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit" }

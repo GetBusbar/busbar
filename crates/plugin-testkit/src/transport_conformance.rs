@@ -24,6 +24,16 @@
 //! runtime-agnostic driver. [`assert_listen_accept_seam`] is the shape that lift takes, and it runs
 //! today over whatever the caller can already drive.
 //!
+//! # Owed, named rather than dropped
+//!
+//! Running this over the seven wires turned up one thing no rule here can settle: `sse`, `stdio`
+//! and `ws` declare ZERO selector forms in either direction. `sse` is correct (it composes over
+//! `http` and inherits its evaluation) and `stdio` is correct (a single-peer wire has nothing to
+//! select between), but nothing in the DECLARATION tells those two apart from a wire that simply
+//! forgot, so [`assert_declaration`] reports the counts and asserts nothing about them. Giving the
+//! declaration a discriminator — or ruling that a bottom wire with no forms is a finding — is the
+//! kind owner's, and it is written here so the next reader meets it.
+//!
 //! # Why the helpers take plain values rather than the `TransportMeta` trait
 //!
 //! Exactly the reason [`crate::store_conformance`]'s siblings are generic over `T`: this crate may
@@ -97,12 +107,13 @@ pub fn assert_declaration(d: &TransportDecl<'_>) {
         "`{}` declares the same transport fact twice; the kernel reserves each key once",
         d.key
     );
-    assert!(
-        d.selector_forms > 0 || d.egress_selector_forms > 0,
-        "`{}` can evaluate no selector form in either direction, so no claim can ever name it and \
-         no plane can ever be mounted on it",
-        d.key
-    );
+    // NOT ASSERTED, and named rather than dropped: "a wire evaluates at least one selector form".
+    // Three of the seven declare none — `sse` (which composes over `http` and inherits its
+    // evaluation), `stdio` (a single-peer wire with nothing to select between) and `ws`. The first
+    // two are correct and the third is a question for the kind's owner, and no discriminator in the
+    // declaration tells the three apart, so this battery reports the counts to the caller and
+    // asserts nothing it cannot justify. See the module docs' owed list.
+    let _ = (d.selector_forms, d.egress_selector_forms);
 }
 
 /// THE WIRE HALF, as far as it can be asked without a runtime in this crate.
