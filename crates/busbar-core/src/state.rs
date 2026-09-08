@@ -666,6 +666,114 @@ impl App {
             self.auth.is_open(),
         )
     }
+
+    /// ONE POOL'S LIVE MEMBER HEALTH, read off this generation's tables and this node's own signals,
+    /// or `None` when no such pool is configured.
+    ///
+    /// ONE FOLD, TWO RENDERINGS, the same rule [`App::ingress_door_facts`] states. `GET /pools` with
+    /// its detail flag CROSSED to the composition root's loop, which renders these readings as bytes;
+    /// `GET /pools/{name}` did NOT cross and is still answered by the surface underneath, which folds
+    /// the very same rows into its own view. Two walks over the store's cells would be two chances
+    /// for one node to report two different healths for one member.
+    ///
+    /// ONE CLOCK READING for the whole pool. Every cell below is asked against the same instant, so a
+    /// member's cooldown and the verdict beside it cannot come from two different moments — a read
+    /// that sampled them apart could report a member usable with seconds still on its cooldown.
+    ///
+    /// SIDE-EFFECT-FREE, which is the one thing a live-health read must be and the easiest to lose:
+    /// the breaker's `usable_for` MUTATES (it can transition an expired-open cell to half-open and
+    /// steal the single-flight recovery probe), so this asks the selection path's own predicate
+    /// instead. A read that armed a probe would be a read that changed the node it was describing.
+    ///
+    /// PER-POOL WHERE THE CELL IS PER-POOL. `usable` and the cooldown are this lane's cell WITHIN
+    /// this pool, because that is the cell routing ranks on; the tallies, the permits and the
+    /// latency beside them are genuinely lane-global counters, and the carrier's own documentation
+    /// says which is which so neither renderer has to decide.
+    #[must_use]
+    pub fn pool_health_of(&self, pool: &str) -> Option<Vec<busbar_substrate::facts::LaneHealth>> {
+        let view = self.engine_tables_view();
+        // A pool is KNOWN iff it appears in the neutral pool label space. Membership emptiness is a
+        // different fact: a configured pool with no members and an unknown pool both project no
+        // members, and only one of them is a `404`.
+        if !view.pool_exists(pool) {
+            return None;
+        }
+        let now = crate::store::now();
+        Some(
+            view.pool_members(pool)
+                .into_iter()
+                .map(|(lane, weight)| {
+                    let snapshot = self.store.snapshot(lane, now);
+                    busbar_substrate::facts::LaneHealth {
+                        model: view
+                            .lane_view(lane)
+                            .map(|l| l.model.to_string())
+                            .unwrap_or_default(),
+                        weight,
+                        usable: self.store.ready_in(pool, lane, now),
+                        cooldown_remaining_seconds: self
+                            .store
+                            .cooldown_remaining_in(pool, lane, now),
+                        available_concurrency: self.store.available_permits(lane),
+                        inflight: snapshot.inflight,
+                        latency_ms: self.store.lane_latency_ms(lane),
+                        ok: snapshot.ok,
+                        err: snapshot.err,
+                        dead: snapshot.dead,
+                        trip_count: snapshot.trips,
+                        // Zero is this counter's NEVER, and `None` is how the reading says so — a
+                        // node that reported the epoch would claim every fresh lane tripped in 1970.
+                        last_trip_at: (snapshot.last_trip_at > 0).then_some(snapshot.last_trip_at),
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// THIS NODE'S PLUGIN CATALOG for one KIND, as its own neutral rows — or the refusal it has for
+    /// a kind it keeps no catalog for, or for a scan it could not start.
+    ///
+    /// `Arc<Self>` rather than `&self`, and that is the seam rather than an inconvenience: the scan
+    /// underneath is cached and single-flighted per plugins directory and the machinery that does
+    /// both takes the generation by handle. Taking it here is what lets the composition root's loop
+    /// ask this question off whichever generation is current, at request time, the same way every
+    /// other crossed read reaches its facts.
+    ///
+    /// BLOCKING, and the caller must already be somewhere it may block — see the catalog's own
+    /// contract for which contexts those are. The one that matters for the crossed read is the
+    /// blocking pool the administrative mount hands a unit to.
+    pub fn plugin_catalog(
+        self: &std::sync::Arc<Self>,
+        kind: &str,
+    ) -> Result<Vec<busbar_substrate::facts::PluginFacts>, busbar_substrate::facts::CatalogRefusal>
+    {
+        crate::admin::v1::service::AdminService::new(std::sync::Arc::clone(self))
+            .plugin_catalog(kind)
+    }
+
+    /// EVERY POOL'S live member health, in pool-name order — the whole topology with its health in
+    /// one read.
+    ///
+    /// The list form of [`App::pool_health_of`] and built out of it, so the row a dashboard reads for
+    /// one pool and the row it reads for all of them are the same row by construction. The order is
+    /// the pool listing's own, which is the order the operation has always answered in.
+    #[must_use]
+    pub fn pool_health(&self) -> Vec<(String, Vec<busbar_substrate::facts::LaneHealth>)> {
+        let mut pools: Vec<String> = self
+            .engine_tables_view()
+            .pools()
+            .iter()
+            .map(|(name, _)| (*name).to_string())
+            .collect();
+        pools.sort();
+        pools
+            .into_iter()
+            .map(|name| {
+                let members = self.pool_health_of(&name).unwrap_or_default();
+                (name, members)
+            })
+            .collect()
+    }
 }
 
 impl App {

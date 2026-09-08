@@ -251,6 +251,15 @@ rustls-pki-types = { version = "1", default-features = false, features = ["std"]
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# THE DOUBLE-TO-STRING ALGORITHM `serde_json` ITSELF PRINTS FLOATS WITH — not a second one that
+# agrees with it today. A composition root that renders an administrative answer by hand has to write
+# a `f64` the way the serializer it replaced wrote it, and "shortest round-trip" does not pin the
+# BYTES: the same value is `1e100` under one printer and a hundred-and-one digits under another, and
+# `1.0` under one and `1` under another. Naming the crate `serde_json` delegates to makes the
+# identity structural — the two renderings cannot drift, because there is only one of them — instead
+# of a comparison somebody has to keep re-running. It is already in the lock, as `serde_json`'s own
+# dependency. NOT a serializer: it turns one number into its digits and nothing else.
+zmij = "1"
 # Form-encoding for the engine-built RFC 8693 token exchange — the exact crate reqwest's `.form()`
 # delegated to, so the encoded bytes are identical by construction. Already in the lock via reqwest.
 serde_urlencoded = "0.7"

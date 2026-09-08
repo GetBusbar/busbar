@@ -44,8 +44,12 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 // `units_admin` tests, where it is compared byte for byte instead of field by field.
 //
 // Every OTHER test in this file that used `/info` as a convenient mounted read — an auth probe, a
-// scope probe, a `config_version` reading — now asks a read this router still answers: `/pools` for
-// the door, `/config` for the version (the same counter, on the read that carries it as `version`).
+// scope probe, a `config_version` reading — now asks a read this router still answers: `/config`,
+// which carries the door, the version (the same counter, as `version`) and the topology at once.
+//
+// `/pools` AND `/plugins` JOINED THEM in admin Cut 2, and the probes that had moved onto `/pools`
+// moved once more, to `/config`. The read-only-scoped mounted GET a probe reaches for is that one
+// now, and it is the last one of its kind on this surface — which is the point of the migration.
 
 /// A CROSSED path keeps its `405` and keeps its `Allow`, on every method the operation never had.
 ///
@@ -66,9 +70,9 @@ async fn a_crossed_path_still_refuses_a_wrong_method_the_way_it_always_did() {
     let (addr, handle) = serve_with_gov(gov).await;
     let client = reqwest::Client::new();
 
-    // `/admin-auth` is not here: its `PUT` has NOT crossed, so it is a path this router still serves
-    // an operation on, and its `Allow` is a different (and equally truthful) list.
-    for path in ["/info", "/auth", "/models", "/providers"] {
+    // `/admin-auth` and `/plugins` are not here: each still serves an operation of its own on this
+    // router — a `PUT` and a `POST` — so each has a different (and equally truthful) `Allow`.
+    for path in ["/info", "/auth", "/models", "/providers", "/pools"] {
         let r = client
             .delete(format!("http://{addr}/api/v1/admin{path}"))
             .header("x-admin-token", "admintok")
@@ -97,11 +101,20 @@ async fn a_crossed_path_still_refuses_a_wrong_method_the_way_it_always_did() {
     handle.abort();
 }
 
-/// The topology read surface THIS ROUTER STILL ANSWERS (`/api/v1/admin/pools`) flows through the
-/// service and projects the pool view. Built on a two-lane, two-provider fixture so the pool
-/// membership and each member's weight are observable.
+/// The pool topology THIS CRATE STILL BUILDS, as the effective-config read embeds it.
+///
+/// THE ROUTE WENT AND THE PROJECTION STAYED. `GET /api/v1/admin/pools` CROSSED to the composition
+/// root's loop in 1.6.0's admin Cut 2, so there is no pool listing to ask this router for — but the
+/// `pools` member of `GET /config` is still built here, off the same substrate projection the loop
+/// renders its bytes from, and that is what this asks about. Built on a two-lane, two-provider
+/// fixture so the pool membership and each member's weight are observable.
+///
+/// The claim about the crossed answer's own BYTES moved with the operation, to the root's
+/// `units_admin` tests. What is left here is the claim that matters on this side of the seam: the
+/// two readings are one fold, so the topology an operator reads out of the effective config is the
+/// topology the listing would have shown.
 #[tokio::test]
-async fn test_admin_v1_topology_read_pools() {
+async fn the_effective_config_still_carries_the_pool_topology() {
     use crate::test_support::LaneSpec;
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -133,24 +146,19 @@ async fn test_admin_v1_topology_read_pools() {
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let client = reqwest::Client::new();
 
-    let get = |path: String| {
-        let url = format!("http://{addr}{path}");
-        let client = client.clone();
-        async move {
-            client
-                .get(url)
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap()
-                .json::<serde_json::Value>()
-                .await
-                .unwrap()
-        }
-    };
+    let config: serde_json::Value = client
+        .get(format!("http://{addr}/api/v1/admin/config"))
+        .header("x-admin-token", "admintok")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
 
-    let pools = get("/api/v1/admin/pools".into()).await;
-    let items = pools["items"].as_array().unwrap();
+    let items = config["pools"]
+        .as_array()
+        .expect("the config carries pools");
     let mypool = items
         .iter()
         .find(|p| p["name"] == "mypool")
@@ -159,11 +167,6 @@ async fn test_admin_v1_topology_read_pools() {
     assert_eq!(members.len(), 2, "pool has two members");
     let weight_a = members.iter().find(|m| m["model"] == "model-a").unwrap()["weight"].as_u64();
     assert_eq!(weight_a, Some(3), "model-a weight projected");
-
-    // THE `/models` AND `/providers` THIRDS OF THIS TEST MOVED. Both crossed to the composition
-    // root's loop in 1.6.0's admin Cut 1, so this router has no route for either and the answers
-    // they render are asked of the composition instead — see the root's `units_admin` tests. The
-    // lane projections both readings share live once, in the substrate.
 
     handle.abort();
 }
@@ -326,44 +329,13 @@ async fn test_admin_v1_pool_detail_live_status() {
     assert_eq!(m["trip_count"], 0);
     assert!(m["last_trip_at"].is_null());
 
-    // ?detail=true on the COLLECTION returns the same row shape for every pool in ONE call
-    // (no more M+1 dashboard fan-out).
-    let detailed: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/pools?detail=true"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = detailed["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["name"], "mypool");
-    assert_eq!(
-        items[0]["members"][0]["usable"], true,
-        "detail rows carry the live status inline: {detailed}"
-    );
-    assert_eq!(items[0]["members"][0]["trip_count"], 0);
-
-    // ?detail=false is the explicit non-detailed request, not a rejected value: it must fall
-    // through to the plain (non-detailed) listing, same shape as omitting `detail` entirely, NOT
-    // the `pools_bad_detail`-style 400 an unrecognized value gets.
-    let plain_via_false = client
-        .get(format!("http://{addr}/api/v1/admin/pools?detail=false"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(plain_via_false.status(), 200);
-    let plain_via_false: serde_json::Value = plain_via_false.json().await.unwrap();
-    let plain_items = plain_via_false["items"].as_array().unwrap();
-    assert_eq!(plain_items.len(), 1);
-    assert_eq!(plain_items[0]["name"], "mypool");
-    assert!(
-        plain_items[0]["members"][0].get("usable").is_none(),
-        "detail=false must NOT carry the live-status row shape: {plain_via_false}"
-    );
+    // THE `?detail` THIRDS OF THIS TEST MOVED. Both of them — the detailed collection and the
+    // explicit `detail=false` that must fall through to the plain listing rather than be refused —
+    // belong to `GET /pools`, which CROSSED to the composition root's loop in 1.6.0's admin Cut 2.
+    // This router has no route for that operation, and the claim about its answer moved with it, to
+    // the root's `units_admin` tests, where the detailed row is compared byte for byte instead of
+    // field by field. The row shape itself cannot drift apart in the move: the health this read
+    // renders and the health that one renders are one walk over the node's cells.
 
     // Unknown pool → 404 not_found.
     let missing = client
@@ -1252,7 +1224,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     // read-only: GET 200, mutations 403 with the frozen envelope.
     let r = with(
         "grp:viewers",
-        client.get(format!("http://{addr}/api/v1/admin/pools")),
+        client.get(format!("http://{addr}/api/v1/admin/config")),
     )
     .send()
     .await
@@ -1306,7 +1278,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     // Unmapped group: authenticated but zero grants — 403 even on reads.
     let r = with(
         "grp:strangers",
-        client.get(format!("http://{addr}/api/v1/admin/pools")),
+        client.get(format!("http://{addr}/api/v1/admin/config")),
     )
     .send()
     .await
@@ -1317,7 +1289,7 @@ async fn test_admin_v1_scope_ladder_e2e_with_group_mapped_principals() {
     // test-scope-module it earns nothing (a role never rides another module's binding table).
     let r = with(
         "grp:sneaky",
-        client.get(format!("http://{addr}/api/v1/admin/pools")),
+        client.get(format!("http://{addr}/api/v1/admin/config")),
     )
     .send()
     .await
@@ -1440,7 +1412,7 @@ async fn test_admin_v1_credential_cache_and_flush_endpoint() {
     // Two reads as a group-mapped principal: the module's Identify lands in the cache.
     for _ in 0..2 {
         let r = client
-            .get(format!("http://{addr}/api/v1/admin/pools"))
+            .get(format!("http://{addr}/api/v1/admin/config"))
             .header("x-admin-token", "grp:viewers")
             .send()
             .await
@@ -1590,7 +1562,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(body["error"]["code"], "conflict");
     let r = client
-        .get(format!("http://{addr}/api/v1/admin/pools"))
+        .get(format!("http://{addr}/api/v1/admin/config"))
         .header("x-admin-token", "admintok")
         .send()
         .await
@@ -1615,7 +1587,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     // …after which the operator token no longer authenticates (it is not in the chain)…
     let r = client
-        .get(format!("http://{addr}/api/v1/admin/pools"))
+        .get(format!("http://{addr}/api/v1/admin/config"))
         .header("x-admin-token", "admintok")
         .send()
         .await
@@ -1628,7 +1600,7 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
 
     // …and the surviving credential carries on.
     let r = client
-        .get(format!("http://{addr}/api/v1/admin/pools"))
+        .get(format!("http://{addr}/api/v1/admin/config"))
         .header("x-admin-token", "grp:admins")
         .send()
         .await
@@ -3865,11 +3837,17 @@ async fn test_admin_v1_hook_health_best_effort() {
     handle.abort();
 }
 
-/// The plugin catalog (`GET /api/v1/admin/plugins?type=`) lists compiled-in plugins per type (the
-/// same feature-gated source as `info`) plus external hooks from the registry, and rejects an
-/// unknown/absent type with the stable `invalid_request` code.
+/// THE CATALOG THIS NODE KEEPS lists compiled-in plugins per kind (the same feature-gated source as
+/// the build proof) plus external hooks from the registry, and refuses an unknown/absent kind.
+///
+/// ASKED OF THE NODE, NOT OF THE ROUTER. The catalog LISTING crossed to the composition root's loop
+/// in 1.6.0's admin Cut 2, so there is no `GET` to send this router — but not one claim below is
+/// about the wire. Every one of them is about the FOLD: which compiled-in modules appear, how a
+/// registry hook is projected, and that a kind this node keeps no catalog for is refused rather than
+/// answered empty. The fold stayed here; only its rendering left. The BYTES it renders into are
+/// pinned where they are now written, in the root's `units_admin` tests.
 #[tokio::test]
-async fn test_admin_v1_plugins_catalog_by_type() {
+async fn the_plugin_catalog_folds_one_kind_at_a_time() {
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -3891,72 +3869,57 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         phase: Vec::new(),
     };
     let app = TestApp::new().governance(gov).hook("myhook", gate).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    let get = |q: &str| {
-        let url = format!("http://{addr}/api/v1/admin/plugins?type={q}");
-        let client = client.clone();
-        async move {
-            client
-                .get(url)
-                .header("x-admin-token", "admintok")
-                .send()
-                .await
-                .unwrap()
-        }
-    };
 
     // auth: `keys` (engine-handled) is always listed; `admin-tokens` iff its feature is on.
-    let auth: serde_json::Value = get("auth").await.json().await.unwrap();
-    let a_items = auth["items"].as_array().unwrap();
+    let a_items = app.plugin_catalog("auth").expect("`auth` is a known kind");
     let keys = a_items
         .iter()
-        .find(|p| p["name"] == "keys")
+        .find(|p| p.name == "keys")
         .expect("the built-in keys verifier is always listed");
-    assert_eq!(keys["loader"], "compiled-in");
-    assert_eq!(keys["type"], "auth");
-    let admin_tokens = a_items.iter().find(|p| p["name"] == "admin-tokens");
+    assert_eq!(keys.loader, "compiled-in");
+    assert_eq!(keys.kind, "auth");
+    let admin_tokens = a_items.iter().find(|p| p.name == "admin-tokens");
     assert_eq!(
         admin_tokens.is_some(),
         cfg!(feature = "auth-admin-tokens"),
         "admin-tokens listed iff compiled in"
     );
     if let Some(admin_tokens) = admin_tokens {
-        assert_eq!(admin_tokens["loader"], "compiled-in");
-        assert_eq!(admin_tokens["type"], "auth");
+        assert_eq!(admin_tokens.loader, "compiled-in");
+        assert_eq!(admin_tokens.kind, "auth");
     }
 
     // hooks: the weighted floor is ALWAYS compiled-in; ranking iff the feature is on; plus the
     // external myhook.
-    let hooks: serde_json::Value = get("hooks").await.json().await.unwrap();
-    let h_items = hooks["items"].as_array().unwrap();
+    let h_items = app
+        .plugin_catalog("hooks")
+        .expect("`hooks` is a known kind");
     assert!(h_items
         .iter()
-        .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
+        .any(|p| p.name == "weighted" && p.loader == "compiled-in"));
     assert_eq!(
-        h_items.iter().any(|p| p["name"] == "ranking"),
+        h_items.iter().any(|p| p.name == "ranking"),
         cfg!(feature = "hooks-ranking"),
         "ranking listed iff compiled in"
     );
     let ext = h_items
         .iter()
-        .find(|p| p["name"] == "myhook")
+        .find(|p| p.name == "myhook")
         .expect("external hook listed");
-    assert_eq!(ext["loader"], "external");
-    assert_eq!(ext["active"], true);
-    assert_eq!(ext["target"], "test-hook");
+    assert_eq!(ext.loader, "external");
+    assert_eq!(ext.active, Some(true));
+    assert_eq!(ext.target.as_deref(), Some("test-hook"));
 
-    // Unknown type → 400 invalid_request.
-    let bad = get("nope").await;
-    assert_eq!(bad.status().as_u16(), 400);
-    let body: serde_json::Value = bad.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "invalid_request");
-
-    handle.abort();
+    // A kind this node keeps no catalog for is REFUSED, and the refusal names the kinds it does
+    // keep. The condition is the node's; the code and the status it goes out under are the loop's.
+    let bad = app.plugin_catalog("nope");
+    assert!(
+        matches!(
+            bad,
+            Err(busbar_substrate::facts::CatalogRefusal::UnknownKind(_))
+        ),
+        "an unknown kind must be refused, not answered empty: {bad:?}"
+    );
 }
 
 // THE `GET /api/v1/admin/auth` READ IS NOT TESTED HERE ANY MORE, for the reason `GET /admin-auth`
@@ -6374,7 +6337,11 @@ async fn test_cancelled_patch_keeps_gate_held_for_full_store_mutation() {
 /// publishers), with a known admin token — for the install/list/remove/reload plugin endpoints.
 async fn serve_with_plugins_dir(
     dir: std::path::PathBuf,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    Arc<crate::state::App>,
+) {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     // The lifecycle test installs an UNSIGNED plugin tarball, so opt in to unsigned plugins (the
@@ -6388,7 +6355,7 @@ async fn serve_with_plugins_dir(
         .plugins_cfg(plugins_cfg)
         .build();
     let (router, _handle) = crate::build_router_with_limits(
-        app,
+        Arc::clone(&app),
         256 * 1024 * 1024,
         0,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
@@ -6396,7 +6363,11 @@ async fn serve_with_plugins_dir(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (addr, handle)
+    // THE NODE COMES BACK WITH ITS SURFACE. The catalog LISTING crossed to the composition root's
+    // loop in 1.6.0's admin Cut 2, so a test that used to read the catalog over the wire asks the
+    // node for its rows instead — and the mutations it is really about (install, reload, remove)
+    // are still asked of the router beside it, which is where they still live.
+    (addr, handle, app)
 }
 
 /// As `serve_with_plugins_dir`, but with a caller-supplied `hook_env` — for tests that need the
@@ -6406,7 +6377,11 @@ async fn serve_with_plugins_dir(
 async fn serve_with_plugins_dir_and_hook_env(
     dir: std::path::PathBuf,
     hook_env: crate::hooks::HookEnv,
-) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+) -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    Arc<crate::state::App>,
+) {
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut plugins_cfg = crate::config::PluginsCfg::default();
@@ -6418,7 +6393,7 @@ async fn serve_with_plugins_dir_and_hook_env(
         .hook_env(hook_env)
         .build();
     let (router, _handle) = crate::build_router_with_limits(
-        app,
+        Arc::clone(&app),
         256 * 1024 * 1024,
         0,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
@@ -6426,7 +6401,8 @@ async fn serve_with_plugins_dir_and_hook_env(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    (addr, handle)
+    // The node comes back with its surface, for the reason `serve_with_plugins_dir` returns it.
+    (addr, handle, app)
 }
 
 /// Build an UNSIGNED (structurally valid) plugin tarball in memory for the HTTP lifecycle tests.
@@ -6476,7 +6452,7 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         std::env::temp_dir().join(format!("busbar-admin-plugins-http-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let (addr, handle, app) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
     // INSTALL — 201 with a trust verdict of "unverified" (unsigned under allow_unsigned).
@@ -6510,25 +6486,26 @@ async fn test_admin_v1_plugin_install_list_reload_remove() {
         .unwrap();
     assert_eq!(unauth.status().as_u16(), 401);
 
-    // LIST — the store catalog reports the memory head + our dynamic plugin (ready).
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = list["items"].as_array().unwrap();
-    assert_eq!(items[0]["name"], "memory");
+    // LIST — the store catalog reports the memory head + our dynamic plugin (ready). Asked of the
+    // NODE: the listing crossed to the loop, and what this step is about is that the install landed
+    // where the scan finds it, not how a row is rendered.
+    let items = tokio::task::spawn_blocking({
+        let app = Arc::clone(&app);
+        move || {
+            app.plugin_catalog("store")
+                .expect("`store` is a known kind")
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(items[0].name, "memory");
     let dyn_row = items
         .iter()
-        .find(|p| p["loader"] == "dynamic-library")
+        .find(|p| p.loader == "dynamic-library")
         .expect("dynamic-library row present");
-    assert_eq!(dyn_row["valid"], true);
-    assert_eq!(dyn_row["target"], file);
-    assert_eq!(dyn_row["name"], "acme-store-junk");
+    assert_eq!(dyn_row.valid, Some(true));
+    assert_eq!(dyn_row.target.as_deref(), Some(file));
+    assert_eq!(dyn_row.name, "acme-store-junk");
 
     // RELOAD — reports the reconciled dynamic set (no memory head).
     let reload: serde_json::Value = client
@@ -6634,7 +6611,7 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let (addr, handle, app) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
     let install = |file: &'static str, tarball: Vec<u8>| {
@@ -6665,52 +6642,37 @@ async fn test_admin_v1_plugins_type_secret_lists_secret_kind_only() {
     )
     .await;
 
-    let secret_list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=secret"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let secret_names: Vec<&str> = secret_list["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["name"].as_str().unwrap())
-        .collect();
+    // ASKED OF THE NODE. The listing crossed to the composition root's loop in 1.6.0's admin Cut 2,
+    // and the claim here is about the SCAN's kind filter, which never left this crate.
+    let catalog = |kind: &'static str| {
+        let app = Arc::clone(&app);
+        async move {
+            tokio::task::spawn_blocking(move || app.plugin_catalog(kind).expect("a known kind"))
+                .await
+                .unwrap()
+        }
+    };
+
+    let secret_list = catalog("secret").await;
+    let secret_names: Vec<&str> = secret_list.iter().map(|p| p.name.as_str()).collect();
     assert_eq!(
         secret_names,
         vec!["acme-secret-vault"],
-        "type=secret lists ONLY the secret-kind plugin: {secret_list}"
+        "kind=secret lists ONLY the secret-kind plugin: {secret_list:?}"
     );
-    for row in secret_list["items"].as_array().unwrap() {
-        assert_eq!(row["type"], "secret");
+    for row in &secret_list {
+        assert_eq!(row.kind, "secret");
     }
 
-    let store_list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let store_names: Vec<&str> = store_list["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p["name"].as_str().unwrap())
-        .collect();
+    let store_list = catalog("store").await;
+    let store_names: Vec<&str> = store_list.iter().map(|p| p.name.as_str()).collect();
     assert!(
         store_names.contains(&"memory") && store_names.contains(&"acme-store-junk"),
-        "type=store still lists the compiled-in default + the store plugin: {store_list}"
+        "kind=store still lists the compiled-in default + the store plugin: {store_list:?}"
     );
     assert!(
         !store_names.contains(&"acme-secret-vault"),
-        "type=store must NOT leak the secret-kind plugin: {store_list}"
+        "kind=store must NOT leak the secret-kind plugin: {store_list:?}"
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -6774,30 +6736,30 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
         std::sync::Arc::new(registry),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     );
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let (addr, handle, app) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let row = list["items"]
-        .as_array()
-        .unwrap()
+    // ASKED OF THE NODE: the listing crossed to the composition root's loop in 1.6.0's admin Cut 2,
+    // and what is under test is the URL the node RESOLVES for a row, not how a row is rendered.
+    let list = tokio::task::spawn_blocking({
+        let app = Arc::clone(&app);
+        move || {
+            app.plugin_catalog("store")
+                .expect("`store` is a known kind")
+        }
+    })
+    .await
+    .unwrap();
+    let row = list
         .iter()
-        .find(|p| p["name"] == "acme-store-schemaurl")
+        .find(|p| p.name == "acme-store-schemaurl")
         .expect("the schema-carrying row is present");
-    let schema_url = row["schema_url"].as_str().expect("schema_url is non-null");
+    let schema_url = row.schema_url.as_deref().expect("schema_url is non-null");
     assert_eq!(
         schema_url, "/api/v1/admin/plugins/acme-store-schemaurl/schema",
         "always the admin-prefixed relative path — never absolute, never a catalog URL"
     );
-    assert_eq!(row["schema_error"], serde_json::Value::Null);
+    assert_eq!(row.schema_error, None);
 
     // Following it returns the same schema.
     let followed: serde_json::Value = client
@@ -6813,13 +6775,11 @@ async fn test_admin_v1_plugins_list_row_carries_schema_url() {
 
     // The `memory` compiled-in row (no manifest at all) has `schema_url: null` — absence, not an
     // error, and distinct from "declared but unparseable".
-    let memory_row = list["items"]
-        .as_array()
-        .unwrap()
+    let memory_row = list
         .iter()
-        .find(|p| p["name"] == "memory")
+        .find(|p| p.name == "memory")
         .expect("compiled-in memory row present");
-    assert_eq!(memory_row["schema_url"], serde_json::Value::Null);
+    assert_eq!(memory_row.schema_url, None);
 
     let _ = std::fs::remove_dir_all(&dir);
     handle.abort();
@@ -6914,41 +6874,45 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
         std::sync::Arc::new(registry),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     );
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let (addr, handle, app) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let items = list["items"].as_array().unwrap();
+    // ASKED OF THE NODE: the listing crossed to the composition root's loop in 1.6.0's admin Cut 2.
+    // The claim is about the row a scan PRODUCES — that `file` is the on-disk artifact name and is
+    // a valid key for the sibling operations — and the sibling operations are still asked of the
+    // router below, which is where they still live.
+    let items = tokio::task::spawn_blocking({
+        let app = Arc::clone(&app);
+        move || {
+            app.plugin_catalog("store")
+                .expect("`store` is a known kind")
+        }
+    })
+    .await
+    .unwrap();
 
     let with_row = items
         .iter()
-        .find(|p| p["name"] == "acme-store-filecheck-with")
+        .find(|p| p.name == "acme-store-filecheck-with")
         .expect("the schema-carrying row is present");
     assert_eq!(
-        with_row["file"], "acme-store-filecheck-with-1.0.0.tar.gz",
+        with_row.file.as_deref(),
+        Some("acme-store-filecheck-with-1.0.0.tar.gz"),
         "`file` is the on-disk artifact filename, not the manifest name"
     );
-    assert_eq!(with_row["has_schema"], true);
+    assert!(with_row.has_schema);
     assert!(
-        with_row["schema_url"].is_string(),
+        with_row.schema_url.is_some(),
         "sanity: has_schema tracks schema_url"
     );
 
     // Round-trip: `file` is exactly what `DELETE /plugins/{file}` and `GET /plugins/{file}/schema`
     // take.
-    let file = with_row["file"].as_str().unwrap();
+    let file = with_row.file.as_deref().unwrap();
     let schema_resp: serde_json::Value = client
         .get(format!(
             "http://{addr}/api/v1/admin/plugins/{}/schema",
-            with_row["name"].as_str().unwrap()
+            with_row.name
         ))
         .header("x-admin-token", "admintok")
         .send()
@@ -6972,25 +6936,25 @@ async fn test_admin_v1_plugins_list_row_carries_file_and_has_schema() {
 
     let without_row = items
         .iter()
-        .find(|p| p["name"] == "acme-store-filecheck-without")
+        .find(|p| p.name == "acme-store-filecheck-without")
         .expect("the schema-less row is present");
     assert_eq!(
-        without_row["file"], "acme-store-filecheck-without-1.0.0.tar.gz",
+        without_row.file.as_deref(),
+        Some("acme-store-filecheck-without-1.0.0.tar.gz"),
         "`file` is populated even when the manifest has no schema"
     );
-    assert_eq!(without_row["has_schema"], false);
-    assert_eq!(without_row["schema_url"], serde_json::Value::Null);
+    assert!(!without_row.has_schema);
+    assert_eq!(without_row.schema_url, None);
 
     let memory_row = items
         .iter()
-        .find(|p| p["name"] == "memory")
+        .find(|p| p.name == "memory")
         .expect("compiled-in memory row present");
     assert_eq!(
-        memory_row["file"],
-        serde_json::Value::Null,
+        memory_row.file, None,
         "no backing artifact for a compiled-in row"
     );
-    assert_eq!(memory_row["has_schema"], false);
+    assert!(!memory_row.has_schema);
 
     let _ = std::fs::remove_dir_all(&dir);
     handle.abort();
@@ -7011,7 +6975,7 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let (addr, handle, app) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
     let tarball = admin_test_tarball("acme-store-candidate", "candidate");
@@ -7040,22 +7004,18 @@ async fn test_admin_v1_plugins_inspect_previews_without_installing() {
         0,
         "inspect must never write to plugins.dir"
     );
-    let list: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/plugins?type=store"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let list = tokio::task::spawn_blocking({
+        let app = Arc::clone(&app);
+        move || {
+            app.plugin_catalog("store")
+                .expect("`store` is a known kind")
+        }
+    })
+    .await
+    .unwrap();
     assert!(
-        !list["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|p| p["name"] == "acme-store-candidate"),
-        "an inspected candidate must not appear in the catalog: {list}"
+        !list.iter().any(|p| p.name == "acme-store-candidate"),
+        "an inspected candidate must not appear in the catalog: {list:?}"
     );
 
     // A read-only-scoped token (no `full`/`mint`/`hooks-register`) can still call it — `read-only`
@@ -7160,7 +7120,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         std::sync::Arc::new(registry),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     );
-    let (addr, handle) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
+    let (addr, handle, _app) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env).await;
     let client = reqwest::Client::new();
 
     // GET .../schema returns the schema as real JSON, resolved by NAME (not filename).
@@ -7195,7 +7155,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         std::sync::Arc::new(registry2),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     );
-    let (addr2, handle2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
+    let (addr2, handle2, _app2) = serve_with_plugins_dir_and_hook_env(dir.clone(), hook_env2).await;
     let got2: serde_json::Value = client
         .get(format!(
             "http://{addr2}/api/v1/admin/plugins/acme-store-junk/schema"
@@ -7262,7 +7222,7 @@ async fn test_admin_v1_plugin_schema_round_trips_from_manifest() {
         std::sync::Arc::new(bad_registry),
         std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
     );
-    let (bad_addr, bad_handle) =
+    let (bad_addr, bad_handle, _bad_app) =
         serve_with_plugins_dir_and_hook_env(bad_dir.clone(), bad_hook_env).await;
     let got_bad: serde_json::Value = client
         .get(format!(
@@ -7307,7 +7267,7 @@ async fn test_admin_v1_plugin_install_same_name_different_file_is_409() {
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-h2-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let (addr, handle, _app) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
     let install = |file: &'static str, tarball: Vec<u8>| {
@@ -7375,7 +7335,7 @@ async fn test_admin_v1_plugin_install_corrupt_existing_tarball_blocks_publish() 
         b"not a real tarball",
     )
     .unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let (addr, handle, _app) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
     let good = admin_test_tarball("busbar-store-good", "goodstore");
@@ -7415,7 +7375,7 @@ async fn test_admin_v1_plugin_install_rejections() {
     let dir = std::env::temp_dir().join(format!("busbar-admin-plugins-rej-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let (addr, handle) = serve_with_plugins_dir(dir.clone()).await;
+    let (addr, handle, _app) = serve_with_plugins_dir(dir.clone()).await;
     let client = reqwest::Client::new();
 
     // Bad base64.
@@ -11603,15 +11563,12 @@ async fn drive_admin_error_surface() {
             "version_conflict",
         ),
         // ── List/read GETs whose query string is rejected at the door ─────────────────────────
-        (
-            "pools_bad_detail",
-            "GET",
-            "/pools?detail=maybe",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
+        //
+        // NO `pools_bad_detail` CELL HERE ANY MORE. `GET /pools` CROSSED to the composition root's
+        // loop in 1.6.0's admin Cut 2, and the strictness of its `?detail` flag — an unrecognized
+        // value is a loud refusal, never a silently-ignored flag — crossed with it. This table
+        // witnesses what THIS surface emits, and it emits nothing for that path now; the refusal is
+        // pinned where it is written, in the root's `units_admin` tests.
         (
             "usage_bad_window",
             "GET",
@@ -11822,15 +11779,13 @@ async fn drive_admin_error_surface() {
             404,
             "not_found",
         ),
-        (
-            "plugins_missing_type",
-            "GET",
-            "/plugins",
-            None,
-            None,
-            400,
-            "invalid_request",
-        ),
+        // NO `plugins_missing_type` CELL HERE ANY MORE. `GET /plugins` CROSSED to the composition
+        // root's loop in 1.6.0's admin Cut 2, and the refusal an absent kind has always answered
+        // with crossed with it: the CONDITION is still raised here — the catalog is still this
+        // crate's, and it still refuses a kind it keeps no rows for — but the code and the status it
+        // goes out under are written where the answer is now written. This table witnesses what THIS
+        // surface emits, and it emits nothing on that path; the refusal is pinned in the root's
+        // `units_admin` tests, and the condition in this file's own catalog test.
         // ── POST /restart's 3 declared conditions ─────────────────────────────────────────────
         // These 3 have their own dedicated behavioral test (`test_admin_v1_restart_refuses_when_
         // it_cannot_restart`, which also asserts the exact refusal MESSAGE distinguishing the two
@@ -12364,6 +12319,27 @@ async fn drive_plugin_inspect_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The operations whose ANSWER — refusals included — this crate no longer produces.
+///
+/// An operation that CROSSES to the composition root's loop keeps its declaration in the served
+/// document, because the document's bytes are pinned and a client that fetched it before the upgrade
+/// and after it must get the same bytes. What it does not keep is an emission site here: the route is
+/// a refusal, and every 4xx the operation ever answered with is now written by the loop, off the same
+/// condition this crate still raises.
+///
+/// That makes the two crossed rows below UNWITNESSABLE from this crate — not over-claims. The
+/// distinction matters and is why this is a set of its own rather than a row in the debt ledger
+/// beside it: a debt is something a future commit pays off HERE, and there is nothing here left to
+/// pay. The witness moved with the operation, to the composition that now writes the bytes: the
+/// root's `units_admin` tests assert both refusals, envelope and sentence, through a real
+/// composition. This list may only grow as operations cross, and each row must still be a live
+/// declaration — a crossed operation whose declaration disappeared would take its document entry with
+/// it, which is the change the pinned bytes forbid.
+const CROSSED_OPERATIONS: &[(crate::admin::v1::contract::taxonomy::MethodTag, &str)] = {
+    use crate::admin::v1::contract::taxonomy::MethodTag::Get;
+    &[(Get, "/plugins"), (Get, "/pools")]
+};
+
 /// `declared_error_set_is_exactly_what_the_handlers_emit` requires every declared `(operation,
 /// ErrKind, Cond)` to be witness-backed. Where an operation declares the SAME `ErrKind` under two or
 /// more conditions, an untagged emission proves only that SOME condition fired -- so the emission
@@ -12512,6 +12488,19 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     // sibling 409 on the same operation kept the check green.
     let mut over_claimed = Vec::new();
     for (rel, method) in documented_operations() {
+        // AN OPERATION THAT CROSSED IS NOT AN OVER-CLAIM. Its declaration is still true and still in
+        // the document; what is no longer here is anything that could emit it. See
+        // `CROSSED_OPERATIONS` for why that is a different fact from a debt, and for where the
+        // witness went.
+        if CROSSED_OPERATIONS.contains(&(method, rel.as_str())) {
+            assert!(
+                !declared_errors(method, &rel).is_empty(),
+                "{} {rel} is listed as crossed but declares no error at all; a crossed operation \
+                 that lost its declaration has changed the pinned document",
+                method.as_str().to_uppercase()
+            );
+            continue;
+        }
         let declared = declared_errors(method, &rel);
         for de in declared {
             let ambiguous = declared.iter().filter(|o| o.kind == de.kind).count() > 1;

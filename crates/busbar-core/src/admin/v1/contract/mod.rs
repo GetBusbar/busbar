@@ -590,37 +590,11 @@ pub(crate) struct PluginView {
     pub(crate) schema_error: Option<String>,
 }
 
-impl PluginView {
-    /// A COMPILED-IN or EXTERNAL plugin row (no manifest metadata) — the historical shape. The
-    /// dynamic-library fields (`version`/`publisher`/`interface_version`/`trust`/`valid`/`error`/
-    /// `schema_url`/`schema_error`) are `None` and skip serialization, so the wire is byte-identical
-    /// to before this addition.
-    pub(crate) fn basic(
-        name: String,
-        r#type: &'static str,
-        loader: &'static str,
-        active: Option<bool>,
-        target: Option<String>,
-    ) -> Self {
-        Self {
-            name,
-            r#type,
-            loader,
-            active,
-            target,
-            file: None,
-            has_schema: false,
-            version: None,
-            publisher: None,
-            interface_version: None,
-            trust: None,
-            valid: None,
-            error: None,
-            schema_url: None,
-            schema_error: None,
-        }
-    }
-}
+// NO `basic` CONSTRUCTOR HERE ANY MORE. The rows a catalog is built OUT OF are the node's own
+// neutral facts now (`busbar_substrate::facts::PluginFacts`), because the catalog LISTING crossed to
+// the composition root's loop in 1.6.0's admin Cut 2 and the loop writes its bytes from those rows
+// directly. This view is what the ONE surface that still embeds a catalog — the plugin re-scan
+// result — projects them into, and a view built only by projection needs no second way to be built.
 
 /// The result of installing a dynamic-library store plugin (`POST /api/v1/admin/plugins`). The
 /// engine RE-VERIFIED the uploaded bytes against the running trust posture (the client is never
