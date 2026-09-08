@@ -154,10 +154,14 @@ impl Usage {
         if lines.len() > MAX_USAGE_LINES {
             return Err(UsageError::TooManyLines);
         }
-        Ok(Usage {
-            lines,
-            estimated: false,
-        })
+        // THE WHOLE-REPORT MARK AND THE PER-LINE MARK ARE ONE CLAIM AT TWO WIDTHS, and only the
+        // per-line one used to reach the posting. A fold that reads one class off the destination's
+        // own response and DERIVES another itself — a duration from a byte count under an assumed
+        // format — has to come through here, because `estimate` would say the destination confirmed
+        // nothing at all; the report then came out clean, so a node-derived figure was billed with
+        // nothing on it saying so and no row on the disputes report.
+        let estimated = lines.iter().any(|l| l.estimated);
+        Ok(Usage { lines, estimated })
     }
 
     /// Report the kernel's own floor, because the destination reported nothing.
