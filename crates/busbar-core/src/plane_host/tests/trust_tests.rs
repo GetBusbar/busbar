@@ -161,8 +161,8 @@ const DUE_CASES: &[(Option<u64>, u64, u64, bool)] = &[
 /// compiled-in one cannot diverge, and the plane reconstructs the reason it audits, not a bool.
 #[test]
 fn verify_decide_q_marshals_the_full_due_reason() {
-    use crate::trust::reverify::due;
-    use crate::trust::reverify::{Ledger, Policy};
+    use busbar_substrate::trust::reverify::due;
+    use busbar_substrate::trust::reverify::{Ledger, Policy};
     with_test_state(|host, vt, _scope| {
         for &(last, ttl_ms, now, _want_due) in DUE_CASES {
             let got = with_vquery(last, ttl_ms, now, |q| (vt.verify_decide.unwrap())(host, q));
@@ -184,7 +184,7 @@ fn verify_decide_q_marshals_the_full_due_reason() {
             // is the a2a-gated inbound half of the mapping).
             #[cfg(feature = "plane-a2a")]
             assert_eq!(
-                crate::trust::reverify::Due::from_verify_decision(got),
+                busbar_substrate::trust::reverify::Due::from_verify_decision(got),
                 due(&ledger, &policy, now, false),
                 "reconstructed Due for last={last:?} ttl={ttl_ms} now={now}"
             );
@@ -251,7 +251,7 @@ fn drift_quarantine_records_and_is_fail_closed() {
 #[cfg(feature = "plane-mcp")]
 #[test]
 fn drift_state_mirror_round_trips_and_fails_safe() {
-    use crate::trust::TrustState;
+    use busbar_substrate::trust::TrustState;
     for state in [
         TrustState::Pending,
         TrustState::Approved,
@@ -274,7 +274,7 @@ fn drift_state_mirror_round_trips_and_fails_safe() {
 #[cfg(feature = "plane-mcp")]
 #[test]
 fn drift_quarantine_carries_the_caller_state() {
-    use crate::trust::TrustState;
+    use busbar_substrate::trust::TrustState;
     with_test_state(|host, vt, _scope| {
         let subject = b"drift/carry/counterparty";
         // A full Key carrying an explicit disposition (CLEAR and DEMOTE both answer Ok).
@@ -358,13 +358,13 @@ impl Facts {
 }
 
 /// The neutral u8 mirror of the plane's `TrustState`, as the plane marshals it.
-fn state_u8(state: crate::trust::TrustState) -> u8 {
+fn state_u8(state: busbar_substrate::trust::TrustState) -> u8 {
     match state {
-        crate::trust::TrustState::Pending => reg_state::PENDING,
-        crate::trust::TrustState::Approved => reg_state::APPROVED,
-        crate::trust::TrustState::Quarantined => reg_state::QUARANTINED,
-        crate::trust::TrustState::Suspended => reg_state::SUSPENDED,
-        crate::trust::TrustState::Error => reg_state::FAILED,
+        busbar_substrate::trust::TrustState::Pending => reg_state::PENDING,
+        busbar_substrate::trust::TrustState::Approved => reg_state::APPROVED,
+        busbar_substrate::trust::TrustState::Quarantined => reg_state::QUARANTINED,
+        busbar_substrate::trust::TrustState::Suspended => reg_state::SUSPENDED,
+        busbar_substrate::trust::TrustState::Error => reg_state::FAILED,
     }
 }
 
@@ -399,7 +399,7 @@ fn with_facts<R>(id: &[u8], facts: Facts, f: impl FnOnce(*const CounterpartyRef)
 /// step outcome, the fold independently reconstructs the disposition, and the two must agree.
 #[test]
 fn trust_evaluate_folds_validate_request_order() {
-    use crate::trust::TrustState;
+    use busbar_substrate::trust::TrustState;
     // (a description, the facts that produce it, the verdict the plane's Refusal maps to).
     let id = b"faithfulness/counterparty";
     let cases: &[(&str, Facts, TrustVerdict)] = &[
