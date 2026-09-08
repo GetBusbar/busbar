@@ -9,6 +9,10 @@ description = "Shared kind-level contract test helpers for every first-party bus
 license = "Apache-2.0"
 
 [dependencies]
+# The plugin-visible contract, and the ONLY workspace crate every plugin kind's dependency row
+# already names — so the per-kind batteries in `kinds` cost a plugin's dev tree nothing it was not
+# already compiling. Not optional, for the reason stated on the module.
+busbar-contract = { path = "../busbar-contract" }
 # OPTIONAL, and off by default: only the `store`-kind plugins need it, and pulling `busbar-api`
 # into every plugin's dev tree (hook/auth/secret alike) for a module they never call would be a
 # gratuitous compile cost. No cycle — `busbar-api` depends on nothing in this crate.
