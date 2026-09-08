@@ -1177,7 +1177,9 @@ fn a_cache_hit_does_not_extend_the_row_so_a_revocation_still_lands() {
     // THE DEFECT: the hit must not have moved the row's expiry. Re-`put` on a hit pushes it to
     // `t0 + TTL`, and since every subsequent use does the same, the row never expires at all.
     assert!(
-        cache.get("idp", "cred", t0 + REVOCABLE_TTL_SECS / 2 + 1).is_none(),
+        cache
+            .get("idp", "cred", t0 + REVOCABLE_TTL_SECS / 2 + 1)
+            .is_none(),
         "a cache HIT must not push the row's expiry out — a credential in continuous use would \
          then never be re-verified and the revocation would never land"
     );

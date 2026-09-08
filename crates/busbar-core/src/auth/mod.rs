@@ -2100,7 +2100,11 @@ impl AuthMiddleware {
         chain: Vec<(String, Box<dyn AuthModule>)>,
         has_plugin_module: bool,
     ) -> Self {
-        Self::from_chain_and_keys_for_test(chain, has_plugin_module, /* keys_in_chain = */ false)
+        Self::from_chain_and_keys_for_test(
+            chain,
+            has_plugin_module,
+            /* keys_in_chain = */ false,
+        )
     }
 
     /// [`AuthMiddleware::from_chain_for_test`] that can also declare the built-in `keys` ENGINE ARM
