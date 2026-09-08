@@ -23,12 +23,12 @@
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
 use busbar_caps::{
-    Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
-    RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
+    Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, ReasonCode, RecoveryToken, StepName,
+    UnitKey, Usage, UsageToken,
 };
 
 use crate::slice::Epoch;
-use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
+use crate::teller::{accrual_line, settle_amount, Evidence, Kernel};
 
 /// A hold as the journal wrote it.
 ///
@@ -80,17 +80,14 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
     let outcome = Outcome::Failed(StepName::Route, ReasonCode::TaskLost);
     let (amount, flags) = settle_amount(&outcome, &evidence);
     // One line, and the record holds sixteen: this report is within the bound by construction.
+    // The recovery path never saw a destination report anything: this figure is the accrual the
+    // journal recorded, which is the kernel's own count, and the whole report is an estimate for
+    // the same reason. The class comes from the one place all three settling sites read it, even
+    // though the evidence built above names none — a site that agrees with the others by
+    // coincidence is a site that can stop agreeing.
     let usage = Usage::estimate(
         &UsageToken::mint(kernel.seal()),
-        vec![UsageLine {
-            class: KERNEL_ACCRUAL_CLASS,
-            quantity: amount,
-            // The sweep never saw a destination report anything: this figure is the accrual the
-            // journal recorded, which is the kernel's own count, and the whole report is an
-            // estimate for the same reason.
-            source: QuantitySource::Count,
-            estimated: true,
-        }],
+        vec![accrual_line(&evidence, amount, true)],
     )
     .expect("one usage line is always within the record's bound");
     // The settlement table's `amount` IS the money figure, in the nano-units the hold reserved
