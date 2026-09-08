@@ -597,6 +597,12 @@ fn run_all(cx: &Ctx, p: &Partition) -> i32 {
     1
 }
 
+/// How long one discovered gate command may take before this runner refuses instead of waiting.
+/// These are whole cargo builds and test runs on a cold target directory, so the number is generous
+/// — an hour is well above the slowest of them, and the point of it is not to be tight. It is to
+/// make "forever" unrepresentable, because a runner still waiting is a runner with no verdict.
+const GATE_LIMIT: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// One gate, with its output captured and only the last 15 lines shown on failure.
 fn run_one(cx: &Ctx, cmd: &str) -> bool {
     print!("  {cmd:<58} ");
@@ -606,11 +612,15 @@ fn run_one(cx: &Ctx, cmd: &str) -> bool {
         println!("FAILED");
         return false;
     };
-    let out = Command::new(program)
-        .args(rest)
+    // BOUNDED IN TIME. A wedged cargo child used to block this runner forever, and a runner with no
+    // verdict is the one answer the ledger's design refuses — the operator eventually kills it and
+    // reports from memory. The limit is written here rather than in the helper because these are
+    // whole cargo builds and test runs; it is above the slowest of them and far below "forever".
+    let mut cmd = Command::new(program);
+    cmd.args(rest)
         .current_dir(cx.root())
-        .env("RUSTFLAGS", RUSTFLAGS)
-        .output();
+        .env("RUSTFLAGS", RUSTFLAGS);
+    let out = crate::proc::output_with_timeout(&mut cmd, GATE_LIMIT);
     match out {
         Ok(o) if o.status.success() => {
             println!("ok");
