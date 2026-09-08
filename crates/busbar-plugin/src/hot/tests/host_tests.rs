@@ -368,7 +368,7 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
         for _ in 0..N {
             f();
         }
-        (0..ROUNDS)
+        (0..REPEATS)
             .map(|_| {
                 let t = std::time::Instant::now();
                 for _ in 0..N {
@@ -394,7 +394,7 @@ fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate
         overhead_ns < BUDGET_NS,
         "the vtable fn-pointer hop cost {overhead_ns:+.3} ns/call over the direct call, which is \
          OVER the {BUDGET_NS} ns budget this test exists to prove (direct {direct_ns:.3} ns, \
-         vtable {vtable_ns:.3} ns, min of {ROUNDS} rounds of {N})"
+         vtable {vtable_ns:.3} ns, min of {REPEATS} rounds of {N})"
     );
 
     // A positive control on the measurement itself: a per-call figure of zero would satisfy any
