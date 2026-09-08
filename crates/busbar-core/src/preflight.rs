@@ -7,8 +7,9 @@
 
 use std::sync::Arc;
 
-use crate::diagnostics::{
-    diag_warn, PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE, PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{
+    PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE, PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
     PLUGIN_LOADED_UNVERIFIED, PLUGIN_SKIPPED_TRUST_POLICY,
 };
 
