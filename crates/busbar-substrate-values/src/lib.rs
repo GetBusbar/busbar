@@ -74,6 +74,10 @@ pub mod plane {
 // The value families the money path is written in.
 pub mod billing;
 pub mod breaker;
+// The neutral fact ROWS a node reports about the things it holds — one lane's live health, one
+// installed plugin's catalog entry. Named by two crates (the surface that folds them into its views
+// and the composition root that renders their bytes), which is why they live in a third one.
+pub mod facts;
 pub mod handlers;
 pub mod ir;
 pub mod proto;
