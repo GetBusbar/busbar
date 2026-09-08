@@ -259,6 +259,10 @@ pub use preflight::{
 pub use router::{
     build_router, build_split_routers_with_limits, fallback_error_response, REQUEST_ACTIVITY_TICKS,
 };
+// THE CONTROL AXIS's one write, re-exported at the crate root so the composition root spells the
+// ACT rather than the list. See `oauth_as::control::install_control_surfaces` on why the list is on
+// this side of the call and when it moves.
+pub use oauth_as::install_control_surfaces;
 // Referenced as `crate::...` only from the test trees (`#[cfg(test)]`), so the production lib
 // build sees them as unused — allowed, with the reason written down rather than widened away.
 #[allow(unused_imports)]

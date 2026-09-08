@@ -698,13 +698,13 @@ fn register_protocols() {
 /// carried no `#[cfg]`, so the shipped binary could always honour an `oauth_as:` block. What decides
 /// whether anything is built and served is the CONFIG — an absent block means no slot, and the
 /// mount loop then mounts nothing.
+/// ONE SYMBOL, and the shape is the legacy-reach ratchet's rather than a preference. The obvious
+/// spelling of this function names three retiring symbols — the decl, the seam's decl type and its
+/// installer — and the root's reach into the retiring crates is a ratchet that may only go down.
+/// Three for one registration is three the ratchet has to carry until the whole surface moves, so
+/// the list lives on the far side of the call and this names the act.
 fn register_control_surfaces() {
-    /// The installed set, `'static` because the registry hands it out for the process's life. A
-    /// named static rather than a temporary, for exactly the reason `register_planes` leaks its
-    /// vector: a registration outlives the function that made it.
-    static INSTALLED: &[&busbar_substrate::control_routes::ControlDecl] =
-        &[&busbar_core::oauth_as::CONTROL_DECL];
-    busbar_substrate::control_routes::install_control_surfaces(INSTALLED);
+    busbar_core::install_control_surfaces();
 }
 
 fn register_planes() {

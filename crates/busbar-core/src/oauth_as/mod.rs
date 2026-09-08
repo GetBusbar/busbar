@@ -38,7 +38,7 @@
 pub(crate) mod control;
 pub(crate) mod fetch;
 
-pub use control::CONTROL_DECL;
+pub use control::{install_control_surfaces, CONTROL_DECL};
 
 // ── THE TRANSITIONAL RE-EXPORTS ────────────────────────────────────────────────────────────────
 // Each of these is one name a core call site still spells `crate::oauth_as::…`. They are listed

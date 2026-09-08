@@ -46,6 +46,21 @@ pub static CONTROL_DECL: ControlDecl = ControlDecl {
     routes: oauth2_routes,
 };
 
+/// THE SET THIS BUILD INSTALLS. One entry today; `busbar-control-admin` joins it in R7.
+static INSTALLED: &[&ControlDecl] = &[&CONTROL_DECL];
+
+/// PERFORM the composition root's one write into the control axis.
+///
+/// The DECISION is the root's — `main::register_control_surfaces` calls this, and a build that does
+/// not call it serves no authorization server, exactly as a build that does not call
+/// `install_planes` serves no plane. What is here is the LIST, and it is here for the same reason
+/// the translation above is: the root's reach into the retiring crates is a ratchet that may only
+/// go down, and spelling the decl, the seam's decl type and its installer at the call site is three
+/// symbols where the act is one. Both move to the root when the config lowering does.
+pub fn install_control_surfaces() {
+    busbar_substrate::control_routes::install_control_surfaces(INSTALLED);
+}
+
 /// Translate the surface's DECLARED table into the neutral one, against this generation's surface.
 ///
 /// The `expect` is sound and is not a shortcut: a slot is only ever inserted under this decl's key

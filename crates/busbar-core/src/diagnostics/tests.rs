@@ -33,7 +33,12 @@ const MIGRATED_FILES: &[&str] = &[
     // `trust/verify.rs` (a `pub use` shim over the relocated verify-on-call gate) was DELETED at the
     // D33 `trust/` cut; the gate itself lives in `busbar-substrate`, which carries its own
     // uncoded-diagnostic floor, so core no longer scans it here (mirroring the egress_auth note).
-    "src/oauth_as/plane.rs",
+    // `oauth_as/plane.rs` RELOCATED to `busbar-control-oauth2` as `src/surface.rs` (the control-kind
+    // move). It is not listed under its new name because it no longer emits a diagnostic AT ALL: a
+    // control surface stamping `OAUTH_AS_SWEEP_FAILED` would be minting node vocabulary from outside
+    // the node, so the sweeper now reports a `SweepFault` value and `appbuild.rs` — which IS scanned,
+    // below — says it in the node's words at the node's two levels. The floor moved with the words.
+    "src/oauth_as/fetch.rs",
     // `sigv4` / `eventstream` (and the other neutral utils) RELOCATED to `busbar-substrate`; each
     // carries its own uncoded-diagnostic floor in that crate, so core no longer scans them here.
     "src/governance/mod.rs",
