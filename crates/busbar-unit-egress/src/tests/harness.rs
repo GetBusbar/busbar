@@ -61,6 +61,13 @@ impl busbar_contract::plugin::KernelSeal for TestSeal {
 pub struct TestClock {
     secs: AtomicU64,
     millis: AtomicU64,
+    /// Every `ms` a caller has asked this clock to sleep for, in call order.
+    ///
+    /// `sleep`'s own readiness (see [`TwoPollSleep`]) is blind to this value once it is nonzero —
+    /// it resolves at the same poll count whatever the duration — so a test that wants to pin the
+    /// VALUE a caller computed and handed to `sleep` (rather than the order two sleeps resolve in)
+    /// has to read it back from here.
+    pub durations: Mutex<Vec<u64>>,
 }
 
 impl TestClock {
@@ -68,6 +75,7 @@ impl TestClock {
         Self {
             secs: AtomicU64::new(secs),
             millis: AtomicU64::new(secs * 1000),
+            durations: Mutex::new(Vec::new()),
         }
     }
 
@@ -94,6 +102,10 @@ impl Clock for TestClock {
     }
 
     fn sleep(&self, ms: u64) -> BoxFut<'_, ()> {
+        self.durations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ms);
         Box::pin(TwoPollSleep {
             ready_now: ms == 0,
             polled: false,

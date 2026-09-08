@@ -599,4 +599,55 @@ mod lane_cross_check {
         // whatever it would have been compared against.
         assert!(lane_matches_seal(Some("host"), &duplicated, None).is_err());
     }
+
+    /// The cases above pin `lane_matches_seal` directly; none of them drive the walk through
+    /// `attempt::assemble`, so none of them exercise the two harness knobs the doc on
+    /// `TestEgressAuth::rewrite_lane_to` and `TestPlane::lane_field` say exist for exactly this —
+    /// nor the hop's own `lane_field`, hardcoded to `None` in every other test in this crate. This
+    /// case wires all three: the plane writes the sealed lane into an envelope field, the node
+    /// declares that field as the one the cross-check reads, and a decoration is told to rewrite it
+    /// post-encode — the bypass the check exists to close.
+    #[test]
+    fn a_decoration_that_rewrites_the_lane_post_encode_is_refused_through_the_full_walk() {
+        use super::super::harness::{ok_frames, Script};
+        use super::super::{member, Node};
+        use crate::wire::RouteOutcome;
+        use busbar_contract::DestinationId;
+
+        let mut node = Node::with_lanes(&["lane-a"]);
+        node.pool("p", vec![member(DestinationId::new(0), "lane-a")]);
+        node.lane_field = Some("x-lane");
+        *node
+            .plane
+            .lane_field
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some("x-lane".to_string());
+        node.transport.script("lane-a", Script::Frames(ok_frames()));
+
+        // Undisturbed: the plane writes the sealed lane verbatim into the declared field, and the
+        // cross-check — now actually reached — must not refuse an honest request.
+        assert!(
+            node.route("p").is_delivered(),
+            "an honest lane field, actually checked, must still deliver"
+        );
+
+        // Now the decoration rewrites that same field to a lane the destination was never sealed
+        // on. If the cross-check were dead code, this would still deliver.
+        *node
+            .egress_auth
+            .lane_field
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some("x-lane".to_string());
+        *node
+            .egress_auth
+            .rewrite_lane_to
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some("lane-evil".to_string());
+        match node.route("p") {
+            RouteOutcome::Refused(_) => {}
+            other => panic!(
+                "a decoration that rewrote the lane post-encode must be refused, got {other:?}"
+            ),
+        }
+    }
 }
