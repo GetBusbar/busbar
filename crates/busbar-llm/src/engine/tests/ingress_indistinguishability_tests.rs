@@ -3532,10 +3532,159 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
     );
 
     // The budget-refund block is unchanged: the spent unit is still refunded on this failed
-    // delivery, so a fresh spend succeeds.
+    // delivery, so a fresh spend succeeds. The rule itself is pinned in its own right by
+    // [`test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit`] below — this line is
+    // only saying that recording the transient did not disturb it.
     assert!(
         app.store.spend_budget(0),
         "non-SSE mid-body transport failure must still refund the spent budget unit"
+    );
+}
+
+/// **PB-27, THE NON-SSE HALF.** A post-first-byte transport cut on a NON-SSE body REFUNDS the
+/// lane's `max_requests` unit; the SSE sibling does not.
+///
+/// # Why this test exists
+///
+/// PB-27's summary sentence reads "the `max_requests` lane unit is refunded on the pre-first-byte
+/// cut and the client disconnect, NOT on the post-first-byte transport cut", with no content-type
+/// qualifier — which reads as though the non-SSE cut kept the unit. It does not, and never has.
+/// The row PB-27 cites (`docs/design/inventory/1.5.5-proxy-hooks.md:435`) is explicitly the
+/// **SSE** post-first-byte row, and §4 carries no row for the non-SSE case at all. The document
+/// that does name it says the opposite of the summary:
+///
+/// - `docs/design/inventory/1.5.5-proxy-hooks.md:407` — "Transport failure **before** first byte
+///   (or non-SSE mid-body) … budget refunded".
+/// - `docs/design/inventory/1.5.5-governance-billing.md:319` §3.8.10 — "Streaming pre-first-byte /
+///   **mid-stream** transport error | `if this.budget_spent { … refund_budget(…) }`".
+///
+/// So 1.5.5 refunds here, and the discriminator between refunding and not is `is_sse`, never
+/// `first_byte_sent`: both cuts reach `FirstByteBody`'s `else` arm only when the body is not SSE,
+/// and that arm's refund is ungated on `had_first`. The SSE cut is handled by the if-branch above
+/// it, which touches `budget_spent` nowhere and sets `ended = true` so the Drop refund is
+/// suppressed too.
+///
+/// # Why it is asserted here and not left to the transient test
+///
+/// The refund on this arm previously had no test of its own — the arm's only coverage was
+/// [`test_streaming_nonsse_mid_body_transport_error_records_transient`], which is about the
+/// BREAKER, and `qa/design-bindings.json` mapped PB-27's refund clause to
+/// `test_truncated_body_does_not_refund_budget`, which is the buffered translate-cap truncation
+/// arm and not a stream cut at all. A rule whose only witness is an incidental line at the end of
+/// a test about something else is a rule that changes silently.
+///
+/// # The two ends this separates
+///
+/// Both are asserted, in one test, because the whole content of the rule is that they DIFFER:
+/// the same cut, at the same point in the body, refunds on a JSON passthrough and does not refund
+/// on an SSE stream. A test that pinned only one half would stay green if the arms were merged.
+#[tokio::test]
+async fn test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit() {
+    crate::testkit::install_test_seams();
+    use super::FirstByteBody;
+    use busbar_substrate::store::BreakerCfg;
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+
+    /// Drive one post-first-byte transport cut through `FirstByteBody` and answer whether the
+    /// lane's spent `max_requests` unit came back.
+    ///
+    /// The two legs differ in `is_sse` and in NOTHING else: same lane, same budget of one, same
+    /// headers-spend, same inner stream shape (one good chunk, then a real `hyper::Error`), same
+    /// deadline and the same breaker config. So a difference in the answer is a difference the
+    /// content type made, which is the only thing this rule turns on.
+    async fn refunded_after_a_post_first_byte_cut(is_sse: bool) -> bool {
+        let app = TestApp::new()
+            .lane(
+                LaneSpec::new("m", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:1")
+                    .budget(1),
+            )
+            .pool("p", &[(0, 1)])
+            .build();
+
+        // The 2xx-headers spend, exactly as the live path makes it before any body flows. The
+        // lane's one unit is now gone and `budget_spent` is true, which is the precondition the
+        // refund is guarded on.
+        let budget_spent = app.store.spend_budget(0);
+        assert!(budget_spent, "the headers-spend must decrement the unit");
+        assert!(
+            !app.store.spend_budget(0),
+            "precondition: the lane's only unit is spent, so a second spend fails"
+        );
+
+        // A REAL `hyper::Error`, not a synthesized one: the cut this arm is written for is a
+        // transport death, and an error of another kind can take another path.
+        let reqwest_err = hyper_transport_err().await;
+        // One good chunk sets `first_byte_sent` — the client HAS bytes — and then the connection
+        // dies. That is the post-first-byte cut, on both legs.
+        let inner = Box::pin(futures::stream::iter(vec![
+            Ok::<Bytes, hyper::Error>(Bytes::from_static(b"{\"id\":\"x\",")),
+            Err::<Bytes, hyper::Error>(reqwest_err),
+        ]));
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let body = FirstByteBody::new(
+            inner,
+            is_sse,
+            "openai",
+            crate::test_support::CHAT,
+            (),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(300),
+            host.clone(),
+            rt.clone(),
+            0,
+            std::sync::Arc::new(BreakerCfg::default()),
+            "p",
+            None,
+            None,
+            None,
+            budget_spent,
+            TapCell::new(),
+        );
+        futures::pin_mut!(body);
+
+        assert!(
+            matches!(body.next().await, Some(Ok(_))),
+            "is_sse={is_sse}: the first chunk streams through, which is what makes the cut below \
+             a POST-first-byte one"
+        );
+        // The cut. On the SSE leg this is answered with an in-band error FRAME (the client is
+        // mid-stream and a stream cannot change its status), on the non-SSE leg with a terminated
+        // body — so the item's shape differs and only its arrival is asserted here.
+        assert!(
+            body.next().await.is_some(),
+            "is_sse={is_sse}: the transport cut must be answered on the body"
+        );
+        // READ WHILE THE BODY IS STILL ALIVE. The counter is asked before this scope ends, so what
+        // it answers is the ARM's own refund and not the cancellation refund standing in for it:
+        // the Drop guard is `!self.ended && self.budget_spent`, and both arms have already set
+        // `ended`, so a reading taken after the drop could not tell the two apart by inspection.
+        //
+        // A spend that now succeeds is a unit that came back. `refund_budget` is an unconditional
+        // `fetch_add`, so this is the only way to read it that cannot be satisfied by the counter
+        // having been pushed above its cap.
+        app.store.spend_budget(0)
+    }
+
+    // THE NON-SSE CUT REFUNDS. `FirstByteBody`'s `else` arm covers the pre-first-byte cut and this
+    // one together, and its `if this.budget_spent { … refund_budget(…) }` is ungated on
+    // `had_first`, exactly as 1.5.5's is.
+    assert!(
+        refunded_after_a_post_first_byte_cut(false).await,
+        "a post-first-byte transport cut on a NON-SSE body refunds the lane's max_requests unit \
+         — the client got a prefix it cannot use as an answer, and 1.5.5 credits the unit back \
+         (inventory 1.5.5-proxy-hooks.md:407, 1.5.5-governance-billing.md:319). Without the \
+         refund a flaky upstream that cuts mid-body drains the lane's serving capacity one unit \
+         per request and the cap stops bounding anything"
+    );
+
+    // THE SSE CUT DOES NOT. Same cut, same point in the body, different content type: the
+    // if-branch never touches `budget_spent` and sets `ended = true`, which also suppresses the
+    // Drop refund. This is the half PB-27's sentence is actually about.
+    assert!(
+        !refunded_after_a_post_first_byte_cut(true).await,
+        "a post-first-byte transport cut on an SSE body KEEPS the lane's max_requests unit — the \
+         client was served a real stream that stopped short, and PB-27 makes that the one cut \
+         that is not credited back. A refund here would erase the difference the rule is"
     );
 }
 

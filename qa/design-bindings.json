@@ -24,7 +24,7 @@
    "lint": 4,
    "oracle-cell": 58,
    "oracle-family": 5,
-   "test": 452
+   "test": 453
   }
  },
  "owner_decisions": {
@@ -1292,7 +1292,7 @@
   {
    "id": "PB-27",
    "surface": "zero-token ends",
-   "binding": "a response bills ZERO tokens (located and accrued figures internal evidence only) on every 1.5.5 not-billed arm: a stream ending with a terminal error signal (`terminal_error != None`); an SSE transport cut after the first byte (`stream_failed = true`); a buffered cross-protocol 2xx that fails after the upstream 2xx (transport failed mid-read → 502, over the translate cap → 500, untranslatable → 500); the `max_requests` lane unit is refunded on the pre-first-byte cut and the client disconnect, NOT on the post-first-byte transport cut; a client disconnect bills the partial tokens and refunds the LANE `max_requests` unit; the flat fee (`billable_requests`) is KEPT, as on every exit after 2xx headers were relayed (`ingress/mod.rs:574-579` refunds only on a non-2xx client status) — each arm one cell",
+   "binding": "a response bills ZERO tokens (located and accrued figures internal evidence only) on every 1.5.5 not-billed arm: a stream ending with a terminal error signal (`terminal_error != None`); an SSE transport cut after the first byte (`stream_failed = true`); a buffered cross-protocol 2xx that fails after the upstream 2xx (transport failed mid-read → 502, over the translate cap → 500, untranslatable → 500); the `max_requests` lane unit is refunded on the pre-first-byte cut, on the post-first-byte cut of a NON-SSE body, and on the client disconnect, and NOT on the post-first-byte cut of an SSE body — the discriminator is the content type, never `first_byte_sent`, because `FirstByteBody`'s `else` arm carries the pre-first-byte cut and the non-SSE mid-body cut together and refunds ungated on `had_first`, while the SSE arm touches `budget_spent` nowhere and sets `ended` so the Drop refund is suppressed too (proxy-hooks §3 :407 \"before first byte (or non-SSE mid-body) … budget refunded\"; governance 3.8.10 :319 \"pre-first-byte / mid-stream transport error\"; the §4 no-refund row :435 is the SSE row, and §4 carries no non-SSE post-first-byte row at all); a client disconnect bills the partial tokens and refunds the LANE `max_requests` unit; the flat fee (`billable_requests`) is KEPT, as on every exit after 2xx headers were relayed (`ingress/mod.rs:574-579` refunds only on a non-2xx client status) — each arm one cell",
    "inventory": "dialects; proxy-hooks (:430-436; `engine/mod.rs:329-378`, `:552-589`, `response_body.rs:283-345`); governance",
    "status": "mapped",
    "checks": [
@@ -1347,8 +1347,15 @@
     },
     {
      "kind": "test",
-     "ref": "test_truncated_body_does_not_refund_budget",
-     "proves": "the post-first-byte cut does not refund the lane unit",
+     "ref": "test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit",
+     "proves": "the post-first-byte cut refunds the lane unit on a NON-SSE body and does not on an SSE body",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "test_streaming_nonsse_mid_body_transport_error_records_transient",
+     "proves": "the non-SSE post-first-byte cut records its compensating transient and leaves the refund standing",
      "source": "curated",
      "status": "mapped"
     },
@@ -1375,7 +1382,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|after-upstream-down, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_truncated_body_does_not_refund_budget, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
+   "verdict_detail": "oracle-cell:billing|key-usage|after-upstream-down, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit, test:test_streaming_nonsse_mid_body_transport_error_records_transient, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
   },
   {
    "id": "PB-28",

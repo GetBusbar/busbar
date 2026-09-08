@@ -231,7 +231,12 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_untranslatable_2xx_does_not_charge_tokens", "a buffered untranslatable 2xx bills zero"),
         ("test", "test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged", "over the translate cap is 500 and uncharged"),
         ("test", "test_streaming_pre_first_byte_transport_error_refunds_budget", "the pre-first-byte cut refunds the lane unit"),
-        ("test", "test_truncated_body_does_not_refund_budget", "the post-first-byte cut does not refund the lane unit"),
+        # The refund rule turns on the CONTENT TYPE, not on `first_byte_sent`, so it takes two
+        # rows. This slot used to hold `test_truncated_body_does_not_refund_budget`, which is the
+        # buffered translate-cap TRUNCATION arm and not a stream cut at all — PB-27's refund clause
+        # had no witness on either half.
+        ("test", "test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit", "the post-first-byte cut refunds the lane unit on a NON-SSE body and does not on an SSE body"),
+        ("test", "test_streaming_nonsse_mid_body_transport_error_records_transient", "the non-SSE post-first-byte cut records its compensating transient and leaves the refund standing"),
         ("test", "test_cancel_drop_bills_partial_tokens", "a client disconnect bills the partial tokens"),
         ("test", "test_cancel_drop_mid_stream_refunds_budget", "a client disconnect refunds the lane unit"),
         ("test", "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx", "the flat fee is kept after 2xx headers"),
