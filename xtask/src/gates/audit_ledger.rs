@@ -7,7 +7,8 @@
 //!
 //! * **The gate owns the five rules about the REGISTER.** Does it carry every scope the tree
 //!   implies; is every entry readable; is every result a result; does every record's hash match the
-//!   tree at the commit it claims to have read; does every HIGH fix carry a confirming round. These
+//!   tree at the commit it claims to have read; does every HIGH/MEDIUM fix carry a confirming round
+//!   from somebody other than the fixer. These
 //!   are questions about whether the instrument can be believed, and the answer is yes today. They
 //!   belong on a gate because a `no` is a regression somebody just introduced.
 //!
@@ -29,7 +30,7 @@
 use crate::audit::{self, Git};
 use crate::audit_cmd::{self, CheckFindings};
 use crate::ctx::{Ctx, Edit, Overlay};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{prove_green, prove_rows_green, prove_rows_red, Gate, Report};
 use crate::json_lite::{self, Json};
 use crate::ledger::{Row, Verdict};
 
@@ -89,8 +90,8 @@ pub fn rows_from(f: &CheckFindings) -> Vec<Row> {
         row(
             &f.owed,
             ROW_OWED,
-            "every HIGH finding stamped fixed carries a confirming round",
-            "a HIGH finding is stamped fixed with no confirming round",
+            "every HIGH/MEDIUM finding stamped fixed carries a confirming round",
+            "a HIGH/MEDIUM finding is stamped fixed with no confirming round",
             format!("{} scope(s)", f.scopes),
         ),
     ]
@@ -189,7 +190,7 @@ impl Gate for AuditLedgerGate {
                 "a result outside the four known results",
                 ROW_INVALID,
                 "not a result",
-                |d: &mut Json| set_first(d, "result", Json::Str("passed".to_string())),
+                |d: &mut Json| set_first_record(d, "result", Json::Str("passed".to_string())),
             ),
             (
                 "a counts entry that is not a count",
@@ -198,7 +199,7 @@ impl Gate for AuditLedgerGate {
                 |d: &mut Json| {
                     let mut c = json_lite::Obj::new();
                     c.insert("HIGH", Json::Int(-1));
-                    set_first(d, "counts", Json::Object(c));
+                    set_first_record(d, "counts", Json::Object(c));
                 },
             ),
             (
@@ -208,8 +209,14 @@ impl Gate for AuditLedgerGate {
                 |d: &mut Json| {
                     let mut c = json_lite::Obj::new();
                     c.insert("CRITICAL", Json::Int(1));
-                    set_first(d, "counts", Json::Object(c));
+                    set_first_record(d, "counts", Json::Object(c));
                 },
+            ),
+            (
+                "a top-level record that has drifted from the round it came from",
+                ROW_READABLE,
+                "must BE the last round",
+                |d: &mut Json| set_first(d, "auditor", Json::Str("somebody else".to_string())),
             ),
         ];
 
@@ -222,7 +229,7 @@ impl Gate for AuditLedgerGate {
                 report.note_infra_failure(format!("{label}: {e}"));
                 continue;
             }
-            report.push(prove_red(cx, self, label, &[covers], ov, &[naming]));
+            report.push(prove_rows_red(cx, self, label, &[covers], ov, &[naming]));
         }
 
         // The two remaining rules need a REAL COMMIT to hash against, so they are planted as a
@@ -238,51 +245,164 @@ impl Gate for AuditLedgerGate {
         // A HIGH finding stamped fixed, with the fix stamped at the same commit the round read.
         // Nobody has confirmed the fixed tree, and the fixer saying so is not a confirmation.
         let mut planted = doc.clone();
-        stamp_first(cx, &mut planted, &head, "findings", "HIGH", true);
-        plant(
+        stamp_first(
+            cx,
+            &mut planted,
+            &head,
+            "findings",
+            "HIGH",
+            "selftest",
+            true,
+        );
+        plant_rows(
             cx,
             self,
             &mut report,
             &planted,
             "a HIGH finding stamped fixed with nobody confirming it",
             ROW_OWED,
-            "no confirming round",
+            &["no confirming round"],
         );
+
+        // THE SAME HOLE ONE SEVERITY DOWN. A MEDIUM that closes itself closes itself just as
+        // completely as a HIGH, and until this the owed rule only ever looked at HIGH.
+        let mut planted = doc.clone();
+        stamp_first(
+            cx,
+            &mut planted,
+            &head,
+            "findings",
+            "MEDIUM",
+            "selftest",
+            true,
+        );
+        plant_rows(
+            cx,
+            self,
+            &mut report,
+            &planted,
+            "a MEDIUM finding stamped fixed with nobody confirming it",
+            ROW_OWED,
+            &["no confirming round"],
+        );
+
+        // THE FIXER CONFIRMING HIMSELF UNDER A DIFFERENT SPELLING. `alice` stamps the fix and
+        // `Alice ` records the confirming zero round: one reader, two spellings, and before
+        // `auditor_identity` the second one counted as somebody else. The contrast case below is
+        // byte-identical except for the name, so what it isolates is the identity and nothing else.
+        let good = hash_first_at(cx, &doc, &head);
+        for (who, label, expect_red) in [
+            (
+                "Alice ",
+                "a HIGH fix confirmed only by the fixer under a different spelling",
+                true,
+            ),
+            (
+                "bob",
+                "a HIGH fix confirmed by somebody who is genuinely somebody else",
+                false,
+            ),
+        ] {
+            let mut planted = doc.clone();
+            stamp_first(cx, &mut planted, &head, "findings", "HIGH", "alice", true);
+            append_round(&mut planted, 2, "zero", who, &head, good.clone());
+            let mut ov = Overlay::new();
+            let text = format!("{}\n", json_lite::dump_python(&planted));
+            match Edit::Replace(text).apply(cx, audit::REGISTER_REL, &mut ov) {
+                Err(e) => report.note_infra_failure(format!("{label}: {e}")),
+                Ok(()) if expect_red => report.push(prove_rows_red(
+                    cx,
+                    self,
+                    label,
+                    &[ROW_OWED],
+                    ov,
+                    &["no confirming round"],
+                )),
+                Ok(()) => report.push(prove_rows_green(cx, self, label, &[ROW_OWED], ov)),
+            }
+        }
 
         // A round that NAMES a commit but stores a hash that is not the scope's hash there. That is
         // a round stamped against a tree it did not read, and every later reading of it reads
         // nothing. It is the only rule whose subject is the record rather than the finding.
         let mut planted = doc.clone();
-        stamp_first(cx, &mut planted, &head, "in_progress", "", false);
-        set_first(&mut planted, "tree_hash", Json::Str("0".repeat(64)));
-        plant(
+        stamp_first(
+            cx,
+            &mut planted,
+            &head,
+            "in_progress",
+            "",
+            "selftest",
+            false,
+        );
+        set_first_record(&mut planted, "tree_hash", Json::Str("0".repeat(64)));
+        plant_rows(
             cx,
             self,
             &mut report,
             &planted,
             "a round stamped against a tree it did not read",
             ROW_STAMPED,
-            "not the tree at the commit",
+            &["not the tree at the commit"],
+        );
+
+        // THE SAME FORGERY INSIDE THE ROUNDS LIST. `clean` is computed from the rounds, so a round
+        // nobody re-hashes is a round anybody can append — and until the check walked every round,
+        // only the top-level record was ever asked to prove its hash.
+        let mut planted = doc.clone();
+        stamp_first(cx, &mut planted, &head, "zero", "", "selftest", false);
+        append_round(
+            &mut planted,
+            2,
+            "zero",
+            "a stranger",
+            &head,
+            Json::Str("0".repeat(64)),
+        );
+        plant_rows(
+            cx,
+            self,
+            &mut report,
+            &planted,
+            "an appended round stamped against a tree it did not read",
+            ROW_STAMPED,
+            &["not the tree at the commit", "round["],
+        );
+
+        // A COMMIT GIT CANNOT PRODUCE IS NOT A COMMIT THAT MATCHED. The rule whose whole purpose is
+        // catching a stamp against an unread tree must not go quiet exactly when the named tree is
+        // the one that cannot be produced at all.
+        let mut planted = doc.clone();
+        stamp_first(cx, &mut planted, &head, "zero", "", "selftest", false);
+        set_first_record(&mut planted, "audited_at", Json::Str("0".repeat(40)));
+        plant_rows(
+            cx,
+            self,
+            &mut report,
+            &planted,
+            "a record naming a commit this repository cannot resolve",
+            ROW_STAMPED,
+            &["cannot be resolved"],
         );
 
         report
     }
 }
 
-/// Overlay a planted register and require the gate to name the violation.
-fn plant(
+/// Overlay a planted register and require THE COVERED ROW to go red naming every string given.
+fn plant_rows(
     cx: &Ctx,
     gate: &dyn Gate,
     report: &mut Report,
     doc: &Json,
     label: &str,
     covers: &str,
-    naming: &str,
+    naming: &[&str],
 ) {
     let mut ov = Overlay::new();
     let text = format!("{}\n", json_lite::dump_python(doc));
     match Edit::Replace(text).apply(cx, audit::REGISTER_REL, &mut ov) {
-        Ok(()) => report.push(prove_red(cx, gate, label, &[covers], ov, &[naming])),
+        Ok(()) => report.push(prove_rows_red(cx, gate, label, &[covers], ov, naming)),
         Err(e) => report.note_infra_failure(format!("{label}: {e}")),
     }
 }
@@ -320,17 +440,78 @@ fn set_first(doc: &mut Json, key: &str, v: Json) {
     }
 }
 
-fn stamp_first(cx: &Ctx, doc: &mut Json, at: &str, result: &str, severity: &str, fixed: bool) {
-    set_first(doc, "result", Json::Str(result.to_string()));
-    set_first(doc, "audited_at", Json::Str(at.to_string()));
-    set_first(doc, "round", Json::Int(1));
-    set_first(doc, "auditor", Json::Str("selftest".to_string()));
-    set_first(doc, "report", Json::Str("selftest".to_string()));
+fn rounds_mut(doc: &mut Json) -> Option<&mut Vec<Json>> {
+    match scopes_mut(doc)?
+        .first_mut()?
+        .as_object_mut()?
+        .get_mut("rounds")?
+    {
+        Json::Array(a) => Some(a),
+        _ => None,
+    }
+}
+
+/// Set a record key on the first scope AND on its last round, keeping the two copies in agreement.
+///
+/// The register requires the top-level record to BE the last round, so editing only the scope trips
+/// THAT rule as well as whichever one the plant is aiming at — and a case that goes red for two
+/// reasons proves neither. Only [`audit::RECORD_KEYS`] are mirrored; `fixed_at` is a stamp on the
+/// scope, not part of the record, and has no round to agree with.
+fn set_first_record(doc: &mut Json, key: &str, v: Json) {
+    set_first(doc, key, v.clone());
+    if audit::RECORD_KEYS.contains(&key) {
+        if let Some(Json::Object(o)) = rounds_mut(doc).and_then(|rs| rs.last_mut()) {
+            o.insert(key, v);
+        }
+    }
+}
+
+/// Append a round to the first scope, spelling every record key out. The caller decides whether it
+/// agrees with the top-level record — a round that does not is exactly the forgery being planted.
+fn append_round(doc: &mut Json, round: i64, result: &str, auditor: &str, at: &str, hash: Json) {
+    let mut o = json_lite::Obj::new();
+    o.insert("round", Json::Int(round));
+    o.insert("result", Json::Str(result.to_string()));
+    o.insert("auditor", Json::Str(auditor.to_string()));
+    o.insert("audited_at", Json::Str(at.to_string()));
+    o.insert("tree_hash", hash);
+    o.insert("counts", Json::Object(json_lite::Obj::new()));
+    o.insert("report", Json::Str("selftest".to_string()));
+    if let Some(rs) = rounds_mut(doc) {
+        rs.push(Json::Object(o));
+    }
+}
+
+/// The first scope's REAL tree hash at `at` — what an honest record there would carry.
+fn hash_first_at(cx: &Ctx, doc: &Json, at: &str) -> Json {
+    let Some(first) = doc.get("scopes").as_array().and_then(<[Json]>::first) else {
+        return Json::Null;
+    };
+    match Git::new(cx.root()).files_at(at) {
+        Ok(all) => audit::tree_hash(first, &all).map_or(Json::Null, Json::Str),
+        Err(_) => Json::Null,
+    }
+}
+
+fn stamp_first(
+    cx: &Ctx,
+    doc: &mut Json,
+    at: &str,
+    result: &str,
+    severity: &str,
+    auditor: &str,
+    fixed: bool,
+) {
+    set_first_record(doc, "result", Json::Str(result.to_string()));
+    set_first_record(doc, "audited_at", Json::Str(at.to_string()));
+    set_first_record(doc, "round", Json::Int(1));
+    set_first_record(doc, "auditor", Json::Str(auditor.to_string()));
+    set_first_record(doc, "report", Json::Str("selftest".to_string()));
     let mut c = json_lite::Obj::new();
     if !severity.is_empty() {
         c.insert(severity, Json::Int(1));
     }
-    set_first(doc, "counts", Json::Object(c));
+    set_first_record(doc, "counts", Json::Object(c));
     set_first(
         doc,
         "fixed_at",
@@ -343,10 +524,39 @@ fn stamp_first(cx: &Ctx, doc: &mut Json, at: &str, result: &str, severity: &str,
     // The recorded hash must be the scope's REAL hash at `at`, or the hash-vs-commit rule fires
     // instead of the rule this plant is aiming at — and a selftest that goes red for the wrong
     // reason proves the wrong rule. The caller that wants THAT rule overwrites this afterwards.
-    if let Some(first) = scopes_mut(doc).and_then(|s| s.first().cloned()) {
-        if let Ok(all) = Git::new(cx.root()).files_at(at) {
-            let h = audit::tree_hash(&first, &all);
-            set_first(doc, "tree_hash", h.map_or(Json::Null, Json::Str));
+    let h = hash_first_at(cx, doc, at);
+    set_first_record(doc, "tree_hash", h);
+    // A scope carrying rounds from BEFORE the plant still carries their old hashes, and the
+    // per-round hash rule reads every one of them. They are honest records of older trees, so they
+    // are left alone; the cases below are narrowed to the row each one is about.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gates::{execute, verify_report};
+
+    /// THE FIVE ROWS THE GATE OWNS ARE GREEN ON THE TREE IT SHIPS WITH. Every RED case below only
+    /// proves the gate can fail; without this one, a gate that is simply broken would look proven.
+    #[test]
+    fn the_gate_is_green_on_the_committed_register() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let verdict = execute(&AuditLedgerGate, &cx);
+        assert!(
+            !verdict.red,
+            "audit-ledger is red on the register it ships with: {:?}",
+            verdict.problems
+        );
+    }
+
+    /// EVERY OWED ROW IS PROVEN RED-ABLE, and every planted case named the offender it planted. This
+    /// is what stops a rule from being deleted with the selftest still green.
+    #[test]
+    fn the_selftest_proves_every_owed_row() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let report = AuditLedgerGate.selftest(&cx);
+        if let Err(failures) = verify_report(&AuditLedgerGate, &report) {
+            panic!("audit-ledger selftest did not prove itself: {failures:#?}");
         }
     }
 }

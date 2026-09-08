@@ -617,7 +617,12 @@ pub fn decisive_round<'a>(sc: &'a Json, current_hash: Option<&str>) -> Option<&'
 }
 
 /// The findings that STAND against the current tree with no fix stamped, as the record that carries
-/// their counts — a round when the rounds list has one, the scope's own record otherwise.
+/// their counts.
+///
+/// Three rungs, most specific first: the latest round that reached a verdict about THIS tree; the
+/// latest round that reached a verdict about ANY tree; the scope's own record. Each rung is a
+/// weaker claim than the one above it, and the status the caller derives weakens with it — the
+/// first is `open`, the other two are `stale`.
 pub fn open_findings<'a>(sc: &'a Json, current_hash: Option<&str>) -> Option<&'a Json> {
     if sc.get("fixed_at").truthy() {
         return None;
@@ -628,8 +633,8 @@ pub fn open_findings<'a>(sc: &'a Json, current_hash: Option<&str>) -> Option<&'a
     // NO ROUND REACHED A VERDICT ABOUT THIS TREE, so fall back to the latest verdict about ANY
     // tree. A finding recorded against an older tree has not been answered just because the tree
     // moved and a later `in_progress` note landed on top of it; it reads `stale`, which is a red
-    // status, rather than vanishing. Without this the six `findings`-then-`in_progress` scopes whose
-    // trees had since moved stayed hidden behind the top-level note.
+    // status, rather than vanishing. Without this, eight `findings`-then-`in_progress` scopes whose
+    // trees had since moved stayed hidden from `--check` behind the top-level note.
     if let Some(round) = sc.get("rounds").as_array().and_then(|rs| {
         rs.iter()
             .rev()
@@ -1072,4 +1077,177 @@ pub fn bar(rows: &[&RowView], key: &str) -> (usize, f64) {
 
 pub fn production(rows: &[RowView]) -> Vec<&RowView> {
     rows.iter().filter(|r| r.kind == "production").collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HASH: &str = "aaaa";
+    const OLD: &str = "bbbb";
+
+    fn scope(json: &str) -> Json {
+        json_lite::parse(json).expect("the test fixture is valid JSON")
+    }
+
+    /// AN AUDITOR IS A PERSON, NOT A SPELLING. Before this, `clean` counted the same reader twice
+    /// whenever the second round was typed with a capital or a stray space — the exact way one
+    /// person's two readings become "two independent auditors".
+    #[test]
+    fn one_reader_typed_three_ways_is_one_identity() {
+        let one = auditor_identity(&Json::Str("alice".into()));
+        assert_eq!(one.as_deref(), Some("alice"));
+        assert_eq!(auditor_identity(&Json::Str("alice ".into())), one);
+        assert_eq!(auditor_identity(&Json::Str(" Alice".into())), one);
+        assert_eq!(auditor_identity(&Json::Str("ALICE".into())), one);
+        assert_eq!(
+            auditor_identity(&Json::Str("Alice\tSmith".into())).as_deref(),
+            Some("alice smith"),
+            "internal whitespace collapses too, so `Alice  Smith` is not a second person"
+        );
+    }
+
+    /// A NAME THAT IS NOT A NAME IS NOT AN IDENTITY. An empty or blank auditor must not become a
+    /// confirming voice; it would let a round nobody signed count towards `clean`.
+    #[test]
+    fn a_blank_auditor_is_nobody() {
+        assert_eq!(auditor_identity(&Json::Str(String::new())), None);
+        assert_eq!(auditor_identity(&Json::Str("   ".into())), None);
+        assert_eq!(auditor_identity(&Json::Null), None);
+        assert_eq!(auditor_identity(&Json::Int(7)), None);
+    }
+
+    fn zero_rounds(a: &str, ra: i64, b: &str, rb: i64) -> Json {
+        scope(&format!(
+            r#"{{"result": "zero", "audited_at": "c0", "tree_hash": "{HASH}", "rounds": [
+                 {{"round": {ra}, "result": "zero", "auditor": "{a}", "tree_hash": "{HASH}"}},
+                 {{"round": {rb}, "result": "zero", "auditor": "{b}", "tree_hash": "{HASH}"}}
+               ]}}"#
+        ))
+    }
+
+    /// CLEAN IS TWO READINGS BY TWO PEOPLE, and each half of that is load-bearing on its own.
+    #[test]
+    fn clean_needs_a_distinct_identity_and_a_distinct_round() {
+        let h = Some(HASH);
+        assert!(confirmed(&zero_rounds("alice", 1, "bob", 2), h));
+        assert!(
+            !confirmed(&zero_rounds("alice", 1, "Alice ", 2), h),
+            "one person reading twice is one reading, however the second round spells the name"
+        );
+        assert!(
+            !confirmed(&zero_rounds("alice", 1, "bob", 1), h),
+            "two names on ONE round is one reading credited to two people"
+        );
+        assert_eq!(
+            status_of(&zero_rounds("alice", 1, "Alice ", 2), h),
+            "unconfirmed",
+            "and the derived status must say so, not fall through to clean"
+        );
+        assert_eq!(status_of(&zero_rounds("alice", 1, "bob", 2), h), "clean");
+    }
+
+    /// A ROUND WHOSE NUMBER CANNOT BE READ CANNOT BE SHOWN TO BE A SECOND ROUND, so it cannot be
+    /// the second half of a confirmation.
+    #[test]
+    fn a_round_with_no_number_confirms_nothing() {
+        let sc = scope(&format!(
+            r#"{{"result": "zero", "tree_hash": "{HASH}", "rounds": [
+                 {{"round": 1, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}},
+                 {{"result": "zero", "auditor": "bob", "tree_hash": "{HASH}"}}
+               ]}}"#
+        ));
+        assert!(!confirmed(&sc, Some(HASH)));
+    }
+
+    /// H1, THE HOLE ITSELF. `record --result in_progress` overwrites the top-level record and wipes
+    /// `counts` to `{}`. A note that a reading is happening must not erase the reading that
+    /// finished: the scope stays OPEN and the severities still come from the round that found them.
+    #[test]
+    fn a_later_in_progress_note_cannot_erase_a_recorded_finding() {
+        let sc = scope(&format!(
+            r#"{{"round": 5, "result": "in_progress", "counts": {{}}, "audited_at": "c0",
+                 "tree_hash": "{HASH}", "rounds": [
+                   {{"round": 5, "result": "findings", "tree_hash": "{HASH}",
+                     "counts": {{"HIGH": 1, "MEDIUM": 6}}}},
+                   {{"round": 5, "result": "in_progress", "tree_hash": "{HASH}", "counts": {{}}}}
+                 ]}}"#
+        ));
+        assert_eq!(status_of(&sc, Some(HASH)), "open");
+        let found = open_findings(&sc, Some(HASH)).expect("the finding still stands");
+        assert_eq!(found.get("counts").get("HIGH").as_i64(), Some(1));
+        assert_eq!(found.get("round").as_i64(), Some(5));
+    }
+
+    /// A VERDICT ABOUT AN OLDER TREE IS STILL A VERDICT. When the code moved after the finding, no
+    /// round is decisive about the tree in front of us — but the finding has not been answered, so
+    /// it reads `stale` (a red status) rather than vanishing behind the `in_progress` note.
+    #[test]
+    fn a_finding_whose_tree_has_moved_goes_stale_not_silent() {
+        let sc = scope(&format!(
+            r#"{{"round": 5, "result": "in_progress", "counts": {{}}, "audited_at": "c0",
+                 "tree_hash": "{OLD}", "rounds": [
+                   {{"round": 5, "result": "findings", "tree_hash": "{OLD}",
+                     "counts": {{"HIGH": 1}}}},
+                   {{"round": 5, "result": "in_progress", "tree_hash": "{OLD}", "counts": {{}}}}
+                 ]}}"#
+        ));
+        assert_eq!(status_of(&sc, Some(HASH)), "stale");
+        let found = open_findings(&sc, Some(HASH)).expect("nobody answered the finding");
+        assert_eq!(found.get("counts").get("HIGH").as_i64(), Some(1));
+    }
+
+    /// A LATER `zero` IS a verdict, and it DOES supersede the finding. The fallback must not
+    /// resurrect a finding somebody has since re-read and closed.
+    #[test]
+    fn a_later_zero_round_does_supersede_the_finding() {
+        let sc = scope(&format!(
+            r#"{{"round": 6, "result": "zero", "counts": {{}}, "audited_at": "c0",
+                 "tree_hash": "{HASH}", "rounds": [
+                   {{"round": 5, "result": "findings", "tree_hash": "{OLD}",
+                     "counts": {{"HIGH": 1}}}},
+                   {{"round": 6, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}}
+                 ]}}"#
+        ));
+        assert_eq!(open_findings(&sc, Some(HASH)), None);
+        assert_eq!(status_of(&sc, Some(HASH)), "unconfirmed");
+    }
+
+    /// `unaudited` IS A NOTE TOO. Recording it over a finding must not return the scope to "never
+    /// audited", which is how a HIGH walks off the worklist without anybody reading anything.
+    #[test]
+    fn a_later_unaudited_note_cannot_erase_a_recorded_finding_either() {
+        let sc = scope(&format!(
+            r#"{{"round": 2, "result": "unaudited", "counts": {{}},
+                 "tree_hash": "{HASH}", "rounds": [
+                   {{"round": 1, "result": "findings", "tree_hash": "{HASH}",
+                     "counts": {{"MEDIUM": 2}}}},
+                   {{"round": 2, "result": "unaudited", "tree_hash": "{HASH}", "counts": {{}}}}
+                 ]}}"#
+        ));
+        assert_eq!(status_of(&sc, Some(HASH)), "open");
+    }
+
+    /// A STAMPED FIX CLOSES THE FINDING for the purposes of `open` — the owed rule, not this one,
+    /// is what then demands somebody else confirm it.
+    #[test]
+    fn a_stamped_fix_is_no_longer_open() {
+        let sc = scope(&format!(
+            r#"{{"round": 1, "result": "findings", "counts": {{"HIGH": 1}}, "audited_at": "c0",
+                 "fixed_at": "c1", "tree_hash": "{HASH}", "rounds": [
+                   {{"round": 1, "result": "findings", "tree_hash": "{HASH}",
+                     "counts": {{"HIGH": 1}}}}
+                 ]}}"#
+        ));
+        assert_eq!(open_findings(&sc, Some(HASH)), None);
+        assert_eq!(status_of(&sc, Some(HASH)), "fixed");
+    }
+
+    /// AN UNREADABLE RESULT CAN NEVER FALL THROUGH TO ANYTHING, including to `open` via the new
+    /// fallback. It gets its own status and `--check` is red on it.
+    #[test]
+    fn an_unknown_result_is_invalid_and_stays_invalid() {
+        let sc = scope(&format!(r#"{{"result": "passed", "tree_hash": "{HASH}"}}"#));
+        assert_eq!(status_of(&sc, Some(HASH)), "invalid");
+    }
 }
