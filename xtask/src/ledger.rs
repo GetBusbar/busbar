@@ -1,6 +1,25 @@
-//! THE LEDGER. Rows in exactly the TSV shape `scripts/release-gate/lib.sh::record` writes and both
-//! `scripts/release-gate/gate.sh` and `testing/fleet-fixtures/verdict.sh` read, so a Rust gate's
-//! rows are readable by the existing shell readers unchanged and the conversion needs no flag day.
+//! THE LEDGER. Rows in the TSV `scripts/release-gate/lib.sh::record` writes and both
+//! `scripts/release-gate/gate.sh` and `testing/fleet-fixtures/verdict.sh` read.
+//!
+//! ## The column count, stated exactly, because it used to be stated wrongly
+//!
+//! `record` writes SIX columns: `id`, `status`, `title`, `detail`, then the VERSION the row is about
+//! and the STAGED QA SHA it was produced against. The last two are not decoration —
+//! `gate.sh` counts only rows whose fifth column names the release under test, because ledgers
+//! arrive as artefacts merged into one directory and nothing else binds a row to the release.
+//!
+//! This module READS all six and WRITES four, and both halves are deliberate:
+//!
+//! * [`parse_rows`] splits on every tab and takes column four as the detail, so a row written by
+//!   the shell reads back as the row the shell meant. It used to `splitn(4, …)`, which welded
+//!   `detail<TAB>ver<TAB>sha` into the detail — and [`crate::parity`] then compared THAT against a
+//!   Rust gate's clean detail, so every ledger-path parity run was comparing two different shapes.
+//! * [`Row::tsv`] writes four, because a `Row` carries no version: it does not know which release it
+//!   is about, and inventing one would be worse than omitting it. [`write_leg`] has no production
+//!   caller, so nothing in this crate contributes rows to a ledger `gate.sh` counts. A Rust gate
+//!   that ever needs to WRITE a leg the shell will count must be given the version at its call
+//!   site — never read from the environment, which is how the shell's own version column came to
+//!   need the refusal `gate.sh` carries.
 //!
 //! The three refusals the shell readers carry are refusals in the TYPE here, not conventions:
 //!
@@ -105,13 +124,20 @@ fn flatten(s: &str) -> String {
 
 /// Parse a leg's TSV. Blank lines are skipped; a line whose column 2 is not a status is an error,
 /// because a ledger the reader cannot understand must not read as an empty one.
+///
+/// COLUMN FOUR IS THE WHOLE DETAIL AND NOTHING ELSE. `record` writes SIX columns — the version and
+/// the staged qa sha follow the detail, and `gate.sh` filters a merged artefact directory on the
+/// fifth — so a `splitn(4, …)` welded `detail\tver\tsha` into the detail of every row read back from
+/// a real ledger, which is what [`crate::parity`] then compared against a Rust gate's clean detail.
+/// Splitting on every tab is exact rather than lenient: both writers strip tabs out of the free-text
+/// fields, so nothing of the detail can be hiding past the split.
 pub fn parse_rows(text: &str) -> Result<Vec<Row>, String> {
     let mut out = Vec::new();
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let mut cols = line.splitn(4, '\t');
+        let mut cols = line.split('\t');
         let id = cols.next().unwrap_or_default();
         let status = cols.next().unwrap_or_default();
         let title = cols.next().unwrap_or_default();
