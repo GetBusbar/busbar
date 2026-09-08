@@ -59,12 +59,11 @@ use busbar_caps::{Origin, TrustToken};
 use busbar_contract::ids::RecordSchemaId;
 use busbar_kernel::teller::{Ended, Kernel, Run, UnitCtx};
 use busbar_plane_a2a::{ops, records, A2aPlane};
-use busbar_substrate::net_guard::SystemResolver as HostResolver;
 use busbar_unit_admission::{BucketChain, Door, GroupTable, InMemoryCells, Pricer};
 use busbar_unit_auth::Auth;
 use busbar_unit_scope::{Grants, Scope};
 use busbar_unit_trust::lane::BreakerView;
-use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
+use busbar_unit_trust::net::{Denylist, GuardPolicy};
 
 use crate::root::durability::Durability;
 use crate::root::kernel::auth_bindings::AuthBindings;
@@ -282,27 +281,16 @@ fn a2a_record_ok(schema: RecordSchemaId, op: &'static str) -> bool {
 //   THE RESOLVER BRIDGE
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// The system resolver, presented to the trust unit's identically-shaped seam.
+/// THE RESOLVER BRIDGE IS NOT THIS PLANE'S, and that is why it is not defined here.
 ///
-/// TWO TRAITS, ONE RESOLUTION. `busbar_substrate::net_guard::Resolver` and
-/// `busbar_unit_trust::net::Resolver` declare the same method over the same types and neither crate
-/// may name the other — the substrate holds the fetch guard, the unit holds the verify step, and a
-/// unit that depended on the substrate would be a unit that could reach a socket. So the composition
-/// root, which is the one thing entitled to name both, carries the join. It is a delegation and not
-/// a second implementation: there is exactly one `lookup_host` in the tree and this forwards to it.
+/// It landed in this file because this leg needed it first, and nothing in it was ever about A2A:
+/// the argument is a host name and the answer is a list of addresses, and the whole content of the
+/// type is the join between two identically-shaped `Resolver` traits that may not name each other.
+/// The MCP leg needs the same join, so the type moved to [`crate::root::registrations`] — beside
+/// [`NetSeam`], which is the value it is handed to — rather than gaining an mcp-shaped twin.
 ///
-/// ONE SYMBOL, deliberately. The forward goes through the host resolver's INHERENT `lookup` rather
-/// than through its trait method, because the ratchet that measures how much of the retiring
-/// substrate's surface this root still names counts distinct symbols — and naming the trait as well
-/// as the type would cost two where one does the same work.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SystemResolver;
-
-impl Resolver for SystemResolver {
-    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
-        HostResolver.lookup(host)
-    }
-}
+/// Re-exported here under the name it already had, so this leg reads as one file.
+pub use crate::root::registrations::SystemResolver;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE BOOT REFUSAL
