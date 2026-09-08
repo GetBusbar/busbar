@@ -294,3 +294,148 @@ fn every_other_primitive_is_delegated() {
         Err(StoreError::Failed)
     ));
 }
+
+/// An UPHELD dispute takes the whole charge off, and the customer's invoice shows it.
+///
+/// The invoice-visible assertion is `settled`: that is the figure a bill is derived from, so a
+/// verdict that cleared the mark and left settled alone would tell the customer they were right and
+/// charge them anyway.
+#[test]
+fn upholding_a_dispute_takes_the_charge_off_the_invoice() {
+    let (store, durability) = a_node(0);
+    durability
+        .lock()
+        .unwrap()
+        .ledger
+        .record_dispute_opened(&key(), WINDOW, 400, 90);
+
+    let answer = store
+        .resolve_dispute(
+            &admin(),
+            &body(",\"dispute_id\":\"d-1\",\"verdict\":\"uphold\""),
+        )
+        .expect("the dispute resolves");
+
+    let figures = durability.lock().unwrap().ledger.book().get(&key(), WINDOW);
+    assert_eq!(figures.disputed, 0, "the mark is cleared");
+    assert_eq!(figures.open_dispute_count, 0);
+    assert_eq!(figures.adjustments, 400, "the correction is in the books");
+    assert_eq!(
+        figures.settled, 9_600,
+        "the upheld charge came off what the customer is billed"
+    );
+
+    let text = json_of(&answer);
+    assert!(text.contains(r#""verdict":"uphold""#), "{text}");
+    assert!(text.contains(r#""posted_amount_nanos":"400""#), "{text}");
+    assert!(text.contains(r#""corrected_amount_nanos":"0""#), "{text}");
+    assert!(text.contains(r#""delta_nanos":"-400""#), "{text}");
+}
+
+/// An OVERTURNED dispute clears the mark and bills exactly what it billed before.
+///
+/// The half that would be invisible without this test: a resolver that always adjusted would refund
+/// every objection it rejected.
+#[test]
+fn overturning_a_dispute_changes_no_money_at_all() {
+    let (store, durability) = a_node(0);
+    durability
+        .lock()
+        .unwrap()
+        .ledger
+        .record_dispute_opened(&key(), WINDOW, 400, 90);
+
+    let answer = store
+        .resolve_dispute(
+            &admin(),
+            &body(",\"dispute_id\":\"d-1\",\"verdict\":\"overturn\""),
+        )
+        .expect("the dispute resolves");
+
+    let figures = durability.lock().unwrap().ledger.book().get(&key(), WINDOW);
+    assert_eq!(figures.disputed, 0, "the mark is still cleared");
+    assert_eq!(figures.settled, 10_000, "the charge stands");
+    assert_eq!(
+        figures.adjustments, 0,
+        "no zero-value correction was posted for a rejected objection"
+    );
+    assert!(json_of(&answer).contains(r#""delta_nanos":"0""#));
+}
+
+/// An AMENDED dispute bills the named figure, not the original and not nothing.
+#[test]
+fn amending_a_dispute_bills_the_named_figure() {
+    let (store, durability) = a_node(0);
+    durability
+        .lock()
+        .unwrap()
+        .ledger
+        .record_dispute_opened(&key(), WINDOW, 400, 90);
+
+    let answer = store
+        .resolve_dispute(
+            &admin(),
+            &body(",\"dispute_id\":\"d-1\",\"verdict\":\"amend\",\"amount_nanos\":\"250\""),
+        )
+        .expect("the dispute resolves");
+
+    let figures = durability.lock().unwrap().ledger.book().get(&key(), WINDOW);
+    assert_eq!(figures.disputed, 0);
+    assert_eq!(figures.adjustments, 150, "400 charged, 250 owed, 150 off");
+    assert_eq!(figures.settled, 9_850);
+    assert!(json_of(&answer).contains(r#""delta_nanos":"-150""#));
+}
+
+/// An `amend` with no amount is refused, and nothing moves.
+///
+/// `amend` is the one verdict whose entire content is the figure, so a missing one is a request
+/// that does not say what it wants — and guessing would move money.
+#[test]
+fn an_amend_with_no_amount_is_refused_and_moves_nothing() {
+    let (store, durability) = a_node(0);
+    durability
+        .lock()
+        .unwrap()
+        .ledger
+        .record_dispute_opened(&key(), WINDOW, 400, 90);
+
+    assert!(store
+        .resolve_dispute(
+            &admin(),
+            &body(",\"dispute_id\":\"d-1\",\"verdict\":\"amend\"")
+        )
+        .is_err());
+
+    let figures = durability.lock().unwrap().ledger.book().get(&key(), WINDOW);
+    assert_eq!(figures.disputed, 400, "the dispute is still open");
+    assert_eq!(figures.adjustments, 0);
+    assert_eq!(figures.settled, 10_000);
+}
+
+/// A verdict this verb does not have moves nothing and leaves the dispute open.
+#[test]
+fn an_unknown_dispute_verdict_moves_nothing() {
+    let (store, durability) = a_node(0);
+    durability
+        .lock()
+        .unwrap()
+        .ledger
+        .record_dispute_opened(&key(), WINDOW, 400, 90);
+
+    assert!(store
+        .resolve_dispute(
+            &admin(),
+            &body(",\"dispute_id\":\"d-1\",\"verdict\":\"probably\"")
+        )
+        .is_err());
+    assert_eq!(
+        durability
+            .lock()
+            .unwrap()
+            .ledger
+            .book()
+            .get(&key(), WINDOW)
+            .disputed,
+        400
+    );
+}

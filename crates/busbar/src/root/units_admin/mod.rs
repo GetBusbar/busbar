@@ -1732,6 +1732,9 @@ pub(crate) fn route(
             MoneyVerb::ResolveSlice => {
                 verbs.resolve_slice(admin, &actor, granted, request.at, &request.body)
             }
+            MoneyVerb::ResolveDispute => {
+                verbs.resolve_dispute(admin, &actor, granted, request.at, &request.body)
+            }
         };
         return match ran {
             Ok(packed) => match AdminAnswer::unpack(&packed) {
@@ -1791,6 +1794,7 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
 enum MoneyVerb {
     Adjust,
     ResolveSlice,
+    ResolveDispute,
 }
 
 /// Which money verb this is, or `None` for anything else.
@@ -1798,6 +1802,7 @@ fn money_verb(verb: KernelVerb) -> Option<MoneyVerb> {
     match verb {
         KernelVerb::Adjust => Some(MoneyVerb::Adjust),
         KernelVerb::ResolveSlice => Some(MoneyVerb::ResolveSlice),
+        KernelVerb::ResolveDispute => Some(MoneyVerb::ResolveDispute),
         _ => None,
     }
 }
@@ -2249,6 +2254,14 @@ impl busbar_unit_verbs::store::Store for StoreRef {
         request: &[u8],
     ) -> Result<Vec<u8>, busbar_unit_verbs::StoreError> {
         self.0.resolve_slice(admin, request)
+    }
+
+    fn resolve_dispute(
+        &self,
+        admin: &busbar_caps::AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, busbar_unit_verbs::StoreError> {
+        self.0.resolve_dispute(admin, request)
     }
 
     fn replay_new_verb(

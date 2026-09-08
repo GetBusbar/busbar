@@ -90,6 +90,13 @@ pub trait Store {
         Err(StoreError::Failed)
     }
 
+    /// `// contract:` decide an open dispute — the `resolve_dispute` verb. Same shape, same
+    /// refusing default, and for the same reason.
+    fn resolve_dispute(&self, admin: &AdminToken, request: &[u8]) -> Result<Vec<u8>, StoreError> {
+        let _ = (admin, request);
+        Err(StoreError::Failed)
+    }
+
     /// `// contract:` the store-backed sealed idempotency cache for the mutating new verbs —
     /// TTL 600 s flat, per the owner's ruling. Returns the previously
     /// committed response bytes for a replay, or `None` on first sighting (in which case the

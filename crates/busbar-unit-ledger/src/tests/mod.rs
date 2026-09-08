@@ -4,6 +4,7 @@
 //! The batteries.
 
 mod checkpoint_tests;
+mod dispute_tests;
 mod fixtures;
 mod identity_tests;
 mod migration_tests;

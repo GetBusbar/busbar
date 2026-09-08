@@ -25,7 +25,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use busbar_unit_cost::{AdjustmentView, UnreconciledSliceView};
+use busbar_unit_cost::{AdjustmentView, DisputeVerdictView, UnreconciledSliceView, Verdict};
 use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey, WindowStart};
 use busbar_unit_verbs::store::{Store, StoreError};
 
@@ -195,6 +195,31 @@ impl Store for MoneyStore {
         Ok(json_answer(&view.to_json()))
     }
 
+    /// `resolve_dispute` — decide an open dispute.
+    fn resolve_dispute(
+        &self,
+        _admin: &busbar_caps::AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, StoreError> {
+        let balance = balance_of(request).ok_or(StoreError::NotFound)?;
+        let dispute_id = json_str(request, "dispute_id").ok_or(StoreError::NotFound)?;
+        let verdict = Verdict::parse(&json_str(request, "verdict").ok_or(StoreError::NotFound)?)
+            .ok_or(StoreError::NotFound)?;
+        // Read only by `amend`, and the view enforces that. A malformed amount is still a refusal
+        // rather than a silent fallback, and an `amend` with none at all is refused outright,
+        // because `amend` is the one verdict whose whole content is the figure.
+        let amended_to = match json_str(request, "amount_nanos") {
+            Some(raw) => Some(raw.parse::<i128>().map_err(|_| StoreError::NotFound)?),
+            None if verdict == Verdict::Amend => return Err(StoreError::NotFound),
+            None => None,
+        };
+
+        let mut durability = self.lock();
+        let view =
+            resolve_dispute_effect(&mut durability, &balance, dispute_id, verdict, amended_to);
+        Ok(json_answer(&view.to_json()))
+    }
+
     /// `resolve_slice` — settle or write off spend the recompute never agreed with.
     ///
     /// Unreconciled value is a MOVE out of settled, so resolving it moves the amount back: the
@@ -257,6 +282,54 @@ impl Store for MoneyStore {
         };
         Ok(json_answer(&view.to_json()))
     }
+}
+
+/// `resolve_dispute` — decide an open dispute and post whatever the verdict corrects.
+///
+/// ## The two halves, and why both are here
+///
+/// A verdict clears the dispute's mark AND posts its correction, and neither half is a dispute
+/// resolution on its own: a cleared mark with no correction is a customer told they were right and
+/// still charged; a correction with the mark left standing is a bucket that stays overdue forever.
+///
+/// The DECISION — what the charge becomes and therefore what moves — is
+/// `busbar_unit_cost::DisputeVerdictView::decide`, per the owner's rule that all money arithmetic
+/// is the cost unit's and the ledger only moves rows. This function reads the posted amount off the
+/// book, hands it over, and applies whatever comes back.
+fn resolve_dispute_effect(
+    durability: &mut Durability,
+    balance: &BalanceRef,
+    dispute_id: String,
+    verdict: Verdict,
+    amended_to: Option<i128>,
+) -> DisputeVerdictView {
+    // What is under objection for this balance. This crate holds totals rather than a list of
+    // disputes, so the balance's mark IS the charge in question.
+    let posted = durability
+        .ledger
+        .book()
+        .get(&balance.key, balance.window)
+        .disputed;
+    let view = DisputeVerdictView::decide(
+        dispute_id,
+        balance.bucket.clone(),
+        verdict,
+        posted,
+        amended_to,
+    );
+
+    durability
+        .ledger
+        .record_dispute_resolved(&balance.key, balance.window, posted);
+    // A correction of nothing is not posted at all. An overturned dispute is the common case, and
+    // posting a zero-value adjustment for each one would fill the adjustments column — the column
+    // an auditor reads to find corrections — with entries that correct nothing.
+    if view.delta_nanos != 0 {
+        durability
+            .ledger
+            .record_adjustment(&balance.key, balance.window, -view.delta_nanos);
+    }
+    view
 }
 
 /// A `200` carrying JSON, packed the way the admin loop unpacks it.

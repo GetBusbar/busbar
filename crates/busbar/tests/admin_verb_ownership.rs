@@ -7,7 +7,7 @@
 //! ## Why this pin exists beside the other one
 //!
 //! `new_verbs_legacy_leg.rs` pins one row of this question: of the thirteen 1.6.0-additive verbs,
-//! six are answered by the loop and seven reach a surface that has never had a route for them.
+//! seven are answered by the loop and six reach a surface that has never had a route for them.
 //! It says nothing about the other seventy-one, and the sixty-six legacy operations are the ones the
 //! admin leg's migration is actually about — each of them is a verb the loop will one day produce the
 //! answer for and the surface underneath will stop answering, and the two halves of that have to
@@ -18,9 +18,9 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or a landed 1.6.0 verb | 11 |
+//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or a landed 1.6.0 verb | 12 |
 //! | the surface answers, and the loop hands it back | everything else that is mounted | 66 |
-//! | nobody answers | scope-checked, then `404` — the shipped defect the sibling pin names | 7 |
+//! | nobody answers | scope-checked, then `404` — the shipped defect the sibling pin names | 6 |
 //!
 //! ## Why it is derived and then measured, rather than written down
 //!
@@ -62,7 +62,7 @@ const RECOVERY_VERBS: &[&str] = &["chain_break", "store_restore", "reseal_epoch_
 /// "answered by nobody" while actually being answered, which is the false green this pin exists to
 /// refuse. Named rather than derived from the root's own match, for the reason the file's header
 /// gives: a table checked only against itself agrees with any code.
-const ROOT_ANSWERED_NEW_VERBS: &[&str] = &["verify", "adjust", "resolve_slice"];
+const ROOT_ANSWERED_NEW_VERBS: &[&str] = &["verify", "adjust", "resolve_slice", "resolve_dispute"];
 
 /// A path the administrative surface has never mounted and never will — the control the two other
 /// admin pins use, and for the same reason: "the surface has no route for this" is only a claim if
@@ -239,7 +239,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
 
     assert_eq!(
         loop_owned.len(),
-        11,
+        12,
         "the loop answers a different number of operations than it did: {loop_owned:?}"
     );
     assert_eq!(
@@ -249,7 +249,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
     );
     assert_eq!(
         nobody_answers.len(),
-        7,
+        6,
         "the number of operations gated by every gate and then answered by nobody has changed: \
          {nobody_answers:?}"
     );
@@ -259,7 +259,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
         "the three buckets do not account for the whole table"
     );
 
-    // The eleven, named. A count would let one verb leave the loop as another arrived.
+    // The twelve, named. A count would let one verb leave the loop as another arrived.
     let mut owned: Vec<&str> = loop_owned.clone();
     owned.sort_unstable();
     assert_eq!(
@@ -273,6 +273,7 @@ async fn the_eighty_four_are_split_between_the_loop_and_the_surface() {
             "get_ledger_reconciliation",
             "get_ledger_totals",
             "reseal_epoch_floor",
+            "resolve_dispute",
             "resolve_slice",
             "store_restore",
             "verify",

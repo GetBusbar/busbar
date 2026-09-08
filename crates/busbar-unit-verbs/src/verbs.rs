@@ -528,6 +528,21 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             .map_err(StoreError::into_refusal)
     }
 
+    /// `resolve_dispute` — decide an open dispute. Same shape as [`Verbs::adjust`].
+    pub fn resolve_dispute(
+        &self,
+        admin: &AdminToken,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Refusal> {
+        self.admit_store_verb(KernelVerb::ResolveDispute, actor, granted, now)?;
+        self.store
+            .resolve_dispute(admin, request)
+            .map_err(StoreError::into_refusal)
+    }
+
     /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
     /// through [`Verbs::admit_store_verb`] and only then handed to the store.
     pub fn reseal_epoch_floor(

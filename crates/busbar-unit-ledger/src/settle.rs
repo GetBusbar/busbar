@@ -262,6 +262,56 @@ impl Ledger {
         self.record_release(key, window, amount);
     }
 
+    /// Mark an amount as under dispute.
+    ///
+    /// ## Opening a dispute is NOT a move
+    ///
+    /// `disputed` is not a term of the identity, and that is the design rather than an omission. A
+    /// disputed amount is value that is still counted exactly where it already was, with a flag on
+    /// it saying somebody has objected. Taking it out of settled here would break the identity for
+    /// as long as the dispute stayed open, and an operator's reconciliation would fill up with
+    /// alarms that are really just open customer queries.
+    ///
+    /// So this marks, and the money moves only when a verdict says it should — as an adjustment,
+    /// through [`Ledger::record_adjustment`], which is the one primitive every correction uses.
+    ///
+    /// `age_secs` is how long THIS dispute has been open. The column keeps the oldest, because the
+    /// overdue alarm reads it: taking the newer one would reset the clock on a dispute that has
+    /// been open for a month every time a fresh one arrived.
+    pub fn record_dispute_opened(
+        &mut self,
+        key: &TotalsKey,
+        window: WindowStart,
+        amount: i128,
+        age_secs: u64,
+    ) {
+        let figures = self.book.entry(key.clone(), window);
+        figures.disputed += amount;
+        figures.open_dispute_count += 1;
+        figures.oldest_dispute_age_secs = figures.oldest_dispute_age_secs.max(age_secs);
+    }
+
+    /// Clear a dispute's mark. On its own this moves no value either.
+    ///
+    /// Kept separate from the correction for the case that has no correction: an overturned dispute
+    /// resolves and nothing moves, and a resolver that always adjusted would post a zero-value
+    /// entry for every objection that failed.
+    ///
+    /// Both columns floor at nothing. A negative `disputed` would report a balance as having less
+    /// than nothing under objection, and this column is what the overdue alarm reads.
+    pub fn record_dispute_resolved(&mut self, key: &TotalsKey, window: WindowStart, amount: i128) {
+        let figures = self.book.entry(key.clone(), window);
+        figures.disputed = (figures.disputed - amount).max(0);
+        figures.open_dispute_count = figures.open_dispute_count.saturating_sub(1);
+        // The age belongs to the oldest OPEN dispute, so it survives exactly as long as one does.
+        // This crate holds totals, not a list of disputes, so it cannot know the next-oldest age —
+        // and inventing one would be worse than clearing it: the alarm would read a number no
+        // dispute has. When the last one closes there is nothing to be overdue, which it can say.
+        if figures.open_dispute_count == 0 {
+            figures.oldest_dispute_age_secs = 0;
+        }
+    }
+
     /// Move value from one window to another, both sides at once.
     ///
     /// Both sides, in one call, because a transfer recorded on only one side is precisely the

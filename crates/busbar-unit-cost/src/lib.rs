@@ -49,7 +49,10 @@ pub use rate::{
     nano_rate, LaneClass, LaneRates, PinnedCard, RateCard, RateCardVersion, TierRates,
     CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
 };
-pub use view::{AdjustmentView, IdentityDeltaView, IdentityTerms, UnreconciledSliceView};
+pub use view::{
+    AdjustmentView, DisputeVerdictView, IdentityDeltaView, IdentityTerms, UnreconciledSliceView,
+    Verdict,
+};
 
 /// Nano-units in one cent. A cent is a hundredth of one abstract cost unit, and a nano-unit is a
 /// billionth of one, so ten million nano-units make a cent.

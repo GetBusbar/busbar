@@ -202,6 +202,118 @@ impl IdentityDeltaView {
     }
 }
 
+/// What a dispute may be resolved as. A closed set of three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The objection succeeds: the charge is wrong and comes off in full.
+    Uphold,
+    /// The objection fails: the charge stands and no money moves.
+    Overturn,
+    /// The charge was wrong but not by all of it: it is corrected to a named amount.
+    Amend,
+}
+
+impl Verdict {
+    /// The wire token for this verdict.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Uphold => "uphold",
+            Verdict::Overturn => "overturn",
+            Verdict::Amend => "amend",
+        }
+    }
+
+    /// Parse a wire token. `None` is a verdict this crate does not have, and a caller must refuse
+    /// rather than pick a nearby one — the three differ by an amount of money.
+    pub fn parse(token: &str) -> Option<Self> {
+        match token {
+            "uphold" => Some(Verdict::Uphold),
+            "overturn" => Some(Verdict::Overturn),
+            "amend" => Some(Verdict::Amend),
+            _ => None,
+        }
+    }
+}
+
+/// What one `resolve_dispute` decided, and what it moves.
+///
+/// ## The arithmetic lives here, deliberately
+///
+/// The owner's rule is that all money arithmetic is this crate's and the ledger only moves rows. So
+/// this type does the one subtraction a verdict IS — what the charge becomes, less what it was —
+/// and the ledger is handed the answer. A verdict computed at the call site would be a second
+/// opinion about what a customer is owed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisputeVerdictView {
+    /// Which dispute.
+    pub dispute_id: String,
+    /// Which pot.
+    pub bucket: String,
+    /// The verdict, as its wire token.
+    pub verdict: String,
+    /// What was originally charged.
+    pub posted_amount_nanos: i128,
+    /// What the charge becomes.
+    pub corrected_amount_nanos: i128,
+    /// The correction: `corrected − posted`. Negative when the customer is owed money.
+    pub delta_nanos: i128,
+}
+
+impl DisputeVerdictView {
+    /// Decide what a verdict moves.
+    ///
+    /// - `Overturn` — the charge stands, so the corrected amount IS the posted amount and the delta
+    ///   is zero. Nothing moves, and the view says so rather than the caller having to know.
+    /// - `Uphold` — the charge comes off in full: corrected is zero and the delta is the whole of
+    ///   it, negative.
+    /// - `Amend` — corrected is whatever was named, and the delta is the difference.
+    ///
+    /// `amended_to` is read only for `Amend`; the other two verdicts derive their corrected amount
+    /// from the posted one, so a caller cannot make an uphold refund a different figure than it
+    /// charged by passing an argument.
+    pub fn decide(
+        dispute_id: impl Into<String>,
+        bucket: impl Into<String>,
+        verdict: Verdict,
+        posted_amount_nanos: i128,
+        amended_to: Option<i128>,
+    ) -> Self {
+        let corrected = match verdict {
+            Verdict::Overturn => posted_amount_nanos,
+            Verdict::Uphold => 0,
+            Verdict::Amend => amended_to.unwrap_or(posted_amount_nanos),
+        };
+        DisputeVerdictView {
+            dispute_id: dispute_id.into(),
+            bucket: bucket.into(),
+            verdict: verdict.as_str().to_string(),
+            posted_amount_nanos,
+            corrected_amount_nanos: corrected,
+            delta_nanos: corrected - posted_amount_nanos,
+        }
+    }
+
+    /// Render this view as a JSON object.
+    pub fn to_json(&self) -> String {
+        let mut out = String::new();
+        out.push_str("{\"dispute_id\":");
+        json_string(&self.dispute_id, &mut out);
+        out.push_str(",\"bucket\":");
+        json_string(&self.bucket, &mut out);
+        out.push_str(",\"verdict\":");
+        json_string(&self.verdict, &mut out);
+        for (name, amount) in [
+            ("posted_amount_nanos", self.posted_amount_nanos),
+            ("corrected_amount_nanos", self.corrected_amount_nanos),
+            ("delta_nanos", self.delta_nanos),
+        ] {
+            let _ = write!(out, ",\"{name}\":\"{amount}\"");
+        }
+        out.push('}');
+        out
+    }
+}
+
 /// What one `adjust` moved.
 ///
 /// `pure_reversal` is the field an operator actually reads: inside the open window an adjustment
