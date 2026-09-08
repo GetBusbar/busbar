@@ -54,7 +54,15 @@
 //! read-time derivation over a whole bucket's lanes at one card, kept because the legacy usage
 //! projection still reads that way. A property test asserts the two agree: the lookup over a
 //! single-entry history equals the legacy derivation at that card, exactly.
+//!
+//! # What a key may still spend
+//!
+//! [`KeyBudgetView`] is the sixth thing here and the newest: given a ledger row's ceiling and what
+//! has been spent on it, what is left, and would one more request go over. Owner ruling 13:0x (5) —
+//! "no arithmetic outside unit-cost" — is why it is in this crate rather than beside the door that
+//! asks the question; ruling 13:0x (6) is why the enforced key does not carry any of it.
 
+mod budget;
 mod currency;
 mod history;
 mod posting;
@@ -71,6 +79,7 @@ pub use project::{
     cents_of, derive_spend_cents, derive_spend_micros, derive_spend_micros_in, derive_spend_minor,
     micros_of, minor_of,
 };
+pub use budget::KeyBudgetView;
 pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
     CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,

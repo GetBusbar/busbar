@@ -8,6 +8,7 @@ mod fixtures;
 mod identity_tests;
 mod migration_tests;
 mod recompute_tests;
+mod rows_tests;
 mod settle_tests;
 mod statement_tests;
 mod totals_tests;

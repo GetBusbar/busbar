@@ -47,6 +47,15 @@
 //! amount, the recompute now CORRECTS a stale cache rather than only reporting it — and it still
 //! tells the two cases apart, because a cache going stale behind a head that moved is an amendment
 //! and a cache going stale behind a head that did not is somebody's hand.
+//! [`mod@rows`] — what a bucket is CALLED. A bucket id is the primary key of a durable row, not a
+//! display string: two nodes that spell one group's monthly bucket differently keep two balances for
+//! one budget and each admits up to the full cap. So the spelling lives with the rows, and every
+//! producer reaches it here instead of composing a format string of its own.
+//!
+//! [`mod@recompute`] — every posting priced again from sealed policy, from a watermark that is the last
+//! posting actually checked rather than the last checkpoint. The difference is not pedantry: at a
+//! busy node's rate "since the last checkpoint" covers a few percent of the postings, and a posting
+//! edited before that point would never be looked at again.
 //!
 //! ## What this crate does not do
 //!
@@ -70,6 +79,7 @@ pub mod identity;
 pub mod legacy;
 pub mod migration;
 pub mod recompute;
+pub mod rows;
 pub mod settle;
 pub mod totals;
 pub mod verify;
@@ -100,6 +110,9 @@ pub use settle::{adjusting_entries, Booked, Ledger, Overdraft, Repricing, Settle
 pub use totals::{
     totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,
     TotalsKey, Unpriced, WindowStart,
+};
+pub use rows::{
+    attribution_bucket, group_bucket, group_bucket_scoped, is_bucket_of_group, GROUP_BUCKET_PREFIX,
 };
 pub use verify::{
     sequences_are_monotonic, verify, AllWindowsOpen, Finding as VerifyFinding, WindowState,

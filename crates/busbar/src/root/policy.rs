@@ -202,13 +202,13 @@ pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
 // The group table — the third configured value, and the third way a default is wrong
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The ledger-bucket prefix every configured group's window bucket is named under.
-///
-/// The same prefix the shipped release writes, because these are the same rows: a node that
-/// resolved its groups through this projection and a node that resolved them through the shipped
-/// door must charge the same cell for the same group, or one release's usage would read as another
-/// release's silence.
-const GROUP_BUCKET_PREFIX: &str = "group:";
+// THE LEDGER-BUCKET NAMES ARE THE LEDGER'S. This file used to carry its own `group:` prefix and
+// compose bucket ids from it with a format string. It does not any more, and the constant is gone
+// rather than kept as an alias: a bucket id is the primary key of a durable row, so the crate that
+// owns the rows owns their spelling, and the way to be sure there is one spelling is for there to
+// be one place it can be written. The projection below reaches
+// `busbar_unit_ledger::group_bucket` / `group_bucket_scoped`, whose output is byte-identical to
+// what this file used to build.
 
 /// Resolve the configured `groups:` tree into the table the door walks.
 ///
@@ -281,16 +281,19 @@ pub fn group_table(
                 let bucket = match position {
                     Some(i) => &mut buckets[i],
                     None => {
+                        // The row identity is the LEDGER's, reached rather than re-composed. The
+                        // spelling is unchanged — the same prefix, the same `@`, the same
+                        // `#<kind>:<value>` suffix — so these are the same cells; what changed is
+                        // that there is now one place the format string lives, and a producer that
+                        // spelled it differently would be spending a second balance against one
+                        // budget rather than reading a name slightly wrong.
                         let bucket_id = match &limit.scope {
-                            Some(s) => {
-                                format!(
-                                    "{GROUP_BUCKET_PREFIX}{name}@{window}#{}:{}",
-                                    s.kind, s.value
-                                )
-                            }
-                            None => format!("{GROUP_BUCKET_PREFIX}{name}@{window}"),
+                            Some(s) => busbar_unit_ledger::group_bucket_scoped(
+                                name, window, &s.kind, &s.value,
+                            ),
+                            None => busbar_unit_ledger::group_bucket(name, window),
                         };
-                        let mut fresh = GroupBucket::new(bucket_id, window);
+                        let mut fresh = GroupBucket::new(bucket_id.as_str(), window);
                         fresh.scope = scope;
                         buckets.push(fresh);
                         buckets.last_mut().expect("just pushed")
