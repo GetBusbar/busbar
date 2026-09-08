@@ -1170,9 +1170,12 @@ async fn one_tasks_pushes_are_bounded_and_the_bound_is_the_shipped_one() {
     let (limit, _window) = pushback::push_rate_bounds();
     // A re-report of the state busbar already holds is a RETRY and not a transition, so these cost
     // no chain append — which is exactly the shape a replay takes, and exactly what the bound is
-    // for. The FIRST push is the transition; every one after it is the replay.
+    // for. EVERY push here is that replay, and the state is deliberately the LIVE one: a terminal
+    // report would end the task on the first push and every push after it would be refused by
+    // `token_live` rather than by the window, which measures the wrong rule. The bound has to be
+    // the thing that stops a caller whose capability is still perfectly good.
     let document = serde_json::json!({ "id": BACKEND_TASK, "kind": "task",
-                                       "status": { "state": "completed" } });
+                                       "status": { "state": "working" } });
     for i in 0..limit {
         assert_eq!(
             push_to_busbar(&h, &token, &document).await,
