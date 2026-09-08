@@ -64,6 +64,19 @@ else
 fi
 echo
 
+# 1b. the pinned oracle tool, IF it is already installed. validate.py rebuilds a request body from
+# the tool's build-request.py for any cell whose recording lacks raw/<cell>/request.body; the tool
+# left this tree with the rest of the oracle, so it is found through the pin (bin/oracle) and never
+# beside busbar's data. This is a BEST EFFORT and deliberately never fatal: a recording that carries
+# every request.body -- what the recorder writes and what CI hands this gate -- needs no rebuild, and
+# a gate that refused to start because an unused fallback was missing would report VACUOUS instead of
+# the verdict it had. When the fallback IS needed and the tool is absent, validate.py fails that ONE
+# row and says so. `tool-dir` is silent about installing, so a cold CI runner still resolves the pin.
+if [ -z "${BUSBAR_ORACLE_TOOL_DIR:-}" ]; then
+  BUSBAR_ORACLE_TOOL_DIR="$("${repo}/bin/oracle" tool-dir 2>/dev/null || true)"
+  [ -n "$BUSBAR_ORACLE_TOOL_DIR" ] && export BUSBAR_ORACLE_TOOL_DIR
+fi
+
 # 2. validate: one row per cell x direction. Its exit code is NOT the verdict; the ledger is.
 python3 "${here}/validate.py" --recording "$RECORDING" --out "$OUT" --cells "$CELLS" --named-gaps "$GAPS" --ledger "$LEDGER" >"${OUT}/validate.log" 2>&1
 vrc=$?
