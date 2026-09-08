@@ -43,7 +43,7 @@ normalize it in normalize.py (which is how the signing key stopped needing a `co
 reach for `compare` only when there is nothing left to normalize.
 
 A cell may also carry `bindings: [PB-N, ...]`: the Appendix B parity rows it proves. That list is
-READ BY A PROGRAM — scripts/design-bindings.py scans each cell for its `PB-N` tokens and derives
+READ BY A PROGRAM — the design-bindings gate scans each cell for its `PB-N` tokens and derives
 the binding's oracle checks from what it finds — so it is a field, not an aside in the cell's
 `why`. The distinction is not cosmetic: as a parenthetical in prose (`(PB-43/70)`) it was
 unqueryable, it constrained how the sentence could be written, and the `/`-joined spelling meant

@@ -1,4 +1,4 @@
-# qa/construction.toml — thresholds for THE CONSTRUCTION GATE (scripts/construction-gate.sh).
+# qa/construction.toml — thresholds for THE CONSTRUCTION GATE (cargo xtask gate construction).
 #
 # The shadow oracle proves the tree is user-correct. This file is the owner's dial for how well the
 # tree is BUILT, measured against docs/design/ARCHITECTURE.md. Every rule below is a named invariant
@@ -54,8 +54,8 @@ busbar-a2a = ["busbar-a2a-codec"]
 busbar-voice = ["busbar-voice-codec"]
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
-# owner decisions, not ratchets that drift upward with the tree — construction-gate.sh reads them
-# from here (rather than a literal in the script) purely so --calibrate/--selftest can also produce
+# owner decisions, not ratchets that drift upward with the tree — the gate reads them
+# from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]

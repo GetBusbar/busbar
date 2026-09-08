@@ -33,10 +33,9 @@ pub const XTASK_GATE_DIR: &str = "xtask/src/gates";
 /// the same trap is one edit away from reopening. The Rust successor is safe by a second
 /// construction as well: `.rs` is deliberately not a runnable suffix, so no module is ever opened
 /// looking for further invocations.
-const NOT_AN_INVOKER: [&str; 2] = [
-    "scripts/design-bindings.py",
-    "xtask/src/gates/design_bindings",
-];
+/// The Python that carried the first entry of this list is gone, so the list is one name: this
+/// gate's own module tree. A path that cannot exist is not a waiver worth keeping.
+const NOT_AN_INVOKER: [&str; 1] = ["xtask/src/gates/design_bindings"];
 
 /// The module path a `cargo xtask gate <name>` invocation runs. ONE mechanical spelling, derived
 /// from the gate name rather than maintained beside it, so a gate cannot be cited under a name the

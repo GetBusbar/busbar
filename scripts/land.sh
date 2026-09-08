@@ -176,9 +176,9 @@ fi
 if [ -n "$gate" ]; then
   # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
   # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
-  # at all (missing python, missing ceilings file) is red, not green.
+  # at all (an unreadable ceilings file, an unbuildable runner) is red, not green.
   glog="$here/target/land-gate-$stamp.log"
-  "$here/scripts/construction-gate.sh" >"$glog" 2>&1 || true
+  ( cd "$here" && cargo xtask gate construction --report ) >"$glog" 2>&1 || true
   rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
   [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; exit 1; }
   named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
