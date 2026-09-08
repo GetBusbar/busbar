@@ -94,6 +94,11 @@ busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-voice = { path = "../busbar-plane-voice" }
 busbar-plane-admin = { path = "../busbar-plane-admin" }
+# THE CONTROL SURFACES. A second family beside the planes: unmetered, routes declared as data, the
+# control path only. The root is the one place entitled to name both a control crate's declaration
+# and the neutral seam the node mounts it through, which is what `src/root/control_oauth2.rs` is.
+# Unconditional, because `oauth_as:` has never had a feature gate — see `register_control_surfaces`.
+busbar-control-oauth2 = { path = "../busbar-control-oauth2" }
 # The seven transports. Composition is an edge that does not exist as a Cargo dependency — a
 # transport may not name the layer beneath it — so the root supplies each composing transport its
 # lower layer as a constructor argument, which is why every one of them is named here.

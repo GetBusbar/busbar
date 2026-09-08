@@ -30,6 +30,10 @@ members = [
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-admin",
     "crates/busbar-plane-voice",
+    # The CONTROL kind: unmetered ways of reaching busbar's controls and obtaining a credential.
+    # `busbar-control-oauth2` is busbar-as-an-OAuth-2.1-issuer, moved out of `busbar-core` under
+    # the 1.6.0 control-kind ruling; `busbar-plane-admin` becomes `busbar-control-admin` in R7.
+    "crates/busbar-control-oauth2",
     "crates/busbar-unit-admission",
     "crates/busbar-unit-cost",
     "crates/busbar-unit-usage",

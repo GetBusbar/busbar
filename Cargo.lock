@@ -337,6 +337,7 @@ dependencies = [
  "busbar-api",
  "busbar-caps",
  "busbar-contract",
+ "busbar-control-oauth2",
  "busbar-core",
  "busbar-kernel",
  "busbar-llm",
@@ -512,6 +513,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-control-oauth2"
+version = "1.6.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "busbar-contract",
+ "busbar-secret-ref",
+ "oauth-as",
+ "ring",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "busbar-core"
 version = "1.6.0"
 dependencies = [
@@ -523,6 +540,7 @@ dependencies = [
  "busbar-a2a-codec",
  "busbar-api",
  "busbar-auth-admin-tokens",
+ "busbar-control-oauth2",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",

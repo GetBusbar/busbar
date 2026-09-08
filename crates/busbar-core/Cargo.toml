@@ -98,6 +98,15 @@ schemars = { workspace = true, optional = true }
 loom = { workspace = true, optional = true }
 ring = { workspace = true }
 base64 = { workspace = true }
+# THE OAUTH 2.1 CONTROL SURFACE. A TRANSITIONAL EDGE, and named as one: the surface itself is
+# `busbar-control-oauth2` and core mounts it through the neutral control-route seam without naming a
+# route, a path or a handler. What core still names is the `oauth_as:` LOWERING — the config types
+# the resolver produces, the secret-ref walker destructures and `appbuild` builds from — and the
+# `CimdFetch` trait its own guarded fetch implements. Both disappear when the lowering moves to the
+# config home and the surface is constructed by the composition root; see
+# docs/design/control-oauth2.md's staging section, which names this edge as owed.
+busbar-control-oauth2 = { path = "../busbar-control-oauth2" }
+# Still direct, and only for the types the CONFIG lowering above still names in core's own signatures.
 oauth-as = { workspace = true }
 sonic-rs = { workspace = true }
 serde_yaml = { workspace = true }
@@ -284,6 +293,11 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # the auth/governance/a2a tests and the mcp plane tests dual-compiled into this crate's test binary).
 # Feature unification means the one substrate instance carries it for the whole test build.
 busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
+# `CimdStore::set_fetcher`, for the end-to-end flow proof: it needs the REAL authorize/consent/token
+# wire and a CONTROLLED document, and a second HTTP listener playing "the public internet" would put
+# the SSRF guard's own loopback refusal between the test and the property under test. Test-only; the
+# feature is never enabled by a release build.
+busbar-control-oauth2 = { path = "../busbar-control-oauth2", features = ["test-support"] }
 busbar-store-example-plugin = { path = "../store-example-plugin" }
 tokio = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }
