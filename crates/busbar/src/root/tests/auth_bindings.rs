@@ -35,10 +35,7 @@ fn a_directory() -> Arc<Directory> {
     Arc::new(Directory {
         keys: vec![(
             "tok-live".to_string(),
-            KeyFacts {
-                id: "vk_1".to_string(),
-                name: "the operator's key".to_string(),
-            },
+            KeyFacts::unrestricted("vk_1", "the operator's key"),
         )],
         revoked: vec!["vk_gone".to_string()],
         asked: Mutex::new(Vec::new()),
@@ -82,10 +79,7 @@ fn the_bound_verifier_resolves_through_the_directory() {
     let keys = bindings.keys().expect("a bound directory is a verifier");
     assert_eq!(
         keys.verify_token("tok-live", 10, None),
-        Some(ResolvedKey {
-            id: "vk_1".to_string(),
-            name: "the operator's key".to_string(),
-        })
+        Some(ResolvedKey::unrestricted("vk_1", "the operator's key"))
     );
     assert_eq!(keys.verify_token("tok-unknown", 10, None), None);
     assert_eq!(
@@ -116,4 +110,66 @@ fn an_unbound_node_binds_a_cache_and_no_authority() {
     assert!(bindings.cache().is_some());
     assert!(bindings.keys().is_none());
     assert!(bindings.revocations().is_none());
+}
+
+/// The port carries every census field to the unit, unchanged, in both directions.
+///
+/// The two shapes are the same shape (owner ruling 13:0x (6): there is ONE enforced key), so the
+/// conversion is a move. What this pins is that it STAYS a move: a field added on one side and
+/// dropped in the `From` is the failure mode a hand-written projection has, and a round trip is
+/// what catches it. Every field is set to something DISTINGUISHABLE, because a round trip over
+/// defaults would pass while silently dropping half of them.
+#[test]
+fn the_key_port_round_trips_every_field_the_census_found_a_reader_for() {
+    let facts = KeyFacts {
+        id: "vk_round".to_string(),
+        name: "round".to_string(),
+        scopes: Some(vec![
+            KeyScope {
+                kind: "pool".to_string(),
+                value: "blue".to_string(),
+            },
+            KeyScope {
+                kind: "agent".to_string(),
+                value: "sales".to_string(),
+            },
+        ]),
+        expires_at: Some(4_242),
+        enabled: false,
+        deleted_at: Some(99),
+    };
+    let there: ResolvedKey = facts.clone().into();
+    assert_eq!(there.id, facts.id);
+    assert_eq!(there.name, facts.name);
+    assert_eq!(there.expires_at, Some(4_242));
+    assert!(!there.enabled);
+    assert_eq!(there.deleted_at, Some(99));
+    assert!(there.scope_allowed("pool", "blue"));
+    assert!(there.scope_allowed("agent", "sales"));
+    assert!(!there.scope_allowed("pool", "sales"));
+    let back: KeyFacts = there.into();
+    assert_eq!(back, facts);
+}
+
+/// The port does not carry the key's charging pot, and there is no way to ask it for one.
+///
+/// Ruling 13:0x (6) as an assertion rather than a promise: the legacy key's only money-carrying
+/// field was its `group`, and it goes to the cost and ledger views. Asserted over the source
+/// because the point is an ABSENCE, and an absence has no value to compare. Comments are stripped
+/// so the file's prose stays free to explain the rule it is governed by.
+#[test]
+fn the_key_port_names_no_charging_pot() {
+    let code: String = include_str!("../auth_bindings.rs")
+        .lines()
+        .map(str::trim_start)
+        .filter(|l| !l.starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in ["group", "budget", "cents", "RateCard", "per_request_fee"] {
+        assert!(
+            !code.contains(banned),
+            "the key port names `{banned}` in code; the charging pot belongs to the cost and \
+             ledger views, and the authenticate step decides who is calling and nothing else"
+        );
+    }
 }
