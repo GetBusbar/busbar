@@ -790,6 +790,13 @@ fn the_refusal_a_caller_receives_is_the_frozen_bytes() {
 /// difference only shows at a boundary — a scan that treated a quote as nothing would see the brace
 /// inside a string value close the envelope early, hand `identify` a truncated object and refuse a
 /// request that had merely not finished arriving.
+///
+/// The plane answers one frame at a time and never joins two itself — `envelope_is_complete`'s
+/// whole job is to say "not yet" so the loop hands over the next frame — so the two halves of the
+/// property are read where each is observable. Over the HEAD ALONE the answer must be `NeedMore`
+/// and not a refusal: that is the string-aware scan refusing to read the quoted brace as the
+/// close. Over the JOINED bytes the answer must be the whole request, verb and all: that is the
+/// envelope reading through the same quoted brace to its real end.
 #[test]
 fn a_split_inside_a_string_carrying_a_brace_is_read_whole() {
     let head = br#"{"method":"GET","path":"/api/v1/admin/audit","body":{},"note":"}"#;
@@ -801,24 +808,33 @@ fn a_split_inside_a_string_carrying_a_brace_is_read_whole() {
     let arena = TestArena;
     let ctx = test_ctx(&config, &transport, &labels, &arena);
 
-    let frames = vec![
-        Frame {
-            direction: Direction::Inbound,
-            stream: busbar_contract::ids::StreamId(0),
-            bytes: SlabBytes::new(std::sync::Arc::from(head.to_vec().into_boxed_slice())),
-            meta: FrameMeta::default(),
-        },
-        Frame {
-            direction: Direction::Inbound,
-            stream: busbar_contract::ids::StreamId(0),
-            bytes: SlabBytes::new(std::sync::Arc::from(tail.to_vec().into_boxed_slice())),
-            meta: FrameMeta::default(),
-        },
-    ];
-    let mut cursor = FrameCursor::new(&frames);
+    let frame_of = |bytes: &[u8]| Frame {
+        direction: Direction::Inbound,
+        stream: busbar_contract::ids::StreamId(0),
+        bytes: SlabBytes::new(std::sync::Arc::from(bytes.to_vec().into_boxed_slice())),
+        meta: FrameMeta::default(),
+    };
+
+    // The head alone: the brace inside the string value is text, so the envelope has not closed.
+    // A brace-counting scan would answer here, and it would answer with a refusal.
+    let head_only = vec![frame_of(head)];
+    let mut cursor = FrameCursor::new(&head_only);
     let ingress = plane
         .decode_ingress(&mut cursor, None, &ctx)
-        .expect("the two frames close one envelope");
+        .expect("an unfinished envelope is not a bad one");
+    assert!(
+        matches!(ingress, Ingress::NeedMore),
+        "the brace inside the string value must not close the envelope"
+    );
+
+    // The two halves as they arrive joined: the same quoted brace is read through to the real end.
+    let mut whole = head.to_vec();
+    whole.extend_from_slice(tail);
+    let joined = vec![frame_of(&whole)];
+    let mut cursor = FrameCursor::new(&joined);
+    let ingress = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("the joined bytes close one envelope");
     let Ingress::OneShot(draft) = ingress else {
         panic!("an admin request is one shot");
     };
