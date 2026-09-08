@@ -132,7 +132,7 @@ const MAX_TRACKED_PRINCIPALS: usize = 16_384;
 /// they are the chain's own business and are supplied by [`crate::audit::Chain::append`], so no call
 /// site can supply a sequence number or a link of its own choosing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RequestInput {
+pub struct RequestInput {
     pub(crate) ts: u64,
     /// The dialect the request ARRIVED on (`anthropic`, `openai`, `gemini`, …). The plane speaks
     /// six, so which one a caller used is a fact about the request rather than about the build.
