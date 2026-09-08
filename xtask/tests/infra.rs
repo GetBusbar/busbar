@@ -1014,6 +1014,57 @@ fn check_ignore_reads_a_clean_scan_set_as_none_ignored_rather_than_as_an_error()
     assert_eq!(some, vec![".fix/whatever".to_string()]);
 }
 
+#[test]
+fn check_ignore_answers_a_scan_set_far_larger_than_one_pipe_buffer_instead_of_deadlocking() {
+    // THE FAILURE THIS PINS IS A HANG, NOT A WRONG ANSWER, so it is measured against a clock.
+    //
+    // `git check-ignore --stdin` streams: it reads paths and writes matches as it goes, through two
+    // OS pipes with a fixed buffer (64 KiB on Linux, less on macOS). A caller that writes the whole
+    // list before reading any stdout wedges the pair as soon as the ANSWERS pass that buffer — git
+    // blocks on a stdout nobody drains, so it stops draining stdin, so the caller blocks too. That
+    // is not a red gate; it is a job that never finishes, and the scan sets this helper is called
+    // with are whole-repository walks that only grow.
+    //
+    // So: a set whose ANSWERS are certain to be megabytes. Every path is under `target/`, which
+    // this repository ignores, so every one comes back — ~30k paths of ~60 bytes is ~1.8 MB of
+    // stdout against a 64 KiB buffer, roughly thirty times over.
+    //
+    // The bound is generous (60s against a call that takes well under a second here) because this
+    // test must fail on a HANG and never on a slow machine. Before the writer moved onto its own
+    // thread this call did not return at all.
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let root = repo_root();
+    let paths: Vec<String> = (0..30_000)
+        .map(|i| format!("target/debug/deps/a-fabricated-artifact-name-{i:012}.rmeta"))
+        .collect();
+    let asked = paths.len();
+    let total_bytes: usize = paths.iter().map(|p| p.len() + 1).sum();
+    assert!(
+        total_bytes > 64 * 1024 * 20,
+        "the fixture must be many pipe buffers wide to be a test of anything: {total_bytes} bytes"
+    );
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(xtask::gitp::check_ignore(&root, &paths));
+    });
+    let got = rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("check_ignore must not deadlock on a scan set wider than the pipe buffer")
+        .expect("`target/` is ignored, so this is exit 0 and a list, not an error");
+
+    // And the answer is still the whole answer: a fix that unwedged the pipes by dropping output
+    // would read as "nothing is ignored", which is the failure direction `drop_ignored` documents
+    // as the one it must never take.
+    assert_eq!(
+        got.len(),
+        asked,
+        "every path under an ignored directory must come back"
+    );
+}
+
 // ── THE ERE SUBSET MATCHER ────────────────────────────────────────────────────────────────────────
 //
 // The rule tables the structure-lint port drives are EREs, so a matcher that quietly disagrees with
