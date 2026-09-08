@@ -29,12 +29,12 @@
 
 use super::wire::HookMetric;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
 
 /// Staleness bound for a hook's cached metrics. On a scrape, a cache older than this triggers an
 /// async refresh (stale-while-revalidate). Chosen ≤ a typical Prometheus `scrape_interval` (15s) so
 /// consecutive scrapes see fresh-enough samples without polling a hook faster than it is scraped.
-pub(crate) const HOOK_METRICS_TTL_SECS: u64 = 10;
+pub const HOOK_METRICS_TTL_SECS: u64 = 10;
 
 /// One hook's last-known metrics + when they were fetched (unix secs). `metrics` empty means the
 /// hook was queried but reported none / doesn't speak status (fail-open: it simply contributes no
@@ -141,7 +141,7 @@ async fn refresh(
     claim: InFlight,
     hook: crate::config::HookCfg,
     settings_version: u64,
-    env: super::HookEnv,
+    env: crate::HookEnv,
 ) {
     // The claim is held for the WHOLE refresh and dropped on the way out (including on panic), so no
     // second refresh for this hook can start while this one is still loading the plugin.
@@ -163,13 +163,23 @@ async fn refresh(
 ///
 /// Stale-while-revalidate: for each configured hook whose cache is stale, spawn an async refresh
 /// (the NEXT scrape sees it) and render the current cache now. The handler never awaits a hook.
-pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
-    let now = busbar_substrate::store::now();
+///
+/// Takes the three things it reads (the resolved hook registry, the config generation the refresh
+/// stamps, and the resolution environment) rather than an `App`. That is the ONE signature this move
+/// changed, and it changed because the engine may not name the engine's own state type; the caller
+/// that used to pass `&Arc<App>` now passes `&app.hook_registry, app.config_version, &app.hook_env`,
+/// which is exactly the three fields the body ever touched.
+pub fn render(
+    hook_registry: &HashMap<String, crate::config::HookCfg>,
+    config_version: u64,
+    hook_env: &crate::HookEnv,
+) -> String {
+    let now = crate::store::now();
     // Evict cache entries for hooks removed/renamed in a config reload so stale series stop
     // rendering and the process-global cache can't grow unbounded across reloads.
-    prune_absent(app.hook_registry.keys().map(String::as_str));
+    prune_absent(hook_registry.keys().map(String::as_str));
     // Fire async refreshes for stale hooks; never block the scrape on them.
-    for (name, hook) in app.hook_registry.iter() {
+    for (name, hook) in hook_registry.iter() {
         // Stale AND not already being refreshed. Staleness alone is not enough: it does not clear
         // until the refresh lands, so it would re-arm on every scrape in the meantime.
         if !is_stale(name, now) {
@@ -181,8 +191,8 @@ pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
         tokio::spawn(refresh(
             claim,
             hook.clone(),
-            app.config_version,
-            app.hook_env.clone(),
+            config_version,
+            hook_env.clone(),
         ));
     }
     render_text(&snapshot())
@@ -371,25 +381,12 @@ fn fmt_f64(v: f64) -> String {
     }
 }
 
-/// `GET /metrics/hooks` — the Prometheus scrape of hook-reported metrics. Standard text exposition,
-/// governed by the auth chain exactly like busbar's own `/metrics` (both carry operational topology,
-/// so busbar does NOT exempt them — a scraper authenticates with a bearer token, which Prometheus and
-/// Grafana both support in scrape/datasource config). Stale-while-revalidate: renders the cache now,
-/// refreshes stale hooks in the background; never blocks on a hook socket.
-pub(crate) async fn handler(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    (
-        axum::http::StatusCode::OK,
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4; charset=utf-8",
-        )],
-        render(&app),
-    )
-        .into_response()
-}
+// The `GET /metrics/hooks` axum HANDLER stayed in busbar-core, because an axum route extracting
+// `CurrentApp` is the composition root's business and naming `App` here is exactly the coupling this
+// crate exists without. It is four lines around this [`render`] and it is unchanged; the auth chain
+// still governs the route exactly like busbar's own `/metrics` (both carry operational topology, so
+// busbar does not exempt either — a scraper authenticates with a bearer token, which Prometheus and
+// Grafana both support in scrape/datasource config).
 
 #[cfg(test)]
 #[path = "tests/scrape_tests.rs"]

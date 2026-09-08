@@ -101,15 +101,19 @@ fn test_env_needs(alias: &str, needs: busbar_plugin_sign::HookNeeds) -> Option<H
     // reporting a lock error instead of its own result.
     let _staging_guard = DLOPEN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let lib = std::fs::read(hook_cdylib()?).expect("read hook cdylib");
-    let dir = crate::tests::tmp_plugin_dir(&format!("hook-env-{alias}"));
-    let mut m = crate::tests::plugin_manifest("busbar-hook-test-plugin", alias, "acme");
+    let dir = busbar_plugin_testkit::loader_fixtures::tmp_plugin_dir(&format!("hook-env-{alias}"));
+    let mut m = busbar_plugin_testkit::loader_fixtures::plugin_manifest(
+        "busbar-hook-test-plugin",
+        alias,
+        "acme",
+    );
     m.kind = "hook".into();
     m.abi_version = *busbar_plugin_loader::supported_abi("hook")
         .iter()
         .max()
         .expect("hook abi");
     m.needs = needs;
-    let tarball = crate::tests::unsigned_tarball(m, &lib);
+    let tarball = busbar_plugin_testkit::loader_fixtures::unsigned_tarball(m, &lib);
     std::fs::write(dir.join("hook.tar.gz"), tarball).unwrap();
     let mut policy = busbar_plugin_sign::TrustPolicy {
         binary_version: "1.5.0".into(),
@@ -2254,7 +2258,7 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
 /// warn distinctly from an ordinary "no resolvable transport" `None`.
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
-    use crate::test_support::warn_capture::WarnCapture;
+    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2326,7 +2330,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert!(
-        crate::hooks::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
+        crate::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
         "a hook running EXACTLY the pushed settings is not drifting — comparing the resolved echo \
          against the unresolved `SecretRef` made every secret-bearing hook report drift forever"
     );
@@ -2341,7 +2345,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .as_object()
     .unwrap()
     .clone();
-    let keys = crate::hooks::settings_drift_keys(&hook, Some(&drifted));
+    let keys = crate::settings_drift_keys(&hook, Some(&drifted));
     assert_eq!(
         keys,
         vec!["ratio".to_string()],
@@ -2362,13 +2366,13 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(&hook, Some(&literal_drift)),
+        crate::settings_drift_keys(&hook, Some(&literal_drift)),
         vec!["db".to_string()],
         "`{{ literal: … }}` is ordinary data, compared against its INNER value"
     );
 
     // A hook that reports no settings at all is fail-open, not drift.
-    assert!(crate::hooks::settings_drift_keys(&hook, None).is_empty());
+    assert!(crate::settings_drift_keys(&hook, None).is_empty());
 }
 
 /// `hook_status` is a POLLED async GET, so nothing it calls may resolve a secret.
@@ -2413,7 +2417,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     ] {
         let observed = echoed.as_object().unwrap().clone();
         assert!(
-            crate::hooks::settings_drift_keys(&hook, Some(&observed)).is_empty(),
+            crate::settings_drift_keys(&hook, Some(&observed)).is_empty(),
             "a SecretRef-valued field is never compared on the read path (and resolving it to \
              compare would be blocking FFI on a polled async GET): {observed:?}"
         );
@@ -2429,7 +2433,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::hooks::settings_drift_keys(&hook, Some(&observed)),
+        crate::settings_drift_keys(&hook, Some(&observed)),
         vec!["ratio".to_string()],
         "an ordinary field still drifts — the fix must not blind the endpoint"
     );
@@ -2501,9 +2505,7 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
     let tasks: Vec<_> = (0..4)
         .map(|_| {
             let (h, e) = (hook.clone(), env.clone());
-            rt.spawn(
-                async move { crate::hooks::push_configure(&h, "compliance-gate", 1, &e).await },
-            )
+            rt.spawn(async move { crate::push_configure(&h, "compliance-gate", 1, &e).await })
         })
         .collect();
     std::thread::sleep(std::time::Duration::from_millis(200));

@@ -58,10 +58,10 @@ use tree::{crate_name_of_dir, dirs_for_globs, Tree};
 
 pub const CEILINGS: &str = "qa/construction.toml";
 
-/// The three section 1.1 surface ceilings, each with the crates it sums and the words the row uses
+/// The section 1.1 surface ceilings, each with the crates it sums and the words the row uses
 /// for them. The figures live in `[gate.surface_ceilings]`; only the labels are here, because a
 /// label is not a threshold.
-const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
+const SURFACE: [(&str, &str, &str, &str, i64); 4] = [
     (
         "contract+caps",
         "contract_caps",
@@ -82,6 +82,13 @@ const SURFACE: [(&str, &str, &str, &str, i64); 3] = [
         "busbar-contract-transport",
         "the transport-facing contract's surface",
         1000,
+    ),
+    (
+        "core-hooks",
+        "core_hooks",
+        "busbar-core-hooks",
+        "the hook policy engine's surface",
+        2000,
     ),
 ];
 

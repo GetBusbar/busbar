@@ -746,6 +746,24 @@
    ]
   },
   {
+   "id": "crates/busbar-core-hooks/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-hooks/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-hooks/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-grammar/src",
    "kind": "production",
    "paths": [
@@ -4201,6 +4219,21 @@
    ]
   },
   {
+   "id": "crates/busbar-core-hooks/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-hooks/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-grammar/tests",
    "kind": "test",
    "paths": [
@@ -4907,6 +4940,21 @@
      "report": "the guard that keeps a wire from naming a plane holds a word list with no model vendor name and no billing word, so it cannot fail on the dialect class it is named for; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail whatever the matcher returns; the file is byte-identical to another crate copy rather than shared from one place"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-transport-grpc/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-transport-http/src/tests",
