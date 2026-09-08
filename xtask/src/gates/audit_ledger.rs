@@ -583,6 +583,7 @@ mod tests {
             "--result",
             "zero",
             "--report",
+            // public-hygiene-lint: allow — RED fixture quoting the exact class `record` refuses
             "gate/audits/codeaudit-fake-r9.md",
             "--auditor",
             "selftest",
