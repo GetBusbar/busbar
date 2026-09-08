@@ -106,6 +106,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo test -p busbar-llm --features teller-waist --locked --lib unit::",
     "cargo test -p busbar-timing --features timing --locked",
     "cargo build -p xtask --locked",
+    "cargo xtask gate kind-isolation --selftest",
+    "cargo xtask gate kind-isolation",
     "cargo xtask gate kernel-token-wire-purity --selftest",
     "cargo xtask gate kernel-token-wire-purity",
     "cargo xtask gate no-self-filed-issues --selftest",
@@ -261,6 +263,17 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
             "scripts/verify-1.6.0-done.sh",
             "cargo xtask gate plane-purity-strict",
         ),
+    ),
+    (
+        "kind-isolation-ship",
+        "the SHIP-criterion twin of kind-isolation. Its four enforceable rows run on every push \
+         under `kind-isolation`; the two it adds — one entry surface per kind, one shared \
+         conformance battery per kind — are a claim about the SHIP SHA and are RED on HEAD by \
+         design (no kind states a `Unit` entry, no plane/transport/unit kind has a shared battery, \
+         and the plane and unit skeletons diverge from their exemplars). Run at release time by \
+         scripts/verify-1.6.0-done.sh, on the same terms as plane-purity-strict: a per-push red \
+         would only restate that the work is in flight, and a gate that is red every push is a \
+         gate somebody puts a `|| true` in front of.",
     ),
     (
         "no-deferral-strict-done",

@@ -29,6 +29,7 @@ pub mod duplex_ws_default_edge;
 pub mod field_inventory;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
+pub mod kind_isolation;
 pub mod no_deferral;
 pub mod no_self_filed_issues;
 pub mod plane_abi_neutrality;
@@ -674,6 +675,20 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(kernel_token_wire_purity::KernelTokenWirePurityGate),
         summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
+    },
+    Registration {
+        name: "kind-isolation",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(kind_isolation::KindIsolationGate::check()),
+        summary: "the ~10 plugin kinds never cross-contaminate: no name, edge or word fuses two",
+    },
+    Registration {
+        name: "kind-isolation-ship",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(kind_isolation::KindIsolationGate::ship()),
+        summary: "the same, plus the ship criterion: one surface per kind, one battery per kind",
     },
     Registration {
         name: "tracing",
