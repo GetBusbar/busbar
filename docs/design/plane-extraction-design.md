@@ -346,9 +346,9 @@ plane boundary becomes an independently-reported release-gating verdict — not 
    P3.
 
 **Non-goals:** dynamic (runtime `.so`) plugin loading of planes — "compiled in for convenience" is
-explicitly the target; the `plane-abi-spike` crate explores true dynamic loading and is out of scope
-here. We are making planes *removable/relocatable at build time*, matching `auth-admin-tokens`, not
-hot-loadable.
+explicitly the target. (A `plane-abi-spike` crate once explored true dynamic loading; it was deleted
+per `PLUGIN-TREE.md` §7 and dynamic loading remains out of scope here.) We are making planes
+*removable/relocatable at build time*, matching `auth-admin-tokens`, not hot-loadable.
 
 **Risks:** P4's store-plugin break is the highest; mitigated by versioning + the adapter. The
 declared-detection registry (phase P1) changes a hot path (ingress protocol resolution) — it must be

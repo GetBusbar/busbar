@@ -242,7 +242,7 @@ kind from segment two, so directory name and `package.name` must agree.
 | `hooks-ranking` | `busbar-hook-ranking` | and re-based off `busbar-api` onto `kinds::Hook` |
 | `export-example-plugin` | `busbar-export-example` | dir only |
 | `plugin-{loader,sdk,sign,pack,testkit}` | `busbar-plugin-{loader,sdk,sign,pack,testkit}` | tooling/TCB, not kinds |
-| `plane-abi-spike`, `plane-abi-spike-plugin` | *deleted* | zero deps in, zero deps out |
+| `plane-abi-spike`, `plane-abi-spike-plugin` | *deleted — DONE* | zero deps in, zero deps out; both crates removed from the tree |
 | — | `busbar-egress-auth-{anthropic,openai}` | the kind's first crates (§8) |
 
 Renaming the fifteen directories to their existing `package.name` makes `[gate.plugin_kinds]`'s globs

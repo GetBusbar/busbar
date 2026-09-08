@@ -222,30 +222,30 @@ run    = "cargo build --release -p busbar-store-example-plugin -p busbar-hook-te
 id     = "benches"
 status = "active"
 tier   = "live-mock"
-# THE BENCHES, COMPILED AND — for the one claim that is a GATE — ASSERTED.
+# THE BENCHES, COMPILED.
 #
 # `cargo bench` ran nowhere: not in .github/workflows/, not in scripts/. `ci.yml`'s workspace test
-# leg passes neither `--benches` nor `--all-targets`, and the three bench targets
-# (crates/busbar/benches/hook_path.rs, crates/busbar-core/benches/pool_upstream_creds.rs,
-# crates/plane-abi-spike/benches/abi_bench.rs) all set `harness = false`, so libtest never picks them
-# up either. The only thing touching them at all was `cargo clippy --all-targets`, which COMPILES and
-# never runs. That left two different problems, and this segment answers both differently on purpose:
+# leg passes neither `--benches` nor `--all-targets`, and both bench targets
+# (crates/busbar/benches/hook_path.rs, crates/busbar-core/benches/pool_upstream_creds.rs) set
+# `harness = false`, so libtest never picks them up either. The only thing touching them at all was
+# `cargo clippy --all-targets`, which COMPILES and never runs.
 #
-#  - A BENCH THAT NO LONGER COMPILES is a silent rot: nobody notices until the day somebody needs the
-#    number. `cargo bench --workspace --no-run` builds every bench target and asserts nothing about
-#    the figures, which is the right strength for a measurement instrument — a wall-clock number on a
-#    shared CI runner is not a thing to fail a release on.
-#  - A BENCH WHOSE HEADER READS AS A GATE is worse than no gate, because it is consulted and cannot
-#    fail. `abi_bench.rs` computed its 1µs/call verdict and its alloc-gate result and then printed
-#    them as the words "UNDER"/"OVER" and "PASS"/"FAIL". Those two claims now have an ASSERTED twin —
-#    `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate` — which is
-#    `#[ignore]`d by default and invoked explicitly here.
+# A BENCH THAT NO LONGER COMPILES is a silent rot: nobody notices until the day somebody needs the
+# number. `cargo bench --workspace --no-run` builds every bench target and asserts nothing about the
+# figures, which is the right strength for a measurement instrument — a wall-clock number on a shared
+# CI runner is not a thing to fail a release on.
 #
-# WHY THIS TIER. The asserted twin measures WALL CLOCK and uses a process-global counting allocator,
-# so it is only meaningful running ALONE (`--ignored --test-threads=1`) on a machine that is not also
-# running a dozen other tests. That is the qa cadence, not the per-push one; and compiling criterion
-# for three bench targets is minutes of build the per-push suite should not be paying.
-run    = "cargo bench --workspace --no-run && cargo test --release -p plane-abi-spike --lib -- --ignored --test-threads=1"
+# OWED — the asserted twin this segment used to invoke is gone. `plane-abi-spike`'s
+# `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate` asserted the
+# vtable-hop wall-clock budget and the no-allocation property of the POD host-call paths; the crate
+# was deleted per docs/design/PLUGIN-TREE.md §7 (it was held to no plugin-kind gate row and its
+# fixtures could not reach the Deny/Throttle branches). Nothing asserts those two properties on the
+# PRODUCTION vtable (crates/busbar-plugin/src/hot/host.rs) today. Re-land the assertion against the
+# production seam rather than against a spike copy of it.
+#
+# WHY THIS TIER. Compiling criterion for the bench targets is minutes of build the per-push suite
+# should not be paying; that is the qa cadence, not the per-push one.
+run    = "cargo bench --workspace --no-run"
 
 [[segment]]
 id     = "core-data-plane"

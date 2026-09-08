@@ -154,9 +154,9 @@ its 1.6.0 replacement.
 | H4 | ABI preamble/version | — | `busbar-plugin/src/lib.rs:58,67,75,84,95,130` | `ABI_MAGIC` = `BUSPLANE`; `ABI_MAJOR = 1`; `ABI_MINOR = 20`; `check_preamble :130` |
 | H5 | vtable builder | — | `crates/busbar-core/src/plane_host/vtable.rs:36` | all 44 slots wired, no stubs; handed out at `busbar-core/src/plane_host/mod.rs:105,122,1689,1750,1827` |
 
-Layout is golden-tested at `crates/busbar-plugin/tests/layout_golden.rs:465`. A *separate* minimal
-`PlaneHostVtable` exists for the benchmark at `crates/plane-abi-spike/src/lib.rs:196` — not
-production.
+Layout is golden-tested at `crates/busbar-plugin/tests/layout_golden.rs:465`. The tree once carried a
+*separate* minimal `PlaneHostVtable` for a `dlopen` PLT benchmark (`plane-abi-spike`); both spike
+crates were deleted per `PLUGIN-TREE.md` §7, so this is now the only `PlaneHostVtable` in the tree.
 
 Nine of the 44 slots are journal verbs. That is the single largest duplicate surface in the tree.
 
