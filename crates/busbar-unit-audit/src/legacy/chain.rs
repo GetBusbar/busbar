@@ -113,6 +113,18 @@ impl Digest {
         self
     }
 
+    /// Feed ALREADY-FRAMED raw bytes verbatim — the join primitive for the host-side journal cleave.
+    /// The plane hands a pre-framed content SUFFIX and the host byte-concatenates it after the framed
+    /// prelude, so `sha256_hex(frame_prelude(..) ⧺ suffix)` byte-equals the legacy single-[`Digest`]
+    /// output (the chain-cleave contract). Frame-independent: it appends no length prefix and no
+    /// separator of its own — the suffix already carries the leading vertical bar a pipe-separated
+    /// stream owes. It still flips `started`.
+    pub fn raw(&mut self, bytes: &[u8]) -> &mut Self {
+        self.buf.extend_from_slice(bytes);
+        self.started = true;
+        self
+    }
+
     /// The digest of everything fed in so far.
     pub fn finish(self) -> String {
         sha256_hex(&self.buf)
@@ -123,6 +135,23 @@ impl Digest {
     pub fn bytes(&self) -> &[u8] {
         &self.buf
     }
+}
+
+/// Frame a chain record's PRELUDE — the previous hash, then the scope IFF the stream digests it
+/// (some omit it), then the sequence — in `framing`, returning the raw framed bytes. The host owns
+/// the prelude; a plane supplies only its own content suffix, and the digest input is
+/// `frame_prelude(..) ⧺ suffix`. The pipe-separated genesis landmine is preserved BY CONSTRUCTION:
+/// the previous hash is pushed FIRST and always (even when empty), which flips `started`, so an
+/// empty genesis previous hash still yields the leading vertical bar before the sequence and scope
+/// that every deployed store was written with.
+pub fn frame_prelude(framing: Framing, prev_hash: &str, scope: Option<&str>, seq: u64) -> Vec<u8> {
+    let mut d = Digest::new(framing);
+    d.text(prev_hash);
+    if let Some(s) = scope {
+        d.text(s);
+    }
+    d.num(seq);
+    d.buf
 }
 
 /// The operator-facing words for one stream: what to call the chain, and what to call the thing a
