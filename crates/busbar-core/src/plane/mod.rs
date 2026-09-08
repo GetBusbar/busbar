@@ -138,26 +138,8 @@ pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 /// `registry::builtin_plane_decls`, so exactly one fallback is always present. Core expresses "which
 /// plane handles unmatched routes" by ASKING the declared fallback plane, never by naming the LLM.
 pub(crate) fn fallback_key() -> &'static str {
-    let decls = registry::plane_decls();
-    // The fallback is FIRST-WINS: with two fallback decls the `find` below would silently pick one
-    // and the other's paths would fall through nowhere. At most one plane may flag itself fallback.
-    debug_assert!(
-        decls.iter().filter(|d| d.fallback).count() <= 1,
-        "more than one registered plane declares itself the fallback catch-all — it must be \
-         unique or `fallback_key`/`is_fallback` first-win nondeterministically"
-    );
-    // Prefer the plane that DECLARES itself the fallback (the LLM plane, always present in a
-    // production or core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane
-    // for the one build where no fallback is flagged: the `test-support`-only dependency-copy of core
-    // the plane crates link, whose built-in plane rows are empty and which registers only the plane
-    // under test (MCP/A2A) — a TestApp built there has no model plane, so this key labels an empty
-    // telemetry bank and is never emitted. Never a hard-coded `"llm"` literal, so core names no dialect.
-    decls
-        .iter()
-        .find(|d| d.fallback)
-        .or_else(|| decls.first())
-        .map(|d| d.key)
-        .unwrap_or("")
+    registry::ensure_host_builtins();
+    busbar_substrate::plane::registry::fallback_key()
 }
 
 /// Whether `key` names THE FALLBACK plane — the non-panicking predicate the fallback GUARDS read
@@ -168,9 +150,8 @@ pub(crate) fn fallback_key() -> &'static str {
 /// ever asks this about a mounted plane's OWN key (never the LLM key). `fallback_key`, by contrast,
 /// is read only on paths (App build, request telemetry family) where the fallback is always present.
 pub(crate) fn is_fallback(key: &str) -> bool {
-    registry::plane_decls()
-        .iter()
-        .any(|d| d.key == key && d.fallback)
+    registry::ensure_host_builtins();
+    busbar_substrate::plane::registry::is_fallback(key)
 }
 
 /// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config
@@ -184,7 +165,8 @@ pub(crate) fn is_fallback(key: &str) -> bool {
 /// the source of the LAYERING iteration order `[llm, mcp, a2a]` every map walk must borrow rather
 /// than reinvent from a map's own key order.
 pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
-    registry::plane_decls().iter().map(|d| d.key)
+    registry::ensure_host_builtins();
+    busbar_substrate::plane::registry::plane_keys()
 }
 
 /// The built-in plane declaration for `key`, or panic — the by-key indirection the former `Plane`
@@ -192,8 +174,8 @@ pub(crate) fn plane_keys() -> impl Iterator<Item = &'static str> {
 /// `audit_kind`, `scope_kinds`) read it straight off this; the free fns below are the accessors
 /// that COMPUTED something rather than reading a field.
 pub(crate) fn plane_decl(key: &str) -> &'static registry::PlaneDecl {
-    registry::plane_decl_for(key)
-        .unwrap_or_else(|| panic!("no built-in plane declared for key `{key}`"))
+    registry::ensure_host_builtins();
+    busbar_substrate::plane::registry::plane_decl(key)
 }
 
 /// The distinct WIRE FORMATS this plane translates between, named. Not transports.
