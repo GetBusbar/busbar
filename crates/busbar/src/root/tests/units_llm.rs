@@ -2122,8 +2122,7 @@ async fn drive_and_go_away(rig: &Rig, node: &LlmNode, fixture: Fixture) {
         body: fixture.body(),
         path: None,
     };
-    let drive =
-        node.answer_arriving_at(arrival, None, NATIVE_SEATS, Arrived::at(EPOCH * 1_000, 0));
+    let drive = node.answer_arriving_at(arrival, None, NATIVE_SEATS, Arrived::at(EPOCH * 1_000, 0));
     let mut drive = std::pin::pin!(drive);
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
     assert!(
