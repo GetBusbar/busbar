@@ -91,9 +91,19 @@ fn the_verify_step_seals_the_destinations_the_later_steps_read() {
     );
 }
 
-/// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
-/// than an identity, so verify, approve and admit are never asked and no reservation is opened.
-/// The design says the step's decision may yield a challenge; this is what the loop does with one.
+/// A challenge round is a handshake unit, and NO STEP IS SKIPPED FOR WANT OF A NAME.
+///
+/// The authenticate step answers "one more round" rather than an identity, and having no principal
+/// is a reason to run the remaining steps for the ARRIVAL SUBJECT, not a reason not to run them.
+/// The design names that subject: an anonymous principal with no bucket, which is what the
+/// pre-authentication surface has always been scoped and admitted as.
+///
+/// What it cost to have skipped them: the hook veto seat at approve and the frozen-group check at
+/// admit are the two gates that apply BEFORE anyone is known, and they were exactly the two a
+/// challenge round went around.
+///
+/// The round is still a handshake: it reaches no destination and opens no reservation of its own,
+/// so the admission is the zero hold whatever the door would have sized for an established caller.
 #[test]
 fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     let kernel = Kernel::new();
@@ -107,21 +117,17 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
 
     assert_eq!(
         units.called(),
-        vec![
-            StepName::Arrival,
-            StepName::Decode,
-            StepName::Authenticate,
-            StepName::Route,
-            StepName::Meter,
-            StepName::Audit,
-            StepName::Encode,
-        ],
-        "a challenge settles nothing about where the unit may go or whether it may be admitted"
+        ORDER.to_vec(),
+        "a challenge round is a unit like any other; no step is skipped for want of a name"
     );
-    assert!(
-        matches!(ended, Ended::Settled { .. }),
-        "the round still ends once, through the one exit"
-    );
+    match ended {
+        Ended::Settled { end, .. } => assert_eq!(
+            end.posted().expect("the round posts once").reserved(),
+            0,
+            "a challenge round opens no reservation, whatever the door would have sized for it"
+        ),
+        other => panic!("the round still ends once, through the one exit: {other:?}"),
+    }
 }
 
 /// AND WHAT THE DOOR HANDED THE ROUND IS NOT DROPPED ON THE FLOOR.
