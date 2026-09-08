@@ -573,6 +573,12 @@ jobs:
         if: ${{ !cancelled() && steps.arm.outcome == 'success' }}
         env:
           A2A_SUBJECT_BUSBAR_BIN: target/debug/busbar
+          # ONE REPORT DIRECTORY PER LEG. This step and the external-deployment step below both run
+          # `--tck`, and the suite writes `subject.json` into this directory: sharing it meant the
+          # second leg silently overwrote the first leg's requirement-level report, so the gate read
+          # and the artifact carried a file that named neither of them. `boot.sh` now derives a
+          # distinct default too; naming it here keeps the split visible in the log.
+          A2A_TCK_OUT: /home/runner/.a2a-tck/out-subject
         run: ./scripts/a2a-subject/boot.sh --tck
 
       # THE OPTIONAL EXTRA LEG. If an operator also wants a real deployment judged, setting the
@@ -584,9 +590,13 @@ jobs:
         env:
           BUSBAR_A2A_ENDPOINT: ${{ vars.BUSBAR_A2A_ENDPOINT }}
           A2A_SUBJECT_TCK_LOG: .a2a-conformance/tck-external.txt
+          # A verdict about somebody's deployment and a verdict about this commit are different
+          # claims; they had separate LOGS already and shared one JSON report. See the step above.
+          A2A_TCK_OUT: /home/runner/.a2a-tck/out-external
         run: ./scripts/a2a-subject/boot.sh --tck
 
-      # `/home/runner/.a2a-tck/out/` (`$A2A_TCK_WORK/out`, this workflow's own env above) is where
+      # `/home/runner/.a2a-tck/out-subject/` and `-external/` (see `A2A_TCK_OUT` on the two steps
+      # above; the shared `$A2A_TCK_WORK/out` they used to write is gone) are where
       # `run-tck.sh` writes `subject.json` -- the requirement-level report `assert_tck_number` now
       # reads to tell a suite limitation (`NOT TESTED`) from a real, pinned-waivable `FAIL`. It was
       # never uploaded, so the only way to see WHICH requirements were behind the MUST row's count
@@ -599,7 +609,8 @@ jobs:
           path: |
             .a2a-conformance
             testing/a2a-harness/reports
-            /home/runner/.a2a-tck/out/
+            /home/runner/.a2a-tck/out-subject/
+            /home/runner/.a2a-tck/out-external/
           if-no-files-found: warn
 
   # ----------------------------------------------------------------------------- the aggregator

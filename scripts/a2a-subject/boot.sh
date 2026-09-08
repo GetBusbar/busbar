@@ -880,6 +880,28 @@ leg_tck() {
   arm_subject shim
   local out="${A2A_SUBJECT_TCK_LOG:-.a2a-conformance/tck-subject.txt}"
   mkdir -p "$(dirname "$out")"
+
+  # ONE OUTPUT DIRECTORY PER LEG, and it is derived here rather than left to the caller.
+  #
+  # THE DEFECT THIS CLOSES. `run-tck.sh` writes its requirement-level report to
+  # `$A2A_TCK_OUT`/`$A2A_TCK_WORK/out`/`subject.json`, and BOTH `--tck` legs — the busbar booted
+  # from this commit, and the optional external deployment — ran with that path unset, so the
+  # second leg to run overwrote the first leg's report IN PLACE. `assert_tck_number` then read, and
+  # the artifact then uploaded, ONE file that named neither of them: whichever leg finished last.
+  # A verdict about this commit and a verdict about somebody's deployment are different claims and
+  # they may not share a filename.
+  #
+  # The caller may still pin `A2A_TCK_OUT` explicitly; what it may no longer do is leave two legs
+  # sharing one by accident.
+  local leg_tag="external"
+  [ -n "${A2A_SUBJECT_BUSBAR_BIN:-}" ] && leg_tag="subject"
+  local work_dir="${A2A_TCK_WORK:-${TMPDIR:-/tmp}/a2a-tck-work}"
+  A2A_TCK_OUT="${A2A_TCK_OUT:-$work_dir/out-$leg_tag}"
+  export A2A_TCK_OUT
+  # A REPORT LEFT BY AN EARLIER RUN IS NOT THIS RUN'S EVIDENCE. Removed before the suite starts, so
+  # that `assert_tck_number` reading a stale file is impossible rather than merely unlikely.
+  rm -f "$A2A_TCK_OUT/subject.json"
+  say "   TCK report directory for this leg: $A2A_TCK_OUT"
   # `run-tck.sh subject` DELIBERATELY EXITS 0 whatever the TCK found — it swallows pytest's status
   # and, for a subject, does no baseline comparison (correctly: a subject baseline would pin our own
   # defects as the expectation). So this leg's verdict cannot be that script's exit code, and the
@@ -890,8 +912,7 @@ leg_tck() {
   # script can call standalone. If that arithmetic ever moves, this one has to move with it -- there
   # is no third place either could drift to unnoticed, because `assert_tck_number` below dies loudly
   # when the file it computes is not there.
-  local work="${A2A_TCK_WORK:-${TMPDIR:-/tmp}/a2a-tck-work}"
-  local report_json="${A2A_TCK_OUT:-$work/out}/subject.json"
+  local report_json="$A2A_TCK_OUT/subject.json"
   assert_tck_number "$out" "$report_json"
 }
 
