@@ -386,15 +386,20 @@ pub(crate) struct LimitView {
 
 impl LimitView {
     /// Project a config `LimitCfg` into its explicit read shape.
-    pub(crate) fn from_cfg(l: &crate::config::LimitCfg) -> Self {
+    ///
+    /// The config SHAPE is named at its home — `busbar_substrate::config::groups` — not through
+    /// this crate's historical re-export, so the projection reaches into no engine: it reads a
+    /// neutral serde struct and writes a view. (The config layer's final crate name is another
+    /// agent's move; the type is the same type either way.)
+    pub(crate) fn from_cfg(l: &busbar_substrate::config::groups::LimitCfg) -> Self {
         LimitView {
             metric: l.metric.as_str(),
             amount: l.amount,
             per: l.per.map(|w| w.as_str()),
             pool: l.scope.as_ref().map(|s| s.value.clone()),
             on_exhaust: l.on_exhaust.map(|e| match e {
-                crate::config::groups::OnExhaust::Block => "block",
-                crate::config::groups::OnExhaust::Downgrade => "downgrade",
+                busbar_substrate::config::groups::OnExhaust::Block => "block",
+                busbar_substrate::config::groups::OnExhaust::Downgrade => "downgrade",
             }),
             downgrade_to: l.downgrade_to.as_ref().map(|s| s.value.clone()),
         }
@@ -402,8 +407,9 @@ impl LimitView {
 }
 
 impl GroupView {
-    /// Project a named `groups:` config entry into its read shape.
-    pub(crate) fn from_cfg(name: &str, cfg: &crate::config::GroupCfg) -> Self {
+    /// Project a named `groups:` config entry into its read shape. Same rule as `LimitView`: the
+    /// config shape is named at its home (`busbar_substrate::config::groups`), never through core.
+    pub(crate) fn from_cfg(name: &str, cfg: &busbar_substrate::config::groups::GroupCfg) -> Self {
         GroupView {
             name: name.to_string(),
             parent: cfg.parent.clone(),
@@ -417,62 +423,15 @@ impl GroupView {
     }
 }
 
-/// `GET /groups/{name}/usage`: one group's DERIVED current-window usage, one row per
-/// enforcement bucket (each `(window, pool?)` its limits materialise), against that bucket's
-/// caps. The dashboard read: spend/tokens/requests per tier vs the budgets, straight off the
-/// ledger x the CURRENT rate card (reprice-on-read, nothing stored). The customer's self-service
-/// tool consumes this per group (`user:<sub>` leaf = one person's view) and re-scopes it.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct GroupUsageView {
-    /// The group name (echoed from the path).
-    pub(crate) group: String,
-    /// `false` = the group is FROZEN (`enabled: false`): every request through it rejects.
-    pub(crate) enabled: bool,
-    /// One row per enforcement bucket, in the group's resolved bucket order. Empty for a group
-    /// with only a `concurrent` limit (or none); there is no windowed ledger to read.
-    pub(crate) buckets: Vec<GroupBucketUsageView>,
-    /// Epoch seconds the read was taken at (the windows below are current AS OF this instant).
-    pub(crate) as_of: u64,
-}
-
-/// One `(window, pool?)` enforcement bucket's usage vs caps inside a [`GroupUsageView`].
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct GroupBucketUsageView {
-    /// The accounting window: `minute` | `hour` | `day` | `month` | `total`.
-    pub(crate) window: &'static str,
-    /// The pool scope for a pool-qualified bucket; absent for a group-wide bucket.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) pool: Option<String>,
-    /// Requests admitted this window (the requests-limit truth: failures are not refunded).
-    pub(crate) requests: u64,
-    /// Total tokens ledgered this window (all tiers).
-    pub(crate) tokens: u64,
-    /// Spend derived at read time (tokens x current rate card), abstract cents.
-    pub(crate) spend_cents: i64,
-    /// The bucket's caps, when configured (absent = uncapped on that metric).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) requests_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tokens_cap: Option<u64>,
-    /// Per-tier token caps mirroring the cost tiers, when configured (absent = uncapped on that
-    /// tier): `tokens_input` = uncached input, `tokens_output` = output, `tokens_cache_read`,
-    /// `tokens_cache_write` = cache creation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tokens_input_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tokens_output_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tokens_cache_read_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) tokens_cache_write_cap: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) budget_cap: Option<i64>,
-    /// Cents left under `budget_cap` (floored at 0); absent when no budget cap is set.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) budget_remaining_cents: Option<i64>,
-}
+/// The group READ views of DERIVED usage against a bucket's caps — relocated to the cost unit
+/// (`busbar_unit_cost::view`) because they NAME MONEY (`spend_cents`, `budget_cap`,
+/// `budget_remaining_cents`), and a view that names a figure belongs to the crate that owns the
+/// money vocabulary; the admin plane renders the document without ever naming one. The shapes are
+/// unchanged (field order, every `serde` attribute, every doc comment: they are the served OpenAPI
+/// document's `description` strings), and no arithmetic moved with them — `service::get_group_usage`
+/// still fills them from the SAME governance bucket read. Re-exported here so every in-core caller
+/// is unchanged.
+pub(crate) use busbar_unit_cost::view::{GroupBucketUsageView, GroupUsageView};
 
 /// The transport half of a `HookView`. As of 1.5.0 a hook is EITHER a compiled-in kind (no
 /// transport at all) or a signed `kind: hook` dlopen'd plugin (`target` = the plugin NAME, not a
@@ -779,114 +738,21 @@ pub(crate) struct EffectiveConfigView {
     pub(crate) global_hooks: Vec<String>,
 }
 
-/// Fleet METERING read (`GET /api/v1/admin/usage`) — the FinOps surface. Design principle:
-/// busbar exposes the RAW INPUTS of cost, not just its own number. Every row carries the full token
-/// SPLIT (input / output / cache-read / cache-creation — each prices differently), so a consumer
-/// with its own (special/negotiated) price catalog reconstructs cost independently; `spend_micros`
-/// is busbar's DERIVED estimate from the operator's configured global prices, computed at read time
-/// (raw counts are what's stored — a price change re-prices history consistently).
-///
-/// Time base — THE PINNED SHAPE RULING: a usage response is ALWAYS exactly
-/// ONE fixed UTC-day metering bucket (`window`). `?window=<bucket-start-epoch>` selects a PAST
-/// bucket (default: the current one); a multi-window series is the CLIENT fetching N buckets — or
-/// a future additive `?from=&to=` returning an ARRAY OF THIS SAME PER-BUCKET SHAPE, never a
-/// differently-shaped merged view. Billing periods aggregate client-side from day buckets (raw
-/// counts are stored, so the math is exact). Deliberately decoupled from per-key budget windows so
-/// per-model aggregation across keys is well-defined; budget ENFORCEMENT state lives on
-/// `GET /keys/{id}/usage`, not here. Empty aggregations when governance is disabled. No secrets —
-/// key ids/names only, never a token.
-///
-/// LEDGER RULE (one loud contract sentence): `spend_micros` is a MUTABLE ESTIMATE — derived at
-/// read time from the operator's CURRENT prices, so a price change re-prices history. Never store
-/// it as a ledger charge; bill from the raw token split.
-/// The denomination reported alongside every `spend_micros` in the admin usage response. A SINGLE
-/// source of truth so a future removal (returning to the currency-agnostic stance) is one line.
-/// Emitted ONLY on `GET /api/v1/admin/usage` (the `currency` field of `UsageView`), never on the
-/// per-key views (those stay currency-agnostic raw-split ledgers).
-pub(crate) const USAGE_CURRENCY: &str = "USD";
-
-/// Serialize helper: `UsageView::currency` is a fixed contract constant, not a stored field.
-fn serialize_usage_currency<S: serde::Serializer>(_: &(), s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_str(USAGE_CURRENCY)
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct UsageView {
-    /// The UTC-day metering bucket this response aggregates: `[start, end)` epoch seconds.
-    pub(crate) window: UsageWindow,
-    /// Freshness marker: the epoch this read was computed at (counters accumulate live).
-    pub(crate) as_of: u64,
-    /// The denomination of every `spend_micros` in this response (`USAGE_CURRENCY`, currently
-    /// `"USD"`). A single-const source of truth so removal is one line. Emitted only here.
-    #[serde(serialize_with = "serialize_usage_currency")]
-    #[cfg_attr(feature = "openapi-schema", schemars(with = "String"))]
-    pub(crate) currency: (),
-    pub(crate) total: UsageBreakdown,
-    /// Per-(model, provider) aggregation: cost attribution by model (the FinOps unit).
-    pub(crate) by_model: Vec<ModelUsageView>,
-    /// Per-key aggregation (same raw-split shape). CAPPED at the top 1000 rows by spend (the
-    /// FinOps-relevant ordering); `by_key_truncated` says the cap fired, never a silent cut.
-    pub(crate) by_key: Vec<KeyUsageView>,
-    /// True when `by_key` was truncated to the cap (a deployment with more active keys than the
-    /// cap). `by_model` is never capped (bounded by the configured model fleet).
-    pub(crate) by_key_truncated: bool,
-    /// The summed remainder BEYOND the `by_key` cap, present exactly when `by_key_truncated`, so
-    /// every unit of consumption is attributable at least to "others" (FinOps completeness:
-    /// `total == sum(by_key) + others`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) others: Option<UsageBreakdown>,
-}
-
-/// A metering window: `[start, end)` epoch seconds.
-#[derive(Debug, Clone, Copy, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct UsageWindow {
-    pub(crate) start: u64,
-    pub(crate) end: u64,
-}
-
-/// The raw consumption counts + the derived spend estimate: the one shape shared by `total`,
-/// `by_model` rows, and `by_key` rows, so a consumer writes ONE aggregation reader.
-#[derive(Debug, Clone, Copy, Default, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct UsageBreakdown {
-    /// Uncached input tokens (normalized additive-cache convention).
-    pub(crate) tokens_input: u64,
-    pub(crate) tokens_output: u64,
-    pub(crate) tokens_cache_read: u64,
-    pub(crate) tokens_cache_creation: u64,
-    pub(crate) requests: u64,
-    /// Busbar's derived cost estimate in MICRO-units of the ABSTRACT cost unit (1e-6 unit -
-    /// integer math, sub-cent precise, no float drift), recomputed at read time from the raw token
-    /// split x the operator's CURRENT per-model rate card. Busbar attaches no currency - the rate
-    /// card's numbers are whatever unit the operator priced in; display/denomination is entirely
-    /// the consumer's concern. A consumer with its own per-model catalog recomputes from the raw
-    /// token split instead.
-    pub(crate) spend_micros: i64,
-}
-
-/// One (model, provider) row of the per-model aggregation.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct ModelUsageView {
-    pub(crate) model: String,
-    pub(crate) provider: String,
-    #[serde(flatten)]
-    pub(crate) usage: UsageBreakdown,
-}
-
-/// One key's row of the per-key aggregation: the key id/name (never the secret) + its counts.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
-pub(crate) struct KeyUsageView {
-    pub(crate) id: String,
-    /// The key's display name; `None` when the key was deleted after metering accumulated (history
-    /// outlives the key; the id still attributes it).
-    pub(crate) name: Option<String>,
-    #[serde(flatten)]
-    pub(crate) usage: UsageBreakdown,
-}
+/// The denomination const the usage response emits. It is SERIALIZED by the view itself (the
+/// `serialize_with` helper moved with the shape), so the only in-crate reader left is the contract's
+/// own test, which asserts the emitted field equals it — hence the test-only re-export rather than
+/// an unused one.
+#[cfg(test)]
+pub(crate) use busbar_unit_cost::view::USAGE_CURRENCY;
+/// The fleet METERING read's views and the one currency constant — relocated to the cost unit
+/// (`busbar_unit_cost::view`) on the same rule as the group usage views above: `spend_micros` is a
+/// figure, so the shape that carries it is the cost unit's. Moved verbatim (field order, the
+/// `serialize_with` currency helper, and every doc comment the OpenAPI document quotes), and the
+/// derivation is untouched — `service::get_usage` still prices each metering row exactly where it
+/// did. Re-exported here so every in-core caller is unchanged.
+pub(crate) use busbar_unit_cost::view::{
+    KeyUsageView, ModelUsageView, UsageBreakdown, UsageView, UsageWindow,
+};
 
 // NO `AdminAuthView` HERE. `GET /api/v1/admin/admin-auth` CROSSED to the composition root's loop in
 // 1.6.0's admin Cut 1b, so this crate no longer SERIALIZES that read — and a struct nothing

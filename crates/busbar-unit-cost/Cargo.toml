@@ -26,6 +26,23 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+# THE VIEW SHAPES, AND WHY A SERIALIZER APPEARS HERE. `src/view.rs` holds the admin READ VIEWS that
+# name a figure (`spend_cents`, `spend_micros`, `budget_cap`, `budget_remaining_cents`): the owner's
+# ruling is that a money-naming view belongs to the crate that owns the money vocabulary, so the
+# admin plane can render the document without ever naming one. Those shapes are wire-frozen, so the
+# `serde` derive moves with them — and a `Serialize` impl over integers and strings cannot affect an
+# integer multiply, which is the promise the paragraph at the top of this file makes. Still no clock,
+# no store, no config parser, no plane, and no workspace crate beyond the capability crate.
+serde = { workspace = true }
+# CI ONLY, and off in every shipped build: the OpenAPI generator derives `JsonSchema` on the same
+# view shapes so `openapi.json` can carry a typed `$ref`. `busbar-core`'s own `openapi-schema`
+# feature forwards to this one, exactly as it does for the substrate.
+schemars = { workspace = true, optional = true }
+
+[features]
+# The CI-only schema-generation switch. Enabling it adds a derive; it changes no arithmetic and no
+# serialized byte.
+openapi-schema = ["dep:schemars"]
 
 # TESTS ONLY, AND THE RULE ABOVE STILL HOLDS. The decimal-to-money conversion exists TWICE in the
 # tree: once here, and once inside the admission unit's rate projection, because that crate depends

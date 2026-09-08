@@ -535,6 +535,7 @@ dependencies = [
  "busbar-store-memory",
  "busbar-substrate",
  "busbar-timing",
+ "busbar-unit-cost",
  "busbar-unit-scope",
  "bytes",
  "crc32fast",
@@ -1174,6 +1175,8 @@ dependencies = [
  "busbar-caps",
  "busbar-plugin-testkit",
  "busbar-unit-admission",
+ "schemars",
+ "serde",
 ]
 
 [[package]]
