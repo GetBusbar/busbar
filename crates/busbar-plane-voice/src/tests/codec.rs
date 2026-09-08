@@ -605,6 +605,117 @@ fn parallel_tool_calls_in_one_frame_mint_a_unit_each_without_cross_talk() {
     }
 }
 
+/// THE QUANTITY IS LOCATED AT THE ANNOUNCEMENT AND THE UNIT AT THE CLOSE, AND MOVING ONE DOES NOT
+/// MOVE THE OTHER.
+///
+/// A call the upstream announces and never closes is a call the turn asked for. Locating the
+/// quantity at the close instead would have made every abandoned call free, and locating it at both
+/// ends would have stated one call as two. It is counted once, where every call has exactly one
+/// event; and until the call closes there is nothing whole enough to mint.
+#[test]
+fn an_announced_call_that_never_closes_counts_once_and_mints_nothing() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    for call_id in ["call_a", "call_b", "call_c"] {
+        let opened = serde_json::to_vec(&json!({
+            "type": "response.output_item.added",
+            "item": { "type": "function_call", "call_id": call_id, "name": "lookup" },
+        }))
+        .expect("fixture serializes");
+        let opened = [frame(&opened)];
+        assert!(
+            minted(&plane, &dest, &mut state, &c, &opened).is_none(),
+            "an announced call mints nothing until it closes"
+        );
+    }
+    // One of the three closes; the other two are abandoned open. All three were still asked for.
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_b",
+        "arguments": "{}",
+    }))
+    .expect("fixture serializes");
+    let done = [frame(&done)];
+    assert!(minted(&plane, &dest, &mut state, &c, &done).is_some());
+
+    let counters = state
+        .get_mut::<crate::session::VoiceSessionState>()
+        .expect("the upstream half holds this plane's state")
+        .close_turn();
+    assert_eq!(
+        counters.tool_calls, 3,
+        "three calls were announced, so three were asked for — closing one counts nothing more \
+         and abandoning two costs nothing less"
+    );
+}
+
+/// THE ARGUMENTS ARE TAKEN ONCE.
+///
+/// The accumulation is the call's, and the close is the single place it is handed over. Replay the
+/// close — a duplicated frame, a retransmitted one — and it finds nothing held, because the first
+/// close took it: it states the empty object, which is what a call with no accumulation is, rather
+/// than handing the same arguments over a second time as if the model had asked twice. (The close
+/// fixture states no arguments of its own, so what the second one finds is the SESSION's answer and
+/// not the wire's.) Nothing on any read path takes it either — the name fact is read from the same
+/// session after the close and still reads.
+#[test]
+fn a_call_hands_its_arguments_over_exactly_once() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let opened = serde_json::to_vec(&json!({
+        "type": "response.output_item.added",
+        "item": { "type": "function_call", "call_id": "call_1", "name": "lookup" },
+    }))
+    .expect("fixture serializes");
+    let delta = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.delta",
+        "call_id": "call_1",
+        "delta": "{\"city\":\"SF\"}",
+    }))
+    .expect("fixture serializes");
+    // The close restates no arguments of its own, so what it frames is what the SESSION held.
+    let done = serde_json::to_vec(&json!({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_1",
+        "arguments": "",
+    }))
+    .expect("fixture serializes");
+    let (opened, delta, done) = ([frame(&opened)], [frame(&delta)], [frame(&done)]);
+
+    assert!(minted(&plane, &dest, &mut state, &c, &opened).is_none());
+    assert!(minted(&plane, &dest, &mut state, &c, &delta).is_none());
+    let first = minted(&plane, &dest, &mut state, &c, &done).expect("the close mints the call");
+    let body: serde_json::Value = serde_json::from_slice(first.body_ir.body()).expect("JSON");
+    assert_eq!(body["arguments"], json!(r#"{"city":"SF"}"#));
+
+    let again = minted(&plane, &dest, &mut state, &c, &done).expect("a repeated close is a call");
+    let body: serde_json::Value = serde_json::from_slice(again.body_ir.body()).expect("JSON");
+    assert_eq!(
+        body["arguments"],
+        json!("{}"),
+        "the arguments were handed over once; a second close finds nothing held"
+    );
+    assert_eq!(
+        again.facts.get(crate::meta::FACT_TOOL_NAME),
+        Some(FactValue::Str("lookup")),
+        "the name is READ, never taken — a call whose name was consumed could not be answered"
+    );
+}
+
 /// A tool reply names the call it answers, not the turn it arrived on.
 ///
 /// The reply is the other half of the leg the call planned. Decoded as an ordinary frame of the
