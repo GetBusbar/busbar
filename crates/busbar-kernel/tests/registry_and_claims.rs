@@ -64,6 +64,30 @@ fn every_form() -> Vec<Selector> {
     ]
 }
 
+/// The same forms with the same values, spelled in a different ASCII case.
+///
+/// Case is where a transcription and the rule it was transcribed from come apart without either
+/// side looking wrong: the contract reads a handshake name case-insensitively and a header name
+/// case-insensitively, and every other value byte for byte. A second copy of the rule that reads
+/// one of those the other way answers "disjoint" for a pair the contract calls the same claim.
+fn every_form_in_another_case() -> Vec<Selector> {
+    vec![
+        Selector::ExactPath("/A/B"),
+        Selector::PrefixOneLevel("/A"),
+        Selector::PathPattern(&[Segment::Lit("A"), Segment::Var]),
+        Selector::PathSuffix("/B"),
+        Selector::PathContains("A"),
+        Selector::HeaderExact("X-Key", "ONE"),
+        Selector::HeaderPresent("X-Key"),
+        Selector::HeaderPrefix("X-Key", "ON"),
+        Selector::Sni("EXAMPLE.invalid"),
+        Selector::ClientCertSubject("cn=one"),
+        Selector::StreamName("CONTROL"),
+        Selector::Alpn("H2"),
+        Selector::Port(443),
+    ]
+}
+
 /// The fixture's own totality check: an exhaustive match with no catch-all, so a selector form
 /// added to the grammar stops this file compiling until it has a representative in `every_form`.
 ///
@@ -223,6 +247,29 @@ fn two_planes_claiming_one_handshake_name_in_different_cases_are_not_disjoint() 
         check_claims(&claims).is_err(),
         "boot sealed two planes on one handshake name as disjoint"
     );
+}
+
+/// The boot check keeps no second reading of the contract's overlap rule.
+///
+/// The rule is READ rather than spelled a second time, for every family and not just the path one:
+/// the contract is what a plane writes its claims in, so the contract's answer IS what the
+/// declaration means. This walks the cross-product of every form against every form in both
+/// spellings and asserts the two never disagree — which is the property, not the arms.
+#[test]
+fn the_boot_check_and_the_contract_answer_every_pair_the_same_way() {
+    let all: Vec<Selector> = every_form()
+        .into_iter()
+        .chain(every_form_in_another_case())
+        .collect();
+    for left in &all {
+        for right in &all {
+            assert_eq!(
+                overlaps(left, right),
+                left.overlaps(right),
+                "the boot check and the contract disagree about {left:?} against {right:?}"
+            );
+        }
+    }
 }
 
 #[test]
