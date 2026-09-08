@@ -166,8 +166,7 @@ fn append_task_event_body_different_bytes_at_same_key_is_a_fork_error() {
             1,
             b"second".to_vec(),
         ))
-        .err()
-        .expect("a different body at the same (task_id, seq) must be refused as a fork");
+        .expect_err("a different body at the same (task_id, seq) must be refused as a fork");
     assert!(
         err.0.contains("fork"),
         "error must name the fork: {}",
@@ -198,8 +197,7 @@ fn append_call_body_different_bytes_at_same_key_is_a_fork_error() {
         .unwrap();
     let err = s
         .append_plane_record(&call_rec_local("p1", 1, 10, b"second".to_vec()))
-        .err()
-        .expect("a different body at the same (principal, seq) must be refused as a fork");
+        .expect_err("a different body at the same (principal, seq) must be refused as a fork");
     assert!(
         err.0.contains("fork"),
         "error must name the fork: {}",
