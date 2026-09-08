@@ -399,11 +399,12 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
 
     // THE SCANNER LOST TRACK is an OFFLOAD WINDOW THAT NEVER SHUT, and deliberately nothing else.
     //
-    // The obvious wider test — "the brace depth returned to zero" — is not available, and the
-    // reason is the same imprecision the shell documents in its own header: a `{` inside a string
-    // literal shifts the counter. Thirteen files in this tree end at a non-zero brace depth for
-    // exactly that reason and not one of them is malformed, so a scanner refusing them would be a
-    // false-POSITIVE generator, which is how a gate gets switched off.
+    // The obvious wider test — "the brace depth returned to zero" — is still not adopted here. The
+    // reason it was ruled out is GONE: the counter used to read a `{` inside a string literal as
+    // structure, which is why thirteen files in this tree ended at a non-zero depth without one of
+    // them being malformed, and the depths now come off `scan::blank_code`, which cannot see a
+    // literal. Adopting the wider test is a separate change with its own measurement — this row is
+    // NOT quietly widened on the strength of the counter having got better.
     //
     // An unclosed OFFLOAD window is different in kind: it does not merely mean the counters drifted,
     // it means every remaining line of the file was EXEMPTED by a window that should have shut. That
