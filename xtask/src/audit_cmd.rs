@@ -430,9 +430,9 @@ fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// Case-insensitive whole-word search: `codeaudit` matches inside `opus-codeaudit-r1` (a hyphen is
-/// not a word character, exactly as in the Python's `\b`) but not inside `my_codeaudit_helper`
-/// (an underscore is).
+/// Case-insensitive whole-word search: hyphen-permissive, exactly as in the Python's `\b` (a
+/// hyphenated identifier that embeds the flagged word still matches; an underscore-joined one,
+/// which reads as a name rather than prose, does not).
 fn contains_word_ci(text: &str, word: &str) -> bool {
     let hay: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
     let pat: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
@@ -503,8 +503,10 @@ fn word_then_number(text: &str, words: &[&str], hash_required: bool) -> Option<S
 
 /// Rule 1 — `internal-issue-id`: an audit-round or tracker citation the reader cannot open.
 fn rule_internal_issue_id(text: &str) -> Option<String> {
+    // The literal word this whole rule exists to catch, not a citation of it.
+    // public-hygiene-lint: allow — the pattern this rule is written to detect, not a leaked reference
     if contains_word_ci(text, "codeaudit") {
-        return Some("cites `codeaudit`, an audit-round artifact name".to_string());
+        return Some("cites the audit-tool name this rule exists to catch".to_string());
     }
     if let Some(hit) = word_then_number(text, &["round", "wave", "audit"], false) {
         return Some(format!("cites `{hit}`, an audit-round label"));
@@ -558,8 +560,8 @@ fn looks_like_hash(hit: &[char]) -> bool {
         && hit.iter().any(|c| c.is_ascii_alphabetic())
 }
 
-/// Rule 2 — `commit-hash-citation`: `fixed in 4bb03d7`, `(53d5774bd70d)`. A hash resolves only
-/// against history the reader does not have.
+/// Rule 2 — `commit-hash-citation`: a keyword-led or bare-parenthesized hex run. A hash resolves
+/// only against history the reader does not have.
 fn rule_commit_hash(text: &str) -> Option<String> {
     if crypto_context(text) {
         return None;
@@ -603,7 +605,7 @@ fn rule_commit_hash(text: &str) -> Option<String> {
         }
     }
 
-    // The bare parenthetical: `(53d5774bd70d)`.
+    // The bare parenthetical form: a hex run inside unlabeled parentheses.
     for i in 0..chars.len() {
         if chars[i] != '(' {
             continue;
@@ -638,23 +640,28 @@ fn rule_commit_hash(text: &str) -> Option<String> {
 /// port would either miss real leaks or nag on legitimate standards prose.
 fn rule_private_doc(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
+    // Two of the Python rule's literal-phrase needles, quoted here only because this function's
+    // whole job is to detect them, not to cite them.
+    // public-hygiene-lint: allow — needles this rule is written to detect, not leaked references
     if lower.contains("companion design") {
-        return Some("cites \"the companion design\", a document the reader cannot open".into());
+        return Some("cites an internal companion write-up the reader cannot open".into());
     }
+    // public-hygiene-lint: allow — needle this rule is written to detect, not a leaked reference
     if lower.contains("design doc") || lower.contains("design document") {
-        return Some("cites a \"design doc\", a document the reader cannot open".into());
+        return Some("cites an internal planning document the reader cannot open".into());
     }
+    // Named internal documents. Each is a needle this rule exists to catch, not a citation of one.
     for needle in [
-        "engine-bugs.md",
-        "mcp-design.md",
-        "a2a-design.md",
-        "smart-router-design.md",
-        "config-redesign-design.md",
-        "busbarai-private",
-        "_handoffs",
+        "engine-bugs.md",       // public-hygiene-lint: allow — needle, not a citation
+        "mcp-design.md",        // public-hygiene-lint: allow — needle, not a citation
+        "a2a-design.md",        // public-hygiene-lint: allow — needle, not a citation
+        "smart-router-design.md", // public-hygiene-lint: allow — needle, not a citation
+        "config-redesign-design.md", // public-hygiene-lint: allow — needle, not a citation
+        "busbarai-private",     // public-hygiene-lint: allow — needle, not a citation
+        "_handoffs",            // public-hygiene-lint: allow — needle, not a citation
     ] {
         if lower.contains(needle) {
-            return Some(format!("cites `{needle}`, an internal document the reader cannot open"));
+            return Some("cites an internal document the reader cannot open".to_string());
         }
     }
     if let Some(pos) = lower.find("-spec.md") {
@@ -684,26 +691,38 @@ pub fn hygiene_refusal(report: &str) -> Option<String> {
 mod hygiene_tests {
     use super::hygiene_refusal;
 
+    // Every fixture below quotes a REAL example of the class each rule refuses -- that is the
+    // point of a RED test -- so each is exactly the kind of text `hygiene_refusal` exists to
+    // catch, not a reference leaked into shipped prose. Each line carries its own escape hatch
+    // (the marker is per-line, not per-file) rather than one blanket exemption for the module.
     #[test]
     fn red_internal_issue_id() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("gate/audits/codeaudit-examples-r1.md").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("filed against round 4 of the audit").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("would have caught task #141 earlier").is_some());
     }
 
     #[test]
     fn red_commit_hash() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("fixed in 4bb03d7 after the parser regressed").is_some());
         // Pure-digit parentheticals are not hex CITATIONS (no [a-f] letter to distinguish them
         // from any other number in prose) -- matches the lint's own `(?=[0-9a-f]*[a-f])` guard.
         assert!(hygiene_refusal("the prior behaviour (2789501) allowed it").is_none());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("the prior behaviour (53d5774bd70d) allowed it").is_some());
     }
 
     #[test]
     fn red_private_doc() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("see the companion design for the projection rules").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("recorded in audit-decisions-1.5.3.md as resolved").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
         assert!(hygiene_refusal("filed in plugin-settings-schema-SPEC.md").is_some());
     }
 
@@ -718,8 +737,7 @@ mod hygiene_tests {
         // Crypto vocabulary that merely LOOKS hex-shaped must stay silent.
         assert!(hygiene_refusal("the digest is sha256(prev_hash | seq | ts)").is_none());
         assert!(hygiene_refusal("a signed token: (ed25519), two base64url segments").is_none());
-        // `phase 2` / round-numbered auditor names outside the report field are out of scope here;
-        // ordinary prose using "round" as an English word with no number attached stays silent.
+        // Ordinary prose using "round" as an English word with no attached number stays silent.
         assert!(hygiene_refusal("every fix proven by a failing case first, 15/15 plants caught")
             .is_none());
     }
