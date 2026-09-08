@@ -10,11 +10,31 @@
 //! wraps an `Arc<dyn Store>` and forwards each verb one-to-one, exposing only [`PlaneStore`]. Both name
 //! only `busbar_api` leaf types (`PlaneRecord`/`PlaneSelector`/`StoreResult`/`Store`), so they live
 //! here; core re-exports them, so `crate::plane::store::{PlaneStore, PlaneStoreView}` still resolves
-//! there. The typed-row `KIND_*` mapping, the `encode`/`decode` bridge and the record builders stay
-//! core beside the plane row types they serialize.
+//! there. The typed-row `KIND_*` mapping and the record builders stay core beside the plane row types
+//! they serialize.
+//!
+//! The [`encode`]/[`decode`] BODY BRIDGE joined them here for the same reason the trait did: it names
+//! no plane type at all (it is generic over `Serialize`/`DeserializeOwned`), and the durable journal
+//! that persists a body through it moved out of core into `busbar-unit-audit`. Two copies of "how a
+//! plane body becomes bytes" would be two answers to whether a stored row still reads back, so there
+//! is one, here, and core re-exports it so `crate::plane::store::{encode, decode}` still resolves.
 
-use busbar_api::{PlaneRecord, PlaneSelector, Store, StoreResult};
+use busbar_api::{PlaneRecord, PlaneSelector, Store, StoreError, StoreResult};
 use std::sync::Arc;
+
+/// Serialize a typed plane row into an opaque [`PlaneRecord::body`]. `serde_json`, matching the store
+/// plugins' decode, so the bytes round-trip identically across the plugin ABI. Generic over any
+/// `Serialize`, so this names no plane type — the caller supplies whatever neutral or plane-owned row
+/// it is persisting.
+pub fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
+    serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
+}
+
+/// Decode an opaque [`PlaneRecord::body`] back into its typed plane row — the exact inverse of
+/// [`encode`]. A malformed body is a STORE ERROR the caller sees, never a silently-dropped read.
+pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
+    serde_json::from_slice(body).map_err(|e| StoreError(format!("plane body decode: {e}")))
+}
 
 /// The PLANE-FACING durable sink: exactly the eight neutral kind-tagged verbs of
 /// [`busbar_api::Store`], and provably none of its audit-chain / key / credential / usage authority.

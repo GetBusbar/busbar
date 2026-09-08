@@ -33,8 +33,6 @@
 //! wrapper — receives an already-sealed row and persists it verbatim; it never computes or recomputes
 //! a digest.
 
-use busbar_api::{StoreError, StoreResult};
-
 // THE NARROWING ADAPTER — the `PlaneStore` trait a plane persists through and the `PlaneStoreView`
 // that narrows a real `busbar_api::Store` to it — lives in the neutral substrate so a plane crate
 // holds an `Arc<dyn PlaneStore>` without naming core. Re-exported here so every in-core call site is
@@ -63,19 +61,11 @@ pub(crate) const KIND_DEMOTION: &str = "demotion";
 /// The spent-approval ledger kind (a single-use token).
 pub(crate) const KIND_ASK: &str = "ask";
 
-/// Serialize a typed plane row into an opaque [`PlaneRecord::body`]. `serde_json`, matching the store
-/// plugins' decode, so the bytes round-trip identically across the plugin ABI. Generic over any
-/// `Serialize`, so this names no plane type — the caller supplies whatever neutral or plane-owned row
-/// it is persisting.
-pub fn encode<T: serde::Serialize>(row: &T) -> StoreResult<Vec<u8>> {
-    serde_json::to_vec(row).map_err(|e| StoreError(format!("plane body encode: {e}")))
-}
-
-/// Decode an opaque [`PlaneRecord::body`] back into its typed plane row — the exact inverse of
-/// [`encode`]. A malformed body is a STORE ERROR the caller sees, never a silently-dropped read.
-pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
-    serde_json::from_slice(body).map_err(|e| StoreError(format!("plane body decode: {e}")))
-}
+/// The BODY BRIDGE — `serde_json` in both directions, matching the store plugins' decode so the bytes
+/// round-trip identically across the plugin ABI. It moved to the neutral substrate beside the
+/// [`PlaneStore`] trait itself, because the durable journal that persists a body through it is no
+/// longer in this crate; re-exported here so every in-core call site is unchanged.
+pub use busbar_substrate::plane::store::{decode, encode};
 
 #[cfg(test)]
 #[path = "tests/store_seam_tests.rs"]
