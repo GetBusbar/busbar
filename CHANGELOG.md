@@ -125,6 +125,12 @@ named next.
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **`RUST_LOG=debug` now says which half of the binary answered each request.** The composition
+  root writes one `root served unit` record per unit it drives, naming the plane and whether the
+  kernel loop produced the answer or the request was handed back to the legacy router to answer.
+  Nothing changes at the default log level, on the wire, or in `/metrics`; at `debug` it is the
+  first externally visible difference between the two paths, and it is what `cargo xtask gate
+  teller-steps` now boots the binary to measure instead of asserting.
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
