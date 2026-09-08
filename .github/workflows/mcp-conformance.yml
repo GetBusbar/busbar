@@ -63,6 +63,10 @@ jobs:
   gate-selftest:
     name: gate self-test (the coverage assertion cannot be lied to)
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -414,6 +418,10 @@ jobs:
   verdict:
     name: MCP conformance verdict
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.1 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     if: always()
     needs:
       - gate-selftest

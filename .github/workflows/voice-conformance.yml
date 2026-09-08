@@ -56,6 +56,10 @@ jobs:
   gate-selftest:
     name: gate self-test (the accounting cannot be lied to)
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.9 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     env:
       # The self-test's final step re-runs the REAL (now READY) legs through `emit_verdict`, which
       # shells out to the conformance harness — so this job builds it too and points the legs at it.
@@ -121,6 +125,10 @@ jobs:
     name: spec battery · ${{ matrix.dialect }}
     needs: gate-selftest
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     strategy:
@@ -159,6 +167,10 @@ jobs:
     name: captured-transcript replay
     needs: gate-selftest
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
@@ -187,6 +199,10 @@ jobs:
     name: cross-parity · 4 ordered OpenAI<->Gemini pairs
     needs: gate-selftest
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
@@ -215,6 +231,10 @@ jobs:
     name: "provider-dial · a session dials the composed provider (the provider-dial leg)"
     needs: gate-selftest
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
@@ -246,6 +266,10 @@ jobs:
     name: "composition · provider credential, per-key lease, session scope, gemini route, admit/route/audit/exit"
     needs: gate-selftest
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.3 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
@@ -286,6 +310,10 @@ jobs:
     name: "boot --features plane-voice parses the owned streams: section"
     needs: gate-selftest
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 2.4 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
@@ -317,6 +345,10 @@ jobs:
     name: governance probe · 5 vision checkpoints (NOT a conformance result)
     needs: gate-selftest
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.2 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
@@ -347,6 +379,10 @@ jobs:
   verdict:
     name: Voice conformance verdict
     runs-on: ubuntu-latest
+    # BOUNDED. Measured p95 0.1 min over the last 9 runs of this job; the
+    # ceiling is the 10-minute floor of the `p95 x 1.5` rule ci.yml documents.
+    # Unbounded, this job inherits the runner's six-hour default.
+    timeout-minutes: 10
     if: always()
     needs:
       - gate-selftest
