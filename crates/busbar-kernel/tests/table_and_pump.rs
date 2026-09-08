@@ -552,7 +552,11 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
         ),
         Dispatch::OpenOneShot
     );
-    assert_eq!(scheduler.one_shots(), 1, "the accessor reflects the open the dispatch just won");
+    assert_eq!(
+        scheduler.one_shots(),
+        1,
+        "the accessor reflects the open the dispatch just won"
+    );
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -581,7 +585,11 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
         "a wait takes no permit, so the count does not move past the ceiling"
     );
     scheduler.finish_one_shot();
-    assert_eq!(scheduler.one_shots(), 1, "the accessor reflects the permit given back");
+    assert_eq!(
+        scheduler.one_shots(),
+        1,
+        "the accessor reflects the permit given back"
+    );
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -711,7 +719,11 @@ fn offer_never_grows_depth_past_the_queue_cap() {
     // Three more overruns past the cap: depth must not move.
     for _ in 0..3 {
         assert!(matches!(stream.offer(0), Emission::Backpressure { .. }));
-        assert_eq!(stream.depth(), 2, "the guard holds depth at the cap, not past it");
+        assert_eq!(
+            stream.depth(),
+            2,
+            "the guard holds depth at the cap, not past it"
+        );
     }
     // Draining by exactly the overrun count proves nothing was silently counted while over cap:
     // two `emitted()` calls empty a depth that never grew past 2.
@@ -731,7 +743,11 @@ fn offer_never_grows_depth_past_the_queue_cap() {
             Emission::Unemitted,
             "a datagram overrun is dropped, not queued"
         );
-        assert_eq!(datagram.depth(), 2, "the guard holds depth at the cap, not past it");
+        assert_eq!(
+            datagram.depth(),
+            2,
+            "the guard holds depth at the cap, not past it"
+        );
     }
     datagram.emitted();
     datagram.emitted();
