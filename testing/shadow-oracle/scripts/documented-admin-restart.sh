@@ -123,3 +123,7 @@ $(cat "$W/boot2.stderr" 2>/dev/null)
 "
 eff="$(jq -c --arg v "$combined_stderr" '. + {stderr: $v}' <<<"$eff")"
 jq -n --argjson eff "$eff" --arg body "$(jq -c 'del(.stderr)' <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

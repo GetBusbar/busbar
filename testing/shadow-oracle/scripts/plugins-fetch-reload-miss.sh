@@ -102,3 +102,7 @@ grep -a "plugins.fetch" "$W/busbar.log" >"$RAW/stderr" || cp "$W/busbar.log" "$R
 python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture-exec.py" "$st" "$RAW/body" "$RAW/stderr" \
   --strip-path "$W" --strip-path "$RAW" --strip-path "$repo" --strip-path "$BIN" >"$RAW/captured.json" 2>"$RAW/capture.err" \
   || fail "capture-exec.py failed: $(tail -c 300 "$RAW/capture.err")"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0
