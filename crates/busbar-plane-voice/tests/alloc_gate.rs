@@ -11,6 +11,17 @@
 //! faster and moved a byte would have broken every client of this dialect, so the count is only
 //! allowed to fall on the far side of a byte-for-byte comparison against the serializer that used
 //! to produce it.
+//!
+//! # WHAT THIS FILE DOES NOT POLICE, said here rather than left to be inferred
+//!
+//! The number below is the ENVELOPE STEP's — `twilio::encode_media_into` and nothing else. It is not
+//! the downlink frame's total, and reading "zero allocations per downlink frame" off it would be
+//! reading a claim this file does not make. The pipeline around it allocates: the renderer's caller
+//! (`plane::progress_from_server_event`) calls `ulaw::encode_frame`, which builds a fresh `Vec` per
+//! frame, on the line BEFORE it takes the held buffer out of the session — so the same path that
+//! goes to some trouble to avoid one allocation per frame pays another one line up. Widening this
+//! gate to the whole pipeline means committing an absolute per-frame budget for it, which is a
+//! measurement rather than a guess and is not made here.
 
 use busbar_plane_voice::twilio;
 use std::alloc::{GlobalAlloc, Layout, System};
