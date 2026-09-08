@@ -25,6 +25,11 @@
 //! separate traits because they are separate claims, and a node that files its own signatures on its
 //! own disk has proved nothing to anybody. The crate says so rather than implying otherwise.
 //!
+//! [`mod@rows`] — what a bucket is CALLED. A bucket id is the primary key of a durable row, not a
+//! display string: two nodes that spell one group's monthly bucket differently keep two balances for
+//! one budget and each admits up to the full cap. So the spelling lives with the rows, and every
+//! producer reaches it here instead of composing a format string of its own.
+//!
 //! [`mod@recompute`] — every posting priced again from sealed policy, from a watermark that is the last
 //! posting actually checked rather than the last checkpoint. The difference is not pedantry: at a
 //! busy node's rate "since the last checkpoint" covers a few percent of the postings, and a posting
@@ -52,6 +57,7 @@ pub mod identity;
 pub mod legacy;
 pub mod migration;
 pub mod recompute;
+pub mod rows;
 pub mod settle;
 pub mod totals;
 pub mod verify;
@@ -76,6 +82,9 @@ pub use migration::{
 pub use recompute::{
     apply_tier, recheck, recompute, Divergence, Finding as RecomputeFinding, Pass, PolicyArchive,
     Posting, PostingOrigin, PricedLine, RateCard, SealedPolicy, Watermark, BASIS_POINTS,
+};
+pub use rows::{
+    attribution_bucket, group_bucket, group_bucket_scoped, is_bucket_of_group, GROUP_BUCKET_PREFIX,
 };
 pub use settle::{Ledger, Overdraft, Settlement};
 pub use totals::{Book, BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart};

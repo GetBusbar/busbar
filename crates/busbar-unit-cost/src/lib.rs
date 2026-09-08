@@ -32,16 +32,25 @@
 //!
 //! # The two readers
 //!
+//! # What a key may still spend
+//!
+//! [`KeyBudgetView`] is the sixth thing here and the newest: given a ledger row's ceiling and what
+//! has been spent on it, what is left, and would one more request go over. Owner ruling 13:0x (5) —
+//! "no arithmetic outside unit-cost" — is why it is in this crate rather than beside the door that
+//! asks the question; ruling 13:0x (6) is why the enforced key does not carry any of it.
+//!
 //! [`price`] builds the stored posting (the new layout). [`derive_spend_cents`] and
 //! [`derive_spend_micros`] are the older release's read-time derivation, kept verbatim because the
 //! legacy usage projection still reprices at read time from the current card. A property test
 //! asserts the two agree: the older derivation at a pinned card equals the sum of the stored
 //! nano-units.
 
+mod budget;
 mod posting;
 mod project;
 mod rate;
 
+pub use budget::KeyBudgetView;
 pub use posting::{apply_tier, price, Posting, PricedLine, FEE_CLASS, STANDARD_TIER_BP};
 pub use project::{cents_of, derive_spend_cents, derive_spend_micros, micros_of};
 pub use rate::{
