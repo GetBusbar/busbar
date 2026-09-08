@@ -268,10 +268,29 @@ impl busbar_contract::kinds::RecordSink for MemoryStore {
         key: &[u8],
         value: &RecordBytes,
     ) -> Result<(), ContractStoreError> {
-        self.records
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((schema.as_str().to_string(), key.to_vec()), value.clone());
+        let written_at = self.now();
+        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
+        records.insert(
+            (schema.as_str().to_string(), key.to_vec()),
+            RecordRow {
+                written_at,
+                value: value.clone(),
+            },
+        );
+
+        // Amortized bounded eviction, mirroring `add_usage`/`add_metering`/`put_key`/
+        // `put_credential` above — same ceiling, same cadence, same `>` boundary. This is the map's
+        // ONLY shrink path: the contract declares no delete verb (see the field's doc), so without
+        // it nothing internal or external could ever prune a row.
+        let sweep_needed = self
+            .records_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            let n = self.now();
+            records.retain(|_, row| row.written_at.saturating_add(MAX_RETENTION_SECS) > n);
+        }
         Ok(())
     }
 
@@ -287,7 +306,7 @@ impl busbar_contract::kinds::RecordSink for MemoryStore {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(schema.as_str().to_string(), key.to_vec()))
-            .cloned())
+            .map(|row| row.value.clone()))
     }
 
     /// In key order, at most `limit` rows. `limit` 0 means NOTHING, not everything: a caller that
@@ -307,7 +326,7 @@ impl busbar_contract::kinds::RecordSink for MemoryStore {
             .iter()
             .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
             .take(limit as usize)
-            .map(|((_, k), v)| (k.clone(), v.clone()))
+            .map(|((_, k), row)| (k.clone(), row.value.clone()))
             .collect())
     }
 }
