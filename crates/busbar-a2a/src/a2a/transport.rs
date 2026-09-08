@@ -97,62 +97,18 @@ pub(crate) const RELAY_TIMEOUT: Duration = Duration::from_secs(60);
 /// which is what makes this the right knob rather than a read timeout.
 pub(crate) const RELAY_STREAM_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Run one future to completion on a DEDICATED thread with its own current-thread runtime.
+/// THE REAL RESOLVER — RE-EXPORTED, NOT DECLARED.
 ///
-/// Not `Handle::current().block_on(..)` and not `block_in_place`: both make assumptions about the
-/// caller (that there IS a runtime, that it is multi-threaded) that a synchronous seam cannot make.
-/// A thread of its own has no such precondition and cannot panic on the caller's behalf.
-fn on_a_dedicated_runtime<T, F>(what: &str, body: F) -> Result<T, String>
-where
-    F: FnOnce(&tokio::runtime::Runtime) -> Result<T, String> + Send,
-    T: Send,
-{
-    std::thread::scope(|s| {
-        s.spawn(|| {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("{what}: could not start a runtime: {e}"))?;
-            body(&rt)
-        })
-        .join()
-        .map_err(|_| format!("{what}: the worker thread panicked"))?
-    })
-}
-
-/// THE REAL RESOLVER: the system resolver, reached through tokio.
+/// The body moved to `busbar_substrate::net_guard::SystemResolver`, beside the `Resolver` trait it
+/// implements and beside `resolve_and_pin`, which is the one caller that matters. It is named here
+/// under its old spelling so that every existing call site in this crate reads unchanged and no byte
+/// of the resolution moved with it — a re-export cannot drift from the thing it re-exports, which is
+/// the whole reason the legacy copy was not left behind as a "second opinion".
 ///
-/// Returns EVERY address the name answered with, de-duplicated but otherwise untouched and
-/// unsorted. Filtering or re-ordering here would quietly decide which address the guard gets to
-/// judge, and the guard's rule is that it judges all of them.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct TokioResolver;
-
-impl Resolver for TokioResolver {
-    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
-        // Port zero: this seam answers about ADDRESSES. The port belongs to the URL and is applied
-        // by the transport, so asking the resolver about one would be asking a second question.
-        let target = format!("{host}:0");
-        on_a_dedicated_runtime("agent card name lookup", move |rt| {
-            rt.block_on(async move {
-                let answered = tokio::net::lookup_host(target)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let mut out: Vec<IpAddr> = Vec::new();
-                for sa in answered {
-                    let ip = sa.ip();
-                    // A name answering the same address under both a v4 and a v6 query is ONE
-                    // fact, not two. De-duplication is not filtering: nothing that was answered is
-                    // dropped, so the guard still sees every distinct address.
-                    if !out.contains(&ip) {
-                        out.push(ip);
-                    }
-                }
-                Ok(out)
-            })
-        })
-    }
-}
+/// Why it had to move at all: the composition root binds a resolver into the A2A plane's kernel
+/// bindings, and this crate is the LEGACY plugin. A root reaching in here for the one production
+/// resolver would be the kind-isolation rule broken by the seam the guard exists to hold.
+pub(crate) use busbar_substrate::net_guard::SystemResolver as TokioResolver;
 
 // THE PEER'S TRANSPORT-LAYER IDENTITY is now observed HOST-SIDE, on the egress seam.
 //
