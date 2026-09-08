@@ -1657,15 +1657,15 @@
    "paths": [
     "crates/busbar-transport-grpc/src"
    ],
-   "tree_hash": "34eb0c899feda55018ab137ec7c64b4b957fba8f1fe43eaded0d264217ed344a",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "tree_hash": "742ee8d5a7bdeec8d4de9d5f65c0bf89e2ca7b861dd49efce3db489e882ab74a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "LOW": 1
+    "MEDIUM": 3
    },
-   "report": "per-stream Reset reaches the reader without a StreamId (needs a contract-transport seam); all files read fully",
-   "auditor": "opus-pass2",
+   "report": "no configured body cap is read at listen or dial, so every message is pinned to the codec library default rather than the operator limit the sibling websocket wire reads for exactly this reason; a decoder failure on a served request body is reported as a network reset, discarding the status and collapsing a caller fault into the variant reserved for a broken connection when a framing variant exists; no meta, claims or conformance module exists, and the frame-meta honesty check is asserted against one correct value with no inflating or deflating fixture to prove it discriminates",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-grpc/src/tests"
@@ -1703,6 +1703,17 @@
       "LOW": 1
      },
      "report": "per-stream Reset reaches the reader without a StreamId (needs a contract-transport seam); all files read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "742ee8d5a7bdeec8d4de9d5f65c0bf89e2ca7b861dd49efce3db489e882ab74a",
+     "counts": {
+      "MEDIUM": 3
+     },
+     "report": "no configured body cap is read at listen or dial, so every message is pinned to the codec library default rather than the operator limit the sibling websocket wire reads for exactly this reason; a decoder failure on a served request body is reported as a network reset, discarding the status and collapsing a caller fault into the variant reserved for a broken connection when a framing variant exists; no meta, claims or conformance module exists, and the frame-meta honesty check is asserted against one correct value with no inflating or deflating fixture to prove it discriminates"
     }
    ]
   },
@@ -1712,16 +1723,16 @@
    "paths": [
     "crates/busbar-transport-http/src"
    ],
-   "tree_hash": "fa09fcb995f50a9bfa58b0311374af2cf0b0c2cba868d359daaa4e6110a78ff2",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "tree_hash": "38a9657f93521e9b3f46d829cc4a4c4b464da9d84a42fbb466aa2aaa42b8703a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
-    "LOW": 1
+    "MEDIUM": 3,
+    "LOW": 2
    },
-   "report": "100-continue answered before the body cap (fixed); misplaced test doc (fixed); all files read fully",
-   "auditor": "opus-pass2",
+   "report": "the chunked ingress body cap is checked one read late and is skipped entirely when the pre-loop feed completes the decode, so a cap set below the read chunk size is not enforced on that path; the egress re-segmenter omits the chunked-plus-content-length refusal its ingress twin performs, forwarding the request-smuggling shape it refuses inbound; serve is public on the mount seam, the vocabulary the kind rules forbid on a plugin surface; no meta, claims or conformance module exists; the plane-name guard duplicates its sibling byte for byte and one self-test line is always true",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-http/src/tests"
@@ -1760,6 +1771,18 @@
       "LOW": 1
      },
      "report": "100-continue answered before the body cap (fixed); misplaced test doc (fixed); all files read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "38a9657f93521e9b3f46d829cc4a4c4b464da9d84a42fbb466aa2aaa42b8703a",
+     "counts": {
+      "MEDIUM": 3,
+      "LOW": 2
+     },
+     "report": "the chunked ingress body cap is checked one read late and is skipped entirely when the pre-loop feed completes the decode, so a cap set below the read chunk size is not enforced on that path; the egress re-segmenter omits the chunked-plus-content-length refusal its ingress twin performs, forwarding the request-smuggling shape it refuses inbound; serve is public on the mount seam, the vocabulary the kind rules forbid on a plugin surface; no meta, claims or conformance module exists; the plane-name guard duplicates its sibling byte for byte and one self-test line is always true"
     }
    ]
   },
@@ -1769,13 +1792,16 @@
    "paths": [
     "crates/busbar-transport-sse/src"
    ],
-   "tree_hash": "4dfff42f96a95069a657b0b9cdee84b21a5161b20ff82f4500bee59c23173f54",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
-   "result": "zero",
-   "counts": {},
-   "report": "zero (two nits); all files read fully",
-   "auditor": "opus-pass3",
+   "tree_hash": "3ae1b7074cc82763e8003dd9e1336987b752bc12e231aa266a0391cdbc99aa8d",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "findings",
+   "counts": {
+    "LOW": 2,
+    "NIT": 1
+   },
+   "report": "a line carrying no colon is treated as carrying no field, but the event-stream grammar reads such a line as a field whose value is empty, so a legal frame whose only line is a bare field name is dropped as if it were a comment keepalive; this wire names a model vendor in a doc comment and in a test name while carrying no vocabulary guard at all; the test-only reference parser trims all whitespace where the grammar strips a single leading space",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-sse/src/tests"
@@ -1820,6 +1846,18 @@
      "tree_hash": "4dfff42f96a95069a657b0b9cdee84b21a5161b20ff82f4500bee59c23173f54",
      "counts": {},
      "report": "zero (two nits); all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "3ae1b7074cc82763e8003dd9e1336987b752bc12e231aa266a0391cdbc99aa8d",
+     "counts": {
+      "LOW": 2,
+      "NIT": 1
+     },
+     "report": "a line carrying no colon is treated as carrying no field, but the event-stream grammar reads such a line as a field whose value is empty, so a legal frame whose only line is a bare field name is dropped as if it were a comment keepalive; this wire names a model vendor in a doc comment and in a test name while carrying no vocabulary guard at all; the test-only reference parser trims all whitespace where the grammar strips a single leading space"
     }
    ]
   },
@@ -1829,16 +1867,16 @@
    "paths": [
     "crates/busbar-transport-stdio/src"
    ],
-   "tree_hash": "e3dc7383b3c9d22359657014256c76889159f50a0956c42b165a484336dd5cf5",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "aa24ae1786643cb9ff93d064a1c1ab8b5332eeac6cf11de1672dfec0bd7c259b",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
     "MEDIUM": 1,
-    "NIT": 2
+    "LOW": 1
    },
-   "report": "write never refused a payload spelling the frame delimiter (fixed); all files read fully",
-   "auditor": "opus-pass3",
+   "report": "the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it discriminates a wrong byte count from a right one; two battery tests assert a reader is parked by sleeping and then checking the task is unfinished, which is equally true of a task the runtime has not polled yet, so under contention the test passes without the interleaving it documents; no meta, claims or conformance module exists",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
@@ -1886,6 +1924,18 @@
       "NIT": 2
      },
      "report": "write never refused a payload spelling the frame delimiter (fixed); all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "aa24ae1786643cb9ff93d064a1c1ab8b5332eeac6cf11de1672dfec0bd7c259b",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it discriminates a wrong byte count from a right one; two battery tests assert a reader is parked by sleeping and then checking the task is unfinished, which is equally true of a task the runtime has not polled yet, so under contention the test passes without the interleaving it documents; no meta, claims or conformance module exists"
     }
    ]
   },
@@ -1895,15 +1945,15 @@
    "paths": [
     "crates/busbar-transport-tcp/src"
    ],
-   "tree_hash": "31c9932fbaca8aa2338d79f2b5086860d6745d9164b93a12fb7ee70031abd1a9",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "b2542b627fa8efa5df43774d57dd0048f54a79a5fc677a9de6f04a0e85858273",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1
+    "LOW": 2
    },
-   "report": "tests.rs read fully; half_close test performs a full close; connect timeout absent; RawStream::from constant-fold survived a plant",
-   "auditor": "opus-pass3",
+   "report": "no meta, claims or conformance module exists, so this wire diverges from the uniform skeleton its kind requires of every sibling; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning, one of them a contract-derived cap and this one a plain read size",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
@@ -1951,6 +2001,17 @@
       "MEDIUM": 1
      },
      "report": "tests.rs read fully; half_close test performs a full close; connect timeout absent; RawStream::from constant-fold survived a plant"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "b2542b627fa8efa5df43774d57dd0048f54a79a5fc677a9de6f04a0e85858273",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "no meta, claims or conformance module exists, so this wire diverges from the uniform skeleton its kind requires of every sibling; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning, one of them a contract-derived cap and this one a plain read size"
     }
    ]
   },
@@ -1960,16 +2021,16 @@
    "paths": [
     "crates/busbar-transport-tls/src"
    ],
-   "tree_hash": "d3cadadde498bc0df2de6f0a78a7211d823c0e0e33a4f84d1a461638126eb4ac",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "8f92881ca723f3ba550e24e79541f35d2f51b50f7d9baac6e0ec1f1c3609856a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 1
+    "MEDIUM": 2,
+    "LOW": 1
    },
-   "report": "pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed); tcp connect has no timeout on tcp and tls dial; tests.rs read fully",
-   "auditor": "opus-pass3",
+   "report": "a peer that vanishes without the close alert surfaces as an unexpected end of file, and the io mapper has no arm for it, so it falls through to the same generic closed value a tidy shutdown produces even though this crate own doc names that signature as what a truncation looks like from the inside; no meta, claims or conformance module exists and the frame-meta honesty check has no inflating or deflating fixture; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tls/src/tests"
@@ -2021,6 +2082,18 @@
       "MEDIUM": 1
      },
      "report": "pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed); tcp connect has no timeout on tcp and tls dial; tests.rs read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "8f92881ca723f3ba550e24e79541f35d2f51b50f7d9baac6e0ec1f1c3609856a",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "a peer that vanishes without the close alert surfaces as an unexpected end of file, and the io mapper has no arm for it, so it falls through to the same generic closed value a tidy shutdown produces even though this crate own doc names that signature as what a truncation looks like from the inside; no meta, claims or conformance module exists and the frame-meta honesty check has no inflating or deflating fixture; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning"
     }
    ]
   },
@@ -2030,15 +2103,16 @@
    "paths": [
     "crates/busbar-transport-ws/src"
    ],
-   "tree_hash": "f5b37edf1ae00860916b06c3b7617ae6199ffc84115c77be407f93b4c006ea2d",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "11bf76b53f0a253448c726d140e55e3baac02333a4f05dd8ef9ae4c6b511983a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1
+    "MEDIUM": 2,
+    "LOW": 1
    },
-   "report": "battery.rs read fully; userinfo guard, max_frame_size and poisoned-arm plants survived; timing constants asserted against themselves",
-   "auditor": "opus-pass3",
+   "report": "no meta, claims or conformance module exists; the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it can go red, unlike three of its siblings; a battery test asserts a reader is parked by sleeping and then checking the task is unfinished, which is also true of a task that was never polled, so the interleaving it claims to establish may never occur",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
@@ -2088,6 +2162,18 @@
       "MEDIUM": 1
      },
      "report": "battery.rs read fully; userinfo guard, max_frame_size and poisoned-arm plants survived; timing constants asserted against themselves"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "11bf76b53f0a253448c726d140e55e3baac02333a4f05dd8ef9ae4c6b511983a",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "no meta, claims or conformance module exists; the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it can go red, unlike three of its siblings; a battery test asserts a reader is parked by sleeping and then checking the task is unfinished, which is also true of a task that was never polled, so the interleaving it claims to establish may never occur"
     }
    ]
   },
@@ -4380,13 +4466,15 @@
    "paths": [
     "crates/busbar-transport-grpc/src/tests"
    ],
-   "tree_hash": "192afb06e04c29f8932f69d8e75fad27ce7a9eb29fb24426bcee87d7543b299d",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "37285e369656f4a3dddcbe5d3ad24bf1f6134695de530590dc8aa5c933b76825",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "read fully; the frame-meta honesty check is a single equality against one hardcoded payload length, so a metering regression returning a constant that happens to match it would ship green, and no test perturbs a real frame to prove the check discriminates; half-close, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4397,6 +4485,17 @@
      "tree_hash": "192afb06e04c29f8932f69d8e75fad27ce7a9eb29fb24426bcee87d7543b299d",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "37285e369656f4a3dddcbe5d3ad24bf1f6134695de530590dc8aa5c933b76825",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "read fully; the frame-meta honesty check is a single equality against one hardcoded payload length, so a metering regression returning a constant that happens to match it would ship green, and no test perturbs a real frame to prove the check discriminates; half-close, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts and the emission clock have no test"
     }
    ]
   },
@@ -4406,14 +4505,31 @@
    "paths": [
     "crates/busbar-transport-grpc/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "f389bbb861e799cb16b7fafec1a4e53535359bca77d9152910c2aab259948036",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "the guard that keeps a wire from naming a plane holds a word list with no model vendor name and no billing word, so it cannot fail on the dialect class it is named for; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail whatever the matcher returns; the file is byte-identical to another crate copy rather than shared from one place",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "f389bbb861e799cb16b7fafec1a4e53535359bca77d9152910c2aab259948036",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the guard that keeps a wire from naming a plane holds a word list with no model vendor name and no billing word, so it cannot fail on the dialect class it is named for; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail whatever the matcher returns; the file is byte-identical to another crate copy rather than shared from one place"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-http/src/tests",
@@ -4421,14 +4537,29 @@
    "paths": [
     "crates/busbar-transport-http/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "65dc81a68d42da7517debfdb74aff75b8d661d8f50171e49c2d504d0899a0205",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "read fully; this crate is one of only three whose frame-meta honesty test perturbs a real frame both ways and asserts the check goes red, and that shape is the one four sibling wires lack; the battery leaves half-close, backpressure, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts, multiplexed streams, K writers, overlap cases and the emission clock with no test",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "65dc81a68d42da7517debfdb74aff75b8d661d8f50171e49c2d504d0899a0205",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "read fully; this crate is one of only three whose frame-meta honesty test perturbs a real frame both ways and asserts the check goes red, and that shape is the one four sibling wires lack; the battery leaves half-close, backpressure, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts, multiplexed streams, K writers, overlap cases and the emission clock with no test"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-http/tests",
@@ -4436,14 +4567,31 @@
    "paths": [
     "crates/busbar-transport-http/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "734bfb225f6a27c7f865fe982f96d23251367aec297b4164b7acbae2e2e74cc2",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "the guard that keeps a wire from naming a plane holds a word list that contains no model vendor name and no billing word, so it cannot fail on the dialect class it is named for, and a live instance of that class sits in a sibling wire; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail; the file is byte-identical to another crate copy rather than shared",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "734bfb225f6a27c7f865fe982f96d23251367aec297b4164b7acbae2e2e74cc2",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the guard that keeps a wire from naming a plane holds a word list that contains no model vendor name and no billing word, so it cannot fail on the dialect class it is named for, and a live instance of that class sits in a sibling wire; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail; the file is byte-identical to another crate copy rather than shared"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-sse/src/tests",
@@ -4451,14 +4599,29 @@
    "paths": [
     "crates/busbar-transport-sse/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "0e8652e00bf2d4bfa834a709fe8b3779eb71a8a7d6c288aeef977e1066b05646",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "NIT": 1
+   },
+   "report": "read fully; this crate is one of three that does perturb a real frame both ways to prove the frame-meta honesty check goes red; a test name and a doc comment in the crate under test name model vendors, which no vocabulary guard here would catch because this wire carries none; half-close, cancel mid-frame, K writers, multiplexed streams, overlap cases and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "0e8652e00bf2d4bfa834a709fe8b3779eb71a8a7d6c288aeef977e1066b05646",
+     "counts": {
+      "NIT": 1
+     },
+     "report": "read fully; this crate is one of three that does perturb a real frame both ways to prove the frame-meta honesty check goes red; a test name and a doc comment in the crate under test name model vendors, which no vocabulary guard here would catch because this wire carries none; half-close, cancel mid-frame, K writers, multiplexed streams, overlap cases and the emission clock have no test"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-stdio/src/tests",
@@ -4466,13 +4629,16 @@
    "paths": [
     "crates/busbar-transport-stdio/src/tests"
    ],
-   "tree_hash": "1af4fcc0e10064e63cb8808098017deb0d5dd400ef15dd1531c0b841d6ca482d",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "245eecf9b80a29b93fc95f0d09c4bf2b7e57b7d2b52b30b8593fcb5cfd8a8916",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "read fully; two tests establish that a reader is parked by sleeping fifty milliseconds and asserting the task is unfinished, which is equally true of a task the runtime has not polled, so on a contended runner the fixture the message calls honest never holds and the test still passes; the frame-meta honesty check has no inflating or deflating fixture; in-band upgrade with cleared facts, multiplexed streams, overlap cases and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4483,6 +4649,18 @@
      "tree_hash": "1af4fcc0e10064e63cb8808098017deb0d5dd400ef15dd1531c0b841d6ca482d",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "245eecf9b80a29b93fc95f0d09c4bf2b7e57b7d2b52b30b8593fcb5cfd8a8916",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "read fully; two tests establish that a reader is parked by sleeping fifty milliseconds and asserting the task is unfinished, which is equally true of a task the runtime has not polled, so on a contended runner the fixture the message calls honest never holds and the test still passes; the frame-meta honesty check has no inflating or deflating fixture; in-band upgrade with cleared facts, multiplexed streams, overlap cases and the emission clock have no test"
     }
    ]
   },
@@ -4493,12 +4671,15 @@
     "crates/busbar-transport-ws/src/tests"
    ],
    "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "read fully; the frame-meta honesty check is a single equality with no fixture proving it discriminates an inflated or deflated count; a test presumes the pump is suspended in its socket read purely because twenty milliseconds elapsed after spawning it, with no primitive proving it was ever polled, so the wake-a-suspended-read path it documents may not be exercised; two-level composition with a bottom-layer credential, overlap cases and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4509,6 +4690,18 @@
      "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "read fully; the frame-meta honesty check is a single equality with no fixture proving it discriminates an inflated or deflated count; a test presumes the pump is suspended in its socket read purely because twenty milliseconds elapsed after spawning it, with no primitive proving it was ever polled, so the wake-a-suspended-read path it documents may not be exercised; two-level composition with a bottom-layer credential, overlap cases and the emission clock have no test"
     }
    ]
   },
