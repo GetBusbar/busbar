@@ -27,5 +27,14 @@ rustls-pki-types = { workspace = true }
 webpki-roots = { workspace = true }
 futures = { workspace = true }
 
+[features]
+# THE DUPLEX SERVING PATH, DEFAULT OFF. `mount` — the addressing, the open, the pump and the close
+# codes — is compiled always, because it is a declaration-driven module with no socket in it and its
+# whole battery runs against fakes. This feature is the half that touches one: the `FrameSource` and
+# `FrameSink` over a real `WebSocketStream`, and the accept path that runs an upgrade, opens a
+# session on it and pumps it to its end. Off, this crate is the byte-for-byte transport it was and no
+# call site anywhere names either.
+serve-sessions = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "test-util"] }

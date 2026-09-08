@@ -1,0 +1,512 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE SERVING PATH OVER A REAL SOCKET, end to end.
+//!
+//! The mount's own battery beside this one proves the RULES — ordering, backpressure, which end cut,
+//! one close per session — against fakes, because rules that can only be exercised through a socket
+//! are rules that get tested for the happy path and reasoned about for the rest. What is left over
+//! is everything that is only true of a real one, and that is what is here:
+//!
+//! * a Ping is answered on this wire and never reaches the pump;
+//! * a peer's Close is the orderly end rather than a frame;
+//! * the declaration's media type chooses between this wire's two frame kinds;
+//! * a close code reaches the peer as this wire spells it;
+//! * and the whole accept path — upgrade, address, open, pump, close — runs against a client that
+//!   is a WebSocket library rather than a fixture.
+//!
+//! The declaration and the driver here are nobody's, for the reason the mount's battery states: what
+//! is under test is the transport, and a battery that drove a real protocol through it would put a
+//! plane's name in this crate's source, which the scan beside this file refuses outright.
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use busbar_contract::{Transport, TransportKeyHandle};
+use busbar_contract_transport::driver::Outcome;
+use busbar_contract_transport::registry::facts as tfacts;
+use busbar_contract_transport::session::{
+    Cut, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
+};
+use busbar_contract_transport::surface::{
+    Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
+};
+use busbar_contract_transport::wire::CloseReason;
+use futures::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message;
+
+use crate::conn::{LowerIo, Sock};
+use crate::mount::{FrameSink, FrameSource, SessionBudgets};
+use crate::session_io::{is_text_media, split};
+use crate::WsTransport;
+
+// ── a declaration that is nobody's ──────────────────────────────────────────────────────────────
+
+const BINDINGS: &[BindingDecl] = &[BindingDecl {
+    name: "duplex",
+    transport: "ws",
+    mounts: &["/session"],
+}];
+
+const OPERATIONS: &[Operation] = &[Operation {
+    op: "turn",
+    dispatch: &[Dispatch::Document {
+        binding: "duplex",
+        method: "GET",
+        member: "kind",
+        name: "turn",
+        bar: Bar::Credential,
+    }],
+    answering: Answering::Stream,
+    request_media: "application/json",
+    response_media: "application/json",
+}];
+
+const SURFACE: WireSurface = WireSurface {
+    bindings: BINDINGS,
+    operations: OPERATIONS,
+};
+
+// ── a driver that is nobody's ───────────────────────────────────────────────────────────────────
+
+struct FakeDriver {
+    answer: Result<SessionHandle, Outcome>,
+    script: Mutex<VecDeque<SessionReply>>,
+    opened: Mutex<Vec<(String, Option<String>)>>,
+    seen: Mutex<Vec<Vec<u8>>>,
+    closed: Mutex<Vec<SessionEnd>>,
+}
+
+impl FakeDriver {
+    fn new(script: Vec<SessionReply>) -> Self {
+        Self {
+            answer: Ok(SessionHandle(7)),
+            script: Mutex::new(script.into()),
+            opened: Mutex::new(Vec::new()),
+            seen: Mutex::new(Vec::new()),
+            closed: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn refusing(outcome: Outcome) -> Self {
+        Self {
+            answer: Err(outcome),
+            ..Self::new(Vec::new())
+        }
+    }
+}
+
+impl SessionDriver for FakeDriver {
+    fn open(
+        &self,
+        open: SessionOpen<'_>,
+        _surface: &WireSurface,
+    ) -> Result<SessionHandle, Outcome> {
+        self.opened.lock().expect("the log").push((
+            open.fact(tfacts::PATH).unwrap_or_default().to_string(),
+            open.fact(tfacts::CREDENTIAL).map(str::to_string),
+        ));
+        self.answer
+    }
+
+    fn drive(&self, _session: SessionHandle, frame: SessionFrame<'_>) -> SessionReply {
+        self.seen
+            .lock()
+            .expect("the log")
+            .push(frame.payload.to_vec());
+        self.script
+            .lock()
+            .expect("the script")
+            .pop_front()
+            .unwrap_or_else(|| SessionReply::quiet(Outcome::Completed))
+    }
+
+    fn close(&self, _session: SessionHandle, end: SessionEnd) {
+        self.closed.lock().expect("the log").push(end);
+    }
+}
+
+fn reply(frames: &[&str], media: &str) -> SessionReply {
+    SessionReply::frames(
+        frames.iter().map(|f| f.as_bytes().to_vec()).collect(),
+        media,
+        Outcome::Completed,
+    )
+}
+
+// ── one upgraded socket, both ends of it ────────────────────────────────────────────────────────
+
+/// A connected pair of already-upgraded sockets over an in-memory duplex.
+///
+/// The server end is this crate's own socket type, which is what [`split`] takes; the client end is
+/// the library's, driven directly, so what the assertions read is what a real peer would see rather
+/// than what this crate believes it wrote.
+async fn upgraded() -> (
+    Sock,
+    tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+) {
+    let (a, b) = tokio::io::duplex(64 * 1024);
+    let server = tokio_tungstenite::accept_async(Box::new(a) as Box<dyn LowerIo>);
+    let client = tokio_tungstenite::client_async("ws://127.0.0.1:44411/session", b);
+    let (server, client) = tokio::join!(server, client);
+    (
+        server.expect("the server end upgrades"),
+        client.expect("the client end upgrades").0,
+    )
+}
+
+/// A PING IS ANSWERED ON THIS WIRE AND NEVER REACHES THE PUMP.
+///
+/// Both halves. The peer gets its Pong, which is the obligation; and the source's next answer is the
+/// DATA frame that followed it, not the keepalive — a pump handed a Ping would be a pump that had to
+/// know what a Ping is, and a plane handed one would be handed a byte the peer never sent it.
+#[tokio::test]
+async fn a_ping_is_answered_here_and_never_handed_up() {
+    let (server, mut client) = upgraded().await;
+    let (mut source, _sink) = split(server);
+
+    client
+        .send(Message::Ping(b"are you there".to_vec().into()))
+        .await
+        .expect("the peer pings");
+    client
+        .send(Message::Text("after the ping".into()))
+        .await
+        .expect("the peer speaks");
+
+    let frame = source
+        .next_frame()
+        .await
+        .expect("the session did not end")
+        .expect("the read did not fail");
+    assert_eq!(
+        frame,
+        b"after the ping".to_vec(),
+        "the frame the source yielded is the data one, not the keepalive"
+    );
+
+    let answered = client.next().await.expect("the peer is owed a pong");
+    assert_eq!(
+        answered.expect("the pong arrived"),
+        Message::Pong(b"are you there".to_vec().into()),
+        "the payload comes back unchanged, which is what a pong is"
+    );
+}
+
+/// A peer's Close is the ORDERLY end of the session, not a frame of it.
+#[tokio::test]
+async fn a_peer_that_closes_ends_the_source_rather_than_yielding_a_frame() {
+    let (server, mut client) = upgraded().await;
+    let (mut source, _sink) = split(server);
+
+    client.close(None).await.expect("the peer closes");
+
+    assert!(
+        source.next_frame().await.is_none(),
+        "a close is the end of the stream, and handing it up as bytes would hand a plane a byte \
+         the peer never sent it"
+    );
+}
+
+/// THE DECLARATION CHOOSES THE FRAME KIND, and this wire has two.
+///
+/// A wire with one kind ignores the media type. This one reads it, and nothing else about the bytes
+/// is looked at — the payload is the plane's, whole, either way.
+#[tokio::test]
+async fn the_declared_media_chooses_this_wires_frame_kind() {
+    let (server, mut client) = upgraded().await;
+    let (_source, mut sink) = split(server);
+
+    sink.write_frame(br#"{"kind":"turn"}"#, "application/json")
+        .await
+        .expect("the write lands");
+    sink.write_frame(b"\x00\x01\x02", "application/octet-stream")
+        .await
+        .expect("the write lands");
+
+    assert_eq!(
+        client.next().await.expect("a frame").expect("no failure"),
+        Message::Text(r#"{"kind":"turn"}"#.into()),
+        "a declared JSON media type is a text frame on this wire"
+    );
+    assert_eq!(
+        client.next().await.expect("a frame").expect("no failure"),
+        Message::Binary(vec![0, 1, 2].into()),
+        "anything else is bytes, which is the safe answer for an unstated encoding"
+    );
+}
+
+/// The media rule is the media registry's own, not a list of protocols.
+#[test]
+fn the_media_rule_reads_the_registrys_own_shape() {
+    for text in [
+        "text/plain",
+        "text/event-stream",
+        "application/json",
+        "application/json; charset=utf-8",
+        "application/vnd.example+json",
+    ] {
+        assert!(is_text_media(text), "`{text}` is a text frame on this wire");
+    }
+    for bytes in [
+        "application/octet-stream",
+        "audio/pcm",
+        "application/grpc",
+        "",
+    ] {
+        assert!(!is_text_media(bytes), "`{bytes}` is a binary frame");
+    }
+}
+
+/// A payload the declaration called text and that is not valid UTF-8 is DELIVERED, as bytes.
+///
+/// Sending it as a text frame would put invalid UTF-8 in a frame whose kind promises otherwise,
+/// which every conforming peer must fail the connection on. The disagreement is the declaration's to
+/// fix; neither answer is this transport's to invent, so it delivers what the plane actually wrote.
+#[tokio::test]
+async fn text_declared_over_bytes_that_are_not_text_is_still_delivered() {
+    let (server, mut client) = upgraded().await;
+    let (_source, mut sink) = split(server);
+
+    sink.write_frame(&[0xff, 0xfe], "application/json")
+        .await
+        .expect("the write lands");
+
+    assert_eq!(
+        client.next().await.expect("a frame").expect("no failure"),
+        Message::Binary(vec![0xff, 0xfe].into())
+    );
+}
+
+/// The close code this wire spells reaches the peer as a close code.
+#[tokio::test]
+async fn the_close_code_reaches_the_peer() {
+    let (server, mut client) = upgraded().await;
+    let (_source, mut sink) = split(server);
+
+    sink.write_close(1011).await;
+
+    let closed = client.next().await.expect("a frame").expect("no failure");
+    let Message::Close(Some(frame)) = closed else {
+        panic!("the peer is owed a close frame with a code: {closed:?}");
+    };
+    assert_eq!(u16::from(frame.code), 1011);
+}
+
+// ── the whole accept path, against a client that is a library ───────────────────────────────────
+
+fn test_key_handle() -> TransportKeyHandle {
+    struct Seal;
+    impl busbar_contract::plugin::KernelSeal for Seal {
+        fn seal_origin(&self) -> &'static str {
+            "test"
+        }
+    }
+    TransportKeyHandle::issue(&Seal, 0, "test")
+}
+
+/// One upgrade request, as a client library builds one.
+fn upgrade_request(
+    addr: &str,
+    target: &str,
+    credential: Option<&str>,
+) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    let mut builder = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(format!("ws://{addr}{target}"))
+        .header("Host", addr)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+        );
+    if let Some(credential) = credential {
+        builder = builder.header("Authorization", credential);
+    }
+    builder.body(()).expect("the upgrade request builds")
+}
+
+/// Dial the listener and run the upgrade, from a client that is a library rather than a fixture.
+async fn dial(
+    addr: &str,
+    target: &str,
+    credential: Option<&str>,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    tokio_tungstenite::tungstenite::Error,
+> {
+    let tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .expect("the listener is bound");
+    tokio_tungstenite::client_async(upgrade_request(addr, target, credential), tcp)
+        .await
+        .map(|(client, _response)| client)
+}
+
+/// A `ws` over `http` listener, and the address it bound.
+async fn listening() -> (Arc<WsTransport>, busbar_contract_transport::wire::Listener) {
+    let http = Arc::new(busbar_transport_http::HttpTransport::new(
+        busbar_transport_http::ClientSettings::default(),
+    ));
+    let ws = Arc::new(WsTransport::over(http));
+    let listener = ws
+        .listen(
+            &crate::StaticConfig::bind_to("127.0.0.1:0"),
+            &test_key_handle(),
+        )
+        .await
+        .expect("the listener binds");
+    (ws, listener)
+}
+
+/// THE WHOLE PATH: upgrade, address, open, pump, close — against a real WebSocket client.
+///
+/// The credential the client presented reaches the driver's `open`, which is the fact that has no
+/// second chance: after the upgrade there is no request left to carry one. The frame reaches
+/// `drive`, the answer comes back on the wire under the DECLARATION's media type, and the peer's own
+/// close is reported as the client's cut with the driver closed exactly once.
+#[tokio::test]
+async fn the_accept_path_opens_pumps_and_closes_one_session() {
+    let (ws, listener) = listening().await;
+    let addr = listener.local_addr();
+    let driver = Arc::new(FakeDriver::new(vec![reply(
+        &[r#"{"kind":"turn"}"#],
+        "application/json",
+    )]));
+
+    let served = {
+        let (ws, driver) = (ws.clone(), driver.clone());
+        tokio::spawn(async move {
+            ws.serve_accept(
+                &listener,
+                driver.as_ref(),
+                &SURFACE,
+                SessionBudgets::default(),
+            )
+            .await
+        })
+    };
+
+    let mut client = dial(&addr, "/session", Some("Bearer sk-44401"))
+        .await
+        .expect("the upgrade is accepted");
+
+    client
+        .send(Message::Text(r#"{"kind":"start"}"#.into()))
+        .await
+        .expect("the client speaks");
+    let answered = client.next().await.expect("an answer").expect("no failure");
+    assert_eq!(
+        answered,
+        Message::Text(r#"{"kind":"turn"}"#.into()),
+        "the plane's bytes came back under the declaration's own media type"
+    );
+
+    client.close(None).await.expect("the client closes");
+    let end = served
+        .await
+        .expect("the served task finished")
+        .expect("the session ran");
+
+    assert_eq!(
+        end,
+        SessionEnd {
+            cut: Cut::Client,
+            reason: CloseReason::PeerClosed
+        }
+    );
+    assert_eq!(
+        driver.opened.lock().expect("the log").as_slice(),
+        [("/session".to_string(), Some("Bearer sk-44401".to_string()))],
+        "the target and the credential the upgrade carried both reached the open"
+    );
+    assert_eq!(
+        driver.seen.lock().expect("the log").as_slice(),
+        [br#"{"kind":"start"}"#.to_vec()]
+    );
+    assert_eq!(
+        driver.closed.lock().expect("the log").len(),
+        1,
+        "one ending, one close"
+    );
+}
+
+/// A DRIVER THAT WILL NOT OPEN A SESSION IS ANSWERED WITH A STATUS, AND NEVER UPGRADED.
+///
+/// This is the whole reason the addressing and the open run inside the upgrade callback rather than
+/// after it. The caller is refused on the protocol it spoke, in a field that protocol has; a node
+/// that upgraded first and then closed would have told the caller yes and then cut it, with a close
+/// code arriving after the client library had already reported success.
+#[tokio::test]
+async fn a_refused_open_is_answered_before_the_protocol_changes() {
+    let (ws, listener) = listening().await;
+    let addr = listener.local_addr();
+    let driver = Arc::new(FakeDriver::refusing(Outcome::Unauthenticated));
+
+    let served = {
+        let (ws, driver) = (ws.clone(), driver.clone());
+        tokio::spawn(async move {
+            ws.serve_accept(
+                &listener,
+                driver.as_ref(),
+                &SURFACE,
+                SessionBudgets::default(),
+            )
+            .await
+        })
+    };
+
+    let refused = dial(&addr, "/session", None).await.map(|_| ());
+    let Err(tokio_tungstenite::tungstenite::Error::Http(response)) = refused else {
+        panic!("the upgrade must be refused with an HTTP status, not accepted: {refused:?}");
+    };
+    assert_eq!(
+        response.status().as_u16(),
+        401,
+        "the eight words are spelled onto the leg underneath by the same mapping the one-shot \
+         mount uses"
+    );
+
+    assert!(
+        served.await.expect("the served task finished").is_err(),
+        "a session that never opened is not a session that ran"
+    );
+    assert!(
+        driver.closed.lock().expect("the log").is_empty(),
+        "a session that never opened is never closed"
+    );
+}
+
+/// A target no binding of this transport declares is answered with the status a mounted surface
+/// already uses for one, and never upgraded.
+#[tokio::test]
+async fn an_unaddressed_target_never_upgrades() {
+    let (ws, listener) = listening().await;
+    let addr = listener.local_addr();
+    let driver = Arc::new(FakeDriver::new(Vec::new()));
+
+    let served = {
+        let (ws, driver) = (ws.clone(), driver.clone());
+        tokio::spawn(async move {
+            ws.serve_accept(
+                &listener,
+                driver.as_ref(),
+                &SURFACE,
+                SessionBudgets::default(),
+            )
+            .await
+        })
+    };
+
+    let refused = dial(&addr, "/nowhere", None).await.map(|_| ());
+    let Err(tokio_tungstenite::tungstenite::Error::Http(response)) = refused else {
+        panic!("an undeclared target must not upgrade: {refused:?}");
+    };
+    assert_eq!(response.status().as_u16(), 404);
+    assert!(
+        driver.opened.lock().expect("the log").is_empty(),
+        "the driver was never asked about a target no declaration names"
+    );
+    let _ = served.await;
+}

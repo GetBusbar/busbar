@@ -38,6 +38,13 @@
 
 mod conn;
 pub mod mount;
+// The two ends of a real socket, as the generic mount's session loop wants them. Crate-private
+// because the value it is built from — this crate's own upgraded socket type — is: nothing outside
+// could hand it one, so a `pub` here would be a name no caller can reach. Behind `serve-sessions`
+// because it is the half of the serving path that touches a socket; off, this crate is the
+// byte-for-byte transport it was.
+#[cfg(feature = "serve-sessions")]
+pub(crate) mod session_io;
 mod transport;
 
 pub use conn::StaticConfig;
@@ -46,3 +53,7 @@ pub use transport::{WsTransport, MESSAGE_MAX_BYTES_KEY};
 #[cfg(test)]
 #[path = "tests/battery.rs"]
 mod battery;
+
+#[cfg(all(test, feature = "serve-sessions"))]
+#[path = "tests/session_io.rs"]
+mod session_battery;
