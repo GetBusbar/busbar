@@ -583,6 +583,15 @@ impl LoopDriver<'_> {
     /// Split out of `drive` so the loop is not nested inside the context the plane is called in:
     /// the arena's borrows live for the length of that context and the loop takes none of them, and
     /// a reader can see that here rather than having to work it out from the indentation.
+    ///
+    /// THE ARRIVAL IS TAKEN AND NOT YET READ, and that is a named gap rather than a spare argument.
+    /// Three of the fields the loop's own context carries are facts about how the bytes got here —
+    /// the origin, the session, and whether the listener that accepted them is the administrative
+    /// one — and every one of them is answered below with the value a client request on a data
+    /// listener has. That is the truth for the mount this driver serves today and it is not a
+    /// derivation: a node that mounted a surface on its admin listener would be running those units
+    /// as ordinary client units, which is the wrong answer arrived at silently. The argument is here
+    /// so the fix is a body change and not a signature change.
     fn run(
         &self,
         _arrival: &busbar_contract::transport::Arrival<'_>,
