@@ -26,6 +26,7 @@ pub mod ci_umbrella;
 pub mod denylist_gate;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
+pub mod inventory_coverage;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod no_deferral;
@@ -703,6 +704,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(teller_steps::TellerStepsGate),
         summary: "one cell per Teller step per plane, each with a second verdict over the root leg",
+    },
+    Registration {
+        name: "inventory-coverage",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(inventory_coverage::InventoryCoverageGate),
+        summary: "every docs/design/inventory/*.md id is a named coverage claim or a named gap",
     },
     Registration {
         name: "audit-ledger",
