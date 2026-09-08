@@ -585,7 +585,7 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 }
 
 /// REGISTER THE LINKED PROTOCOL CRATES — the composition root's one write into the protocol axis
-/// (`busbar_core::proto::registry::install_protocols`). Each linked dialect contributes its `&DECL`
+/// (`busbar_substrate::proto::install_protocols`). Each linked dialect contributes its `&DECL`
 /// here and nowhere else; core's own built-in table keeps the dialects that have not been extracted
 /// yet. Feature-gated per crate so a deletion build (`--no-default-features`, or default minus one
 /// `proto-*` feature) drops the dependency edge AND the registration line together — which is what
@@ -625,7 +625,7 @@ fn register_protocols() {
     }
     #[cfg(feature = "plane-mcp")]
     installed.push(&busbar_mcp::PROTO_DECL);
-    busbar_core::proto::registry::install_protocols_with_path_ingress(installed, path_ingress);
+    busbar_substrate::proto::install_protocols_with_path_ingress(installed, path_ingress);
 
     // THE BODY-MODEL ARRIVAL SEAM — the body-axis twin of `path_ingress`. The `named`/`adhoc`
     // (`/v1/messages`) convenience surfaces and the generic body-model dispatch arm resolve a dialect's

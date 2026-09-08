@@ -147,7 +147,13 @@ pub mod plane_routes;
 // core JSON envelope. Core re-exports the resolve/look half from `busbar_core::admin::planeverbs`.
 pub mod admin_verbs;
 pub mod admin_witness;
-pub use busbar_substrate_values::proto;
+// The protocol registry: the whole declaration vocabulary and the registry runtime re-exported from
+// the pure value leaf, PLUS the composition root's one write into both protocol seams
+// (`install_protocols_with_path_ingress`), which folds the decl install with the path-model arrival
+// install so the two cannot drift. That fold needs `ingress::arrival`, which is this crate's, so it
+// cannot live on the leaf; it used to live in the retiring engine crate for a reason that expired
+// when the arrival type relocated here.
+pub mod proto;
 // `proxy` is the ONE module the split had to cut in half rather than move whole: three of its items
 // (the `tokio` task-local RTT slot, the egress-client shim over the engine, and the axum-`Response`
 // ingress-error shaper) name I/O types and stayed here, beside the engine; everything else moved and
