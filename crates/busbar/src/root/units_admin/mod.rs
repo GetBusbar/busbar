@@ -525,28 +525,35 @@ impl LegacyRowsRead for busbar_unit_ledger::legacy::RecordingRows {
     }
 }
 
-// ── the node's own routing tables, read at request time ─────────────────────────────────────────
+// ── the node's own facts, read at request time ──────────────────────────────────────────────────
 
-/// The routing tables an administrative TOPOLOGY read answers from.
+/// The facts about THIS NODE that a crossed administrative read answers from.
 ///
 /// The second kind of seam this file holds, and it is a different kind from the ledger's on purpose.
 /// The ledger views read figures the previous release never kept, so they had nowhere else to reach.
-/// A topology read is the opposite: the answer has always existed, it was produced by a handler on
-/// the surface underneath, and what CROSSES is which side produces it — the loop reads the tables
+/// A crossed read is the opposite: the answer has always existed, it was produced by a handler on
+/// the surface underneath, and what CROSSES is which side produces it — the loop reads the fact
 /// itself and renders, and the route the handler was mounted on is deleted in the same commit.
 ///
-/// **Read at request time, never captured.** A node's tables are replaced wholesale by a config
-/// apply: the handle swaps in a new generation and the old one retires. A seam that had taken an
-/// `Arc<App>` at boot would go on answering off the retired generation for the life of the process —
-/// an operator would apply a pool and read back a topology that did not have it, which is the same
-/// class of fault as a stale cache and reads exactly like the apply having failed. So the binding
-/// holds the HANDLE and asks it per call.
+/// **Facts, not topology.** It began as the two routing-table reads and it is named for what it
+/// actually carries, because the reads that cross after them are not all about the tables: the
+/// node's door, its admin-plane guard and its own boot epoch are facts about the same node, asked at
+/// the same moment, through the same binding. One seam for "what is true of the node this
+/// composition is the root of" is one place to bind and one place to fake; a second seam per kind of
+/// fact would be four bindings that can each be forgotten separately.
 ///
-/// **Neutral in, JSON out.** Everything that crosses this seam is a substrate projection — provider
-/// names and lane counts, no core view struct and no config type. The rendering is this file's,
-/// beside the ledger views' rendering, for the same reason: the composition root is the one place
-/// entitled to write the bytes an operation answers with.
-pub trait NodeTopology: Send + Sync {
+/// **Read at request time, never captured.** A node's tables and its config are replaced wholesale
+/// by a config apply: the handle swaps in a new generation and the old one retires. A seam that had
+/// taken an `Arc<App>` at boot would go on answering off the retired generation for the life of the
+/// process — an operator would apply a pool and read back a topology that did not have it, which is
+/// the same class of fault as a stale cache and reads exactly like the apply having failed. So the
+/// binding holds the HANDLE and asks it per call.
+///
+/// **Neutral in, JSON out.** Everything that crosses this seam is a neutral projection — names,
+/// counts, flags and numbers — and never a core view struct or a config type. The rendering is this
+/// file's, beside the ledger views' rendering, for the same reason: the composition root is the one
+/// place entitled to write the bytes an operation answers with.
+pub trait NodeFacts: Send + Sync {
     /// Every upstream provider this node has a lane for, with how many lanes route through it,
     /// ordered by provider name.
     ///
@@ -561,15 +568,15 @@ pub trait NodeTopology: Send + Sync {
     fn models(&self) -> Vec<(String, String)>;
 }
 
-/// The topology of a node this composition never handed its tables to.
+/// The facts of a node this composition never handed its handle to.
 ///
 /// Not "no providers this node happens to have" — the honest answer for a binding with nothing
 /// behind it, which is the same decision [`UnopenedLedger`] makes for the figures. An admin-only
 /// composition really does route nothing, and the empty list is what it should say.
 #[derive(Debug, Default)]
-pub struct UnboundTopology;
+pub struct UnboundFacts;
 
-impl NodeTopology for UnboundTopology {
+impl NodeFacts for UnboundFacts {
     fn providers(&self) -> Vec<(String, usize)> {
         Vec::new()
     }
@@ -579,29 +586,29 @@ impl NodeTopology for UnboundTopology {
     }
 }
 
-/// The topology of a running node, read off whichever generation is current.
+/// The facts of a running node, read off whichever generation is current.
 ///
 /// Holds the HANDLE and not a generation, which is the whole content of the type — see the seam's
 /// own note above for what a captured generation would cost.
-pub struct HandleTopology {
+pub struct HandleFacts {
     handle: Arc<busbar_core::state::AppHandle>,
 }
 
-impl std::fmt::Debug for HandleTopology {
+impl std::fmt::Debug for HandleFacts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HandleTopology").finish_non_exhaustive()
+        f.debug_struct("HandleFacts").finish_non_exhaustive()
     }
 }
 
-impl HandleTopology {
-    /// Bind the topology reads to a node's live handle.
+impl HandleFacts {
+    /// Bind the crossed reads to a node's live handle.
     #[must_use]
     pub fn new(handle: Arc<busbar_core::state::AppHandle>) -> Self {
-        HandleTopology { handle }
+        HandleFacts { handle }
     }
 }
 
-impl NodeTopology for HandleTopology {
+impl NodeFacts for HandleFacts {
     fn providers(&self) -> Vec<(String, usize)> {
         // ONE load, held for the length of the walk over the tables. Loading per lane would let a
         // config apply land between two indices and produce a count over two different topologies.
@@ -632,10 +639,10 @@ pub struct CoreGovernance {
     /// because the two answer different halves of the surface and neither can stand in for the
     /// other: a dispatch handed a ledger path would answer the 404 its router has for it.
     ledger: Arc<dyn LedgerView>,
-    /// The routing tables the CROSSED topology reads answer from. A third seam beside the dispatch
+    /// The node facts the CROSSED reads answer from. A third seam beside the dispatch
     /// and the ledger, for the reason the ledger is a second one: the dispatch's whole content is
     /// "ask the surface underneath", and a verb that has crossed must not be able to reach it.
-    topology: Arc<dyn NodeTopology>,
+    facts: Arc<dyn NodeFacts>,
     /// The request the current unit is executing, so the seam's argument-free methods can reach it.
     /// One unit at a time per governance value, which is what the root guarantees by building one
     /// per unit rather than sharing one across them.
@@ -649,14 +656,14 @@ impl CoreGovernance {
     pub fn new(
         dispatch: Arc<dyn AdminDispatch>,
         ledger: Arc<dyn LedgerView>,
-        topology: Arc<dyn NodeTopology>,
+        facts: Arc<dyn NodeFacts>,
         verb: KernelVerb,
         request: AdminRequest,
     ) -> Self {
         CoreGovernance {
             dispatch,
             ledger,
-            topology,
+            facts,
             request,
             verb,
         }
@@ -720,8 +727,8 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         // produces the answer for is the composition's question, not the unit's — so the branch is
         // here, before the seam that asks the surface underneath. There is nothing to ask: the route
         // was deleted in the commit that crossed the verb.
-        if let Some(body) = render_topology_view(verb, self.topology.as_ref()) {
-            return Ok(topology_answer(body).pack());
+        if let Some(body) = render_crossed_view(verb, self.facts.as_ref()) {
+            return Ok(crossed_answer(body).pack());
         }
         Ok(self.run())
     }
@@ -793,14 +800,14 @@ fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>
 /// to agree about which verbs have crossed, and two matches that each decide it separately are two
 /// answers to one question. The ownership pin measures the consequence — a crossed verb must have no
 /// route on the surface underneath, and an uncrossed one must have one.
-const CROSSED_TOPOLOGY_VERBS: &[KernelVerb] = &[KernelVerb::GetModels, KernelVerb::GetProviders];
+const CROSSED_VERBS: &[KernelVerb] = &[KernelVerb::GetModels, KernelVerb::GetProviders];
 
-/// The answer a crossed topology read produces: a 200 carrying JSON, and no other header.
+/// The answer a crossed read produces: a 200 carrying JSON, and no other header.
 ///
 /// The same two facts the surface underneath answered with, because they ARE the answer a client
 /// pinned: `ok_json` sets one header, `content-type: application/json`, and the transport adds the
 /// framing. A header this file added would be a byte the operation did not used to carry.
-fn topology_answer(body: Vec<u8>) -> AdminAnswer {
+fn crossed_answer(body: Vec<u8>) -> AdminAnswer {
     AdminAnswer {
         status: 200,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
@@ -808,17 +815,17 @@ fn topology_answer(body: Vec<u8>) -> AdminAnswer {
     }
 }
 
-/// The bytes one crossed topology read answers with, or `None` for a verb that has not crossed.
+/// The bytes one crossed read answers with, or `None` for a verb that has not crossed.
 ///
 /// `None` is the uncrossed answer and it is load-bearing: it is what sends every other one of the
 /// sixty-six on to the dispatch, so a verb is answered here only by being named above.
-fn render_topology_view(verb: KernelVerb, topology: &dyn NodeTopology) -> Option<Vec<u8>> {
-    if !CROSSED_TOPOLOGY_VERBS.contains(&verb) {
+fn render_crossed_view(verb: KernelVerb, facts: &dyn NodeFacts) -> Option<Vec<u8>> {
+    if !CROSSED_VERBS.contains(&verb) {
         return None;
     }
     Some(match verb {
-        KernelVerb::GetModels => render_models(&topology.models()).into_bytes(),
-        KernelVerb::GetProviders => render_providers(&topology.providers()).into_bytes(),
+        KernelVerb::GetModels => render_models(&facts.models()).into_bytes(),
+        KernelVerb::GetProviders => render_providers(&facts.providers()).into_bytes(),
         // Unreachable while the set above and this match name the same verbs, which is the
         // invariant the set exists to make checkable rather than a case to invent a body for.
         _ => return None,
@@ -828,7 +835,7 @@ fn render_topology_view(verb: KernelVerb, topology: &dyn NodeTopology) -> Option
 /// `GET /api/v1/admin/providers` — the distinct upstream providers and how many lanes reach each.
 ///
 /// The shape is the retiring handler's, field for field and in its order: a page envelope whose
-/// `items` are `{provider, model_count}` and whose `next_cursor` is null, because the topology reads
+/// `items` are `{provider, model_count}` and whose `next_cursor` is null, because the list reads
 /// have always been one page. It is rendered by hand for the same reason the ledger views are — this
 /// crate carries no serializer on the request path — and the pin beside it compares these bytes
 /// against the ones the surface underneath used to produce.
@@ -851,7 +858,7 @@ fn render_providers(providers: &[(String, usize)]) -> String {
 /// `GET /api/v1/admin/models` — every configured model lane and the provider it reaches.
 ///
 /// The retiring handler's shape, field for field and in its order, inside the same page envelope
-/// every topology read answers in. See [`render_providers`] for why it is written by hand.
+/// every list read answers in. See [`render_providers`] for why it is written by hand.
 fn render_models(models: &[(String, String)]) -> String {
     let mut out = String::from("{\"items\":[");
     for (i, (model, provider)) in models.iter().enumerate() {
@@ -1307,12 +1314,12 @@ pub struct AdminBinding {
     /// figures that surface never kept, so they need somewhere else to reach, and giving them their
     /// own read-only seam is what stops the dispatch from acquiring a way to read money.
     pub ledger: Arc<dyn LedgerView>,
-    /// The routing tables the crossed topology reads answer from.
+    /// The node facts the crossed reads answer from.
     ///
-    /// A fourth seam, bound to [`UnboundTopology`] until a root hands over its handle. It is beside
+    /// A fourth seam, bound to [`UnboundFacts`] until a root hands over its handle. It is beside
     /// the dispatch rather than behind it for the reason the ledger is: what has crossed must not be
     /// able to reach the surface underneath, and a seam that could would make that a convention.
-    pub topology: Arc<dyn NodeTopology>,
+    pub facts: Arc<dyn NodeFacts>,
     /// Where the money-governance posture is read from.
     ///
     /// A third seam, and it has to be one: the two gates the 17 verbs are checked against are sealed
@@ -1391,7 +1398,7 @@ impl AdminBinding {
         AdminBinding {
             dispatch,
             ledger: Arc::new(UnopenedLedger),
-            topology: Arc::new(UnboundTopology),
+            facts: Arc::new(UnboundFacts),
             posture: Arc::new(UnsealedPosture),
             units: AdminUnits::new(),
         }
@@ -1404,10 +1411,10 @@ impl AdminBinding {
         self
     }
 
-    /// Bind the crossed topology reads to the tables a node actually routes over.
+    /// Bind the crossed reads to the facts a node actually has.
     #[must_use]
-    pub fn with_topology_view(mut self, topology: Arc<dyn NodeTopology>) -> Self {
-        self.topology = topology;
+    pub fn with_facts_view(mut self, facts: Arc<dyn NodeFacts>) -> Self {
+        self.facts = facts;
         self
     }
 
@@ -1736,7 +1743,7 @@ pub(crate) fn route(
         CoreGovernance::new(
             Arc::clone(&binding.dispatch),
             Arc::clone(&binding.ledger),
-            Arc::clone(&binding.topology),
+            Arc::clone(&binding.facts),
             verb,
             request.clone(),
         ),
@@ -1887,7 +1894,7 @@ pub fn answered_by(verb: KernelVerb) -> AnsweredBy {
         // seam is never reached and the surface underneath has never had a route for them.
         return AnsweredBy::Loop;
     }
-    if CROSSED_TOPOLOGY_VERBS.contains(&verb) {
+    if CROSSED_VERBS.contains(&verb) {
         // One of the sixty-six that has CROSSED: the loop reads the node's tables through its own
         // seam and renders, and the route this operation was mounted on is gone.
         return AnsweredBy::Loop;
