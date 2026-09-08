@@ -54,7 +54,7 @@ pub(crate) async fn exchange(
     }
     // Identity comes from the VERIFIED chain, never the body. The IdP credential rides the same
     // carriers as any data-plane token (Authorization: Bearer / x-api-key / x-goog-api-key).
-    let candidate = AuthMiddleware::extract_client_token(&req);
+    let candidate = crate::auth::client_token(&req);
     let verdict = AuthMiddleware::run_chain_on_request_path(
         &app.auth,
         &app.credential_cache,
