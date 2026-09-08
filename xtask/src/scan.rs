@@ -110,10 +110,11 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
 
     for (i, raw) in src.lines().enumerate() {
         let is_comment = raw.trim_start().starts_with("//");
-        let code = code_of(raw);
         // Read off the RAW line, so the blanker sees the comment markers and the multi-line
-        // literals `code_of` hands back whole whenever the line holds a `"`.
-        let counted = blank_code(raw, &mut lex);
+        // literals. The blanker is also the ONE answer to "where does this line's comment start" —
+        // it is the only reader in the crate that knows a `//` inside a `"…"` is not one.
+        let (counted, comment_at) = blank_code_marking(raw, &mut lex);
+        let code = code_of(raw, comment_at);
         let mut gated = false;
 
         if in_test {
@@ -187,18 +188,21 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
     out
 }
 
-/// The code content of a line: empty for a whole-line comment, and with a trailing `//` comment
-/// stripped when the line holds no string literal (so a `// }` in a trailer cannot skew brace
-/// depth, and a `"//"` inside a literal is not mistaken for one).
-fn code_of(line: &str) -> String {
+/// The code content of a line: empty for a whole-line comment, and with the trailing `//` comment
+/// stripped — at the position [`blank_code_marking`] found it, which is the only reader that can
+/// tell a comment marker from a `"//"` inside a literal.
+///
+/// It used to give up and hand back the WHOLE line whenever the line held a `"` anywhere, so
+/// `let s = "x"; // and then }` kept its trailer, and every rule reading `code` read a comment as
+/// code: the brace above closed a scope that was never opened, a text ban matched prose, and a
+/// `#[cfg(test)]` written in a trailing comment armed the test-scope machine. The literal was never
+/// the problem — not knowing where the literal ENDED was.
+fn code_of(line: &str, comment_at: Option<usize>) -> String {
     if line.trim_start().starts_with("//") {
         return String::new();
     }
-    if line.contains('"') {
-        return line.to_string();
-    }
-    match line.find("//") {
-        Some(at) => line[..at].to_string(),
+    match comment_at {
+        Some(at) => line.chars().take(at).collect(),
         None => line.to_string(),
     }
 }
@@ -332,7 +336,17 @@ enum OpenLit {
 /// `st` carries the multi-line state; pass `&mut LexState::default()` for a standalone line, which
 /// is what [`blank_literals`] does.
 pub fn blank_code(line: &str, st: &mut LexState) -> String {
+    blank_code_marking(line, st).0
+}
+
+/// The same blanking, plus the CHAR INDEX at which this line's `//` comment began, if it has one.
+///
+/// The blanker already decides that question — it has to, to know whether a `//` opens a comment or
+/// sits inside a literal — and it was the only reader that knew. Handing the answer back is what
+/// lets [`code_of`] strip a trailer off a line that also holds a string.
+pub fn blank_code_marking(line: &str, st: &mut LexState) -> (String, Option<usize>) {
     let chars: Vec<char> = line.chars().collect();
+    let mut comment_at: Option<usize> = None;
     let mut out = String::with_capacity(line.len());
     let mut i = 0;
 
@@ -396,6 +410,7 @@ pub fn blank_code(line: &str, st: &mut LexState) -> String {
         }
         // A line comment runs to end of line and carries no state with it.
         if c == '/' && chars.get(i + 1) == Some(&'/') {
+            comment_at = Some(i);
             out.extend(std::iter::repeat_n(' ', chars.len() - i));
             break;
         }
@@ -435,7 +450,7 @@ pub fn blank_code(line: &str, st: &mut LexState) -> String {
         out.push(c);
         i += 1;
     }
-    out
+    (out, comment_at)
 }
 
 /// The same blanking for a line read on its own, with no carried state.
