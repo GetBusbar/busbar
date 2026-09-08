@@ -12,6 +12,7 @@
 
 pub mod bounded;
 pub mod dest;
+pub mod dialect;
 pub mod grammar;
 pub mod ids;
 pub mod kinds;
@@ -34,6 +35,7 @@ pub use dest::{
     EgressBody, Leg, OnEmpty, Permutation, RoutePlan, SecretOnce, SecretSlot, TransportKeyHandle,
     UpstreamAddress, VerifiedDestination, VetoCode,
 };
+pub use dialect::{Dialect, DialectMeta};
 pub use grammar::{
     ArrivalLocation, Claim, Idempotency, Location, MaskKind, PathSeg, ReplayMatch, Selector,
     SelectorFamily, SelectorForm, SignedOver,
@@ -58,7 +60,7 @@ pub use plane::{
 // it is not among the names this crate offers as the plugin-visible ABI. It cannot be made private
 // — the capability crate implements it on every token and sits above this one — so the scan named
 // in its own documentation is what holds the in-tree side.
-pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, STORE_ABI};
+pub use plugin::{AbiVersion, Kind, KindMarker, Plugin, CONTROL_ABI, DIALECT_ABI, STORE_ABI};
 pub use transport::{
     check_composition, CompositionError, FrameStream, Fut, Registered, Transport,
     TransportConfigView, TransportMeta, TRANSPORT_ABI,

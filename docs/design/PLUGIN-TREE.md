@@ -153,9 +153,14 @@ crates/busbar-<kind>-<name>/
 ```
 
 The `plugin-testkit` batteries named in §1's last column are the body of that last test. Today
-`plugin-testkit` ships the universal config battery (all kinds) and the store battery; **the other
-eight batteries are owed** and are a §8 line item, not a follow-up — a kind whose battery does not
-exist cannot be gate-enforced (§6, step 10).
+`plugin-testkit` ships the universal config battery (all kinds), the store battery, and the DIALECT
+and CONTROL batteries — which carry the declaration rows (`kind_is_declared_once`, the key's shape
+and stability, the interface generation) and name their own owed rows in their own docs, because the
+kind traits those rows are written against are the part still owed. **The other seven batteries are
+owed** and are a §8 line item, not a follow-up — a kind whose battery does not exist cannot be
+gate-enforced (§6, step 10). A battery that exists and states what it does NOT yet check is the
+honest form of a kind landing before its first crate; a battery that quietly checks less than its
+row claims is not.
 
 ---
 
@@ -299,8 +304,9 @@ boundaries around traits nothing implements.
 | export | `export-example-plugin` on `busbar-api` | re-base onto `kinds::Export`; `Anchor` for the retention sink | ~150 | **R5** `export/` row |
 | egress-auth | **zero crates**; the schemes are hardcoded in `busbar-unit-egress-auth` and a full dialect-detection ladder sits in `busbar-unit-auth` | create `busbar-egress-auth-anthropic` / `-openai`; the unit keeps the mechanism, the crates keep the vocabulary; `lean-core`'s `max_hits = 21` ratchet closes to 0 | ~300 | **R6**, with the dialect split (same vocabulary, same move) |
 
-Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` constant — only `STORE_ABI`
-(5) and `TRANSPORT_ABI` (1) exist today, while `Plugin::abi()` is required of every kind.
+Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` constant — `STORE_ABI` (5),
+`TRANSPORT_ABI` (1), `DIALECT_ABI` (1) and `CONTROL_ABI` (1) exist today, and the six rows above owe
+theirs, while `Plugin::abi()` is required of every kind.
 
 ---
 
@@ -308,7 +314,7 @@ Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` const
 
 | Audit | Answer here |
 |---|---|
-| §1.1 codec is an unnamed kind | Superseded: the kind is **dialect** (§1), named, with a trait, a ceiling, a battery, a naming rule and a manifest rule. The 2026-09-06 "codec folds into its plane" decision is REVERSED by the 2026-09-07 ruling; D36 becomes the split. |
+| §1.1 codec is an unnamed kind | ANSWERED IN THE CRATES, 2026-09-08: `Kind::Dialect` and `Kind::Control` are members of the contract's closed kind set with their sealed markers, `DIALECT_ABI`/`CONTROL_ABI`, and `dialect::Dialect` + `DialectMeta` shipped. The kind is **dialect** (§1), named, with a trait, a ceiling, a battery, a naming rule and a manifest rule. The 2026-09-06 "codec folds into its plane" decision is REVERSED by the 2026-09-07 ruling; D36 becomes the split. |
 | §1.2 egress-auth has zero crates | §8 last row: two crates, sized, in R6. Until then the kind is doc-only with a dated owner note (§6 step 15). |
 | §1.3 six kinds, zero implementors | §8 in full. |
 | §1.4 `loader`/`abi` are not kinds | Stated in the header: `tcb_crates`, not `[gate.plugin_kinds]`. |

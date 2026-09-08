@@ -666,14 +666,31 @@ fn glob_match(pat: &[u8], name: &[u8], star_crosses: bool) -> bool {
 
 /// Existing directories matching a list of globs, sorted, de-duplicated. A glob matching nothing is
 /// silently empty (the kind has no crate yet), never an error.
+///
+/// A pattern prefixed with `!` EXCLUDES, and every exclusion is applied after every inclusion, so
+/// order in the list does not change the answer. It exists for one shape this glob syntax otherwise
+/// cannot say: `*` does not cross a path separator but it does cross a hyphen, so
+/// `crates/busbar-plane-*` matches `busbar-plane-llm` and `busbar-plane-llm-anthropic` alike — a
+/// plane and a DIALECT OF THAT PLANE, two different kinds, one glob. Without the exclusion the
+/// narrower kind is silently scored against the wider one's rules.
 pub fn dirs_for_globs(cx: &Ctx, patterns: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for pat in patterns {
+        if pat.starts_with('!') {
+            continue;
+        }
         for d in glob_dirs(cx, pat) {
             if cx.abs(&d).is_dir() && !out.contains(&d) {
                 out.push(d);
             }
         }
+    }
+    for pat in patterns {
+        let Some(neg) = pat.strip_prefix('!') else {
+            continue;
+        };
+        let excluded = glob_dirs(cx, neg);
+        out.retain(|d| !excluded.contains(d));
     }
     out
 }
