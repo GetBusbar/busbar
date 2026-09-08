@@ -81,6 +81,12 @@ pub mod units_admin;
 pub mod units_llm;
 #[cfg(feature = "root-mcp")]
 pub mod units_mcp;
+// Declared under `root-mcp`, not under the serving switch, for the reason the A2A sibling's two
+// modules carry the same line: everything inside reaches into the MCP plane's units, and a
+// plane-gated module named from code under a different feature is what the root's own escape test
+// refuses. The serving switch is on the FILE.
+#[cfg(feature = "root-mcp")]
+pub mod units_mcp_leg;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;

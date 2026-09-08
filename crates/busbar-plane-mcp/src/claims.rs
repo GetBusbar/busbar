@@ -137,6 +137,47 @@ pub fn declares(key: &str) -> bool {
     CLAIMS.iter().any(|c| c.transport == key)
 }
 
+/// The claim one arrival was matched by, in the table's own most-specific-first order.
+///
+/// A NAMED QUESTION on the plane's own declaration, for the reason [`declares`] above is one, and it
+/// answers the thing a transport alone cannot: two of this plane's four claims are made over the
+/// SAME carrier and one of them carries no credential scheme. So "does this arrival's claim declare
+/// a scheme" is a question about the ADDRESS as well as the carrier, and a caller that asked by
+/// carrier alone would demand a credential on the discovery document — closing the one surface a
+/// client reads in order to find out how to authenticate.
+///
+/// Matched by the grammar's own shapes and nothing else: an exact path is an equality and a stream
+/// name is an equality. There is no prefix arm and its absence is the point — `/mcpx` is somebody
+/// else's address, and a `starts_with` would take it. Every other way a plane can select bytes is
+/// not something a path names, so nothing matches it; written as an arm rather than a wildcard so a
+/// shape the grammar gains has to be considered here.
+///
+/// The order is the table's, which is most specific first: the discovery document sits above the
+/// request surface precisely so a looser claim cannot swallow it, and the first match is the answer.
+#[must_use]
+pub fn matching(transport: &str, path: &str) -> Option<&'static Claim> {
+    CLAIMS.iter().find(|c| {
+        c.transport == transport
+            && match c.selector {
+                busbar_contract::grammar::Selector::ExactPath(exact) => exact == path,
+                busbar_contract::grammar::Selector::StreamName(name) => name == path,
+                _ => false,
+            }
+    })
+}
+
+/// Whether the claim this arrival was matched by declares a credential scheme at all.
+///
+/// The one reading a composition root needs off [`matching`], named so the root asks the plane its
+/// own question rather than reaching into a `Claim`'s fields. An address no claim of this plane
+/// matches declares nothing, which is the fail-closed reading in the only direction that matters
+/// here: no scheme means no narrowing and no audience, and the arrival step has already refused a
+/// carrier no claim names.
+#[must_use]
+pub fn declares_scheme(transport: &str, path: &str) -> bool {
+    matching(transport, path).is_some_and(|c| c.scheme.is_some())
+}
+
 #[cfg(test)]
 #[path = "tests/claims.rs"]
 mod tests;
