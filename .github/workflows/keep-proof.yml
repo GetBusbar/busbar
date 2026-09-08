@@ -1,0 +1,488 @@
+name: keep-proof
+
+# JUDGE THE HAND-BACK REMOTELY, NOT ON SOMEBODY'S LAPTOP.
+#
+# Work arrives here as a `keep-*` branch: an agent's hand-back, offered as done. Today the proof
+# that it IS done is produced LOCALLY — every agent re-runs the workspace build, clippy, the tests
+# and the gates on the same machine, thirty to sixty minutes each, several agents at once, on a
+# tree whose CI is red for reasons that have nothing to do with the hand-back. That is the wrong
+# machine doing the wrong work: a laptop's green is a claim about a laptop, the runner's green is
+# the fact everyone else can read, and the runners are sitting idle while the laptop thermally
+# throttles.
+#
+# So a push of any `keep-*` branch runs the SAME required set CI runs, on GitHub's runners, and
+# writes a ONE-LINE VERDICT back onto the commit as a status named `keep-proof`. The harvest
+# question -- "is this hand-back green?" -- becomes a lookup on the sha instead of an hour of
+# somebody's afternoon.
+#
+# WHAT IS AND IS NOT HERE, AND WHY.
+#   HERE:     fmt, clippy -D warnings, workspace build, the workspace test suite SHARDED across four
+#             runners, `cargo xtask gate --all`, `cargo xtask selftest`, the structure gate, the
+#             design-bindings gate (existence + regen-clean), the construction gate (report-only,
+#             exactly as in ci.yml).
+#   NOT HERE: the shadow oracle. It needs the PUBLISHED 1.5.5 binary plus service containers and is
+#             a twenty-three-minute product judgement whose reds are owner items, not hand-back
+#             defects. It stays on integration pushes, where the person who can act on a divergence
+#             is the one reading it. A keep branch that is green here and red there has learned
+#             something true either way; conflating the two teaches nothing.
+#   NOT HERE: the full tier's platform matrix (windows, no-default-features, timing, migration
+#             corpus, deletion matrix). Those are promotion-gate questions and they run on the
+#             integration branch this work lands on. This workflow answers "does the hand-back
+#             stand up", not "may this ship".
+#
+# THIS IS NOT A PROMOTION GATE. Green here means the hand-back builds, lints, tests and gates on a
+# runner. `ci-umbrella` on the integration branch is still the required check, and nothing in this
+# file can make a promotion decision.
+
+on:
+  push:
+    branches: ['keep-*']
+
+# One verdict per branch tip. An agent that pushes three fixups in five minutes should pay for the
+# last one, not for all three -- these are four-runner test shards, and the wasted capacity comes
+# straight out of the queue every other agent is waiting in.
+concurrency:
+  group: keep-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+# `statuses: write` is the whole point of the last job: the verdict is written onto the COMMIT, so
+# a harvester reads it from the sha without opening the Actions tab. Nothing here needs write access
+# to contents, packages or id-token, and it does not get any.
+permissions:
+  contents: read
+  statuses: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # THE SAME FLAGS CI ENFORCES. A local green under different flags is not a CI green, and a
+  # keep-proof green under different flags would be worse: it would be a REMOTE green that still
+  # did not mean what the required check means. `cargo xtask full-gate --selftest` asserts this
+  # string against ci.yml's; it is spelled identically here on purpose.
+  RUSTFLAGS: "-D warnings"
+  # See ci.yml's "COMPILER CACHE (sccache)" note. The four test shards compile the same workspace at
+  # the same moment; without a content-addressed cache under them, sharding buys wall-clock by
+  # paying for the same rustc invocations four times.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ── FMT · CLIPPY · BUILD ────────────────────────────────────────────────────────────────────────
+  # The three questions that are cheap to ask and pointless to ask twice. Deliberately NOT fused with
+  # the tests: in ci.yml they share one job, and the consequence is that a formatting diff in one
+  # file stops the entire test suite from running -- which is exactly what the tree did on
+  # 2026-09-08, where `cargo fmt --check` failed at 60 seconds and the workspace suite reported
+  # nothing at all. A layout debt and a broken test are independent facts about a commit.
+  build-clippy:
+    name: fmt · clippy · build
+    runs-on: ubuntu-latest
+    # Measured against ci.yml's `check`, whose fmt+clippy+build steps total ~1.6 min warm and whose
+    # whole job is bounded at 75 for cold-cache headroom. 40 is that headroom without the test step.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build
+        run: cargo build --workspace --locked
+
+  # ── THE WORKSPACE SUITE, SHARDED ACROSS FOUR RUNNERS ────────────────────────────────────────────
+  # THE SHARD AXIS IS THE TEST BINARY, NOT THE PACKAGE, AND THAT CHOICE IS LOAD-BEARING.
+  #
+  # The obvious shard is `cargo test -p <group>` per runner. It is wrong here, and ci.yml's own
+  # `check` job says why in its header: `cargo test --workspace` activates the plane crates'
+  # `test-support` suites THROUGH FEATURE UNIFICATION, and excluding two plane crates from the
+  # invocation drops ~1123 tests. A per-package shard set is therefore a DIFFERENT feature
+  # resolution from the one CI runs: the shards would sum to a smaller suite than the workspace run,
+  # while every shard printed `ok`. A sharding scheme that quietly tests less is worse than no
+  # sharding, because it reports faster AND weaker.
+  #
+  # So each shard compiles the WHOLE workspace exactly as CI does -- `cargo test --workspace
+  # --locked --no-run`, one feature resolution, identical to the unsharded run -- and then EXECUTES
+  # a deterministic slice of the test binaries that compile produced. The compile is what sccache
+  # deduplicates across the four runners; the execution is what actually parallelises. Membership is
+  # DERIVED (sorted binary list, index modulo four), never a hand-maintained list, so a new test
+  # target joins a shard the day it exists and cannot fall out of all four.
+  #
+  # DOCTESTS RIDE SHARD 1. `--no-run` produces no doctest binary, so a pure binary partition would
+  # silently drop every doctest from the summed total. Shard 1 runs `--doc` and counts it.
+  tests:
+    name: tests (shard ${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    # ci.yml's Test step measures 9.3 min warm for the WHOLE suite; a quarter of the execution plus a
+    # full compile lands well inside 20. 30 is that with cold-cache headroom, and it is a ceiling on
+    # a hang, not a target.
+    timeout-minutes: 30
+    strategy:
+      # A red shard must not cancel the other three: the harvester wants the whole picture of the
+      # hand-back in one pass, not the first failure and three unknowns.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # The live-DB roundtrip tests read these URLs and HARD-FAIL rather than skip when `CI` is set, so
+    # every shard carries the services: the store tests are in whichever binary the partition put
+    # them in, and a shard without a database would fail for the wrong reason. Digests pinned for the
+    # same reason ci.yml pins them -- what a moving tag resolved to must be a fact about the commit.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      # `json-render-diagnostics`, not plain `json`: the machine-readable stream goes to the file the
+      # enumerator reads, and compiler errors are still RENDERED to the log. A compile failure whose
+      # only trace is a JSON blob in a temp file is a red nobody can read.
+      - name: Compile every test binary (one workspace feature resolution, same as CI)
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked --no-run \
+            --message-format=json-render-diagnostics > "$RUNNER_TEMP/compile.json"
+
+      # `profile.test` is CARGO'S OWN flag for "this artifact is a test binary", so the shard list is
+      # cargo's answer about the compile that just happened, not a guess from a path pattern that
+      # goes stale the first time a target is renamed. `sort -u` because the partition below is by
+      # INDEX: an unstable order would reshuffle which shard runs what between two runs of the same
+      # commit, and a flaky partition is indistinguishable from a flaky test.
+      - name: Enumerate the test binaries this compile produced
+        run: |
+          set -euo pipefail
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.profile.test == true)
+                 | .executable // empty' "$RUNNER_TEMP/compile.json" | sort -u > "$RUNNER_TEMP/bins.txt"
+          count=$(wc -l < "$RUNNER_TEMP/bins.txt")
+          echo "compiled test binaries: ${count}"
+          # THE FLOOR. A partition of an empty list runs nothing and prints a clean pass on every
+          # shard -- the exact vacuous-green this whole file exists to stop. The workspace has well
+          # over sixty test targets; forty is a floor that a real regression in the enumerator trips
+          # long before a legitimate shrink reaches it.
+          if [ "$count" -lt 40 ]; then
+            echo "::error::only ${count} test binaries were enumerated (floor 40). The message-format=json"
+            echo "::error::reader found nothing to shard, so a green here would mean nothing. Refusing."
+            exit 1
+          fi
+
+      - name: Run this shard's binaries
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "4"
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          VALKEY_URL: redis://localhost:6379
+          # PER-BINARY HANG CEILING, the same instrument ci.yml's watchdog is: the `busbar_core`
+          # lib-test binary alone aggregates ~3900 tests to ~330s, so this bounds a genuine hang
+          # (unbounded) rather than a slow suite. When it fires it NAMES the binary.
+          BINARY_TIMEOUT_SECS: "900"
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/shard.log"
+          : > "$log"
+          i=0
+          ran=0
+          rc_all=0
+          while IFS= read -r bin; do
+            if [ "$(( i % SHARDS ))" -eq "$(( SHARD - 1 ))" ]; then
+              echo "=== shard ${SHARD}/${SHARDS}: ${bin}"
+              timeout --signal=KILL "$BINARY_TIMEOUT_SECS" "$bin" 2>&1 | tee -a "$log"
+              rc=${PIPESTATUS[0]}
+              if [ "$rc" -eq 137 ]; then
+                echo "::error::${bin} was killed after ${BINARY_TIMEOUT_SECS}s — that is a hang, not a slow suite."
+                rc_all=1
+              elif [ "$rc" -ne 0 ]; then
+                echo "::error::${bin} FAILED (exit ${rc})."
+                rc_all=1
+              fi
+              ran=$(( ran + 1 ))
+            fi
+            i=$(( i + 1 ))
+          done < "$RUNNER_TEMP/bins.txt"
+
+          # DOCTESTS RIDE SHARD 1: `--no-run` never produced a doctest binary, so without this the
+          # summed total silently loses every doctest in the workspace.
+          if [ "$SHARD" = "1" ]; then
+            echo "=== shard 1 also runs the doctests"
+            cargo test --workspace --locked --doc 2>&1 | tee -a "$log"
+            rc=${PIPESTATUS[0]}
+            [ "$rc" -eq 0 ] || { echo "::error::the doctests FAILED (exit ${rc})."; rc_all=1; }
+          fi
+
+          # SUM ACROSS BINARIES, never a single line: `test result: ok. N passed` prints once per
+          # binary, and one binary compiling to nothing still prints `ok` and exits 0.
+          passed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$log" \
+                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                   | awk '{s+=$1} END {print s+0}')
+          echo "shard ${SHARD}: ${ran} binaries, ${passed} tests passed"
+          mkdir -p "$RUNNER_TEMP/counts"
+          echo "$passed" > "$RUNNER_TEMP/counts/shard-${SHARD}.count"
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::shard ${SHARD} ran ZERO binaries. A shard that runs nothing is not a pass."
+            rc_all=1
+          fi
+          exit "$rc_all"
+
+      # `if: always()` so a RED shard still publishes its count: the verdict job's arithmetic is how
+      # "the shards covered the suite" is proven, and a failing shard that also stopped counting
+      # would make the total look like a coverage hole instead of a test failure.
+      - name: Publish this shard's count
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: keep-proof-count-${{ matrix.shard }}
+          path: ${{ runner.temp }}/counts/
+          if-no-files-found: warn
+
+  # ── THE SHARDS SUMMED ──────────────────────────────────────────────────────────────────────────
+  # Sharding's real risk is not a slow shard, it is a shard that quietly stopped running things.
+  # Four green shards that between them ran 900 tests look identical, in the Actions UI, to four
+  # green shards that ran 5700. So the counts are summed and floored, exactly as ci.yml floors its
+  # unsharded workspace run -- the floor is the same number, because it is the same suite.
+  tests-total:
+    name: tests total (the four shards summed against the suite floor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: tests
+    if: always()
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: keep-proof-count-*
+          merge-multiple: true
+          path: counts
+      - name: Sum the shards and floor the total
+        env:
+          # ci.yml's UNIX_MIN_TESTS at the time this file was written. Same suite, same floor; raise
+          # both together or the two gates start disagreeing about what the suite is.
+          KEEP_MIN_TESTS: "5650"
+          SHARDS_RESULT: ${{ needs.tests.result }}
+        run: |
+          set -euo pipefail
+          total=0
+          files=0
+          for f in counts/shard-*.count; do
+            [ -e "$f" ] || continue
+            n=$(cat "$f")
+            echo "  $(basename "$f"): ${n}"
+            total=$(( total + n ))
+            files=$(( files + 1 ))
+          done
+          echo "shards reporting: ${files}/4; tests passed across the workspace: ${total}"
+          if [ "$files" -ne 4 ]; then
+            echo "::error::${files} of 4 shards reported a count. A missing shard is a missing quarter"
+            echo "::error::of the suite, not a pass."
+            exit 1
+          fi
+          if [ "$total" -lt "$KEEP_MIN_TESTS" ]; then
+            echo "::error::the four shards ran ${total} tests, below the suite floor ${KEEP_MIN_TESTS}."
+            echo "::error::Either tests stopped being collected, or the floor is stale — decide which."
+            exit 1
+          fi
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::the shards summed to ${total} but at least one shard was ${SHARDS_RESULT}."
+            exit 1
+          fi
+          echo "tests total: ${total} passed across four shards (floor ${KEEP_MIN_TESTS})"
+
+  # ── EVERY REGISTERED GATE, PLUS THE PROOF EACH ONE CAN STILL GO RED ─────────────────────────────
+  # `gate --all` runs the registry, which is where the structure gate lives (`structure-lint`) along
+  # with the rest of the layout, plane-purity, changelog and audit-ledger rows. `selftest` is the
+  # other half and the one agents skip: a gate that cannot be made to fail is not a gate, and a
+  # hand-back that adds a gate without a RED proof has added a green light with no bulb.
+  gates:
+    name: cargo xtask gate --all · selftest
+    runs-on: ubuntu-latest
+    # ci.yml's structure-lint (the same registry, run one gate per step) measures p95 14.5 min.
+    timeout-minutes: 25
+    steps:
+      # FULL HISTORY: the audit-ledger gate resolves the COMMIT each register row stamps, and a
+      # depth-1 clone cannot. It is red on a stamp it cannot check rather than passing over it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain (the gate runner)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+      # SELF-TEST BEFORE VERDICT, as everywhere else in this repository: never believe a gate's
+      # green before proving the gate still works.
+      - name: Every registered gate is provably RED-able
+        run: cargo xtask selftest
+      - name: Every registered gate, run against this tree
+        run: cargo xtask gate --all --format=tsv
+
+  # ── DESIGN BINDINGS ────────────────────────────────────────────────────────────────────────────
+  # The same two assertions ci.yml's design-bindings job makes, for the same reason, on a job that
+  # needs no toolchain: EXISTENCE (every check an Appendix B binding names still exists) and
+  # REGEN-CLEAN (the committed ledger is what the deriver produces from Appendix B today). A
+  # hand-back that edits ARCHITECTURE.md and skips the regen lands a stale generated artifact.
+  design-bindings:
+    name: design bindings (existence · regen-clean)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Design bindings self-test
+        run: scripts/design-bindings.sh --selftest
+      - name: Design bindings check (existence)
+        run: scripts/design-bindings.sh --check
+      - name: Design bindings regen-clean
+        run: |
+          set -euo pipefail
+          mkdir -p target/design-bindings
+          python3 scripts/design-bindings.py --write \
+            --out-json target/design-bindings/fresh.json \
+            --out-md target/design-bindings/fresh.md
+          stale=0
+          diff -u qa/design-bindings.json target/design-bindings/fresh.json || stale=1
+          diff -u qa/DESIGN-BINDINGS.md target/design-bindings/fresh.md || stale=1
+          if [ "$stale" -ne 0 ]; then
+            echo "::error::the committed design-bindings artifacts are not what the deriver produces"
+            echo "::error::from Appendix B today. Re-run the deriver and commit the result."
+            exit 1
+          fi
+
+  # ── CONSTRUCTION GATE (REPORT-ONLY, EXACTLY AS IN ci.yml) ──────────────────────────────────────
+  # Red by design on HEAD while the construction work it measures is in flight. It is run and
+  # PRINTED so a hand-back can be read against it, and deliberately NOT scored: a report-only gate
+  # that silently becomes blocking in a second workflow is the same drift ci.yml's umbrella refuses.
+  # Flip `continue-on-error` here on the same day ci.yml's job is flipped, not before.
+  construction-gate:
+    name: construction gate (report-only)
+    runs-on: ubuntu-latest
+    # Measured: this gate is CANCELLED at ci.yml's 15-minute ceiling on every recent run, i.e. its
+    # true runtime is unknown and >15. 25 is a ceiling that lets it FINISH so its real duration
+    # becomes a measurement instead of a cancellation; the owner item is the gate's runtime itself.
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Construction gate self-test
+        run: scripts/construction-gate.sh --selftest
+      - name: Construction gate (report-only)
+        run: scripts/construction-gate.sh || true
+
+  # ── THE ONE LINE THE HARVESTER READS ───────────────────────────────────────────────────────────
+  # The whole point of the file. A harvester asking "is keep-foo green?" should get an answer from
+  # the SHA, not from reading five job logs, so the verdict is written back as a commit status named
+  # `keep-proof` with a target_url pointing at this run.
+  #
+  # `if: always()` and every dependency's result read explicitly: a job that was SKIPPED or
+  # CANCELLED is not a pass, and the classic version of this job -- one that only runs on success --
+  # writes no status at all on the runs where the answer matters most.
+  verdict:
+    name: keep-proof verdict
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: always()
+    needs:
+      - build-clippy
+      - tests
+      - tests-total
+      - gates
+      - design-bindings
+      # In `needs` so the verdict waits for it and prints it, NOT in RESULTS below: report-only,
+      # exactly as ci.yml's umbrella treats the same gate.
+      - construction-gate
+    env:
+      # jobkey|result, one per scored job. Same shape as ci.yml's umbrella ledger, and for the same
+      # reason: a hand-maintained prose summary drifts from the jobs it claims to describe.
+      RESULTS: |
+        build-clippy|${{ needs.build-clippy.result }}
+        tests|${{ needs.tests.result }}
+        tests-total|${{ needs.tests-total.result }}
+        gates|${{ needs.gates.result }}
+        design-bindings|${{ needs.design-bindings.result }}
+      CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Score the run and publish the one-line verdict on the commit
+        run: |
+          set -u
+          fails=0
+          reds=""
+          while IFS='|' read -r job result; do
+            [ -n "$job" ] || continue
+            if [ "$result" = "success" ]; then
+              printf '  %-16s OK\n' "$job"
+            else
+              printf '  %-16s RED (%s)\n' "$job" "$result"
+              fails=$(( fails + 1 ))
+              reds="${reds}${reds:+, }${job}"
+            fi
+          done <<< "$RESULTS"
+          printf '  %-16s REPORT-ONLY (%s)\n' "construction-gate" "${CONSTRUCTION_RESULT:-unset}"
+
+          if [ "$fails" -eq 0 ]; then
+            state="success"
+            desc="keep-proof GREEN: fmt/clippy/build, 4 test shards, gate --all + selftest, design bindings"
+          else
+            state="failure"
+            desc="keep-proof RED (${fails}): ${reds}"
+          fi
+          # The status API refuses a description over 140 characters, and a refused status is a
+          # hand-back with NO verdict on it — the one outcome this job exists to prevent.
+          desc=$(printf '%.140s' "$desc")
+          {
+            echo "### keep-proof: ${state}"
+            echo ""
+            echo "\`${desc}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state="$state" \
+            -f context="keep-proof" \
+            -f description="$desc" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          [ "$fails" -eq 0 ] || exit 1
