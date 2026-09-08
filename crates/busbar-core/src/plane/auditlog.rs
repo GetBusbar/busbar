@@ -381,8 +381,8 @@ impl PlaneAuditLog {
                     }
                     Err(e) => {
                         out.unreadable += 1;
-                        crate::diagnostics::diag_error!(
-                            crate::diagnostics::PLANE_AUDIT_ROW_UNREADABLE,
+                        busbar_substrate::diag_error!(
+                            busbar_substrate::diagnostics::PLANE_AUDIT_ROW_UNREADABLE,
                             scope = %scope,
                             error = %e,
                             "a persisted admin audit record could NOT be decoded on restore; it is \
@@ -396,8 +396,8 @@ impl PlaneAuditLog {
             }
             out.records += good_bodies.len();
             if let Some(brk) = self.seed_chain(host, scope, &good_bodies)? {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,
                     "admin audit CHAIN VERIFICATION FAILED on restore — the persisted records do not \
                      verify against their own hash chain. They are still restored and the chain \
@@ -458,16 +458,16 @@ pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
     );
     if seq == Seq::NONE {
         if !WRITE_FAILED_LATCHED.swap(true, Ordering::Relaxed) {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+            busbar_substrate::diag_error!(
+                busbar_substrate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                 "the durable admin audit record could NOT be written through the journal seam: this \
                  mutation is being served and its evidence is being LOST on that path. The chain \
                  position is unchanged, so the chain stays contiguous — what is missing is this \
                  record, not the ones after it."
             );
         } else {
-            crate::diagnostics::diag_debug!(
-                crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+            busbar_substrate::diag_debug!(
+                busbar_substrate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                 "the durable admin audit record could NOT be written through the journal seam; its \
                  evidence is being LOST. The chain position is unchanged, so the chain stays contiguous."
             );
@@ -557,8 +557,8 @@ pub(crate) fn register_and_migrate(
             records = n,
             "migrated the legacy durable audit table into the neutral plane_records seam"
         ),
-        Err(e) => crate::diagnostics::diag_error!(
-            crate::diagnostics::BOOT_AUDIT_MIGRATE_FAILED,
+        Err(e) => busbar_substrate::diag_error!(
+            busbar_substrate::diagnostics::BOOT_AUDIT_MIGRATE_FAILED,
             error = %e.0,
             "could not migrate the legacy durable audit table into plane_records; the durable audit \
              seam will restore only what plane_records already holds and the migration retries on the \
@@ -578,8 +578,8 @@ pub(crate) fn register_and_migrate(
                 "admin audit restored from the durable plane_records seam"
             ),
             Ok(_) => {}
-            Err(e) => crate::diagnostics::diag_warn!(
-                crate::diagnostics::BOOT_AUDIT_RESTORE_READ_FAILED,
+            Err(e) => busbar_substrate::diag_warn!(
+                busbar_substrate::diagnostics::BOOT_AUDIT_RESTORE_READ_FAILED,
                 error = %e.0,
                 "could not read the durable audit plane_records to seed the journal seam; the seam \
                  read model starts empty and resumes from the persisted tail on the next successful read"
@@ -632,16 +632,16 @@ pub(crate) fn emit_admin_hostless(
         }
         Err(_e) => {
             if !WRITE_FAILED_LATCHED.swap(true, Ordering::Relaxed) {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                     "the durable admin audit record could NOT be written through the journal seam: \
                      this mutation is being served and its evidence is being LOST on that path. The \
                      chain position is unchanged, so the chain stays contiguous — what is missing is \
                      this record, not the ones after it."
                 );
             } else {
-                crate::diagnostics::diag_debug!(
-                    crate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
+                busbar_substrate::diag_debug!(
+                    busbar_substrate::diagnostics::PLANE_AUDITLOG_WRITE_FAILED,
                     "the durable admin audit record could NOT be written through the journal seam; \
                      its evidence is being LOST. The chain position is unchanged, so the chain stays \
                      contiguous."
