@@ -604,6 +604,83 @@ fn key_with_no_group_is_unlimited() {
     assert_eq!(other, 0);
 }
 
+/// The fail-closed twin of a refund: a request whose chain could not be resolved still charged
+/// nothing, so [`Door::refund_unchained`] refunds the principal's own bucket defensively — it must
+/// reach the SAME bucket a normal charge on an unchained principal would (`key_with_no_group_is_
+/// unlimited`, above, shows that bucket is just the principal id under the all-time window), and it
+/// must floor at zero rather than underflow when there is nothing to give back.
+///
+/// This pins the function itself (`decide.rs:503`), not any wiring onto it — nothing in the crate's
+/// public seam calls it today.
+#[test]
+fn refund_unchained_reaches_the_principals_own_bucket_and_floors_at_zero() {
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[("g", group_cfg(None, true, Vec::new()))]);
+    let c = chain(&t, "vk_unchained", None); // no group = the request lands on the bare principal id
+    let now = 1_700_000_000;
+    d.try_admit(&p, &c, "", now).expect("no group = no caps");
+    assert_eq!(
+        d.cells()
+            .snapshot("vk_unchained")
+            .expect("the charge landed")
+            .billable_requests,
+        1
+    );
+
+    d.refund_unchained("vk_unchained", now);
+    assert_eq!(
+        d.cells()
+            .snapshot("vk_unchained")
+            .expect("cell")
+            .billable_requests,
+        0,
+        "the fee came back off the same bucket the charge reached"
+    );
+
+    // Nothing left to give back: a second refund is a no-op, not an underflow.
+    d.refund_unchained("vk_unchained", now);
+    assert_eq!(
+        d.cells()
+            .snapshot("vk_unchained")
+            .expect("cell")
+            .billable_requests,
+        0,
+        "a refund past zero floors rather than wraps"
+    );
+}
+
+/// [`Door::record_usage_unchained`] is the accrual half of the same fail-closed pair: tokens for a
+/// request whose chain could not be resolved degrade onto the principal's own bucket rather than
+/// being lost. An all-zero report is still a no-op (mirroring `record_usage`), and it ledgers under
+/// the all-time window the way every other unchained access does.
+///
+/// This pins the function itself (`decide.rs:549`), not any wiring onto it.
+#[test]
+fn record_usage_unchained_ledgers_onto_the_principals_bucket_and_ignores_an_all_zero_report() {
+    let d = door();
+    let now = 1_700_000_000;
+
+    // Nothing to ledger: no cell is created at all.
+    d.record_usage_unchained("vk_unchained2", "m", &toks(0, 0), now);
+    assert!(
+        d.cells().snapshot("vk_unchained2").is_none(),
+        "an all-zero report must not create a cell"
+    );
+
+    d.record_usage_unchained("vk_unchained2", "m", &toks(100, 50), now);
+    let cell = d
+        .cells()
+        .snapshot("vk_unchained2")
+        .expect("real usage created the cell");
+    assert_eq!(cell.total_tokens(), 150);
+    assert_eq!(
+        cell.window_start,
+        crate::window::budget_window(TOTAL, now),
+        "the unchained accrual ledgers under the all-time window"
+    );
+}
+
 /// A principal bound to a group MISSING from this node's config fails CLOSED at admission.
 #[test]
 fn missing_group_fails_closed() {
