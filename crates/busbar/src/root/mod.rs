@@ -65,6 +65,11 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+pub mod plane_ctx;
+// ONE MOUNT, for every plane that has one. Not gated on either plane's switch: the body is about
+// the closed grammar, the operator's ingress cap and the loop's own refusal rule, and it is compiled
+// wherever SOME plane has a mount to reach it through.
+pub mod plane_mount;
 pub mod policy;
 pub mod registrations;
 pub mod registry;
@@ -87,6 +92,8 @@ pub mod units_mcp;
 // refuses. The serving switch is on the FILE.
 #[cfg(feature = "root-mcp")]
 pub mod units_mcp_leg;
+#[cfg(feature = "root-mcp")]
+pub mod units_mcp_mount;
 #[cfg(feature = "root-voice")]
 pub mod units_voice;
 pub mod vocabulary;
