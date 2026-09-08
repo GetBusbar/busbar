@@ -24,7 +24,9 @@ pub mod changelog;
 pub mod changelog_register;
 pub mod ci_umbrella;
 pub mod config_schema;
+pub mod construction;
 pub mod denylist_gate;
+pub mod design_bindings;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
 pub mod inventory_ref;
@@ -73,12 +75,71 @@ pub struct Registration {
     pub summary: &'static str,
 }
 
+/// THE GATES WHOSE VERDICT IS PRINTED BUT NOT COUNTED BY `--all`, and why that is data here rather
+/// than a posture flag somebody remembers.
+///
+/// Exactly one gate is on this list today and it is not a loophole: the construction gate is RED BY
+/// DESIGN on HEAD — rows sit over ceilings the construction work in flight is driving down — and
+/// `ci.yml` has run it `continue-on-error` with the verdict printed by the umbrella since it was
+/// written, while `qa/full-gate.toml` names it in its skip list for the same reason. That posture
+/// existed in prose, in two files, with nothing in the runner that knew about it; a converted gate
+/// that simply joined `--all` would have turned the whole local gate red on a fact CI does not
+/// score. So it says out loud, next to the registry, what those two comments say: this one is
+/// reported, not counted, until it is flipped.
+///
+/// A report-only gate is still fully reconciled, still self-tested and still exits non-zero when
+/// run BY NAME (`cargo xtask gate construction`), which is what the CI job captures. This governs
+/// one thing only: whether `--all` adds it to the red list.
+const REPORT_ONLY: &[&str] = &["construction"];
+
+impl Registration {
+    /// Does this gate's verdict COUNT under `--all`, or is it printed and not scored?
+    pub fn blocking(&self) -> bool {
+        !REPORT_ONLY.contains(&self.name)
+    }
+}
+
 pub trait Gate {
     fn name(&self) -> &'static str;
 
     /// Every ledger row id this gate can emit. THE OWED SET. Non-empty by construction: a gate
     /// that owes nothing has nothing anybody reconciles.
     fn owed(&self) -> Vec<String>;
+
+    /// The narrow set of owed ids whose SKIP is not RED. EMPTY BY DEFAULT, and it should stay that
+    /// way for almost every gate: a check that could not run is unreachable for users too.
+    ///
+    /// One gate needs it, and needs it to be DATA rather than a posture flag: the design bindings
+    /// ledger's plain form reports a NAMED gap without turning the run red, and the name is the
+    /// point — the allowlist is exactly the bindings the committed ledger records as `unmapped`, a
+    /// file somebody edits and a reviewer reads. [`execute_strict`] runs the same rows with no
+    /// allowlist at all, which is what makes "DONE means no gap" a claim rather than a hope.
+    fn skip_allow(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The narrow set of owed ids that are PASS BY CONSTRUCTION — a measurement the gate reports
+    /// and does not judge. EMPTY BY DEFAULT, and it must stay that way for anything that is a rule.
+    ///
+    /// One gate needs it. The construction gate reports four rows whose status is `Pass` however
+    /// they measure — `duplicate-dispatch` and the per-crate `legacy-reach:<crate>` figures, each
+    /// titled `WARN` — because the shell it was proven identical to reports them that way: the
+    /// gating claim is the TOTAL `legacy-reach` row, and these carry the breakdown a reader needs
+    /// to act on it. Demanding a RED case for a row that cannot be RED cannot be met honestly, and
+    /// the two dishonest ways to meet it — hand-writing the case's `got`, or making the row red and
+    /// losing parity with the instrument that licensed the conversion — are both worse than saying
+    /// which rows they are.
+    ///
+    /// WHAT IS AND IS NOT GIVEN UP. This never touches a verdict: unlike [`Gate::skip_allow`] it is
+    /// read only by [`verify_report`], so a declared row that somehow went FAIL would still turn
+    /// the gate red. What it gives up is the RED half of the coverage proof, and only that — the
+    /// row must still be exercised by SOME case, and deleting the rule that emits it is still
+    /// caught on every run, by the reconciliation, as DID NOT RUN. The RED demand exists to catch a
+    /// rule that is GUTTED rather than deleted — one that still emits its row and always passes —
+    /// and for a row that always passes by design there is nothing left for it to catch.
+    fn informational(&self) -> Vec<String> {
+        Vec::new()
+    }
 
     /// The gate's verdict over the tree `cx` shows it. Never panics on a tree it does not like;
     /// panics only on its OWN bugs.
@@ -302,6 +363,13 @@ impl Report {
         self.cases.push(case);
     }
 
+    /// Fold another report's cases and infra failures into this one, for a gate whose selftest is
+    /// assembled from per-rule sub-reports rather than written as one list.
+    pub fn append(&mut self, other: Report) {
+        self.cases.extend(other.cases);
+        self.infra.extend(other.infra);
+    }
+
     pub fn note_infra_failure(&mut self, msg: impl Into<String>) {
         self.infra.push(msg.into());
     }
@@ -332,6 +400,15 @@ impl Report {
 /// is judged: a gate never marks itself green.
 pub fn execute(gate: &dyn Gate, cx: &Ctx) -> Verdict {
     let verdict = gate.run(cx);
+    Reconcile::new(gate.owed())
+        .allow_skip(gate.skip_allow())
+        .verdict(verdict.rows)
+}
+
+/// The same, with the gate's own skip allowlist REFUSED. `cargo xtask gate <name> --strict` is
+/// this: every owed row must have run and passed, and a named gap is red like any other SKIP.
+pub fn execute_strict(gate: &dyn Gate, cx: &Ctx) -> Verdict {
+    let verdict = gate.run(cx);
     Reconcile::new(gate.owed()).verdict(verdict.rows)
 }
 
@@ -356,6 +433,10 @@ pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Ver
 /// as one is how a whole-tree `prove_green` naming the entire owed set discharges the coverage
 /// check for rules with no RED proof anywhere — and those rules are then deletable with
 /// `cargo xtask selftest` still green, which is the one thing this function exists to refuse.
+///
+/// The single exception is DECLARED, NAMED and stale-checked: [`Gate::informational`] rows are
+/// PASS by construction, so they are held to being exercised rather than to going red, and a
+/// declaration that no longer names an owed row is itself refused.
 pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
@@ -377,7 +458,37 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
         .filter(|c| matches!(c.expected, Expect::Red { .. }))
         .flat_map(|c| c.covers.iter().cloned())
         .collect();
-    for owed in gate.owed() {
+    let exercised: BTreeSet<String> = report
+        .cases
+        .iter()
+        .flat_map(|c| c.covers.iter().cloned())
+        .collect();
+    let owed: Vec<String> = gate.owed();
+    let informational: BTreeSet<String> = gate.informational().into_iter().collect();
+
+    // A declaration that no longer names an owed row is a waiver that outlived what it excused,
+    // and it is refused for the same reason every other stale waiver in this tree is.
+    for id in &informational {
+        if !owed.contains(id) {
+            errs.push(format!(
+                "{}: `{id}` is declared informational but is not an owed row id — an exemption \
+                 that names nothing is a line nobody re-reads",
+                gate.name()
+            ));
+        }
+    }
+
+    for owed in owed {
+        if informational.contains(&owed) {
+            if !exercised.contains(&owed) {
+                errs.push(format!(
+                    "{}: owed row id `{owed}` is declared informational and is exercised by no \
+                     case at all — a row that cannot go RED must at least be measured by one",
+                    gate.name()
+                ));
+            }
+            continue;
+        }
         if !covered.contains(&owed) {
             errs.push(format!(
                 "{}: owed row id `{owed}` is covered by no RED selftest case — a green case cannot \
@@ -610,6 +721,20 @@ fn reported_text(verdict: &Verdict) -> Vec<String> {
 }
 
 pub static REGISTRY: &[Registration] = &[
+    Registration {
+        name: "construction",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(construction::ConstructionGate),
+        summary: "how the tree is BUILT, against ARCHITECTURE.md and qa/construction.toml",
+    },
+    Registration {
+        name: "design-bindings",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(design_bindings::DesignBindingsGate),
+        summary: "every ARCHITECTURE.md Appendix B binding cites a check that compares something",
+    },
     Registration {
         name: "denylist",
         batch: 1,
