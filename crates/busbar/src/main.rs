@@ -1324,7 +1324,7 @@ async fn run(data_workers: usize) {
     // root's card is whatever the last resolution said, and each unit prices against the one it
     // pinned at admission. Off, no holder is installed and the seam is silent, which is the honest
     // answer for a binary with no root ledger in it.
-    #[cfg(feature = "root-llm")]
+    #[cfg(any(feature = "root-llm", feature = "root-a2a-serve"))]
     root::kernel::install_card_repricer();
 
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
