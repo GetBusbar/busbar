@@ -274,6 +274,28 @@ fn test_empty_chain_is_open_front_door() {
     assert!(mw.validate_token(Some("anything")));
 }
 
+/// `chain: [keys]` is NOT an open front door, and `is_open()` must say so.
+///
+/// The `keys` arm is an ENGINE ARM rather than a boxed module, so it leaves `self.chain` empty and
+/// sets `keys_in_chain` instead. `is_open()` asked only the first of those two questions and
+/// therefore reported OPEN for a deployment whose door is shut — a node that denies every
+/// unsigned request was described, by its own `GET /api/v1/admin/auth`, as admitting everything.
+/// The two places that already get this right are `run_chain_cached`'s own front-door check (this
+/// file, the `chain.is_empty() && !keys_in_chain` short-circuit) and `busbar-unit-auth`'s
+/// `AuthChain::is_open`; this pins the third to the same rule.
+#[test]
+fn test_keys_arm_is_not_an_open_front_door() {
+    let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
+    assert!(
+        !mw.is_open(),
+        "a chain naming the keys arm is not an open door"
+    );
+    // And the door really is shut: the arm is the terminal authenticator and fails closed.
+    assert_eq!(mw.run_chain(None), ChainVerdict::Denied);
+    assert_eq!(mw.run_chain(Some("not-a-signed-key")), ChainVerdict::Denied);
+    assert!(!mw.validate_token(None));
+}
+
 /// `upstream_credentials` selects WHOSE credential goes upstream; it does not gate the front
 /// door. With an empty chain both modes admit everything (the old none/passthrough split is now
 /// chain-shape for the front door + this knob for egress). 1.5.3: the knob itself moved OFF `auth:`
