@@ -3018,72 +3018,6 @@
    ]
   },
   {
-   "id": "crates/plane-abi-spike/src",
-   "kind": "production",
-   "paths": [
-    "crates/plane-abi-spike/src"
-   ],
-   "tree_hash": "90654969f1de71e6e7bd60fd69b8b3f3a49071ba3a1913d746eee0ee7141238e",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 2
-   },
-   "report": "live unsafe FFI/ABI code (raw pointer derefs, from_raw_parts, extern C-unwind exports) matches none of the plugin-kind gate globs so no forbid-unsafe/manifest/source-denylist row ever runs over it, and the frozen ABI version plus admit kernel are hand-duplicated against the sibling plugin crate with nothing cross-checking the two copies",
-   "auditor": "opus-examples-auditor-a",
-   "fixed_at": null,
-   "exclude": [
-    "crates/plane-abi-spike/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-examples-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "90654969f1de71e6e7bd60fd69b8b3f3a49071ba3a1913d746eee0ee7141238e",
-     "counts": {
-      "MEDIUM": 2
-     },
-     "report": "live unsafe FFI/ABI code (raw pointer derefs, from_raw_parts, extern C-unwind exports) matches none of the plugin-kind gate globs so no forbid-unsafe/manifest/source-denylist row ever runs over it, and the frozen ABI version plus admit kernel are hand-duplicated against the sibling plugin crate with nothing cross-checking the two copies"
-    }
-   ]
-  },
-  {
-   "id": "crates/plane-abi-spike-plugin/src",
-   "kind": "production",
-   "paths": [
-    "crates/plane-abi-spike-plugin/src"
-   ],
-   "tree_hash": "9977bd5e31c11319f8412e61ce8bb7560a66d6bffd4b4198fdc49521148eac75",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 2
-   },
-   "report": "re-declares the frozen ABI's version literal and admit kernel by hand from the sibling spike crate with nothing cross-checking the two copies, and — like that sibling — touches raw pointers/from_raw_parts across a real dlopen boundary while matching no plugin-kind gate glob, so forbid-unsafe/manifest-allowlist/source-denylist never run against it",
-   "auditor": "opus-examples-auditor-a",
-   "fixed_at": null,
-   "exclude": [
-    "crates/plane-abi-spike-plugin/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-examples-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "9977bd5e31c11319f8412e61ce8bb7560a66d6bffd4b4198fdc49521148eac75",
-     "counts": {
-      "MEDIUM": 2
-     },
-     "report": "re-declares the frozen ABI's version literal and admit kernel by hand from the sibling spike crate with nothing cross-checking the two copies, and — like that sibling — touches raw pointers/from_raw_parts across a real dlopen boundary while matching no plugin-kind gate glob, so forbid-unsafe/manifest-allowlist/source-denylist never run against it"
-    }
-   ]
-  },
-  {
    "id": "crates/plugin-loader/src",
    "kind": "production",
    "paths": [
@@ -4467,6 +4401,21 @@
    ]
   },
   {
+   "id": "crates/busbar-transport-grpc/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-transport-http/src/tests",
    "kind": "test",
    "paths": [
@@ -4486,21 +4435,6 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-http/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-transport-grpc/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-grpc/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4996,52 +4930,6 @@
      "report": "zero; read fully"
     }
    ]
-  },
-  {
-   "id": "crates/plane-abi-spike/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/plane-abi-spike/src/tests"
-   ],
-   "tree_hash": "354b7c1d09d28ef465f2e8ed0972247a277f38018e05c869c512041cfced0103",
-   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1
-   },
-   "report": "the suite's one fixture drives the admit kernel down the same accept path in every test, so the throttle branch, deny branch, and the over-budget/size/version guards are never exercised -- replacing the kernel's body with a constant accept would still pass",
-   "auditor": "opus-examples-auditor-a",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-examples-auditor-a",
-     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
-     "tree_hash": "354b7c1d09d28ef465f2e8ed0972247a277f38018e05c869c512041cfced0103",
-     "counts": {
-      "MEDIUM": 1
-     },
-     "report": "the suite's one fixture drives the admit kernel down the same accept path in every test, so the throttle branch, deny branch, and the over-budget/size/version guards are never exercised -- replacing the kernel's body with a constant accept would still pass"
-    }
-   ]
-  },
-  {
-   "id": "crates/plane-abi-spike/benches",
-   "kind": "test",
-   "paths": [
-    "crates/plane-abi-spike/benches"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "rounds": []
   },
   {
    "id": "crates/plugin-loader/src/tests",
