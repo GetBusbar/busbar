@@ -234,6 +234,12 @@ from = 486
 to = 493
 because = """DECLARED FACE, second half, measured in the OTHER instrument. `kind-isolation` counts how often one crate spells another kind's vocabulary, and the fourteen `impl Unit for` blocks each open with the one import the kind's entry needs -- `use busbar_caps::{Unit, UnitToken, <Step>, ...}` -- so every busbar-unit-* crate spells `busbar-caps` a little more than it did. THAT IS WHAT THE FACE IS: fourteen siblings of one kind, each stating its one entry at the same file position. This row is `[[cell]] busbar-unit-verbs x control`, 486 -> 493: `busbar_caps::AdminToken` and the `admin` field of the new `VerbInput` that holds it. The word is caps vocabulary that happens to contain a control instance's name; no control crate is named, imported or depended on. No new dependency edge is created anywhere -- `kind-isolation:deps`, `:test-deps` and `:build-inputs` are untouched and PASS -- and no cell row is minted: the three cells that had no row (`busbar-caps x unit`, `busbar-unit-scope x plane`, `busbar-unit-usage x plane`) are DRAINED to zero in this same commit rather than written down, by citing the composition root as `crates/busbar/src/root/units_*.rs` instead of by its per-plane file name."""
 
+[gate.ceiling_raises."cell.9.count"]
+file = "qa/kind-isolation.toml"
+from = 1798
+to = 1806
+because = """DECLARED: `[[cell]] busbar x plane` 1798 -> 1806. A feature block is text and the census reads Cargo.toml, so declaring `root-a2a-serve` and the forwards beside it spells the plane the feature turns on eight more times. THE COMPOSITION ROOT IS THE ONE CRATE WHOSE JOB IS TO NAME EVERY PLANE -- that is what a composition root is, and 1798 of these hits were already there for exactly that reason. No dependency edge is added: the feature is default-OFF and forwards to deps the manifest already carries. The number moves in the commit that moves it because a rise is read by a person, never re-pinned by a tool."""
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
