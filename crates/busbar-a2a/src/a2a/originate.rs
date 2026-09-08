@@ -223,7 +223,7 @@ pub(super) async fn mirror_push_config(
     };
     // A TASK BUSBAR ALREADY HOLDS AS TERMINAL IS NOT ARMED: that would be registering a webhook for
     // an event that cannot happen, and handing a backend a live capability for finished work.
-    if !super::pushback::worth_registering(task.state) {
+    if !super::pushback::token_live(task.state) {
         return;
     }
     let Some(token) = super::pushback::mint(&task.task_id) else {
