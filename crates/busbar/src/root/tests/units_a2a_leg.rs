@@ -46,8 +46,8 @@ fn every_binding_of_the_unit_has_a_row_in_the_source_table() {
     let fields = bindings_fields();
     assert_eq!(
         fields.len(),
-        23,
-        "the bindings carry twenty-three halves; the table below is written per field, so a change \
+        24,
+        "the bindings carry twenty-four halves; the table below is written per field, so a change \
          in the count is a change this test has to see"
     );
     for field in &fields {
@@ -451,6 +451,294 @@ fn every_declared_class_walks_to_an_ending() {
         // hands the ten steps. A class the plane does not answer for would have panicked above.
         assert_eq!(draft.op, Some(*op), "{op:?}: the class is carried through");
     }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE DISPATCH SEAM: THE UNITS ARE THE GATE, THE SURFACE IS THE ANSWER
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// A surface that counts how many times it was asked and answers with bytes nothing else could
+/// produce.
+///
+/// The COUNT is the whole instrument. Every cell below is about whether the surface was reached, and
+/// an assertion on the answer alone cannot tell "the loop refused before the seam" apart from "the
+/// seam was driven and its answer was then discarded" — which are the same bytes to a caller and
+/// completely different facts about what ran. A surface that ran for a refused unit has executed an
+/// operation on the path where nothing is supposed to execute.
+#[derive(Default)]
+struct CountingSurface {
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingSurface {
+    /// How many times the loop reached the seam.
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// The bytes this double answers with, which no step of the loop could have written.
+const SURFACE_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the surface"}}"#;
+
+/// The status it answers with, deliberately not one the loop's own narrowing would produce.
+const SURFACE_STATUS: u16 = 207;
+
+impl crate::root::units_a2a::A2aDispatch for CountingSurface {
+    fn execute(&self, _op: busbar_contract::ids::OpClassId) -> crate::root::units_a2a::A2aAnswer {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::root::units_a2a::A2aAnswer {
+            status: SURFACE_STATUS,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: SURFACE_BODY.to_vec(),
+        }
+    }
+}
+
+/// **The Route step drives the seam, and what comes back out is the surface's own bytes.**
+///
+/// RED FIRST: before the seam existed this walk answered with a plan and an EMPTY frame — the leg ran
+/// ten steps and served nothing, which is the sentence the previous cut ended on. The three
+/// assertions are the three halves of the seam: the surface was asked exactly once, the status and
+/// the headers came back through the answer, and the body reached the frame the Encode step reports.
+///
+/// The bytes are ones NO step of this loop could have written. A cell that asserted on a plausible
+/// document would pass for a root that had rendered its own — which is the one thing the whole seam
+/// exists to make impossible.
+#[test]
+fn the_route_step_drives_the_seam_and_the_surface_bytes_come_back_out() {
+    let kernel = a_kernel();
+    let leg = A2aLeg::assemble(all_sources(&kernel)).expect("every source is present");
+    let surface = CountingSurface::default();
+
+    let (ended, answer) = serve_one(
+        &leg,
+        &kernel,
+        br#"{"jsonrpc":"2.0","id":1,"method":"tasks/list"}"#,
+        Some(&surface),
+    );
+
+    assert_eq!(
+        surface.asked(),
+        1,
+        "a unit that reached Route asked the surface exactly once — not never, and not twice"
+    );
+    let answer = answer.expect("a unit that reached the seam carries the surface's answer out");
+    assert_eq!(
+        answer.status, SURFACE_STATUS,
+        "the status is the surface's, not one this root narrowed an ending into"
+    );
+    assert_eq!(
+        answer.body, SURFACE_BODY,
+        "and so is every byte of the body"
+    );
+    assert_eq!(
+        answer.headers,
+        vec![("content-type".to_string(), "application/json".to_string())],
+        "and the headers it emitted travel with it"
+    );
+    // AND THE ENCODE STEP REPORTS THEM. The frame is what a driver hands a transport, so a body that
+    // reached the answer and not the frame would be a body the driven path still cannot serve.
+    assert_eq!(
+        frame_bytes(&ended).as_deref(),
+        Some(SURFACE_BODY),
+        "the frame the loop ends with carries the surface's bytes"
+    );
+}
+
+/// **A Verify refusal ends the unit BEFORE the surface is touched.**
+///
+/// RED FIRST, and the red is the reason the seam is at Route and not above it. With nothing
+/// registered the trust unit has nowhere to send an agent call and refuses — and a seam driven
+/// anywhere earlier, or driven unconditionally on the way past, would have executed the operation for
+/// a caller the deployment's own guards said no to. The count is zero, which is a fact about what RAN
+/// rather than about what came back.
+#[test]
+fn a_verify_refusal_never_touches_the_surface() {
+    let kernel = a_kernel();
+    let leg = A2aLeg::assemble(all_sources(&kernel)).expect("every source is present");
+    let surface = CountingSurface::default();
+
+    let (ended, answer) = serve_one(
+        &leg,
+        &kernel,
+        br#"{"jsonrpc":"2.0","id":1,"method":"message/send"}"#,
+        Some(&surface),
+    );
+
+    assert_eq!(
+        refused_at(&ended),
+        Some(busbar_caps::StepName::Verify),
+        "the trust unit refuses the destination the plane calls unreachable"
+    );
+    assert_eq!(
+        surface.asked(),
+        0,
+        "and the surface was never asked, because Verify runs before Route"
+    );
+    assert!(
+        answer.is_none(),
+        "so there is no answer to carry out, and the mount renders the loop's refusal instead"
+    );
+}
+
+/// **An Approve refusal ends the unit BEFORE the surface is touched.**
+///
+/// The scope unit reads silence as a denial and an anonymous caller holds read-only grants, so a
+/// class this plane declares `Full` is refused at Approve. Same instrument, different gate: the
+/// surface answers a caller whose grant does not reach the operation exactly never.
+#[test]
+fn an_approve_refusal_never_touches_the_surface() {
+    let kernel = a_kernel();
+    let leg = A2aLeg::assemble(all_sources(&kernel)).expect("every source is present");
+    let surface = CountingSurface::default();
+
+    let (ended, answer) = serve_one(
+        &leg,
+        &kernel,
+        br#"{"jsonrpc":"2.0","id":1,"method":"tasks/pushNotificationConfig/set"}"#,
+        Some(&surface),
+    );
+
+    assert!(
+        !completed(&ended),
+        "an under-scoped caller does not complete"
+    );
+    assert_eq!(
+        surface.asked(),
+        0,
+        "and the surface was never asked for a unit the scope policy refused"
+    );
+    assert!(
+        answer.is_none(),
+        "so nothing of the surface's is carried out"
+    );
+}
+
+/// **An Admit refusal ends the unit BEFORE the surface is touched.**
+///
+/// The third gate and the money one. A caller bound to a group this node's configuration does not
+/// have is fail-closed at the door — `chain` is `None`, which the admission step renders as over
+/// budget — and a surface asked for that unit would be work done, and possibly value delivered, for a
+/// request that was never paid for.
+#[test]
+fn an_admit_refusal_never_touches_the_surface() {
+    let kernel = a_kernel();
+    let surface = CountingSurface::default();
+
+    // The door is asked about a chain the leg could not resolve. Driven through the units rather than
+    // through the leg because the leg resolves the chain from the group table it was assembled with,
+    // and the fail-closed arm is precisely the case where that resolution came back empty.
+    let refused = admit_with_no_chain(&kernel, &surface);
+    assert_eq!(
+        refused,
+        Some(busbar_caps::ReasonCode::OverBudget),
+        "a caller whose caps could not be read is refused at the door"
+    );
+    assert_eq!(
+        surface.asked(),
+        0,
+        "and Admit runs before Route, so the surface was never asked"
+    );
+}
+
+/// The reason the admission step refuses a unit whose chain could not be resolved.
+///
+/// One walk of the door with the binding the leg would have built, minus the chain. It reads the
+/// refusal off the step's own decision rather than off an ending, because this is a cell about which
+/// gate fired and not about how the loop narrowed it.
+fn admit_with_no_chain(
+    kernel: &Kernel,
+    surface: &CountingSurface,
+) -> Option<busbar_caps::ReasonCode> {
+    use busbar_kernel::teller::Units as _;
+    let leg = A2aLeg::assemble(all_sources(kernel)).expect("every source is present");
+    let pools = leg.pools();
+    let kinds = leg.kinds(records::SCHEMA_TASK, records::OP_GET);
+    let draft = A2aDraft::from_decoded(
+        leg.plane(),
+        &Decoded {
+            op: Some(ops::OP_TASK_LIST),
+            request_bytes: 64,
+            ..Decoded::default()
+        },
+        busbar_contract::wire::ArrivalRecord {
+            source: "127.0.0.1:1".to_string(),
+            port: 0,
+            alpn: None,
+            sni: None,
+            peer_cert: None,
+            transport_chain: vec!["tcp", "http"],
+        },
+    );
+    // Everything the leg would have bound, and `chain: None` — the caller bound to a group this
+    // node's configuration does not have.
+    let bindings = leg.bindings(&pools, &kinds, &[], None, 1_700_000_000, 0, Some(surface));
+    let units = A2aUnits::new(bindings, draft, Grants::of(Scope::ReadOnly));
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let slip = busbar_kernel::slice::GroupLeaseSlip::new();
+    let decision = units.admit(
+        &busbar_caps::UnitToken::mint(&seal),
+        &busbar_caps::AdmitToken::mint(&seal),
+        &a_ctx(),
+        &busbar_caps::PrincipalId::new("anyone"),
+        &[],
+        &slip,
+    );
+    decision.into_result(&seal).err().map(|r| r.reason())
+}
+
+/// The bytes the loop's ending carries on its frame, where it carries one.
+fn frame_bytes(ended: &Ended) -> Option<Vec<u8>> {
+    match ended {
+        Ended::Settled { frame, .. } => frame.as_ref().map(|f| f.bytes.as_slice().to_vec()),
+        Ended::AlreadySettled => None,
+    }
+}
+
+/// Walk one body through the leg WITH a seam, and take back both halves.
+fn serve_one(
+    leg: &A2aLeg,
+    kernel: &Kernel,
+    body: &[u8],
+    dispatch: Option<&dyn crate::root::units_a2a::A2aDispatch>,
+) -> (Ended, Option<crate::root::units_a2a::A2aAnswer>) {
+    let facts: [(&str, &str); 3] = [
+        ("path", "/a2a"),
+        ("method", "POST"),
+        ("peer", "127.0.0.1:1"),
+    ];
+    let chain: [&'static str; 2] = ["tcp", "http"];
+    let arrival = busbar_contract::transport::Arrival {
+        facts: &facts,
+        body,
+        transport: "http",
+        chain: &chain,
+        operation: None,
+        bar: busbar_contract::transport::Bar::Open,
+    };
+    let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+        &kernel.admit_token(),
+        busbar_caps::PrincipalId::new(""),
+        0,
+    ));
+    let leases = busbar_kernel::slice::LeaseCell::new();
+    let meter = busbar_kernel::teller::AccrualMeter::new();
+    let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
+    let canary = busbar_caps::Canary::new();
+    leg.serve(
+        &arrival,
+        kernel,
+        &a_ctx(),
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+        dispatch,
+    )
 }
 
 /// Walk one body through the leg, as the driver would.
