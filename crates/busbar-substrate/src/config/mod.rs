@@ -20,6 +20,9 @@ pub mod hooks;
 pub mod limits;
 pub mod pools;
 pub mod providers;
+// The SECRET REFERENCE type and the fail-closed resolver that turns one into bytes, beside the leaf
+// structs whose `settings:` maps it resolves. Core re-exports it at `busbar_core::config::secret`.
+pub mod secret;
 pub mod sections;
 
 /// A resolved on_error/on_empty TERMINAL. `Weighted` (default) is the non-negotiable safety
