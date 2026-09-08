@@ -683,6 +683,42 @@ fn deps_of(text: &str, want: &str) -> Vec<String> {
 }
 
 /// The crate census, read through the context so a planted manifest counts exactly as a real one.
+/// The one legacy crate in the PLANE family that is not plane-kind SOURCE: `busbar-core` is in the
+/// legacy row so the naming and vocabulary rules read it as plane-side, and it is the NEUTRAL half
+/// of the plane ABI for every scan. One crate cannot be both populations, and `plane-purity` scans
+/// it as neutral ([`crate::planes::neutral_src_roots`]).
+const NEUTRAL_LEGACY: &str = "busbar-core";
+
+/// THE PLANE-KIND SOURCE ROOTS, DERIVED FROM THE KIND TABLE rather than spelled out.
+///
+/// `planes::plane_src_roots` was a literal list — the four `busbar-<key>/src` plus the four
+/// `busbar-<key>-codec/src` — which is a list somebody has to remember to add to. It was already
+/// one crate short of the tree (`busbar-plane-*` is plane-kind and was in no scan), and the whole
+/// point of the dialect split is that `busbar-plane-<p>-<d>` crates arrive in numbers: every one of
+/// them would have to be added here by hand, and a plane crate nobody added is a plane crate the
+/// backwards-reach rule scans zero files of — which is the passing answer to a ban.
+///
+/// The kind table already answers "is this crate plane-kind": [`Family::Plane`] covers the planes,
+/// the dialects, the pre-split `-codec` halves and the retiring legacy plane crates. So the
+/// population comes from there, and a crate named tomorrow is scanned tomorrow.
+pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = census(cx)?
+        .into_iter()
+        .filter(|c| c.family == Family::Plane && c.name != NEUTRAL_LEGACY)
+        .map(|c| format!("{}/src", c.dir))
+        .collect();
+    out.sort();
+    out.dedup();
+    if out.is_empty() {
+        return Err(
+            "no crate under crates/ resolves to a plane-family kind — the plane population is \
+             empty, and an empty population is the passing answer to every ban"
+                .to_string(),
+        );
+    }
+    Ok(out)
+}
+
 fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("toml"))
