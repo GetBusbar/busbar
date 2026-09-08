@@ -8,27 +8,37 @@
 # integrator can look; never rewrites history, never pushes.
 #
 #   scripts/land.sh [--tests "pkg pkg"] [--families 'regex'] [--gate 'rule|rule'] <hash>...
+#   scripts/land.sh --batch <file>          # N landing lines, proven ONCE, bisected on red
+#   scripts/land.sh --selftest              # prove this script's own refusals
 #
 # --tests     cargo packages to test after the picks (default: the packages whose files the picks
 #             touched, by crate directory).
 # --families  a record.sh --filter regex; when given, the candidate binary is rebuilt and those
 #             families are recorded on the ports below and diffed against the golden.
 # --gate      construction-gate rows (an egrep over the FAIL column) that must not be red after.
+#
+# ── WHY A BATCH ───────────────────────────────────────────────────────────────────────────────────
+# One landing is a build, a test leg, a clippy leg, the gates and an oracle recording: 25–40 minutes,
+# almost all of it fixed cost that does not care how many commits are on the tree. Landing N queue
+# lines serially pays that fixed cost N times to prove N disjoint claims that a SINGLE run of the
+# same legs over the UNION would prove at once. `--batch` pays it once.
+#
+# The whole difficulty of batching is what a red means. A red over a union names the union, not the
+# line, and "the batch is red so nothing lands" would trade throughput for a worse answer than the
+# serial queue gave. So a red batch is BISECTED: the tree is reset to the batch's base, the lines are
+# split in half, and each half is re-applied and re-proven on its own, recursively, until every line
+# is either inside a half that went green or is alone in a half that went red. The invariant that
+# makes the result mean the same thing as N serial landings is:
+#
+#     NO LINE IS EVER MARKED GREEN EXCEPT BY A PROOF RUN AT A TIP THAT CONTAINS ITS PICKS.
+#
+# There is no inference step, no "the other half was red so this one must be green". A green half is
+# proven green by its own run of the same legs a serial landing would have run, over the union of
+# exactly the lines in it.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-tests=""; families=""; gate=""; prove=0
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --tests) tests="$2"; shift 2 ;;
-    --families) families="$2"; shift 2 ;;
-    --gate) gate="$2"; shift 2 ;;
-    # --prove: pick nothing; prove the tip as it stands (a landing whose picks are already on
-    # the tree but whose legs were never run to green).
-    --prove) prove=1; shift ;;
-    *) break ;;
-  esac
-done
-[ $# -gt 0 ] || [ "$prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
+# The selftest drives this whole engine against a scratch repository; everything below reads $here.
+[ -n "${LAND_SELFTEST_ROOT:-}" ] && here="$LAND_SELFTEST_ROOT"
 
 # ONE STAMP FOR EVERY PATH THIS RUN WRITES, and it carries the date and the pid.
 #
@@ -47,11 +57,1011 @@ stamp="$(date +%Y%m%d-%H%M%S)-$$"
 # occupied-port guard would turn that collision into a RED attributed to whichever commits happened
 # to be picked. An operator running a second landing sets these in the environment and gets a
 # recording of their own binary; the RED path below prints the triple so a collision reads as one.
-ORACLE_LISTEN_PORT="${ORACLE_LISTEN_PORT:-49901}"
-ORACLE_ADMIN_PORT="${ORACLE_ADMIN_PORT:-49902}"
-ORACLE_MOCK_PORT="${ORACLE_MOCK_PORT:-49911}"
+#
+# ONE KNOB MOVES ALL OF THEM. K disjoint shards each bind a six-port block inside a 20-wide range
+# derived from LAND_ORACLE_PORT_BASE: shard k takes base+20k+{1,2,11,13,14} (and base+20k+3 for the
+# script cells' mock, which record.sh derives as ADMIN+1). The first three blocks are therefore
+# 49901/49902/49911, 49921/49922/49931 and 49941/49942/49951 — the triples the landing queue has
+# always used — and `LAND_ORACLE_PORT_BASE=49700` moves EVERY shard, including the single-shard
+# case. It did not, once: the k=1 path read ORACLE_LISTEN_PORT's own default and went on binding
+# 49911 while the operator believed the whole run had been moved out of the way, which is how a
+# port collision with a neighbouring worktree gets recorded as a red attributed to the picks.
+LAND_ORACLE_SHARDS="${LAND_ORACLE_SHARDS:-3}"
+LAND_ORACLE_PORT_BASE="${LAND_ORACLE_PORT_BASE:-49900}"
+ORACLE_LISTEN_PORT="${ORACLE_LISTEN_PORT:-$((LAND_ORACLE_PORT_BASE + 1))}"
+ORACLE_ADMIN_PORT="${ORACLE_ADMIN_PORT:-$((LAND_ORACLE_PORT_BASE + 2))}"
+ORACLE_MOCK_PORT="${ORACLE_MOCK_PORT:-$((LAND_ORACLE_PORT_BASE + 11))}"
+# merged (default): one diff over `busbar-oracle merge`d parts, so --strict's "zero owed cells" is
+# asked of the whole requested set at once. per-shard: one diff per shard against that shard's own
+# id filter, red if ANY shard is red — the honest fallback when a merge is refused.
+LAND_ORACLE_DIFF="${LAND_ORACLE_DIFF:-merged}"
 
-# The lock file drifts between worktrees; a pick must never fail on it.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# ARGUMENT PARSING, as a function so a batch line is parsed by the same code as a command line.
+# Sets P_tests P_families P_gate P_prove P_hashes.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+land_parse_args() {
+  P_tests=""; P_families=""; P_gate=""; P_prove=0; P_hashes=""; P_batch=""; P_selftest=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --tests) P_tests="$2"; shift 2 ;;
+      --families) P_families="$2"; shift 2 ;;
+      --gate) P_gate="$2"; shift 2 ;;
+      --batch) P_batch="$2"; shift 2 ;;
+      --selftest) P_selftest=1; shift ;;
+      # --prove: pick nothing; prove the tip as it stands (a landing whose picks are already on
+      # the tree but whose legs were never run to green).
+      --prove) P_prove=1; shift ;;
+      *) break ;;
+    esac
+  done
+  P_hashes="$*"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE FLOOR: which legs run when the caller named nothing.
+#
+# This is a function, not four `if`s inline, for one reason: it is the answer to "can a landing run
+# no check and still print GREEN". prove_tree runs EXACTLY the tokens this returns and nothing else,
+# so the selftest can ask the question directly — a union with no --tests and no --families must
+# still come back with build, fmt, clippy and gates in the plan.
+#
+#   $1 = union tests   $2 = union gate rows   $3 = union families
+# tokens: plugins  fmt  gatefiles  tests  clippy  workspace-clippy  kind-isolation  gate  oracle
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+land_floor_plan() {
+  local t="$1" g="$2" f="$3" plan="plugins fmt gatefiles"
+  if [ -n "$t" ]; then plan="$plan tests clippy"; fi
+  # NOTHING WAS NAMED. The old script skipped the test and clippy legs when `$tests` was empty and
+  # went on to print GREEN. A batch makes that worse, not better: one empty line in a union of six
+  # would inherit five other lines' proof. When the union names no package and no family, the floor
+  # is the whole workspace — expensive, and exactly what "prove it or do not call it landed" costs.
+  if [ -z "$t" ] && [ -z "$f" ]; then plan="$plan workspace-clippy"; fi
+  plan="$plan kind-isolation"
+  [ -n "$g" ] && plan="$plan gate"
+  [ -n "$f" ] && plan="$plan oracle"
+  echo "$plan"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# SHARDING THE ORACLE RECORDING.
+#
+# record.sh selects cells with bash's own `[[ "$id" =~ $FILTER ]]` (record.sh:958) — an UNANCHORED
+# ERE over the cell id. Every function below therefore matches with `[[ =~ ]]` too, never with grep
+# and never with python's `re`: a partition asserted with a different matcher than the recorder uses
+# is not an assertion about what will be recorded.
+#
+# The shard unit is the FAMILY — the id's first `|`-field — because that is the unit the queue's own
+# --families regexes are written in, and because a family-anchored shard filter is small enough to
+# read in a log. A shard may record MORE than was requested (a filter that selects part of a family
+# still drags the whole family into its shard); that is sound, because the ONE diff at the end is
+# id-filtered by the caller's own regex. What would not be sound is a shard boundary that DROPS a
+# requested cell or that records one cell twice, and both are refused below.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+# All cell ids, one per line. Extraction only — the matching is bash's.
+land_cell_ids() {
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+for c in d["cells"]: print(c["id"])' "$here/testing/shadow-oracle/cells.json"
+}
+# id<TAB>1 when record.sh can produce a PASS row for it, id<TAB>0 when it cannot.
+#
+# record.sh:995-997 SKIPs the whole mcp and a2a planes unconditionally ("proven by its conformance
+# rig, not recorded here"), and record.sh:1318-1320 exits 1 on "ZERO ROWS IS RED". Those two facts
+# together are a sharding hazard that has nothing to do with the picked commits: pack the 912-cell
+# mcp family into a shard of its own and that shard records 912 skips, counts zero, and exits 1 —
+# a RED landing where the unsharded run was green. So the packer weights families by RECORDABLE
+# cells and refuses to emit a shard that has none.
+land_cell_recordable() {
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+for c in d["cells"]:
+    print("%s\t%d" % (c["id"], 0 if c.get("plane") in ("mcp","a2a") else 1))' \
+    "$here/testing/shadow-oracle/cells.json"
+}
+
+# ERE-escape a family token. The id charset is [A-Za-z0-9 ()+-./|_]; bracket classes are used rather
+# than backslashes because `\|` and `\+` are not portable ERE.
+land_ere_escape() {
+  printf '%s' "$1" | sed -e 's/[.]/[.]/g' -e 's/|/[|]/g' -e 's/(/[(]/g' -e 's/)/[)]/g' -e 's/+/[+]/g'
+}
+
+# land_shard_plan <filter> <K>  -> prints one shard filter per line; non-zero and a reason on stderr
+# when the requested set is empty (zero rows is red, never a fast green).
+land_shard_plan() {
+  local filter="$1" k="$2" id fam rec
+  local all; all="$(land_cell_recordable)" || return 1
+  [ -n "$all" ] || { echo "land.sh: RED — cells.json enumerated no cells" >&2; return 1; }
+  # The requested set as `<family> <recordable>` rows.
+  local req
+  req="$(
+    while IFS="$(printf '\t')" read -r id rec; do
+      [ -n "$id" ] || continue
+      if [[ "$id" =~ $filter ]]; then printf '%s %s\n' "${id%%|*}" "$rec"; fi
+    done <<EOF
+$all
+EOF
+  )"
+  [ -n "$req" ] || {
+    echo "land.sh: RED — the family filter selects ZERO cells: $filter" >&2
+    echo "land.sh:       a recording of nothing diffs green against nothing. Name families that exist." >&2
+    return 1
+  }
+  # Families that can produce a PASS row, heaviest first; then the inert ones (mcp/a2a), which cost
+  # nothing to record and must never be alone in a shard.
+  local live inert nf
+  live="$(printf '%s\n' "$req" | awk '$2==1{c[$1]++} END{for (f in c) printf "%d %s\n", c[f], f}' | sort -rn | awk '{print $2}')"
+  inert="$(printf '%s\n' "$req" | awk '$2==0{c[$1]++} END{for (f in c) printf "%d %s\n", c[f], f}' | sort -rn | awk '{print $2}')"
+  [ -n "$live" ] || {
+    echo "land.sh: RED — every cell the filter selects is on a plane record.sh never records" >&2
+    echo "land.sh:       (mcp/a2a are proven by their conformance rigs). record.sh would exit on" >&2
+    echo "land.sh:       ZERO ROWS IS RED whether this ran sharded or not: $filter" >&2
+    return 1
+  }
+  nf="$(printf '%s\n' "$live" | grep -c .)"
+  [ "$k" -ge 1 ] 2>/dev/null || k=1
+  [ "$k" -le "$nf" ] || k="$nf"
+  # Greedy largest-first bin packing: the point of sharding is wall clock, and wall clock is the
+  # slowest shard, so the heaviest family must not share a shard with the second-heaviest while a
+  # third shard records five cells.
+  local i best bestload n
+  local -a shardf shardload
+  i=0; while [ "$i" -lt "$k" ]; do shardf[$i]=""; shardload[$i]=0; i=$((i + 1)); done
+  # LIVE first (weighted, so every shard ends with at least one recordable family), then INERT.
+  while IFS= read -r fam; do
+    [ -n "$fam" ] || continue
+    n="$(printf '%s\n' "$req" | awk -v f="$fam" '$1==f && $2==1' | grep -c .)"
+    best=0; bestload="${shardload[0]}"; i=1
+    while [ "$i" -lt "$k" ]; do
+      if [ "${shardload[$i]}" -lt "$bestload" ]; then best="$i"; bestload="${shardload[$i]}"; fi
+      i=$((i + 1))
+    done
+    if [ -z "${shardf[$best]}" ]; then shardf[$best]="$(land_ere_escape "$fam")"
+    else shardf[$best]="${shardf[$best]}|$(land_ere_escape "$fam")"; fi
+    shardload[$best]=$(( ${shardload[$best]} + n ))
+  done <<EOF
+$live
+EOF
+  local j=0
+  while IFS= read -r fam; do
+    [ -n "$fam" ] || continue
+    best=$(( j % k )); j=$((j + 1))
+    shardf[$best]="${shardf[$best]}|$(land_ere_escape "$fam")"
+  done <<EOF
+$inert
+EOF
+  i=0; while [ "$i" -lt "$k" ]; do
+    [ -n "${shardf[$i]}" ] && printf '^(%s)[|]\n' "${shardf[$i]}"
+    i=$((i + 1))
+  done
+  return 0
+}
+
+# land_shard_assert <filter> <shard-re>...  -> 0 when the shards are a partition that covers the
+# requested set, non-zero (with the offending cell named) otherwise. This is the gate on the
+# sharding, and it is deliberately callable on a plan this script did not produce so the selftest
+# can hand it a KNOWN-BAD plan and watch it refuse.
+land_shard_assert() {
+  local filter="$1"; shift
+  [ $# -gt 0 ] || { echo "land.sh: RED — no shards to assert" >&2; return 1; }
+  local -a res; local i=0
+  for r in "$@"; do res[$i]="$r"; i=$((i + 1)); done
+  local n_shards=$i
+  local all; all="$(land_cell_ids)"
+  local id hits j req=0 covered=0 over=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    hits=0; j=0
+    while [ "$j" -lt "$n_shards" ]; do
+      if [[ "$id" =~ ${res[$j]} ]]; then hits=$((hits + 1)); fi
+      j=$((j + 1))
+    done
+    if [ "$hits" -gt 1 ]; then
+      echo "land.sh: RED — shards are not disjoint: cell '$id' is recorded by $hits shards" >&2
+      return 1
+    fi
+    if [[ "$id" =~ $filter ]]; then
+      req=$((req + 1))
+      if [ "$hits" -eq 0 ]; then
+        echo "land.sh: RED — shard union does not cover the requested set: '$id' is in no shard" >&2
+        return 1
+      fi
+      covered=$((covered + 1))
+    elif [ "$hits" -eq 1 ]; then over=$((over + 1)); fi
+  done <<EOF
+$all
+EOF
+  [ "$req" -gt 0 ] || { echo "land.sh: RED — the requested family set is empty" >&2; return 1; }
+  echo "land.sh: shards: $n_shards, disjoint, covering all $req requested cell(s) (+$over recorded over)"
+  return 0
+}
+
+# land_shards_collect <dir-prefix> <K>  -> 0 only when every shard exited 0 AND left a recording.
+# A shard that died is a landing that is RED, never a landing that is green over the shards that
+# happened to survive: the merged recording would simply be missing those cells and --strict would
+# have nothing to complain about because it was never told they were owed by THIS run.
+land_shards_collect() {
+  local pre="$1" k="$2" i=0 bad=0
+  while [ "$i" -lt "$k" ]; do
+    local d="$pre$i" rc
+    rc="$(cat "$d.rc" 2>/dev/null || echo missing)"
+    if [ "$rc" != "0" ]; then
+      echo "land.sh: RED — oracle shard $i exited '$rc' (see $d.log)" >&2; bad=1
+    elif [ ! -d "$d" ] || [ -z "$(ls -A "$d" 2>/dev/null)" ]; then
+      echo "land.sh: RED — oracle shard $i left no recording in $d" >&2; bad=1
+    fi
+    i=$((i + 1))
+  done
+  return "$bad"
+}
+
+# land_ledger_assert <filter> <dir-prefix> <K>  -> 0 when the parts' ledgers are disjoint and cover
+# every requested cell. Callable on directories this script did not produce, so the selftest can
+# hand it a ledger pair it knows is wrong and watch it refuse.
+land_ledger_assert() {
+  local filter="$1" pre="$2" k="$3" i=0 rows=0
+  local tmp; tmp="$(mktemp -t land-ledger)" || return 1
+  : >"$tmp"
+  while [ "$i" -lt "$k" ]; do
+    [ -f "$pre$i/ledger.tsv" ] || {
+      echo "land.sh: RED — oracle shard $i wrote no ledger; what it recorded is unmeasurable" >&2
+      rm -f "$tmp"; return 1; }
+    cut -f1 "$pre$i/ledger.tsv" >>"$tmp"
+    i=$((i + 1))
+  done
+  rows="$(grep -c . "$tmp" || true)"
+  [ "${rows:-0}" -gt 0 ] || {
+    echo "land.sh: RED — the shard ledgers hold no rows at all. Zero rows is red." >&2
+    rm -f "$tmp"; return 1; }
+  local dup; dup="$(sort "$tmp" | uniq -d | head -3)"
+  [ -z "$dup" ] || {
+    echo "land.sh: RED — shards recorded the same cell twice: $(echo $dup)" >&2
+    rm -f "$tmp"; return 1; }
+  local recorded; recorded="$(sort -u "$tmp")"
+  local id miss=0
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if [[ "$id" =~ $filter ]]; then
+      printf '%s\n' "$recorded" | grep -qxF -- "$id" || {
+        echo "land.sh: RED — requested cell '$id' was recorded by no shard" >&2; miss=$((miss + 1)); }
+    fi
+    [ "$miss" -lt 3 ] || break
+  done <<EOF
+$(land_cell_ids)
+EOF
+  rm -f "$tmp"
+  [ "$miss" -eq 0 ] || return 1
+  echo "land.sh: shard ledgers: $rows row(s), disjoint, covering every requested cell"
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE PROOF. Every leg a landing has ever had, over a union of packages / rows / families, at
+# whatever tip the tree is at. Called once per batch, and once per bisected half.
+#
+#   prove_tree <base-sha> <tests> <gate> <families> <label>
+#
+# It reads the tree; it does not move it. Resetting after a red is the caller's business, because
+# only the caller knows whether a red is "leave it in place for the integrator" (a single landing)
+# or "put it back and split" (a batch).
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+prove_tree() {
+  local base="$1" tests="$2" gate="$3" families="$4" label="$5"
+  PROVEN=""
+
+  # THE SELFTEST'S PROVER. It is a function of the TREE, not of the line number — a poisoned file
+  # is red wherever it is and however the batch was split — which is what makes the bisect below a
+  # thing the selftest can actually catch getting wrong. Everything above and below this point (the
+  # picking, the resetting, the halving, the outcome book-keeping) runs for real.
+  if [ -n "${LAND_SELFTEST_ROOT:-}" ]; then
+    if [ -e "$here/POISON" ]; then
+      echo "land.sh: RED — [$label] selftest prover: POISON is on the tree" >&2; return 1
+    fi
+    PROVEN=" selftest prover;"; echo "land.sh: [$label] selftest prover: green"; return 0
+  fi
+
+  local plan; plan="$(land_floor_plan "$tests" "$gate" "$families")"
+  echo "land.sh: [$label] plan: $plan"
+  local touched; touched="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null || true)"
+
+  local leg
+  for leg in $plan; do
+    case "$leg" in
+
+    plugins)
+      # The plugin batteries refuse to skip when their cdylib is absent, so the example plugins are
+      # built before any test leg; a green here must mean the ABI-crossing cells actually ran.
+      local plog="$here/target/land-plugins-$stamp.log"
+      if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-store-example-plugin -p busbar-export-example-plugin -p busbar-secret-example-plugin >"$plog" 2>&1); then
+        grep -E '^error' "$plog" | head -5 >&2
+        echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; return 1
+      fi
+      PROVEN="$PROVEN plugin cdylibs build;" ;;
+
+    fmt)
+      # RUSTFMT OVER THE FILES THE PICKS TOUCHED, not over the workspace. CI runs `cargo fmt --all
+      # --check`, so a pick that lands unformatted Rust is a red CI run this script could have
+      # caught in two seconds; but a workspace check would attribute the tree's PRE-EXISTING drift
+      # to whoever landed next, and a gate that reds on somebody else's file is a gate people learn
+      # to pass with --no-verify. Scoped to the diff, the verdict is the picks'.
+      local rs; rs="$(printf '%s\n' "$touched" | grep -E '\.rs$' || true)"
+      local nfmt=0
+      if [ -n "$rs" ]; then
+        local bad=""
+        while IFS= read -r f; do
+          [ -n "$f" ] && [ -f "$here/$f" ] || continue
+          nfmt=$((nfmt + 1))
+          (cd "$here" && rustfmt --check --quiet "$f" >/dev/null 2>&1) || bad="$bad $f"
+        done <<EOF
+$rs
+EOF
+        [ -z "$bad" ] || {
+          echo "land.sh: RED — rustfmt --check on picked file(s):$bad" >&2; return 1; }
+      fi
+      PROVEN="$PROVEN rustfmt on $nfmt picked .rs file(s);" ;;
+
+    gatefiles)
+      # A landing whose picks touch only `scripts/`, `.github/` or `testing/` selects NO cargo
+      # package — the crate-directory grep below matches nothing — so `$tests` is empty, the test and
+      # clippy legs are skipped, and with no `--gate` and no `--families` this script used to reach
+      # its final line having executed not one check. It then printed GREEN, which is the exact
+      # sentence an integrator reads as "these commits were proven". Landing a change to the GATES
+      # THEMSELVES was the one case with no proof at all, which is precisely backwards: a broken gate
+      # script is invisible to every other leg here, because every other leg is about the crates.
+      #
+      # So every touched shell/python/workflow file is parsed, and every touched script that
+      # advertises a `--selftest` runs it. These are cheap (seconds) and they catch the two failures
+      # that actually happen to a picked gate script: it no longer parses, and its own self-test
+      # cases no longer hold.
+      local gate_files; gate_files="$(printf '%s\n' "$touched" | grep -E '^(scripts|testing|\.github)/.*\.(sh|py|mjs|yml|yaml)$' || true)"
+      local n_parsed=0 n_selftests=0 f
+      if [ -n "$gate_files" ]; then
+        while IFS= read -r f; do
+          [ -n "$f" ] && [ -f "$here/$f" ] || continue
+          case "$f" in
+            *.sh)
+              bash -n "$here/$f" || { echo "land.sh: RED — $f does not parse (bash -n)" >&2; return 1; }
+              n_parsed=$((n_parsed + 1)) ;;
+            *.py)
+              python3 -m py_compile "$here/$f" || { echo "land.sh: RED — $f does not compile (py_compile)" >&2; return 1; }
+              n_parsed=$((n_parsed + 1)) ;;
+            *.yml|*.yaml)
+              case "$f" in
+                .github/workflows/*)
+                  if command -v actionlint >/dev/null 2>&1; then
+                    (cd "$here" && actionlint "$f") || { echo "land.sh: RED — actionlint $f" >&2; return 1; }
+                    n_parsed=$((n_parsed + 1))
+                  else
+                    python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$here/$f" \
+                      || { echo "land.sh: RED — $f is not valid YAML" >&2; return 1; }
+                    n_parsed=$((n_parsed + 1))
+                  fi ;;
+              esac ;;
+            *.mjs)
+              if command -v node >/dev/null 2>&1; then
+                node --check "$here/$f" || { echo "land.sh: RED — $f does not parse (node --check)" >&2; return 1; }
+                n_parsed=$((n_parsed + 1))
+              fi ;;
+          esac
+          # …and its own self-test, where it has one. A gate script that has stopped discriminating
+          # is worse than one that fails to parse: it lands green and goes on reporting green.
+          local slog="$here/target/land-selftest-$stamp.log"
+          case "$f" in
+            *.sh)
+              # A script ADVERTISES a self-test when it handles the flag (a `case` arm or a quoted
+              # comparison), not when its prose merely mentions one.
+              if grep -qE -- "(--selftest\)|[\"']--selftest[\"'])" "$here/$f"; then
+                if ! (cd "$here" && bash "$f" --selftest >"$slog" 2>&1); then
+                  tail -20 "$slog" >&2
+                  echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; return 1
+                fi
+                n_selftests=$((n_selftests + 1))
+              fi ;;
+            *.py)
+              if grep -qE -- "[\"']--selftest[\"']" "$here/$f"; then
+                if ! (cd "$here" && python3 "$f" --selftest >"$slog" 2>&1); then
+                  tail -20 "$slog" >&2
+                  echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; return 1
+                fi
+                n_selftests=$((n_selftests + 1))
+              fi ;;
+          esac
+        done <<EOF
+$gate_files
+EOF
+        PROVEN="$PROVEN $n_parsed gate file(s) parsed, $n_selftests self-test(s) green;"
+      fi ;;
+
+    tests)
+      local args=""; for p in $tests; do args="$args -p $p"; done
+      echo "land.sh: cargo test $args"
+      # cargo's own exit status is the verdict; the grep only names the red lines. A pipeline here
+      # would let pipefail turn a failing cargo into a skipped check.
+      local log="$here/target/land-$stamp.log"
+      # shellcheck disable=SC2086
+      if ! (cd "$here" && cargo test $args >"$log" 2>&1); then
+        grep -E '^test result:.* [1-9][0-9]* failed|^error(\[|:)|^---- .* stdout ----|panicked at' "$log" | head -20 >&2
+        echo "land.sh: RED — tests failed in: $tests (log: $log)" >&2; return 1
+      fi
+      PROVEN="$PROVEN cargo test ($tests);" ;;
+
+    clippy)
+      local args=""; for p in $tests; do args="$args -p $p"; done
+      local log="$here/target/land-$stamp.log"
+      # shellcheck disable=SC2086
+      if ! (cd "$here" && cargo clippy $args --all-targets -- -D warnings >"$log" 2>&1); then
+        grep -E '^(warning|error)' "$log" | head -5 >&2
+        echo "land.sh: RED — clippy (log: $log)" >&2; return 1
+      fi
+      echo "land.sh: tests and clippy green for: $tests"
+      PROVEN="$PROVEN cargo clippy ($tests);" ;;
+
+    workspace-clippy)
+      local log="$here/target/land-wsclippy-$stamp.log"
+      echo "land.sh: nothing was named — falling back to the workspace floor (build + clippy)"
+      if ! (cd "$here" && cargo clippy --workspace --all-targets -- -D warnings >"$log" 2>&1); then
+        grep -E '^(warning|error)' "$log" | head -5 >&2
+        echo "land.sh: RED — workspace clippy (log: $log)" >&2; return 1
+      fi
+      PROVEN="$PROVEN workspace build+clippy;" ;;
+
+    kind-isolation)
+      # THE KIND-ISOLATION GATE IS MEASURED ON EVERY LANDING, unconditionally — it is the owner's
+      # ship criterion (2026-09-07), and a criterion only measured when somebody remembers to ask is
+      # not one. It is an xtask-registry gate, not a construction row, so it runs through the
+      # registry rather than being grepped out of the construction gate's log. Self-test FIRST.
+      (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
+        || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
+      (cd "$here" && cargo xtask gate kind-isolation --selftest >/dev/null) \
+        || { echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself)" >&2; return 1; }
+      (cd "$here" && cargo xtask gate kind-isolation) \
+        || { echo "land.sh: RED — kind-isolation (a plugin kind was fused; rows above)" >&2; return 1; }
+      PROVEN="$PROVEN kind-isolation green;" ;;
+
+    gate)
+      # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
+      # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
+      # at all (an unreadable ceilings file, an unbuildable runner) is red, not green.
+      local glog="$here/target/land-gate-$stamp.log"
+      ( cd "$here" && cargo xtask gate construction --report ) >"$glog" 2>&1 || true
+      local rows; rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
+      [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; return 1; }
+      local named; named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
+      [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$gate' (renamed rule?)" >&2; return 1; }
+      local red; red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
+      [ -z "$red" ] || { echo "land.sh: RED — construction gate rows still red: $red" >&2; return 1; }
+      echo "land.sh: gate rows green: $gate"
+      PROVEN="$PROVEN construction rows ($gate);" ;;
+
+    oracle)
+      prove_oracle "$families" || return 1 ;;
+    esac
+  done
+  [ -n "$PROVEN" ] || {
+    echo "land.sh: RED — nothing was proven. The plan was empty, which land_floor_plan must never" >&2
+    echo "land.sh:       return. A landing that ran no check is not a green landing." >&2
+    return 1; }
+  return 0
+}
+
+# ── THE ORACLE LEG, SHARDED ───────────────────────────────────────────────────────────────────────
+# Recording is the slowest leg in a landing and it is embarrassingly parallel: every cell is an
+# independent (request, response, effects) triple. What makes it NOT trivially parallel is that each
+# recorder binds a listen/admin/mock triple and drives one busbar process, so two shards on one port
+# triple would produce a red attributed to the picked commits. Each shard gets its own triple.
+prove_oracle() {
+  local families="$1"
+  # cargo's exit status is the verdict (a pipe into grep would let pipefail invert it).
+  local blog="$here/target/land-build-$stamp.log"
+  if ! (cd "$here" && cargo build --release -p busbar >"$blog" 2>&1); then
+    grep -E '^error' "$blog" | head -5 >&2
+    echo "land.sh: RED — release build (log: $blog)" >&2; return 1
+  fi
+  local out="$here/target/oracle/recordings/land-$stamp"
+  # record.sh only `mkdir -p`s its --out, so the directory is cleared HERE. A recording the differ
+  # reads must contain this candidate's cells and nothing else.
+  rm -rf "$out" "$out.report" "$out".shard*
+  # …and the PARENT has to exist before the redirect below opens `$out.log` in it. record.sh makes
+  # its own `--out`, but the shell opens the log first, so a worktree that has never recorded dies
+  # on "No such file or directory" AFTER paying for the release build — and the message it dies with
+  # names the ports, so a first run reads as a port collision that is not happening.
+  mkdir -p "$(dirname "$out")"
+
+  local plan; plan="$(land_shard_plan "$families" "$LAND_ORACLE_SHARDS")" || return 1
+  local -a sre; local i=0
+  while IFS= read -r r; do [ -n "$r" ] && { sre[$i]="$r"; i=$((i + 1)); }; done <<EOF
+$plan
+EOF
+  local k=$i
+  [ "$k" -ge 1 ] || { echo "land.sh: RED — the shard planner produced no shards" >&2; return 1; }
+  # THE PARTITION IS ASSERTED BEFORE A SINGLE CELL IS RECORDED, with record.sh's own matcher.
+  land_shard_assert "$families" "${sre[@]}" || return 1
+
+  if [ "$k" -eq 1 ]; then
+    # One shard is the old path, and it keeps the operator's ORACLE_*_PORT overrides exactly.
+    i=0
+  fi
+  # K RECORDERS ON ONE HOST MAKE THE HOST K TIMES SLOWER, and two of record.sh's waits are
+  # wall-clock bounds whose expiry is written into the CELL: ORACLE_BOOT_BOUND_SECS (record.sh:334,
+  # :589-593 — "on a loaded machine a warning-boot cell whose golden is `exit 0` records `exit 124`
+  # … the harness's stopwatch frozen into the cell as if it were the binary's answer") and
+  # ORACLE_EGRESS_SETTLE_SECS (record.sh:670). Left at their single-recorder defaults, sharding would
+  # manufacture divergences that are facts about this host's load and about nothing the picks did.
+  # They scale with the fan-out, and only upward — an operator's own export still wins.
+  local boot_secs egress_secs
+  boot_secs="${ORACLE_BOOT_BOUND_SECS:-$(( 60 * k ))}"
+  egress_secs="${ORACLE_EGRESS_SETTLE_SECS:-$(( 15 * k ))}"
+
+  # The oracle plugin cache under $HOME is shared and deliberately concurrency-safe (fetch-plugin.sh
+  # writes beside the target and renames), but K shards starting cold would each pay for the same
+  # download. Warm it once, and do not let a warm-up failure be the verdict: the shards fetch it
+  # themselves and their own failure is the one that counts.
+  [ "$k" -gt 1 ] && "$here/bin/oracle" fetch-plugin webrequest-hook >/dev/null 2>&1
+
+  local pids=""
+  i=0
+  while [ "$i" -lt "$k" ]; do
+    # SIX PORTS PER SHARD, not three. Beyond the recording's own listen/admin/mock, record.sh:266-267
+    # starts a SECOND busbar for `exec.mode: boot` cells, and record.sh:1037 gives script cells a
+    # mock on ADMIN_PORT+1. Left derived, the boot pair defaults to LISTEN+10/ADMIN+10 and then walks
+    # upward by two (record.sh:274-278) until it is clear of this run's own four — a walk that could
+    # step out of this shard's block and into the next shard's. Pinning all six inside a 20-wide
+    # block makes the blocks provably non-overlapping and the walk a no-op.
+    #   shard 0: 49901 49902 49903 49911 49913 49914   (the queue's historical triple)
+    #   shard 1: 49921 49922 49923 49931 49933 49934
+    #   shard 2: 49941 49942 49943 49951 49953 49954
+    # The 499xx band is above the 4xxxx range the agent worktrees bind.
+    local lp ap mp blp bap
+    if [ "$k" -eq 1 ]; then
+      # One shard keeps the operator's ORACLE_*_PORT overrides exactly; absent those it is block 0
+      # of LAND_ORACLE_PORT_BASE, the same block shard 0 of a fan-out would take. The boot pair is
+      # pinned rather than derived so it cannot walk (record.sh:274-278) out of the block.
+      lp="$ORACLE_LISTEN_PORT"; ap="$ORACLE_ADMIN_PORT"; mp="$ORACLE_MOCK_PORT"
+      blp=$(( LAND_ORACLE_PORT_BASE + 13 )); bap=$(( LAND_ORACLE_PORT_BASE + 14 ))
+      # …unless the operator moved the triple by hand, in which case the boot pair follows it.
+      case "$lp" in "$((LAND_ORACLE_PORT_BASE + 1))") ;; *) blp=$(( lp + 10 )); bap=$(( ap + 10 )) ;; esac
+    else
+      local b=$(( LAND_ORACLE_PORT_BASE + 20 * i ))
+      lp=$(( b + 1 )); ap=$(( b + 2 )); mp=$(( b + 11 )); blp=$(( b + 13 )); bap=$(( b + 14 ))
+    fi
+    echo "land.sh: oracle shard $i on $lp/$ap/$mp (boot $blp/$bap): ${sre[$i]}"
+    (
+      ORACLE_LISTEN_PORT="$lp" ORACLE_ADMIN_PORT="$ap" ORACLE_MOCK_PORT="$mp" \
+      ORACLE_BOOT_LISTEN_PORT="$blp" ORACLE_BOOT_ADMIN_PORT="$bap" \
+      ORACLE_BOOT_BOUND_SECS="$boot_secs" ORACLE_EGRESS_SETTLE_SECS="$egress_secs" \
+        "$here/bin/oracle" record --plane all --bin "$here/target/release/busbar" \
+        --filter "${sre[$i]}" --out "$out.shard$i" >"$out.shard$i.log" 2>&1
+      echo $? >"$out.shard$i.rc"
+    ) &
+    pids="$pids $!"
+    i=$((i + 1))
+  done
+  for p in $pids; do wait "$p" || true; done
+  # A shard that failed to record is a RED landing, full stop. It is never "the shards that finished
+  # were green": the missing cells would simply be absent from the merged recording, and a differ
+  # asked about a set it was never handed has nothing to be strict about.
+  land_shards_collect "$out.shard" "$k" || {
+    echo "land.sh:       if another landing is recording on this host, set LAND_ORACLE_PORT_BASE and re-run" >&2
+    return 1; }
+  # THE PARTITION, ASSERTED AGAIN AGAINST WHAT WAS ACTUALLY RECORDED. The check before the fan-out
+  # is a claim about regexes; this one is a claim about ledger rows, and it is the one that catches a
+  # filter that was not as anchored as it read. record.sh writes one ledger row per SELECTED cell
+  # (PASS, SKIP or FAIL alike), so the union of the parts' first columns is exactly the set of cells
+  # this landing recorded.
+  land_ledger_assert "$families" "$out.shard" "$k" || return 1
+
+  # The same regex selects the cells on both sides (an ID filter, the domain record.sh --filter
+  # uses), and --strict makes the differ's exit code carry the verdict for this subset: zero owed
+  # cells, an unaccepted divergence, or an owed cell missing from the candidate is red.
+  # THE SAME GOLDEN CI READS — the committed, signed-off recording, which is also why
+  # `--allow-harness-skew` is not passed: a harness edit that moves the rev is a golden to re-stamp
+  # or re-record, not a warning to pass over.
+  local golden="$here/testing/shadow-oracle/golden/1.5.5"
+  if [ "$LAND_ORACLE_DIFF" = merged ] && [ "$k" -gt 1 ]; then
+    local parts=""; i=0
+    while [ "$i" -lt "$k" ]; do parts="$parts $out.shard$i"; i=$((i + 1)); done
+    # No --allow-*-skew: the shards ran in this same process, on this host, against this one binary,
+    # under this one pinned harness. If merge refuses them, the thing it is refusing is REAL — the
+    # shards did not record the same candidate — and that is a red landing, not a flag to add.
+    # shellcheck disable=SC2086
+    # --cells so the merged ledger is written in cells.json order (record.sh's own order) rather
+    # than in part order: a merged part must be byte-comparable to a single-shot recording.
+    "$here/bin/oracle" merge --out "$out" --cells "$here/testing/shadow-oracle/cells.json" $parts >"$out.merge.log" 2>&1 || {
+      tail -20 "$out.merge.log" >&2
+      echo "land.sh: RED — busbar-oracle merge refused the shards (see $out.merge.log)." >&2
+      echo "land.sh:       Re-run with LAND_ORACLE_DIFF=per-shard to diff each shard on its own," >&2
+      echo "land.sh:       or LAND_ORACLE_SHARDS=1 for one unsharded recording." >&2
+      return 1; }
+    "$here/bin/oracle" diff --golden "$golden" \
+      --candidate "$out" --out "$out.report" --cells "$here/testing/shadow-oracle/cells.json" \
+      --accepted "$here/testing/shadow-oracle/accepted-differences.json" \
+      --id-filter "$families" --strict \
+      || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; return 1; }
+    echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed, $k merged shard(s))"
+  else
+    # PER-SHARD: each shard diffed against its own filter, red if ANY shard is red. Strictness is
+    # asked of each subset rather than of the union, which is weaker in exactly one way — it cannot
+    # see a cell owed by the requested set that landed in no shard — and that is the one thing
+    # land_shard_assert already refused above.
+    local red=0; i=0
+    while [ "$i" -lt "$k" ]; do
+      "$here/bin/oracle" diff --golden "$golden" \
+        --candidate "$out.shard$i" --out "$out.shard$i.report" --cells "$here/testing/shadow-oracle/cells.json" \
+        --accepted "$here/testing/shadow-oracle/accepted-differences.json" \
+        --id-filter "${sre[$i]}" --strict \
+        || { echo "land.sh: RED — oracle shard $i: ${sre[$i]} (see $out.shard$i.report)" >&2; red=1; }
+      i=$((i + 1))
+    done
+    [ "$red" = 0 ] || return 1
+    echo "land.sh: oracle green on: $families ($k shard(s), diffed per shard)"
+  fi
+  PROVEN="$PROVEN oracle families ($families);"
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE BATCH ENGINE
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# BL_text/BL_tests/BL_fams/BL_gate/BL_hashes/BL_prove/BL_out, indexed by line number (0-based).
+
+land_pick_hashes() {  # $1 = space-separated hashes; 0 on success, 1 on conflict (tree restored)
+  local base; base="$(git -C "$here" rev-parse HEAD)"
+  local h
+  # The lock file drifts between worktrees; a pick must never fail on it.
+  git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
+  for h in $1; do
+    if ! git -C "$here" cherry-pick -x "$h" >/dev/null 2>&1; then
+      git -C "$here" cherry-pick --abort >/dev/null 2>&1
+      git -C "$here" reset -q --hard "$base"
+      LAND_CONFLICT_AT="$h"
+      return 1
+    fi
+  done
+  return 0
+}
+
+land_apply_line() {  # $1 = index; 0 when the line's picks are on the tree
+  local i="$1"
+  BL_out[$i]=PENDING
+  local base; base="$(git -C "$here" rev-parse HEAD)"
+  if [ -n "${BL_hashes[$i]}" ]; then
+    if ! land_pick_hashes "${BL_hashes[$i]}"; then
+      echo "land.sh: line $((i + 1)) RED-conflict at $LAND_CONFLICT_AT — its picks are backed out, the batch continues" >&2
+      BL_out[$i]=RED-CONFLICT
+      return 1
+    fi
+    # WHAT THE PICKS ACTUALLY TOUCHED, per line, so a line that named no --tests contributes the
+    # same packages to the union that it would have tested on its own.
+    if [ -z "${BL_tests[$i]}" ]; then
+      BL_tests[$i]="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null | grep -o '^crates/[^/]*' | sort -u \
+        | while read -r d; do grep -m1 '^name = ' "$here/$d/Cargo.toml" 2>/dev/null | sed 's/name = "\(.*\)"/\1/'; done | tr '\n' ' ')"
+    fi
+  fi
+  return 0
+}
+
+land_batch_range() {  # $@ = line indices; the tree is at their base on entry
+  local -a idx; local i=0
+  for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
+  local n=$i
+  [ "$n" -gt 0 ] || return 0
+  local base; base="$(git -C "$here" rev-parse HEAD)"
+  local -a applied; local na=0
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    if land_apply_line "${idx[$i]}"; then applied[$na]="${idx[$i]}"; na=$((na + 1)); fi
+    i=$((i + 1))
+  done
+  [ "$na" -gt 0 ] || return 0   # every line in this range conflicted; nothing to prove
+
+  # THE UNION. Packages are a set; gate rows and family regexes are alternations.
+  local u_tests="" u_gate="" u_fams="" lbl=""
+  i=0
+  while [ "$i" -lt "$na" ]; do
+    local j="${applied[$i]}"
+    u_tests="$u_tests ${BL_tests[$j]}"
+    [ -n "${BL_gate[$j]}" ] && u_gate="$u_gate|${BL_gate[$j]}"
+    [ -n "${BL_fams[$j]}" ] && u_fams="$u_fams|(${BL_fams[$j]})"
+    lbl="$lbl,$((j + 1))"
+    i=$((i + 1))
+  done
+  # shellcheck disable=SC2086
+  u_tests="$(printf '%s\n' $u_tests | sed '/^$/d' | sort -u | tr '\n' ' ')"
+  u_gate="${u_gate#|}"; u_fams="${u_fams#|}"; lbl="lines ${lbl#,}"
+
+  echo "land.sh: === proving $lbl at $(git -C "$here" rev-parse --short HEAD)"
+  if prove_tree "$base" "$u_tests" "$u_gate" "$u_fams" "$lbl"; then
+    i=0; while [ "$i" -lt "$na" ]; do BL_out[${applied[$i]}]=GREEN; i=$((i + 1)); done
+    echo "land.sh: === GREEN $lbl — proven by:$PROVEN"
+    return 0
+  fi
+
+  git -C "$here" reset -q --hard "$base"
+  if [ "$na" -eq 1 ]; then
+    BL_out[${applied[0]}]=RED
+    echo "land.sh: === RED line $(( ${applied[0]} + 1 )) — alone, proven red, backed out" >&2
+    return 0
+  fi
+  # BISECT. The whole range is split — including the lines that conflicted, because a line can
+  # conflict against a preceding line that is about to be found red and dropped, and it deserves the
+  # second chance the serial queue would have given it.
+  local half=$(( (n + 1) / 2 ))
+  echo "land.sh: === RED over $lbl — bisecting into $half + $((n - half))" >&2
+  land_batch_range "${idx[@]:0:$half}"
+  land_batch_range "${idx[@]:$half}"
+  return 0
+}
+
+land_run_batch() {  # $1 = batch file
+  local bf="$1"
+  [ -f "$bf" ] || { echo "land.sh: --batch: no such file: $bf" >&2; exit 2; }
+  local n=0 line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    BL_text[$n]="$line"
+    eval "land_parse_args $line"
+    BL_tests[$n]="$P_tests"; BL_fams[$n]="$P_families"; BL_gate[$n]="$P_gate"
+    BL_hashes[$n]="$P_hashes"; BL_prove[$n]="$P_prove"; BL_out[$n]=PENDING
+    if [ -z "$P_hashes" ] && [ "$P_prove" != 1 ]; then
+      echo "land.sh: --batch line $((n + 1)) has no hashes and no --prove: $line" >&2; exit 2
+    fi
+    n=$((n + 1))
+  done <"$bf"
+  # AN EMPTY BATCH IS REFUSED. It is the one input that would otherwise walk the entire engine,
+  # prove nothing at all, and exit 0 — the queue runner would read that as "those lines landed".
+  [ "$n" -gt 0 ] || {
+    echo "land.sh: RED — --batch $bf holds no landing lines. An empty batch proves nothing and is" >&2
+    echo "land.sh:       not a green landing; it is a queue that popped nothing." >&2
+    exit 2; }
+
+  local -a all; local i=0
+  while [ "$i" -lt "$n" ]; do all[$i]="$i"; i=$((i + 1)); done
+  local base0; base0="$(git -C "$here" rev-parse HEAD)"
+  echo "land.sh: batch $stamp: $n line(s) on $(git -C "$here" rev-parse --short HEAD)"
+  land_batch_range "${all[@]}"
+
+  # PER-LINE OUTCOMES, in the queue's own order, for the runner and for the record.
+  local res="$bf.result"; : >"$res"
+  local done_file="${LAND_DONE:-$here/target/gate/land-done.txt}"
+  mkdir -p "$(dirname "$done_file")" 2>/dev/null || true
+  local green=0 red=0 conflict=0
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    local st="${BL_out[$i]}"
+    [ "$st" = PENDING ] && st=RED   # never left unstated: an unproven line is red
+    printf '%s\t%s\n' "$st" "${BL_text[$i]}" >>"$res"
+    printf '%s batch=%s log=%s %s\n' "$st" "$stamp" "$here/target/land-$stamp.log" "${BL_text[$i]}" >>"$done_file"
+    case "$st" in GREEN) green=$((green + 1)) ;; RED-CONFLICT) conflict=$((conflict + 1)) ;; *) red=$((red + 1)) ;; esac
+    i=$((i + 1))
+  done
+  echo "land.sh: batch $stamp: $green green, $red red, $conflict red-conflict; base $(git -C "$here" rev-parse --short "$base0"), tip $(git -C "$here" rev-parse --short HEAD)"
+  echo "land.sh: per-line outcomes: $res"
+  [ $((red + conflict)) -eq 0 ]
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --selftest: the engine's own refusals, proven RED before anything is called green.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+land_selftest() {
+  local root="$here/target/land-selftest-$stamp"
+  local repo="$root/repo" fails=0 name
+  rm -rf "$root"; mkdir -p "$repo"
+  _st() { # $1 = name, $2 = expected rc (0|1|2), rest = command
+    local nm="$1" want="$2"; shift 2
+    ST_OUT="$root/$(printf '%s' "$nm" | tr -c 'A-Za-z0-9._-' '_').out"
+    "$@" >"$ST_OUT" 2>&1; local got=$?
+    if [ "$got" = "$want" ]; then printf '  ok   %-46s (rc %s)\n' "$nm" "$got"
+    else printf '  FAIL %-46s (rc %s, wanted %s; %s)\n' "$nm" "$got" "$want" "$ST_OUT"; fails=$((fails + 1)); fi
+  }
+  _stgrep() { # $1 = name, $2 = file, $3 = regex that must match
+    if grep -qE "$3" "$2" 2>/dev/null; then printf '  ok   %-46s\n' "$1"
+    else printf '  FAIL %-46s (no /%s/ in %s)\n' "$1" "$3" "$2"; fails=$((fails + 1)); fi
+  }
+  _stno() { # $1 = name, $2 = file, $3 = regex that must NOT match
+    if grep -qE "$3" "$2" 2>/dev/null; then printf '  FAIL %-46s (unwanted /%s/ in %s)\n' "$1" "$3" "$2"; fails=$((fails + 1))
+    else printf '  ok   %-46s\n' "$1"; fi
+  }
+
+  echo "land.sh selftest: the floor plan (a landing that named nothing must still run legs)"
+  land_floor_plan "" "" "" >"$root/plan-empty.txt"
+  _stgrep "plan(empty) has the workspace build+clippy" "$root/plan-empty.txt" 'workspace-clippy'
+  _stgrep "plan(empty) has fmt"                        "$root/plan-empty.txt" '(^| )fmt( |$)'
+  _stgrep "plan(empty) has the gate-tree legs"         "$root/plan-empty.txt" 'gatefiles'
+  _stgrep "plan(empty) has kind-isolation"             "$root/plan-empty.txt" 'kind-isolation'
+  _stgrep "plan(empty) has the plugin cdylib build"    "$root/plan-empty.txt" 'plugins'
+  land_floor_plan "busbar" "loc-ceilings" "^x" >"$root/plan-full.txt"
+  _stgrep "plan(named) has tests/clippy/gate/oracle"   "$root/plan-full.txt" 'tests clippy'
+  _stgrep "plan(named) has the gate row leg"           "$root/plan-full.txt" '(^| )gate( |$)'
+  _stgrep "plan(named) has the oracle leg"             "$root/plan-full.txt" 'oracle'
+  _stno   "plan(named) does NOT fall back to workspace" "$root/plan-full.txt" 'workspace-clippy'
+
+  echo "land.sh selftest: the shard partition (record.sh's own matcher)"
+  if [ -f "$here/testing/shadow-oracle/cells.json" ]; then
+    local sp; sp="$(land_shard_plan '^(billing|ledger)[|.]' 3)"
+    printf '%s\n' "$sp" >"$root/shards.txt"
+    local -a sr; local i=0
+    while IFS= read -r r; do [ -n "$r" ] && { sr[$i]="$r"; i=$((i + 1)); }; done <<EOF
+$sp
+EOF
+    _st "shard plan for two families is a partition" 0 land_shard_assert '^(billing|ledger)[|.]' "${sr[@]}"
+    # RED-ABILITY 1: overlapping shards must be refused. Two shards that both claim `billing`.
+    _st "overlapping shards are REFUSED"            1 land_shard_assert '^(billing|ledger)[|.]' '^(billing)[|]' '^(billing|ledger)[|]'
+    # RED-ABILITY 2: a shard set that drops a requested family must be refused.
+    _st "a shard set that drops a family is REFUSED" 1 land_shard_assert '^(billing|ledger)[|.]' '^(billing)[|]'
+    # RED-ABILITY 3: a filter that selects nothing is refused, never recorded-and-green.
+    _st "a zero-cell family filter is REFUSED"      1 land_shard_plan '^no-such-family-at-all[|]' 3
+    # …and the planner never emits more shards than there are families.
+    _stgrep "K is clamped to the family count"      "$root/shards.txt" '^\^\('
+    [ "$(grep -c . "$root/shards.txt")" = 2 ] && printf '  ok   %-46s\n' "two families -> two shards" \
+      || { printf '  FAIL %-46s\n' "two families -> two shards"; fails=$((fails + 1)); }
+  else
+    printf '  SKIP %-46s (no cells.json in this tree)\n' "shard partition"
+  fi
+
+  echo "land.sh selftest: a shard that fails to record is a RED landing"
+  mkdir -p "$root/rec0" "$root/rec1"; : >"$root/rec0/meta.json"; : >"$root/rec1/meta.json"
+  echo 0 >"$root/rec0.rc"; echo 0 >"$root/rec1.rc"
+  _st "all shards recorded -> collect green"    0 land_shards_collect "$root/rec" 2
+  echo 1 >"$root/rec1.rc"
+  _st "one shard exited non-zero -> RED"        1 land_shards_collect "$root/rec" 2
+  echo 0 >"$root/rec1.rc"; rm -f "$root/rec1/meta.json"
+  _st "one shard left an EMPTY recording -> RED" 1 land_shards_collect "$root/rec" 2
+  rm -f "$root/rec1.rc"
+  _st "one shard never reported at all -> RED"  1 land_shards_collect "$root/rec" 2
+
+  echo "land.sh selftest: the ledger union (what was RECORDED, not what was requested)"
+  if [ -f "$here/testing/shadow-oracle/cells.json" ]; then
+    local b1 b2 l1 l2
+    b1="$(land_cell_ids | grep -m1 '^billing|')"; b2="$(land_cell_ids | grep '^billing|' | sed -n 2p)"
+    l1="$(land_cell_ids | grep -m1 '^ledger|')"
+    mkdir -p "$root/led0" "$root/led1"
+    # Complete and disjoint over a filter that selects exactly those three cells.
+    local f3; f3="$(printf '^(%s|%s|%s)$' "$(land_ere_escape "$b1")" "$(land_ere_escape "$b2")" "$(land_ere_escape "$l1")")"
+    printf '%s\tPASS\tt\td\n%s\tPASS\tt\td\n' "$b1" "$b2" >"$root/led0/ledger.tsv"
+    printf '%s\tPASS\tt\td\n' "$l1" >"$root/led1/ledger.tsv"
+    _st "complete, disjoint ledgers -> green"   0 land_ledger_assert "$f3" "$root/led" 2
+    # RED-ABILITY: the same cell in two ledgers.
+    printf '%s\tPASS\tt\td\n%s\tPASS\tt\td\n' "$l1" "$b1" >"$root/led1/ledger.tsv"
+    _st "a cell in two shard ledgers -> RED"    1 land_ledger_assert "$f3" "$root/led" 2
+    # RED-ABILITY: a requested cell nobody recorded.
+    printf '%s\tPASS\tt\td\n' "$l1" >"$root/led1/ledger.tsv"
+    printf '%s\tPASS\tt\td\n' "$b1" >"$root/led0/ledger.tsv"
+    _st "a requested cell in no ledger -> RED"  1 land_ledger_assert "$f3" "$root/led" 2
+    # RED-ABILITY: no ledger at all is unmeasurable, therefore red.
+    rm -f "$root/led1/ledger.tsv"
+    _st "a shard with no ledger -> RED"         1 land_ledger_assert "$f3" "$root/led" 2
+    : >"$root/led1/ledger.tsv"; : >"$root/led0/ledger.tsv"
+    _st "empty ledgers (zero rows) -> RED"      1 land_ledger_assert "$f3" "$root/led" 2
+  else
+    printf '  SKIP %-46s (no cells.json in this tree)\n' "ledger union"
+  fi
+
+  # ── THE BATCH ENGINE, on a real repository ─────────────────────────────────────────────────────
+  # Real commits, real cherry-picks, a real conflict, real resets. Only the PROOF is scripted, and
+  # it is scripted as a function of the tree (a file named POISON), never of the line number — so a
+  # bisect that reset the wrong way, kept a red line's picks, or dropped a green line's picks gives
+  # the wrong answer here and the case fails.
+  echo "land.sh selftest: the batch engine (real picks, scripted prover)"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email land@selftest; git -C "$repo" config user.name land
+  git -C "$repo" config commit.gpgsign false
+  # A THROWAWAY REPOSITORY, NOT THIS DEVELOPER'S. The host's global core.hooksPath (identity checks,
+  # signing policy, whatever an operator has installed) would otherwise decide whether this script's
+  # own self-test can commit — a self-test whose verdict depends on the machine is not a self-test.
+  mkdir -p "$root/nohooks"; git -C "$repo" config core.hooksPath "$root/nohooks"
+  printf 'base\n' >"$repo/f.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm base
+  local base; base="$(git -C "$repo" rev-parse HEAD)"
+  # A source branch of hand-backs, exactly as an agent worktree would leave them.
+  git -C "$repo" checkout -q -b src
+  printf '1\n' >"$repo/a.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm c1
+  local c1; c1="$(git -C "$repo" rev-parse HEAD)"
+  : >"$repo/POISON"; git -C "$repo" add -A; git -C "$repo" commit -qm c2-poison
+  local c2; c2="$(git -C "$repo" rev-parse HEAD)"
+  printf '3\n' >"$repo/b.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm c3
+  local c3; c3="$(git -C "$repo" rev-parse HEAD)"
+  printf '4\n' >"$repo/c.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm c4
+  local c4; c4="$(git -C "$repo" rev-parse HEAD)"
+  # A commit that cannot be picked onto the integration line: it rewrites f.txt from a different base.
+  git -C "$repo" checkout -q -b conflicting "$base"
+  printf 'theirs\n' >"$repo/f.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm conflict-side
+  local cx; cx="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q -b integ "$base"
+  printf 'ours\n' >"$repo/f.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm ours
+  local integ; integ="$(git -C "$repo" rev-parse HEAD)"
+
+  # CASE A — one poisoned line in four: that line alone is RED, the other three are GREEN and are
+  # on the tree; the poisoned line's commit is not.
+  local ba="$root/batchA.txt"
+  { echo "--prove $c1"; echo "--prove $c2"; echo "--prove $c3"; echo "--prove $c4"; } >"$ba"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "batch A runs (red batch exits 1)" 1 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done.txt" \
+      bash "$0" --batch "$ba"
+  _stgrep "A: line 1 GREEN"  "$ba.result" "^GREEN.*$c1"
+  _stgrep "A: line 2 RED"    "$ba.result" "^RED.*$c2"
+  _stgrep "A: line 3 GREEN"  "$ba.result" "^GREEN.*$c3"
+  _stgrep "A: line 4 GREEN"  "$ba.result" "^GREEN.*$c4"
+  for f in a.txt b.txt c.txt; do
+    [ -f "$repo/$f" ] && printf '  ok   %-46s\n' "A: $f landed" \
+      || { printf '  FAIL %-46s\n' "A: $f landed"; fails=$((fails + 1)); }
+  done
+  [ -e "$repo/POISON" ] && { printf '  FAIL %-46s\n' "A: POISON backed out"; fails=$((fails + 1)); } \
+    || printf '  ok   %-46s\n' "A: POISON backed out"
+  # The batch id is the CHILD's stamp, not this selftest's: the shape is what is asserted.
+  _stgrep "A: land-done.txt names outcome+batch+log" "$root/done.txt" \
+    "^GREEN batch=[0-9]{8}-[0-9]{6}-[0-9]+ log=.*land-[0-9]{8}-[0-9]{6}-[0-9]+\.log .*$c1"
+  _stgrep "A: land-done.txt records the RED line too" "$root/done.txt" "^RED batch=.* log=.*$c2"
+
+  # CASE B — a conflicting line in the middle: RED-CONFLICT for that line alone, and the other three
+  # are proven and landed. (No poison here: a conflict must not contaminate the rest.)
+  local bb="$root/batchB.txt"
+  { echo "--prove $c1"; echo "--prove $cx"; echo "--prove $c3"; echo "--prove $c4"; } >"$bb"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "batch B runs (red-conflict batch exits 1)" 1 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done.txt" \
+      bash "$0" --batch "$bb"
+  _stgrep "B: the conflicting line is RED-CONFLICT" "$bb.result" "^RED-CONFLICT.*$cx"
+  _stgrep "B: line 1 GREEN" "$bb.result" "^GREEN.*$c1"
+  _stgrep "B: line 3 GREEN" "$bb.result" "^GREEN.*$c3"
+  _stgrep "B: line 4 GREEN" "$bb.result" "^GREEN.*$c4"
+  _stgrep "B: ours survived the conflict"  "$repo/f.txt" '^ours$'
+
+  # CASE C — all green: one proof, no bisect, every line GREEN, exit 0.
+  local bc="$root/batchC.txt"
+  { echo "--prove $c1"; echo "--prove $c3"; echo "--prove $c4"; } >"$bc"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "batch C (all green) exits 0" 0 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done.txt" \
+      bash "$0" --batch "$bc"
+  [ "$(grep -c '^GREEN' "$bc.result")" = 3 ] && printf '  ok   %-46s\n' "C: three GREEN lines" \
+    || { printf '  FAIL %-46s\n' "C: three GREEN lines"; fails=$((fails + 1)); }
+  _stgrep "C: proved ONCE, over all three lines" "$ST_OUT" 'proving lines 1,2,3'
+  _stno   "C: no bisection happened"             "$ST_OUT" 'bisecting'
+
+  # CASE D — an empty batch is refused, not silently green.
+  : >"$root/batchD.txt"
+  _st "an empty batch is REFUSED (rc 2)" 2 env LAND_SELFTEST_ROOT="$repo" bash "$0" --batch "$root/batchD.txt"
+  printf '# only a comment\n\n' >"$root/batchD.txt"
+  _st "a comments-only batch is REFUSED"  2 env LAND_SELFTEST_ROOT="$repo" bash "$0" --batch "$root/batchD.txt"
+  _st "a missing batch file is REFUSED"   2 env LAND_SELFTEST_ROOT="$repo" bash "$0" --batch "$root/nope.txt"
+  printf -- "--tests busbar\n" >"$root/batchE.txt"
+  _st "a line with no hashes and no --prove is REFUSED" 2 env LAND_SELFTEST_ROOT="$repo" bash "$0" --batch "$root/batchE.txt"
+
+  # CASE F — every line red: nothing is left on the tree, and the batch is red.
+  local bf2="$root/batchF.txt"
+  { echo "--prove $c2"; } >"$bf2"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "a one-line poisoned batch is RED" 1 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done.txt" \
+      bash "$0" --batch "$bf2"
+  [ "$(git -C "$repo" rev-parse HEAD)" = "$integ" ] && printf '  ok   %-46s\n' "F: tree reset to the batch base" \
+    || { printf '  FAIL %-46s\n' "F: tree reset to the batch base"; fails=$((fails + 1)); }
+
+  if [ "$fails" = 0 ]; then
+    printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
+    printf '                  conflict isolation, empty-batch refusal — each proven RED before green)\n'
+    rm -rf "$root"
+    return 0
+  fi
+  printf '\nland.sh selftest: RED (%s failure(s); artifacts under %s)\n' "$fails" "$root"
+  return 1
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+land_parse_args "$@"
+
+if [ "$P_selftest" = 1 ]; then land_selftest; exit $?; fi
+
+if [ -n "$P_batch" ]; then
+  land_run_batch "$P_batch"
+  exit $?
+fi
+
+# ── SINGLE LANDING ────────────────────────────────────────────────────────────────────────────────
+# Unchanged in every observable way: the picks stay on the tree after a red so the integrator can
+# look, and a conflict stops at the conflicting hash.
+set -- $P_hashes
+[ $# -gt 0 ] || [ "$P_prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
+base="$(git -C "$here" rev-parse HEAD)"
 git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
 for h in "$@"; do
   git -C "$here" cherry-pick -x "$h" >/dev/null || {
@@ -61,198 +1071,13 @@ for h in "$@"; do
   }
 done
 echo "land.sh: picked $# commit(s); tip $(git -C "$here" rev-parse --short HEAD)"
-
-# The plugin batteries refuse to skip when their cdylib is absent, so the example plugins are
-# built before any test leg; a green here must mean the ABI-crossing cells actually ran.
-plog="$here/target/land-plugins-$stamp.log"
-if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-store-example-plugin -p busbar-export-example-plugin -p busbar-secret-example-plugin >"$plog" 2>&1); then
-  grep -E '^error' "$plog" | head -5 >&2
-  echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; exit 1
-fi
-
-# WHAT THE PICKS ACTUALLY TOUCHED. Used twice: to pick the cargo packages, and — the part that was
-# missing — to prove the picks that touch NO crate at all.
-picked_range="HEAD~$#"
-[ "$#" -gt 0 ] || picked_range="HEAD~1"
-touched="$(git -C "$here" diff --name-only "$picked_range" HEAD 2>/dev/null || true)"
-
-if [ -z "$tests" ] && [ $# -gt 0 ]; then
-  tests="$(printf '%s\n' "$touched" | grep -o '^crates/[^/]*' | sort -u \
+if [ -z "$P_tests" ] && [ $# -gt 0 ]; then
+  P_tests="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null | grep -o '^crates/[^/]*' | sort -u \
     | while read -r d; do grep -m1 '^name = ' "$here/$d/Cargo.toml" 2>/dev/null | sed 's/name = "\(.*\)"/\1/'; done | tr '\n' ' ')"
 fi
-
-# ── THE GATE-TREE LEGS ────────────────────────────────────────────────────────────────────────────
-# A landing whose picks touch only `scripts/`, `.github/` or `testing/` selects NO cargo package —
-# the crate-directory grep above matches nothing — so `$tests` is empty, the test and clippy legs are
-# skipped, and with no `--gate` and no `--families` this script reached its final line having
-# executed not one check. It then printed `land.sh: GREEN — landed N commit(s)`, which is the exact
-# sentence an integrator reads as "these commits were proven". Landing a change to the GATES
-# THEMSELVES was the one case with no proof at all, which is precisely backwards: a broken gate
-# script is invisible to every other leg here, because every other leg is about the crates.
-#
-# So every touched shell/python/workflow file is parsed, and every touched script that advertises a
-# `--selftest` runs it. These are cheap (seconds) and they catch the two failures that actually
-# happen to a picked gate script: it no longer parses, and its own self-test cases no longer hold.
-# What ran is NAMED in the GREEN line at the bottom, so the word "green" carries its scope.
-proof_notes=""
-gate_files="$(printf '%s\n' "$touched" | grep -E '^(scripts|testing|\.github)/.*\.(sh|py|mjs|yml|yaml)$' || true)"
-n_parsed=0; n_selftests=0
-if [ -n "$gate_files" ]; then
-  while IFS= read -r f; do
-    [ -n "$f" ] && [ -f "$here/$f" ] || continue
-    case "$f" in
-      *.sh)
-        bash -n "$here/$f" || { echo "land.sh: RED — $f does not parse (bash -n)" >&2; exit 1; }
-        n_parsed=$((n_parsed + 1)) ;;
-      *.py)
-        python3 -m py_compile "$here/$f" || { echo "land.sh: RED — $f does not compile (py_compile)" >&2; exit 1; }
-        n_parsed=$((n_parsed + 1)) ;;
-      *.yml|*.yaml)
-        case "$f" in
-          .github/workflows/*)
-            if command -v actionlint >/dev/null 2>&1; then
-              (cd "$here" && actionlint "$f") || { echo "land.sh: RED — actionlint $f" >&2; exit 1; }
-              n_parsed=$((n_parsed + 1))
-            else
-              python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$here/$f" \
-                || { echo "land.sh: RED — $f is not valid YAML" >&2; exit 1; }
-              n_parsed=$((n_parsed + 1))
-            fi ;;
-        esac ;;
-      *.mjs)
-        if command -v node >/dev/null 2>&1; then
-          node --check "$here/$f" || { echo "land.sh: RED — $f does not parse (node --check)" >&2; exit 1; }
-          n_parsed=$((n_parsed + 1))
-        fi ;;
-    esac
-    # …and its own self-test, where it has one. A gate script that has stopped discriminating is
-    # worse than one that fails to parse: it lands green and goes on reporting green forever.
-    slog="$here/target/land-selftest-$stamp.log"
-    case "$f" in
-      *.sh)
-        # A script ADVERTISES a self-test when it handles the flag (a `case` arm or a quoted
-        # comparison), not when its prose merely mentions one.
-        if grep -qE -- "(--selftest\)|[\"']--selftest[\"'])" "$here/$f"; then
-          if ! (cd "$here" && bash "$f" --selftest >"$slog" 2>&1); then
-            tail -20 "$slog" >&2
-            echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; exit 1
-          fi
-          n_selftests=$((n_selftests + 1))
-        fi ;;
-      *.py)
-        if grep -qE -- "[\"']--selftest[\"']" "$here/$f"; then
-          if ! (cd "$here" && python3 "$f" --selftest >"$slog" 2>&1); then
-            tail -20 "$slog" >&2
-            echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; exit 1
-          fi
-          n_selftests=$((n_selftests + 1))
-        fi ;;
-    esac
-  done <<EOF
-$gate_files
-EOF
-  proof_notes="${n_parsed} gate file(s) parsed, ${n_selftests} self-test(s) green"
-  echo "land.sh: $proof_notes"
-fi
-if [ -n "$tests" ]; then
-  args=""; for p in $tests; do args="$args -p $p"; done
-  echo "land.sh: cargo test $args"
-  # cargo's own exit status is the verdict; the grep only names the red lines. A pipeline here
-  # would let pipefail turn a failing cargo into a skipped check.
-  log="$here/target/land-$stamp.log"
-  # shellcheck disable=SC2086
-  if ! (cd "$here" && cargo test $args >"$log" 2>&1); then
-    grep -E '^test result:.* [1-9][0-9]* failed|^error(\[|:)|^---- .* stdout ----|panicked at' "$log" | head -20 >&2
-    echo "land.sh: RED — tests failed in: $tests (log: $log)" >&2; exit 1
-  fi
-  # shellcheck disable=SC2086
-  if ! (cd "$here" && cargo clippy $args --all-targets -- -D warnings >"$log" 2>&1); then
-    grep -E '^(warning|error)' "$log" | head -5 >&2
-    echo "land.sh: RED — clippy (log: $log)" >&2; exit 1
-  fi
-  echo "land.sh: tests and clippy green for: $tests"
-fi
-
-# THE KIND-ISOLATION GATE IS MEASURED ON EVERY LANDING, unconditionally — it is the owner's ship
-# criterion (2026-09-07), and a criterion only measured when somebody remembers to ask is not one.
-# It is an xtask-registry gate, not a construction row, so it runs through the registry rather than
-# being grepped out of the construction gate's log. Self-test FIRST, as everywhere else.
-(cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
-  || { echo "land.sh: RED — the gate runner will not build" >&2; exit 1; }
-(cd "$here" && cargo xtask gate kind-isolation --selftest >/dev/null) \
-  || { echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself)" >&2; exit 1; }
-(cd "$here" && cargo xtask gate kind-isolation) \
-  || { echo "land.sh: RED — kind-isolation (a plugin kind was fused; rows above)" >&2; exit 1; }
-proof_notes="$proof_notes kind-isolation green;"
-
-if [ -n "$gate" ]; then
-  # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
-  # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
-  # at all (an unreadable ceilings file, an unbuildable runner) is red, not green.
-  glog="$here/target/land-gate-$stamp.log"
-  ( cd "$here" && cargo xtask gate construction --report ) >"$glog" 2>&1 || true
-  rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
-  [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; exit 1; }
-  named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
-  [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$gate' (renamed rule?)" >&2; exit 1; }
-  red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
-  [ -z "$red" ] || { echo "land.sh: RED — construction gate rows still red: $red" >&2; exit 1; }
-  echo "land.sh: gate rows green: $gate"
-fi
-
-if [ -n "$families" ]; then
-  # cargo's exit status is the verdict (a pipe into grep would let pipefail invert it).
-  blog="$here/target/land-build-$stamp.log"
-  if ! (cd "$here" && cargo build --release -p busbar >"$blog" 2>&1); then
-    grep -E '^error' "$blog" | head -5 >&2
-    echo "land.sh: RED — release build (log: $blog)" >&2; exit 1
-  fi
-  out="$here/target/oracle/recordings/land-$stamp"
-  # record.sh only `mkdir -p`s its --out, so the directory is cleared HERE. A recording the differ
-  # reads must contain this candidate's cells and nothing else.
-  rm -rf "$out" "$out.report"
-  # …and the PARENT has to exist before the redirect below opens `$out.log` in it. record.sh makes
-  # its own `--out`, but the shell opens the log first, so a worktree that has never recorded dies
-  # on "No such file or directory" AFTER paying for the release build — and the message it dies with
-  # names the ports, so a first run reads as a port collision that is not happening.
-  mkdir -p "$(dirname "$out")"
-  ORACLE_LISTEN_PORT="$ORACLE_LISTEN_PORT" ORACLE_ADMIN_PORT="$ORACLE_ADMIN_PORT" ORACLE_MOCK_PORT="$ORACLE_MOCK_PORT" \
-    "$here/bin/oracle" record --plane all --bin "$here/target/release/busbar" --filter "$families" \
-    --out "$out" >"$out.log" 2>&1 || {
-      echo "land.sh: RED — record.sh on ports $ORACLE_LISTEN_PORT/$ORACLE_ADMIN_PORT/$ORACLE_MOCK_PORT (see $out.log)" >&2
-      echo "land.sh:       if another landing is recording on this host, set ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT/ORACLE_MOCK_PORT and re-run" >&2
-      exit 1
-    }
-  # The same regex selects the cells on both sides (an ID filter, the domain record.sh --filter
-  # uses), and --strict makes the differ's exit code carry the verdict for this subset: zero owed
-  # cells, an unaccepted divergence, or an owed cell missing from the candidate is red.
-  # THE SAME GOLDEN CI READS. It used to be `target/oracle/recordings/golden` — whatever this host
-  # last re-recorded — so a landing and the CI job could each be green against a different answer to
-  # "what did 1.5.5 do", and the local one was green against a file nobody had reviewed. Both callers
-  # now diff against the committed, signed-off recording, which is also why `--allow-harness-skew` is
-  # gone: with one golden on both sides the skew guard means the same thing in both places, and a
-  # harness edit that moves the rev is a golden to re-stamp or re-record, not a warning to pass over.
-  "$here/bin/oracle" diff --golden "$here/testing/shadow-oracle/golden/1.5.5" \
-    --candidate "$out" --out "$out.report" --cells "$here/testing/shadow-oracle/cells.json" \
-    --accepted "$here/testing/shadow-oracle/accepted-differences.json" \
-    --id-filter "$families" --strict \
-    || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; exit 1; }
-  echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed)"
-fi
+prove_tree "$base" "$P_tests" "$P_gate" "$P_families" "landing" || exit 1
 # ── THE GREEN LINE NAMES ITS SCOPE ────────────────────────────────────────────────────────────────
 # It used to read "GREEN — landed N commit(s)" whatever had run, including nothing. A verdict that
 # does not say what it measured is read as having measured everything.
-proved=""
-[ -n "$tests" ]       && proved="$proved cargo test+clippy ($tests);"
-[ -n "$proof_notes" ] && proved="$proved $proof_notes;"
-[ -n "$gate" ]        && proved="$proved construction rows ($gate);"
-[ -n "$families" ]    && proved="$proved oracle families ($families);"
-if [ -z "$proved" ]; then
-  echo "land.sh: RED — nothing was proven. The picks touched no crate, no gate script, no workflow" >&2
-  echo "land.sh:       and no oracle family, and no --tests/--gate/--families was given, so every" >&2
-  echo "land.sh:       leg above was skipped. A landing that ran no check is not a green landing —" >&2
-  echo "land.sh:       name what should have proven it, or say why the picks need proving by nothing." >&2
-  exit 1
-fi
 echo "land.sh: GREEN — landed $# commit(s) at $(git -C "$here" rev-parse --short HEAD)"
-echo "land.sh: proven by:$proved and nothing else. A green here is exactly that list."
+echo "land.sh: proven by:$PROVEN and nothing else. A green here is exactly that list."
