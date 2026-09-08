@@ -503,10 +503,7 @@ fn replace_json_numbers(s: &str, names: &[&str]) -> String {
     for name in names {
         out = replace_member(&out, name, |rest| {
             let lead = rest.len() - rest.trim_start().len();
-            let digits = rest[lead..]
-                .bytes()
-                .take_while(u8::is_ascii_digit)
-                .count();
+            let digits = rest[lead..].bytes().take_while(u8::is_ascii_digit).count();
             (digits > 0).then_some((lead + digits, "<TIME>"))
         });
     }
