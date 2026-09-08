@@ -448,6 +448,52 @@ pub const BUILTIN_IDENTITY_PROVIDERS: &[&str] = &[KEYS_MODULE, ADMIN_TOKENS_MODU
 /// only to non-`admin-tokens` providers.
 pub const DEFAULT_MAX_ADMIN_SCOPE: &str = "read-only";
 
+/// The `max_admin_scope:` / `admin_scope:` READ token — the bottom rung of the frozen two-rung
+/// authorization chain, as an operator writes it.
+pub const MAX_ADMIN_SCOPE_READ_ONLY: &str = "read-only";
+
+/// The `max_admin_scope:` / `admin_scope:` FULL token — the top rung, as an operator writes it.
+/// Named rather than spelled at each site because lifting a ceiling to it is a LOUD boot warning
+/// and the config validator must recognise exactly this token to raise it.
+pub const MAX_ADMIN_SCOPE_FULL: &str = "full";
+
+/// THE ACCEPTED-VALUE LIST for every admin-scope token an operator can write, in the order the
+/// refusal message names them. The authorization TYPE (`Scope`) is the admin surface's own and this
+/// grammar deliberately does not name it: what the config layer decides is whether a STRING is a
+/// legal token and which rung it names, and the admin surface maps the answer onto its enum. That
+/// direction — admin reads the config grammar, never the reverse — is what lets the config layer be
+/// read by a deployment whose admin surface is not compiled in.
+pub const MAX_ADMIN_SCOPE_TOKENS: &[&str] = &[MAX_ADMIN_SCOPE_READ_ONLY, MAX_ADMIN_SCOPE_FULL];
+
+/// Canonicalise an admin-scope token: `Some` of the `'static` spelling from
+/// [`MAX_ADMIN_SCOPE_TOKENS`] when `token` is one of them, `None` otherwise.
+pub fn max_admin_scope_token(token: &str) -> Option<&'static str> {
+    MAX_ADMIN_SCOPE_TOKENS.iter().copied().find(|t| *t == token)
+}
+
+/// THE ONE `max_admin_scope:` CEILING-TOKEN CHECK, with the one error message. `subject` is the
+/// human path of the site that carries the token (`auth chain entry 'ad'`,
+/// `identity-providers.corp-ad`) — everything else is identical, because the accepted-value list
+/// must be.
+///
+/// Both surfaces that can introduce a ceiling call THIS: the boot / `--validate` chain-entry rule
+/// and the admin named-map write path. They used to disagree — the API accepted any string (the
+/// write path only ran the `serde` type-check, and `Option<String>` accepts every string),
+/// persisted it, answered 200, and the gateway then refused to BOOT on the next restart with
+/// "unknown max_admin_scope". A successful admin write that leaves the deployment unbootable is
+/// the failure mode a second copy of the accepted-value list buys you; there is now only one copy.
+pub fn parse_max_admin_scope(subject: &str, token: &str) -> Result<&'static str, String> {
+    max_admin_scope_token(token).ok_or_else(|| {
+        format!(
+            "{subject} has unknown max_admin_scope '{token}': expected read-only or full. \
+             There is no `none`: omit the key for the most restrictive default \
+             (`{DEFAULT_MAX_ADMIN_SCOPE}`), and to grant NO admin authority through this identity \
+             source grant no `admin_scope` under its `role_bindings:` — the ceiling caps what a \
+             grant can reach, it cannot express the absence of one."
+        )
+    })
+}
+
 /// The serde default for `auth.admin_auth:` - the built-in `admin-tokens` provider, referenced bare
 /// (the single operator admin token; byte-identical to the pre-chain behavior).
 pub fn default_admin_auth_names() -> Vec<String> {

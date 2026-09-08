@@ -14,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod admin;
 pub mod auth;
 pub mod groups;
 pub mod hooks;
