@@ -506,3 +506,415 @@ mod driver {
         assert_eq!(first, second);
     }
 }
+
+// ── the seam: what the driver walks an arrival against ──────────────────────────────────────────
+
+/// THE ONE SEAM between the driver and a plane's units, driven both ways.
+///
+/// The driver used to hold the node's units by name. It holds a `&dyn PlaneLeg` now, and these
+/// tests are what says the widening is real rather than cosmetic: a leg written here, over units
+/// this file spells, reaches the loop through the same call the node's own units reach it through,
+/// and the ending it produces is what the transport frames.
+///
+/// The fixture is deliberately NOT the A2A leg. A test that could only be written against one plane
+/// would be a test of that plane; what is under test is the seam, so the leg is a leg and nothing
+/// else, and the property it proves holds for every leg that ever mounts.
+#[cfg(all(feature = "root-admin", feature = "plane-a2a"))]
+mod leg {
+    use busbar_caps::{
+        Admission, Admit, AdmitToken, Approve, Arrival as ArrivalStep, Audit, Authenticate,
+        Authenticated, Decision, Decode, Encode, Hold, Meter, Outcome, PrincipalId, ReasonCode,
+        Refusal, Route, StepName, UnitToken, Usage, UsageToken, VerifiedDestination, Verify,
+    };
+    use busbar_contract::transport::{Arrival, UnitDriver};
+    use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
+    use std::sync::Mutex;
+
+    use crate::root::transports::{LoopDriver, PlaneLeg};
+
+    /// A leg whose units run every step, note that they ran, and refuse at one named step.
+    ///
+    /// The step names are the assertion. A refusal is not only "the unit ended badly" — it is "the
+    /// unit ended THERE", and a loop that ran the meter after a verify that refused would be
+    /// charging for a destination it had just said was unreachable. So the log is what is read, and
+    /// the ending is read beside it.
+    #[derive(Default)]
+    struct Noting {
+        ran: Mutex<Vec<StepName>>,
+        refuse_at: Option<(StepName, ReasonCode)>,
+    }
+
+    impl Noting {
+        /// A leg that refuses nothing.
+        fn passing() -> Self {
+            Noting::default()
+        }
+
+        /// A leg whose named step answers with a refusal.
+        fn refusing_at(step: StepName, reason: ReasonCode) -> Self {
+            Noting {
+                ran: Mutex::new(Vec::new()),
+                refuse_at: Some((step, reason)),
+            }
+        }
+
+        fn note(&self, step: StepName) {
+            self.ran.lock().expect("a test lock").push(step);
+        }
+
+        fn refusal(&self, step: StepName) -> Option<Refusal> {
+            self.refuse_at
+                .as_ref()
+                .filter(|(at, _)| *at == step)
+                .map(|(_, reason)| Refusal::new(*reason))
+        }
+
+        fn ran(&self) -> Vec<StepName> {
+            self.ran.lock().expect("a test lock").clone()
+        }
+    }
+
+    macro_rules! step {
+        ($self:ident, $token:ident, $marker:ty, $name:expr, $facts:expr) => {{
+            $self.note($name);
+            match $self.refusal($name) {
+                Some(refusal) => Decision::<$marker>::refuse($token, refusal),
+                None => Decision::<$marker>::proceed($token, $facts),
+            }
+        }};
+    }
+
+    impl Units for Noting {
+        fn arrival(&self, token: &UnitToken<ArrivalStep>, _ctx: &UnitCtx) -> Decision<ArrivalStep> {
+            step!(
+                self,
+                token,
+                ArrivalStep,
+                StepName::Arrival,
+                busbar_caps::ArrivalRecord {
+                    source: "203.0.113.9:52000".into(),
+                    port: 52_000,
+                    alpn: None,
+                    sni: None,
+                    peer_cert: None,
+                    transport_chain: vec!["http"],
+                }
+            )
+        }
+
+        fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
+            step!(
+                self,
+                token,
+                Decode,
+                StepName::Decode,
+                busbar_caps::OpClassId::new("seam")
+            )
+        }
+
+        fn authenticate(
+            &self,
+            token: &UnitToken<Authenticate>,
+            _ctx: &UnitCtx,
+        ) -> Decision<Authenticate> {
+            step!(
+                self,
+                token,
+                Authenticate,
+                StepName::Authenticate,
+                Authenticated::Principal(PrincipalId::new("caller"))
+            )
+        }
+
+        fn verify(
+            &self,
+            token: &UnitToken<Verify>,
+            trust: &busbar_caps::TrustToken,
+            _ctx: &UnitCtx,
+            _principal: &PrincipalId,
+        ) -> Decision<Verify> {
+            self.note(StepName::Verify);
+            match self.refusal(StepName::Verify) {
+                Some(refusal) => Decision::refuse(token, refusal),
+                None => Decision::proceed(
+                    token,
+                    vec![VerifiedDestination::seal(
+                        trust,
+                        busbar_caps::LaneId::new("seam:lane"),
+                    )],
+                ),
+            }
+        }
+
+        fn approve(
+            &self,
+            token: &UnitToken<Approve>,
+            _ctx: &UnitCtx,
+            _principal: &PrincipalId,
+            _destinations: &[VerifiedDestination],
+        ) -> Decision<Approve> {
+            step!(
+                self,
+                token,
+                Approve,
+                StepName::Approve,
+                busbar_caps::ScopeFacts::default()
+            )
+        }
+
+        fn admit(
+            &self,
+            token: &UnitToken<Admit>,
+            admit: &AdmitToken<Admit>,
+            _ctx: &UnitCtx,
+            principal: &PrincipalId,
+            _destinations: &[VerifiedDestination],
+            _leases: &busbar_kernel::slice::GroupLeaseSlip,
+        ) -> Decision<Admit> {
+            step!(
+                self,
+                token,
+                Admit,
+                StepName::Admit,
+                Admission::Own(Hold::open(admit, principal.clone(), 0))
+            )
+        }
+
+        fn route(
+            &self,
+            token: &UnitToken<Route>,
+            _ctx: &UnitCtx,
+            _meter: &AccrualMeter,
+        ) -> Decision<Route> {
+            step!(
+                self,
+                token,
+                Route,
+                StepName::Route,
+                busbar_caps::RoutePlan::default()
+            )
+        }
+
+        fn meter(
+            &self,
+            token: &UnitToken<Meter>,
+            usage: &UsageToken,
+            _ctx: &UnitCtx,
+            _provisional: &Outcome,
+        ) -> Decision<Meter> {
+            step!(
+                self,
+                token,
+                Meter,
+                StepName::Meter,
+                Usage::report(usage, Vec::new()).expect("an empty report is within the bound")
+            )
+        }
+
+        fn audit(
+            &self,
+            token: &UnitToken<Audit>,
+            _ctx: &UnitCtx,
+            _outcome: &Outcome,
+        ) -> Decision<Audit> {
+            self.note(StepName::Audit);
+            Decision::proceed(token, audit_facts())
+        }
+
+        fn audit_refused(
+            &self,
+            token: &UnitToken<Audit>,
+            _ctx: &UnitCtx,
+            _refusal: &Refusal,
+        ) -> Decision<Audit> {
+            self.note(StepName::Audit);
+            Decision::proceed(token, audit_facts())
+        }
+
+        fn encode(
+            &self,
+            token: &UnitToken<Encode>,
+            _ctx: &UnitCtx,
+            _outcome: &Outcome,
+        ) -> Decision<Encode> {
+            step!(
+                self,
+                token,
+                Encode,
+                StepName::Encode,
+                busbar_caps::Frame {
+                    direction: busbar_contract::Direction::Outbound,
+                    stream: busbar_contract::StreamId(0),
+                    bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b"{}"[..])),
+                    meta: busbar_contract::FrameMeta::default(),
+                }
+            )
+        }
+
+        fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+            Evidence::default()
+        }
+    }
+
+    fn audit_facts() -> busbar_caps::AuditFacts {
+        busbar_caps::AuditFacts {
+            op_class: busbar_caps::OpClassId::new("seam"),
+            finish: busbar_contract::FinishClass::Complete,
+        }
+    }
+
+    /// Everything a listener holds, minus the units — those are the leg's.
+    struct Node {
+        kernel: busbar_kernel::teller::Kernel,
+        gauge: busbar_kernel::slice::ConcurrencyGauge,
+        canary: busbar_caps::Canary,
+    }
+
+    impl Node {
+        fn new() -> Self {
+            Node {
+                kernel: crate::root::kernel::new_kernel(),
+                gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
+                canary: busbar_caps::Canary::new(),
+            }
+        }
+
+        fn driver<'n>(
+            &'n self,
+            leg: &'n dyn PlaneLeg,
+            plane: &'n dyn busbar_contract::Plane,
+        ) -> LoopDriver<'n> {
+            LoopDriver::new(&self.kernel, leg, &self.gauge, &self.canary, plane)
+        }
+    }
+
+    const FACTS: &[(&str, &str)] = &[("path", "/seam"), ("method", "POST")];
+    const CHAIN: &[&str] = &["tcp", "http"];
+
+    fn arrival(body: &[u8]) -> Arrival<'_> {
+        Arrival {
+            facts: FACTS,
+            body,
+            transport: "http",
+            chain: CHAIN,
+            operation: None,
+            bar: busbar_contract::transport::surface::Bar::Credential,
+        }
+    }
+
+    /// A LEG WHOSE STEP ANSWER IS REFUSE ENDS THE UNIT AS REFUSED.
+    ///
+    /// The point of the seam is that the leg DECIDES and the driver reports. So a leg that refuses
+    /// at Approve — the caller's credential was accepted and does not cover this — must produce a
+    /// unit that ended refused at Approve, and the driver must frame that as forbidden rather than
+    /// as anything of its own. A driver that reached its own verdict would answer the same word for
+    /// a leg that passed, which is the failure this pins.
+    #[test]
+    fn a_leg_that_refuses_a_step_ends_the_unit_refused_at_that_step() {
+        let node = Node::new();
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let leg = Noting::refusing_at(StepName::Approve, ReasonCode::ScopeDenied);
+        let driver = node.driver(&leg, &plane);
+        let answer = driver.drive(arrival(b"{}"), &busbar_plane_a2a::surface::SURFACE);
+        assert_eq!(
+            answer.outcome,
+            busbar_contract::transport::Outcome::Forbidden,
+            "the leg refused at Approve and the transport frames the leg's word, not the driver's"
+        );
+        let ran = leg.ran();
+        assert!(
+            ran.contains(&StepName::Approve),
+            "the refusing step ran: {ran:?}"
+        );
+        assert!(
+            !ran.contains(&StepName::Admit) && !ran.contains(&StepName::Route),
+            "nothing after the refusal ran: {ran:?}"
+        );
+        assert!(
+            ran.contains(&StepName::Audit),
+            "and it still left through the refused audit door: {ran:?}"
+        );
+    }
+
+    /// A UNIT WHOSE DESTINATION IS UNREACHABLE NEVER REACHES THE METER.
+    ///
+    /// The Verify step is where a plane says where a unit may go, and a draft whose destination the
+    /// plane calls unreachable is refused there. What must be true after that refusal is that
+    /// NOTHING PRICED IT: the meter step is what folds a usage report, and a unit that had no
+    /// destination consumed nothing, so a meter that ran would be pricing a hop that never happened.
+    ///
+    /// This is the money property of the seam and it is asserted on the log rather than on a figure,
+    /// because a figure of zero is what a meter that ran and found nothing also reports — and those
+    /// two are not the same fact.
+    #[test]
+    fn an_unreachable_destination_never_reaches_the_meter() {
+        let node = Node::new();
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let leg = Noting::refusing_at(StepName::Verify, ReasonCode::NoDestination);
+        let driver = node.driver(&leg, &plane);
+        let answer = driver.drive(arrival(b"{}"), &busbar_plane_a2a::surface::SURFACE);
+        assert_eq!(
+            answer.outcome,
+            busbar_contract::transport::Outcome::Forbidden,
+            "a unit refused at Verify is told its credential was accepted and does not cover this \
+             — the step decides the word, never the reason, which is the split `outcome_of` keeps"
+        );
+        let ran = leg.ran();
+        assert!(
+            !ran.contains(&StepName::Meter),
+            "the meter never ran for a unit that reached nowhere: {ran:?}"
+        );
+        assert!(
+            !ran.contains(&StepName::Route),
+            "and neither did the route step: {ran:?}"
+        );
+    }
+
+    /// A LEG THAT PASSES EVERY STEP COMPLETES, AND ANSWERS WITH WHAT ITS OWN ENCODE STEP WROTE.
+    ///
+    /// The other half of the same seam. Without this the two refusal tests above would pass against
+    /// a driver that refused everything, which is exactly the driver the widening replaced.
+    #[test]
+    fn a_leg_that_passes_every_step_completes_with_its_own_bytes() {
+        let node = Node::new();
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let leg = Noting::passing();
+        let driver = node.driver(&leg, &plane);
+        let answer = driver.drive(arrival(b"{}"), &busbar_plane_a2a::surface::SURFACE);
+        assert_eq!(
+            answer.outcome,
+            busbar_contract::transport::Outcome::Completed,
+            "every step passed, so the unit completed"
+        );
+        assert_eq!(
+            answer.body, b"{}",
+            "the bytes that leave are the ones the leg's own Encode step wrote"
+        );
+        let ran = leg.ran();
+        assert!(
+            ran.contains(&StepName::Meter) && ran.contains(&StepName::Encode),
+            "the whole chain ran: {ran:?}"
+        );
+    }
+
+    /// THE NODE'S OWN UNITS ARE A LEG WITHOUT BEING TOLD SO.
+    ///
+    /// The blanket implementation is the compatibility half of the widening, and this is what says
+    /// it holds: `ProductionUnits` is passed where a `&dyn PlaneLeg` is expected, with no adapter
+    /// written at the call site, and the ending is the one it always produced.
+    #[test]
+    fn the_nodes_own_units_are_a_leg_with_no_adapter() {
+        let node = Node::new();
+        let units = crate::root::kernel::ProductionUnits::admin_only(std::sync::Arc::new(
+            crate::root::units_admin::RefusingDispatch,
+        ));
+        let plane = busbar_plane_a2a::A2aPlane::EMPTY;
+        let driver = node.driver(&units, &plane);
+        let answer = driver.drive(arrival(b"{}"), &busbar_plane_a2a::surface::SURFACE);
+        assert_eq!(
+            answer.outcome,
+            busbar_contract::transport::Outcome::NotFound,
+            "a unit on a plane this root composes no steps for is refused for want of a destination"
+        );
+    }
+}

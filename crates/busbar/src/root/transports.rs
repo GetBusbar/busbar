@@ -293,6 +293,72 @@ pub fn provision_dial(
     provision_client(sink, token, slot, cfg)
 }
 
+// ── the leg a driver walks an arrival against ───────────────────────────────────────────────────
+
+/// WHAT ONE ARRIVAL IS WALKED AGAINST: a plane's units, for that arrival.
+///
+/// ## Why this is a seam and not a field of the driver
+///
+/// The driver held `&ProductionUnits` for as long as there was one shape of leg. There are two, and
+/// the difference between them is not cosmetic:
+///
+/// - A leg whose units are the SAME for every arrival — the node's own `ProductionUnits`, assembled
+///   once at boot and shared by every connection. Nothing about the arrival changes what it is, so
+///   the walk is `run_unit` against the value the driver already holds. Every `Units` gets this for
+///   free through the blanket implementation below, which is what makes the change a widening
+///   rather than a swap: the shape that worked before still works, unaltered, and the call site
+///   that passed a `&ProductionUnits` still passes one.
+/// - A leg whose units are ASSEMBLED PER ARRIVAL, because the bindings they run over carry facts the
+///   arrival decided — what the plane made of the bytes, when they landed, which pool the agent
+///   they name is reached on. Such a leg cannot exist before the arrival does, so it cannot be a
+///   field of anything built at boot; what IS a field at boot is the thing that knows how to build
+///   one, which is exactly what an implementor of this trait is.
+///
+/// ## What the driver learns from it: an ending, and nothing else
+///
+/// One method, one return value. The driver hands over the arrival and the four things the loop is
+/// run under, and receives the `Ended` the loop reached. It learns no plane name, no operation, no
+/// principal and no money — a leg that wanted to tell the driver any of those would have to widen
+/// this signature, and the widening is the review.
+///
+/// The arrival is passed BY REFERENCE and the leg may read it; the driver still does not. Reading
+/// the body is the plane's job on both sides of this seam, and a leg that reads it does so by
+/// asking its own plane, in its own file, where the plane is named.
+#[cfg(feature = "root-admin")]
+pub trait PlaneLeg: Send + Sync {
+    /// Walk one arrival through the kernel's ten steps and its one exit, and hand back the ending.
+    ///
+    /// The kernel, the hold cell, the leases, the gauge, the canary and the meter are the DRIVER'S:
+    /// there is one of each per node and one of the first per unit, and a leg that made its own
+    /// would be balancing its own books beside the node's. What the leg supplies is the `Units`.
+    fn walk(
+        &self,
+        arrival: &busbar_contract::transport::Arrival<'_>,
+        kernel: &busbar_kernel::teller::Kernel,
+        ctx: &busbar_kernel::teller::UnitCtx,
+        run: busbar_kernel::teller::Run<'_>,
+    ) -> busbar_kernel::teller::Ended;
+}
+
+/// A leg whose units do not depend on the arrival is the units themselves.
+///
+/// The blanket implementation is what makes [`PlaneLeg`] a widening of the driver rather than a
+/// replacement for it: every `Units` the root already had is already a leg, so no existing
+/// composition changed and no existing byte moved. The arrival goes unread here on purpose — that
+/// is the whole content of "these units do not depend on it".
+#[cfg(feature = "root-admin")]
+impl<U: busbar_kernel::teller::Units + Send + Sync> PlaneLeg for U {
+    fn walk(
+        &self,
+        _arrival: &busbar_contract::transport::Arrival<'_>,
+        kernel: &busbar_kernel::teller::Kernel,
+        ctx: &busbar_kernel::teller::UnitCtx,
+        run: busbar_kernel::teller::Run<'_>,
+    ) -> busbar_kernel::teller::Ended {
+        busbar_kernel::teller::run_unit(kernel, self, ctx, run)
+    }
+}
+
 // ── the driver a listener is handed ─────────────────────────────────────────────────────────────
 
 /// WHAT RUNS A UNIT, on the root's side of the transport seam.
@@ -331,14 +397,16 @@ pub fn provision_dial(
 /// plane wrote is the one thing the whole seam exists to prevent. It passes the frame along unread.
 /// A completed unit whose Encode step declined to write still leaves with no body.
 ///
-/// **A plane's own steps.** `ProductionUnits` answers every non-admin step with a refusal, by
-/// design — the bodies arrive one plane at a time and admin is the one that has landed — so a unit
-/// driven here today ends at Arrival whatever the bytes were, and what the caller reads is the
-/// plane's rendering of that refusal.
+/// **A plane's own steps.** A leg whose units answer every step with a refusal is a leg the root has
+/// not composed yet, and that is the shape `ProductionUnits` has for every plane but admin — so a
+/// unit driven over it ends at its first step whatever the bytes were, and what the caller reads is
+/// the plane's rendering of that refusal. A leg that DOES compose its plane's steps ends wherever
+/// those steps end, and this file cannot tell the two apart, which is the property that lets a
+/// second plane land without a line here changing.
 #[cfg(feature = "root-admin")]
 pub struct LoopDriver<'n> {
     kernel: &'n busbar_kernel::teller::Kernel,
-    units: &'n crate::root::kernel::ProductionUnits,
+    leg: &'n dyn PlaneLeg,
     gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
     canary: &'n busbar_caps::Canary,
     /// What the bytes mean. One plane, handed in, never named here.
@@ -362,23 +430,26 @@ impl std::fmt::Debug for LoopDriver<'_> {
 
 #[cfg(feature = "root-admin")]
 impl<'n> LoopDriver<'n> {
-    /// Bind the driver to the node's own kernel, units, gauge and canary, and to the plane whose
+    /// Bind the driver to the node's own kernel, leg, gauge and canary, and to the plane whose
     /// declared surface the listener it is handed to serves.
     ///
     /// By reference and not by value: one driver serves every connection every listener accepts, and
     /// the counts the canary balances are node-wide. A driver that owned a copy of them would be
     /// balancing its own books beside the node's.
+    ///
+    /// The leg arrives as `&dyn PlaneLeg`, which the node's own `ProductionUnits` coerces to through
+    /// the blanket implementation — so a caller that passed the units still passes the units.
     #[must_use]
     pub fn new(
         kernel: &'n busbar_kernel::teller::Kernel,
-        units: &'n crate::root::kernel::ProductionUnits,
+        leg: &'n dyn PlaneLeg,
         gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
         canary: &'n busbar_caps::Canary,
         plane: &'n dyn busbar_contract::Plane,
     ) -> Self {
         Self {
             kernel,
-            units,
+            leg,
             gauge,
             canary,
             plane,
@@ -621,17 +692,20 @@ impl LoopDriver<'_> {
     /// the arena's borrows live for the length of that context and the loop takes none of them, and
     /// a reader can see that here rather than having to work it out from the indentation.
     ///
-    /// THE ARRIVAL IS TAKEN AND NOT YET READ, and that is a named gap rather than a spare argument.
-    /// Three of the fields the loop's own context carries are facts about how the bytes got here —
-    /// the origin, the session, and whether the listener that accepted them is the administrative
-    /// one — and every one of them is answered below with the value a client request on a data
-    /// listener has. That is the truth for the mount this driver serves today and it is not a
-    /// derivation: a node that mounted a surface on its admin listener would be running those units
-    /// as ordinary client units, which is the wrong answer arrived at silently. The argument is here
-    /// so the fix is a body change and not a signature change.
+    /// THE ARRIVAL IS NOT READ HERE, and that is the seam rather than a gap. Three of the fields the
+    /// loop's own context carries are facts about how the bytes got here — the origin, the session,
+    /// and whether the listener that accepted them is the administrative one — and every one of them
+    /// is answered below with the value a client request on a data listener has. That is the truth
+    /// for the mount this driver serves today and it is not a derivation: a node that mounted a
+    /// surface on its admin listener would be running those units as ordinary client units, which is
+    /// the wrong answer arrived at silently.
+    ///
+    /// The arrival is HANDED ON, to the leg, which is the one thing here entitled to read it: a leg
+    /// whose units are assembled per arrival assembles them from it, and a leg whose units are not
+    /// ignores it. Either way the reading happens where a plane is named, and this file names none.
     fn run(
         &self,
-        _arrival: &busbar_contract::transport::Arrival<'_>,
+        arrival: &busbar_contract::transport::Arrival<'_>,
     ) -> busbar_kernel::teller::Ended {
         let key = self.next_unit();
         let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
@@ -650,10 +724,12 @@ impl LoopDriver<'_> {
             kernel_verb_only: false,
         };
         // THE LOOP ITSELF, not an approximation of it. Whatever this driver cannot yet do above the
-        // loop, the ten steps below it are the node's own.
-        busbar_kernel::teller::run_unit(
+        // loop, the ten steps below it are the node's own. WHICH units they run against is the leg's
+        // and never this file's — the leg is handed the arrival and the four node-wide values, and
+        // what comes back is the ending.
+        self.leg.walk(
+            arrival,
             self.kernel,
-            self.units,
             &ctx,
             busbar_kernel::teller::Run {
                 cell: &cell,
