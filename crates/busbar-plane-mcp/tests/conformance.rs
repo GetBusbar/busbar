@@ -109,7 +109,20 @@ fn notification(method: &str) -> Vec<u8> {
 
 /// Drive one body through the decode step and hand back what the plane made of it.
 fn decode(plane: &McpPlane, body: &[u8]) -> Result<Ingress<'static>, Decode> {
-    let scaffold = Box::leak(Box::new(Scaffold::new("http")));
+    decode_on(plane, body, "http")
+}
+
+/// The same read, on a named claim transport.
+///
+/// A method is reachable on the BINDING its surface declares it on, and two of them are declared on
+/// the console binding alone — so a rig that only ever asked over the mounted request surface would
+/// report those two as unsupported and call it a pass. The transport is an argument for that reason.
+fn decode_on(
+    plane: &McpPlane,
+    body: &[u8],
+    transport: &'static str,
+) -> Result<Ingress<'static>, Decode> {
+    let scaffold = Box::leak(Box::new(Scaffold::new(transport)));
     let ctx = scaffold.ctx();
     let frames: &'static [busbar_contract::wire::Frame] = Box::leak(vec![frame(body)].into());
     let mut cursor = FrameCursor::new(frames);
@@ -154,7 +167,7 @@ fn every_method_the_battery_sends_is_carried() {
 /// would leave that loop iterating zero times — and a conformance test that drove nothing reports
 /// `ok`. These three numbers are what turns "the loop found nothing" into a failure. Raise one
 /// deliberately, in the commit that adds the row.
-const CLIENT_ROWS: usize = 13;
+const CLIENT_ROWS: usize = 15;
 /// The rows only a paired server may send. See [`CLIENT_ROWS`].
 const PROVIDER_ROWS: usize = 3;
 /// The notices this plane recognises. See [`CLIENT_ROWS`].
@@ -165,6 +178,21 @@ fn rows_of(sender: ops::Sender) -> Vec<&'static ops::MethodRow> {
     ops::METHODS.iter().filter(|r| r.sender == sender).collect()
 }
 
+/// The claim transport one method is reachable on, asked of the surface that declares it.
+///
+/// Never guessed and never a second list kept here: the surface is the single declaration of where a
+/// method can be SAID, and a rig holding its own copy would agree with it right up until the day it
+/// did not. The mounted request surface is asked first, so the answer for everything except the two
+/// console-era verbs is the one the rig has always used.
+fn transport_of(method: &str) -> &'static str {
+    for transport in ["http", "stdio"] {
+        if busbar_plane_mcp::surface::row_on(method, transport).is_some() {
+            return transport;
+        }
+    }
+    panic!("{method} is reachable on no binding this surface declares")
+}
+
 /// Every method a caller sends decodes to a declared class, carrying the caller's identifier.
 #[test]
 fn every_client_method_decodes() {
@@ -173,12 +201,14 @@ fn every_client_method_decodes() {
     assert_eq!(rows.len(), CLIENT_ROWS);
     for row in rows {
         let body = request("1", row.method);
-        let draft = draft_of(decode(&plane, &body).unwrap_or_else(|e| {
-            panic!(
-                "a caller may send {} and this plane answered {e:?}",
-                row.method
-            )
-        }));
+        let draft = draft_of(
+            decode_on(&plane, &body, transport_of(row.method)).unwrap_or_else(|e| {
+                panic!(
+                    "a caller may send {} and this plane answered {e:?}",
+                    row.method
+                )
+            }),
+        );
         assert_eq!(draft.op, row.op, "{} named the wrong class", row.method);
         assert_eq!(
             draft.correlation_out.expect("a request correlates").value,
@@ -247,7 +277,10 @@ fn only_the_held_stream_opens_a_unit() {
     let rows = rows_of(ops::Sender::Client);
     assert_eq!(rows.len(), CLIENT_ROWS);
     for row in rows {
-        match (decode(&plane, &request("1", row.method)), row.streaming) {
+        match (
+            decode_on(&plane, &request("1", row.method), transport_of(row.method)),
+            row.streaming,
+        ) {
             (Ok(Ingress::Open(_)), true) | (Ok(Ingress::OneShot(_)), false) => {}
             (other, _) => panic!("{} decoded as {other:?}", row.method),
         }
@@ -525,6 +558,10 @@ fn a_refusal_that_implies_a_wait_says_so() {
 /// written down here rather than left to a bound that can never fail.
 const EXPECTED_LEGS: &[(&str, usize)] = &[
     ("discover", 2),
+    // One leg each: the answer is composed from this build's own declarations, and the leg says
+    // where it GOES rather than what it reads.
+    ("initialize", 1),
+    ("ping", 1),
     ("tools_list", 2),
     ("tool_call", 5),
     ("prompts_list", 2),

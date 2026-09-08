@@ -25,6 +25,25 @@ use busbar_contract::ids::OpClassId;
 /// Ask the server what it is and what it supports.
 pub const OP_DISCOVER: OpClassId = OpClassId::new("discover");
 
+/// The console-era handshake: what revision this node speaks, and what it can do.
+///
+/// A class of its own rather than a second spelling of [`OP_DISCOVER`], because the two answer
+/// different documents about different things. Discovery is computed PER CALLER from that caller's
+/// own grant — two callers discover two different servers — and this one is computed from nothing at
+/// all: it names the revision this build implements and the capabilities the build has, which are
+/// the same for every caller and are known before a caller is identified.
+///
+/// Reachable on the console binding alone. See [`crate::surface`] for why that is the protocol's
+/// fact rather than this crate's convenience.
+pub const OP_INITIALIZE: OpClassId = OpClassId::new("initialize");
+
+/// The console-era liveness verb: an empty answer to an empty question.
+///
+/// It reads nothing, decides nothing and answers the empty document. It is a class of its own
+/// because it is an operation a caller can send and a unit the loop therefore walks — a class it
+/// shared with something else would be a unit priced, scoped and recorded as that something else.
+pub const OP_PING: OpClassId = OpClassId::new("ping");
+
 /// List the tools this caller may use.
 pub const OP_TOOLS_LIST: OpClassId = OpClassId::new("tools_list");
 
@@ -79,6 +98,8 @@ pub const OP_NOTIFICATION: OpClassId = OpClassId::new("notification");
 /// Every operation class this plane's units can be, in declaration order.
 pub const OP_CLASSES: &[OpClassId] = &[
     OP_DISCOVER,
+    OP_INITIALIZE,
+    OP_PING,
     OP_TOOLS_LIST,
     OP_TOOL_CALL,
     OP_PROMPTS_LIST,
@@ -134,6 +155,26 @@ pub const METHODS: &[MethodRow] = &[
     MethodRow {
         method: "server/discover",
         op: OP_DISCOVER,
+        sender: Sender::Client,
+        streaming: false,
+        name_pointer: None,
+    },
+    // The two console-era verbs. They are rows of the vocabulary because a caller SENDS them and
+    // this node ANSWERS them; WHERE it answers them is the surface's declaration and not this
+    // table's, and [`crate::surface`] declares both on the console binding alone. A reader who wants
+    // to know whether the mounted request surface carries them reads that file, and the answer there
+    // is no — which is the same answer `busbar_mcp_codec::codec::IMPLEMENTED_METHODS` gives, pinned
+    // by a test below.
+    MethodRow {
+        method: "initialize",
+        op: OP_INITIALIZE,
+        sender: Sender::Client,
+        streaming: false,
+        name_pointer: None,
+    },
+    MethodRow {
+        method: "ping",
+        op: OP_PING,
         sender: Sender::Client,
         streaming: false,
         name_pointer: None,
