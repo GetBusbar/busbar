@@ -394,8 +394,9 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
-# store-example-plugin demonstrates wrapping the in-tree memory store; it is not itself the store.
-store-example-plugin = ["busbar-store-memory"]
+# RETIRED 2026-09-08: store-example-plugin named busbar-store-memory, a sibling instance of its own
+# kind, which PLUGIN-TREE.md §4 forbids without exception. The waiver is gone because the dependency
+# is: the example now carries its own in-process backend (crates/store-example-plugin/src/ram.rs).
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a

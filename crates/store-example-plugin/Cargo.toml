@@ -20,7 +20,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 busbar-api = { path = "../api" }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
-busbar-store-memory = { path = "../store-memory" }
+# NO SIBLING INSTANCE. This crate is the copy-me template for `kind: store`, so it names no other
+# store — its in-process backend is its own (`src/ram.rs`). See PLUGIN-TREE.md §4.
 serde = { workspace = true }
 serde_json = { workspace = true }
 

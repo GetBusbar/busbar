@@ -642,3 +642,123 @@ fn plane_token_live_refuses_a_lapsed_token_and_an_unknown_kind() {
     );
     assert!(!s.plane_token_live("ask", "t-1", 100, 20).unwrap());
 }
+
+// ── THE CRATE'S OWN IN-PROCESS BACKEND (`src/ram.rs`) ────────────────────────────────────────────
+//
+// `RamStore` replaced a dependency on `busbar-store-memory` — a SIBLING INSTANCE of this crate's own
+// kind, which PLUGIN-TREE.md §4 forbids without exception and which the manifest allow-list used to
+// waive for this one crate. Deleting the waiver is only honest if the behaviour it covered is now
+// asserted HERE, so the three rulings a store gets wrong invisibly are pinned below: the tombstone
+// precondition, the delete cascade, and the metering accumulate. The first two are the SHARED
+// cross-backend cells from `busbar-plugin-testkit`, wired the same way the plane-purge cells above
+// are, so a ruling added to the shared suite reaches this backend on its next dependency bump.
+
+/// `put_key` must not clear a tombstone — the shared ruling, answered by this crate's own backend.
+#[test]
+fn conformance_ram_put_key_does_not_resurrect_a_tombstone() {
+    busbar_plugin_testkit::store_conformance::assert_put_key_does_not_resurrect_a_tombstone(
+        &RamStore::new(),
+        "ram",
+    );
+}
+
+/// `delete_key` on an id that was never written is an ERROR, not a silent success.
+#[test]
+fn conformance_ram_delete_key_unknown_id_is_an_error() {
+    busbar_plugin_testkit::store_conformance::assert_delete_key_unknown_id_is_an_error(
+        &RamStore::new(),
+        "ram",
+    );
+}
+
+/// The tombstone cascade: the KEY ROW SURVIVES (attribution by id keeps resolving forever and the id
+/// is never reissued) while the usage LEDGER for that key is dropped. A backend that deleted the row
+/// outright, or that kept the ledger, would pass every round-trip test and still be wrong.
+#[test]
+fn ram_delete_key_tombstones_the_row_and_drops_its_usage_ledger() {
+    let s = RamStore::new();
+    let key = busbar_plugin_testkit::store_conformance::live_key("ram_cascade");
+    s.put_key(&key).expect("put a live key");
+    s.put_usage("ram_cascade", 0, &UsageLedger::default())
+        .expect("write the ledger");
+
+    s.delete_key("ram_cascade").expect("tombstone the key");
+
+    let row = s.get_key("ram_cascade").expect("read back").expect(
+        "the key ROW survives its own deletion — anything that attributes by key id still resolves",
+    );
+    assert!(row.deleted_at.is_some(), "the row carries a tombstone");
+    assert!(!row.enabled, "a tombstoned key is not enabled");
+    assert!(
+        s.list_keys().expect("list").iter().any(|k| k.id == row.id),
+        "list_keys is UNFILTERED, so the hydrator can observe the new tombstone and evict"
+    );
+    // Idempotent on a second call, and still not a resurrection.
+    s.delete_key("ram_cascade")
+        .expect("deleting an already-tombstoned key is idempotent");
+}
+
+/// `add_metering` ACCUMULATES into one row per `(key_id, bucket, model, provider)` rather than
+/// replacing it, and `list_metering` answers by bucket. A metering row that overwrote instead of
+/// summing loses every request but the last, silently, on the billing path.
+#[test]
+fn ram_add_metering_accumulates_into_one_row_per_bucket() {
+    let s = RamStore::new();
+    let delta = |requests: u64, tokens_input: u64| MeteringDelta {
+        key_id: "ram_meter".into(),
+        bucket: 7,
+        model: "m".into(),
+        provider: "p".into(),
+        tokens_input,
+        tokens_output: 0,
+        tokens_cache_read: 0,
+        tokens_cache_write: 0,
+        requests,
+        billable_requests: requests,
+        key_group_at_use: String::new(),
+        pricing_version: String::new(),
+    };
+    s.add_metering(&delta(1, 10)).expect("first charge");
+    s.add_metering(&delta(2, 5)).expect("second charge");
+
+    let rows = s.list_metering(7).expect("read the bucket");
+    assert_eq!(
+        rows.len(),
+        1,
+        "one row per (key_id, bucket, model, provider)"
+    );
+    assert_eq!(rows[0].requests, 3, "requests accumulate");
+    assert_eq!(rows[0].tokens_input, 15, "tokens accumulate");
+    assert!(
+        s.list_metering(8).expect("read another bucket").is_empty(),
+        "list_metering answers only the bucket it was asked for"
+    );
+}
+
+/// THE STANDALONE RULING ITSELF, read off the manifest rather than trusted to review. This crate is
+/// the copy-me template for `kind: store`; PLUGIN-TREE.md §4 says no crate may name another instance
+/// of any kind, "not in a dependency". The `manifest-allowlist` gate is report-only in CI today
+/// (`ci.yml`'s construction-gate job carries `continue-on-error: true`), so this cell is the
+/// BLOCKING half: it fails `cargo test -p busbar-store-example-plugin` the moment a sibling store
+/// reappears in the dependency table, whatever the gate does.
+#[test]
+fn the_template_names_no_sibling_store_in_its_manifest() {
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("read this crate's own Cargo.toml");
+    for line in manifest.lines() {
+        let decl = line.trim();
+        if decl.starts_with('#') {
+            continue; // the comment recording WHY the dependency is gone is not a dependency
+        }
+        let Some(name) = decl.split_once('=').map(|(n, _)| n.trim()) else {
+            continue;
+        };
+        assert!(
+            !(name.contains("store") && name != "name"),
+            "crates/store-example-plugin/Cargo.toml names '{name}', a sibling instance of this \
+             crate's own kind. PLUGIN-TREE.md §4 admits no exception: this crate is the template a \
+             third-party store plugin is copied from, and the copy fails kind-isolation:deps on the \
+             day it ships. Its backend belongs in this crate (src/ram.rs)."
+        );
+    }
+}
