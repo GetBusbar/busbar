@@ -727,9 +727,17 @@ impl Units for ProductionUnits {
     ) -> Decision<Route> {
         #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
+            // The store the admin surface reaches is the configured one PLUS this node's book, so
+            // the money verbs have somewhere for their effect to land. Wrapped here rather than at
+            // composition because the wrapper is only meaningful on this leg: nothing else on the
+            // loop reaches the store through an admin verb, and a node-wide `store` field that
+            // could move money would be a second writable handle on the books.
             return crate::root::units_admin::route(
                 &self.admin,
-                Arc::clone(&self.store),
+                Arc::new(crate::root::money_store::MoneyStore::new(
+                    Arc::clone(&self.store),
+                    Arc::clone(&self.durability),
+                )),
                 &self.admin_token,
                 token,
                 ctx,

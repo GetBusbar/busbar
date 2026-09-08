@@ -202,6 +202,106 @@ impl IdentityDeltaView {
     }
 }
 
+/// What one `adjust` moved.
+///
+/// `pure_reversal` is the field an operator actually reads: inside the open window an adjustment
+/// releases headroom back to the store, and outside it there is no headroom left to release, so the
+/// entry is a pure ledger reversal. Both are correct; which happened changes what the next request
+/// against that bucket is allowed to spend, so it is answered rather than left to be inferred from
+/// a window boundary the caller would have to compute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdjustmentView {
+    /// Which pot.
+    pub bucket: String,
+    /// Counting what.
+    pub dimension: String,
+    /// How wide.
+    pub scope: String,
+    /// The window the correction lands in, as a unix second.
+    pub window_start: u64,
+    /// The correction, signed: an adjustment can go either way.
+    pub amount_nanos: i128,
+    /// How much headroom went back to the store. Zero on a pure reversal.
+    pub headroom_released_nanos: i128,
+    /// Whether the window had already closed, making this a reversal and not a release.
+    pub pure_reversal: bool,
+}
+
+impl AdjustmentView {
+    /// Render this view as a JSON object.
+    pub fn to_json(&self) -> String {
+        let mut out = String::new();
+        out.push_str("{\"bucket\":");
+        json_string(&self.bucket, &mut out);
+        out.push_str(",\"dimension\":");
+        json_string(&self.dimension, &mut out);
+        out.push_str(",\"scope\":");
+        json_string(&self.scope, &mut out);
+        let _ = write!(out, ",\"window_start\":{}", self.window_start);
+        let _ = write!(out, ",\"amount_nanos\":\"{}\"", self.amount_nanos);
+        let _ = write!(
+            out,
+            ",\"headroom_released_nanos\":\"{}\"",
+            self.headroom_released_nanos
+        );
+        let _ = write!(out, ",\"pure_reversal\":{}", self.pure_reversal);
+        out.push('}');
+        out
+    }
+}
+
+/// What one `resolve_slice` moved.
+///
+/// The three amounts are carried together because the operator's question is "what was stranded,
+/// what did I just settle, and what is still stranded" — and a reader deriving `remaining` by
+/// subtraction would be re-implementing the books.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreconciledSliceView {
+    /// Which node's slice.
+    pub node: u64,
+    /// Which pot.
+    pub bucket: String,
+    /// Counting what.
+    pub dimension: String,
+    /// How wide.
+    pub scope: String,
+    /// The window the slice belongs to, as a unix second.
+    pub window_start: u64,
+    /// What was unreconciled before this call.
+    pub unreconciled_nanos: i128,
+    /// How much this call resolved.
+    pub resolved_nanos: i128,
+    /// What is unreconciled after it.
+    pub remaining_nanos: i128,
+    /// Whether the amount was written off rather than posted.
+    pub written_off: bool,
+}
+
+impl UnreconciledSliceView {
+    /// Render this view as a JSON object.
+    pub fn to_json(&self) -> String {
+        let mut out = String::new();
+        let _ = write!(out, "{{\"node\":{}", self.node);
+        out.push_str(",\"bucket\":");
+        json_string(&self.bucket, &mut out);
+        out.push_str(",\"dimension\":");
+        json_string(&self.dimension, &mut out);
+        out.push_str(",\"scope\":");
+        json_string(&self.scope, &mut out);
+        let _ = write!(out, ",\"window_start\":{}", self.window_start);
+        for (name, amount) in [
+            ("unreconciled_nanos", self.unreconciled_nanos),
+            ("resolved_nanos", self.resolved_nanos),
+            ("remaining_nanos", self.remaining_nanos),
+        ] {
+            let _ = write!(out, ",\"{name}\":\"{amount}\"");
+        }
+        let _ = write!(out, ",\"written_off\":{}", self.written_off);
+        out.push('}');
+        out
+    }
+}
+
 /// Write one JSON string literal, escaping what the grammar requires and nothing else.
 ///
 /// A bucket name reaches this from configuration, so it is not this module's to assume well-formed.

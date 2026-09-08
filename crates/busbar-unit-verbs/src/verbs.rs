@@ -447,13 +447,13 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         &self.store
     }
 
-    /// The gate the three disaster-recovery verbs run through before they reach the store.
+    /// The gate every store-bound verb runs through before it reaches the store.
     ///
     /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, then rate class —
-    /// because these three ARE new verbs; the only thing that makes them different is that their
-    /// effect lands on [`Store`] rather than [`Governance`], and where an effect lands is not a
-    /// reason to be admitted differently.
-    fn admit_recovery_verb(
+    /// because these ARE new verbs; the only thing that makes them different is that their effect
+    /// lands on [`Store`] rather than [`Governance`], and where an effect lands is not a reason to
+    /// be admitted differently.
+    fn admit_store_verb(
         &self,
         verb: KernelVerb,
         actor: &str,
@@ -464,7 +464,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     }
 
     /// `chain_break` — deliberately break the journal chain. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::admit_store_verb`] and only then handed to the store.
     pub fn chain_break(
         &self,
         admin: &AdminToken,
@@ -472,14 +472,14 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         granted: VerbScope,
         now: u64,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::ChainBreak, actor, granted, now)?;
+        self.admit_store_verb(KernelVerb::ChainBreak, actor, granted, now)?;
         self.store
             .chain_break(admin)
             .map_err(StoreError::into_refusal)
     }
 
     /// `store_restore` — restore the store from a named backup. Admitted through
-    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// [`Verbs::admit_store_verb`] and only then handed to the store.
     pub fn store_restore(
         &self,
         admin: &AdminToken,
@@ -488,14 +488,48 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         now: u64,
         backup_ref: &str,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::StoreRestore, actor, granted, now)?;
+        self.admit_store_verb(KernelVerb::StoreRestore, actor, granted, now)?;
         self.store
             .store_restore(admin, backup_ref)
             .map_err(StoreError::into_refusal)
     }
 
+    /// `adjust` — post a correcting entry against one balance.
+    ///
+    /// Bytes in, bytes out: this crate reads no field of either. What it decides is whether the
+    /// call happens at all, which is the same decision it makes for every other verb and is made
+    /// the same way.
+    pub fn adjust(
+        &self,
+        admin: &AdminToken,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Refusal> {
+        self.admit_store_verb(KernelVerb::Adjust, actor, granted, now)?;
+        self.store
+            .adjust(admin, request)
+            .map_err(StoreError::into_refusal)
+    }
+
+    /// `resolve_slice` — resolve an unreconciled slice. Same shape as [`Verbs::adjust`].
+    pub fn resolve_slice(
+        &self,
+        admin: &AdminToken,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        request: &[u8],
+    ) -> Result<Vec<u8>, Refusal> {
+        self.admit_store_verb(KernelVerb::ResolveSlice, actor, granted, now)?;
+        self.store
+            .resolve_slice(admin, request)
+            .map_err(StoreError::into_refusal)
+    }
+
     /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
-    /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    /// through [`Verbs::admit_store_verb`] and only then handed to the store.
     pub fn reseal_epoch_floor(
         &self,
         admin: &AdminToken,
@@ -503,7 +537,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         granted: VerbScope,
         now: u64,
     ) -> Result<(), Refusal> {
-        self.admit_recovery_verb(KernelVerb::ResealEpochFloor, actor, granted, now)?;
+        self.admit_store_verb(KernelVerb::ResealEpochFloor, actor, granted, now)?;
         self.store
             .reseal_epoch_floor(admin)
             .map_err(StoreError::into_refusal)

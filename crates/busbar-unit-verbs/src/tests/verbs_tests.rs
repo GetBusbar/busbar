@@ -1308,6 +1308,14 @@ impl Store for RecordingStore {
         self.0.lock().unwrap().push("reseal_epoch_floor");
         Ok(())
     }
+    fn adjust(&self, _admin: &AdminToken, _request: &[u8]) -> Result<Vec<u8>, StoreError> {
+        self.0.lock().unwrap().push("adjust");
+        Ok(b"adjusted".to_vec())
+    }
+    fn resolve_slice(&self, _admin: &AdminToken, _request: &[u8]) -> Result<Vec<u8>, StoreError> {
+        self.0.lock().unwrap().push("resolve_slice");
+        Ok(b"resolved".to_vec())
+    }
     fn replay_new_verb(&self, _key: &(String, String)) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(None)
     }
@@ -1409,4 +1417,74 @@ fn no_new_verb_is_held_by_anything_but_its_scope() {
             .execute(*verb, &admin, "alice", VerbScope::Full, 0, b"{}")
             .unwrap_or_else(|e| panic!("{verb:?} was refused {:?} on a full credential", e.reason));
     }
+}
+
+/// `adjust` and `resolve_slice` reach the store only through the admission every verb runs.
+///
+/// The pair is the first two of the eight MUTATING 1.6.0 verbs, and they are the reason the store
+/// seam grew: the control surface must name one seam and no ledger, so the effect arrives behind
+/// the same trait the recovery verbs already use. What this asserts is that the seam did not come
+/// with a way around the gate.
+#[test]
+fn the_money_verbs_are_refused_a_read_only_credential_before_the_store_is_touched() {
+    let verbs = recovery_verbs();
+    let admin = admin();
+
+    let err = verbs
+        .adjust(&admin, "alice", VerbScope::ReadOnly, 0, b"{}")
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
+    assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
+
+    let err = verbs
+        .resolve_slice(&admin, "alice", VerbScope::ReadOnly, 0, b"{}")
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
+
+    assert!(
+        verbs.store_for_test().reached().is_empty(),
+        "a refused money verb reached the store anyway"
+    );
+}
+
+/// A full credential carries each of them through, and each reaches its OWN store primitive.
+#[test]
+fn a_full_credential_carries_each_money_verb_to_its_own_store_primitive() {
+    let verbs = recovery_verbs();
+    let admin = admin();
+
+    verbs
+        .adjust(&admin, "alice", VerbScope::Full, 0, b"{}")
+        .expect("adjust is admitted on a full credential");
+    verbs
+        .resolve_slice(&admin, "alice", VerbScope::Full, 0, b"{}")
+        .expect("resolve_slice is admitted on a full credential");
+
+    // Named and ordered. A dispatcher that sent `adjust` to the slice primitive would still be
+    // `Ok`, and the books would be wrong in a way no status code would show.
+    assert_eq!(
+        verbs.store_for_test().reached(),
+        vec!["adjust", "resolve_slice"]
+    );
+}
+
+/// The default the trait ships REFUSES, so an integrator with no ledger cannot report a
+/// correction that never landed.
+///
+/// This is the one behaviour a money seam must not get wrong by omission, so it is asserted
+/// against a store that implements none of the money methods at all.
+#[test]
+fn a_store_that_has_not_bound_a_ledger_refuses_a_money_verb_rather_than_answering_ok() {
+    let verbs = make_verbs(FakeGovernance::new()); // over `FakeStore`, which takes the defaults
+    let admin = admin();
+
+    let err = verbs
+        .adjust(&admin, "alice", VerbScope::Full, 0, b"{}")
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
+
+    let err = verbs
+        .resolve_slice(&admin, "alice", VerbScope::Full, 0, b"{}")
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::StoreError);
 }

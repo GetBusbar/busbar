@@ -1721,6 +1721,30 @@ pub(crate) fn route(
         };
     }
 
+    // THE MUTATING MONEY VERBS REACH THE STORE TOO, through their own entry points on the unit and
+    // for the same reason the three above do: their effect moves a row, and the one seam this
+    // surface is allowed to name is the store. Unlike the three, they ANSWER with bytes — a
+    // correction that reported nothing would leave an operator unable to tell what moved — so they
+    // unpack an answer rather than falling to `applied_answer()`.
+    if let Some(money) = money_verb(verb) {
+        let ran = match money {
+            MoneyVerb::Adjust => verbs.adjust(admin, &actor, granted, request.at, &request.body),
+            MoneyVerb::ResolveSlice => {
+                verbs.resolve_slice(admin, &actor, granted, request.at, &request.body)
+            }
+        };
+        return match ran {
+            Ok(packed) => match AdminAnswer::unpack(&packed) {
+                Some(answer) => {
+                    binding.units.set_answer(ctx.key, answer);
+                    Decision::proceed(token, busbar_contract::RoutePlan::default())
+                }
+                None => Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed)),
+            },
+            Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
+        };
+    }
+
     match verbs.execute(verb, admin, &actor, granted, request.at, &request.body) {
         Ok(packed) => match AdminAnswer::unpack(&packed) {
             Some(answer) => {
@@ -1753,6 +1777,27 @@ fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
         KernelVerb::ChainBreak => Some(RecoveryVerb::ChainBreak),
         KernelVerb::StoreRestore => Some(RecoveryVerb::StoreRestore),
         KernelVerb::ResealEpochFloor => Some(RecoveryVerb::ResealEpochFloor),
+        _ => None,
+    }
+}
+
+/// The mutating verbs whose effect MOVES MONEY, and therefore lands on the store seam.
+///
+/// Kept as its own enumeration beside [`RecoveryVerb`] rather than folded into it, because the two
+/// groups differ in the one way a reader has to notice: a recovery verb answers `204` with no body,
+/// and a money verb answers with the figure it moved. Folding them would make the answering
+/// difference a per-arm detail instead of a property of the group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MoneyVerb {
+    Adjust,
+    ResolveSlice,
+}
+
+/// Which money verb this is, or `None` for anything else.
+fn money_verb(verb: KernelVerb) -> Option<MoneyVerb> {
+    match verb {
+        KernelVerb::Adjust => Some(MoneyVerb::Adjust),
+        KernelVerb::ResolveSlice => Some(MoneyVerb::ResolveSlice),
         _ => None,
     }
 }
@@ -2184,6 +2229,26 @@ impl busbar_unit_verbs::store::Store for StoreRef {
         admin: &busbar_caps::AdminToken,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         self.0.reseal_epoch_floor(admin)
+    }
+
+    /// Delegated, NOT defaulted. The trait's default for the money verbs refuses, which is right
+    /// for an integrator that bound no ledger and wrong for this newtype: forwarding is the whole
+    /// of what a newtype over a store is for, and a method left to the default here would refuse a
+    /// correction the node was perfectly able to make.
+    fn adjust(
+        &self,
+        admin: &busbar_caps::AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, busbar_unit_verbs::StoreError> {
+        self.0.adjust(admin, request)
+    }
+
+    fn resolve_slice(
+        &self,
+        admin: &busbar_caps::AdminToken,
+        request: &[u8],
+    ) -> Result<Vec<u8>, busbar_unit_verbs::StoreError> {
+        self.0.resolve_slice(admin, request)
     }
 
     fn replay_new_verb(

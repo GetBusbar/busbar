@@ -9,10 +9,10 @@
 //! one of their paths is resolved against `busbar_plane_admin::verbs::resolve`, walked through the
 //! real auth chain, scope-checked, rate-classed, and put past the operator-ceremony and dual-control
 //! gates. Three of them — `chain_break`, `store_restore`, `reseal_epoch_floor` — then land on the
-//! `Store` seam and are answered by the loop. The other nine are handed to
+//! `Store` seam and are answered by the loop. The other seven are handed to
 //! `Governance::execute_new_verb`, which re-serves them on the legacy administrative router.
 //!
-//! That router has never had a route for any of them. So the nine pass every gate the design
+//! That router has never had a route for any of them. So the seven pass every gate the design
 //! put in front of them and are then told the resource does not exist.
 //!
 //! This test pins that. It is not a complaint about the 404 — an absent route SHOULD 404, and the
@@ -47,6 +47,8 @@ const LOOP_SERVED_VERBS: &[&str] = &[
     // Answered by `CoreGovernance::execute_new_verb` from the ledger, not handed back. Grows by one
     // per landed verb; see the sibling ownership pin's `ROOT_ANSWERED_NEW_VERBS`.
     "verify",
+    "adjust",
+    "resolve_slice",
 ];
 
 /// A path the administrative surface has never mounted and never will.
@@ -164,7 +166,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_new_verb_path() {
         );
     }
 
-    // Which rows this is a statement about. Nine of the thirteen are handed back to this
+    // Which rows this is a statement about. Seven of the thirteen are handed back to this
     // surface by `execute_new_verb` and get the answer above; the three recovery verbs never reach
     // it at all, because the loop answers them from `Store`. Both halves are asserted, so a change
     // that moved a verb from one half to the other has to say so here.
@@ -183,7 +185,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_new_verb_path() {
     );
     assert_eq!(
         rows.len() - loop_served,
-        9,
+        7,
         "the number of new verbs answered by a 404 from the legacy surface has changed"
     );
 

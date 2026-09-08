@@ -65,6 +65,11 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+// Gated with the surface it exists for: this module's whole purpose is to give the admin control
+// surface a store that can move the book, and it names `units_admin`'s answer type to do it. A
+// build without the admin plane has no such surface, so it must not carry the wrapper either.
+#[cfg(feature = "root-admin")]
+pub mod money_store;
 pub mod plane_ctx;
 pub mod policy;
 pub mod registry;

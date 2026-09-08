@@ -2825,3 +2825,64 @@ fn verify_answers_the_identity_from_the_ledger_and_not_from_the_dispatch() {
         }
     }
 }
+
+/// `adjust` and `resolve_slice` move the NODE'S OWN BOOK, through the whole loop.
+///
+/// The unit tests beside `MoneyStore` prove the effect; this proves the wiring reaches it. The two
+/// have to be separate: a correct effect behind a seam nothing calls is exactly the state the ten
+/// verbs were already in — admitted by every gate and then answered by a router that had never
+/// heard of them.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_money_verbs_move_the_nodes_own_book_through_the_whole_loop() {
+    use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+
+    let key = TotalsKey::new(
+        BucketId::new("key-1"),
+        CapDimension::NanoUnits,
+        BucketScope::All,
+    );
+    const WINDOW: u64 = 1_700_000_000;
+
+    let durability = Arc::new(std::sync::Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::default()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ));
+    {
+        let mut guard = durability.lock().unwrap();
+        let figures = guard.ledger.book_mut().entry(key.clone(), WINDOW);
+        figures.settled = 10_000;
+        figures.drawn = 10_000;
+        figures.unreconciled = 400;
+    }
+
+    let units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+        Arc::new(AnsweringDispatch),
+        Arc::clone(&durability),
+        Arc::new(busbar_unit_ledger::legacy::RecordingRows::default()),
+    );
+    let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+
+    let mut request = a_ledger_request("/api/v1/admin/adjust");
+    request.method = "POST".to_string();
+    request.body = br#"{"bucket":"key-1","dimension":"nano_units","scope":"all",
+        "window_start":"1700000000","amount_nanos":"250","reason":"an audit"}"#
+        .to_vec();
+    let answer = node.answer(request);
+    assert_eq!(answer.status, 200, "adjust did not answer");
+    assert_ne!(
+        answer.body, br#"{"entries":[]}"#,
+        "adjust fell through to the dispatch"
+    );
+
+    let figures = durability.lock().unwrap().ledger.book().get(&key, WINDOW);
+    assert_eq!(
+        figures.adjustments, 250,
+        "the loop answered but the books did not move"
+    );
+    assert_eq!(figures.settled, 9_750);
+}
