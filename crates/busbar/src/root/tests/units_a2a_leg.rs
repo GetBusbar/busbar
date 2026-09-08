@@ -226,10 +226,7 @@ fn an_empty_holder_leaves_the_leg_on_the_rates_it_was_assembled_over() {
     sources.rates = Some(rates_of(9));
     let leg = A2aLeg::assemble(sources).expect("every source is present");
     let empty = crate::root::kernel::RootCard::default();
-    assert_eq!(
-        leg.rates_from(&empty).pricer().price_per_request_cents(),
-        9
-    );
+    assert_eq!(leg.rates_from(&empty).pricer().price_per_request_cents(), 9);
 }
 
 /// The agent set a byte-price cell reads its lanes off.

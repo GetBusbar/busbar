@@ -188,7 +188,11 @@ impl RootCard {
     /// from the configuration the engine just resolved its own rates from. Two arguments rather than
     /// one derived from the other, because deriving the price from the card here would be a second
     /// place a fee is turned into money — and there is one.
-    pub fn apply(&self, card: Arc<busbar_unit_cost::RateCard>, pricer: busbar_unit_admission::Pricer) {
+    pub fn apply(
+        &self,
+        card: Arc<busbar_unit_cost::RateCard>,
+        pricer: busbar_unit_admission::Pricer,
+    ) {
         self.rates.store(Some(Arc::new(RootRates { card, pricer })));
     }
 }

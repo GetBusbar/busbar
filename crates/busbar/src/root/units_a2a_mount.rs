@@ -535,7 +535,8 @@ impl MountedNode {
         // counters are the chain's, which is what makes one process one node however many planes
         // are mounted on it.
         let (ended, answer) = self.chain.run(&self.kernel, |ctx, run| {
-            self.leg.serve(arrival, &self.kernel, ctx, run, Some(dispatch))
+            self.leg
+                .serve(arrival, &self.kernel, ctx, run, Some(dispatch))
         });
         // THE ANSWER IS THE SURFACE'S WHERE THERE IS ONE. A unit that reached Route carries the
         // status, the headers and the body the operation's own surface wrote, and every one of them
