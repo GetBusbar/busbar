@@ -308,28 +308,49 @@ pub fn provision_dial(
 /// them. What it gets back is the plane's bytes, the media type the declaration named, and one word
 /// from a closed list of eight.
 ///
+/// ## The three things it does, in order
+///
+/// 1. **Reads with the plane.** One arrival is one inbound frame, and the plane says what it is —
+///    over the root's own per-unit context, whose arena is `busbar_kernel::arena::UnitArena` and
+///    whose transport facts are the ones the mount published. The driver does not read the body.
+/// 2. **Runs the loop.** The ten steps, against the node's own units, under the node's gauge and
+///    canary. Not an approximation of the loop and not a subset of it.
+/// 3. **Writes with the plane.** The bytes that leave are the plane's — its refusal document for an
+///    ending that refused, which is what carries the caller's own request identifier back to it.
+///
+/// WHICH PLANE, it does not choose: it is handed one at composition, the same way it is handed the
+/// kernel. There is no plane name in this file, which is the property that lets one driver serve a
+/// second protocol without a line here changing.
+///
 /// ## What this driver does NOT do yet, said plainly
 ///
-/// It runs the loop and maps the ending. It does NOT yet call the plane, so the answers it returns
-/// carry no body. Two things upstream of it are missing, and neither is this file's to fix:
+/// **A completed unit's answer document.** The loop's `Encode` step answers with a `Frame`, and
+/// `Ended` does not carry it: what comes back from `run_unit` is the ending and the posting, so
+/// there is nothing for this driver to hand `encode_response`. A unit that completes therefore
+/// answers with the outcome and no body. Encoding something anyway — the request's own document
+/// echoed back, say — would be the driver inventing an answer no plane wrote, which is the one thing
+/// the whole seam exists to prevent. The fix is on the loop's side: the ending has to carry the
+/// encode step's frame.
 ///
-/// 1. **There is no per-unit arena that ships.** `busbar_contract::Arena` is `Send + Sync` and its
-///    allocators take `&self` and hand back a slice borrowed from it; those two together have no
-///    safe implementation, and every implementor in this tree is a test double that leaks. A plane
-///    call needs one, so there is nothing to build a `Ctx` around.
-/// 2. **`ProductionUnits` answers every non-admin step with a refusal.** That is deliberate — the
-///    bodies arrive one plane at a time and admin is the one that has landed — so a unit driven
-///    here today ends at Arrival whatever the bytes were.
-///
-/// Wiring it half-built and calling it served would be the failure this whole seam exists to
-/// prevent, so it answers honestly instead: the loop really runs, the ending really is the loop's,
-/// and the body is empty because no plane was asked.
+/// **A plane's own steps.** `ProductionUnits` answers every non-admin step with a refusal, by
+/// design — the bodies arrive one plane at a time and admin is the one that has landed — so a unit
+/// driven here today ends at Arrival whatever the bytes were, and what the caller reads is the
+/// plane's rendering of that refusal.
 #[cfg(feature = "root-admin")]
 pub struct LoopDriver<'n> {
     kernel: &'n busbar_kernel::teller::Kernel,
     units: &'n crate::root::kernel::ProductionUnits,
     gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
     canary: &'n busbar_caps::Canary,
+    /// What the bytes mean. One plane, handed in, never named here.
+    plane: &'n dyn busbar_contract::Plane,
+    /// When this process started, for the monotonic half of a unit's clock reading.
+    ///
+    /// The context carries two clocks and they are two different measurements: the wall reading
+    /// dates a unit and the monotonic reading orders it. Filling both from the wall clock would give
+    /// a unit one clock written twice — it would still date correctly and would order nothing at all,
+    /// which is exactly the property the second field exists to provide.
+    started: std::time::Instant,
     next_key: std::sync::atomic::AtomicU64,
 }
 
@@ -342,7 +363,8 @@ impl std::fmt::Debug for LoopDriver<'_> {
 
 #[cfg(feature = "root-admin")]
 impl<'n> LoopDriver<'n> {
-    /// Bind the driver to the node's own kernel, units, gauge and canary.
+    /// Bind the driver to the node's own kernel, units, gauge and canary, and to the plane whose
+    /// declared surface the listener it is handed to serves.
     ///
     /// By reference and not by value: one driver serves every connection every listener accepts, and
     /// the counts the canary balances are node-wide. A driver that owned a copy of them would be
@@ -353,13 +375,34 @@ impl<'n> LoopDriver<'n> {
         units: &'n crate::root::kernel::ProductionUnits,
         gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
         canary: &'n busbar_caps::Canary,
+        plane: &'n dyn busbar_contract::Plane,
     ) -> Self {
         Self {
             kernel,
             units,
             gauge,
             canary,
+            plane,
+            started: std::time::Instant::now(),
             next_key: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// The node's clock, read ONCE for one arrival.
+    ///
+    /// Pinned per unit rather than per step, which is what makes a plane pure over its inputs: two
+    /// steps of one unit that each read the clock would see two different times, and a plane whose
+    /// answer depended on which was a plane whose answer depended on how long the node took.
+    ///
+    /// A wall clock before the epoch is read as the epoch rather than refused. A unit is not the
+    /// place to discover that the host's clock is set wrongly, and a saturating read dates the unit
+    /// at the earliest time it could have happened instead of ending it.
+    fn clock(&self) -> busbar_contract::unit::Clock {
+        busbar_contract::unit::Clock {
+            unix_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+            monotonic_nanos: self.started.elapsed().as_nanos(),
         }
     }
 
@@ -411,13 +454,139 @@ pub fn outcome_of(ended: &busbar_kernel::teller::Ended) -> busbar_contract::tran
     }
 }
 
+/// The step the loop stopped at, in the contract's own spelling of the ten.
+///
+/// The kernel decides in `StepName` and a plane is handed a `Step` to render, and without a
+/// written-down join the two drift. `busbar_caps` already carries the same join for the reason
+/// vocabulary; this is its other half, and it is here rather than there for the same reason
+/// [`outcome_of`] is — this is where an ending is narrowed for something outside the kernel to read.
+///
+/// Total, with no fallback arm. An eleventh step would not compile, which is the whole value of
+/// writing the mapping down once.
+#[cfg(feature = "root-admin")]
+#[must_use]
+pub fn step_of(step: busbar_caps::StepName) -> busbar_contract::unit::Step {
+    use busbar_caps::StepName as S;
+    use busbar_contract::unit::Step as T;
+    match step {
+        S::Arrival => T::Arrival,
+        S::Decode => T::Decode,
+        S::Authenticate => T::Authenticate,
+        S::Verify => T::Verify,
+        S::Approve => T::Approve,
+        S::Admit => T::Admit,
+        S::Route => T::Route,
+        S::Meter => T::Meter,
+        S::Audit => T::Audit,
+        S::Encode => T::Encode,
+    }
+}
+
+/// The refusal a plane is asked to render, where the ending is one it can.
+///
+/// THREE of the five endings become a refusal document and two do not, and the split is about what
+/// the ending CARRIES rather than about how bad it was. A refusal and a failure both name a step and
+/// a reason, which is exactly what a plane's refusal encoder takes. An abort and a timeout name no
+/// reason at all — there is no word in the vocabulary for "the caller went away" — so a document
+/// rendered for one of them would have to have a reason invented for it here, by the driver, about a
+/// unit it did not decide. The transport still frames the answer from the outcome; what is missing
+/// is a body, and a missing body is the truthful answer to "what did the plane say about this".
+///
+/// `AlreadySettled` is the same call: the node's own sweep took the hold, so this unit produced no
+/// ending of its own and there is nothing of the plane's to render.
+#[cfg(feature = "root-admin")]
+#[must_use]
+pub fn refusal_of(
+    ended: &busbar_kernel::teller::Ended,
+) -> Option<busbar_contract::unit::Refusal<'static>> {
+    let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
+        return None;
+    };
+    let (step, reason) = match end.outcome() {
+        busbar_caps::Outcome::Refused(step, reason)
+        | busbar_caps::Outcome::Failed(step, reason) => (step, reason),
+        busbar_caps::Outcome::Completed
+        | busbar_caps::Outcome::Aborted(_)
+        | busbar_caps::Outcome::TimedOut(_) => return None,
+    };
+    Some(busbar_contract::unit::Refusal {
+        step: step_of(step),
+        reason: reason.into(),
+        // The wait a caller should observe is a rate unit's answer and this driver has none of its
+        // readings, so it says nothing rather than guessing a number a client would sleep for.
+        retry_after_secs: None,
+        // A mounted document surface carries one exchange and no stream identity, and the
+        // correlation an answer must carry is read by the plane off the draft it decoded — which is
+        // handed to the encoder beside this refusal rather than copied into it.
+        stream: None,
+        correlates: None,
+    })
+}
+
 #[cfg(feature = "root-admin")]
 impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
     fn drive(
         &self,
-        _arrival: busbar_contract::transport::Arrival<'_>,
+        arrival: busbar_contract::transport::Arrival<'_>,
         _surface: &busbar_contract::transport::WireSurface,
     ) -> busbar_contract::transport::Answer {
+        // WHAT THE DECLARATION SAYS THE ANSWER LOOKS LIKE, read before anything runs. Empty where
+        // the arrival addressed a mount rather than a route: no declaration named a media type for
+        // it, so the frame carries none rather than a guessed one.
+        //
+        // Whether one was ADDRESSED, never which one it is. Two fields are read off whatever the
+        // declaration matched and neither is compared against a name — a driver that branched on
+        // which operation this was would be the axis-agnostic side of the seam asking the operation
+        // axis its identity, which is the thing the whole file is arranged not to do.
+        let (media, answering) = arrival.operation.map_or_else(
+            || (String::new(), busbar_contract::transport::Answering::Unary),
+            |op| (op.response_media.to_string(), op.answering),
+        );
+        let clock = self.clock();
+        let (outcome, body) =
+            crate::root::plane_ctx::with_frames(&arrival, clock, |ctx, frames| {
+                // THE PLANE READS. What it makes of the bytes is carried forward as the draft the
+                // refusal encoder is handed, which is what puts the caller's own request identifier
+                // on the answer it gets back. A body this plane cannot read yields no draft, and the
+                // encoder is told so rather than handed an empty one.
+                let read = self.plane.decode_ingress(frames, None, ctx);
+                let draft = match &read {
+                    Ok(busbar_contract::Ingress::OneShot(d))
+                    | Ok(busbar_contract::Ingress::Open(d))
+                    | Ok(busbar_contract::Ingress::Handshake(d)) => Some(&**d),
+                    _ => None,
+                };
+                let ended = self.run(&arrival);
+                let outcome = outcome_of(&ended);
+                // THE PLANE WRITES. Never this driver's prose and never the transport's: an ending
+                // the plane has no rendering for leaves with no body at all, which says less than a
+                // sentence this file made up and is the only thing that is true.
+                let body = refusal_of(&ended)
+                    .and_then(|refusal| self.plane.encode_refusal(&refusal, draft, None, ctx).ok())
+                    .map(|bytes| bytes.as_slice().to_vec())
+                    .unwrap_or_default();
+                (outcome, body)
+            });
+        busbar_contract::transport::Answer {
+            body,
+            media,
+            answering,
+            outcome,
+        }
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl LoopDriver<'_> {
+    /// The ten steps, against this node's own units.
+    ///
+    /// Split out of `drive` so the loop is not nested inside the context the plane is called in:
+    /// the arena's borrows live for the length of that context and the loop takes none of them, and
+    /// a reader can see that here rather than having to work it out from the indentation.
+    fn run(
+        &self,
+        _arrival: &busbar_contract::transport::Arrival<'_>,
+    ) -> busbar_kernel::teller::Ended {
         let key = self.next_unit();
         let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
             &self.kernel.admit_token(),
@@ -436,7 +605,7 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
         };
         // THE LOOP ITSELF, not an approximation of it. Whatever this driver cannot yet do above the
         // loop, the ten steps below it are the node's own.
-        let ended = busbar_kernel::teller::run_unit(
+        busbar_kernel::teller::run_unit(
             self.kernel,
             self.units,
             &ctx,
@@ -448,8 +617,7 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
                 canary: self.canary,
                 meter: &meter,
             },
-        );
-        busbar_contract::transport::Answer::empty(outcome_of(&ended))
+        )
     }
 }
 

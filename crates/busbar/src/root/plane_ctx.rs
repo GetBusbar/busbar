@@ -38,9 +38,11 @@
 //! and a session is what a duplex transport opens. A one-shot arrival handed a session view would be
 //! handed somebody else's.
 
-use busbar_contract::bounded::Labels;
+use busbar_contract::bounded::{Labels, SlabBytes};
+use busbar_contract::ids::StreamId;
 use busbar_contract::transport::Arrival;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, TransportView};
+use busbar_contract::wire::{Direction, Frame, FrameCursor, FrameMeta};
 use busbar_kernel::arena::{ArenaSpace, UnitArena};
 
 /// A plugin's own configuration block, for a call that has not been told which plugin it is for.
@@ -118,13 +120,44 @@ impl TransportView for ArrivalTransport<'_> {
 /// answer is a slice OF the space, so a signature that handed one back would be a signature the
 /// borrow checker refuses. Copy what you need out before returning.
 pub fn with_ctx<R>(arrival: &Arrival<'_>, clock: Clock, call: impl FnOnce(&Ctx<'_>) -> R) -> R {
+    with_frames(arrival, clock, |ctx, _frames| call(ctx))
+}
+
+/// Build one unit's context AND the frame the arrival is, and run `call` over both.
+///
+/// The two travel together because the plane trait takes them at ONE lifetime: `decode_ingress`
+/// reads a `&mut FrameCursor<'u>` and writes its answer into the arena on a `&Ctx<'u>`, and the
+/// facts it hands back point into whichever of the two they came from. A caller that built the two
+/// separately would be asking the borrow checker to relate two scopes it has no reason to relate.
+///
+/// ONE FRAME, and that is a statement about the surface rather than a simplification. A mounted
+/// document surface is one-shot: the whole request body arrived before this was called, so there is
+/// no second frame to wait for and no cross-frame codec state to keep. A duplex transport's frames
+/// come one at a time and carry the plane's own session state beside them, which is a different
+/// entry point on the same trait and not this one.
+///
+/// The body is copied into a shared slab because `SlabBytes` is refcounted: the arriving bytes are
+/// the transport's, and a plane holding a borrow of them past the connection's own buffer would be
+/// reading a buffer somebody else is refilling.
+pub fn with_frames<R>(
+    arrival: &Arrival<'_>,
+    clock: Clock,
+    call: impl for<'u> FnOnce(&Ctx<'u>, &mut FrameCursor<'u>) -> R,
+) -> R {
     let mut space = ArenaSpace::new();
     let arena = UnitArena::new(&mut space);
     let config = NoConfig;
     let transport = ArrivalTransport::new(arrival);
     let labels = Labels::new();
+    let frames = [Frame {
+        direction: Direction::Inbound,
+        stream: StreamId(0),
+        bytes: SlabBytes::new(std::sync::Arc::from(arrival.body)),
+        meta: FrameMeta::default(),
+    }];
     let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
-    call(&ctx)
+    let mut cursor = FrameCursor::new(&frames);
+    call(&ctx, &mut cursor)
 }
 
 #[cfg(test)]
