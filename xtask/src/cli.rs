@@ -27,6 +27,16 @@ usage:
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
 
+/// The subcommands below that NAME NO GATE.
+///
+/// `cargo xtask <name>` is a gate invocation for `denylist` and `teller-steps` — both are registry
+/// names kept in their pre-registry spelling — so a reader of `ci.yml` cannot tell a gate from a
+/// subcommand by shape alone, and [`crate::yaml_lite::xtask_gate_invocations`] reads the token
+/// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
+/// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
+/// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
+pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger"];
+
 pub fn main(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("gate") => gate(&args[1..]),

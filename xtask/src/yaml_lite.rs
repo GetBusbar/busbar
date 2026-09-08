@@ -133,8 +133,15 @@ pub fn xtask_gate_invocations(text: &str) -> Vec<String> {
             rest = &rest[i + "cargo xtask ".len()..];
             let mut tokens = rest.split_whitespace();
             let mut name = tokens.next().unwrap_or("");
-            if name == "gate" {
+            if name == "gate" || name == "selftest" {
                 name = tokens.next().unwrap_or("");
+            }
+            // The dispatcher's two non-gate subcommands. Everything else after `cargo xtask` is a
+            // gate name — `denylist` and `teller-steps` are registry names in their pre-registry
+            // spelling — so without this the runner and the register read as gates the registry
+            // cannot answer to, which is the shape this reader exists to report.
+            if crate::cli::NON_GATE_SUBCOMMANDS.contains(&name) {
+                continue;
             }
             if !name.is_empty() && !name.starts_with('-') && !out.iter().any(|n| n == name) {
                 out.push(name.to_string());
