@@ -64,7 +64,30 @@ async function driveClient(ctx, mode, { failsafeMs = 20000, armListing = false }
     fromClient: lines.filter((e) => e.direction === 'client->server').map((e) => e.payload),
     rawFromClient: lines.filter((e) => e.direction === 'client->server-raw').map((e) => e.payload),
     unparseable: lines.filter((e) => e.direction === 'client->server-unparseable').map((e) => e.payload),
+    // THE OTHER HALF OF THE TRANSCRIPT, and it is what makes an absence row mean something. Every
+    // hostile scenario below is of the form "the client did not do X after the server did Y";
+    // without Y in evidence, the row passes on a client that never connected and a peer that
+    // therefore never attacked. See `stimulated` and Ctx.evidence.
+    fromServer: lines.filter((e) => e.direction === 'server->client').map((e) => e.payload),
+    rawFromServer: lines.filter((e) => e.direction === 'server->client-raw').map((e) => e.payload),
   };
+}
+
+/**
+ * THE EVIDENCE EVERY CLIENT SCENARIO OWES, in one place.
+ *
+ * `pred` is the mode's own attack, read off the SERVER half of the transcript: it answers "was the
+ * thing this scenario is named for actually put on the wire?". The second half answers "did the
+ * subject act at all?". A scenario passes on the conjunction and nothing weaker, so a subject that
+ * exits immediately — `/usr/bin/true` scored 9 of 14 PASS before this existed — now scores none.
+ */
+function stimulated(ctx, obs, mode, pred, what) {
+  const delivered = obs.fromServer.some(pred) || obs.rawFromServer.some(pred);
+  ctx.evidence(`stimulus.${mode}`, delivered,
+    `the peer never put ${what} on the wire, so nothing this scenario is named for was tested`);
+  ctx.evidence(`subject.acted.${mode}`, obs.fromClient.length > 0,
+    'the subject sent nothing at all to the peer; its silence cannot satisfy an absence row');
+  return delivered;
 }
 
 const PV = 'io.modelcontextprotocol/protocolVersion';
@@ -80,6 +103,8 @@ test({
     const obs = await driveClient(ctx, 'honest');
     const requests = obs.fromClient.filter((m) => m.id !== undefined && m.method);
     if (requests.length === 0) ctx.skip(`client sent no requests to the fake server; driver stderr: ${JSON.stringify(String(obs.stderr || '').slice(-800))}`);
+    ctx.evidence('subject.sentRequests', requests.length > 0,
+      'no request from the subject means no _meta to judge');
     for (const r of requests) {
       const meta = (r.params && r.params._meta) || {};
       ctx.assert('BASE.META.REQUIRED-FIELDS', meta[PV] !== undefined,
@@ -108,6 +133,8 @@ test({
     const obs = await driveClient(ctx, 'honest');
     const requests = obs.fromClient.filter((m) => m.id !== undefined && m.method);
     if (requests.length === 0) ctx.skip(`client sent no requests; driver stderr: ${JSON.stringify(String(obs.stderr || '').slice(-800))}`);
+    ctx.evidence('subject.sentRequests', requests.length > 0,
+      'no request from the subject means no id allocation to judge');
     const seen = new Set();
     const reused = [];
     for (const r of requests) {
@@ -139,6 +166,12 @@ test({
     const responses = obs.fromClient.filter(
       (m) => m.id !== undefined && !m.method && ('result' in m || 'error' in m),
     );
+    // "It sent no responses" is true of a subject that sent nothing. The row means "it talked to
+    // the server AND none of what it sent was a response".
+    ctx.evidence('subject.acted.honest', obs.fromClient.length > 0,
+      'the subject sent nothing at all, so "sent no responses" is a fact about silence');
+    ctx.evidence('stimulus.honest', obs.fromServer.length > 0,
+      'the peer answered nothing, so the subject was never in a position to reply to anything');
     ctx.assert('STDIO.CLIENT-NO-RESPONSES', responses.length === 0,
       `client sent JSON-RPC responses: ${JSON.stringify(responses).slice(0, 300)}`);
   },
@@ -151,6 +184,9 @@ test({
   catches: 'A client that still answers server-initiated requests, giving a hostile server an unsolicited sampling channel.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'server-request');
+    stimulated(ctx, obs, 'server-request',
+      (m) => m && m.id === 'server-initiated-1' && m.method,
+      'the forbidden server-initiated request');
     const answers = obs.fromClient.filter(
       (m) => m.id === 'server-initiated-1' && ('result' in m || 'error' in m),
     );
@@ -168,6 +204,9 @@ test({
   catches: 'A client whose JSON parse error is fatal, so one bad byte from any server kills the host.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'malformed');
+    stimulated(ctx, obs, 'malformed',
+      (m) => typeof m === 'string' && m.includes('"jsonrpc"') && !m.trim().endsWith('}'),
+      'the unparseable frame');
     // The only assertable property is that the client did not itself emit
     // garbage in response. Whether it retries or gives up is its own business.
     ctx.assert('STDIO.CLIENT-NO-RESPONSES',
@@ -185,6 +224,17 @@ test({
   catches: 'A client with no request timeout, so one stalling server hangs the host indefinitely.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'stall', { failsafeMs: 25000 });
+    // The stimulus in `stall` is an ABSENCE — the peer's silence — so it cannot be read off the
+    // server half of the transcript. What CAN be read is that the subject put a request in flight
+    // and that the peer never answered it: without those two, "the client exited" says nothing
+    // about timeouts, because a client that never asked anything has nothing to wait for.
+    const sent = obs.fromClient.filter((m) => m.method && m.id !== undefined);
+    const answered = new Set(obs.fromServer.filter((m) => m && m.id !== undefined && !m.method)
+      .map((m) => JSON.stringify(m.id)));
+    ctx.evidence('subject.requestInFlight', sent.length > 0,
+      'the subject never sent a request, so it was never waiting on this peer');
+    ctx.evidence('stimulus.stall', sent.some((m) => !answered.has(JSON.stringify(m.id))),
+      'every request the subject sent was answered, so the stalling peer never stalled it');
     // Spec: implementations SHOULD establish timeouts for all sent requests.
     // SHOULD, so advisory, but a strong signal in a differential run.
     ctx.recommend('client.hasRequestTimeout', obs.exited,
@@ -201,6 +251,9 @@ test({
   catches: 'A client that hangs or crashes when a server dies mid-response, the commonest real-world server failure.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'half-answer');
+    stimulated(ctx, obs, 'half-answer',
+      (m) => typeof m === 'string' && m.includes('"result"') && !m.trim().endsWith('}'),
+      'the half-written frame followed by a closed stdout');
     ctx.recommend('client.survivesMidFrameDisconnect', obs.exited,
       'A client should terminate or recover when the server closes the stream mid-frame.');
     ctx.variance('hostile.halfAnswer.clientExited', obs.exited);
@@ -215,6 +268,10 @@ test({
   catches: 'A client that auto-fills credential elicitations, handing secrets to any server that asks.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'evil-elicitation');
+    stimulated(ctx, obs, 'evil-elicitation',
+      (m) => m && m.result && m.result.resultType === 'input_required'
+        && JSON.stringify(m.result.inputRequests || {}).includes('password'),
+      'the form-mode elicitation asking for a password');
     // The SERVER is the violator here (form mode MUST NOT request secrets).
     // The client-side question is whether it leaked anything back.
     const retries = obs.fromClient.filter((m) => m.method === 'tools/call'
@@ -247,6 +304,10 @@ test({
     const obs = await driveClient(ctx, 'mrtr-undeclared');
     const requests = obs.fromClient.filter((m) => m.method && m.id !== undefined);
     if (requests.length === 0) ctx.skip(`client sent no requests; driver stderr: ${JSON.stringify(String(obs.stderr || '').slice(-800))}`);
+    stimulated(ctx, obs, 'mrtr-undeclared',
+      (m) => m && m.result && m.result.resultType === 'input_required'
+        && JSON.stringify(m.result.inputRequests || {}).includes('sampling/createMessage'),
+      'the MRTR request for an undeclared sampling capability');
     const declaredSampling = requests.some(
       (r) => (((r.params || {})._meta || {})[CC] || {}).sampling !== undefined,
     );
@@ -269,6 +330,12 @@ test({
     const obs = await driveClient(ctx, 'rugpull');
     const lists = obs.fromClient.filter((m) => m.method === 'tools/list');
     const calls = obs.fromClient.filter((m) => m.method === 'tools/call');
+    // The rug-pull only exists once the subject has read a listing: "it did not re-list" is
+    // meaningless about a subject that never listed once.
+    ctx.evidence('subject.readAListing', lists.length > 0,
+      'the subject never called tools/list, so no listing of its could be pulled out from under it');
+    ctx.evidence('stimulus.rugpull', obs.fromServer.some((m) => m && m.result && m.result.tools),
+      'the peer never served a tool listing');
     // Purely observational: there is no spec rule requiring re-validation.
     // The variance point is what a human needs to see.
     ctx.recommend('client.refreshesToolsAfterCall', lists.length > 1,
@@ -285,10 +352,18 @@ test({
   catches: 'A client that trusts structuredContent without validating it, so malformed data reaches the model as fact.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'outputschema-lie');
-    // Clients SHOULD validate. We cannot see validation from the wire, only
-    // whether the client kept going. Recorded, never failed.
-    ctx.recommend('client.validatesStructuredContent', true,
-      'Spec SHOULD: clients validate structured results against outputSchema. Not observable from the wire; needs a client-side hook.');
+    stimulated(ctx, obs, 'outputschema-lie',
+      (m) => m && m.result && m.result.structuredContent
+        && m.result.structuredContent.count === 'not-an-integer',
+      'the result that violates the declared outputSchema');
+    // Clients SHOULD validate. We cannot see validation from the wire, only whether the client kept
+    // going — so the recommendation is keyed on THAT, and not, as it was, on a literal `true`, which
+    // recorded a green opinion about a subject nobody had observed.
+    ctx.recommend('client.survivesOutputSchemaViolation',
+      obs.fromClient.length > 0 && obs.unparseable.length === 0,
+      'Spec SHOULD: clients validate structured results against outputSchema. Whether it validated '
+      + 'is NOT observable from the wire; what is recorded here is that it stayed well-formed after '
+      + 'being lied to. Proving validation needs a client-side hook.');
     ctx.variance('hostile.outputSchemaLie.clientExited', obs.exited);
     ctx.variance('hostile.outputSchemaLie.requestCount', obs.fromClient.length);
     ctx.note('limitation',
@@ -304,10 +379,19 @@ test({
   catches: 'An unbounded read buffer in the client, so a hostile server can exhaust host memory with one reply.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'giant', { failsafeMs: 40000 });
+    stimulated(ctx, obs, 'giant',
+      (m) => JSON.stringify(m || '').length > 1024 * 1024,
+      'the multi-megabyte result');
     ctx.variance('hostile.giant.clientExited', obs.exited);
     ctx.variance('hostile.giant.exitCode', obs.exitCode);
-    ctx.recommend('client.boundsResponseSize', true,
-      'RECOMMENDATION (this battery): clients should cap inbound message size rather than buffering without limit.');
+    // Keyed on an observation and not on a literal `true`: what the wire shows is whether the
+    // subject was still coherent after the giant frame, which is the only half of this that is
+    // observable from the server side at all.
+    ctx.recommend('client.survivesGiantResult',
+      obs.unparseable.length === 0,
+      'RECOMMENDATION (this battery): clients should cap inbound message size rather than buffering '
+      + 'without limit. The cap itself is not visible from here; the recorded fact is that the '
+      + 'subject did not start emitting garbage after the frame.');
   },
 });
 
@@ -318,13 +402,21 @@ test({
   catches: 'A client that renders or fetches server-supplied icon URIs without scheme checking, an XSS and SSRF vector.',
   run: async (ctx) => {
     const obs = await driveClient(ctx, 'bad-icon');
+    stimulated(ctx, obs, 'bad-icon',
+      (m) => JSON.stringify(m || '').includes('javascript:alert(1)'),
+      'the tool listing carrying a javascript: icon URI');
     // Not observable from the server side either; recorded as a limitation.
     ctx.variance('hostile.badIcon.clientExited', obs.exited);
     ctx.note('limitation',
       'Icon fetching happens outside the MCP stdio channel. Detecting a fetch needs a network sinkhole, '
       + 'which is in the HTTP half of the battery, not the stdio half.');
-    ctx.recommend('client.rejectsUnsafeIconSchemes', true,
-      'Spec MUST for clients that render icons; not observable over stdio. Needs an HTTP sinkhole to prove.');
+    // Keyed on an observation and not on a literal `true`. The scheme check itself is invisible from
+    // here; that the subject was SHOWN the URI and kept talking is not, and it is what the row
+    // records. The unproven half is named in the note above and in the text below.
+    ctx.recommend('client.wasOfferedUnsafeIconScheme',
+      obs.fromClient.length > 0,
+      'Spec MUST for clients that render icons. NOT observable over stdio: this row proves only that '
+      + 'the subject was offered a javascript: icon. Proving it never fetched one needs an HTTP sinkhole.');
   },
 });
 
@@ -355,6 +447,13 @@ test({
     // rather than treating it as an error, precisely so newer clients keep
     // working against older servers. SHOULD, so this is advisory, but it is a
     // high-value signal in a differential run.
+    ctx.evidence('subject.listedWithHints', listedWithHints,
+      'the subject never listed against the honest peer, so there is no with-hints run to compare');
+    ctx.evidence('stimulus.no-cache-hints',
+      without.fromServer.some((m) => m && m.result && m.result.tools
+        && m.result.ttlMs === undefined && m.result.cacheScope === undefined),
+      'the peer served no hint-free listing, so the tolerance this row is named for was never tested');
+
     const keptGoing = without.fromClient.filter((m) => m.method).length
       >= withHints.fromClient.filter((m) => m.method).length;
     ctx.recommend('client.toleratesAbsentCachingHints', keptGoing,
