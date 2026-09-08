@@ -969,7 +969,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     scope,
                 ) {
                     Err(e) => errors.push(e),
-                    Ok(busbar_substrate::config::auth::MAX_ADMIN_SCOPE_FULL) => diag_warn!(
+                    Ok(crate::admin::v1::contract::Scope::Full) => diag_warn!(
                         CONFIG_AUTH_CHAIN_FULL_SCOPE,
                         module = %entry.module,
                         "auth chain entry grants max_admin_scope: full - principals identified by \

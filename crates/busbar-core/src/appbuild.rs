@@ -26,7 +26,7 @@ use crate::{
 };
 use busbar_substrate::diagnostics::{
     DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT, GOVERNANCE_STORE_EPHEMERAL,
-    OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
+    OAUTH_AS_EPHEMERAL_SIGNING_KEY, OAUTH_AS_SWEEP_FAILED, OPEN_RELAY_NO_AUTH, PLUGINS_FETCH_RELOAD_MISS,
     PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED, STATEFUL_PLANE_EPHEMERAL_STORE,
     STORE_SECRET_REF_UNRESOLVED,
 };
@@ -34,7 +34,7 @@ use busbar_substrate::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
     HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput, PoolMemberInput,
 };
-use busbar_substrate::{diag_error, diag_warn};
+use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
 // The upstream-request timeout, pool-idle, and request-body caps that used to live here as `const`s
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /

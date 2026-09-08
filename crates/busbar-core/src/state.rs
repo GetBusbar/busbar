@@ -714,7 +714,7 @@ impl App {
         if !view.pool_exists(pool) {
             return None;
         }
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         Some(
             view.pool_members(pool)
                 .into_iter()

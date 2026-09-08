@@ -32,7 +32,7 @@ the move it is **447 source lines across 3 files** plus 1,425 test lines — a d
 Core's 447 remaining source lines are not residue: 173 are the node's guarded fetch, 145 are the
 declared-table→neutral-seam translation, and 114 are the module shim's transitional re-exports and
 the two whole-composition proofs' attachment. The first is permanent (§4); the other two move to the
-root with the config lowering (§7).
+root with the config lowering (§8).
 
 | was | is | half | why |
 |---|---|---|---|
@@ -58,7 +58,7 @@ and deleted. **The answer is none, and that is a finding rather than a convenien
 and the claim ladder — it has **no signer and no ES256 anywhere in it** (`grep -n 'Es256\|Signer\|ring::' crates/busbar-unit-auth/src/*.rs` returns nothing). The tree's only ES256
 signer is the one in `oauth_as/signer.rs`, and the only other JWS signer is `egress_auth`'s RS256.
 So "ONE signer = busbar-unit-auth's" is not a repoint that was available: there is nothing there to
-repoint onto. It is carried as an unproven item (§7).
+repoint onto. It is carried as an unproven item (§8).
 
 What IS shared and was not duplicated: the CONSENT ROUTE's admission. The issuer does not
 authenticate the operator itself — the row declares `Bar::Operator`, the composition records
@@ -159,9 +159,41 @@ crate — an edge from the substrate up into a plugin, which is worse than the e
 `busbar-core-config` does not exist in this tree yet (the crate the parallel unit is creating). So
 the types live with the surface that defines them, and `busbar-core` keeps the *lowering* — the
 `resolve` call, the `prepass` lift and the `config_validate::secret_refs` destructure — which is the
-one edge core still has to this crate, named in §7.
+one edge core still has to this crate, named in §8.
 
-## 7. Staging: what is done, and what is owed
+## 7. The battery
+
+| | result |
+|---|---|
+| `cargo test -p busbar-control-oauth2 -p busbar-unit-auth -p busbar -p busbar-core -p xtask` | green |
+| `cargo clippy … --all-targets -- -D warnings` | clean |
+| `cargo fmt --all --check` | clean on every file this change touches |
+| `cargo xtask gate --all` | **every registered gate green** |
+| `scripts/construction-gate.sh` | `legacy-reach` 91/92 PASS; new `surface-ceiling:control-oauth2` 1310/1810 PASS; the 7 remaining FAILs are pre-existing and live in `busbar-llm` / `busbar-timing` / `busbar-substrate::rate_apply` / `busbar-unit-egress`, none of which this change touches |
+| byte identity | `crates/busbar/tests/oauth2_control_byte_identity.rs`, 29 cells over every route, recorded on the base binary at `79c56ef31` and identical after |
+| oracle `^(auth\.lifecycle\|admin\.ops)` | **0 diverging attributable to this change**, measured rather than argued — see below |
+
+### The oracle, and how "0 diverging" was established
+
+243 cells (240 `admin.ops` + 3 `auth.lifecycle`) were recorded twice: once against the moved tree
+and once against a release binary built from the BASE commit `79c56ef31` in a scratch checkout.
+
+* **All 243 normalized cells are byte-identical between the two recordings.**
+* Both replays against the 1.5.5 golden give the identical verdict: 237 PASS, 6 FAIL, and the
+  `diverging.txt` files are identical.
+* The 6 are pre-existing and already REGISTERED in `testing/shadow-oracle/accepted-differences.json`
+  as F-011, F-011r and the openapi entry — all three committed on 2026-09-04/05, both ancestors of
+  the base commit. They are hooks / openapi / overlay surface (`fires_at` seats, longer error
+  bodies, a `vary` header) and the tool declines to forgive them only because those classes are
+  rated money on `admin.ops`. None is in `auth.lifecycle`; none is in a file this change touches.
+
+One note for whoever runs this next: the brief's regex `^(auth\.lifecycle|admin\.ops)[|.]` selects
+nothing, because `replay --family` matches the cell's **family field** (`admin.ops`), not the full
+id. The equivalent that selects the same 243 cells is `^(auth\.lifecycle|admin\.ops)$`. A run with
+the first regex reports `VACUOUS RUN … RED by construction`, which is the tool refusing to pass on
+having exercised nothing — worth knowing, since it looks like a failure and is an empty selection.
+
+## 8. Staging: what is done, and what is owed
 
 **Done.** The issuing half and the routes are a control crate; the routes are declared as data; the
 composition mounts them through a generic seam; core's oauth2-specific mount is deleted and there is
