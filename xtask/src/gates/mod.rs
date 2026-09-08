@@ -347,6 +347,13 @@ pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Ver
 /// * a case that did not do what it expected;
 /// * **a gate with no RED proof at all** — `cargo xtask selftest` will not accept it;
 /// * an owed row id no case covers, which is the derived-owed-set rule applied to the selftest.
+///
+/// COVERAGE IS COUNTED FROM THE RED CASES ONLY. A green case names the rows it expects to stay
+/// quiet; it cannot distinguish a rule that ran and found nothing from a rule that is not there at
+/// all, so a green case's `covers` list is not a proof that the rule can still fail. Counting it
+/// as one is how a whole-tree `prove_green` naming the entire owed set discharges the coverage
+/// check for rules with no RED proof anywhere — and those rules are then deletable with
+/// `cargo xtask selftest` still green, which is the one thing this function exists to refuse.
 pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
@@ -365,13 +372,15 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
     let covered: BTreeSet<String> = report
         .cases
         .iter()
+        .filter(|c| matches!(c.expected, Expect::Red { .. }))
         .flat_map(|c| c.covers.iter().cloned())
         .collect();
     for owed in gate.owed() {
         if !covered.contains(&owed) {
             errs.push(format!(
-                "{}: owed row id `{owed}` is covered by no selftest case — the rule that emits it \
-                 could be deleted with the selftest still green",
+                "{}: owed row id `{owed}` is covered by no RED selftest case — a green case cannot \
+                 tell a rule that found nothing from a rule that is not there, so the rule that \
+                 emits this row could be deleted with the selftest still green",
                 gate.name()
             ));
         }
@@ -486,6 +495,59 @@ pub fn prove_rows_green(
             Expect::Green
         } else {
             Expect::Red { naming: offenders }
+        },
+    }
+}
+
+/// The tree in which `crates/` is present, readable and holds a file, and NO plane declares its
+/// grammar. It is the plant for every `plane-roots` row: the scanners that share the plane
+/// resolver read it with `std::fs`, so this is the only way to make a plane genuinely absent.
+pub const PLANE_ROOT_MISSING_FIXTURE: &str = "xtask/fixtures/plane-root-missing";
+
+/// The red arm for a rule whose subject is read OUTSIDE the overlay — narrowed to its rows, and
+/// driven over a fixture tree the gate is re-rooted onto.
+///
+/// Some inputs are resolved from the real filesystem before any overlay can reach them: the plane
+/// resolver walks `crates/` with `std::fs`, so `Overlay::remove` cannot make a plane vanish. The
+/// answer is not to hand-write the case's `got` — that is a case with the gate taken out of it,
+/// and it passes just as happily when the rule it names has been deleted. The answer is to point
+/// a whole `Ctx` at a tree where the subject really is absent and run `execute` there.
+pub fn prove_rows_red_at(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    name: impl Into<String>,
+    covers: &[&str],
+    fixture_rel: &str,
+    naming: &[&str],
+) -> Case {
+    let name = name.into();
+    let expected = Expect::Red {
+        naming: naming.iter().map(|s| (*s).to_string()).collect(),
+    };
+    let covers_owned: Vec<String> = covers.iter().map(|s| (*s).to_string()).collect();
+    let Ok(fixture_cx) = Ctx::at(cx.abs(fixture_rel), cx.scratch()) else {
+        return Case {
+            name,
+            covers: covers_owned,
+            expected,
+            got: Expect::Skipped,
+        };
+    };
+    let verdict = execute(gate, &fixture_cx);
+    let reported: Vec<String> = verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != crate::ledger::Status::Pass && covers.contains(&r.id.as_str()))
+        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
+        .collect();
+    Case {
+        name,
+        covers: covers_owned,
+        expected,
+        got: if reported.is_empty() {
+            Expect::Green
+        } else {
+            Expect::Red { naming: reported }
         },
     }
 }
