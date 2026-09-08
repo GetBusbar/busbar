@@ -513,6 +513,95 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
     );
 }
 
+/// The chunked ingress cap is held against every byte read, including the last one.
+///
+/// A chunked sender declares no total, so the only thing that can refuse an oversized body is a
+/// count of the bytes that have arrived — and a count checked only at the top of the read loop is
+/// a count that is never checked on the read that finishes the message. Two shapes fall through
+/// that gap, and both are here:
+///
+/// * the whole body arriving inside the SAME read that carried the header block, so the decode is
+///   complete before the loop is entered at all and the cap is never evaluated;
+/// * the body finishing on a later read, so the count crosses the cap and the decoder reports
+///   `is_done` on the same iteration, and the loop exits without looking at it again.
+///
+/// The `Content-Length` twin has neither shape — it refuses on the declared length before reading
+/// a byte of the body — so a cap that means one thing on one framing and another on the other is
+/// the divergence this cell exists to refuse. Both cells assert the same `Framing` the twin
+/// returns: the operator set one number, and it holds on both framings.
+#[tokio::test]
+async fn a_chunked_body_past_the_configured_maximum_is_refused_on_the_read_that_crosses_it() {
+    /// Small enough that a body a client can write in one go is over it, and far below the read
+    /// budget so the header block and the whole body land in one read.
+    const CAP: usize = 64;
+
+    async fn refusal_for(pieces: Vec<Vec<u8>>) -> TransportError {
+        let transport = StdArc::new(HttpTransport::new(ClientSettings {
+            request_body_max_bytes: CAP,
+            ..ClientSettings::default()
+        }));
+        let cfg = TestCfg {
+            bind: "127.0.0.1:0".to_string(),
+        };
+        let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+        let addr = listener.local_addr();
+        let accept_fut = tokio::spawn({
+            let transport = transport.clone();
+            async move { transport.accept(&listener).await.unwrap() }
+        });
+        let writer = tokio::spawn(async move {
+            let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+            for piece in pieces {
+                tokio::io::AsyncWriteExt::write_all(&mut client, &piece)
+                    .await
+                    .unwrap();
+                tokio::io::AsyncWriteExt::flush(&mut client).await.unwrap();
+                // Each piece is its own read on the far side; without the pause they coalesce and
+                // the cell stops being about the read that crosses the cap.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        });
+        let conn = accept_fut.await.unwrap();
+        let mut frames = transport.frames(conn);
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+            .await
+            .expect("the reader answers rather than parking on an oversized body")
+            .expect("the stream yields an item");
+        writer.abort();
+        first.expect_err("a body past the cap is refused, not handed up as frames")
+    }
+
+    const HEAD: &[u8] = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
+    // A complete chunked body of 0x50 = 80 payload bytes: 4 + 80 + 2 + 5 = 91 wire bytes, past CAP.
+    let mut whole = HEAD.to_vec();
+    whole.extend_from_slice(b"50\r\n");
+    whole.extend_from_slice(&[b'a'; 0x50]);
+    whole.extend_from_slice(b"\r\n0\r\n\r\n");
+
+    assert_eq!(
+        refusal_for(vec![whole]).await,
+        TransportError::Framing,
+        "a body that completed inside the header read is still held against the cap"
+    );
+
+    // The same body, split so the count crosses the cap on the read that carries the terminal
+    // chunk: 0x30 = 48 payload bytes is 54 wire bytes (under CAP), and the rest takes it to 91.
+    let mut first = HEAD.to_vec();
+    first.extend_from_slice(b"30\r\n");
+    first.extend_from_slice(&[b'a'; 0x30]);
+    first.extend_from_slice(b"\r\n");
+    let mut last = b"20\r\n".to_vec();
+    last.extend_from_slice(&[b'a'; 0x20]);
+    last.extend_from_slice(b"\r\n0\r\n\r\n");
+
+    assert_eq!(
+        refusal_for(vec![HEAD.to_vec(), first[HEAD.len()..].to_vec(), last]).await,
+        TransportError::Framing,
+        "the read that finishes the message is held against the cap like every read before it"
+    );
+}
+
 /// A header block this transport cannot parse fails closed, rather than decoding as no headers.
 ///
 /// The old reading took an unparsable block to mean an empty header list — declared length zero,
