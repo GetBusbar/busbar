@@ -6,9 +6,9 @@
 //! reconciled by the runner, and a [`Report`] whose RED cases are driven THROUGH [`Gate::run`]
 //! over the two fixture trees that must refuse a vacuous pass.
 
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Overlay};
 use crate::denylist;
-use crate::gates::{prove_green, Case, Expect, Gate, Report};
+use crate::gates::{prove_green, prove_red, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::selftest;
 
@@ -32,7 +32,7 @@ impl Gate for DenylistGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let report = denylist::run(cx.root());
+        let report = denylist::run(cx);
         let mut rows = Vec::new();
 
         // A GATE WHOSE OWN INPUT VANISHED MUST NOT ANSWER GREEN: zero crates scanned, or any
@@ -102,6 +102,28 @@ impl Gate for DenylistGate {
             self,
             "the real tree is clean under the denylist",
             &[ROW_SCAN, ROW_HITS, ROW_WAIVERS],
+        ));
+
+        // THE PLANT THE `std::fs` RUN COULD NOT SEE. `denylist::run` read its config, its crate
+        // listing and every source file straight off the disk under `cx.root()`, so an overlay
+        // changed nothing and the only way to move the gate was to check a whole second tree into
+        // `xtask/fixtures/` and re-root onto it. Now the run reads the `Ctx`: this case renames
+        // `[rules.source-denylist]` out of the config IN AN OVERLAY, and the gate that answered
+        // "0 crates scanned" as OK answers RED on the tree it is actually pointed at. Delete the
+        // `cx.read`/`cx.walk` routing and this case goes green while the fixture cases below stay
+        // red, which is exactly the difference it is here to hold.
+        let mut renamed = Overlay::new();
+        renamed.set(
+            "qa/construction.toml",
+            "[rules.source-denylist-RENAMED]\nkinds = [\"plane\"]\npatterns = [\"libc\"]\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "the rule table renamed away IN THE OVERLAY is a red run, not a vacuous pass",
+            &[ROW_SCAN],
+            renamed,
+            &["scanned"],
         ));
 
         // Two REAL red proofs, driven through `Gate::run` over fixture trees whose input is gone:

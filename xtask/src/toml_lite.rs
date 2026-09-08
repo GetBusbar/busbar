@@ -81,6 +81,13 @@ fn split_array_items(body: &str) -> Vec<String> {
 pub fn parse(path: &Path) -> Document {
     let raw = fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("toml_lite: cannot read {}: {e}", path.display()));
+    parse_text(&raw)
+}
+
+/// The same parse over TEXT SOMEBODY ELSE READ. A gate reads its config through the `Ctx` so a
+/// selftest can plant one with an overlay; [`parse`] reaches around that to `std::fs`, and a
+/// document read from disk is the one document no plant can change.
+pub fn parse_text(raw: &str) -> Document {
     let mut doc = Document::default();
     let mut cur_path: Option<String> = None;
     let mut cur_table = Table::default();

@@ -327,7 +327,7 @@ fn denylist_cmd(args: &[String]) -> i32 {
         Ok(cx) => cx,
         Err(code) => return code,
     };
-    let report = denylist::run(cx.root());
+    let report = denylist::run(&cx);
     let ok = if args.iter().any(|a| a == "--format=tsv") {
         denylist::print_report_tsv(&report)
     } else {
