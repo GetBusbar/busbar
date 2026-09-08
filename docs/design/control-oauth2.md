@@ -24,9 +24,15 @@ than a way of spending money through it.
 
 ## 2. The module map
 
-`busbar-core/src/oauth_as/` was 2,388 source lines across 8 files plus 1,989 test lines. After the
-move it is **432 source lines across 3 files** — a delta of **−1,956 source lines** — and the surface
-crate is 2,575 source lines plus 852 test lines.
+`busbar-core/src/oauth_as/` was **2,388 source lines across 8 files** plus 1,989 test lines. After
+the move it is **447 source lines across 3 files** plus 1,425 test lines — a delta of
+**−1,941 source lines** — and the surface crate is 2,575 source lines plus 852 test lines
+(1,310 by `scripts/loc-surface.py`'s counting rule, which is what the ceiling row measures).
+
+Core's 447 remaining source lines are not residue: 173 are the node's guarded fetch, 145 are the
+declared-table→neutral-seam translation, and 114 are the module shim's transitional re-exports and
+the two whole-composition proofs' attachment. The first is permanent (§4); the other two move to the
+root with the config lowering (§7).
 
 | was | is | half | why |
 |---|---|---|---|
