@@ -153,8 +153,10 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
         // ── THE NEUTRAL KIND-TAGGED PLANE-RECORD SURFACE (1.6.0) ─────────────────────────────
         //
         // Maps the eight kind-tagged wire variants onto the eight neutral trait methods — the ONLY
-        // durable-plane surface now (the fourteen protocol-named arms are deleted, `ABI_VERSION` is
-        // 3). Upsert and append reconstitute a [`busbar_api::PlaneRecord`] from the request and
+        // durable-plane surface now (the fourteen protocol-named arms are deleted, `ABI_VERSION` was
+        // raised to 3 in 1.6.0 for that, then to 4 in 1.7.0 when the plane-record types relocated;
+        // see `busbar_plugin::cold::ABI_VERSION`). Upsert and append reconstitute a
+        // [`busbar_api::PlaneRecord`] from the request and
         // NOTHING else, which is why the write verbs carry the whole typed sidecar: `ts` and
         // `disposition` are the two columns a retention sweep reads and the two it cannot recover
         // from an opaque body, so a wire that dropped them would hand every backend behind this ABI
