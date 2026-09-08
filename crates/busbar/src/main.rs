@@ -1305,6 +1305,15 @@ async fn run(data_workers: usize) {
     // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
     mount_root_voice(&cfg.limits);
+    // WHAT THIS DEPLOYMENT SAID ABOUT THE A2A PLANE, read HERE because this is the last slot where
+    // the resolved configuration is still in scope — it moves into the app build a few lines down,
+    // and the routers this composes onto do not exist until long after. Every binding is resolved
+    // from a key this deployment already has, and a source it does not have refuses boot by name;
+    // `None` is the deployment with no `public_url:`, which fronts no inbound A2A surface and which
+    // the legacy plugin likewise mounts no route for. Behind the serving switch, which the shipped
+    // binary does NOT carry: with it off the line is not compiled and the binary is what it was.
+    #[cfg(feature = "root-a2a-serve")]
+    let a2a_configured = root::units_a2a_boot::read(&cfg).unwrap_or_else(|e| die(e));
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
     // the one already serving the model that section targets: `streams.session.model` names a model,
