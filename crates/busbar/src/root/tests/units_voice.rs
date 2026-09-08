@@ -457,7 +457,10 @@ fn a_detached_node_refuses_the_session_at_the_door() {
     };
     assert_eq!(
         end.outcome(),
-        Outcome::Refused(busbar_caps::StepName::Admit, ReasonCode::DurabilityUnavailable),
+        Outcome::Refused(
+            busbar_caps::StepName::Admit,
+            ReasonCode::DurabilityUnavailable
+        ),
         "a node with no I/O half must be refused at admit, under the node's own unavailability \
          reason - not reported as an over-budget principal, and not any other refusal in the \
          vocabulary"
@@ -1488,7 +1491,12 @@ fn a_paid_turns_record_names_its_principal() {
     // only caught if the record is checked against the exact id the door issued.
     struct OneKey;
     impl VirtualKeyDirectory for OneKey {
-        fn verify(&self, credential: &str, _now: u64, expected_aud: Option<&str>) -> Option<KeyFacts> {
+        fn verify(
+            &self,
+            credential: &str,
+            _now: u64,
+            expected_aud: Option<&str>,
+        ) -> Option<KeyFacts> {
             (credential == "tok"
                 && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
             .then(|| KeyFacts {
