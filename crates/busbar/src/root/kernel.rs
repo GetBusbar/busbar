@@ -116,7 +116,44 @@ pub struct RootCard {
     /// `None` until the boot resolution raises the rate-apply seam. Absent, a report is not priced
     /// and nothing is posted — the honest answer for a build that has read no configuration yet,
     /// rather than a fallback card whose figures no operator wrote.
-    card: arc_swap::ArcSwapOption<busbar_unit_cost::RateCard>,
+    ///
+    /// ONE slot for BOTH halves, deliberately. A second holder beside this one would be a second
+    /// atomic store and a window between them, and a unit that read this apply's card beside the
+    /// previous apply's price would be charged a flat fee the operator had replaced against rates
+    /// they had not — a discrepancy with no line in any book to explain it.
+    rates: arc_swap::ArcSwapOption<RootRates>,
+}
+
+/// WHAT ONE APPLY PRODUCED: this deployment's card, and the price its door admits a unit against.
+///
+/// Two readings of one configured figure, kept together because they are one decision. The card is
+/// what a REPORTED unit is priced at when it settles; the price is what an ARRIVING unit is admitted
+/// against before anything is known about it. A plane's leg needs the second and a plane's exit
+/// needs the first, and neither may be the boot's answer forever — which is the whole reason this is
+/// swapped rather than captured.
+pub struct RootRates {
+    card: Arc<busbar_unit_cost::RateCard>,
+    pricer: busbar_unit_admission::Pricer,
+}
+
+impl std::fmt::Debug for RootRates {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootRates").finish_non_exhaustive()
+    }
+}
+
+impl RootRates {
+    /// This deployment's card, as the exit prices a settled unit against.
+    #[must_use]
+    pub fn card(&self) -> &busbar_unit_cost::RateCard {
+        &self.card
+    }
+
+    /// What the admission door prices an ARRIVING unit against, from the same resolution.
+    #[must_use]
+    pub fn pricer(&self) -> &busbar_unit_admission::Pricer {
+        &self.pricer
+    }
 }
 
 impl std::fmt::Debug for RootCard {
@@ -132,15 +169,27 @@ impl RootCard {
     /// caller sees and leaves this one holding the card it was admitted under.
     #[must_use]
     pub fn pin(&self) -> Option<Arc<busbar_unit_cost::RateCard>> {
-        self.card.load_full()
+        self.rates.load_full().map(|rates| Arc::clone(&rates.card))
     }
 
-    /// Put `card` in place of whatever is there, atomically.
+    /// BOTH halves of the last apply, pinned together for the caller's whole life.
     ///
-    /// Called on the boot resolution and again on every apply/reload, always with a card built from
-    /// the configuration the engine just resolved its own rates from.
-    pub fn apply(&self, card: Arc<busbar_unit_cost::RateCard>) {
-        self.card.store(Some(card));
+    /// The accessor a plane's LEG reads: an arriving unit is admitted against a price and, when it
+    /// settles, priced against a card, and the two have to be one apply's or the node bills against
+    /// figures that never existed together. One load, so they are.
+    #[must_use]
+    pub fn pin_rates(&self) -> Option<Arc<RootRates>> {
+        self.rates.load_full()
+    }
+
+    /// Put this apply's card AND price in place of whatever is there, atomically.
+    ///
+    /// Called on the boot resolution and again on every apply/reload, always with both halves built
+    /// from the configuration the engine just resolved its own rates from. Two arguments rather than
+    /// one derived from the other, because deriving the price from the card here would be a second
+    /// place a fee is turned into money — and there is one.
+    pub fn apply(&self, card: Arc<busbar_unit_cost::RateCard>, pricer: busbar_unit_admission::Pricer) {
+        self.rates.store(Some(Arc::new(RootRates { card, pricer })));
     }
 }
 
@@ -205,6 +254,30 @@ fn card_from_config<'r>(
     )
 }
 
+/// BOTH READINGS OF ONE RESOLUTION: the card a settled unit is priced against, and the price an
+/// arriving one is admitted against.
+///
+/// A RELAY, like the one above and for the same reason. The configured figure arrives already read
+/// — by the seam that resolved it, once — and what happens to it here is two constructions and no
+/// arithmetic: the cost unit builds the card, the admission unit builds the price, and neither
+/// computation is spelled in this file to disagree with the other.
+///
+/// The price is FLAT, and that is what this deployment's price IS rather than a stand-in for one: a
+/// data plane's admission has no per-model rate to read — the classes it meters are priced off the
+/// card, per lane, at settle — so what the door needs before anything is known about a unit is the
+/// deployment's own per-request figure and nothing else. A per-model table here would be the root
+/// inventing a rate the operator never wrote.
+fn rates_from_config<'r>(
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    flat: i64,
+    present: bool,
+) -> (busbar_unit_cost::RateCard, busbar_unit_admission::Pricer) {
+    (
+        card_from_config(rates, flat, present),
+        busbar_unit_admission::Pricer::flat(flat),
+    )
+}
+
 /// The root, answering the engine's rate-apply seam.
 ///
 /// The whole of the wiring: the engine resolved the deployment's rates — at boot or on a live apply —
@@ -215,11 +288,13 @@ pub struct CardRepricer;
 
 impl busbar_substrate::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply(Arc::new(card_from_config(
+        let flat = rates.fee_cents;
+        let (card, pricer) = rates_from_config(
             rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-            rates.fee_cents,
+            flat,
             rates.present,
-        )));
+        );
+        ROOT_CARD.apply(Arc::new(card), pricer);
     }
 }
 

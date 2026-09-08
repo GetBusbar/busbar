@@ -20,13 +20,19 @@ fn an_apply_moves_the_card_and_leaves_a_pinned_reader_on_the_one_it_took() {
     );
 
     let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-    holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 3)));
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::absent(version, 3)),
+        busbar_unit_admission::Pricer::flat(3),
+    );
     let admitted = holder.pin().expect("the first apply put a card in place");
     assert_eq!(admitted.fee_unit_price_nanos(), 30_000_000);
 
     // The apply a request in flight must not feel.
     let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-    holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 11)));
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::absent(version, 11)),
+        busbar_unit_admission::Pricer::flat(11),
+    );
     assert_eq!(
         admitted.fee_unit_price_nanos(),
         30_000_000,
@@ -39,6 +45,96 @@ fn an_apply_moves_the_card_and_leaves_a_pinned_reader_on_the_one_it_took() {
             .fee_unit_price_nanos(),
         110_000_000,
         "the apply did not reach the next admission's card"
+    );
+}
+
+/// **The price a DATA plane's unit is admitted against moves with the apply, and one already
+/// admitted is unmoved.**
+///
+/// The finding this cell is the answer to. A leg that captured its pricer at boot would go on
+/// admitting against the fee the operator had already replaced: the engine's own spend projection
+/// reprices on an apply and this node's door would not, and the identity that says the two are one
+/// money would hold exactly until somebody changed a figure. So the price rides the SAME swap the
+/// card does — one atomic store, so a reader can never see this apply's card beside the last one's
+/// price — and a reader that pinned before the apply keeps what it was admitted under.
+#[test]
+fn an_apply_moves_the_price_a_data_plane_unit_is_admitted_against() {
+    let holder = RootCard::default();
+    assert!(
+        holder.pin_rates().is_none(),
+        "a holder that has heard no apply prices nothing, on either half"
+    );
+
+    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::absent(version, 3)),
+        busbar_unit_admission::Pricer::flat(3),
+    );
+    let admitted = holder.pin_rates().expect("the first apply put rates in place");
+    assert_eq!(admitted.pricer().price_per_request_cents(), 3);
+
+    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::absent(version, 11)),
+        busbar_unit_admission::Pricer::flat(11),
+    );
+    assert_eq!(
+        admitted.pricer().price_per_request_cents(),
+        3,
+        "a unit admitted before the apply was repriced by it"
+    );
+    assert_eq!(
+        holder
+            .pin_rates()
+            .expect("the second apply put rates in place")
+            .pricer()
+            .price_per_request_cents(),
+        11,
+        "the apply did not reach the next admission's price"
+    );
+}
+
+/// **The card and the price a reader pins are ONE apply's, never two.**
+///
+/// Two holders would be two stores and a window between them, and a unit that read the new card
+/// beside the previous price would be charged a flat fee the operator had replaced against rates
+/// they had not — a discrepancy with no line in any book to explain it. One value, one store.
+#[test]
+fn the_card_and_the_price_a_reader_pins_come_from_one_apply() {
+    let holder = RootCard::default();
+    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::absent(version, 7)),
+        busbar_unit_admission::Pricer::flat(7),
+    );
+    let pinned = holder.pin_rates().expect("the apply put rates in place");
+    assert_eq!(pinned.card().fee_unit_price_nanos(), 70_000_000);
+    assert_eq!(pinned.pricer().price_per_request_cents(), 7);
+    assert_eq!(
+        holder
+            .pin()
+            .expect("the same apply put a card in place")
+            .fee_unit_price_nanos(),
+        pinned.card().fee_unit_price_nanos(),
+        "the card read through the older accessor and the card read beside the price are one card"
+    );
+}
+
+/// **And the relay the repricer runs derives BOTH halves from ONE configured figure.**
+///
+/// The wiring cell, one call short of the process-wide holder — which this deliberately does not
+/// touch, because a cell that reached into the node's own card would be repricing whatever else in
+/// this binary is reading it. What it proves is the thing the two cells above would otherwise hold
+/// of a holder nobody ever filled: the resolution a deployment's apply raises produces the card AND
+/// the price, from the same number, in one place.
+#[test]
+fn the_relay_derives_both_halves_from_one_configured_figure() {
+    let (card, pricer) = rates_from_config(std::iter::empty(), 5, false);
+    assert_eq!(pricer.price_per_request_cents(), 5);
+    assert_eq!(card.fee_unit_price_nanos(), 50_000_000);
+    assert!(
+        !card.pricing_enabled(),
+        "a deployment that configured no rate card gets an ABSENT card and still charges its fee"
     );
 }
 
