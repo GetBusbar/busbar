@@ -784,6 +784,107 @@ fn a_report_that_leaves_an_owed_row_id_uncovered_is_refused() {
     assert!(errs.iter().any(|e| e.contains("owed:one")));
 }
 
+/// `RowNobodyOwes` with its one owed row declared PASS-by-construction, plus a second declaration
+/// that names nothing — the two halves of the informational contract in one gate.
+struct DeclaresInformational {
+    declare: &'static [&'static str],
+}
+impl Gate for DeclaresInformational {
+    fn name(&self) -> &'static str {
+        "declares-informational"
+    }
+    fn owed(&self) -> Vec<String> {
+        vec!["owed:one".to_string()]
+    }
+    fn informational(&self) -> Vec<String> {
+        self.declare.iter().map(|s| (*s).to_string()).collect()
+    }
+    fn run(&self, _cx: &Ctx) -> Verdict {
+        Verdict::of(vec![Row::new(Status::Pass, "owed:one", "t", "d")])
+    }
+    fn selftest(&self, _cx: &Ctx) -> Report {
+        Report::new()
+    }
+}
+
+/// A report with one RED case (so the gate has a red proof at all) and one GREEN case naming
+/// `owed:one`, which is exactly what a PASS-by-construction row can offer.
+fn report_covering_owed_one_green_only() -> Report {
+    let mut report = Report::new();
+    report.push(Case {
+        name: "some other rule goes red".to_string(),
+        covers: vec!["some:other".to_string()],
+        expected: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+        got: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+    });
+    report.push(Case {
+        name: "the informational row is measured".to_string(),
+        covers: vec!["owed:one".to_string()],
+        expected: Expect::Green,
+        got: Expect::Green,
+    });
+    report
+}
+
+#[test]
+fn an_owed_row_declared_informational_is_discharged_by_a_green_case_and_nothing_else_is() {
+    let undeclared = DeclaresInformational { declare: &[] };
+    let errs = gates::verify_report(&undeclared, &report_covering_owed_one_green_only())
+        .expect_err("a green case does not discharge a row that is not declared informational");
+    assert!(
+        errs.iter().any(|e| e.contains("owed:one")),
+        "the undeclared row must still be refused: {errs:?}"
+    );
+
+    let declared = DeclaresInformational {
+        declare: &["owed:one"],
+    };
+    gates::verify_report(&declared, &report_covering_owed_one_green_only())
+        .expect("a declared informational row is held to being exercised, and it was");
+}
+
+#[test]
+fn a_declared_informational_row_that_no_case_exercises_at_all_is_still_refused() {
+    let declared = DeclaresInformational {
+        declare: &["owed:one"],
+    };
+    let mut report = Report::new();
+    report.push(Case {
+        name: "some other rule goes red".to_string(),
+        covers: vec!["some:other".to_string()],
+        expected: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+        got: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+    });
+    let errs = gates::verify_report(&declared, &report)
+        .expect_err("a row that cannot go RED must at least be measured by one case");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("owed:one") && e.contains("exercised by no case")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn an_informational_declaration_that_names_no_owed_row_is_refused_as_a_stale_exemption() {
+    let stale = DeclaresInformational {
+        declare: &["owed:one", "owed:gone"],
+    };
+    let errs = gates::verify_report(&stale, &report_covering_owed_one_green_only())
+        .expect_err("an exemption that names nothing is a line nobody re-reads");
+    assert!(
+        errs.iter().any(|e| e.contains("owed:gone")),
+        "the stale declaration must be named: {errs:?}"
+    );
+}
+
 #[test]
 fn a_case_that_went_green_where_red_was_expected_fails_the_report() {
     let mut report = Report::new();

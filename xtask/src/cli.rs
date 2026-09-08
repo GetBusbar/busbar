@@ -124,7 +124,10 @@ fn gate(args: &[String]) -> i32 {
             } else {
                 gates::print_verdict(reg.name, &verdict);
             }
-            if verdict.red {
+            // A REPORT-ONLY gate is printed and not scored. It is still reconciled, still
+            // self-tested, and still exits non-zero when run by name; what it does not do is turn
+            // `--all` red on a fact CI deliberately does not count.
+            if verdict.red && reg.blocking() {
                 red.push(reg.name);
             }
         }
@@ -189,6 +192,26 @@ fn gate(args: &[String]) -> i32 {
     };
     if want_selftest {
         return run_selftest(gate.as_ref(), &cx);
+    }
+
+    // `--write` is the one arm that CHANGES the tree, so it is the one arm that does no judging:
+    // a check that repairs what it is checking has not checked anything, and a caller that wanted
+    // both would be asking a gate to make itself pass.
+    if cx.env().write {
+        if reg.name != "design-bindings" {
+            eprintln!("xtask gate {name}: this gate has nothing to write");
+            return 2;
+        }
+        return match crate::gates::design_bindings::DesignBindingsGate::write(&cx) {
+            Ok(msg) => {
+                println!("{msg}");
+                0
+            }
+            Err(e) => {
+                eprintln!("xtask gate {name} --write: {e}");
+                3
+            }
+        };
     }
 
     // THE PARITY ARM, used by every conversion before its Python or bash is deleted: run the
