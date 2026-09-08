@@ -251,6 +251,203 @@ fn a_shorter_vtable_hides_its_trailing_slots() {
     assert!(host_slot!(p, full, cost_settle).is_some());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE VTABLE-HOP BUDGET + THE POD ALLOC-GATE — re-landed against the PRODUCTION vtable/POD types.
+//
+// OWED by `7693efb14` (`plugins: delete plane-abi-spike and plane-abi-spike-plugin, and every
+// reference`): deleting `crates/plane-abi-spike` took the only assertion of (a) the vtable
+// fn-pointer-hop wall-clock budget and (b) the no-allocation property of the POD host-call paths
+// with it — `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate`,
+// invoked from qa/segments.toml's `benches` segment. The budget (1000ns) and the round/iteration
+// counts below are the ones that test used (`git show 527bdbf96:crates/plane-abi-spike/src/tests/
+// lib_tests.rs`); everything else is re-derived against the REAL surface rather than the spike's
+// own hand-rolled duplicate of it: the real [`Facts`]/[`Decision`] from `hot/pod.rs` (not a spike
+// copy), the real [`PlaneHostVtable::EMPTY`] from this file with ONE slot wired for the
+// measurement, and [`crate::CountingAlloc`] (this crate's own per-thread counting allocator,
+// `#[cfg(test)]`-only — see its doc comment) rather than the spike's copy of the same idiom.
+//
+// The "direct" comparator below is a plain fn call to the SAME kernel the wired slot calls — so the
+// only cost the delta measures is the fn-pointer indirection through the `#[repr(C)]` struct, not a
+// difference in work. Both shapes read the exact same POD fields the real ABI struct carries
+// (`size`/`version` preamble, tokens/budget, the borrowed pool-name range) and return the real
+// `Decision` enum by value: this is a measurement of the CALL MECHANISM, not of any governance
+// verdict, since the wired `govern_admit` slot in `busbar-core` (which does perform a real
+// admission) lives one crate up and cannot be reached from here without busbar-plugin depending on
+// busbar-core — a dependency direction that does not exist and must not be introduced for a test.
+
+/// The one true admit computation the benchmarked shapes share, so the comparison below measures
+/// ONLY the call mechanism (direct fn call vs. through a `#[repr(C)]` vtable slot), never a
+/// difference in work. Reads the real [`Facts`] POD fields — the sized/versioned preamble, the
+/// token/budget scalars, and the borrowed pool-name range — exactly as a wired host impl would.
+#[inline]
+fn bench_govern_admit_kernel(f: &Facts) -> Decision {
+    if f.size < core::mem::size_of::<Facts>() as u32 || f.version != crate::hot::pod::POD_VERSION {
+        return Decision::Deny;
+    }
+    if f.tokens > f.budget_remaining {
+        return Decision::Deny;
+    }
+    // SAFETY: every public constructor of `Facts` (`Facts::new`, `Facts::with_attribution`) ties the
+    // borrowed pool-name range to the returned `FactsGuard`'s lifetime, and every caller below drives
+    // the kernel through a live guard.
+    let name = unsafe {
+        if f.pool_name_ptr.is_null() || f.pool_name_len == 0 {
+            &[][..]
+        } else {
+            core::slice::from_raw_parts(f.pool_name_ptr, f.pool_name_len)
+        }
+    };
+    let mut fold: u32 = f.priority ^ (f.tenant_id as u32);
+    for &b in name {
+        fold = fold.rotate_left(5) ^ (b as u32);
+    }
+    let trusted = f.flags & 1 != 0;
+    let headroom = f.budget_remaining - f.tokens;
+    if trusted || headroom >= f.tokens {
+        Decision::Admit
+    } else if fold & 1 == 0 {
+        Decision::Throttle
+    } else {
+        Decision::Deny
+    }
+}
+
+/// (a) The baseline: a plain, statically-resolved fn call to the kernel.
+#[inline]
+fn bench_govern_admit_direct(f: &Facts) -> Decision {
+    bench_govern_admit_kernel(f)
+}
+
+/// (b) The SAME kernel, reached the way a compiled-in plane reaches it: through the real
+/// [`GovernAdmitFn`] slot of a real [`PlaneHostVtable`].
+extern "C-unwind" fn bench_govern_admit_ffi(_host: HostCtx, facts: *const Facts) -> Decision {
+    // SAFETY: every caller below passes a pointer to a live `Facts` obtained from a `FactsGuard`.
+    let f = unsafe { &*facts };
+    bench_govern_admit_kernel(f)
+}
+
+/// A representative sample `Facts`, mirroring the deleted spike's fixture.
+fn bench_sample() -> (Vec<u8>, u64, u64, u64, u32, u32) {
+    (b"pool-a".to_vec(), 10, 100, 42, 5, 1)
+}
+
+/// THE 1 µs/CALL BUDGET, ASSERTED — see the module-level OWED comment above.
+///
+/// IGNORED BY DEFAULT, run explicitly by qa/segments.toml's `benches` segment
+/// (`--ignored --test-threads=1`): it measures WALL CLOCK (meaningless alongside other tests on a
+/// shared runner) and uses [`crate::CountingAlloc`], a per-THREAD (not per-test) counter, so the
+/// alloc arms below must run alone in this thread the same way `stub_vtable_populates_every_slot`'s
+/// sibling gates do.
+///
+/// The estimator is the MINIMUM over several rounds, not the mean: scheduler noise can only ever add
+/// time, so the smallest observation is closest to the real cost and least able to flake this test.
+/// The budget is a CEILING on the DIFFERENCE, not a pin on either measurement.
+#[test]
+#[ignore = "measures wall clock and uses the per-thread counting allocator; run alone via the qa \
+            `benches` segment (--ignored --test-threads=1)"]
+fn the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate() {
+    use std::hint::black_box;
+
+    /// The per-call ceiling the deleted spike's header claimed, in nanoseconds — carried over
+    /// verbatim (`git show 527bdbf96:crates/plane-abi-spike/src/tests/lib_tests.rs`).
+    const BUDGET_NS: f64 = 1000.0;
+    const N: u64 = 200_000;
+    const ROUNDS: usize = 5;
+
+    let (name, tokens, budget, tenant, prio, flags) = bench_sample();
+    let g = Facts::new(tokens, budget, tenant, prio, flags, &name);
+    let vt = PlaneHostVtable {
+        govern_admit: Some(bench_govern_admit_ffi),
+        ..PlaneHostVtable::EMPTY
+    };
+    let facts_ptr = &*g as *const Facts;
+
+    let per_call = |f: &dyn Fn()| -> f64 {
+        // A warm round, discarded: the first pass pays for cold branch predictors and cold icache,
+        // which is not what the budget is about.
+        for _ in 0..N {
+            f();
+        }
+        (0..ROUNDS)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                for _ in 0..N {
+                    f();
+                }
+                t.elapsed().as_nanos() as f64 / N as f64
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+
+    let direct_ns = per_call(&|| {
+        black_box(bench_govern_admit_direct(black_box(&g)));
+    });
+    let vtable_ns = per_call(&|| {
+        black_box((vt.govern_admit.unwrap())(
+            core::ptr::null_mut(),
+            black_box(facts_ptr),
+        ));
+    });
+    let overhead_ns = vtable_ns - direct_ns;
+
+    assert!(
+        overhead_ns < BUDGET_NS,
+        "the vtable fn-pointer hop cost {overhead_ns:+.3} ns/call over the direct call, which is \
+         OVER the {BUDGET_NS} ns budget this test exists to prove (direct {direct_ns:.3} ns, \
+         vtable {vtable_ns:.3} ns, min of {ROUNDS} rounds of {N})"
+    );
+
+    // A positive control on the measurement itself: a per-call figure of zero would satisfy any
+    // ceiling, so the timer has to have measured something.
+    assert!(
+        direct_ns > 0.0 && vtable_ns > 0.0,
+        "the measurement is degenerate (direct {direct_ns} ns, vtable {vtable_ns} ns) — a budget \
+         compared against nothing is not a budget"
+    );
+
+    // ── THE ALLOC-GATE, over the real PlaneHostVtable slot + the real POD Facts. ──
+    const M: u64 = 100_000;
+    crate::CountingAlloc::reset();
+    for _ in 0..M {
+        black_box(bench_govern_admit_direct(black_box(&g)));
+    }
+    let direct_allocs = crate::CountingAlloc::count();
+    assert_eq!(
+        direct_allocs, 0,
+        "the direct POD call must allocate 0 across {M} calls, saw {direct_allocs}"
+    );
+
+    crate::CountingAlloc::reset();
+    for _ in 0..M {
+        black_box((vt.govern_admit.unwrap())(
+            core::ptr::null_mut(),
+            black_box(facts_ptr),
+        ));
+    }
+    let vtable_allocs = crate::CountingAlloc::count();
+    assert_eq!(
+        vtable_allocs, 0,
+        "the vtable POD call must allocate 0 across {M} calls, saw {vtable_allocs} — the whole \
+         point of passing repr(C) POD by pointer is that the hop is allocation-free"
+    );
+
+    // A positive control, so the gate is known to be able to SEE an allocation rather than
+    // reporting zero because the counter is not installed: a `Vec` push of the same class the
+    // shipped `Result<Vec<u8>, _>` anti-pattern this ABI replaced would perform.
+    crate::CountingAlloc::reset();
+    for _ in 0..M {
+        let v: Vec<u8> = black_box(vec![bench_govern_admit_direct(&g) as u8]);
+        black_box(v);
+    }
+    let vec_allocs = crate::CountingAlloc::count();
+    assert_eq!(
+        vec_allocs, M,
+        "the vec-returning anti-pattern must allocate once per call: expected {M}, saw \
+         {vec_allocs} — if this reads 0 the counting allocator stopped observing allocations, \
+         which would silently defang the two zero-alloc assertions above"
+    );
+}
+
 /// The POD-side upper clamp: a peer's self-attested `size` is clamped to this build's own struct, so
 /// an over-claim can never widen the read window past what this build compiled.
 #[test]
