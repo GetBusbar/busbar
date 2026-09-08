@@ -1216,7 +1216,12 @@ fn the_record_names_the_caller_the_class_and_the_resource() {
         record.subject,
         busbar_unit_audit::Subject::PrincipalId("vk_mcp".to_string())
     );
-    assert_eq!(record.what.op_class, record_op_class(ops::OP_TOOL_CALL));
+    assert_eq!(
+        record.what.op_class,
+        busbar_unit_audit::record::OpClassId::new("tool_call"),
+        "the record must file under the plane's own literal op-class name, not a re-derivation \
+         of whatever record_op_class happens to produce today"
+    );
     assert_eq!(
         record.what.destination.as_deref(),
         Some("mcp_tool:fs"),
