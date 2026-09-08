@@ -37,8 +37,11 @@ path = "src/lib.rs"
 # and friends): this plane has NO production dependency on busbar-core, so there is nothing of core's
 # to forward. The G6 A4b leaf-op read/write free fns are `#[cfg(any(test, feature = "test-support"))]`.
 test-support = ["busbar-substrate/test-support", "busbar-llm-codec/test-support"]
-# THE TELLER WAIST, written dark. DEFAULT OFF, and it stays off until the whole step set is wired and
-# the owed golden is clean on both legs. With it off `src/unit/` compiles to nothing (the module root
+# THE TELLER WAIST. Not in THIS crate's default set, but the shipped binary turns it on: `root-llm`
+# forwards to it (crates/busbar/Cargo.toml `root-llm = ["proto-llm", "busbar-llm?/teller-waist"]`)
+# and `root-llm` is in the binary's `default`. The condition this line used to name — the whole step
+# set wired and the owed golden clean on both legs — is what the flip was waiting for, and it was
+# met. With it off `src/unit/` compiles to nothing (the module root
 # carries an inner `cfg`), so the default dependency graph, the default build and every default-feature
 # test are byte-for-byte what they were; with it on the per-step files and their identity tests come in
 # beside the live `native_ingress` path rather than in place of it. Both paths always compile and are
@@ -72,11 +75,14 @@ openapi-schema = ["busbar-substrate/openapi-schema", "busbar-llm-codec/openapi-s
 # (a `webhooks:` config section + a dispatch slot on the fallback plane) is the reported deferred
 # remainder — see `openai_responses/webhook.rs`.
 webhook-receiver = ["dep:busbar-plugin"]
-# THE TELLER WAIST — the `src/unit/` step files, ONE FILE PER TELLER STEP, written dark. DEFAULT OFF,
-# and off is byte-identical to not having them: `src/unit/mod.rs` carries the inner
+# THE TELLER WAIST — the `src/unit/` step files, ONE FILE PER TELLER STEP. NOT in this crate's own
+# default set, and ON in the shipped binary: `root-llm` forwards to it and `root-llm` is in the
+# binary's `default`, so a default `cargo build` of `busbar` compiles this directory in. Off is
+# byte-identical to not having them: `src/unit/mod.rs` carries the inner
 # `#![cfg(feature = "teller-waist")]`, so with the flag down the whole directory compiles to nothing
 # and the dependency below is not linked at all. The legacy `native_ingress` path is untouched either
-# way; the two coexist until the composition root flips the matrix leg.
+# way; the composition root has flipped the matrix leg, and the two still coexist so the flip stays
+# reversible and the off leg stays measurable.
 #
 # It carries `busbar-caps` — the capability vocabulary the loop's step seam is written in
 # (`UnitToken<S>`, `Decision<S>`, `Refusal`, `ReasonCode`, the step markers, and the facts each step
