@@ -192,7 +192,7 @@ fn sources_with_chain(
     auth: busbar_unit_auth::Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
 ) -> crate::root::units_mcp_leg::McpLegSources<'_> {
-    use busbar_unit_admission::{Door, GroupTable, InMemoryCells};
+    use busbar_unit_admission::{Door, GroupTable, InMemoryCells, Pricer};
     crate::root::units_mcp_leg::McpLegSources {
         plane: busbar_plane_mcp::McpPlane::new(ONE_SERVER),
         kernel,
@@ -206,6 +206,7 @@ fn sources_with_chain(
         denylist: Some(busbar_unit_trust::net::Denylist::default()),
         door: Some(Door::new(InMemoryCells::new())),
         groups: Some(GroupTable::default()),
+        pricer: Some(Pricer::flat(0)),
         store: Some(Arc::new(busbar_core::governance::MemoryStore::new())),
         meter_policy: Some(crate::root::policy::build(
             &crate::root::policy::MeterPolicyConfig::default(),
