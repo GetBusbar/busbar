@@ -124,135 +124,42 @@ pub fn required_scope(method: &axum::http::Method, path: &str) -> Scope {
     busbar_unit_scope::admin_required_scope(method.as_str(), path)
 }
 
-/// The stable v1 error taxonomy. Each variant maps to a fixed `code` (the machine-stable branch key
-/// tooling switches on — NEVER `message`) and an HTTP status the JSON-REST adapter uses. A non-HTTP
-/// transport reads `code` and ignores the status. Adding a variant is additive; an existing
-/// `code` string is frozen.
+/// The stable v1 error taxonomy: ten variants, ten frozen `code` strings, ten HTTP statuses.
 ///
-/// Some variants are exercised only by endpoints in upcoming slices (conflict/forbidden land with the
-/// mutation surface); the taxonomy is defined whole so the frozen contract + its test lock exist from
-/// the start.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub enum AdminError {
-    /// The named resource does not exist. `code = not_found`. `what` NAMES the missing thing (the
-    /// message is `"<what> not found"`), and the optional `note` appends a parenthetical reason for
-    /// the cases where "missing" has a cause worth stating — e.g. a single-key read on a server with
-    /// governance disabled, where no key CAN exist. Build one with [`AdminError::not_found`] /
-    /// [`AdminError::not_found_because`] rather than the variant, so the phrasing stays in one place.
-    NotFound {
-        what: String,
-        note: Option<&'static str>,
-    },
-    /// No/invalid admin credential (the auth middleware could not authenticate the caller).
-    /// `code = unauthorized`. Distinct from `forbidden` (authenticated but under-scoped).
-    Unauthorized,
-    /// The path exists on the surface but not with this HTTP method. `code = method_not_allowed`.
-    MethodNotAllowed,
-    /// The principal's scope is insufficient for the endpoint. `code = forbidden`. Carries the scope
-    /// that WOULD have sufficed, for a precise client message (never leaks other principals' data).
-    Forbidden { needed: Scope },
-    /// The request is structurally invalid (bad field, unknown enum, failed validation). `code =
-    /// invalid_request`.
-    Validation(String),
-    /// Optimistic-concurrency mismatch: the caller's `If-Match` is STALE — re-read the resource
-    /// and retry. `code = version_conflict`. Split from `conflict`: a client must distinguish
-    /// RETRYABLE (this) from TERMINAL state conflicts without string-matching the human message.
-    VersionConflict(String),
-    /// A TERMINAL state conflict: the request contradicts server state in a way a retry cannot fix
-    /// (governance disabled, base-defined hook, immutable grant change, in-flight idempotency
-    /// reservation). `code = conflict`.
-    Conflict(String),
-    /// The principal exhausted its per-minute mutation budget. `code = rate_limited`.
-    RateLimited,
-    /// An internal failure (store/plugin). `code = internal`. The human `message` is generic; details
-    /// are logged server-side, never returned.
-    Internal,
-    /// A operation that is normally fast could not complete (or even START) within its bound and was
-    /// abandoned rather than left to hang the request indefinitely. `code = unavailable`. Unlike
-    /// [`AdminError::Internal`] the message is specific and caller-safe (e.g. "the plugin catalog
-    /// scan is taking too long") — this is a timeout/backpressure signal the caller can retry, not an
-    /// internal defect. First user: `GET /plugins?type=store`'s `CATALOG_SCAN_GATE` wait.
-    Unavailable(String),
-}
+/// DEFINED IN `busbar-plane-admin`, not here. The plane already owned the envelope those two strings
+/// are rendered into — its `refusal::envelope_of` says in its own doc comment that the shape lives
+/// there and nowhere else, precisely so a second rendering cannot drift from the first — while the
+/// CONTENT of that envelope was this enum, in this crate, and this crate rendered the shape a second
+/// time out of its own `json!`. Shape in one crate and content in another is that same split with an
+/// extra seam in it: the `code` a condition renders under is as much the frozen contract as the brace
+/// placement is, and neither half means anything without the other.
+///
+/// So the taxonomy sits beside the envelope it feeds, and what stays here is the part that is
+/// genuinely this crate's: the axum `Response` the two are turned into (`super::super::json`'s
+/// `err_json`), because the transport is here and only here.
+///
+/// Re-exported under the name every in-crate caller already spells.
+pub use busbar_plane_admin::envelope::AdminError;
 
-impl AdminError {
-    /// The plain "no such thing" — message `"<what> not found"`.
-    pub(crate) fn not_found(what: impl Into<String>) -> Self {
-        AdminError::NotFound {
-            what: what.into(),
-            note: None,
-        }
-    }
-
-    /// A not-found WITH a reason — message `"<what> not found (<why>)"`. For the cases where the
-    /// absence is a property of the server's configuration rather than of the request.
-    pub(crate) fn not_found_because(what: impl Into<String>, why: &'static str) -> Self {
-        AdminError::NotFound {
-            what: what.into(),
-            note: Some(why),
-        }
-    }
-
-    /// The FROZEN stable code. Tooling branches on this string; it never changes for a shipped variant.
-    pub(crate) fn code(&self) -> &'static str {
-        match self {
-            AdminError::NotFound { .. } => "not_found",
-            AdminError::Unauthorized => "unauthorized",
-            AdminError::MethodNotAllowed => "method_not_allowed",
-            AdminError::Forbidden { .. } => "forbidden",
-            AdminError::Validation(_) => "invalid_request",
-            AdminError::VersionConflict(_) => "version_conflict",
-            AdminError::Conflict(_) => "conflict",
-            AdminError::RateLimited => "rate_limited",
-            AdminError::Internal => "internal",
-            AdminError::Unavailable(_) => "unavailable",
-        }
-    }
-
-    /// The HTTP status the JSON-REST adapter returns for this error. A non-HTTP transport ignores it.
-    pub(crate) fn http_status(&self) -> u16 {
-        match self {
-            AdminError::NotFound { .. } => 404,
-            AdminError::Unauthorized => 401,
-            AdminError::MethodNotAllowed => 405,
-            AdminError::Forbidden { .. } => 403,
-            AdminError::Validation(_) => 400,
-            AdminError::VersionConflict(_) => 409,
-            AdminError::Conflict(_) => 409,
-            AdminError::RateLimited => 429,
-            AdminError::Internal => 500,
-            AdminError::Unavailable(_) => 503,
-        }
-    }
-
-    /// The human-facing message. Caller-safe only — internal store/plugin detail never lands here.
-    pub(crate) fn message(&self) -> String {
-        match self {
-            AdminError::NotFound {
-                what,
-                note: Some(why),
-            } => format!("{what} not found ({why})"),
-            AdminError::NotFound { what, note: None } => format!("{what} not found"),
-            AdminError::Unauthorized => {
-                "missing or invalid admin credential (Bearer or x-admin-token)".to_string()
-            }
-            AdminError::MethodNotAllowed => "method not allowed for this resource".to_string(),
-            AdminError::Forbidden { needed } => {
-                format!(
-                    "insufficient scope: this endpoint requires `{}`",
-                    needed.as_str()
-                )
-            }
-            AdminError::Validation(msg) => msg.clone(),
-            AdminError::VersionConflict(msg) => msg.clone(),
-            AdminError::Conflict(msg) => msg.clone(),
-            AdminError::RateLimited => {
-                "admin mutation rate limit exceeded; retry next minute".to_string()
-            }
-            AdminError::Internal => "internal error".to_string(),
-            AdminError::Unavailable(msg) => msg.clone(),
-        }
+/// An `AdminError::Forbidden` naming the scope that would have sufficed.
+///
+/// The variant carries the scope's WIRE TOKEN rather than a `Scope`, because the message it renders
+/// has never needed anything else about it and a plane may not name a unit crate to obtain one. This
+/// is the one line that bridges the two: the scope model is the unit's, the token is what the
+/// envelope wants, and turning the first into the second is core's, where both are already in scope.
+///
+/// Only CONSTRUCTED under `test`/`openapi-schema`, for the same reason `ErrKind::Forbidden` is: after
+/// the 1.5.2 scope collapse there is no per-endpoint `Forbidden` declaration left, and every 403 the
+/// surface answers is the generic under-scope response the middleware stamps. The bridge stays real
+/// so the frozen taxonomy still recognizes the kind; the lint is narrow-suppressed rather than the
+/// bridge deleted.
+#[cfg_attr(
+    not(any(test, feature = "openapi-schema", feature = "test-support")),
+    allow(dead_code)
+)]
+pub(crate) fn forbidden(needed: Scope) -> AdminError {
+    AdminError::Forbidden {
+        needed: needed.as_str(),
     }
 }
 
