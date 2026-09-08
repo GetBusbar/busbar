@@ -272,6 +272,7 @@ fn each_named_map_path_refs_the_view_its_section_serves() {
         };
         // `path_root()` is the router-relative path; the document keys are absolute.
         let item = format!("/api/v1/admin{}/{{name}}", section.path_root());
+        // plane-purity: frozen-wire `responses` is the OpenAPI 3.1 keyword, not the LLM dialect
         let body = serde_json::to_string(&doc["paths"][&item]["get"]["responses"]["200"])
             .expect("serialises");
         assert!(
