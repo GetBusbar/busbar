@@ -411,6 +411,23 @@ jobs:
         run: cargo xtask gate plane-abi-neutrality --selftest
       - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
         run: cargo xtask gate plane-abi-neutrality
+      # KIND-ISOLATION gate: busbar is core + plugins, and the ~10 plugin kinds can never
+      # cross-contaminate (owner ruling, 2026-09-07). A proposal to create `busbar-transport-a2a`
+      # was ruled catastrophic — it fuses a KIND with another kind's INSTANCE and merges back what
+      # the plane/transport split is tearing apart. This is the ruling as a machine fact, in four
+      # rows: the crate NAME (`busbar-transport-a2a`, `busbar-plane-http`, `busbar-unit-mcp`,
+      # `busbar-plane-transport` are all refused), the kind-to-kind DEPENDENCY graph (a ratchet over
+      # the measured edge classes, so a new one is refused and a dead allowance has to be struck),
+      # the source VOCABULARY (a transport never says `a2a`, a plane never says `axum`), and the
+      # kind REGISTRY (a crate of no kind is refused with the owner's own instruction: make a new
+      # plugin kind, do not fuse two). Self-test runs FIRST — every one of the four rows is planted
+      # and proven RED before the verdict is trusted, including the `busbar-transport-a2a` the
+      # owner refused. The SHIP-criterion twin (`kind-isolation-ship`, one surface and one shared
+      # conformance battery per kind) is red on HEAD by design and runs at release time.
+      - name: Kind-isolation self-test (the refused busbar-transport-a2a, planted and proven RED)
+        run: cargo xtask gate kind-isolation --selftest
+      - name: Kind-isolation gate (BLOCKING — no name, edge or word fuses two plugin kinds)
+        run: cargo xtask gate kind-isolation
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
 
