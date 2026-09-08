@@ -13,7 +13,7 @@
 //!
 //! The router that goes in is the one that already answers this protocol — the legacy plugin's, with
 //! its eighteen route specifications. The router that comes out answers the same addresses THROUGH
-//! THE KERNEL'S LOOP. The seam between them is [`crate::root::units_a2a::A2aDispatch`], so the inner
+//! THE KERNEL'S LOOP. The seam between them is [`crate::root::units_a2a::PlaneDispatch`], so the inner
 //! router remains the only thing that knows what any of these operations do, and the bytes a caller
 //! reads are the ones that surface wrote.
 //!
@@ -53,7 +53,7 @@ use std::sync::Arc;
 
 use busbar_contract::grammar::{PathSeg, Selector};
 
-use crate::root::units_a2a::A2aAnswer;
+use crate::root::units_a2a::PlaneAnswer;
 use crate::root::units_a2a_leg::A2aLeg;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -139,7 +139,7 @@ fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
 /// this protocol under one status with no headers at all. Written once because two paths reach it —
 /// the unit that ran and the one this wrap refused before the loop was entered — and a second builder
 /// would be a second chance for the two to differ.
-fn http_response(answer: A2aAnswer) -> axum::http::Response<axum::body::Body> {
+fn http_response(answer: PlaneAnswer) -> axum::http::Response<axum::body::Body> {
     let mut response = axum::http::Response::builder().status(answer.status);
     for (name, value) in &answer.headers {
         response = response.header(name.as_str(), value.as_str());
@@ -159,7 +159,7 @@ fn http_response(answer: A2aAnswer) -> axum::http::Response<axum::body::Body> {
 /// No document, because there is no plane answer to render: the loop produced no ending of its own,
 /// so anything in the body would be this file's prose about a unit it did not decide.
 fn unavailable_response() -> axum::http::Response<axum::body::Body> {
-    http_response(A2aAnswer {
+    http_response(PlaneAnswer {
         status: 503,
         headers: Vec::new(),
         body: Vec::new(),
@@ -176,7 +176,7 @@ fn unavailable_response() -> axum::http::Response<axum::body::Body> {
 /// asynchronous side never has to know which of several outstanding calls it is answering.
 type Errand = (
     axum::http::Request<axum::body::Body>,
-    std::sync::mpsc::SyncSender<A2aAnswer>,
+    std::sync::mpsc::SyncSender<PlaneAnswer>,
 );
 
 /// The dispatch that hands one operation to the surface it is already mounted on.
@@ -192,7 +192,7 @@ type Errand = (
 /// which knows nothing about runtimes.
 ///
 /// **Bound to ONE request,** because a unit of this plane is assembled per arrival and so is its
-/// seam. That is the shape [`crate::root::units_a2a::A2aDispatch`] has, and the reason it takes no
+/// seam. That is the shape [`crate::root::units_a2a::PlaneDispatch`] has, and the reason it takes no
 /// request: the request travelled across when the dispatch was built.
 struct RequestDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
@@ -218,8 +218,8 @@ impl RequestDispatch {
     }
 }
 
-impl crate::root::units_a2a::A2aDispatch for RequestDispatch {
-    fn execute(&self, _op: busbar_contract::ids::OpClassId) -> A2aAnswer {
+impl crate::root::units_a2a::PlaneDispatch for RequestDispatch {
+    fn execute(&self, _op: busbar_contract::ids::OpClassId) -> PlaneAnswer {
         let taken = self
             .request
             .lock()
@@ -240,8 +240,8 @@ impl crate::root::units_a2a::A2aDispatch for RequestDispatch {
 }
 
 /// What the seam answers when there is no surface left to ask.
-fn unavailable_answer() -> A2aAnswer {
-    A2aAnswer {
+fn unavailable_answer() -> PlaneAnswer {
+    PlaneAnswer {
         status: 503,
         headers: Vec::new(),
         body: Vec::new(),
@@ -269,7 +269,7 @@ fn drive(
 }
 
 /// Hand one request to the router and take its whole answer.
-async fn call(inner: axum::Router, request: axum::http::Request<axum::body::Body>) -> A2aAnswer {
+async fn call(inner: axum::Router, request: axum::http::Request<axum::body::Body>) -> PlaneAnswer {
     use tower::ServiceExt;
 
     // The router's own error type is uninhabited: a mounted axum router answers, and failing is not
@@ -283,7 +283,7 @@ async fn call(inner: axum::Router, request: axum::http::Request<axum::body::Body
     let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
         return unavailable_answer();
     };
-    A2aAnswer {
+    PlaneAnswer {
         status: parts.status.as_u16(),
         headers: header_pairs(&parts.headers),
         body: bytes.to_vec(),
@@ -395,7 +395,7 @@ pub fn mount(
                 // differently for a reason nobody wrote down.
                 let forwarded =
                     axum::http::Request::from_parts(parts, axum::body::Body::from(bytes.clone()));
-                let dispatch: Arc<dyn crate::root::units_a2a::A2aDispatch> =
+                let dispatch: Arc<dyn crate::root::units_a2a::PlaneDispatch> =
                     Arc::new(RequestDispatch::new(errands, forwarded));
                 let answered = tokio::task::spawn_blocking(move || {
                     with_arrival(&facts, &bytes, |arrival| {
@@ -519,7 +519,7 @@ impl MountedNode {
     fn answer(
         &self,
         arrival: &busbar_contract::transport::Arrival<'_>,
-        dispatch: &dyn crate::root::units_a2a::A2aDispatch,
+        dispatch: &dyn crate::root::units_a2a::PlaneDispatch,
     ) -> axum::http::Response<axum::body::Body> {
         let key = busbar_caps::UnitKey::new(
             self.next_key
@@ -592,7 +592,7 @@ fn refused_response(
     } else {
         vec![("content-type".to_string(), MEDIA_JSON.to_string())]
     };
-    http_response(A2aAnswer {
+    http_response(PlaneAnswer {
         status,
         headers,
         body,
