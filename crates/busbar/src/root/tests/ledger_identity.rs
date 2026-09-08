@@ -171,7 +171,7 @@ fn drive(
         // lines here are raw token counts and their sum is not money at all. The legacy row
         // accumulator below is the one place that still adds the raw quantities up, which is
         // exactly where the previous release added them.
-        ledger.settle(
+        let _ = ledger.settle(
             &totals_key(s.bucket),
             DAY,
             Hold::open(&admit_token(), PrincipalId::new(s.bucket), reserved),
