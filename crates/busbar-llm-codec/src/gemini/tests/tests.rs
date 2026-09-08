@@ -5579,6 +5579,77 @@ fn u_of(input: u64, output: u64, tool_use: Option<u64>) -> crate::ir::IrUsage {
     }
 }
 
+/// THE TOOL-USE PROMPT TERM IS INSIDE `input_tokens`, AND THE WIRE STILL REPORTS IT BESIDE THE
+/// PROMPT COUNT.
+///
+/// Vertex reports `usageMetadata.toolUsePromptTokenCount` BESIDE `promptTokenCount`, not inside it,
+/// and its own `totalTokenCount` reconciles only when the term is added. Busbar's IR folds the term
+/// INTO `input_tokens`, because that is the tier Google charges it at — so the writer has to take
+/// it back out of the prompt count and re-emit it as its own member, or a native google-genai
+/// client counts it twice and reads a `usageMetadata` that no longer reconciles.
+///
+/// The literals: a turn whose `input_tokens` is 50 with 32 of those being the tool-use prompt term,
+/// and 7 candidates. The wire must read prompt 18, toolUsePrompt 32, candidates 7, total 57 — and
+/// 18 + 32 + 7 is 57, which is the reconciliation the member exists for.
+#[test]
+fn test_write_response_reports_the_tool_use_prompt_term_beside_the_prompt_count() {
+    let writer = GeminiWriter;
+    let ir = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        content: vec![crate::ir::IrBlock::Text {
+            text: "hi".to_string(),
+            cache_control: None,
+            citations: Vec::new(),
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: u_of(50, 7, Some(32)),
+        model: None,
+        id: None,
+        created: Some(1_700_000_000), // cross-protocol boundary signal
+        system_fingerprint: None,
+        stop_sequence: None,
+
+        request_echo: None,
+    };
+    let wire = writer.write_response(&ir);
+    assert_eq!(
+        wire.pointer("/usageMetadata/promptTokenCount"),
+        Some(&serde_json::json!(18)),
+        "the tool-use term is taken back out of the prompt count it is folded into: {wire}"
+    );
+    assert_eq!(
+        wire.pointer("/usageMetadata/toolUsePromptTokenCount"),
+        Some(&serde_json::json!(32)),
+        "and re-emitted as the member Vertex spells it with: {wire}"
+    );
+    assert_eq!(
+        wire.pointer("/usageMetadata/candidatesTokenCount"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(
+        wire.pointer("/usageMetadata/totalTokenCount"),
+        Some(&serde_json::json!(57)),
+        "prompt + toolUsePrompt + candidates, which is the sum Google's own total reconciles to"
+    );
+
+    // A turn with NO server-side tool use carries no member and no adjustment.
+    let plain = crate::ir::IrResponse {
+        usage: u_of(50, 7, None),
+        ..ir
+    };
+    let wire = writer.write_response(&plain);
+    assert!(
+        wire.pointer("/usageMetadata/toolUsePromptTokenCount")
+            .is_none(),
+        "the member is absent, not zero, when nothing used a server-side tool: {wire}"
+    );
+    assert_eq!(
+        wire.pointer("/usageMetadata/promptTokenCount"),
+        Some(&serde_json::json!(50))
+    );
+}
+
 /// The Gemini stream WRITE path must emit a streamed reasoning part for a `ThinkingDelta`
 /// (`{text, thought:true}`) and carry the signature for a `SignatureDelta`
 /// (`{thought:true, thoughtSignature}`), mirroring the non-stream `write_response` thinking shape.
