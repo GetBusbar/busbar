@@ -52,6 +52,23 @@ use busbar_substrate::{diag_debug, diag_error, diag_warn};
 /// The audit action every inbound call on this plane records under.
 pub(super) const AUDIT_ACTION: &str = "agent.call";
 
+/// **THE PLANE-LEVEL POOL** — what a verb that names no agent is admitted and billed against.
+///
+/// `GetExtendedAgentCard` on `POST /a2a` is answered before the catalogue selects anything, so it
+/// has no `agent:<id>` to attribute a row to. It is still this caller's call and still costs this
+/// node work, so it is charged; the only question is to WHAT, and the answer is not one invented
+/// here. The successor plane already spells it: `busbar-plane-a2a` declares the card verb's
+/// destination as a `DestinationFacts::PlaneRecord` rather than an upstream, its `approve` step
+/// names an `agent` resource ONLY when an agent is in hand, and the root drives such a unit against
+/// its plane pool rather than a member's cell. That pool is this plane's config section — the one
+/// word an operator already uses for "the agents of this deployment, collectively" — so it is read
+/// from the codec's single source rather than restated as a literal.
+///
+/// It cannot collide with a member row: `super::route` keys those through
+/// `busbar_substrate::store::agent_key`, which prefixes `agent:`. A pool line and an agent line are
+/// therefore distinguishable in one ledger, which is the whole reason the prefix rule exists.
+const PLANE_POOL: &str = busbar_a2a_codec::CONFIG_SECTION;
+
 /// THE CREDENTIAL KIND THIS MOUNT CONFERS. `a2a_inbound` only when the plane is audience-bound;
 /// otherwise the empty string, which [`super::inbound::authorize`] refuses.
 ///
@@ -682,6 +699,47 @@ fn governance_required() -> Response {
         .into_response()
 }
 
+/// **THE PLANE'S ONE CHARGE, WRITTEN ONCE.** Meter one admitted call through the host
+/// `meter_charge` seam (CLUSTER-4), against the resource it was admitted on.
+///
+/// A pure request meter with no token split (component `Queries` → `None`), so the recorded
+/// `(key_id, model, provider)` row is byte-identical to the in-place
+/// `record_metering(&billed_key_id, &resource, Plane::A2a.key(), None, ..)` it replaced: the
+/// attribution tail carries those exact three words, and the amount-0 charge validates an empty
+/// breakdown and always accrues ONE REQUEST. Fire-and-forget, exactly as the direct call was.
+///
+/// **The amount is zero and that is the kernel's reading, not an omission.** The kernel's flat
+/// per-request fee needs three facts true together — a client origin, a SELECTED UPSTREAM, and a
+/// relayed first response frame (`busbar_kernel::teller::fee_count`, and the root's `fee_evidence`
+/// over this plane's draft). A verb busbar answers out of its own state selects no upstream and
+/// relays no frame, so its `fee_count` is zero however it is asked; what it draws is the request
+/// accrual, which is what this charge is. A locally-answered call is therefore not free and not
+/// double-charged: it is the same one row every other call posts, with nothing priced on a hop that
+/// did not happen.
+///
+/// Stated as a function rather than inline because there are now three callers — the hop, the
+/// locally-answered verbs, and the pre-selection card — and a fourth spelled slightly differently
+/// is how one verb quietly stops appearing in a deployment's ledger.
+fn meter_request(
+    engine_host: &dyn busbar_substrate::plane_host::EngineHost,
+    cap_scope: &busbar_substrate::plane_host::DispatchScope,
+    billed_key_id: &str,
+    resource: &str,
+) {
+    // The `UsageGuard` holds borrowed attribution pointers (`!Send`), so it is built AND consumed
+    // inside this call — it never crosses an `.await` and the request future stays `Send`.
+    let usage = busbar_plugin::hot::Usage::with_attribution(
+        busbar_plugin::hot::UsageComponent::Queries,
+        0,
+        0,
+        busbar_plugin::hot::AdmissionId::NONE,
+        billed_key_id.as_bytes(),
+        resource.as_bytes(),
+        "a2a".as_bytes(),
+    );
+    engine_host.meter_charge(cap_scope, &usage);
+}
+
 /// `agents:` configured for the DELEGATING direction alone — no `public_url`, so no receiving side.
 pub(super) fn no_receiving_side() -> Response {
     (
@@ -1010,6 +1068,56 @@ async fn admitted(
             "GetExtendedAgentCard" | "agent/getAuthenticatedExtendedCard"
         )
     {
+        // ── AND IT IS ADMITTED, METERED AND AUDITED — against the PLANE POOL. ───────────────────
+        //
+        // "Answered early" was read for a while as "answered for free". It is not: this verb reads
+        // this caller's whole catalogue, builds a document out of it and returns it, and a verb
+        // that does work no deployment can see, cap or bill is a verb an unbounded caller can sit
+        // on. It was the one call on this plane that reached a handler and left no ledger row.
+        //
+        // What it could not have is what kept it out: `admit` selects an agent, and there is no
+        // agent here to select — which is the point of the verb. So the subject is the plane pool
+        // (see `PLANE_POOL`), the caller is `key.id` (the very value `inbound::admit` would have
+        // copied into `billed_key_id`, so the row's principal is the same either way), and the
+        // order is the order every other admitted call keeps: governance, then admission, then the
+        // charge, then the work. Charging before the answer is what makes an over-budget caller
+        // REFUSED rather than served and billed.
+        if !engine_host.governance_enabled() {
+            return governance_required();
+        }
+        let actor = principal.actor_id().to_string();
+        if matches!(
+            engine_host.govern_admit_reason(
+                &cap_scope,
+                PLANE_POOL.as_bytes(),
+                key.id.as_bytes(),
+                key.group.as_deref().map(str::as_bytes),
+            ),
+            busbar_substrate::plane_host::GovAdmit::Blocked { .. }
+        ) {
+            engine_host.audit_emit(
+                AUDIT_ACTION,
+                PLANE_POOL,
+                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                &actor,
+            );
+            return (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                axum::Json(super::rpcerror::body(
+                    &rpc_id,
+                    super::rpcerror::A2aError::UnsupportedOperation,
+                    "this key's budget is spent",
+                )),
+            )
+                .into_response();
+        }
+        meter_request(engine_host.as_ref(), &cap_scope, &key.id, PLANE_POOL);
+        engine_host.audit_emit(
+            AUDIT_ACTION,
+            PLANE_POOL,
+            busbar_substrate::audit::vocab::OUTCOME_APPLIED,
+            &actor,
+        );
         return super::route::extended_agent_card(&engine_host, key, &rpc_id);
     }
 
@@ -1281,9 +1389,10 @@ async fn admitted(
 
     // ── THE VERBS BUSBAR ANSWERS ITSELF. ────────────────────────────────────────────────────────
     //
-    // AFTER admission and the meter — a locally-answered call is still this caller's call against
-    // this caller's budget, and answering it for free would make `ListTasks` the one unmetered verb
-    // on the plane — and BEFORE the egress gate, the callback guard and the task-open block, all
+    // AFTER admission, and METERED ON ITS WAY OUT (below) — a locally-answered call is still this
+    // caller's call against this caller's budget, and answering it for free made `ListTasks` an
+    // unmetered verb on a metered plane — and BEFORE the egress gate, the callback guard and the
+    // task-open block, all
     // three of which are about A HOP. None of these verbs makes one: no credential of busbar's is
     // leased, and no task row is opened, which matters most for the two that name no task busbar
     // holds (`ListTasks`, and a subscribe to an id busbar never issued). Relayed, each of those
@@ -1407,8 +1516,18 @@ async fn admitted(
                     }
                 }
             }
-            // AUDITED LIKE ANY OTHER ADMITTED CALL, under the same action and resource spelling, so
-            // a locally-answered verb is not invisible in the record just because no socket opened.
+            // METERED AND AUDITED LIKE ANY OTHER ADMITTED CALL, under the same action and the same
+            // resource spelling, so a locally-answered verb is not invisible in the record — or in
+            // the ledger — just because no socket opened.
+            //
+            // The section header above already claimed this arm sat "AFTER admission and the
+            // meter", and half of it was true: admission ran, and then this arm returned ABOVE the
+            // plane's one `meter_charge`. `ListTasks` — a verb whose answer is a scan of every task
+            // this caller owns, which is the most expensive read on the plane — was billed nothing,
+            // for every call, forever. The charge is placed here rather than the return moved
+            // because the mirroring above is a hop this arm makes on the caller's behalf, and a
+            // charge that a mirrored callback could skip past is a charge with a hole in it.
+            meter_request(engine_host.as_ref(), &cap_scope, &principal, &resource);
             engine_host.audit_emit(
                 AUDIT_ACTION,
                 &resource,
@@ -1803,20 +1922,12 @@ async fn admitted(
     // to the in-place `record_metering(&hop.billed_key_id, &resource, Plane::A2a.key(), None, ..)`:
     // the attribution tail carries those exact three words, and the amount-0 charge validates an empty
     // breakdown and always accrues one request. Fire-and-forget, exactly as the direct call was.
-    {
-        // The `UsageGuard` holds borrowed attribution pointers (`!Send`), so it is built AND consumed
-        // in this block — it never crosses the hop `.await` below and the request future stays `Send`.
-        let usage = busbar_plugin::hot::Usage::with_attribution(
-            busbar_plugin::hot::UsageComponent::Queries,
-            0,
-            0,
-            busbar_plugin::hot::AdmissionId::NONE,
-            hop.billed_key_id.as_bytes(),
-            resource.as_bytes(),
-            "a2a".as_bytes(),
-        );
-        engine_host.meter_charge(&cap_scope, &usage);
-    }
+    meter_request(
+        engine_host.as_ref(),
+        &cap_scope,
+        &hop.billed_key_id,
+        &resource,
+    );
 
     // 6. AUDIT. One record per admitted call, under this plane's own action and resource spelling.
     engine_host.audit_emit(

@@ -2315,6 +2315,13 @@ mod relay_tests;
 #[path = "tests/refusal_leak_tests.rs"]
 mod refusal_leak_tests;
 
+// THE LEDGER SCAN over the verbs busbar answers ITSELF. It hangs here rather than under `receive`
+// for the same reason the scan above does — it drives the shared harness, and a second harness is a
+// second thing that can stop matching the production router.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/metered_verbs_tests.rs"]
+mod metered_verbs_tests;
+
 // KILL-THE-UPSTREAM — the breaker's trip + fast-fail on this plane, all three bindings, through
 // the same harness/router as the batteries above. It hangs here because the mount is `prepare`.
 #[cfg(all(test, feature = "test-support"))]

@@ -54,6 +54,32 @@ named next.
   **fail-closed**, so a deployment on a store that cannot answer refuses the callback rather than
   accepting it. A refused callback meters nothing; the endpoint's answers to a caller are unchanged.
 
+- **The same token lifetime now holds on the A2A plane that serves the binary, and its deadline no
+  longer depends on traffic.** The fix above landed over the composition root; the shipped plane
+  checked only that the token's MAC verified and that the task row existed. A token captured
+  anywhere it travels — it rides `Authorization: Bearer` on an outbound hop, so a backend's logs, a
+  proxy and an error page all hold one — replayed for as long as the process lived, against a task
+  that had finished. The replay did not have to lie: re-reporting a state Busbar already held was
+  treated as a retry rather than a transition, so the transition table's terminal-refuses-everything
+  rule never ran, and each replay re-notified the caller's webhook and appended another link to that
+  task's durable provenance chain. Both planes now ask one predicate of one fact — is this token's
+  task still non-terminal — at mint time and at present time.
+
+  The task TTL behind it is now enforced on **presentation**, not only on submission. The retention
+  sweep that ends a task idle past the 24h abandonment ceiling ran only as a side effect of a new
+  task being submitted, so on a deployment that had stopped submitting the ceiling was not a
+  deadline at all and a silent task's token stayed live indefinitely. The callback endpoint runs the
+  sweep itself, after the MAC verifies and before it reads the task; the sweep is claimed once per
+  second, so a busy backend pays an atomic load rather than a scan.
+
+- **An A2A hop refusal no longer names the backend to the caller.** Nine refusal arms rendered
+  operator-facing detail into the JSON-RPC error body a client reads: the backend's URL, the address
+  its name resolved to, and in two cases the backend's own prose. A caller could map a deployment's
+  private agent estate by submitting work and reading the failures. Refusals now carry a stable
+  `a2a.hop.*` code and a fixed sentence with nothing a backend, its DNS answer or its response body
+  can influence; the full detail still goes to the operator's journal, where it was always meant to
+  be. Refusal status codes are unchanged.
+
 ### Improvements
 
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
@@ -63,6 +89,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **Two A2A verbs that were answered for free are now metered.** `GetExtendedAgentCard` on
+  `POST /a2a` and `ListTasks` reached a handler, did the work and left no ledger row: the card verb
+  reads the caller's whole catalogue and builds a document, and `ListTasks` scans every task the
+  caller owns, which is the most expensive read on the plane. Neither could be seen, capped or
+  billed. `ListTasks` writes the ordinary `agent:<agent_id>` row every admitted call writes; the
+  card verb names no agent — that is what it is for — so it is admitted and billed against the
+  **plane pool**, spelled `agents` (this plane's config section), which cannot collide with an
+  `agent:`-prefixed member line. Both rows carry `requests: 1` and zero tokens, because a verb
+  answered out of Busbar's own state selects no upstream and relays no frame. Additive: no existing
+  row changed shape, and no other verb's attribution moved.
 - **The jemalloc background-purge line is `[info]` on macOS**, with an explanation, instead of a
   `[warn]`. The behaviour it describes — Busbar's own idle-purge fallback — is unchanged.
 - **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`
