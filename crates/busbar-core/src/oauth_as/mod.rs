@@ -68,8 +68,19 @@
 //!   re-guarded redirect chain as every other guarded fetch in the tree.
 
 pub(crate) mod cimd;
-pub(crate) mod config;
 pub(crate) mod consent;
+
+/// RETIRING re-export shim (D33 wave 5). The `oauth_as:` VALUE GRAMMAR — the deserialized
+/// [`config::OauthAsCfg`] block, the [`config::AsCfgError`] refusals and the derived
+/// [`config::AsIdentity`] — is pure serde data over `SecretRef` and `String`: it names no store, no
+/// signing key, no route and no session. It lives with the rest of the config grammar in
+/// [`busbar_substrate::config::oauth_as`], where the config document root reaches it WITHOUT
+/// reaching up into this module, and where the authorization server's own crate can read it
+/// without depending on busbar-core. The runtime half (`plane`, `routes`, `signer`, `consent`,
+/// `cimd`, `policy`) names it through this path unchanged.
+pub(crate) mod config {
+    pub(crate) use busbar_substrate::config::oauth_as::*;
+}
 pub(crate) mod plane;
 pub(crate) mod policy;
 pub(crate) mod routes;
