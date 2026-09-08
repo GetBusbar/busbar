@@ -350,6 +350,7 @@ dependencies = [
  "busbar-plugin-sign",
  "busbar-store-example-plugin",
  "busbar-substrate",
+ "busbar-substrate-values",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-sse",
@@ -779,6 +780,7 @@ dependencies = [
 name = "busbar-plane-voice"
 version = "1.6.0"
 dependencies = [
+ "async-trait",
  "busbar-contract",
  "busbar-voice-codec",
  "bytes",
@@ -889,6 +891,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
+ "busbar-plugin-testkit",
  "busbar-store-memory",
  "libc",
  "serde",

@@ -60,6 +60,13 @@ fn a_hold_of_the_current_incarnation_is_left_alone() {
     );
 }
 
+/// One row per kill point: what the node owes after dying there, and whether the claim is voided.
+///
+/// Read forwards, from the point to the answer. Matching on the ANSWER and asserting which points
+/// could have produced it leaves the other direction unsaid: a `MidWrite` that answered `Nothing`
+/// satisfied the `Owed::Nothing` arm, so a torn tail would never have been truncated and nothing
+/// here would have said so. The match on `point` is exhaustive with no catch-all, so a kill point
+/// added to the enum stops this file compiling until it has an answer.
 #[test]
 fn every_kill_point_has_an_answer_and_none_of_them_guesses_upward() {
     let points = [
@@ -72,23 +79,24 @@ fn every_kill_point_has_an_answer_and_none_of_them_guesses_upward() {
         KillPoint::MidWrite,
     ];
     for point in points {
-        match owed_after(point) {
-            Owed::Nothing => assert!(
-                !matches!(
-                    point,
-                    KillPoint::BetweenLegs | KillPoint::AfterRelayBeforeSettle
-                ),
-                "{point:?} dispatched something and owes the checkpoint"
-            ),
-            Owed::LastCheckpoint => assert!(matches!(
-                point,
-                KillPoint::BetweenLegs | KillPoint::AfterRelayBeforeSettle
-            )),
-            Owed::TruncateThenDecide => assert_eq!(point, KillPoint::MidWrite),
-        }
+        let (owed, voids) = match point {
+            // Nothing was dispatched, so there is nothing to pay for — and everything before the
+            // hold was durable voids the claim, because a key with no hold behind it would answer a
+            // retry with a unit that never ran.
+            KillPoint::BeforeDecode => (Owed::Nothing, true),
+            KillPoint::BetweenPreDoorSteps => (Owed::Nothing, true),
+            KillPoint::BetweenClaimAndHold => (Owed::Nothing, true),
+            // The hold IS durable here, so the claim stands.
+            KillPoint::AfterHoldBeforeDispatch => (Owed::Nothing, false),
+            // Something was dispatched: post the last checkpoint, never more.
+            KillPoint::BetweenLegs => (Owed::LastCheckpoint, false),
+            KillPoint::AfterRelayBeforeSettle => (Owed::LastCheckpoint, false),
+            // The tail is torn: truncate first, then decide as above.
+            KillPoint::MidWrite => (Owed::TruncateThenDecide, false),
+        };
+        assert_eq!(owed_after(point), owed, "what {point:?} owes");
+        assert_eq!(voids_claim(point), voids, "whether {point:?} voids the claim");
     }
-    assert!(voids_claim(KillPoint::BetweenClaimAndHold));
-    assert!(!voids_claim(KillPoint::AfterRelayBeforeSettle));
 }
 
 #[test]

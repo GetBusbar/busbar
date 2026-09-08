@@ -42,7 +42,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 # shellcheck source=../oracle-config.sh
-source "${here}/oracle-config.sh"
+source "${BUSBAR_ORACLE_TOOL_DIR:-$here}/oracle-config.sh"
 
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
 LISTEN_PORT="${COOLDOWN_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48861}}" ADMIN_PORT="${COOLDOWN_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48862}}" MOCK_PORT="${COOLDOWN_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48796}}"
@@ -53,7 +53,7 @@ W="$RAW/cooldown-work"; mkdir -p "$W"
 export WORK="$W" BUSBAR_BIN="$BIN"
 CONTROL="$W/mock.control"
 
-python3 "${here}/mock-upstream.py" "$MOCK_PORT" oracle-marker "$CONTROL" >"$W/mock.log" 2>&1 & track_pid $!
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MOCK_PORT" oracle-marker "$CONTROL" >"$W/mock.log" 2>&1 & track_pid $!
 wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail "mock upstream did not come up"
 
 oracle_write_config "$W" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail "oracle config could not be written"
@@ -113,5 +113,5 @@ snap "$after_dir"
 
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 
-python3 "${here}/capture.py" "$RAW/headers" "$status" "$RAW/body" "$before_dir" "$after_dir" >"$RAW/captured.json" 2>"$RAW/capture.err" \
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture.py" "$RAW/headers" "$status" "$RAW/body" "$before_dir" "$after_dir" >"$RAW/captured.json" 2>"$RAW/capture.err" \
   || fail "capture.py failed: $(tail -c 300 "$RAW/capture.err")"

@@ -622,6 +622,77 @@ fn admit_yields_a_hold_sized_from_the_estimate() {
     );
 }
 
+/// The reason code the wire renders MUST split on the metric that blocked, not collapse to one
+/// dialect: a spend cap and a fail-closed missing group are OVER-QUOTA; a frozen group is its own
+/// code; every count cap (already pinned as `RateLimited` above) is a rate limit. Only the
+/// `RateLimited` arm had a covering assertion before this case.
+#[test]
+fn refusal_reason_code_matches_the_kind_of_block_not_just_that_something_blocked() {
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit_token: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let unit_token: UnitToken<Admit> = UnitToken::mint(&seal);
+    let now = 1_700_000_000;
+    let principal = PrincipalId::new("vk_reason");
+
+    // A spend cap blocking is OVER-QUOTA, never a rate limit.
+    let d = door();
+    let p = no_card(10);
+    let t = table(&[(
+        "g",
+        group_cfg(None, true, vec![limit(LimitMetric::Budget, 20, Some(DAY))]),
+    )]);
+    let c = chain(&t, "vk_reason", Some("g"));
+    d.try_admit(&p, &c, "", now).expect("spend 0, +10 <= 20");
+    d.try_admit(&p, &c, "", now).expect("spend 10, +10 <= 20");
+    let mut unit = AdmissionUnit::new(&d, &p, "", now);
+    let refused = unit.admit(&estimate(0, 0), &principal, &c, &admit_token, &unit_token);
+    let refusal = refused.into_result(&seal).expect_err("over the budget cap");
+    assert_eq!(
+        refusal.reason(),
+        ReasonCode::OverBudget,
+        "a spend-cap block must never render as a rate limit"
+    );
+    assert_blocked(
+        unit.blocked().cloned().expect("a blocking bucket"),
+        "g",
+        Metric::Budget,
+        Some(DAY),
+        true,
+    );
+
+    // A frozen group is its own code, distinct from both of the above.
+    let d2 = door();
+    let t2 = table(&[("g", group_cfg(None, false, Vec::new()))]);
+    let c2 = chain(&t2, "vk_reason2", Some("g"));
+    let mut unit2 = AdmissionUnit::new(&d2, &p, "", now);
+    let refused2 = unit2.admit(
+        &estimate(0, 0),
+        &PrincipalId::new("vk_reason2"),
+        &c2,
+        &admit_token,
+        &unit_token,
+    );
+    let refusal2 = refused2
+        .into_result(&seal)
+        .expect_err("the group is frozen");
+    assert_eq!(
+        refusal2.reason(),
+        ReasonCode::GroupFrozen,
+        "a frozen group must not collapse into either quota code"
+    );
+
+    // A principal bound to a group this node's config does not have fails closed as OVER-QUOTA —
+    // the caps cannot be read, so the safe rendering is the same as a spend cap's, not a rate
+    // limit's.
+    let empty = table(&[]);
+    let missing = chain_for(&empty, "vk_ghost", Some("ghost")).unwrap_err();
+    assert_eq!(
+        crate::refusal_for(&missing).reason(),
+        ReasonCode::OverBudget,
+        "a fail-closed missing group must render as over-quota, not a rate limit"
+    );
+}
+
 /// A tier other than one times the multiplier scales the hold once over the whole sum, rounded up,
 /// and does not touch the decision.
 #[test]

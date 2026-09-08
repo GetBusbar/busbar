@@ -334,6 +334,31 @@ fn s_get(s: &FileStore, id: &str) -> Option<Vec<u8>> {
     s.get_plane_record("task", id).unwrap()
 }
 
+// ── THE SHARED CROSS-BACKEND RETENTION CONFORMANCE ───────────────────────────────────────────────
+//
+// The purge cells below this comment are THIS fixture's own, written against its own tables. The two
+// here are the SHARED ones every backend answers identically (`busbar-plugin-testkit`), and they are
+// wired separately on purpose: a ruling added to the shared suite has to reach this plugin on its
+// next dependency bump rather than be hand-copied here and then drift, which is the exact failure
+// the testkit exists to prevent. A fresh store per check is already an empty namespace, so `ns` only
+// has to be stable.
+
+/// The retention sweep drops rows older than the cutoff and NOTHING else — the eighth neutral verb,
+/// held to the same ruling as every other backend.
+#[test]
+fn conformance_plane_purge_honours_the_cutoff() {
+    busbar_plugin_testkit::store_conformance::assert_plane_purge_honours_the_cutoff(&store(), "cf");
+}
+
+/// The task table's retention rule is terminality AND age, not age alone.
+#[test]
+fn conformance_plane_purge_task_keeps_active_rows() {
+    busbar_plugin_testkit::store_conformance::assert_plane_purge_task_keeps_active_rows(
+        &store(),
+        "cf",
+    );
+}
+
 #[test]
 fn purge_plane_records_before_task_drops_only_terminal_rows() {
     let s = store();
@@ -539,4 +564,81 @@ fn purging_a_terminal_task_cascades_to_its_event_chain() {
         vec![b"event-one".to_vec()],
         "a retained task's chain is untouched — this is a cascade, not a second retention rule"
     );
+}
+
+/// A push-callback token is LIVE many times over, and dead the moment its task ends.
+///
+/// The verb beside `redeem_plane_token` and deliberately not a second spelling of it. A single-use
+/// redeem is wrong for this token in both directions at once: spent on the first callback it refuses
+/// the `input-required` and `completed` a backend legitimately sends afterwards, and answered `true`
+/// every time it accepts a captured one forever. So the check is asked THREE times here and answers
+/// live all three, then the row is flipped to `Terminal` — the way the plan's revocation leg does —
+/// and the fourth is refused.
+///
+/// Liveness is read off the typed `disposition` column, never decoded out of the body, so this
+/// cannot pass by the fixture peeking at bytes a real backend would never open.
+#[test]
+fn plane_token_live_carries_a_task_and_dies_with_it() {
+    let s = store();
+    let config = |disposition| PlaneRecord {
+        kind: "push_config".to_string(),
+        id: "t-1".to_string(),
+        parent: None,
+        seq: 0,
+        ts: 10,
+        disposition,
+        body: b"{}".to_vec(),
+    };
+
+    s.upsert_plane_record(&config(PlaneDisposition::Active))
+        .unwrap();
+    for nth in 1..=3 {
+        assert!(
+            s.plane_token_live("push_config", "t-1", 100, 20).unwrap(),
+            "callback {nth} of a running task was refused; the check spent the token"
+        );
+    }
+
+    // The ending revokes it, and every later callback is refused.
+    s.upsert_plane_record(&config(PlaneDisposition::Terminal))
+        .unwrap();
+    assert!(
+        !s.plane_token_live("push_config", "t-1", 100, 20).unwrap(),
+        "a token whose task has finished is still live — this is the replay"
+    );
+
+    // And a deleted configuration holds no capability at all.
+    s.upsert_plane_record(&config(PlaneDisposition::Active))
+        .unwrap();
+    s.delete_plane_record("push_config", "t-1").unwrap();
+    assert!(!s.plane_token_live("push_config", "t-1", 100, 20).unwrap());
+}
+
+/// The deadline is a real one, and an unknown kind holds nothing live.
+///
+/// The two calls differ ONLY in the clock, so a pass cannot come from anything but the expiry
+/// comparison being made — the comparison the composition root used to skip by passing one timestamp
+/// as both sides of it. The unknown-kind arm falls to `false`, the opposite direction from
+/// `redeem_plane_token`'s fall-through, because a store that keeps no capability rows holds no live
+/// capability even though it has spent nothing.
+#[test]
+fn plane_token_live_refuses_a_lapsed_token_and_an_unknown_kind() {
+    let s = store();
+    s.upsert_plane_record(&PlaneRecord {
+        kind: "push_config".to_string(),
+        id: "t-1".to_string(),
+        parent: None,
+        seq: 0,
+        ts: 10,
+        disposition: PlaneDisposition::Active,
+        body: b"{}".to_vec(),
+    })
+    .unwrap();
+
+    assert!(s.plane_token_live("push_config", "t-1", 100, 100).unwrap());
+    assert!(
+        !s.plane_token_live("push_config", "t-1", 100, 101).unwrap(),
+        "a token one second past its deadline is still live"
+    );
+    assert!(!s.plane_token_live("ask", "t-1", 100, 20).unwrap());
 }

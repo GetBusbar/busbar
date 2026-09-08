@@ -64,7 +64,7 @@ These are the only environment variables read by Busbar (excluding test-only `BU
 |---|---|---|
 | `BUSBAR_CONFIG` | `main.rs` | Path to `config.yaml`. Default: `/etc/busbar/config.yaml`. **The one bootstrap env var**: it locates config.yaml itself. Overridden by the `-c`/`--config` flag. |
 | `RUST_LOG` | `observability.rs` | Log level: `error`, `warn`, `info`, `debug`, or `trace`. Default: `info`. |
-| *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider. |
+| *(each provider's `api_key: { env: VAR }` reference)* | `main.rs` | The env var **named by** the secret reference holds that provider's upstream credential. Resolved once at boot per provider; unset is a fatal boot error (use `api_key: none` for a keyless upstream). |
 | *(any `${VAR}` in `config.yaml`)* | `config.rs` | Expanded before YAML is parsed. Unset → fatal boot error. |
 
 `BUSBAR_ADMIN_TOKEN` is not special-cased in the code. It appears in the shipped `config.yaml` only because the file references `{ env: BUSBAR_ADMIN_TOKEN }` under `auth.admin_auth`. Any variable name works.
@@ -217,7 +217,7 @@ anthropic:
     timeout_secs: 5
 ```
 
-A provider whose `api_key` reference resolves to an empty value will not be probed regardless of the `health` block.
+A provider declaring `api_key: none` (a keyless local upstream) is not probed regardless of the `health` block: the probe would go out unauthenticated, which says nothing about a lane that never authenticates.
 
 ---
 
@@ -692,7 +692,7 @@ Declares which catalog providers this deployment uses and supplies the env var h
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `api_key` | secret reference | **yes** | n/a | The upstream credential as a secret reference: `{ env: VAR }`, `{ file: /path }`, or `{ module: <secret-plugin>, settings: {...} }`. Resolved once at boot. A reference resolving to an empty value logs a startup warning; the lane starts but will fail upstream auth. |
+| `api_key` | secret reference | **yes** | n/a | The upstream credential as a secret reference: `{ env: VAR }`, `{ file: /path }`, `{ module: <secret-plugin>, settings: {...} }`, or the bare scalar `none`. Resolved once at boot, **fail-closed**: a reference that does not resolve (unset variable, missing or empty file, unknown module, secret-plugin error) **refuses boot** under `BUSBAR-8020` and fails `--validate` — it never degrades to an empty credential. `api_key: none` declares an upstream that takes NO credential (a local ollama or vLLM): the lane starts, no auth header is sent, and the health prober skips it. `none` is rejected with `auth: jwt-bearer` and `auth: oauth-client-credentials`, which mint their token FROM the credential. Omitting `api_key` is still an error. |
 | `protocol` | string | no | Catalog value | Override the catalog protocol. Rarely needed. |
 | `base_url` | string | no | Catalog value | Override the upstream base URL. Must use `https://` for public/external hosts. Plain `http://` is permitted only for private or loopback hosts (e.g. a local Ollama or vLLM instance). Cloud-metadata hosts are blocked regardless of scheme (see SSRF guard). |
 | `error_map` | map<string, string> | no | `{}` merged onto catalog | Merged with the catalog's `error_map`; deployment entries win per code. |
@@ -1599,6 +1599,8 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `affinity.mode` value unknown | `affinity.mode` not `session` (the only supported value) |
 | 1.x config detected | A 1.x structural marker is present (a `governance:` block, `auth.group_map:`, `auth.mode:`, a top-level `hooks:` **REGISTRY** block (one with `socket:`/`webhook:` entries, or any entry lacking `module:`; the 1.5.3 `hooks:` DEFINITION map is valid and passes straight through), `api_key_env`, `target:` in a pool member): boot refuses with "this looks like a Busbar 1.x config; run `busbar --migrate-config`" |
 | Retired 1.5.3 key present | A retired grammar key is present (`global_hooks:`, `observability:`, a top-level `metrics:` block, `admin_insecure:`, `auth.upstream_credentials:`, `auth.methods:`, `otlp_url`/`otlp_endpoint`): boot refuses, naming the key AND its 1.5.3 home, with the `busbar --migrate-config` breadcrumb |
+| Provider `api_key` unresolvable | A provider's `api_key` reference does not resolve (unset variable, missing or empty file, unknown module, secret-plugin error). `BUSBAR-8020` names the provider and the reference (`env:VAR`, `file:/path`), never the value. Declare `api_key: none` for an upstream that takes no credential |
+| `api_key: none` where a credential is required | `none` on any secret other than a provider `api_key`, or on a provider using `auth: jwt-bearer` / `auth: oauth-client-credentials` (both mint their token FROM the credential) |
 | `path` malformed | `path` does not begin with `/` |
 | Model name reserved | Model named `admin` |
 | `provider` reference missing | `models.<name>.provider` does not name a configured provider |
@@ -1649,7 +1651,6 @@ Busbar validates the merged config before accepting any traffic. Fatal errors ab
 | `chain: []` (open front door): no client authentication, development only |
 | `pools.upstream_credentials: passthrough` (or a pool override) with a provider whose credential reference resolves non-empty (credential-leak risk) |
 | Heterogeneous pool (members span more than one backend protocol, cross-protocol translation applies) |
-| A provider `api_key` reference resolves empty at boot (lane will fail auth) |
 | `allowed_pools` on a virtual key (admin API) names a pool not currently configured |
 | The ephemeral `memory` store with minted keys: keys, usage, and the revocation denylist reset on restart (choose a durable `store.module` for persistence) |
 

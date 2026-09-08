@@ -22,30 +22,13 @@
 //!
 //! `busbar_api::Store`'s task methods are DEFAULTED to accept-and-keep-nothing, so a write's
 //! `Ok(())` is worthless as evidence and the shipped memory store answers every read with an empty
-//! list. The pre-existing chain assertion in `relay_tests.rs` therefore has to RETURN EARLY when the
-//! store kept nothing — correct for what that test is, and it means an empty answer reads as a pass.
-//! This battery attaches `EventLedger` as the registry's sink for the duration, so an empty read-back
-//! is a FAILURE and is asserted as one. There is no arm here that can be silently satisfied by
-//! nothing having happened.
+//! list. Every chain battery therefore attaches `EventLedger` as the registry's sink for the
+//! duration (`relay_harness::with_ledger`), so an empty read-back is a FAILURE and is asserted as
+//! one. There is no arm here that can be silently satisfied by nothing having happened.
 
 use super::relay_harness::*;
-use crate::taskstore::{event_ledger::EventLedger, TASKS, TASKS_SINK_LOCK};
+use crate::taskstore::TASKS;
 use busbar_substrate::audit::vocab as provenance;
-use std::sync::Arc;
-
-/// Attach a fresh ledger to the process-wide registry, hand it back, and hold the lock that keeps
-/// two of these from interleaving. The caller drops the guard when it is done.
-async fn with_ledger() -> (Arc<EventLedger>, tokio::sync::MutexGuard<'static, ()>) {
-    let guard = TASKS_SINK_LOCK.lock().await;
-    let ledger = Arc::new(EventLedger::new());
-    // Aim the process-wide `task_event` stream (which the front door writes through) at THIS ledger
-    // for the duration of the lock — a sink swap, not a re-register, so positions stay intact — and
-    // attach the row-upsert sink.
-    TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
-        ledger.clone(),
-    ));
-    (ledger, guard)
-}
 
 /// THE FRONT DOOR CHAINS THE TASK IT OPENED, and the chain RECOMPUTES from the persisted rows.
 ///
@@ -69,14 +52,11 @@ async fn an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wr
         .expect("the answer names the task busbar opened")
         .to_string();
 
-    let events = ledger.events_for(&task_id);
+    // The wait is bounded and ends in a panic: an empty (or never-settling) read-back is the answer
+    // this battery exists to FAIL on, because it is indistinguishable from a plane that chains
+    // nothing. The delegation record rides detached work, hence the wait rather than a bare read.
+    let events = await_chain_with(&ledger, &task_id, provenance::EV_DELEGATED).await;
     TASKS.clear_sink_for_test();
-    assert!(
-        !events.is_empty(),
-        "the A2A front door served a task and left NO chained event behind. An empty read-back is \
-         the answer this battery exists to fail on: it is indistinguishable from a plane that \
-         chains nothing."
-    );
 
     crate::taskstore::verify_chain(&events)
         .expect("the per-task chain must recompute from the store");
@@ -127,12 +107,8 @@ async fn editing_a_persisted_event_breaks_the_chain_the_front_door_wrote() {
         .expect("the answer names the task busbar opened")
         .to_string();
 
-    let mut events = ledger.events_for(&task_id);
+    let mut events = await_chain_with(&ledger, &task_id, provenance::EV_DELEGATED).await;
     TASKS.clear_sink_for_test();
-    assert!(
-        !events.is_empty(),
-        "no events were persisted, so there is nothing to tamper with — see the sibling test"
-    );
     crate::taskstore::verify_chain(&events).expect("the untampered rows verify first");
 
     // The agent a task was delegated to is the fact a delegation record exists to carry, and

@@ -29,12 +29,33 @@ BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracl
 BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 LP="${STORE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48831}}" AP="${STORE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48832}}" MP="${STORE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48791}}"
 W="$RAW/store-work"; mkdir -p "$W/plugins"
-tarball="$(bash "${here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"
 alias_="$(tar -xzOf "$tarball" manifest.json | jq -r .alias)"
+# The store's fixture. sqlite's lives in the tree (a path under this cell's own work dir). Every
+# other first-party store is a NETWORK backend whose fixture is a live service, addressed by a URL
+# this harness will not invent: the var per plugin is the same map enumerate-cells.py gates the cell
+# on, so a cell that ran cannot have been pointed at a different backend than the one it named.
+# An explicit <settings-json> arg still wins, so a caller can drive a backend this map has never
+# heard of. `{}` survives ONLY for a store with neither — it would boot on the plugin's own
+# defaults, which is a real 1.5.5 shape, not a stand-in.
+case "$PLUGIN" in
+  store-postgres) URL_VAR=BUSBAR_TEST_POSTGRES_URL ;;
+  store-mysql)    URL_VAR=BUSBAR_TEST_MYSQL_URL ;;
+  store-valkey)   URL_VAR=VALKEY_URL ;;
+  *)              URL_VAR="" ;;
+esac
+if [ -z "$SETTINGS" ] && [ -n "$URL_VAR" ]; then
+  url="${!URL_VAR:-}"
+  # record.sh gates these cells on the same var, so an unset one should never reach here. If it
+  # does (a direct call), refuse in the -1 UNSUPPORTED shape rather than booting on `{}` and
+  # recording whatever a store with no backend answers as the 1.5.5 contract.
+  [ -n "$url" ] || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"$URL_VAR is unset: no live backend for $PLUGIN\"}}" >"$RAW/captured.json"; exit 0; }
+  SETTINGS="{ url: \"${url}\" }"
+fi
 [ -n "$SETTINGS" ] || case "$alias_" in sqlite) SETTINGS="{ db_path: \"${W}/governance.db\" }" ;; *) SETTINGS="{}" ;; esac
 for p in "$LP" "$AP" "$MP"; do assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }; done
-python3 "${here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
 # the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.

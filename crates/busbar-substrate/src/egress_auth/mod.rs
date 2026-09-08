@@ -188,6 +188,20 @@ pub trait CredentialProvider: Send + Sync {
     fn is_lane_constant(&self) -> bool {
         false
     }
+
+    /// Whether this credential builds its header FROM the `key` it is handed. True for every static
+    /// scheme (bearer, api-key header, anthropic-native, SigV4); false for a self-minting
+    /// credential (OAuth jwt-bearer / client-credentials), which ignores `key` entirely and presents
+    /// its own minted token.
+    ///
+    /// Callers use this to decide that an EMPTY key means "there is no credential to present, so
+    /// send no auth header" — see `prebuild_auth` and the engine's `lane_auth_headers`. Asking the
+    /// credential, rather than inspecting the lane, is what keeps a keyless provider
+    /// (`api_key: none`) and a tokenless passthrough caller from suppressing a minted OAuth token,
+    /// which never came from `key` in the first place. Default: true.
+    fn uses_key(&self) -> bool {
+        true
+    }
 }
 
 /// Resolve a lane's egress credential at boot from its protocol name and auth style.
@@ -311,6 +325,14 @@ pub fn prebuild_auth(
 ) -> Option<http::header::HeaderMap> {
     if !credential.is_lane_constant() {
         return None;
+    }
+    // NO CREDENTIAL ⇒ NO AUTH HEADER. An empty key means there is nothing to present: the provider
+    // declared `api_key: none` (a keyless local upstream — ollama, vLLM). Freezing
+    // `Authorization: Bearer ` with no token would be strictly worse than freezing nothing — a
+    // keyless upstream may reject a malformed empty credential, and an empty auth header is a proxy
+    // tell no native client emits. The same rule is applied per-request in `lane_auth_headers`.
+    if api_key.is_empty() && credential.uses_key() {
+        return Some(http::header::HeaderMap::new());
     }
     let ctx = SigningContext {
         host: signing_host,

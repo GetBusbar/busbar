@@ -42,9 +42,13 @@ fn battery() -> PathBuf {
 fn battery_methods() -> Vec<String> {
     let mut found = Vec::new();
     let mut walk = |dir: PathBuf| {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return;
-        };
+        // A directory that is not there is NOT "no methods here". The three below are the three
+        // places the battery keeps the names this plane is checked against, and a missing one used
+        // to return quietly: the surviving two still filled `found`, the non-empty floor below
+        // still held, and the coverage this test claims silently shrank to whatever was left. If
+        // the battery moves a directory, that must be a red here rather than a smaller test.
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("the battery's {} is readable ({e})", dir.display()));
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "mjs") {
@@ -144,14 +148,30 @@ fn every_method_the_battery_sends_is_carried() {
     }
 }
 
+/// How many rows of each role the method table declares, and how many notices this plane knows.
+///
+/// Every loop below is a FILTER over a declared table, so a table that lost the rows a loop selects
+/// would leave that loop iterating zero times — and a conformance test that drove nothing reports
+/// `ok`. These three numbers are what turns "the loop found nothing" into a failure. Raise one
+/// deliberately, in the commit that adds the row.
+const CLIENT_ROWS: usize = 13;
+/// The rows only a paired server may send. See [`CLIENT_ROWS`].
+const PROVIDER_ROWS: usize = 3;
+/// The notices this plane recognises. See [`CLIENT_ROWS`].
+const NOTICE_ROWS: usize = 3;
+
+/// The declared method rows of one role.
+fn rows_of(sender: ops::Sender) -> Vec<&'static ops::MethodRow> {
+    ops::METHODS.iter().filter(|r| r.sender == sender).collect()
+}
+
 /// Every method a caller sends decodes to a declared class, carrying the caller's identifier.
 #[test]
 fn every_client_method_decodes() {
     let plane = McpPlane::EMPTY;
-    for row in ops::METHODS
-        .iter()
-        .filter(|r| r.sender == ops::Sender::Client)
-    {
+    let rows = rows_of(ops::Sender::Client);
+    assert_eq!(rows.len(), CLIENT_ROWS);
+    for row in rows {
         let body = request("1", row.method);
         let draft = draft_of(decode(&plane, &body).unwrap_or_else(|e| {
             panic!(
@@ -208,10 +228,9 @@ fn the_batterys_nonsense_method_is_refused() {
 #[test]
 fn a_caller_cannot_send_an_upstreams_method() {
     let plane = McpPlane::EMPTY;
-    for row in ops::METHODS
-        .iter()
-        .filter(|r| r.sender == ops::Sender::Provider)
-    {
+    let rows = rows_of(ops::Sender::Provider);
+    assert_eq!(rows.len(), PROVIDER_ROWS);
+    for row in rows {
         assert_eq!(
             decode(&plane, &request("1", row.method)),
             Err(Decode::UnsupportedOperation),
@@ -225,10 +244,9 @@ fn a_caller_cannot_send_an_upstreams_method() {
 #[test]
 fn only_the_held_stream_opens_a_unit() {
     let plane = McpPlane::EMPTY;
-    for row in ops::METHODS
-        .iter()
-        .filter(|r| r.sender == ops::Sender::Client)
-    {
+    let rows = rows_of(ops::Sender::Client);
+    assert_eq!(rows.len(), CLIENT_ROWS);
+    for row in rows {
         match (decode(&plane, &request("1", row.method)), row.streaming) {
             (Ok(Ingress::Open(_)), true) | (Ok(Ingress::OneShot(_)), false) => {}
             (other, _) => panic!("{} decoded as {other:?}", row.method),
@@ -240,6 +258,7 @@ fn only_the_held_stream_opens_a_unit() {
 #[test]
 fn a_recognised_notice_opens_a_unit_that_answers_nothing() {
     let plane = McpPlane::EMPTY;
+    assert_eq!(ops::NOTIFICATIONS.len(), NOTICE_ROWS);
     for name in ops::NOTIFICATIONS {
         let draft = draft_of(decode(&plane, &notification(name)).expect("a notice decodes"));
         assert_eq!(draft.op, ops::OP_NOTIFICATION);
@@ -304,18 +323,35 @@ fn the_error_codes_are_the_batterys_own() {
         jsonrpc::CODE_UNSUPPORTED_PROTOCOL_VERSION,
     ] {
         assert!(
-            source.contains(&format!("{code}")),
+            names_the_number(&source, code),
             "the battery no longer names the code {code}"
         );
     }
     // And the two the battery calls RETIRED are two this plane cannot write.
     for retired in jsonrpc::RETIRED_CODES {
         assert!(
-            source.contains(&format!("{retired}")),
+            names_the_number(&source, *retired),
             "the battery no longer names the retired code {retired}"
         );
         assert!(!jsonrpc::CODES.contains(retired));
     }
+}
+
+/// Whether a source file names EXACTLY this number, rather than merely containing its digits.
+///
+/// A bare substring search answers yes for a code that is a prefix of a longer one — `-32700` is
+/// inside `-327001` — and yes for the digits of a code that appears in a version string, a byte
+/// count or a comment. Either way the check would report the battery still names a code it had
+/// dropped. Requiring a non-digit on each side is what makes the match the number itself.
+fn names_the_number(source: &str, code: i64) -> bool {
+    let needle = code.to_string();
+    let bytes = source.as_bytes();
+    source.match_indices(&needle).any(|(at, _)| {
+        let before_ok = at == 0 || !bytes[at - 1].is_ascii_digit();
+        let after = at + needle.len();
+        let after_ok = after == bytes.len() || !bytes[after].is_ascii_digit();
+        before_ok && after_ok
+    })
 }
 
 /// The metadata keys are the ones the battery actually sends.
@@ -514,7 +550,9 @@ fn every_operation_routes_somewhere() {
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
+    let mut covered = 0usize;
     for op in McpPlane::OP_CLASSES {
+        covered += 1;
         let unit = busbar_contract::unit::Unit::new(
             &seal,
             busbar_contract::UnitKey::new(1),
@@ -554,6 +592,16 @@ fn every_operation_routes_somewhere() {
             }
         }
     }
+    // The loop walks a DECLARED table, so an empty one would walk nothing and report `ok`, and a
+    // class dropped from it would leave its written-down leg count behind unchallenged. The two
+    // tables are pinned equal in size, which makes both of those a failure here.
+    assert_eq!(
+        covered,
+        EXPECTED_LEGS.len(),
+        "the plane declares {covered} operation classes and {} leg counts are written down: a \
+         class with no row is unproven, and a row with no class proves nothing",
+        EXPECTED_LEGS.len()
+    );
 }
 
 /// A call spends its grant before the hop, never after.

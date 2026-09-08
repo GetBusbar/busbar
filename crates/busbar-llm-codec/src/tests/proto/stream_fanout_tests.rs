@@ -142,6 +142,12 @@ fn openai_sparse_tool_index_does_not_collide_text_onto_tool_block() {
         } => Some(*index),
         _ => None,
     });
+    // Require BOTH blocks to EXIST before comparing. As two `Option`s, `assert_ne!` was satisfied by
+    // either being `None`: if the reader stopped emitting the text BlockStart (text's slot is
+    // derived from `open_tools.len()`, so this is a live regression shape), `assert_ne!(Some(0),
+    // None)` holds and the "must claim DISTINCT indices" claim is proven against a phantom.
+    let tool_index = tool_index.expect("the tool block must open a BlockStart");
+    let text_index = text_index.expect("the text block must open a BlockStart");
     assert_ne!(
         tool_index, text_index,
         "tool and text must not share an IR index: tool={tool_index:?} text={text_index:?}, events={events:?}"
@@ -155,6 +161,12 @@ fn openai_sparse_tool_index_does_not_collide_text_onto_tool_block() {
         })
         .collect();
     let n = start_indices.len();
+    // Both blocks opened, so the sweep must have seen at least those two starts; a dedup check over
+    // an empty (or single-element) vector is trivially satisfied.
+    assert_eq!(
+        n, 2,
+        "exactly two BlockStart frames (one tool, one text) are expected; got {events:?}"
+    );
     start_indices.sort_unstable();
     start_indices.dedup();
     assert_eq!(
@@ -271,10 +283,14 @@ fn openai_tool_after_finish_chunk_claims_a_fresh_index() {
         _ => None,
     });
 
-    assert!(
-        post_finish_tool_index.is_some(),
-        "the post-finish tool_calls chunk must still open a block; events={events:?}"
-    );
+    // Require all THREE blocks to exist before comparing. As `Option`s, both `assert_ne!`s below
+    // were satisfied by the other operand being `None`: a reader that dropped the text block or the
+    // pre-finish `get_weather` BlockStart proved the "must not collide" claim against a phantom.
+    let post_finish_tool_index = post_finish_tool_index
+        .expect("the post-finish tool_calls chunk must still open a block");
+    let text_index = text_index.expect("the text chunk must open a text block");
+    let pre_finish_tool_index =
+        pre_finish_tool_index.expect("the pre-finish get_weather chunk must open a tool block");
     assert_ne!(
         post_finish_tool_index, text_index,
         "the post-finish tool must NOT collide with the text block's index; got post-finish={post_finish_tool_index:?} text={text_index:?}, events={events:?}"

@@ -130,23 +130,32 @@ def strip_comments_and_literals(text: str) -> str:
 
 
 def drop_cfg_test_items(lines: list[str]) -> list[str]:
-    """Drop every `#[cfg(test)]`-guarded item from `lines`."""
+    """Drop every `#[cfg(test)]`-guarded item from `lines`.
+
+    THE ATTRIBUTE AND ITS ITEM MAY SHARE A LINE. This used to drop the whole matching line and
+    then start hunting for the guarded item on the NEXT one --- so `#[cfg(test)] mod t { ... }`
+    written on one line dropped that line AND ate the following real item as if it were the thing
+    the attribute guarded. The surface then reads LOW, and low is the direction that makes a
+    `--ceiling` pass: a crate genuinely over its limit measures under it because a one-line test
+    module sat above the code that pushed it over. So the scan for the item's end starts at the
+    tail of the attribute's own line.
+    """
     kept: list[str] = []
     i = 0
     n = len(lines)
     while i < n:
-        if not CFG_TEST.search(lines[i]):
+        m = CFG_TEST.search(lines[i])
+        if not m:
             kept.append(lines[i])
             i += 1
             continue
 
-        # Skip the attribute, any further attributes, then the guarded item.
-        i += 1
         depth = 0
         opened = False
-        while i < n:
-            line = lines[i]
-            i += 1
+
+        def consume(line: str) -> bool:
+            """Advance the counters over `line`; True once the guarded item has ended."""
+            nonlocal depth, opened
             for ch in line:
                 if ch == "{":
                     depth += 1
@@ -154,8 +163,19 @@ def drop_cfg_test_items(lines: list[str]) -> list[str]:
                 elif ch == "}":
                     depth -= 1
             if opened and depth <= 0:
-                break
-            if not opened and ";" in line:
+                return True
+            return not opened and ";" in line
+
+        # Whatever follows the attribute ON ITS OWN LINE is the first of the item's text.
+        rest = lines[i][m.end():]
+        i += 1
+        if rest.strip() and consume(rest):
+            continue
+        # Otherwise: any further attributes, then the guarded item, on the lines below.
+        while i < n:
+            line = lines[i]
+            i += 1
+            if consume(line):
                 break
     return kept
 
@@ -228,7 +248,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument(
         "--per-file", action="store_true", help="also print a per-file breakdown"
     )
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help="prove the counting rules and the ceiling on fixtures of known surface, then exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.selftest:
+        return selftest()
 
     root = repo_root()
     ceilings = [parse_ceiling(spec) for spec in args.ceiling]
@@ -277,13 +305,169 @@ def main(argv: list[str]) -> int:
             return 2
         total = sum(results[name] for name in crates)
         label = "+".join(crates)
-        if total > limit:
+        # ── A CRATE THAT MEASURED NOTHING IS UNDER EVERY CEILING ──────────────────────────────────
+        # `total <= limit` is satisfied by 0, and 0 is what this script reports for a `src/` that
+        # holds no `.rs` at all: a crate whose sources moved into a subcrate, a rename that left
+        # the ceiling naming the old shell, a build layout that put the code somewhere `rglob`
+        # does not reach. Each of those prints `ok <crate> 0 <= 3000` -- a ceiling honoured by a
+        # crate nobody measured, which is the same green as a crate that is genuinely small.
+        # A ceiling is a statement about code; there has to be some.
+        empty = [name for name in crates if results[name] == 0]
+        if empty:
+            print(
+                f"FAIL  {label}  measured 0 surface lines in: {', '.join(empty)}. A crate with no "
+                f"code is under every ceiling, so this is not a pass -- point the ceiling at where "
+                f"the code went."
+            )
+            failed = True
+        elif total > limit:
             print(f"FAIL  {label}  {total} > {limit}")
             failed = True
         else:
             print(f"ok    {label}  {total} <= {limit}")
 
     return 1 if failed else 0
+
+
+# ── SELF-TEST — a measurement nothing has watched be wrong is a number, not a measurement ─────────
+# Drives the REAL strip/drop/measure path over fixture crates whose surface is known by hand, and
+# the REAL main() over a ceiling that must be refused. Without this, every rule below was one edit
+# from silently under-counting, and under-counting is the direction a ceiling forgives.
+SELFTEST_FIXTURES = {
+    "plain": (
+        "pub fn one() -> u32 { 1 }\n"
+        "pub fn two() -> u32 { 2 }\n",
+        2,
+        "two code lines are two",
+    ),
+    "blank-and-comments": (
+        "// a line comment\n"
+        "\n"
+        "/// a doc comment\n"
+        "/* a block\n"
+        "   comment */\n"
+        "pub fn one() -> u32 { 1 }\n",
+        1,
+        "comments and blanks are not surface",
+    ),
+    "inline-cfg-test": (
+        "#[cfg(test)] mod t { fn a() {} }\n"
+        "pub fn one() -> u32 { 1 }\n"
+        "pub fn two() -> u32 { 2 }\n",
+        2,
+        "an attribute and its item on ONE line do not also eat the next item",
+    ),
+    "block-cfg-test": (
+        "#[cfg(test)]\n"
+        "mod t {\n"
+        "    fn a() {}\n"
+        "}\n"
+        "pub fn one() -> u32 { 1 }\n",
+        1,
+        "a multi-line cfg(test) module is dropped, and only it",
+    ),
+    "file-backed-cfg-test": (
+        "#[cfg(test)]\n"
+        "mod t;\n"
+        "pub fn one() -> u32 { 1 }\n",
+        1,
+        "a file-backed `mod t;` under cfg(test) is dropped at its semicolon",
+    ),
+    "braces-in-literals": (
+        'pub const A: &str = "{ } // not a comment";\n'
+        "pub const B: char = '}';\n"
+        "pub fn one() -> u32 { 1 }\n",
+        3,
+        "braces and comment markers inside literals do not shift the depth",
+    ),
+    "cfg-all-test": (
+        '#[cfg(all(test, feature = "x"))]\n'
+        "mod t {\n"
+        "    fn a() {}\n"
+        "}\n"
+        "pub fn one() -> u32 { 1 }\n",
+        1,
+        "`cfg(all(test, ...))` guards the same way a bare `cfg(test)` does",
+    ),
+}
+
+
+def selftest() -> int:
+    import tempfile
+
+    print("== loc-surface SELF-TEST ==")
+    bad = 0
+
+    def say(ok: bool, msg: str) -> None:
+        nonlocal bad
+        print(("PASS  " if ok else "FAIL  ") + msg)
+        if not ok:
+            bad += 1
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        for name, (body, want, why) in SELFTEST_FIXTURES.items():
+            path = root / f"{name}.rs"
+            path.write_text(body, encoding="utf-8")
+            got = surface_lines(path)
+            say(got == want, f"{why} (wanted {want}, measured {got})")
+
+        # `src/tests.rs` and `src/tests/**` are proofs, not surface, and are never counted.
+        crate = root / "crate" / "src"
+        (crate / "tests").mkdir(parents=True)
+        (crate / "lib.rs").write_text("pub fn one() -> u32 { 1 }\n", encoding="utf-8")
+        (crate / "tests.rs").write_text("fn t1() {}\nfn t2() {}\n", encoding="utf-8")
+        (crate / "tests" / "more.rs").write_text("fn t3() {}\n", encoding="utf-8")
+        total, per_file = measure_crate(root / "crate")
+        say(total == 1, f"the tests tree is not surface (wanted 1, measured {total})")
+        say(
+            [rel for rel, _ in per_file] == ["lib.rs"],
+            f"only lib.rs is measured (measured {[rel for rel, _ in per_file]})",
+        )
+
+        # THE CEILING ITSELF, through the real main(): a crate over its limit is refused, the same
+        # crate under it is accepted, and a crate that measured NOTHING is refused rather than
+        # waved through for being under every limit.
+        crates_dir = root / "crates"
+        for name, body in (
+            ("big", "pub fn a() {}\npub fn b() {}\npub fn c() {}\n"),
+            ("small", "pub fn a() {}\n"),
+        ):
+            (crates_dir / name / "src").mkdir(parents=True)
+            (crates_dir / name / "src" / "lib.rs").write_text(body, encoding="utf-8")
+        (crates_dir / "hollow" / "src").mkdir(parents=True)
+
+        def run(args: list[str]) -> int:
+            import contextlib
+            import io
+
+            global repo_root
+            saved, repo_root = repo_root, lambda: root
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    return main(args)
+            finally:
+                repo_root = saved
+
+        say(run(["--ceiling", "big=2"]) == 1, "a crate OVER its ceiling is refused")
+        say(run(["--ceiling", "big=3"]) == 0, "the same crate AT its ceiling is accepted")
+        say(
+            run(["--ceiling", "hollow=3000"]) == 1,
+            "a crate whose src/ holds no .rs is REFUSED, not reported under every ceiling",
+        )
+        say(
+            run(["--ceiling", "big,small=4"]) == 0
+            and run(["--ceiling", "big,small=3"]) == 1,
+            "a summed ceiling over two crates bites at the sum",
+        )
+        say(run(["--ceiling", "no-such-crate=10"]) == 2, "a ceiling naming no measured crate is refused")
+
+    print()
+    if bad:
+        print(f"loc-surface selftest: RED ({bad} case(s) failed)")
+        return 1
+    print("loc-surface selftest: GREEN")
+    return 0
 
 
 if __name__ == "__main__":

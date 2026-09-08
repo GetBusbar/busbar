@@ -117,15 +117,39 @@ jobs:
     name: structure lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # THIS JOB NOW NEEDS A TOOLCHAIN, and that is the one real cost of the conversion: the
+      # cheapest job in CI used to install nothing. It is declared rather than assumed. A Rust
+      # toolchain does happen to be present on today's runner image, but that is a property of the
+      # image and not of anything this repository controls -- the same reasoning the release-order
+      # lint's own header gives for parsing YAML by hand rather than importing a parser the image
+      # happens to ship. A gate that silently stops running when a base image changes is worse than
+      # no gate.
+      #
+      # The cost is bounded by the segregation gate, which holds the runner's dependency count at
+      # one: `cargo build -p xtask --locked` is one step ahead of the gates, and the cache is keyed
+      # on `xtask` so the gates below do not pay for the workspace's build.
+      - name: Install Rust toolchain (the gate runner)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+
       # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
       # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
       # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
-      # proving the lint still works.
+      # proving the lint still works. The self-test now plants a violation for EVERY ONE of the
+      # gate's owed rows and requires the run to name it, so "the lint still works" is a claim about
+      # twenty rules rather than about the five fixtures the shell happened to carry.
       - name: Structure lint self-test
-        run: scripts/structure-lint.sh --selftest
+        run: cargo xtask gate structure-lint --selftest
       - name: Structure lint
-        run: scripts/structure-lint.sh
+        run: cargo xtask gate structure-lint
       # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
       # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
       # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
@@ -142,9 +166,9 @@ jobs:
       # caught this lint's own `--draft` rule passing against a release that had had `--draft`
       # deleted, because `--draft=false` elsewhere in the file contained the substring.
       - name: Release-order lint self-test
-        run: python3 scripts/release-order-lint.py --selftest
+        run: cargo xtask gate release-order --selftest
       - name: Release-order lint
-        run: python3 scripts/release-order-lint.py --root .
+        run: cargo xtask gate release-order
       # DUPLEX-WS DEFAULT-EDGE gate: `tokio-tungstenite` must not be in the DEFAULT money-path
       # build's dependency closure — the WebSocket edge belongs to `plane-voice` and nowhere else.
       # It was a fully-written, self-testing gate that NOTHING invoked: it lived in `scripts/`,
@@ -153,9 +177,9 @@ jobs:
       # would have caught the regression. Wired here (it is a `cargo tree` read, seconds, no build),
       # self-test first as everywhere else.
       - name: duplex-ws default-edge self-test
-        run: scripts/duplex-ws-default-edge.sh --selftest
+        run: cargo xtask gate duplex-ws-default-edge --selftest
       - name: duplex-ws default-edge gate (no WS in the default money-path closure)
-        run: scripts/duplex-ws-default-edge.sh
+        run: cargo xtask gate duplex-ws-default-edge
       # CI-UMBRELLA MEMBERSHIP lint: `ci-umbrella` is the ONE required check, and its `needs:` list
       # is the whole of what "CI is green" means. That list is hand-maintained, and a job added
       # without its `needs:` line is invisible to it: the job goes red and the required check reports
@@ -165,9 +189,9 @@ jobs:
       # `# non-gating:` / `# report-only:` line names it WITH a reason. Self-test runs FIRST, and its
       # last case re-plants exactly that historical defect in this very file and requires a red.
       - name: ci-umbrella membership self-test (the historical omission re-planted, proven RED)
-        run: python3 scripts/ci-umbrella-lint.py --selftest
+        run: cargo xtask gate ci-umbrella --selftest
       - name: ci-umbrella membership (no job is outside the required check by accident)
-        run: python3 scripts/ci-umbrella-lint.py --root .
+        run: cargo xtask gate ci-umbrella
       # NO-SELF-FILED-ISSUES lint: this repository must not open issues against itself. It used to —
       # verify-deploy.yml filed #51 when a published release was broken — and that was wrong three
       # ways: a robot's issue is indistinguishable from a user's in the queue a human triages, the
@@ -177,14 +201,18 @@ jobs:
       # and it includes a comment-only fixture because the workflows now EXPLAIN the ban in prose —
       # a lint its own explanation fails is a lint people learn to skip.
       - name: No-self-filed-issues lint self-test
-        run: scripts/no-self-filed-issues-lint.sh --selftest
+        run: cargo xtask gate no-self-filed-issues --selftest
       - name: No-self-filed-issues lint
-        run: scripts/no-self-filed-issues-lint.sh
+        run: cargo xtask gate no-self-filed-issues
       # AND WATCH IT FAIL. `--prove` fails each job of the release graph in turn and asserts that no
       # name-minting job runs afterwards. It is the executable form of "a failure leaves nothing
       # public", so that property is re-proven on every push rather than argued once in a comment.
+      # The proof is now a ROW of the same gate rather than a second invocation: a claim about this
+      # graph that lives in its own call site is a claim that can fall out of CI by losing one line.
+      # `cargo xtask gate release-order` above emits it, and the owed set refuses a run that does
+      # not.
       - name: Release-order proof (a failure leaves nothing public)
-        run: python3 scripts/release-order-lint.py --prove
+        run: cargo xtask gate release-order --format=tsv
       # CHANGELOG lint: the newest entry carries a version AND a date, always. This has shipped
       # wrong more than once and been reported more than once, which is what makes it a gate rather
       # than a reminder. The specific fault was a headless blob at the top of the published page:
@@ -194,9 +222,9 @@ jobs:
       # site repo; this guards the source shape the site can only render what it is given. Self-test
       # runs FIRST: never trust the lint's verdict before proving the lint still fires.
       - name: Changelog lint self-test (every rule proven RED)
-        run: python3 scripts/changelog-lint.py --selftest
+        run: cargo xtask gate changelog --selftest
       - name: Changelog lint
-        run: python3 scripts/changelog-lint.py --root .
+        run: cargo xtask gate changelog
       # WORKSPACE-DEPS lint: one version requirement per external dependency, written once in
       # [workspace.dependencies]. The table makes that POSSIBLE; only this lint makes it TRUE —
       # nothing in Cargo stops a member re-stating a version, and before the table `hex`, `sha2` and
@@ -207,9 +235,9 @@ jobs:
       # `[dependencies]` is a rule scoped to where the bug was first seen — and the jemalloc pins,
       # the ones that differ per shipped target, live in a target table.
       - name: Workspace-deps lint self-test
-        run: python3 scripts/workspace-deps-lint.py --selftest
+        run: cargo xtask gate workspace-deps --selftest
       - name: Workspace-deps lint
-        run: python3 scripts/workspace-deps-lint.py --root .
+        run: cargo xtask gate workspace-deps
       # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
       # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
       # promoted commit's. That has already cost a silent green: measured on qa c736177 the
@@ -224,13 +252,13 @@ jobs:
       # release, so a byte-identical rule would make every prose edit red until the very release it
       # is meant to gate. Self-test first, as everywhere else here.
       - name: qa-gate dispatcher drift self-test
-        run: python3 scripts/qa-gate-dispatch-lint.py --selftest
+        run: cargo xtask gate qa-gate-dispatch --selftest
       # `fetch-depth: 0` is not set on this job's checkout, so origin/main may be absent; fetch it
       # explicitly rather than letting the lint fail closed for a reason that is not drift.
       - name: Fetch the default branch (the dispatcher that will actually fire)
         run: git fetch --no-tags --depth=1 origin main
       - name: qa-gate dispatcher drift
-        run: python3 scripts/qa-gate-dispatch-lint.py
+        run: cargo xtask gate qa-gate-dispatch
       # ARTIFACT CONTRACT wholeness. The contract is data (.github/artifact-contract.json) and the
       # verifier implements it, so the two can drift: a row declared with no implementation is a
       # property everybody believes is checked and nobody checks, and a check outside the contract is
@@ -252,17 +280,17 @@ jobs:
       # `advanced.response_headers` opt-in. Self-test runs FIRST (never trust the lint's verdict before
       # proving the scanner still catches a real bypass), then it scans crates/busbar-core/src.
       - name: Response-header lint self-test
-        run: scripts/response-header-lint.sh --selftest
+        run: cargo xtask gate response-header --selftest
       - name: Response-header lint
-        run: scripts/response-header-lint.sh
+        run: cargo xtask gate response-header
       # TRACING-SEAM lint: every `#[tracing::instrument]` must carry an explicit
       # `level =` so a hot-path span can never again silently default to INFO (always-on). Self-test
       # runs FIRST (never trust the lint's verdict before proving the scanner still catches a real
       # bypass), then it scans crates/**/*.rs.
       - name: Tracing lint self-test
-        run: scripts/tracing-lint.sh --selftest
+        run: cargo xtask gate tracing --selftest
       - name: Tracing lint
-        run: scripts/tracing-lint.sh
+        run: cargo xtask gate tracing
       # SETTINGS-LEAK lint: an admin-facing projection may serve an opaque `settings:` bag's KEY
       # NAMES (`settings_keys` / `service::redact_settings_bags`) but NEVER its values — that bag is
       # where an operator's credentials legitimately live and the reads are READ-ONLY scope. Added
@@ -270,9 +298,9 @@ jobs:
       # Self-test runs FIRST (never trust the lint's verdict before proving the scanner still catches
       # a real leak), then it scans crates/busbar-core/src/admin.
       - name: Settings-leak lint self-test
-        run: scripts/settings-leak-lint.sh --selftest
+        run: cargo xtask gate settings-leak --selftest
       - name: Settings-leak lint
-        run: scripts/settings-leak-lint.sh
+        run: cargo xtask gate settings-leak
       # BLOCKING-FFI lint (1.5.3): a synchronous call into a dlopened PLUGIN (`transport_call`, and
       # the `dlopen` + constructor before it) must never run inline in an `async fn` — one such call
       # parks a Tokio worker for the plugin's full network timeout, and N concurrent callers stop the
@@ -281,11 +309,11 @@ jobs:
       # script header). Self-test runs FIRST (never trust the lint's verdict before proving the
       # scanner still catches a real inline call), then it scans crates/busbar-core/src.
       - name: Blocking-FFI lint self-test
-        run: scripts/blocking-ffi-lint.sh --selftest
+        run: cargo xtask gate blocking-ffi --selftest
       - name: Blocking-FFI lint
-        run: scripts/blocking-ffi-lint.sh
+        run: cargo xtask gate blocking-ffi
       # THE FOUR GATES BELOW EACH SHIPPED WITH A --selftest AND A --check AND WERE INVOKED BY
-      # NOTHING: no workflow step, no qa/segments.toml row, and so nothing scripts/full-gate.sh could
+      # NOTHING: no workflow step, no qa/segments.toml row, and so nothing cargo xtask full-gate could
       # discover. A gate nobody runs measures nothing — it is a script with the SHAPE of a gate, which
       # is worse than no gate at all, because its existence reads as coverage. All four are GREEN on
       # this tree today, which is exactly why they are being wired now rather than after a regression
@@ -296,35 +324,36 @@ jobs:
       # that a provider's wire vocabulary stops short of the kernel, and this is the only thing that
       # checks it.
       - name: Kernel token-wire purity self-test (the scanner cannot be lied to)
-        run: scripts/kernel-token-wire-purity-lint.sh --selftest
+        run: cargo xtask gate kernel-token-wire-purity --selftest
       - name: Kernel token-wire purity (BLOCKING — no raw provider wire token field reaches the kernel)
-        run: scripts/kernel-token-wire-purity-lint.sh --check
+        run: cargo xtask gate kernel-token-wire-purity
       # NO-DEFERRAL: every reachable unimplemented!()/todo!() (Class A) and every self-declared debt
       # label (Class B) in shipped source must be a floor-checked entry in the committed
-      # scripts/no-deferral.waivers allowlist. verify-1.6.0-done.sh runs the stricter --strict-done
-      # form as part of the DONE claim; that is a release-time question. THIS is the per-push posture
+      # scripts/no-deferral.waivers allowlist. verify-1.6.0-done.sh runs the stricter
+      # no-deferral-strict-done twin as part of the DONE claim; that is a release-time question. THIS
+      # is the per-push posture
       # that stops a NEW unwaived deferral landing in the first place, and it was the half nothing ran.
       - name: No-deferral self-test (the deferral scanner cannot be lied to)
-        run: scripts/no-deferral-gate.sh --selftest
+        run: cargo xtask gate no-deferral --selftest
       - name: No-deferral gate (BLOCKING — every deferral marker is a floor-checked waiver)
-        run: scripts/no-deferral-gate.sh --check
+        run: cargo xtask gate no-deferral
       # INVENTORY-REF LINT: the companion to the design-bindings job below. design-bindings proves
       # every Appendix B binding's CHECKS still exist; this proves every binding's INVENTORY citation
       # still resolves to a docs/design inventory file that exists, so a renamed or deleted inventory
       # cannot leave a binding pointing at nothing while still reading as mapped.
       - name: Inventory-ref lint self-test
-        run: python3 scripts/inventory-ref-lint.py --selftest
+        run: cargo xtask gate inventory-ref --selftest
       - name: Inventory-ref lint (BLOCKING — every binding's inventory column resolves)
-        run: python3 scripts/inventory-ref-lint.py --check
+        run: cargo xtask gate inventory-ref
       # CHANGELOG REGISTER: the second half of the shadow-oracle register's money rule. diff-cells.py
       # refuses at LOAD time to let an `improvement` entry forgive a status or a billing figure — only
       # a `kind: breaking` entry carrying a changelog line may. This proves that changelog line is not
       # a string nobody ever read: it must appear VERBATIM in CHANGELOG.md. Without it an accepted
       # breaking difference could cite a line that was reworded, or never written at all.
       - name: Changelog register self-test
-        run: scripts/changelog-register-check.sh --selftest
+        run: cargo xtask gate changelog-register --selftest
       - name: Changelog register (BLOCKING — every accepted `breaking` names a real CHANGELOG line)
-        run: scripts/changelog-register-check.sh --check
+        run: cargo xtask gate changelog-register
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
@@ -356,9 +385,9 @@ jobs:
       # unwatched again. The deletion test then proves the strong form: each plane crate is physically
       # removable (`git rm -r`) with the neutral crates + bin still compiling — no neutral→plane edge.
       - name: Plane-purity lint self-test (the side-channel scanner cannot be lied to)
-        run: scripts/plane-purity-lint.sh --selftest
+        run: cargo xtask gate plane-purity --selftest
       - name: Plane-purity gate (BLOCKING — no side channel in the neutral crates)
-        run: scripts/plane-purity-lint.sh --check
+        run: cargo xtask gate plane-purity
       # VOICE-TRANSPORT/MEDIA neutrality — the FORWARD-edge companion to plane-purity. plane-purity bans
       # the plane KEYS + LLM dialects; this bans the Plane-4 (busbar-voice) TRANSPORT/MEDIA nouns
       # (rtc/sdp/webrtc/twilio/dtmf/rtp/sideband/realtime/audio/mulaw/g711/barge) that plane-purity does
@@ -367,15 +396,21 @@ jobs:
       # then the tree is scanned in --check (BLOCKING): the neutral crates carry ZERO transport nouns
       # today and any regression that introduces one fails it RED.
       - name: Plane transport-neutrality self-test (the transport/media scanner cannot be lied to)
-        run: scripts/plane-transport-neutrality.sh --selftest
+        run: cargo xtask gate plane-transport-neutrality --selftest
       - name: Plane transport-neutrality gate (BLOCKING — no voice-transport noun in the neutral crates)
-        run: scripts/plane-transport-neutrality.sh --check
+        run: cargo xtask gate plane-transport-neutrality
       # PLANE-ABI NEUTRALITY witness — the plane ABI's capability surface was DERIVED from a primitive
       # taxonomy, not ENUMERATED from one protocol. This greps the busbar-plugin HOT lane for the banned
       # protocol/role nouns and asserts ZERO (with a ban-list self-check of its own). It PASSES today;
       # wired here as a BLOCKING gate so "derived, not enumerated" stays a machine fact, not a claim.
+      # Its self-test runs FIRST, like every sibling here. It was the one gate in this job without
+      # that step, and it is the gate whose ban list is checked against a DOCUMENT — the arm most
+      # worth proving before its verdict is trusted, because a mandate that silently stopped being
+      # read would leave the witness checking its own answer.
+      - name: Plane-ABI neutrality self-test (the ban list is checked against the design, not itself)
+        run: cargo xtask gate plane-abi-neutrality --selftest
       - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
-        run: scripts/plane-abi-neutrality.sh
+        run: cargo xtask gate plane-abi-neutrality
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
 
@@ -438,15 +473,15 @@ jobs:
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -717,11 +752,11 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Clippy (--features openapi-schema)
         run: cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
@@ -766,13 +801,13 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Corpus is present and covers the tags
         run: |
           set -euo pipefail
@@ -793,7 +828,7 @@ jobs:
     name: config-stability gate (frozen grammar · additive-only)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Need history so the additive check can diff against the PR base (not just the tip).
           fetch-depth: 0
@@ -830,11 +865,11 @@ jobs:
     name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The method-inventory derivation reads the rmcp SDK's `model.rs` from the EXTRACTED registry
       # source (`registry/src/*/rmcp-<ver>/src/model.rs`) and REFUSES rather than skip when it is
       # absent — an inventory of nothing is worse than no inventory. A bare checkout never extracts a
@@ -847,9 +882,9 @@ jobs:
           cargo fetch --locked
           cargo check -p rmcp --locked
       - name: field-inventory self-test (derivation cannot be lied to)
-        run: python3 scripts/field-inventory.py --selftest
+        run: cargo xtask gate field-inventory --selftest
       - name: field-inventory drift (committed == fresh derivation)
-        run: python3 scripts/field-inventory.py --check
+        run: cargo xtask gate field-inventory
       - name: method-inventory self-test (derivation cannot be lied to)
         run: python3 scripts/method-inventory.py --selftest
       - name: method-inventory drift (committed == fresh derivation)
@@ -865,8 +900,8 @@ jobs:
           # missing fixture, so a renamed fixture deletes a whole family from the owed corpus
           # without a word. The self-test plants exactly that and requires the per-family floor to
           # refuse it, before the floor's verdict on this tree is trusted.
-          python3 testing/shadow-oracle/enumerate-cells.py --selftest
-          python3 testing/shadow-oracle/enumerate-cells.py --check
+          ./bin/oracle cells --selftest
+          ./bin/oracle cells --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
@@ -891,7 +926,7 @@ jobs:
     name: docs hygiene (public prose describes the software, not the process)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Public-hygiene self-test (every rule proven RED, every twin proven GREEN)
         run: python3 scripts/public-hygiene-lint.py --selftest
       - name: Public-hygiene gate
@@ -921,11 +956,11 @@ jobs:
     name: service image pins (one pinned list, every workflow reads it)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Service-image lint self-test (every rule proven RED)
-        run: scripts/service-images-check.sh --selftest
+        run: cargo xtask gate service-images --selftest
       - name: Service-image pin gate
-        run: scripts/service-images-check.sh
+        run: cargo xtask gate service-images
       # The local store fixtures read the same table. Their self-test needs NO docker: it asserts the
       # properties of the table and of the script's own rules — that the local port band stays
       # disjoint from the shadow oracle's 487xx/488xx band, that a namespace token cannot reach DDL
@@ -958,11 +993,11 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build busbar (the validator this gate judges with)
         run: cargo build --locked --bin busbar
       - name: Executable-config gate self-test (RED/GREEN before the verdict is trusted)
@@ -992,11 +1027,11 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Clippy (no-default-features)
         run: cargo clippy --no-default-features --locked -- -D warnings
       - name: Build (no-default-features)
@@ -1077,9 +1112,9 @@ jobs:
           - name: all planes off (core serves no protocols)
             features: ""
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build neutral crates — ${{ matrix.name }}
         # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
         # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
@@ -1122,9 +1157,9 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
         run: scripts/no-plugins-gate.sh --selftest
       - name: No-plugins gate (axis 1 compiled out · axis 2 not installed)
@@ -1142,9 +1177,9 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Transaction compile fence (must fail to compile)
         run: scripts/txn-fence.sh
       - name: Loom model of the swap invariant
@@ -1161,9 +1196,9 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Hot-path timing gate
         run: |
           set -euo pipefail
@@ -1218,11 +1253,11 @@ jobs:
       WINDOWS_MIN_TESTS: "5620"
       WINDOWS_EXPECTED_TESTS: "5686"
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build
         run: cargo build --workspace --verbose
       # CLIPPY ON WINDOWS, which `build` above does not subsume in either direction. `cargo build`
@@ -1351,15 +1386,15 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
       - name: Collect coverage (workspace, live-DB tests wired)
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
@@ -1417,14 +1452,14 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
-      # (same discipline as structure-lint.sh et al).
+      # (same discipline as `cargo xtask gate <name> --selftest` et al).
       - name: profile-lock self-test
         run: scripts/profile-lock.sh --selftest
       - name: build-provenance gate self-test
@@ -1525,12 +1560,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
       # The publication branch is checked out into RUNNER_TEMP as its OWN clone, so nothing here can
@@ -1588,7 +1623,7 @@ jobs:
       # available to any consumer without a git write. This upload happens whether or not the commit
       # below does anything, so the manifest for a run always exists somewhere.
       - name: Upload the manifest as a workflow artifact (keyed by source branch)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: proof-manifest-${{ github.ref_name }}
           path: |
@@ -1597,7 +1632,7 @@ jobs:
           if-no-files-found: error
       - name: Upload hit-list evidence as a PRIVATE CI artifact (contains source; never committed)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: proof-hits-${{ github.ref_name }}
           path: ${{ runner.temp }}/proof-hits
@@ -1658,12 +1693,64 @@ jobs:
     timeout-minutes: 60
     env:
       BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+    # THE BACKENDS BOTH SIDES RECORD AGAINST.
+    #
+    # The store families' cells boot a real backend, spend, restart and read back — persistence IS
+    # the thing under comparison. Without a backend here those cells were named gaps on both sides,
+    # so the oracle compared nothing and said "0 divergences" about the one family whose whole claim
+    # is durability. A gap on both sides is not agreement.
+    #
+    # Digests are NOT re-pinned here. testing/fleet-fixtures/service-images.tsv is the single pinned
+    # list (that is what the `service image pins` job enforces: every workflow `image:` line must
+    # equal a row in it), so these three are the same bytes the `check` job runs — postgres 16 and
+    # valkey 8 identically, and mysql 8 from the row plugin-ci.yml already uses. Re-pinning with
+    # `docker buildx imagetools inspect` here would create a second source of truth and the pin gate
+    # would refuse it, which is the gate working. The bump belongs in that one file.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # MySQL 8's FIRST boot initialises the datadir and restarts once, which is why its readiness
+      # budget is larger than the other two here exactly as service-images.tsv's ready_secs records.
+      mysql:
+        image: mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+        env:
+          MYSQL_ROOT_PASSWORD: busbar
+          MYSQL_USER: busbar
+          MYSQL_PASSWORD: busbar
+          MYSQL_DATABASE: busbar_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. The oracle binds a fixed band
       # (48781 mock, 48811/48812 data+admin, 48821/48822 the boot probe, 48851+ the selftest), and on
       # Linux that band sits INSIDE the default ephemeral range, `net.ipv4.ip_local_port_range`
@@ -1700,23 +1787,23 @@ jobs:
           # harness into this key would only throw away a correct download on every harness edit.
           echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
       - name: Cache the pinned 1.5.5 artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/busbar-oracle
           key: ${{ steps.rev.outputs.key }}
       - name: The differ can see a diff (replay selftest)
-        run: bash testing/shadow-oracle/replay-selftest.sh
+        run: ./bin/oracle replay-selftest
       - name: Fetch the published 1.5.5 binary and plugins by digest
         run: |
           set -euo pipefail
-          bash testing/shadow-oracle/fetch-golden.sh
+          ./bin/oracle fetch-golden
           # The plugin set is DERIVED from the same digest file the cells and fetch-plugin.sh read,
           # not restated here: a hand-kept copy of it goes stale the day a plugin is added, and the
           # symptom is a plugins-family cell recording against a plugin that was never fetched.
           plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
           [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
           for pl in $plugins; do
-            bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
+            ./bin/oracle fetch-plugin "$pl" >/dev/null
           done
       - name: Build the candidate (release, with the release public key)
         run: |
@@ -1724,7 +1811,7 @@ jobs:
           [ -n "${BUSBAR_RELEASE_PUBKEY:-}" ] || { echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"; exit 1; }
           cargo build -p busbar --release --locked
       - name: Both binaries accept the oracle config
-        run: bash testing/shadow-oracle/selftest.sh target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
+        run: ./bin/oracle selftest target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
       # THE GOLDEN IS COMMITTED, NOT RE-DERIVED. `testing/shadow-oracle/golden/1.5.5/` is the signed-off
       # 1.5.5 recording, reviewed cell by cell, and it is the thing this job is supposed to diff
       # against. Re-recording it here made the gate's own reference an OUTPUT of the runner: 234 of
@@ -1750,15 +1837,19 @@ jobs:
           [ "$pass" -gt 0 ] || { echo "::error::the committed golden carries no PASS rows — the replay below would be vacuously green"; exit 1; }
           [ "$pass" = "$want" ] || { echo "::error::the committed golden's ledger has ${pass} PASS rows but meta.json records ${want}; the checked-in recording is not whole"; exit 1; }
       - name: Record the candidate
+        env:
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
+          VALKEY_URL: redis://localhost:6379
         run: |
           set -euo pipefail
           rm -rf target/oracle/recordings/candidate; mkdir -p target/oracle/recordings/candidate
-          bash testing/shadow-oracle/record.sh --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+          ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       - name: Replay — candidate vs golden (0 divergences, gaps named)
-        run: bash testing/shadow-oracle/replay.sh --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci
+        run: ./bin/oracle replay --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shadow-oracle-report
           path: |
@@ -1792,7 +1883,7 @@ jobs:
       # admin-plane cell, stays on the runner.
       - name: Upload the candidate recording (consumed by llm-conformance)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shadow-oracle-candidate-recording
           path: |
@@ -1831,9 +1922,9 @@ jobs:
     # download step below fails and names the missing artifact — a red with a reason, not a skip.
     if: ${{ !cancelled() }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download the candidate recording (made by shadow-oracle on this commit)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: shadow-oracle-candidate-recording
           path: target/oracle/recordings/candidate
@@ -1844,7 +1935,7 @@ jobs:
           [ -s "$led" ] || { echo "::error::no candidate ledger at $led — the shadow-oracle job did not record HEAD"; exit 1; }
           echo "candidate recording: $(wc -l <"$led" | tr -d ' ') ledger rows"
       - name: Cache the provider specs (by pinned digest; a re-pin is the only invalidation)
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/busbar-llm-specs
           key: llm-specs-${{ hashFiles('testing/llm-conformance/spec-digests.tsv') }}
@@ -1859,7 +1950,7 @@ jobs:
         run: bash testing/llm-conformance/run.sh --recording target/oracle/recordings/candidate
       - name: Upload the conformance report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llm-conformance-report
           path: target/llm-conformance/
@@ -1892,9 +1983,11 @@ jobs:
   #      itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
-  # is a per-run fact instead. (There is no `--root-legs-gating` flag: the script dispatches on
-  # `--selftest` and `--root-legs` and silently ignores anything else, so spelling one would quietly
-  # run plain `--root-legs` while reading as though it had asked for more.)
+  # is a per-run fact instead. (`cargo xtask teller-steps --root-legs-gating` is a real fourth arm —
+  # the shipped root legs owe every GATING step a cell over the loop — and is not wired here yet
+  # because it is a strictly narrower bar than --root-legs, which already runs. The runner REFUSES
+  # an unknown flag with exit 2; the Python it replaced fell through into its default path, so a
+  # mistyped arm ran a check nobody asked for and reported green for it.)
   teller-steps:
     name: teller steps (one cell per Teller step per plane, and the cells RUN)
     runs-on: ubuntu-latest
@@ -1904,17 +1997,19 @@ jobs:
     # dev/qa/main and on workflow_dispatch, not on every branch push. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
       - name: Teller-steps self-test (a lying matrix is refused)
-        run: python3 scripts/teller-steps-check.py --selftest
+        run: cargo xtask gate teller-steps --selftest
       - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)
-        run: python3 scripts/teller-steps-check.py --check
+        run: cargo xtask gate teller-steps
       - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
-        run: python3 scripts/teller-steps-check.py --root-legs
+        run: cargo xtask teller-steps --root-legs
 
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)
@@ -1924,7 +2019,7 @@ jobs:
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Construction gate self-test (every rule proves it sees its planted violation)
         run: scripts/construction-gate.sh --selftest
       - name: Construction gate (RED by design today; see the job comment for the flip)
@@ -1949,7 +2044,7 @@ jobs:
           fi
       - name: Upload the construction report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: construction-report
           path: target/construction/report.md
@@ -1972,7 +2067,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Design bindings self-test (the gate proves itself before it judges the tree)
         run: scripts/design-bindings.sh --selftest
       - name: Design bindings check (existence; unmapped bindings listed as named gaps)
@@ -1986,7 +2081,7 @@ jobs:
           diff -u qa/design-bindings.json target/design-bindings/fresh.json || stale=1
           diff -u qa/DESIGN-BINDINGS.md target/design-bindings/fresh.md || stale=1
           if [ "$stale" -ne 0 ]; then
-            # The regen command is spelled without its directory on purpose: scripts/full-gate.sh
+            # The regen command is spelled without its directory on purpose: cargo xtask full-gate
             # discovers gates from this file's run lines, and a literal path here would make it run
             # the --write (rewriting the committed ledger locally) as if it were a gate.
             echo "::error::qa/design-bindings.json or qa/DESIGN-BINDINGS.md is stale. Regenerate with design-bindings.sh --write (under scripts/) and commit both files."

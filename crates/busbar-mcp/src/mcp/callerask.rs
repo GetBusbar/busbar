@@ -93,7 +93,7 @@ pub(crate) use authored::CallerAsk;
 ///
 /// The residual, named rather than hidden: this makes the ONLY input an `AskEntryCfg`. It does not
 /// stop someone forging an `AskEntryCfg` at runtime out of upstream text and passing THAT. That
-/// residual is closed on the other side, by `structure-lint.sh`'s `H-operator-authored-ask` choke
+/// residual is closed on the other side, by the `structure-lint` gate's `H-operator-authored-ask` choke
 /// point, which bans constructing an `AskEntryCfg` anywhere but the config module that deserialises
 /// it. Two halves, both mechanical, neither of them a grep for a module name.
 mod authored {

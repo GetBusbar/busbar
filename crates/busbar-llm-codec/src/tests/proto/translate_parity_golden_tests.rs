@@ -38,8 +38,13 @@ fn golden_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/tests/proto/golden")
 }
 
+/// Bless mode requires the EXACT value `1`, not mere presence. Under `var_os(..).is_some()` even
+/// `BUSBAR_BLESS_GOLDEN=0` or `=false` — the spellings a reader uses to turn the flag OFF — put the
+/// whole golden suite into rewrite mode, where every test executes zero assertions AND overwrites
+/// the committed goldens with whatever the current translate path emits. One stale `export` left in
+/// a shell (or inherited by a CI runner) silently re-blesses a regression as the new truth.
 fn bless() -> bool {
-    std::env::var_os("BUSBAR_BLESS_GOLDEN").is_some()
+    std::env::var("BUSBAR_BLESS_GOLDEN").is_ok_and(|v| v == "1")
 }
 
 /// Compare `actual` to the committed golden `name`, or rewrite the golden in bless mode.

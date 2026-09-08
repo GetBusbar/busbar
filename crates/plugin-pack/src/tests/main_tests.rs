@@ -835,18 +835,24 @@ fn x_busbar_ref_passes_pack_time_validation_untouched() {
 /// `busbar` binary crate, unreachable from any tooling) and derives the `x-busbar-secret`
 /// reference `oneOf` FROM the real type instead of a hand-written parallel copy — this is the
 /// fragment busbar-ui composes a secret reference against, matching exactly what
-/// `SecretRef::deserialize` accepts (env/file sugar + the canonical module/settings form), with
+/// `SecretRef::deserialize` accepts (env/file sugar, the canonical module/settings form, and the
+/// keyless `none` scalar), with
 /// no special-casing needed to exclude `{ literal: ... }`: a full derivation already excludes
 /// it, since `literal` was never a `SecretRef` shape to begin with.
 #[test]
 fn derives_secret_ref_oneof_from_the_shared_type() {
     let oneof = busbar_secret_ref::oneof_schema();
     let alts = oneof["oneOf"].as_array().expect("oneOf array");
-    assert_eq!(alts.len(), 3, "module/settings + env + file, nothing else");
+    assert_eq!(
+        alts.len(),
+        4,
+        "the `none` scalar + module/settings + env + file, nothing else"
+    );
     // Sanity: the derived fragment is a valid JSON Schema (full round-trip fidelity against
     // SecretRef::deserialize is asserted in busbar-secret-ref's own test suite, the single
-    // source of truth for the derivation).
-    let mut full = serde_json::json!({"type": "object"});
+    // source of truth for the derivation). No `type` constraint of our own: one alternative is a
+    // scalar (`none`), the rest are objects.
+    let mut full = serde_json::json!({});
     for (k, v) in oneof.as_object().unwrap() {
         full[k] = v.clone();
     }

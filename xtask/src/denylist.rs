@@ -78,7 +78,7 @@ fn pattern_to_crate_name(pattern: &str) -> String {
     pattern.replace('_', "-")
 }
 
-pub(crate) struct BannedLists {
+pub struct BannedLists {
     /// Crate (package) names banned anywhere in a pure crate's transitive normal closure.
     crate_names: BTreeSet<String>,
     /// `std::`/`tokio::` path substrings banned in a pure crate's own `src/`.
@@ -524,107 +524,10 @@ fn closure_hits(meta: &Metadata, root_id: &str, root_name: &str, banned: &Banned
     hits
 }
 
-/// Comments stripped (line + block, string contents ignored, same trade
-/// `scripts/construction-gate/rules.py::strip_comments` makes), `#[cfg(test)] mod { .. }` bodies
-/// dropped, one production-code line per output entry.
-fn production_lines(src: &str) -> Vec<(usize, String)> {
-    let mut out = Vec::new();
-    let mut in_block_comment = false;
-    let mut pending_test_attr = false;
-    let mut test_mod_depth: Option<i32> = None;
-    let mut depth: i32 = 0;
-
-    for (i, raw_line) in src.lines().enumerate() {
-        let stripped = strip_comment_line(raw_line, &mut in_block_comment);
-        let trimmed = stripped.trim();
-
-        let this_line_is_test = test_mod_depth.is_some();
-
-        if !this_line_is_test && trimmed.contains("#[cfg(test)]") {
-            pending_test_attr = true;
-        } else if !this_line_is_test && !trimmed.is_empty() && !trimmed.starts_with('#') {
-            // an attribute only pends across attribute/blank lines; anything else clears it
-            if !trimmed.contains("mod ") {
-                pending_test_attr = false;
-            }
-        }
-
-        if !this_line_is_test
-            && pending_test_attr
-            && trimmed.contains("mod ")
-            && trimmed.contains('{')
-        {
-            test_mod_depth = Some(depth);
-            pending_test_attr = false;
-        }
-
-        let opens = stripped.matches('{').count() as i32;
-        let closes = stripped.matches('}').count() as i32;
-        depth += opens - closes;
-
-        let was_test = test_mod_depth.is_some();
-        if let Some(d) = test_mod_depth {
-            if depth <= d && (opens > 0 || closes > 0) {
-                test_mod_depth = None;
-            }
-        }
-
-        if !was_test && !this_line_is_test {
-            out.push((i + 1, stripped));
-        }
-    }
-    out
-}
-
-fn strip_comment_line(line: &str, in_block: &mut bool) -> String {
-    let mut out = String::new();
-    let bytes: Vec<char> = line.chars().collect();
-    let mut i = 0;
-    let mut in_str = false;
-    while i < bytes.len() {
-        if *in_block {
-            if bytes[i] == '*' && bytes.get(i + 1) == Some(&'/') {
-                *in_block = false;
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if in_str {
-            out.push(bytes[i]);
-            if bytes[i] == '\\' {
-                if let Some(c) = bytes.get(i + 1) {
-                    out.push(*c);
-                }
-                i += 2;
-                continue;
-            }
-            if bytes[i] == '"' {
-                in_str = false;
-            }
-            i += 1;
-            continue;
-        }
-        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'*') {
-            *in_block = true;
-            i += 2;
-            continue;
-        }
-        if bytes[i] == '/' && bytes.get(i + 1) == Some(&'/') {
-            break;
-        }
-        if bytes[i] == '"' {
-            in_str = true;
-            out.push(bytes[i]);
-            i += 1;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    out
-}
+// `production_lines` and `strip_comment_line` MOVED to `crate::scan` — one scanner for the whole
+// crate, so every text gate points at the implementation the denylist's own fixtures already
+// drive, instead of the seven copies of `TEST_SCOPE_AWK` the shell carried.
+use crate::scan::production_lines;
 
 fn is_test_path(rel: &str, fragments: &[String]) -> bool {
     fragments.iter().any(|f| rel.contains(f.as_str()))

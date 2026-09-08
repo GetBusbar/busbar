@@ -150,6 +150,7 @@ fn policy(first_party: &SigningKey) -> TrustPolicy {
         first_party_key: Some(first_party.verifying_key()),
         binary_version: "1.5.0".into(),
         first_party_floors: Default::default(),
+        first_party_high_water: Default::default(),
         publishers: Default::default(),
         allow_unsigned: false,
         allow_third_party: false,
@@ -860,4 +861,81 @@ fn export_supported_abi_reads_the_shared_const() {
         ]
     );
     assert!(!supported_abi("export").is_empty());
+}
+
+// ── The FIRST-PARTY replay, end to end over the real scan ──────────────────────────────────────
+
+/// `docs/plugins.md` security-model item 3, proven through the actual pipeline: a deployment loads
+/// 1.2.0 of a first-party plugin, the high-water mark records it, and the GENUINE busbar-signed
+/// 1.0.0 an attacker with write access to `plugins.dir` swaps in is then REFUSED — even though its
+/// signature verifies against the embedded release key. Before the mark existed this scan admitted
+/// the replay silently, with a `first-party` catalog label and no warning.
+#[test]
+fn a_first_party_replay_is_refused_after_the_mark_records_the_newer_load() {
+    let release = key(1);
+    let dir = tmpdir("replay");
+
+    // 1. The deployment loads 1.2.0.
+    let mut current = manifest("busbar-store-valkey-plugin", "valkey", "busbar");
+    current.version = "1.2.0".into();
+    let current = sign(&release, current, b"1.2.0 lib");
+    write_tarball(&dir, "store.tar.gz", &current, b"1.2.0 lib");
+
+    let mut marks = crate::HighWaterMarks::load(None).0;
+    let mut pol = policy(&release);
+    pol.first_party_high_water = marks.marks();
+    let reg = scan_and_validate(&dir, &pol).expect("the current release loads");
+    assert_eq!(reg.loadable().len(), 1);
+
+    // 2. The mark records what was actually loaded.
+    assert!(marks.record_registry(&reg), "the mark rises on a load");
+    assert_eq!(
+        marks.marks().get("busbar-store-valkey-plugin").unwrap(),
+        "1.2.0"
+    );
+
+    // 3. The attacker swaps in the GENUINE, busbar-signed 1.0.0 with a known fixed defect.
+    let mut old = manifest("busbar-store-valkey-plugin", "valkey", "busbar");
+    old.version = "1.0.0".into();
+    let old = sign(&release, old, b"1.0.0 lib");
+    write_tarball(&dir, "store.tar.gz", &old, b"1.0.0 lib");
+
+    // 4. It is REFUSED as a downgrade — skipped, never loaded, with the floor named.
+    let mut pol = policy(&release);
+    pol.first_party_high_water = marks.marks();
+    let reg = scan_and_validate(&dir, &pol).expect("a refusal is a skip, not a scan failure");
+    assert!(
+        reg.loadable().is_empty(),
+        "the replayed artifact must not be loadable"
+    );
+    let skipped = reg.skipped();
+    assert_eq!(skipped.len(), 1);
+    assert!(
+        skipped[0].reason.contains("1.2.0"),
+        "the refusal names the floor: {}",
+        skipped[0].reason
+    );
+    assert!(
+        skipped[0].reason.contains("rollback"),
+        "the refusal names the override: {}",
+        skipped[0].reason
+    );
+
+    // 5. The mark does NOT fall to the refused artifact's version.
+    assert!(!marks.record_registry(&reg));
+    assert_eq!(
+        marks.marks().get("busbar-store-valkey-plugin").unwrap(),
+        "1.2.0"
+    );
+
+    // 6. The documented override: an explicit, audited rollback pin admits that exact version.
+    pol.first_party_floors
+        .insert("busbar-store-valkey-plugin".into(), "1.0.0".into());
+    let reg = scan_and_validate(&dir, &pol).expect("scan");
+    assert_eq!(
+        reg.loadable().len(),
+        1,
+        "an explicit rollback pin admits the older artifact"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

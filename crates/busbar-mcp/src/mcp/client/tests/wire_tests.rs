@@ -136,7 +136,7 @@ fn the_authorization_header_is_present_exactly_when_a_credential_was_planned() {
 // true, and until 2026-08-12 it was true as a claim and false as code. Nothing is left to compare,
 // so the comparison is gone rather than ported.
 //
-// What replaces it is not a symmetry check but a SINGULARITY check: `scripts/structure-lint.sh`'s
+// What replaces it is not a symmetry check but a SINGULARITY check: the `structure-lint` gate's
 // declaration census requires each of the five literals to occur EXACTLY ONCE in production code.
 // A second spelling anywhere in the tree is RED — that is the drift this test existed to catch, now
 // caught without naming a file — and ZERO occurrences is RED too, reported as SUBJECT-MISSING

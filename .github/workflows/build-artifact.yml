@@ -81,9 +81,9 @@ jobs:
     name: ${{ inputs.target }}
     runs-on: ${{ inputs.runner }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           targets: ${{ inputs.triple }}
 
@@ -123,7 +123,7 @@ jobs:
       # digest, so promoting the draft later changes nothing. The contract's `attestation` row
       # re-runs that exact user-facing command against the bytes downloaded back from the release.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: busbar-${{ inputs.target }}.${{ inputs.archive }}
 
@@ -140,7 +140,7 @@ jobs:
       # `needs:` does to a dependent when an upstream leg fails -- leaves a grey square and no
       # evidence, and a set derived from grey squares silently shrinks to fit.
       - name: Upload build evidence and the produced-receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-evidence-${{ inputs.target }}
           path: build-evidence

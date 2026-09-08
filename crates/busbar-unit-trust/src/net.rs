@@ -897,11 +897,31 @@ fn percent_decode_host(host: &str) -> Cow<'_, str> {
     }
 }
 
-/// Strip every ASCII tab, LF and CR, borrowing when there are none to strip.
+/// The WHATWG basic URL parser's very first step, BOTH halves of it, in the parser's own order.
 ///
-/// The WHATWG removal is unconditional in meaning but almost never has anything to do: an ordinary
-/// configured URL carries none of the three, and that case should cost a scan and no allocation.
+/// The first half is the leading/trailing trim: before anything else, the parser removes any
+/// LEADING and TRAILING C0 control characters (U+0000..=U+001F) and SPACE (U+0020) from the input.
+/// The second half deletes every ASCII tab / LF / CR from ANYWHERE inside what is left. Doing only
+/// the second half — which is what this copy did when it was extracted from the live sibling
+/// (`busbar-substrate::net_guard`) — leaves a whole family of spellings that this guard reads
+/// differently from the stack that will dial them. A destination of `"https://10.99.99.99 "` (one
+/// trailing space, exactly what an unquoted YAML scalar or a console copy-paste leaves behind) is
+/// read as the host `10.99.99.99 `, which parses as no `IpAddr`, expands to no alternate encoding
+/// and matches no `HostSet` entry — so an operator's `blocked_metadata_hosts` entry silently does
+/// not fire, and the connecting stack trims the space and dials the blocked host. The leading side
+/// is worse still, because the padding hides the SCHEME rather than the host:
+/// `" http://169.254.169.254/"` splits on `://` into the scheme `" http"`, which matches neither
+/// `http` nor `https`, so `strip_scheme` returns `None` and the URL is waved through without any
+/// host ever being examined. This matters most at the token endpoints, which POST the operator's
+/// `client_id`/`client_secret` to the configured URL verbatim — a metadata host the guard failed to
+/// recognize is a metadata host that receives those credentials.
+///
+/// Both halves are borrowing where there is nothing to do: an ordinary configured URL carries no
+/// padding and none of the three deleted bytes, and that case should cost a scan and no allocation.
 fn strip_whatwg_removed(s: &str) -> Cow<'_, str> {
+    // The trim FIRST, byte-for-byte the sibling's predicate, so the two copies cannot read a
+    // different host from the same string.
+    let s = s.trim_matches(|c: char| c <= '\u{1f}' || c == ' ');
     if s.contains(['\t', '\n', '\r']) {
         Cow::Owned(s.replace(['\t', '\n', '\r'], ""))
     } else {
@@ -916,11 +936,14 @@ fn strip_whatwg_removed(s: &str) -> Cow<'_, str> {
 /// bracket, the percent-decode, and the trailing FQDN-root dot. A guard that read a different host
 /// than the socket connects to is not a guard.
 pub fn extract_normalized_host(url: &str) -> Option<String> {
-    // Strip ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere in the string,
-    // FIRST — before any other normalization, mirroring the WHATWG URL spec's basic parser, which
-    // removes these three bytes from the whole input as its very first step, before scheme/authority
-    // parsing even begins. reqwest's `url` crate implements this removal, so it is not merely a
-    // leading/trailing trim: a tab EMBEDDED mid-host is deleted too. Without mirroring it, a
+    // Run BOTH halves of the WHATWG first step — the leading/trailing C0-and-space trim and then the
+    // interior tab/LF/CR deletion — FIRST, before any other normalization, in the parser's own
+    // order. See `strip_whatwg_removed` for why the trim is load-bearing and what dropping it costs.
+    //
+    // The second half strips ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere
+    // in the string, before scheme/authority parsing even begins. reqwest's `url` crate implements
+    // both halves, and this removal in particular is not merely a leading/trailing trim: a tab
+    // EMBEDDED mid-host is deleted too. Without mirroring it, a
     // `base_url` like `"https://169.254.169\t.254/"` (a tab is a legal byte inside a YAML
     // double-quoted scalar) is seen by this guard as the non-IP, non-metadata-matching host
     // `169.254.169\t.254` (passes every check) while the actual connecting stack deletes the tab and

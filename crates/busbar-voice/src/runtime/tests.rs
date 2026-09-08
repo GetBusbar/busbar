@@ -780,7 +780,12 @@ async fn the_sweep_rides_the_pump_and_ends_with_it() {
         .insert(7, vec!["cr".to_string()]);
 
     // A pump that runs past one tick and then returns, exactly as a socket closing would.
-    let pump = tokio::time::sleep(std::time::Duration::from_millis(1_400));
+    //
+    // THE MARGIN IS THE POINT. `SWEEP_EVERY` is one second and this is real time, not a paused
+    // clock, so the pump has to outlive the tick by enough that a loaded CI runner's scheduler
+    // jitter cannot land the tick after the pump returns — 400 ms of headroom was not enough, and
+    // the failure would have read as "the sweep does not run" rather than "the box was busy".
+    let pump = tokio::time::sleep(std::time::Duration::from_millis(2_500));
     crate::runtime::serve_with_sweep(Arc::clone(&core), pump).await;
 
     assert!(

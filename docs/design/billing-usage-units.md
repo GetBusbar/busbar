@@ -265,10 +265,31 @@ an open key. Core prices it by key with no code change — only rate-card YAML.
 
 Each is a disjoint key, so it cannot double-count against a reserved total (§6).
 Sub-bucket detail that is *already inside* a reserved total (`reasoning_tokens`
-⊂ output, `input_audio_tokens` ⊂ input, `tool_use_prompt_tokens` ⊂ prompt) is
-**not** emitted as a billable key — it stays pure attribution in the metering
-series, exactly as `IrUsageDetail` documents it ("a SLICE OF a total, never an
-addition"). This is the anti-double-count rule the plane mapping must enforce.
+⊂ output, `input_audio_tokens` ⊂ input) is **not** emitted as a billable key —
+it stays pure attribution in the metering series, exactly as `IrUsageDetail`
+documents it ("a SLICE OF a total, never an addition"). This is the
+anti-double-count rule the plane mapping must enforce.
+
+> **CORRECTION (2026-09-07) — `tool_use_prompt_tokens` was listed above as
+> `⊂ prompt` and it is not.** A real Vertex AI recording
+> (`crates/busbar-llm-codec/src/tests/proto/golden/vendor/resp_g2g_vertex_grounding.json`)
+> reports `toolUsePromptTokenCount: 32` against a `promptTokenCount` of `18`. A
+> slice cannot exceed the total it is a slice of. Gemini's
+> `totalTokenCount` reconciles only when the term is ADDED, making it a fourth
+> additive term rather than attribution. Excluding it from the billable keys
+> therefore UNDER-counts a grounded Gemini turn by exactly that amount (32 of
+> 222 tokens on that recording).
+>
+> **CORRECTED IN 1.6.0 (registered money change).** Google charges the term at
+> the input rate, so the Gemini reader now adds it to `IrUsage::input_tokens`
+> (both the buffered decode and `recover_truncated_usage`), and a grounded turn
+> bills Google's own stated `totalTokenCount`. It stays in `IrUsageDetail` as
+> ATTRIBUTION — how many of those input tokens were server-side tool use — and,
+> like every other detail field, is never emitted as its own billable key, so
+> the anti-double-count rule above still holds: the tokens are counted once, in
+> the input tier. `IrUsageDetail::usage_identity_note` remains, now as a
+> discrepancy metric for a `totalTokenCount` the modelled terms cannot reach.
+> See `docs/design/gemini-usage-metadata-spec-discrepancy.md`.
 
 ---
 

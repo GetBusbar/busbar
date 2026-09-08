@@ -1197,3 +1197,209 @@ fn the_sealed_door_and_the_facts_door_are_one_implementation() {
         );
     }
 }
+
+// ── the percent-decode arm of the host normalization ────────────────────────────────────────────
+//
+// `extract_normalized_host` percent-decodes before it answers, and nothing in this crate said so.
+// Reducing the decode to an identity left the whole suite green while
+// `https://169%2E254%2E169%2E254/` reached the range checks as a host that parses as no `IpAddr`,
+// matches no metadata name, and is therefore waved through — after which the `url` crate reqwest
+// uses decodes the dots and dials the real IMDS address. The rows below are the decision table the
+// decode actually implements, not one happy case: what decodes, what deliberately does NOT, and
+// where the decode sits relative to the trailing-root-dot strip that runs after it.
+
+/// A `%XX` escape naming a dot is the same host as the dot, which is the whole SSRF claim.
+#[test]
+fn a_percent_encoded_metadata_host_normalizes_to_the_address_it_will_dial() {
+    assert_eq!(
+        extract_normalized_host("https://169%2E254%2E169%2E254/").as_deref(),
+        Some("169.254.169.254"),
+        "an escaped dot must be read as the dot the connecting stack will read"
+    );
+    // Lower-case hex is the same escape. A decoder that accepted only one case would leave the
+    // other spelling as the bypass it replaced.
+    assert_eq!(
+        extract_normalized_host("https://169%2e254%2e169%2e254/").as_deref(),
+        Some("169.254.169.254")
+    );
+    // And the decoded literal really is an address, which is what makes every range check below it
+    // apply at all.
+    assert!("169.254.169.254".parse::<IpAddr>().is_ok());
+}
+
+/// An escape this decoder cannot read stays VERBATIM rather than being dropped or guessed at.
+///
+/// Dropping a malformed escape would be the same bypass in reverse: the host would collapse toward
+/// a shorter string the stack never produces, and a guard that reads a host the socket does not
+/// connect to is not a guard.
+#[test]
+fn a_malformed_percent_escape_is_left_exactly_as_it_was_written() {
+    // A `%` with nothing behind it, and one with only a single character behind it: no two hex
+    // digits, so no escape.
+    assert_eq!(
+        extract_normalized_host("https://host.example%/").as_deref(),
+        Some("host.example%")
+    );
+    assert_eq!(
+        extract_normalized_host("https://host.exampl%4/").as_deref(),
+        Some("host.exampl%4")
+    );
+    // Two characters that are not hex.
+    assert_eq!(
+        extract_normalized_host("https://host%ZZexample/").as_deref(),
+        Some("host%ZZexample")
+    );
+    // None of these is an address, which is the point: they stay non-matching rather than becoming
+    // a different host.
+    assert!("host.example%".parse::<IpAddr>().is_err());
+}
+
+/// The decode runs EXACTLY ONCE. `%252E` is the escape for the literal text `%2E`, and a decoder
+/// that looped would turn it into a dot — reading a host the connecting stack never dials.
+#[test]
+fn the_decode_runs_once_and_does_not_unwrap_a_double_encoding() {
+    assert_eq!(
+        extract_normalized_host("https://169%252E254%252E169%252E254/").as_deref(),
+        Some("169%2E254%2E169%2E254"),
+        "one pass, so a double encoding decodes to the literal escape text and no further"
+    );
+}
+
+/// A decoding that would not be TEXT is abandoned and the original stands.
+///
+/// `%FF` is a legal escape and an illegal UTF-8 byte on its own, so the decode produces bytes that
+/// are not a string. The rule is that the host reverts to exactly what was written rather than
+/// being lossily patched up: a replacement character substituted here would be a host that neither
+/// the config nor the connecting stack ever names, and every list comparison below would be made
+/// against a string nobody can produce.
+#[test]
+fn a_decoding_that_would_not_be_text_leaves_the_host_as_it_was() {
+    assert_eq!(
+        extract_normalized_host("https://host%FFexample.test/").as_deref(),
+        Some("host%FFexample.test"),
+        "bytes that are not UTF-8 abandon the decode rather than mangling the host"
+    );
+}
+
+/// A NUL, by contrast, IS text and therefore DOES decode — pinned because the two escapes look
+/// alike and behave differently, and because the decoded form is what the guard must compare.
+///
+/// The decoded host is `169.254.169.254\0.evil.example`, which is not the metadata address and is
+/// not meant to be: the escape does not truncate the host, so it cannot be used to make a longer
+/// attacker-controlled name compare equal to a shorter blocked one.
+#[test]
+fn an_escaped_nul_decodes_and_does_not_truncate_the_host() {
+    assert_eq!(
+        extract_normalized_host("https://169.254.169.254%00.evil.example/").as_deref(),
+        Some("169.254.169.254\u{0}.evil.example"),
+        "the NUL decodes in place; the host is not cut short at it"
+    );
+    assert!(
+        "169.254.169.254\u{0}.evil.example"
+            .parse::<IpAddr>()
+            .is_err(),
+        "and the decoded host is still not the metadata address"
+    );
+}
+
+/// The decode happens BEFORE the trailing-root-dot strip, so an escaped trailing dot is stripped
+/// too. Ordered the other way, `169.254.169.254%2E` would keep the escape, parse as no `IpAddr`,
+/// and defeat every range check while glibc resolved it as the rooted FQDN it is.
+#[test]
+fn an_escaped_trailing_root_dot_is_stripped_because_the_decode_comes_first() {
+    assert_eq!(
+        extract_normalized_host("https://169.254.169.254%2E/").as_deref(),
+        Some("169.254.169.254")
+    );
+    // The unescaped spelling of the same thing, so the two are pinned as one answer.
+    assert_eq!(
+        extract_normalized_host("https://169.254.169.254./").as_deref(),
+        Some("169.254.169.254")
+    );
+}
+
+/// A host with no `%` in it at all comes back unchanged — the ordinary case, pinned so the
+/// borrowing fast path cannot start rewriting hosts nobody escaped.
+#[test]
+fn a_host_with_no_escape_in_it_is_returned_unchanged() {
+    assert_eq!(
+        extract_normalized_host("https://api.openai.com/v1").as_deref(),
+        Some("api.openai.com")
+    );
+}
+
+/// WHITESPACE AROUND A URL MUST NOT BUY A METADATA HOP. The WHATWG basic URL parser begins by
+/// trimming leading and trailing C0 controls AND spaces from the input, and by deleting every ASCII
+/// tab / CR / LF from anywhere inside it — so a connecting stack sees `169.254.169.254` for every
+/// spelling below. Any spelling this guard reads differently from the stack that will dial it is a
+/// bypass: a token endpoint POSTs client credentials to the URL verbatim, so a host the guard failed
+/// to recognize as IMDS is a host that receives those credentials.
+///
+/// Ported byte-for-byte from the live sibling copy's own coverage
+/// (`busbar-substrate/src/tests/net_guard_tests.rs`), because the extraction dropped half of that
+/// first step and kept the tests that would have said so on the other side of the move.
+#[test]
+fn whitespace_padded_metadata_urls_are_still_refused() {
+    for spelling in [
+        "http://169.254.169.254/latest/meta-data/ ", // trailing space after the path
+        "http://169.254.169.254 ",                   // trailing space directly after the host
+        " http://169.254.169.254/latest/meta-data/", // leading space (would hide the scheme)
+        "\u{1}http://169.254.169.254/",              // leading C0 control
+        "http://169.254.169.254/\u{1f}",             // trailing C0 control
+        "http://169.254.169\t.254/",                 // interior tab, deleted by the parser
+        "http://169.254.169.254\r\n/",               // interior CR/LF
+        "\t http://169.254.169.254/ \r\n",           // mixed padding, both ends
+    ] {
+        assert_eq!(
+            ssrf_blocked_host(spelling, &[], false, &[]).as_deref(),
+            Some("169.254.169.254"),
+            "{spelling:?} is dialled as the IMDS target once the parser trims and deletes the \
+             whitespace the guard must trim and delete the same way"
+        );
+    }
+}
+
+/// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
+/// of the three deleted bytes) is left alone, so a malformed host stays malformed rather than being
+/// silently repaired into something that matches.
+#[test]
+fn interior_spaces_are_not_trimmed_away() {
+    assert_eq!(
+        extract_normalized_host("http://169.254.169 .254/").as_deref(),
+        Some("169.254.169 .254")
+    );
+    assert_eq!(
+        ssrf_blocked_host("http://169.254.169 .254/", &[], false, &[]),
+        None
+    );
+    assert_eq!(
+        extract_normalized_host("  https://api.openai.com/v1  ").as_deref(),
+        Some("api.openai.com")
+    );
+}
+
+/// THE OPERATOR'S DENYLIST IS THE THING THE PADDING DEFEATED. The metadata refusals above are
+/// hard-coded ranges; an operator's own `blocked_metadata_hosts` entry is a `HostSet` match on the
+/// extracted host, so a host that carries a trailing space matches no entry and the block silently
+/// does not fire while the connecting stack trims and dials it.
+#[test]
+fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
+    let blocked = vec!["10.99.99.99".to_string()];
+    for spelling in [
+        "https://10.99.99.99",
+        "https://10.99.99.99 ",
+        " https://10.99.99.99",
+        "https://10.99.99.99\u{1f}",
+        // The bare-authority spelling of the same destination, which `judge_against_lists` falls
+        // back to and which runs the same first step.
+        "10.99.99.99",
+        "10.99.99.99 ",
+        " 10.99.99.99:8443",
+    ] {
+        assert_eq!(
+            ssrf_blocked_host(spelling, &[], false, &blocked).as_deref(),
+            Some("10.99.99.99"),
+            "{spelling:?} must fire the operator's denylist entry"
+        );
+    }
+}

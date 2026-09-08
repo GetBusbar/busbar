@@ -61,10 +61,22 @@ models:
     .unwrap();
 }
 
+/// The variable `validate_notes_unset_interpolated_env_vars_by_name` relies on being ABSENT. Named
+/// here because [`run_busbar`] is what has to guarantee that, per child.
+const UNSET_INTERPOLATION_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
+
 /// Run the real busbar binary with the fixture's config env; returns (exit_code, stdout, stderr).
 fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(args)
+        // The unset-interpolation test needs its var genuinely absent in the CHILD regardless of the
+        // ambient environment. Cleared per-child rather than with `std::env::remove_var` in the
+        // parent: libtest runs this binary's ~20 tests on concurrent threads and every one of them
+        // sits inside `Command::output()`, which reads `environ`. Mutating the process environment
+        // while a sibling spawns is the documented-unsound setenv/getenv race, and its symptom is
+        // not a clean failure -- it is a child that silently never received MOCK_KEY or
+        // BUSBAR_CONFIG. Per-child it is ordered, and harmless: no other test sets this var.
+        .env_remove(UNSET_INTERPOLATION_VAR)
         // `--validate` RESOLVES built-in secret refs, so the fixture's referenced var must be set.
         .env("MOCK_KEY", "test-key-value")
         .env(
@@ -149,16 +161,15 @@ fn validate_ok_on_valid_config_without_plugins() {
 #[test]
 fn validate_notes_unset_interpolated_env_vars_by_name() {
     let dir = fixture_dir("unsetenv");
-    // Defensive: ensure the var is genuinely unset regardless of the ambient environment (this test
-    // never sets it, only relies on its absence).
-    std::env::remove_var("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR");
+    // The var is guaranteed absent in the child by `run_busbar`'s `.env_remove` -- see the comment
+    // there for why this must not be a `std::env::remove_var` in this shared-process parent.
     // `${VAR}` interpolation runs on the RAW config text before YAML parsing (see
     // config::interpolate_env_with), so a reference inside a COMMENT is still recorded as
     // referenced/unset while being guaranteed structurally harmless -- no risk of the substituted
     // (empty) value landing in a real field and failing config validation for an unrelated reason.
     write_configs(
         &dir,
-        "# smoke-tests unset-env-var interpolation: ${BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR}\n",
+        &format!("# smoke-tests unset-env-var interpolation: ${{{UNSET_INTERPOLATION_VAR}}}\n"),
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -167,7 +178,7 @@ fn validate_notes_unset_interpolated_env_vars_by_name() {
     );
     assert!(
         stdout.contains("1 env var(s) referenced but unset here")
-            && stdout.contains("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR"),
+            && stdout.contains(UNSET_INTERPOLATION_VAR),
         "expected the unset-var note naming the variable, got: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1204,6 +1215,96 @@ fn busbar_providers_env_is_deprecated_but_honored() {
     assert!(
         stderr.contains(warn),
         "the deprecation warning fires whenever the var is set: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A config whose SOLE provider's `api_key` is `api_key_yaml` verbatim (`{ env: X }`, `none`, …).
+/// The shared `write_configs` hard-codes `{ env: MOCK_KEY }`; the credential tests below need to
+/// vary exactly that field.
+fn write_configs_with_api_key(dir: &Path, api_key_yaml: &str, extra: &str) {
+    std::fs::write(
+        dir.join("providers.yaml"),
+        r#"mock:
+  protocol: anthropic
+  base_url: "http://127.0.0.1:9"
+  api_key_env: MOCK_KEY
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            r#"listen: "127.0.0.1:0"
+providers:
+  mock:
+    api_key: {api_key_yaml}
+models:
+  test-model:
+    provider: mock
+{extra}"#
+        ),
+    )
+    .unwrap();
+}
+
+/// FAIL-CLOSED: a provider `api_key` naming an UNSET variable fails `--validate` (exit 1), naming
+/// the config path and the reference. `run_busbar` sets `MOCK_KEY` to a known value, so this also
+/// proves the refusal carries no credential material — a diagnostic must never print a resolved
+/// secret, and the whole point of this change is that the credential path is fail-closed WITHOUT
+/// becoming a place secrets leak.
+#[test]
+fn validate_refuses_a_provider_api_key_that_does_not_resolve() {
+    let dir = fixture_dir("apikey-unresolvable");
+    let unset = format!("BUSBAR_CLI_UNSET_PROVIDER_KEY_{}", std::process::id());
+    write_configs_with_api_key(&dir, &format!("{{ env: {unset} }}"), "");
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "an unresolvable api_key fails validate: {stdout}");
+    assert!(
+        stderr.contains("providers.mock.api_key"),
+        "the refusal names the field: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("env:{unset}")),
+        "the refusal names the reference: {stderr}"
+    );
+    assert!(
+        !stderr.contains("test-key-value"),
+        "a resolved credential value must never appear in a refusal"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `api_key: none` — the explicit keyless declaration for a local ollama / vLLM — validates CLEAN
+/// with no variable set for it anywhere. This is the migration path off the removed
+/// degrade-to-an-empty-credential behaviour, so it has to work at the outermost surface.
+#[test]
+fn validate_accepts_api_key_none_for_a_keyless_upstream() {
+    let dir = fixture_dir("apikey-none");
+    write_configs_with_api_key(&dir, "none", "");
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 0, "`api_key: none` is valid: {stderr}");
+    assert!(stdout.contains("ok: config valid"), "got {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `none` is accepted ONLY where an absent credential is meaningful. On `auth.signing_key` — which
+/// has no credential-free mode — it is a refusal, not a silently disabled signer. That is the same
+/// class of quiet failure the provider degrade used to cause, so the new form must not reintroduce
+/// it one field over.
+#[test]
+fn validate_refuses_none_on_a_secret_that_requires_a_credential() {
+    let dir = fixture_dir("none-on-signing-key");
+    write_configs_with_api_key(
+        &dir,
+        "{ env: MOCK_KEY }",
+        "auth:\n  signing_key: none\n  chain: [keys]\n",
+    );
+    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    assert_eq!(code, 1, "`none` on a signing key is refused: {stdout}");
+    assert!(
+        stderr.contains("auth.signing_key") && stderr.contains("NO credential"),
+        "the refusal names the field and why `none` is wrong there: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

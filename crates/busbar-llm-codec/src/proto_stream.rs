@@ -1478,6 +1478,7 @@ fn merge_trailing_usage_detail(
         billed_input_tokens,
         billed_output_tokens,
         billed_classifications,
+        usage_identity_note,
     } = trailing;
 
     if reasoning_tokens.is_some() {
@@ -1529,6 +1530,14 @@ fn merge_trailing_usage_detail(
     }
     if billed_output_tokens.is_some() {
         acc.billed_output_tokens = *billed_output_tokens;
+    }
+    // The usage-identity cross-check is computed from whichever frame carried the counters, and on a
+    // Gemini stream that is the TRAILING frame — the early ones carry a `usageMetadata` object with
+    // no counters in it at all. Same-wins rule as the rest: a trailing frame that found a
+    // discrepancy must be able to report one the accumulator does not have yet, or a streamed turn
+    // would reconcile silently where its buffered twin reports the shortfall.
+    if usage_identity_note.is_some() {
+        acc.usage_identity_note = usage_identity_note.clone();
     }
     if billed_classifications.is_some() {
         acc.billed_classifications = *billed_classifications;

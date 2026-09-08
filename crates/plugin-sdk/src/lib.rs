@@ -224,6 +224,12 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             expires_at,
             now,
         } => R::Redeemed(store.redeem_plane_token(&kind, &token, expires_at, now)?),
+        Q::PlaneTokenLive {
+            kind,
+            token,
+            expires_at,
+            now,
+        } => R::TokenLive(store.plane_token_live(&kind, &token, expires_at, now)?),
     })
 }
 

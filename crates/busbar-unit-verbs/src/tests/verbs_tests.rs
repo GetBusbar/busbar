@@ -627,6 +627,61 @@ fn rotate_scoped_idempotency_key_replays_and_does_not_collide_with_create() {
     assert_eq!(second.body(), first.body());
 }
 
+/// `SecretOnce::target()` names the ONE place its secret may appear, and a create and a rotate
+/// must declare DIFFERENT ones — swapping the two literals at the call sites (`verbs.rs:319` and
+/// `:381`) would have a rotate declare its target as the mint's field and passes every other
+/// assertion in this file, since nothing here reads `target()` at all.
+#[test]
+fn create_and_rotate_declare_their_own_distinct_secret_targets() {
+    let gov = FakeGovernance::new().with_key("k1", false);
+    let verbs = make_verbs(gov);
+    let admin = admin();
+
+    let minted = verbs
+        .create_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(1),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        minted
+            .minted_outcome()
+            .expect("a fresh mint")
+            .secret
+            .target(),
+        "response.secret",
+        "a mint's secret must be declared at the mint's own response field"
+    );
+
+    let rotated = verbs
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            UnitKey::new(2),
+            None,
+            "k1",
+        )
+        .unwrap();
+    assert_eq!(
+        rotated
+            .minted_outcome()
+            .expect("a fresh rotation")
+            .secret
+            .target(),
+        "response.token",
+        "a rotation's secret must be declared at the rotation's own response field, not the \
+         mint's"
+    );
+}
+
 #[test]
 fn a_new_verb_refused_by_posture_never_reaches_governance() {
     let verbs = make_verbs(FakeGovernance::new());
@@ -1346,6 +1401,137 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
             .unwrap_err();
         assert_eq!(err.reason, crate::refusal::ReasonCode::NotFound);
     }
+}
+
+/// THE TWO MINTING VERBS ARE REFUSED ON THE GENERIC PATH, IN EVERY BUILD.
+///
+/// `create_key`/`rotate_key` have dedicated methods because they are the two operations with a
+/// replay cache: a retry inside the window must return the first response rather than mint a second
+/// credential. The generic dispatcher has none of that, so a caller that routes either verb through
+/// it hands the mint straight to the legacy catch-all and every retry mints again — a fresh admin
+/// credential per network hiccup, none of which the client asked for and only the last of which it
+/// sees.
+///
+/// A `debug_assert` said so in debug builds and said nothing in a release binary, which is the one
+/// build where it matters. The refusal is the same answer every other unresolvable precondition in
+/// this crate gets, and it is the same one in both profiles.
+#[test]
+fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_double_minting() {
+    let admin = admin();
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
+
+    for verb in [KernelVerb::PostKeys, KernelVerb::PostKeysIdRotate] {
+        let Err(err) = verbs.execute(
+            verb,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        ) else {
+            panic!("{verb:?} must not be served by the generic dispatcher");
+        };
+        assert_eq!(err.reason, crate::refusal::ReasonCode::Internal);
+        assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
+    }
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a minting verb reached a governance seam through the generic path"
+    );
+
+    // The control: another legacy mutation on the same executor still reaches the legacy seam.
+    verbs
+        .execute(
+            KernelVerb::PostGroups,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .expect("an ordinary legacy mutation is still served");
+    assert_eq!(
+        log.lock().unwrap().clone(),
+        vec![(KernelVerb::PostGroups, "legacy")]
+    );
+}
+
+/// The two 1.6.0 verbs the design binds as GETs are reads, and a read-only credential is what they
+/// ask for.
+///
+/// `verify` and `plane_facts` are the two of the seventeen the architecture document binds as `GET`
+/// — "GET for the two read-only verbs" — and everything that follows from a verb being a read
+/// follows for them: an operator holding a read-only admin credential is answered, and the
+/// maker-checker gate has no mutation of theirs to interpose on, so `required` posture answers them
+/// too. Demanding `full` of them refuses the operator who was only ever allowed to look; holding
+/// them behind an approval refuses them forever, because there is no pending mutation anyone can
+/// approve.
+///
+/// The control below is a mutating verb on the same executor under the same posture, so the green
+/// above is these two being reads rather than the gates being unwired.
+#[test]
+fn the_two_read_only_new_verbs_answer_a_read_only_credential_under_required_posture() {
+    let admin = admin();
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
+    let posture = Some(PostureCtx {
+        operator: OperatorState::Set,
+        dual_control: DualControl::Required,
+    });
+
+    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
+        assert_eq!(
+            crate::verbs::required_scope(verb),
+            VerbScope::ReadOnly,
+            "{verb:?} is bound as a GET and must ask what a read asks"
+        );
+        let body = verbs
+            .execute(
+                verb,
+                &admin,
+                "alice",
+                VerbScope::ReadOnly,
+                0,
+                posture,
+                ApprovalState::NotYetApproved,
+                b"",
+            )
+            .unwrap_or_else(|e| panic!("{verb:?} was refused: {e:?}"));
+        assert_eq!(body, b"new", "{verb:?} did not reach the new-verb seam");
+    }
+
+    // The control: a mutating new verb still needs `full`, and still waits for its approval.
+    let err = verbs
+        .execute(
+            KernelVerb::Adjust,
+            &admin,
+            "alice",
+            VerbScope::ReadOnly,
+            0,
+            posture,
+            ApprovalState::NotYetApproved,
+            b"",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
+    let err = verbs
+        .execute(
+            KernelVerb::Adjust,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            posture,
+            ApprovalState::NotYetApproved,
+            b"",
+        )
+        .unwrap_err();
+    assert_eq!(err.reason, crate::refusal::ReasonCode::ApprovalPending);
 }
 
 /// A store that records which recovery primitive it was asked to perform, so a test can say

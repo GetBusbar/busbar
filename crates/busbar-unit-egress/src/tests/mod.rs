@@ -46,6 +46,9 @@ pub(crate) struct Node {
     pub affinity: Option<u64>,
     pub preference: Option<Vec<DestinationId>>,
     pub wants_stream: bool,
+    /// The envelope field the lane name is carried in, for the lane cross-check. `None` by
+    /// default: most tests have no lane field to check and the cross-check is a no-op for them.
+    pub lane_field: Option<&'static str>,
 }
 
 impl Node {
@@ -67,6 +70,7 @@ impl Node {
             affinity: None,
             preference: None,
             wants_stream: false,
+            lane_field: None,
         }
     }
 
@@ -163,7 +167,7 @@ impl Node {
             leg: 0,
             wants_stream: self.wants_stream,
             stream_ceiling_secs: 300,
-            lane_field: None,
+            lane_field: self.lane_field,
             stream: busbar_contract::StreamId(0),
             floor: &self.floor,
         };

@@ -458,19 +458,37 @@ fn a_claim_with_no_scheme_offers_nothing_to_narrow_to() {
     assert!(!narrows_to(&open, "anonymous"));
 }
 
-/// The family a form belongs to is fixed, and every form belongs to exactly one.
+/// The family a form belongs to is fixed, and this is WHICH one.
+///
+/// Asserting only that the answer is a family named somewhere in the enum is an assertion no answer
+/// could fail, and the family is not a label: `different_families_always_overlap` above reads it,
+/// so a form that moved into another family would quietly stop being asked the question its own
+/// family answers. The expectation is a decision per form, written out, with no catch-all — so a
+/// form added to the enum stops this file compiling until somebody says which part of a request it
+/// reads.
 #[test]
 fn every_form_has_one_family() {
     for form in ALL_FORMS {
-        let family = form.family();
-        assert!(matches!(
-            family,
-            SelectorFamily::Path
-                | SelectorFamily::Header
-                | SelectorFamily::Handshake
-                | SelectorFamily::Stream
-                | SelectorFamily::Port
-        ));
+        let expected = match form {
+            SelectorForm::ExactPath
+            | SelectorForm::PrefixOneLevel
+            | SelectorForm::PathPattern
+            | SelectorForm::PathSuffix
+            | SelectorForm::PathContains => SelectorFamily::Path,
+            SelectorForm::HeaderExact | SelectorForm::HeaderPresent | SelectorForm::HeaderPrefix => {
+                SelectorFamily::Header
+            }
+            SelectorForm::Sni | SelectorForm::ClientCertSubject | SelectorForm::Alpn => {
+                SelectorFamily::Handshake
+            }
+            SelectorForm::StreamName => SelectorFamily::Stream,
+            SelectorForm::Port => SelectorFamily::Port,
+        };
+        assert_eq!(
+            form.family(),
+            expected,
+            "{form} reads a different part of a request than its family says"
+        );
     }
 }
 

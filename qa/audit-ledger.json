@@ -1,6 +1,6 @@
 {
  "_comment": [
-  "GENERATED scope list -- `scripts/audit-ledger.py sync --write` derives it from the tree.",
+  "GENERATED scope list -- `cargo xtask ledger sync --write` derives it from the tree.",
   "Audit records (round/result/report/auditor/fixed_at/tree_hash) are hand-stamped by",
   "`record` and `fixed` and are preserved across sync.",
   "tree_hash = sha256 over the sorted `path<TAB>blob-oid` list of the scope's tracked files at",
@@ -355,18 +355,36 @@
    "paths": [
     "crates/busbar-a2a/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "7f485902036bf80af700b4cd69035cd416cb413c2aff9d6b3c977247c12f3d4e",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 3,
+    "LOW": 3
+   },
+   "report": "audits/prod-a2a.md — PARTIAL first read (wind-down): backend URL leaks into refusals; legacy pushback token never revoked; unmetered GetExtendedAgentCard/ListTasks",
+   "auditor": "opus-prod-auditor-a2a",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-a2a/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-a2a",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "7f485902036bf80af700b4cd69035cd416cb413c2aff9d6b3c977247c12f3d4e",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 3,
+      "LOW": 3
+     },
+     "report": "audits/prod-a2a.md — PARTIAL first read (wind-down): backend URL leaks into refusals; legacy pushback token never revoked; unmetered GetExtendedAgentCard/ListTasks"
+    }
+   ]
   },
   {
    "id": "crates/busbar-a2a-codec/src",
@@ -825,18 +843,36 @@
    "paths": [
     "crates/busbar-llm/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "0bad9cd81cd907f143cdf8c4174ba8988676421524731e661696acba3327872b",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 5,
+    "LOW": 3
+   },
+   "report": "audits/prod-llm.md — PARTIAL first read (wind-down): Meter step never receives a sink/hold on live units; non-SSE post-first-byte cut refunds",
+   "auditor": "opus-prod-auditor-llm",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-llm",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "0bad9cd81cd907f143cdf8c4174ba8988676421524731e661696acba3327872b",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 5,
+      "LOW": 3
+     },
+     "report": "audits/prod-llm.md — PARTIAL first read (wind-down): Meter step never receives a sink/hold on live units; non-SSE post-first-byte cut refunds"
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm-codec/src",
@@ -1345,18 +1381,36 @@
    "paths": [
     "crates/busbar-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "caf3501a42089431888d219c29c8915c31ae7b1515597eff9a94ec84c970193e",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "caf3501a42089431888d219c29c8915c31ae7b1515597eff9a94ec84c970193e",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/busbar-substrate/src",
@@ -2905,16 +2959,17 @@
    "paths": [
     "crates/plugin-loader/src"
    ],
-   "tree_hash": "9e546c3a6f86423d5914b6fc030e74d08621813fd0b343a457e9a73199979933",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "tree_hash": "e5cf818335b9cc60a0d596efee2acdf5d55c6351e12bfcfde7bfeb022b1fba7e",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 6,
-    "LOW": 5
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
    },
-   "report": "read_buf no isize bound, publish_handle drop after catch_unwind, replay cache on wall clock, shim cannot say in-flight (ABI), key_bucket_plan double-count, staging dir via symlink reported; hold-escapes fixed; stale waivers red",
-   "auditor": "opus-pass2",
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-loader/src/tests"
@@ -2945,6 +3000,19 @@
       "LOW": 5
      },
      "report": "read_buf no isize bound, publish_handle drop after catch_unwind, replay cache on wall clock, shim cannot say in-flight (ABI), key_bucket_plan double-count, staging dir via symlink reported; hold-escapes fixed; stale waivers red"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "e5cf818335b9cc60a0d596efee2acdf5d55c6351e12bfcfde7bfeb022b1fba7e",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
     }
    ]
   },
@@ -2954,18 +3022,36 @@
    "paths": [
     "crates/plugin-pack/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "c4eee4b0205e454824878bfa779aeffb42caead81efdb062e8c3daa98f0a7f85",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-pack/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "c4eee4b0205e454824878bfa779aeffb42caead81efdb062e8c3daa98f0a7f85",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/plugin-sdk/src",
@@ -2973,18 +3059,17 @@
    "paths": [
     "crates/plugin-sdk/src"
    ],
-   "tree_hash": "b46ac9eb8ddd63ce8f4bebbcfa2ee9cda71acc84ae97c2b570818c915e674bdd",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 5,
+   "tree_hash": "34a10e3aced4ac756871a07cbde23fb71d78f8b16cb5eb962742d90ffcc758d7",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 6,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 9,
-    "LOW": 6,
-    "NIT": 5
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
    },
-   "report": "findings against substrate+plugin-loader+plugin-sdk+timing; the reading's detail was not carried into the register",
-   "auditor": "opus",
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sdk/src/tests"
@@ -3003,6 +3088,19 @@
       "NIT": 5
      },
      "report": "findings against substrate+plugin-loader+plugin-sdk+timing; the reading's detail was not carried into the register"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "34a10e3aced4ac756871a07cbde23fb71d78f8b16cb5eb962742d90ffcc758d7",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
     }
    ]
   },
@@ -3012,18 +3110,36 @@
    "paths": [
     "crates/plugin-sign/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b39cbda5887ca455a23ff38104dfb538ea110cdb0c259a6d4f585b0c9669b14c",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sign/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "b39cbda5887ca455a23ff38104dfb538ea110cdb0c259a6d4f585b0c9669b14c",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/plugin-testkit/src",
@@ -3031,18 +3147,36 @@
    "paths": [
     "crates/plugin-testkit/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "4721b81ba45d84cd262a119b1f128455767c0b47f32bda368d65e4670fe1d965",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-testkit/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "4721b81ba45d84cd262a119b1f128455767c0b47f32bda368d65e4670fe1d965",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/secret-example-plugin/src",
@@ -3069,18 +3203,36 @@
    "paths": [
     "crates/secret-ref/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "a79f067f11b066245a1dfe8077a1f7185611592ac22d995931245e354655b348",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/secret-ref/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "a79f067f11b066245a1dfe8077a1f7185611592ac22d995931245e354655b348",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/store-example-plugin/src",
@@ -3126,18 +3278,49 @@
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
+   "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 19,
+    "MEDIUM": 34,
+    "LOW": 24
+   },
+   "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree",
+   "auditor": "opus-xtask-auditor-a",
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-xtask-auditor-b",
+     "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
+     "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
+     "counts": {
+      "HIGH": 45,
+      "MEDIUM": 55,
+      "LOW": 21
+     },
+     "report": "audits/xtask-b.md — PARTIAL (17 verified first-hand 7/6/4, 104 delegated leads): full-gate set-equality check runs on no automated path; green cases discharge proof coverage; scan.rs counts braces inside string literals"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-xtask-auditor-a",
+     "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
+     "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
+     "counts": {
+      "HIGH": 19,
+      "MEDIUM": 34,
+      "LOW": 24
+     },
+     "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree"
+    }
+   ]
   },
   {
    "id": "crates/api/src/tests",
@@ -3145,15 +3328,25 @@
    "paths": [
     "crates/api/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "bca2460e95de5f9e34f0cd24a839f600df7ddfc6e9be3c676d4d20338b35c87a",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
+   "auditor": "opus-test-auditor-root",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-root",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "bca2460e95de5f9e34f0cd24a839f600df7ddfc6e9be3c676d4d20338b35c87a",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
+    }
+   ]
   },
   {
    "id": "crates/auth-admin-tokens/src/tests",
@@ -3161,15 +3354,25 @@
    "paths": [
     "crates/auth-admin-tokens/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
+   "auditor": "opus-test-auditor-root",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-root",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
+    }
+   ]
   },
   {
    "id": "crates/auth-static-plugin/src/tests",
@@ -3177,15 +3380,25 @@
    "paths": [
     "crates/auth-static-plugin/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "b920f1ddf8fa341026ed3ca50bd55053e16da7d9be7af55750ad4ea05151e66e",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
+   "auditor": "opus-test-auditor-root",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-root",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "b920f1ddf8fa341026ed3ca50bd55053e16da7d9be7af55750ad4ea05151e66e",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar/src/tests",
@@ -3209,15 +3422,33 @@
    "paths": [
     "crates/busbar/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "d05798da5436a9190f90b4dc4d673a82ba99cdfd3c6704bd600f055959c4eac5",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 15,
+    "MEDIUM": 38,
+    "LOW": 13
+   },
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
+   "auditor": "opus-test-auditor-root",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-root",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "d05798da5436a9190f90b4dc4d673a82ba99cdfd3c6704bd600f055959c4eac5",
+     "counts": {
+      "HIGH": 15,
+      "MEDIUM": 38,
+      "LOW": 13
+     },
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar/benches",
@@ -3241,15 +3472,25 @@
    "paths": [
     "crates/busbar-a2a-codec/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "2e229a92f24b87e0d2ed8d317599f593f8a0148c2a3f9a2837f11e1d36624130",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "2e229a92f24b87e0d2ed8d317599f593f8a0148c2a3f9a2837f11e1d36624130",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-contract/tests",
@@ -3257,15 +3498,25 @@
    "paths": [
     "crates/busbar-contract/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "23ce9e4d68053fc3f7cb30591dc94ab5ada43903b7191d1706622b67d059b506",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+   "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-kernel",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "23ce9e4d68053fc3f7cb30591dc94ab5ada43903b7191d1706622b67d059b506",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-contract-transport/tests",
@@ -3273,15 +3524,25 @@
    "paths": [
     "crates/busbar-contract-transport/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e8145960243ab7a5428878e0c03b2d853477894cd90b7ee124c978774221e852",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+   "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-kernel",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "e8145960243ab7a5428878e0c03b2d853477894cd90b7ee124c978774221e852",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-core/src/tests",
@@ -3289,15 +3550,33 @@
    "paths": [
     "crates/busbar-core/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "a86ee2c767b7ca142d4002b0db57f6d6843f7e118c6a529269cf12deb80d3dd2",
+   "audited_at": "759280973a9075e8c1197116643156290af970a0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 4,
+    "LOW": 9
+   },
+   "report": "busbar-landq-state/gate/audits/tests-core.md",
+   "auditor": "opus-test-auditor-core",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-core",
+     "audited_at": "759280973a9075e8c1197116643156290af970a0",
+     "tree_hash": "a86ee2c767b7ca142d4002b0db57f6d6843f7e118c6a529269cf12deb80d3dd2",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 4,
+      "LOW": 9
+     },
+     "report": "busbar-landq-state/gate/audits/tests-core.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-core/tests",
@@ -3305,15 +3584,25 @@
    "paths": [
     "crates/busbar-core/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e0a9e1f71f4cdc38d7463cc25f3b347db57b2544453401ff020805deb0e4321e",
+   "audited_at": "759280973a9075e8c1197116643156290af970a0",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-core.md",
+   "auditor": "opus-test-auditor-core",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-core",
+     "audited_at": "759280973a9075e8c1197116643156290af970a0",
+     "tree_hash": "e0a9e1f71f4cdc38d7463cc25f3b347db57b2544453401ff020805deb0e4321e",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-core.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-core/benches",
@@ -3321,15 +3610,25 @@
    "paths": [
     "crates/busbar-core/benches"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "28ea7fb4572361032187d5d346b1edbc47aecf0c1829e5b2a91cb88122d37427",
+   "audited_at": "759280973a9075e8c1197116643156290af970a0",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-core.md",
+   "auditor": "opus-test-auditor-core",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-core",
+     "audited_at": "759280973a9075e8c1197116643156290af970a0",
+     "tree_hash": "28ea7fb4572361032187d5d346b1edbc47aecf0c1829e5b2a91cb88122d37427",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-core.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-grammar/tests",
@@ -3337,15 +3636,25 @@
    "paths": [
     "crates/busbar-grammar/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "d3c391149ca3217a2e2f010833994294e78b771a450f93ce15222093e0604192",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+   "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-kernel",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "d3c391149ca3217a2e2f010833994294e78b771a450f93ce15222093e0604192",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-kernel/tests",
@@ -3353,15 +3662,33 @@
    "paths": [
     "crates/busbar-kernel/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "24f5c4ae492082579c2dfcb1ebae67e9202cd9ea82dc6f98ed3256ecbb644101",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 12,
+    "LOW": 5
+   },
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+   "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-kernel",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "24f5c4ae492082579c2dfcb1ebae67e9202cd9ea82dc6f98ed3256ecbb644101",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 12,
+      "LOW": 5
+     },
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm/src/tests",
@@ -3369,15 +3696,25 @@
    "paths": [
     "crates/busbar-llm/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e0546e3be8ac02b761616d7f49db247566e4556b95a7adbafd4d4d62d12b0f0e",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-llm-codec.md",
+   "auditor": "opus-test-auditor-llm-codec",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-llm-codec",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "e0546e3be8ac02b761616d7f49db247566e4556b95a7adbafd4d4d62d12b0f0e",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-llm-codec.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm-codec/src/tests",
@@ -3385,15 +3722,33 @@
    "paths": [
     "crates/busbar-llm-codec/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9a2c9578fe7bfd1f9227439eefc7d672b4ffee70f4a46e6218a7b37daeca80a8",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 8,
+    "MEDIUM": 25,
+    "LOW": 9
+   },
+   "report": "busbar-landq-state/gate/audits/tests-llm-codec.md",
+   "auditor": "opus-test-auditor-llm-codec",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-llm-codec",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "9a2c9578fe7bfd1f9227439eefc7d672b4ffee70f4a46e6218a7b37daeca80a8",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 25,
+      "LOW": 9
+     },
+     "report": "busbar-landq-state/gate/audits/tests-llm-codec.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-mcp/src/tests",
@@ -3401,15 +3756,33 @@
    "paths": [
     "crates/busbar-mcp/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "f4f41ce28815eec87fcb583eb5d60144b6139753dbb16044154480a222ddc22c",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 6,
+    "LOW": 5
+   },
+   "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md",
+   "auditor": "opus-test-auditor-legacy-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-legacy-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "f4f41ce28815eec87fcb583eb5d60144b6139753dbb16044154480a222ddc22c",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 6,
+      "LOW": 5
+     },
+     "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-mcp-codec/src/tests",
@@ -3417,6 +3790,32 @@
    "paths": [
     "crates/busbar-mcp-codec/src/tests"
    ],
+   "tree_hash": "bae2bdf74469067ef3206f018819f6a2427638c08ece9559d2505d0aed7b0bcb",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {},
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "bae2bdf74469067ef3206f018819f6a2427638c08ece9559d2505d0aed7b0bcb",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-a2a/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a/src/tests"
+   ],
    "tree_hash": null,
    "audited_at": null,
    "round": null,
@@ -3424,8 +3823,7 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null,
-   "rounds": []
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-a2a/tests",
@@ -3433,6 +3831,32 @@
    "paths": [
     "crates/busbar-plane-a2a/tests"
    ],
+   "tree_hash": "b9e93945fae157395cd4f3d0124da766887c2b0ad6d6cf501bcf4a1cedbd8217",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {},
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "b9e93945fae157395cd4f3d0124da766887c2b0ad6d6cf501bcf4a1cedbd8217",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-admin/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-admin/src/tests"
+   ],
    "tree_hash": null,
    "audited_at": null,
    "round": null,
@@ -3440,8 +3864,7 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null,
-   "rounds": []
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-llm/tests",
@@ -3449,6 +3872,32 @@
    "paths": [
     "crates/busbar-plane-llm/tests"
    ],
+   "tree_hash": "de96fdf3ddb0bab81363dcf97ba0e9f8f937f7276de4e69a8df1a8ee93341997",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {},
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "de96fdf3ddb0bab81363dcf97ba0e9f8f937f7276de4e69a8df1a8ee93341997",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp/src/tests"
+   ],
    "tree_hash": null,
    "audited_at": null,
    "round": null,
@@ -3456,8 +3905,7 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null,
-   "rounds": []
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-mcp/tests",
@@ -3465,15 +3913,33 @@
    "paths": [
     "crates/busbar-plane-mcp/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "56342b88ee8fb65b1ecd3f343114e02fa25e214500b25a6e6294a6a1334bb4cc",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 3,
+    "LOW": 5
+   },
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "56342b88ee8fb65b1ecd3f343114e02fa25e214500b25a6e6294a6a1334bb4cc",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "LOW": 5
+     },
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-voice/src/tests",
@@ -3481,15 +3947,25 @@
    "paths": [
     "crates/busbar-plane-voice/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-voice/tests",
@@ -3497,15 +3973,25 @@
    "paths": [
     "crates/busbar-plane-voice/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plugin/src/tests",
@@ -3513,15 +3999,25 @@
    "paths": [
     "crates/busbar-plugin/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "ca963de88b5595f90b883824ad626048e13c6e6caf3ec8c86ec81ef429f95a78",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "ca963de88b5595f90b883824ad626048e13c6e6caf3ec8c86ec81ef429f95a78",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plugin/tests",
@@ -3529,15 +4025,25 @@
    "paths": [
     "crates/busbar-plugin/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e140bce4e2785ab92dccb81e5145b3a4a5af8d1a1252556085d6373052be57bf",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "e140bce4e2785ab92dccb81e5145b3a4a5af8d1a1252556085d6373052be57bf",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-substrate/src/tests",
@@ -3545,15 +4051,33 @@
    "paths": [
     "crates/busbar-substrate/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "99c121cdb1cf5f33b7c86ca5049e5ae639bbaf31ada428a56ff57b0bb1554fb0",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 3,
+    "LOW": 3
+   },
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+   "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-substrate",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "99c121cdb1cf5f33b7c86ca5049e5ae639bbaf31ada428a56ff57b0bb1554fb0",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "LOW": 3
+     },
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-substrate/tests",
@@ -3561,15 +4085,25 @@
    "paths": [
     "crates/busbar-substrate/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e8dc6d23cd79cd96eb3e18e814daa8b5cdfecea0ddf0bd5c097ffb9c5ac1d1c5",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+   "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-substrate",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "e8dc6d23cd79cd96eb3e18e814daa8b5cdfecea0ddf0bd5c097ffb9c5ac1d1c5",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-substrate-values/src/tests",
@@ -3577,15 +4111,25 @@
    "paths": [
     "crates/busbar-substrate-values/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e18a92c4987b7569403354b28fef78ef97b4b5ed368b74c37bf8ab31174ad9dc",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+   "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-substrate",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "e18a92c4987b7569403354b28fef78ef97b4b5ed368b74c37bf8ab31174ad9dc",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-timing/src/tests",
@@ -3593,15 +4137,25 @@
    "paths": [
     "crates/busbar-timing/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "ca9931f8ebc935c7c753f11cd32d04a9f0a83fcb59c6fde2383c4f8eaff82a67",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+   "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-kernel",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "ca9931f8ebc935c7c753f11cd32d04a9f0a83fcb59c6fde2383c4f8eaff82a67",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-timing/tests",
@@ -3609,15 +4163,25 @@
    "paths": [
     "crates/busbar-timing/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "226b72072791fd504e8bb9ff868b1fedb29827178dfa4eeecdc1d439698354c5",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
+   "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-kernel",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "226b72072791fd504e8bb9ff868b1fedb29827178dfa4eeecdc1d439698354c5",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-grpc/src/tests",
@@ -3625,6 +4189,32 @@
    "paths": [
     "crates/busbar-transport-grpc/src/tests"
    ],
+   "tree_hash": "192afb06e04c29f8932f69d8e75fad27ce7a9eb29fb24426bcee87d7543b299d",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {},
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+   "auditor": "opus-test-auditor-substrate",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-substrate",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "192afb06e04c29f8932f69d8e75fad27ce7a9eb29fb24426bcee87d7543b299d",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-http/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-http/src/tests"
+   ],
    "tree_hash": null,
    "audited_at": null,
    "round": null,
@@ -3632,8 +4222,22 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null,
-   "rounds": []
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-sse/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-sse/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-transport-stdio/src/tests",
@@ -3641,15 +4245,25 @@
    "paths": [
     "crates/busbar-transport-stdio/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "1af4fcc0e10064e63cb8808098017deb0d5dd400ef15dd1531c0b841d6ca482d",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+   "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-substrate",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "1af4fcc0e10064e63cb8808098017deb0d5dd400ef15dd1531c0b841d6ca482d",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-ws/src/tests",
@@ -3657,15 +4271,25 @@
    "paths": [
     "crates/busbar-transport-ws/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
+   "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-substrate",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-admission/src/tests",
@@ -3673,15 +4297,33 @@
    "paths": [
     "crates/busbar-unit-admission/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "02b0ec22593c021a3706948c8e86cb828521460754bdd57f2789f1379224512b",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 14,
+    "MEDIUM": 16,
+    "LOW": 13
+   },
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "02b0ec22593c021a3706948c8e86cb828521460754bdd57f2789f1379224512b",
+     "counts": {
+      "HIGH": 14,
+      "MEDIUM": 16,
+      "LOW": 13
+     },
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-audit/src/tests",
@@ -3689,15 +4331,25 @@
    "paths": [
     "crates/busbar-unit-audit/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-auth/src/tests",
@@ -3705,6 +4357,32 @@
    "paths": [
     "crates/busbar-unit-auth/src/tests"
    ],
+   "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {},
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-breaker/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-breaker/src/tests"
+   ],
    "tree_hash": null,
    "audited_at": null,
    "round": null,
@@ -3712,8 +4390,7 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null,
-   "rounds": []
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-unit-cost/src/tests",
@@ -3721,15 +4398,25 @@
    "paths": [
     "crates/busbar-unit-cost/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-cost/tests",
@@ -3737,15 +4424,25 @@
    "paths": [
     "crates/busbar-unit-cost/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-egress/src/tests",
@@ -3753,15 +4450,25 @@
    "paths": [
     "crates/busbar-unit-egress/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-egress/tests",
@@ -3769,15 +4476,25 @@
    "paths": [
     "crates/busbar-unit-egress/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-ledger/src/tests",
@@ -3785,15 +4502,25 @@
    "paths": [
     "crates/busbar-unit-ledger/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-trust/src/tests",
@@ -3801,15 +4528,25 @@
    "paths": [
     "crates/busbar-unit-trust/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-trust/tests",
@@ -3817,15 +4554,25 @@
    "paths": [
     "crates/busbar-unit-trust/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-usage/src/tests",
@@ -3833,15 +4580,25 @@
    "paths": [
     "crates/busbar-unit-usage/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-verbs/src/tests",
@@ -3849,15 +4606,25 @@
    "paths": [
     "crates/busbar-unit-verbs/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-wal/src/tests",
@@ -3865,15 +4632,25 @@
    "paths": [
     "crates/busbar-unit-wal/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
+   "auditor": "opus-test-auditor-units",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-units",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
+     "counts": {},
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-voice/src/tests",
@@ -4121,17 +4898,17 @@
    "paths": [
     "scripts"
    ],
-   "tree_hash": "b38a2c9ccaed8cbd1bfb71dd0a04e13fe1f30935c3a1ac8f962b08e56390cfda",
-   "audited_at": "954d85924c0205dd9bca7e92765149caeb6ec26f",
-   "round": 4,
+   "tree_hash": "09da9989d3753774af6a9223bbdeaa1c89b5bb9d6dc49721b0c7199148a49cbb",
+   "audited_at": "5b9951c3cbc2cb9feda0561c75f391e41a92ee68",
+   "round": 5,
    "result": "findings",
    "counts": {
-    "HIGH": 8,
-    "MEDIUM": 2,
-    "LOW": 5
+    "HIGH": 20,
+    "MEDIUM": 14,
+    "LOW": 1
    },
-   "report": "release and landing scripts fresh eyes: the done gate's floor was one below its group count and env-overridable, the no-extras check flagged two contracted assets on every healthy release and accepted zero assets, the release gate read only the first ledger row per id, channel checks guessed the pointer they were meant to verify, the script lint's producers failed open; digests are never re-bound after promote (report)",
-   "auditor": "opus-instr-p3-release",
+   "report": "scripts m-z fresh eyes: six gates guarded their scan root but not their subject, the queue lander only ever landed the first commit, a secret gate nothing runs, the PGO proof asserted a flag not the artifact, a prose comment satisfied the plugin registry check; 37 plants, every survivor closed with a red proof; 33 fixes",
+   "auditor": "opus-instr-p3-scripts-mz",
    "fixed_at": null,
    "rounds": [
     {
@@ -4197,6 +4974,19 @@
       "LOW": 5
      },
      "report": "release and landing scripts fresh eyes: the done gate's floor was one below its group count and env-overridable, the no-extras check flagged two contracted assets on every healthy release and accepted zero assets, the release gate read only the first ledger row per id, channel checks guessed the pointer they were meant to verify, the script lint's producers failed open; digests are never re-bound after promote (report)"
+    },
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus-instr-p3-scripts-mz",
+     "audited_at": "5b9951c3cbc2cb9feda0561c75f391e41a92ee68",
+     "tree_hash": "09da9989d3753774af6a9223bbdeaa1c89b5bb9d6dc49721b0c7199148a49cbb",
+     "counts": {
+      "HIGH": 20,
+      "MEDIUM": 14,
+      "LOW": 1
+     },
+     "report": "scripts m-z fresh eyes: six gates guarded their scan root but not their subject, the queue lander only ever landed the first commit, a secret gate nothing runs, the PGO proof asserted a flag not the artifact, a prose comment satisfied the plugin registry check; 37 plants, every survivor closed with a red proof; 33 fixes"
     }
    ]
   },
@@ -4761,18 +5551,17 @@
    "paths": [
     "testing/shadow-oracle"
    ],
-   "tree_hash": "e1742a86af4a748780a18dc7fffdcc7e197f4e95f0fe8cdc615b7cd126924ead",
-   "audited_at": "44c5c8a18a890a14a90cc3c20e648dcdfe4172e6",
-   "round": 5,
+   "tree_hash": "46da699ec4f82cf96cfcdf744ffde0fce2cb2f29bd1184a49b9aa003cd177dc6",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 6,
-    "LOW": 3,
-    "NIT": 1
+    "HIGH": 11,
+    "MEDIUM": 14,
+    "LOW": 10
    },
-   "report": "recorder fresh eyes: the mock resolved two shipped control shapes to no verb and served healthy, a broken mutation tool wrote itself into the ledger as a named gap, the outage clear was never checked, a boot cell had a private ten-second bound; two cells cannot observe what they name without a new capture; 14 plants, 2 survivors",
-   "auditor": "opus-instr-p3-recorder",
+   "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red",
+   "auditor": "opus-oracle-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4853,6 +5642,32 @@
       "NIT": 1
      },
      "report": "recorder fresh eyes: the mock resolved two shipped control shapes to no verb and served healthy, a broken mutation tool wrote itself into the ledger as a named gap, the outage clear was never checked, a boot cell had a private ten-second bound; two cells cannot observe what they name without a new capture; 14 plants, 2 survivors"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-oracle-auditor-a",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "46da699ec4f82cf96cfcdf744ffde0fce2cb2f29bd1184a49b9aa003cd177dc6",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 14,
+      "LOW": 12
+     },
+     "report": "audits/oracle-tool-a.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): enumerate-cells swallows a corrupt cells.json and can shrink the corpus green; an improvement waiver can forgive a body-10 refusal; rigs-ledger fails open on a corrupt/missing baseline"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-oracle-auditor-b",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "46da699ec4f82cf96cfcdf744ffde0fce2cb2f29bd1184a49b9aa003cd177dc6",
+     "counts": {
+      "HIGH": 11,
+      "MEDIUM": 14,
+      "LOW": 10
+     },
+     "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red"
     }
    ]
   },

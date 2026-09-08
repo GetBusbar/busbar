@@ -36,20 +36,21 @@ for _pk in $PLANE_KEYS; do
 done
 unset _pk
 
-plane_src_roots() {   # echo "crates/busbar-<k>/src …" for every plane key, canonical order.
+plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src …", canonical order.
   local k out=""
-  for k in $PLANE_KEYS; do out="${out:+$out }crates/busbar-${k}/src"; done
-  # The LLM protocol is TWO crates now: the engine kept the `busbar-llm` name and the six dialect
-  # codecs moved to `busbar-llm-codec`. The gate scans sources, not manifests, so the moved files
-  # have to be named here or the bulk of the LLM plane would stop being scanned — which is the
-  # failure mode a split invites and the reason this line exists.
-  out="${out} crates/busbar-llm-codec/src"
-  # The SAME split, repeated for the other three planes: `busbar-mcp`, `busbar-a2a` and
-  # `busbar-voice` each kept their I/O half (the axum routes, the stdio serve loop, the tokio
-  # transports, the telephony dial and the WS accept) and shed their pure half — the codecs, the
-  # record vocabularies, the duplex IR and the dialect grammars — into a `-codec` crate a PURE kind
-  # may name. Same reason as the line above: the gate scans sources, not manifests.
-  out="${out} crates/busbar-mcp-codec/src crates/busbar-a2a-codec/src crates/busbar-voice-codec/src"
+  # BOTH HALVES, AND BOTH DERIVED FROM THE KEY. Every plane is TWO crates since the codec split:
+  # `busbar-<k>` kept its I/O half (the axum routes, the stdio serve loop, the tokio transports, the
+  # telephony dial, the WS accept) and shed its pure half — the codecs, the record vocabularies, the
+  # duplex IR, the dialect grammars — into `busbar-<k>-codec`, which a PURE kind may name. The gate
+  # scans sources, not manifests, so both halves must be named or the bulk of a plane stops being
+  # scanned.
+  #
+  # The codec halves used to be a hand-written list of four crate paths appended below this loop. That
+  # is the one thing this file exists to abolish: the loop grew a fifth plane's `src` root by itself
+  # and the literal list did NOT grow its `-codec` root, so a new plane would arrive half-scanned —
+  # its pure half, the bulk of it, read by nothing while the gate reported clean over the half it
+  # could see. A hard-coded list beside a derived one is a rot clock. Both come off the key now.
+  for k in $PLANE_KEYS; do out="${out:+$out }crates/busbar-${k}/src crates/busbar-${k}-codec/src"; done
   printf '%s' "$out"
 }
 

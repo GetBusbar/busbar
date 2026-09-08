@@ -52,14 +52,15 @@ command -v python3 >/dev/null 2>&1 || { red "construction-gate: python3 is requi
 [ -f "$TOML" ] || { red "construction-gate: ceilings file not found: $TOML"; exit 2; }
 
 # ── the delegated scan ───────────────────────────────────────────────────────────────────────────
-# plane-purity-lint.sh owns the dialect/plane-noun policy. --baseline always exits 0 and leaves its
-# per-hit rows where PLANE_PURITY_HITS_OUT points. Its own function because --calibrate needs it
+# The plane-purity gate owns the dialect/plane-noun policy. Its verdict is deliberately ignored
+# here (`|| true`) and its per-hit rows are read from where PLANE_PURITY_HITS_OUT points, the same
+# artefact with the same #SCAN denominator line. Its own function because --calibrate needs it
 # exactly as much as --check does, and each needs it exactly once.
 purity_scan() {
   mkdir -p "$OUT"
   rm -f "$OUT/purity-hits.tsv"
   PLANE_PURITY_HITS_OUT="$OUT/purity-hits.tsv" \
-    bash "$ROOT/scripts/plane-purity-lint.sh" --baseline >"$OUT/purity-lint.log" 2>&1 || true
+    cargo xtask gate plane-purity --report >"$OUT/purity-lint.log" 2>&1 || true
 }
 
 # ── measure: the purity lint first (the delegated scanner), then every rule into the ledger ──────
@@ -227,9 +228,9 @@ run_selftest() {
   mine="$(python3 -c "import json,sys; print(sum(r['current'] for r in json.load(open(sys.argv[1])) if r['id'].startswith('ports-only:')))" "$out/rows.json")"
   lint="$(awk -F'\t' '$1=="BACKWARDS"{n++} END{print n+0}' "$out/purity-hits.tsv")"
   if [ "$mine" = "$lint" ]; then
-    note "scanner parity: production busbar_core:: reaches = $mine (rules.py) = $lint (plane-purity-lint.sh)"
+    note "scanner parity: production busbar_core:: reaches = $mine (rules.py) = $lint (plane-purity gate)"
   else
-    fail=1; note "scanner parity FAILED: rules.py counts $mine production reaches, plane-purity-lint.sh counts $lint"
+    fail=1; note "scanner parity FAILED: rules.py counts $mine production reaches, the plane-purity gate counts $lint"
   fi
 
   # 3. Plant each violation and require exactly one FAIL row, naming the rule.

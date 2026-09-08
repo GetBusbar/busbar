@@ -8,31 +8,16 @@
 //! this plane had before this module existed, so a test that called the handler would have passed
 //! against it.
 
-use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
 use busbar_plugin_loader::RouteAuth;
 use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
 
-fn unpinned_agent(url: &str) -> AgentDefCfg {
-    AgentDefCfg {
-        url: url.to_string(),
-        pin: AgentPinCfg {
-            mechanism: PinMechanism::Unpinned,
-            key: None,
-            fingerprint: None,
-        },
-        reverify_ttl: None,
-        recovery_backoff: None,
-        protocol_version: None,
-        allow_private: false,
-        upstream_credentials: None,
-        upstream_credential: None,
-        egress_scopes: Vec::new(),
-        client_identity: None,
-        hooks: Vec::new(),
-    }
-}
+// THE ONE `unpinned_agent`, not a third field-for-field copy of it. `AgentDefCfg` gaining a field
+// only forces the copy whose own file is being edited to be updated; the others go on compiling
+// with a stale `Default`-shaped literal, and a security-relevant opt-in is exactly the kind of
+// field that would land that way.
+use crate::testkit::unpinned_agent;
 
 /// The engine's route table view the DATA router was actually built from — the same function
 /// production calls, with the same inputs, so the enumeration cannot describe a different surface.
@@ -574,7 +559,7 @@ async fn a_foreign_origin_cannot_drive_this_plane() {
 
     // A LOCAL PAGE IS UNAFFECTED. A browser sends a loopback `Origin` only for a document served
     // from loopback, which is already inside the trust boundary — so this reaches the ordinary
-    // admission chain and is refused for want of a credential, not for its origin.
+    // admission chain and is refused THERE, not for its origin.
     let resp = client
         .post(format!("http://{addr}/a2a/agents/planner"))
         .header("content-type", "application/json")
@@ -583,10 +568,15 @@ async fn a_foreign_origin_cannot_drive_this_plane() {
         .send()
         .await
         .unwrap();
-    assert_ne!(
+    // PINNED TO THE ANSWER, not merely to "not 403". `assert_ne!(.., 403)` also passes on a `200`,
+    // so an admission-chain regression that ADMITTED this uncredentialled request would have read as
+    // proof that the origin check was correctly not firing.
+    assert_eq!(
         resp.status().as_u16(),
-        403,
-        "a loopback origin carries no rebinding risk and must not be refused for its origin"
+        503,
+        "a loopback origin carries no rebinding risk: this must reach the ordinary admission chain \
+         and be refused THERE, on the answer that chain gives this fixture — never 403 for its \
+         origin, and never admitted"
     );
 
     // AND A REQUEST WITH NO `Origin` AT ALL is not a browser request. Refusing those would refuse
@@ -598,7 +588,12 @@ async fn a_foreign_origin_cannot_drive_this_plane() {
         .send()
         .await
         .unwrap();
-    assert_ne!(resp.status().as_u16(), 403, "an agent sends no Origin");
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "an agent sends no `Origin`, so this must reach the ordinary admission chain and be refused \
+         THERE — never 403 for a header it did not send, and never admitted"
+    );
     handle.abort();
 }
 

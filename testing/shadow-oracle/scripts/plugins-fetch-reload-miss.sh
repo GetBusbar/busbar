@@ -38,7 +38,7 @@ rm -rf "$W"; mkdir -p "$W/plugins" "$W/serve" "$W/tmp"
 # see durable-governance-precondition.sh's header comment: isolate `sweep_dead_staging`'s host-wide
 # `$TMPDIR` scan so its opportunistic `[info] removed N orphaned ...` line never fires here.
 export TMPDIR="$W/tmp"
-tarball="$(bash "${here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
 asset="$(basename "$tarball")"
 cp "$tarball" "$W/serve/"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
@@ -99,6 +99,6 @@ i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); 
 
 : >"$RAW/stdout"
 grep -a "plugins.fetch" "$W/busbar.log" >"$RAW/stderr" || cp "$W/busbar.log" "$RAW/stderr"
-python3 "${here}/capture-exec.py" "$st" "$RAW/body" "$RAW/stderr" \
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture-exec.py" "$st" "$RAW/body" "$RAW/stderr" \
   --strip-path "$W" --strip-path "$RAW" --strip-path "$repo" --strip-path "$BIN" >"$RAW/captured.json" 2>"$RAW/capture.err" \
   || fail "capture-exec.py failed: $(tail -c 300 "$RAW/capture.err")"

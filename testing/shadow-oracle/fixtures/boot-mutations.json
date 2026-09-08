@@ -4088,7 +4088,27 @@
         "stderr_contains": "secret env:ORACLE_UNSET_SECRET_152 cannot resolve: environment variable 'ORACLE_UNSET_SECRET_152' is unset",
         "stdout_contains": null
       },
-      "notes": "\u00a73.3 BOOT-152 (main.rs:2484-2498, :328-331): --validate ONLY (validate_builtin_secrets_resolve). At boot the same config only WARNs (BOOT-W16/W17) and serves. Recorder must not export the var."
+      "notes": "\u00a73.3 BOOT-152 (main.rs:2484-2498, :328-331): --validate ONLY (validate_builtin_secrets_resolve) in 1.5.5. From 1.6.0 BOOT is a refusal too \u2014 its boot-mode twin is BOOT-152b \u2014 so the two modes finally agree. Recorder must not export the var."
+    },
+    {
+      "id": "BOOT-152b",
+      "family": "boot.refusal",
+      "mode": "boot",
+      "target": "config",
+      "op": [
+        {
+          "set": "providers.gemini.api_key",
+          "value": {
+            "env": "ORACLE_UNSET_SECRET_152B"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "provider 'gemini' api_key (env:ORACLE_UNSET_SECRET_152B) did not resolve",
+        "stdout_contains": null
+      },
+      "notes": "1.6.0, no 1.5.5 inventory row: the BOOT-mode twin of BOOT-152. 1.5.5 refused this config under --validate and DEGRADED it at boot to an empty key (BOOT-W16/W17, exit 0); 1.6.0 refuses in both modes (appbuild.rs, diag BUSBAR-8020), so a provider credential that cannot resolve can no longer start a lane that could only ever 401. Suffixed `b` rather than given a fresh number because it drives the same inventory row's config as BOOT-152, in the other mode. The message names the provider and the reference and never the value. Recorder must not export the var. Will report missing.golden until the 1.5.5 golden is re-recorded \u2014 1.5.5 has no such refusal to record, and the 1.5.5 BEHAVIOUR for this config is already recorded, and registered as a break, at BOOT-W16/W17."
     },
     {
       "id": "BOOT-153",

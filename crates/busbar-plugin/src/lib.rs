@@ -148,10 +148,45 @@ pub fn check_preamble(peer: &AbiPreamble) -> Result<(), PreambleError> {
 /// `field_end` (= its offset + its size). The append-only rule makes this a total forward-compat
 /// guard: an older sender advertises a smaller `size`, so a newer field reads as "absent" instead of
 /// as uninitialized garbage. Use via [`read_sized_field`] rather than by hand.
+///
+/// This is the LOWER half of the guard only — it bounds the shorter sender. The advertised size is
+/// SELF-ATTESTED by the peer, so the upper half ([`honoured_size`]) belongs with it: pass
+/// `honoured_size(advertised, size_of::<T>())` rather than the raw claim. [`read_sized_field`] does
+/// that clamp for you.
 #[inline]
 #[must_use]
 pub const fn field_present(advertised_size: u32, field_end: usize) -> bool {
     advertised_size as usize >= field_end
+}
+
+/// The UPPER half of the sized-struct guard: the largest peer-attested `size` this build will honour
+/// for a `struct_size`-byte struct, i.e. `min(advertised_size, struct_size)`.
+///
+/// `size` is written by the PEER and this side has no way to measure how many bytes it actually
+/// mapped, so an over-large claim is an unverifiable assertion, not a fact. Clamping it to this
+/// build's own `size_of::<T>()` means an over-claim can never widen the read window past the struct
+/// this build compiled — a genuinely NEWER peer's trailing bytes are simply never named here (which
+/// is exactly the append-only rule, from the other side), and a peer that stamps a wild `size` over a
+/// short buffer gains nothing beyond the fields this build already knows.
+///
+/// It does NOT rescue a peer that stamps an over-large `size` over a struct SHORTER than this
+/// build's — no clamp can, because nothing on this side can measure the peer's real extent. That
+/// residual is why the analogous claim on the host vtable is REFUSED outright rather than clamped
+/// (see `hot::host::PlaneHostVtable::check`): a wrong POD field is bad data, a wrong vtable slot is a
+/// fn-pointer this side then CALLS.
+#[inline]
+#[must_use]
+pub const fn honoured_size(advertised_size: u32, struct_size: usize) -> u32 {
+    let struct_size = if struct_size > u32::MAX as usize {
+        u32::MAX
+    } else {
+        struct_size as u32
+    };
+    if advertised_size < struct_size {
+        advertised_size
+    } else {
+        struct_size
+    }
 }
 
 /// The byte size of whatever `p` points at — the type-level companion to [`field_present`], used to
@@ -190,7 +225,11 @@ pub const fn pointee_size<T>(_p: *const T) -> usize {
 macro_rules! read_sized_field {
     ($ptr:expr, $size:expr, $struct:ty, $field:ident) => {{
         let p: *const $struct = $ptr;
-        let advertised: u32 = $size;
+        // The peer's claim, CLAMPED to this build's own struct (the upper half of the guard): a
+        // self-attested `size` larger than `$struct` can never widen the window past what this build
+        // compiled. See `honoured_size`.
+        let advertised: u32 =
+            $crate::honoured_size($size, ::core::mem::size_of::<$struct>());
         // The field's END offset, derived WITHOUT touching `p`: a full-size `MaybeUninit` probe is a
         // real, correctly-sized, correctly-aligned allocation, and `addr_of!` only computes an
         // address — it never reads the uninitialized bytes. Const-folds to a literal.

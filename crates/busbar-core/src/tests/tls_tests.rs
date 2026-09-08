@@ -150,8 +150,10 @@ async fn spawn_tls_server(tls: &TlsCfg) -> (SocketAddr, oneshot::Sender<()>) {
             .await
             .unwrap();
     });
-    // Give the spawned task a tick to begin accepting before the client connects.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // No startup sleep: `TcpListener::bind` above ALREADY listens, so the kernel queues an inbound
+    // SYN in the accept backlog whether or not the spawned task has reached its first `accept()`
+    // yet. A wall-clock "give it a tick" pause is therefore not a synchronisation primitive at all
+    // — it is a fixed tax on every run and, on a loaded machine, a bound that can be too short.
     (addr, tx)
 }
 
@@ -298,7 +300,6 @@ async fn plain_http_still_works_without_tls() {
             .await
             .unwrap();
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let resp = reqwest::get(format!("http://127.0.0.1:{}/healthz", addr.port()))
         .await
@@ -391,7 +392,6 @@ async fn body_read_timeout_trips_on_stalled_body() {
             .await
             .unwrap();
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
     // Headers announce a 100-byte body; we send NONE of it, then stall.
@@ -473,7 +473,6 @@ async fn a_rejected_configs_limits_do_not_govern_later_connections() {
             .await
             .unwrap();
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
     sock.write_all(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n")
@@ -515,8 +514,15 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // Deliberately generous / left at the historical default: the point of this test is that
-    // this timer NEVER fires (the dribble is far faster than 30s per byte).
-    crate::limits::install(&crate::config::LimitsResolved::default());
+    // this timer NEVER fires (the dribble is far faster than 30s per byte). Through the RAII guard,
+    // not the bare setter, for the reason the sibling tests in this file already write down: a bare
+    // `install` REPLACES the whole struct behind the process-global RwLock with no restore, so it
+    // leaves the limits INSTALLED for every later reader in the binary — and `limits_tests.rs`'s
+    // `uninstalled_accessors_return_historical_defaults` asserts against the UNINSTALLED state.
+    // That it currently passes is an accident of the values happening to equal the defaults; the
+    // guard makes it a property instead of a coincidence.
+    let _limits_guard =
+        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -533,7 +539,6 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
             .await
             .unwrap();
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
     let (mut rd, mut wr) = sock.into_split();
@@ -594,7 +599,10 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    crate::limits::install(&crate::config::LimitsResolved::default());
+    // Through the RAII guard, not the bare setter — see the note in
+    // `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`.
+    let _limits_guard =
+        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -611,7 +619,6 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
             .await
             .unwrap();
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let body = vec![b'x'; 200_000];
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -700,7 +707,6 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
             .await
             .unwrap();
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
 
     let sock = tokio::net::TcpStream::connect(addr).await.unwrap();
     let (mut rd, mut wr) = sock.into_split();

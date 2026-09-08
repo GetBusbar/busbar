@@ -9,7 +9,7 @@
 //! `busbar-core/src/mcp/`, with zero `ProtocolReader`/`ProtocolWriter` implementations and zero
 //! `IrBlock`. Every concern the core already owned — the guarded fetch, ingress admission, outbound
 //! credentials, the hash-chained audit, the config-section container — was written a second time in
-//! that directory, which is what the plane ledger in `scripts/structure-lint.sh` counts.
+//! that directory, which is what the plane ledger in the `structure-lint` gate counts.
 //!
 //! This file is the other way of doing it, and it is deliberately the same size and shape as the
 //! LLM dialects' handlers: a protocol declares which operations it serves, and the operations it

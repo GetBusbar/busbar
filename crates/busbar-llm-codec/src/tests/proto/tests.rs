@@ -339,6 +339,14 @@ fn test_openai_streaming_reasoning_blocks() {
         text_start.is_some() && text_delta,
         "text opens at index 1 after reasoning"
     );
+    // Compare POSITIONS, not `Option`s: `None < Some(_)` is true under the derived `Ord`, so
+    // `think_stop < text_start` was satisfied by the thinking block never closing AT ALL — the exact
+    // defect the message below names. Require the stop to exist first.
+    let think_stop = think_stop.expect(
+        "the thinking block must emit a BlockStop at index 0; without it an ingress accumulator \
+         leaves the thinking block open across the text block",
+    );
+    let text_start = text_start.expect("text opens a BlockStart at index 1");
     assert!(
         think_stop < text_start,
         "the thinking block must close before the text block opens"
@@ -474,12 +482,18 @@ fn test_signature_verbatim() {
     }
     assert!(found_thinking);
     let roundtrip = writer.write_request(&ir);
+    // The write side needs the same found-flag the read side above uses. Without it, a writer that
+    // dropped assistant `thinking` blocks (or emitted them as `"type":"reasoning"`) reached ZERO
+    // iterations of the assert and this test — whose whole subject is signature survival ON WRITE —
+    // passed green. A lost thinking signature is a hard Anthropic 400 on the next turn.
+    let mut wrote_thinking = false;
     if let Some(msgs) = roundtrip.get("messages").and_then(|v| v.as_array()) {
         for msg_val in msgs {
             if let Some(content_arr) = msg_val.get("content").and_then(|v| v.as_array()) {
                 for block_val in content_arr {
                     if let Some(block_obj) = block_val.as_object() {
                         if block_obj.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                            wrote_thinking = true;
                             assert_eq!(
                                 block_obj.get("signature").and_then(|s| s.as_str()),
                                 Some("sig_abc123xyz")
@@ -490,6 +504,11 @@ fn test_signature_verbatim() {
             }
         }
     }
+    assert!(
+        wrote_thinking,
+        "the writer must emit the assistant thinking block back, or its signature cannot survive: \
+         {roundtrip}"
+    );
 }
 
 #[test]
@@ -502,26 +521,43 @@ fn test_cache_control_preserved() {
         .read_request(&j)
         .expect("read_request should succeed");
     assert!(!ir.system.is_empty());
-    if let crate::ir::IrBlock::Text {
+    // `else { panic }` both halves. As guards, a reader returning the system prompt as some other
+    // block variant skipped the read-side check, and — worse — a writer that stopped emitting
+    // `system`, or emitted it as a bare string instead of an array (a legal Anthropic shape),
+    // skipped the write-side check entirely. The test then passed while every prompt-cache
+    // breakpoint was silently dropped on the wire: the system prompt is re-billed in full each turn.
+    let crate::ir::IrBlock::Text {
         text: _,
         cache_control,
         citations: _,
     } = &ir.system[0]
-    {
-        assert!(cache_control.is_some());
-        match cache_control.as_ref().unwrap().kind {
-            crate::ir::CacheKind::Ephemeral => {}
-        };
-    }
+    else {
+        panic!(
+            "the anthropic reader must carry the system prompt as a Text block, got {:?}",
+            ir.system[0]
+        );
+    };
+    assert!(cache_control.is_some());
+    match cache_control.as_ref().unwrap().kind {
+        crate::ir::CacheKind::Ephemeral => {}
+    };
     let roundtrip = writer.write_request(&ir);
-    if let Some(system_arr) = roundtrip.get("system").and_then(|v| v.as_array()) {
-        if let Some(first_block) = system_arr.first() {
-            assert!(first_block
-                .as_object()
-                .unwrap()
-                .contains_key("cache_control"));
-        }
-    }
+    let system_arr = roundtrip
+        .get("system")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| {
+            panic!("the writer must emit `system` as an array to carry cache_control: {roundtrip}")
+        });
+    let first_block = system_arr
+        .first()
+        .unwrap_or_else(|| panic!("the written `system` array must not be empty: {roundtrip}"));
+    assert!(
+        first_block
+            .as_object()
+            .expect("system block object")
+            .contains_key("cache_control"),
+        "the system prompt's cache breakpoint must survive the write: {roundtrip}"
+    );
 }
 
 /// An Anthropic `cache_control`
@@ -721,10 +757,30 @@ fn test_reader_classify_behavior() {
 #[test]
 fn test_writer_auth_headers() {
     let headers = crate::anthropic::anthropic_auth_headers("k", None);
-    let header_names: Vec<&str> = headers.iter().map(|(name, _)| name.as_str()).collect();
-
-    assert!(header_names.contains(&"x-api-key"));
-    assert!(header_names.contains(&"anthropic-version"));
+    // Pin the VALUES, not just the names. Asserting only that the two header names appear left the
+    // key argument and the `None` version override with no assertion at all: `x-api-key: ""` (the
+    // key dropped by the bad-bytes guard) or a stale `anthropic-version` 401s every upstream call
+    // while both name checks still pass.
+    let named: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.to_str().expect("ascii header value")))
+        .collect();
+    assert_eq!(
+        named,
+        // `"k"` matches no known credential shape, so `classify_credential` returns `Ambiguous`;
+        // with `creds: None` the mode-blind primitive deliberately emits BOTH native shapes "so
+        // neither path silently drops" (anthropic/mod.rs, the `Ambiguous` arm), then the
+        // always-present version. The version is spelled as a LITERAL rather than read from the
+        // private `ANTHROPIC_API_VERSION` it pins: a golden taken from the same constant it checks
+        // would move silently with it. "2023-06-01" is Anthropic's published version string.
+        vec![
+            ("x-api-key", "k"),
+            ("authorization", "Bearer k"),
+            ("anthropic-version", "2023-06-01"),
+        ],
+        "an ambiguous key with no creds emits both native credential shapes plus the pinned API \
+         version, in that order"
+    );
 }
 
 #[test]
@@ -1848,12 +1904,20 @@ mod ir_property_tests {
             .expect("read_request should succeed");
         let roundtrip = writer.write_request(&ir);
 
+        // BOTH halves need a found-flag. As three nested guards with no flag, a writer that emitted
+        // the assistant call under the legacy `function_call` key (or dropped the `id`) reached no
+        // assertion; a writer that dropped the tool-result message entirely reached neither half's
+        // body. A writer that dropped BOTH sides passed a test named "correlation survives write".
+        let mut saw_assistant_call = false;
+        let mut saw_tool_result = false;
+
         // Verify assistant tool_calls[0].id == "call_123"
         if let Some(msgs) = roundtrip.get("messages").and_then(|v| v.as_array()) {
             for msg_val in msgs {
                 if let Some(tc_arr) = msg_val.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc_val in tc_arr {
                         if let Some(id) = tc_val.get("id").and_then(|i| i.as_str()) {
+                            saw_assistant_call = true;
                             assert_eq!(id, "call_123", "assistant tool_call id must survive write");
                         }
                     }
@@ -1867,6 +1931,7 @@ mod ir_property_tests {
                 if msg_val.get("role").and_then(|r| r.as_str()) == Some("tool") {
                     if let Some(tool_call_id) = msg_val.get("tool_call_id").and_then(|i| i.as_str())
                     {
+                        saw_tool_result = true;
                         assert_eq!(
                             tool_call_id, "call_123",
                             "tool message correlation must survive"
@@ -1877,6 +1942,17 @@ mod ir_property_tests {
                 }
             }
         }
+
+        assert!(
+            saw_assistant_call,
+            "the writer must emit the assistant tool_call with an id — there is no correlation to \
+             survive otherwise: {roundtrip}"
+        );
+        assert!(
+            saw_tool_result,
+            "the writer must emit the tool-result message — the other half of the correlation: \
+             {roundtrip}"
+        );
     }
 
     #[test]
@@ -2243,11 +2319,14 @@ mod ir_property_tests {
             assert_eq!(usage.cache_creation_input_tokens, Some(30));
             assert_eq!(usage.cache_read_input_tokens, Some(200));
 
-            // Verify they weren't collapsed: input != sum of cache tokens (anti-fab)
-            let cache_sum = 30 + 200;
+            // Verify they weren't collapsed: the DECODED input must not be the sum of the decoded
+            // cache buckets. Comparing the two literals `100` and `30 + 200` instead — as this did
+            // — is an arithmetic fact about the fixture, true whatever the reader returns.
             assert_ne!(
-                100, cache_sum,
-                "input_tokens must not be collapsed into cache token sum"
+                usage.input_tokens,
+                usage.cache_creation_input_tokens.unwrap_or(0)
+                    + usage.cache_read_input_tokens.unwrap_or(0),
+                "input_tokens must not be collapsed into the cache token sum"
             );
         } else {
             panic!("expected MessageDelta event");

@@ -481,6 +481,20 @@ pub enum StoreRequest {
         expires_at: u64,
         now: u64,
     },
+    /// `plane_token_live` — the MULTI-USE capability check (kind `push_config`): is this token still
+    /// live, meaning present, still `Active`, and inside `expires_at` at `now`? SPENDS NOTHING, so it
+    /// is its own verb rather than a second spelling of `RedeemPlaneToken` — a single-use redeem is
+    /// the wrong primitive for a token a backend agent presents once per task state change.
+    ///
+    /// ADDITIVE, so [`ABI_VERSION`] does not move: a plugin built before this verb existed answers
+    /// `STATUS_UNSUPPORTED`, and the engine's client maps that to a REFUSAL rather than a default —
+    /// the same fail-closed posture `RedeemPlaneToken` takes, for the same reason.
+    PlaneTokenLive {
+        kind: String,
+        token: String,
+        expires_at: u64,
+        now: u64,
+    },
 }
 
 /// The success payload for a `call`, matched to the request variant. Store-level errors do NOT ride
@@ -534,6 +548,12 @@ pub enum StoreResponse {
     /// shared boolean so `unexpected()` can catch a plugin answering the wrong shape (that guard only
     /// works if the shapes differ).
     Redeemed(bool),
+    /// `plane_token_live` — whether the token is STILL LIVE. Its own variant rather than sharing
+    /// `Redeemed`'s boolean, for the reason every shape here is distinct: `unexpected()` can only
+    /// catch a plugin answering the wrong question if the two answers do not look alike, and
+    /// "nobody has spent this" and "this is still live" are exactly the two answers that must never
+    /// be confused for one another.
+    TokenLive(bool),
 }
 
 // ── SECRET-plugin wire (`kind: secret`) ─────────────────────────────────────────────────────────

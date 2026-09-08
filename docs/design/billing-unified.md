@@ -398,10 +398,22 @@ response with `billed_units` present ledgers `billed_*`, not raw
 (red-before-green). Anthropic cache-TTL split (`cache_creation_1h_input_tokens`,
 `:927` → open `cache-1h`) and web search (`web_search_requests`, `:937` → open
 `web_search`) map the same way; slices already inside a reserved total
-(`reasoning_tokens ⊂ output`, `input_audio_tokens ⊂ input`,
-`tool_use_prompt_tokens ⊂ prompt`) are **never** emitted as billable keys — they
-stay pure attribution (the `IrUsageDetail` "a SLICE OF a total, never an
-addition" rule, the anti-double-count guard of §9.3).
+(`reasoning_tokens ⊂ output`, `input_audio_tokens ⊂ input`) are **never**
+emitted as billable keys — they stay pure attribution (the `IrUsageDetail` "a
+SLICE OF a total, never an addition" rule, the anti-double-count guard of §9.3).
+
+> **CORRECTION (2026-09-07):** `tool_use_prompt_tokens ⊂ prompt` was listed here
+> and is wrong. Measured on real Vertex AI bytes, Gemini's
+> `toolUsePromptTokenCount` is an ADDITIVE fourth term, not a slice — it is `32`
+> on a turn whose entire `promptTokenCount` is `18`. Under-counting a grounded
+> Gemini turn by exactly that term is fixed in 1.6.0 (registered money change):
+> Google charges it at the input rate, so the reader folds it into
+> `IrUsage::input_tokens` and it is billed in the INPUT tier. It is still not a
+> billable key of its own — it stays attribution in `IrUsageDetail`, so the
+> anti-double-count guard of §9.3 is untouched and the tokens are counted once.
+> `IrUsageDetail::usage_identity_note` survives as a discrepancy metric over
+> Gemini's `totalTokenCount`. See
+> `docs/design/gemini-usage-metadata-spec-discrepancy.md`.
 
 ---
 

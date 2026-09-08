@@ -17,7 +17,7 @@ Per-increment gate battery (all must pass before push):
 `cargo build --workspace` · `cargo build --no-default-features` · `cargo clippy --workspace --all-targets -- -D warnings` (0/0)
 · `cargo fmt --check` · `./scripts/plane-purity-lint.sh --check` (TOTAL 0 / BACKWARDS 0) · config-schema additive-only
 · `./scripts/plane-delete-test.sh --all` (four planes) · `cargo test --workspace` · `cargo test -p busbar-voice --features runtime`
-· `bash testing/voice-conformance/voice-conformance.sh` (0 failures) · `./scripts/structure-lint.sh` · `python3 scripts/public-hygiene-lint.py`.
+· `bash testing/voice-conformance/voice-conformance.sh` (0 failures) · `cargo xtask gate structure-lint` · `python3 scripts/public-hygiene-lint.py`.
 
 ---
 
@@ -100,7 +100,7 @@ All of D lands together (the doctrine gates cross-check each other):
   add voice to `installed_decls` + `PLANE_LEDGER_COLUMNS` + the axis assertion; any voice hook that is
   None-while-a-sibling-is-Some gets a ledger-anchored allow row or real wiring.
 - **D4. no-deferral** — with C done and the state assertion (handler Some, in default) satisfied, update the
-  allowlist floor and run `./scripts/no-deferral-gate.sh --strict-done` → GREEN.
+  allowlist floor and run `cargo xtask gate no-deferral-strict-done` → GREEN.
 
 ## Final verification → 11/11
 

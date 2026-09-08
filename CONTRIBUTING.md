@@ -56,8 +56,9 @@ See [docs/configuration.md](docs/configuration.md) for the full config reference
 5. **No `_ =>` catch-all arms** in disposition/breaker `match` statements — the
    exhaustive match is how the compiler enforces that every failure mode is
    handled. This is a project invariant.
-6. **`scripts/structure-lint.sh`** — green. Beyond code layout it enforces the
-   remediation contract's choke-point registry.
+6. **`cargo xtask gate structure-lint`** — green, and
+   `cargo xtask gate structure-lint --selftest` before you believe it. Beyond code
+   layout it enforces the remediation contract's choke-point registry.
 7. Update documentation when you change behavior or config.
 
 ## Fixing a defect: the remediation contract

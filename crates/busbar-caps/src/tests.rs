@@ -81,6 +81,26 @@ fn kernel_owned_marker(name: StepName) -> bool {
 #[test]
 fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
     assert_eq!(StepName::ALL.len(), 10);
+    // The order itself, written out. Sorting the list and comparing it to itself only says the list
+    // agrees with the derived `Ord`, and the derived `Ord` is the declaration order — so a pair of
+    // steps declared the wrong way round satisfies that check and moves the under-hold line, which
+    // is the comparison that decides whether a refusal was charged.
+    assert_eq!(
+        StepName::ALL,
+        [
+            StepName::Arrival,
+            StepName::Decode,
+            StepName::Authenticate,
+            StepName::Verify,
+            StepName::Approve,
+            StepName::Admit,
+            StepName::Route,
+            StepName::Meter,
+            StepName::Audit,
+            StepName::Encode,
+        ],
+        "the ten steps, in the one order the loop calls them"
+    );
     let mut sorted = StepName::ALL;
     sorted.sort();
     assert_eq!(sorted, StepName::ALL, "the list is already in loop order");
@@ -419,8 +439,6 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
         AccrualRefused::ParentExited
     );
 
-    let late = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
-    let _ = late.take(&k.exit_token());
     let posted = Posted::settle_late(accrual, &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::LATE_ACCRUAL));
     assert_eq!(posted.settled(), 10);

@@ -401,6 +401,49 @@ async fn the_trust_verbs_need_full_scope() {
     }
 }
 
+/// AND THE SCOPE MATRIX IS ENFORCED BY THE ROUTER, not merely declared in a table.
+///
+/// `the_trust_verbs_need_full_scope` above reads `admin_required_scope` — a config lookup that would
+/// go on answering `Full` if the routes were mounted with no token check at all. Every other request
+/// in this file goes through `request()`, which always presents the one valid `x-admin-token`, so
+/// until this test the guard on the two routes that move a registration INTO SERVICE was exercised
+/// only on the input it accepts. A regression that mounted `connect`/`approve` without the check
+/// would have left this whole file green while any unauthenticated caller could approve an agent.
+#[tokio::test]
+async fn the_trust_verbs_refuse_a_caller_holding_no_admin_token_or_the_wrong_one() {
+    engine().metrics_init();
+    let (addr, server, plane) = serve(agent_cfg("https://echo.agent.test/a2a", false)).await;
+    assert!(!delegable(&plane), "the agent starts out Pending");
+
+    for path in ["/agents/echo/connect", "/agents/echo/approve"] {
+        for (what, token) in [
+            ("no admin token at all", None),
+            ("a wrong token", Some("nope")),
+        ] {
+            let mut req = reqwest::Client::new()
+                .post(format!("http://{addr}/api/v1/admin{path}"))
+                .json(&serde_json::json!({}));
+            if let Some(t) = token {
+                req = req.header("x-admin-token", t);
+            }
+            let status = req.send().await.unwrap().status().as_u16();
+            assert_eq!(
+                status, 401,
+                "`{path}` admitted {what}: these are the two verbs that move a registration into \
+                 service, so admitting one is a full trust bypass"
+            );
+        }
+    }
+
+    // AND THE REFUSAL CHANGED NOTHING. A guard that answered 401 after doing the work would be no
+    // guard at all — the registration must still be exactly as `Pending` as it started.
+    assert!(
+        !delegable(&plane),
+        "a refused admin call still moved the registration into service"
+    );
+    server.abort();
+}
+
 /// THE DRIVERS for this surface's declared error set, callable from the taxonomy's own
 /// set-comparison so the assertion does not depend on which tests happened to run first.
 // No cfg of its own: this whole module is gated on `auth-admin-tokens` at its include site in

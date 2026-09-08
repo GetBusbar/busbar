@@ -37,10 +37,10 @@ jobs:
   cut:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
 
       - name: Validate version + not already released
         # The input reaches the shell via `env:` (a plain variable), NEVER via `${{ }}` inside

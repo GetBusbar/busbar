@@ -31,9 +31,26 @@ emit() {  # emit <id> <description>
 # Six rows per published target, each on a NATIVE runner for that target. They are separate ids
 # rather than one composite "the artifact is fine" because a composite hides which property broke,
 # and because #52 broke exactly one of the six (pubkey/plugin) while the other four were perfect.
+
+# THE STAGED-COMPARISON IDS ARE OWED EXACTLY WHEN A RECORD WAS SUPPLIED, AND THAT IS NOT A LOOPHOLE.
+#
+# `sha256:<target>`, `docker:staged-digest` and `docker:staged-armv8-digest` diff the PUBLISHED
+# artifacts against the record release-stage.yml wrote on qa. That record is a workflow artifact
+# with a 90-day retention, so for a release older than that — or one that predates the design —
+# there is nothing to diff against and demanding the rows would make the required `release gate`
+# status permanently red for a reason that is not about the release. It would also be a lie in the
+# other direction to let the ids quietly vanish: release-fleet.yml's `resolve` prints a ::warning::
+# naming these exact ids when it cannot resolve a record, and makes it FATAL on a `release:
+# published` run, which is the only trigger where the record must exist. So the ids are owed when
+# they can be met, their absence is announced rather than inferred, and the one path where absence
+# would matter cannot take it.
+STAGED_RECORD="${STAGED_RECORD:-}"
+
 while read -r t; do
   [ -n "$t" ] || continue
   emit "asset:${t}"   "the named release asset exists, is plausibly sized and is really downloadable"
+  [ -z "$STAGED_RECORD" ] || \
+  emit "sha256:${t}"  "the published asset's sha256 IS the one qa recorded for the staged bytes"
   emit "extract:${t}" "the archive extracts to the declared executable"
   emit "version:${t}" "the shipped binary answers --version with the tagged version"
   emit "binfmt:${t}"  "the shipped binary is the declared architecture and object format"
@@ -58,9 +75,13 @@ emit "docker:hub-armv8-pin"      "docker.io :<version>-armv8.0 (the armv8.0-comp
 emit "docker:hub-armv8-floating" "docker.io :armv8.0 is the SAME digest as :<version>-armv8.0"
 emit "docker:ghcr-armv8-pin"     "ghcr.io :<version>-armv8.0 is the SAME digest as Docker Hub's"
 emit "docker:ghcr-armv8-floating" "ghcr.io :armv8.0 is the SAME digest as :<version>-armv8.0"
+[ -z "$STAGED_RECORD" ] || \
+emit "docker:staged-digest"   "docker.io :<version> is the DIGEST qa staged and the promote retagged"
+[ -z "$STAGED_RECORD" ] || \
+emit "docker:staged-armv8-digest" "docker.io :<version>-armv8.0 is the compat DIGEST qa staged"
 emit "docker:label"           "the pulled image's org.opencontainers.image.version label matches"
-emit "docker:boot-bare"       "the bare documented docker run boots and answers ok on /healthz"
-emit "docker:boot-ro-mount"   "the documented read-only config mount boots and answers ok (#50)"
+emit "docker:boot-bare"       "the bare documented docker run boots (by digest) and answers ok on /healthz"
+emit "docker:boot-ro-mount"   "the documented read-only config mount boots (by digest) and answers ok (#50)"
 
 # ── Downstream channels ─────────────────────────────────────────────────────────────────────────
 emit "helm:appversion"        "GetBusbar/helm-charts' published busbar chart appVersion == version"

@@ -73,6 +73,12 @@ pack() { # $1=signing key ("" = unsigned) $2=out $3...=extra flags
 pack "$PRIV" "$WORK/signed.tar.gz"
 pack ""      "$WORK/unsigned.tar.gz" --allow-unsigned
 OTHER_PRIV=$("$PACK" keygen | sed -n 's/^private.*: //p')
+# The FIRST keypair is length-checked above; this one was not, and it is the one that decides what
+# the wrong-key case actually tests. `pack` branches on `[ -n "$key" ]`, so an unparseable keygen
+# here silently packs the "wrong key" tarball UNSIGNED — a different defect than the one the case
+# is named for, asserted against a message about signatures.
+[ ${#OTHER_PRIV} -eq 64 ] \
+  || { echo "FAIL: second keygen output unparseable — the wrong-key case would be packed UNSIGNED, testing a different defect than its name claims" >&2; exit 1; }
 pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
 
 # Tampered variants: unpack the SIGNED tarball, mutate, repack (signature/manifest kept as-was).
@@ -184,8 +190,14 @@ fi
 install_only "$WORK/signed.tar.gz";            expect "signed-ok"         "$POS_RC" "$POS_RE"
 install_only "$WORK/unsigned.tar.gz";          expect "unsigned-refused"  "$UNS_RC" "$UNS_RE"
 install_only "$WORK/wrongkey.tar.gz";          expect "wrongkey-refused"  "$WRK_RC" "$WRK_RE"
-# A sha256/lib-bytes mismatch is a HARD structural failure for every kind, referenced or not:
-install_only "$WORK/tampered-lib.tar.gz";      expect "tampered-lib-refused"      1 'integrity'
+# A sha256/lib-bytes mismatch is a HARD structural failure for every kind, referenced or not.
+# The needle is the two-word phrase plugin-sign's evaluate() actually emits ("library bytes do not
+# match the manifest sha256 (integrity failure)"), not the bare word `integrity`. The bare word,
+# paired only with exit 1, is satisfied by any boot refusal whose output happens to contain it —
+# and this gate has TWICE been reduced to asserting an unrelated exit-1 refusal (the 1.5.3 config
+# grammar break, then the --validate secret-resolution change), each time still printing PASS while
+# testing nothing about signing. A one-word needle is how that keeps being possible.
+install_only "$WORK/tampered-lib.tar.gz";      expect "tampered-lib-refused"      1 'integrity failure'
 install_only "$WORK/tampered-manifest.tar.gz"; expect "tampered-manifest-refused" "$TMM_RC" "$TMM_RE"
 
 echo "gate: ALL SIGNING ASSERTIONS PASSED for $PLUGIN_CRATE (kind $PLUGIN_KIND)"

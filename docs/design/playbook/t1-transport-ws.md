@@ -165,15 +165,15 @@ a `PlaneRouteFn` gets a live ungoverned socket. This is R1 in §6.
   "voice", "audio", "openai", "realtime", "session", "gemini" noun appears in `transport.rs`,
   `ingress/duplex_ws.rs`, `egress/duplex_ws.rs`, or `byte_duplex.rs`. `name()` returns
   `"websocket"` (`transport.rs:219`) — a neutral transport noun, same tier as `"stdio"` (`:218`),
-  and per audit §6 it is deliberately OFF the `structure-lint.sh` neutrality ban list.
+  and per audit §6 it is deliberately OFF the `cargo xtask gate structure-lint` neutrality ban list.
 - **The axis hands back a neutral discriminant, not a plane wire type** (`UpstreamWireKind::Duplex`,
   `transport.rs:172-178`); the plane maps it to its own machinery, exactly as MCP maps
   `StreamableHttp`/`Stdio` to `&dyn McpWire` on its own side (`:157-161`).
 - **The pump owns framing/lock/correlation/lifecycle and nothing a plane means** — `classify` and
   `handle` are the plane's only two callbacks (`byte_duplex.rs:26-38,81-92`); the pump reads no
   frame content and attaches no wire meaning to `CallRef`.
-- **`structure-lint.sh` forbids the agnostic core from branching on the transport axis**
-  (`scripts/structure-lint.sh:1709-1715`); the one legitimate match stays in `upstream_wire`
+- **`cargo xtask gate structure-lint` forbids the agnostic core from branching on the transport axis**
+  (`xtask/src/gates/structure_lint/axis.rs`, the transport row); the one legitimate match stays in `upstream_wire`
   (`transport.rs:223-239`), and the plane's config→axis map stays in the plane
   (`mcp/config.rs:900-905`).
 - **Voice keeps its own nouns in `busbar-voice`** (plan §7.2). `busbar-voice/src/lib.rs:84`

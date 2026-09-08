@@ -284,6 +284,61 @@ pub enum UsageComponent {
     Queries = 3,
 }
 
+impl TryFrom<u8> for UsageComponent {
+    /// The offending out-of-range byte, so a caller can log WHAT it refused.
+    type Error = u8;
+
+    /// Decode a raw discriminant, REJECTING any value outside the named `0..=3` range.
+    #[inline]
+    fn try_from(v: u8) -> Result<Self, u8> {
+        match v {
+            0 => Ok(UsageComponent::Tokens),
+            1 => Ok(UsageComponent::Bytes),
+            2 => Ok(UsageComponent::Frames),
+            3 => Ok(UsageComponent::Queries),
+            other => Err(other),
+        }
+    }
+}
+
+/// The RAW, unvalidated one-byte usage component a plane writes into [`Usage::component`].
+///
+/// Same reasoning as [`RawFault`]: a plane builds the whole `Usage` it hands the host's metering
+/// slot, so every byte of it is plane-chosen. Typing `component` as the bare [`UsageComponent`] enum
+/// lets a stale, newer or hostile plane materialize an INVALID DISCRIMINANT the moment the host reads
+/// the field — UB BEFORE the `match`, not a wrong branch. This transparent u8 has no invalid bit
+/// pattern; the host decodes through the checked [`component`](Self::component).
+///
+/// Like [`RawEgressKind`] there is no honest neutral fallback — a component the host cannot name has
+/// no defensible cost line and no defensible token projection — so the decode returns `None` and the
+/// metering slot REFUSES the charge rather than billing against a guess.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawUsageComponent(pub u8);
+
+impl RawUsageComponent {
+    /// The raw byte for a [`UsageComponent`] — the TRUSTED encode direction.
+    #[inline]
+    #[must_use]
+    pub const fn of(component: UsageComponent) -> Self {
+        RawUsageComponent(component as u8)
+    }
+
+    /// Decode into a [`UsageComponent`], or `None` for any component this build does not name.
+    #[inline]
+    #[must_use]
+    pub fn component(self) -> Option<UsageComponent> {
+        UsageComponent::try_from(self.0).ok()
+    }
+}
+
+impl From<UsageComponent> for RawUsageComponent {
+    #[inline]
+    fn from(c: UsageComponent) -> Self {
+        RawUsageComponent(c as u8)
+    }
+}
+
 /// The egress tier/kind — DATA, not a capability. The governance path (resolve-then-pin, SPKI, mTLS,
 /// breaker, meter) is ONE regardless of kind; the kind only selects the channel shape.
 #[repr(u8)]
@@ -373,6 +428,59 @@ pub enum Framing {
     LengthPrefixed = 0,
     /// A pipe-separated record framing.
     PipeSeparated = 1,
+}
+
+impl TryFrom<u8> for Framing {
+    /// The offending out-of-range byte, so a caller can log WHAT it refused.
+    type Error = u8;
+
+    /// Decode a raw discriminant, REJECTING any value outside the named `0..=1` range.
+    #[inline]
+    fn try_from(v: u8) -> Result<Self, u8> {
+        match v {
+            0 => Ok(Framing::LengthPrefixed),
+            1 => Ok(Framing::PipeSeparated),
+            other => Err(other),
+        }
+    }
+}
+
+/// The RAW, unvalidated one-byte prelude framing a plane writes into [`FramingDesc::framing`] and
+/// [`JournalStreamDesc::framing`].
+///
+/// Both descriptors are built ENTIRELY by the plane and handed to the host's journal slots, so the
+/// framing byte is plane-chosen — the same hazard [`RawFault`] and [`RawUsageComponent`] close, on
+/// the journal side. A stale build, a newer framing, or a hostile cdylib writing `2` would otherwise
+/// materialize an invalid discriminant the instant the host reads the field.
+///
+/// There is no neutral fallback: reproducing a stream's stored bytes in the WRONG framing would break
+/// every digest in the chain, so an unnamed framing decodes to `None` and the slot answers
+/// [`StatusClass::Unsupported`] (register) / [`Seq::NONE`] (append) instead of guessing.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawFraming(pub u8);
+
+impl RawFraming {
+    /// The raw byte for a [`Framing`] — the TRUSTED encode direction.
+    #[inline]
+    #[must_use]
+    pub const fn of(framing: Framing) -> Self {
+        RawFraming(framing as u8)
+    }
+
+    /// Decode into a [`Framing`], or `None` for any framing this build does not name.
+    #[inline]
+    #[must_use]
+    pub fn framing(self) -> Option<Framing> {
+        Framing::try_from(self.0).ok()
+    }
+}
+
+impl From<Framing> for RawFraming {
+    #[inline]
+    fn from(f: Framing) -> Self {
+        RawFraming(f as u8)
+    }
 }
 
 /// The counterparty-verification verdict class (host cache hit, or a single-flight leadership split).
@@ -786,8 +894,9 @@ pub struct Usage {
     pub size: u32,
     /// POD schema version.
     pub version: u16,
-    /// The component `amount` measures.
-    pub component: UsageComponent,
+    /// The component `amount` measures, as the RAW plane-written byte. Decode through
+    /// [`RawUsageComponent::component`] — NEVER as a bare enum (see the carrier's docs).
+    pub component: RawUsageComponent,
     /// Preamble tail padding.
     pub _reserved: u8,
     /// The quantity consumed, in units of `component`.
@@ -835,7 +944,7 @@ impl Usage {
             usage: Usage {
                 size: core::mem::size_of::<Usage>() as u32,
                 version: POD_VERSION,
-                component,
+                component: RawUsageComponent::of(component),
                 _reserved: 0,
                 amount,
                 unit_cost_micros,
@@ -871,7 +980,7 @@ impl Usage {
             usage: Usage {
                 size: core::mem::size_of::<Usage>() as u32,
                 version: POD_VERSION,
-                component,
+                component: RawUsageComponent::of(component),
                 _reserved: 0,
                 amount,
                 unit_cost_micros,
@@ -911,7 +1020,7 @@ impl Usage {
             usage: Usage {
                 size: core::mem::size_of::<Usage>() as u32,
                 version: POD_VERSION,
-                component,
+                component: RawUsageComponent::of(component),
                 _reserved: 0,
                 amount,
                 unit_cost_micros,
@@ -1413,8 +1522,9 @@ pub struct FramingDesc {
     pub size: u32,
     /// POD schema version.
     pub version: u16,
-    /// The prelude framing this stream uses.
-    pub framing: Framing,
+    /// The prelude framing this stream uses, as the RAW plane-written byte. Decode through
+    /// [`RawFraming::framing`] — NEVER as a bare enum (see the carrier's docs).
+    pub framing: RawFraming,
     /// `1` if the scope field participates in the digest, `0` if it does not (some streams omit it).
     pub digests_scope: u8,
 }
@@ -1454,8 +1564,9 @@ pub struct JournalStreamDesc {
     pub size: u32,
     /// POD schema version.
     pub version: u16,
-    /// The prelude framing this stream reproduces (byte-identical to its deployed store).
-    pub framing: Framing,
+    /// The prelude framing this stream reproduces (byte-identical to its deployed store), as the RAW
+    /// plane-written byte. Decode through [`RawFraming::framing`] — NEVER as a bare enum.
+    pub framing: RawFraming,
     /// `1` if the scope field participates in the digest, `0` if it does not.
     pub digests_scope: u8,
     /// The host-assigned integer handle the scoped ops address this stream by.

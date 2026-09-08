@@ -110,6 +110,12 @@ impl CredentialProvider for BearerToken {
         }
     }
 
+    /// Self-minting: the header comes from the cached token, never from the `key` handed in — so an
+    /// empty `key` says nothing about this credential and must NOT suppress its header.
+    fn uses_key(&self) -> bool {
+        false
+    }
+
     /// Ready once the first mint has populated a non-empty token. Before that (the boot/reload window)
     /// `headers_for` emits no auth header, so the prober skips this lane rather than 401-parking it.
     fn is_ready(&self) -> bool {

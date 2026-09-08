@@ -4,6 +4,12 @@
 #
 # plane-roots.sh — THE ONE ANSWER TO "WHERE DOES A PLANE LIVE?", for the lints that need it.
 #
+# NO SHELL LINT SOURCES THIS FILE ANY MORE. All four callers below are `cargo xtask gate <name>`
+# now, and the live implementation of the rule this file states is `xtask/src/planes.rs`, which is
+# the one both the disk resolver and the overlay-aware one in `structure_lint::roots` go through.
+# The file is kept until the end of the batch-1 conversion rather than deleted mid-flight, and this
+# note is here so nobody reads its four-caller argument below as a description of today.
+#
 # WHY THIS FILE EXISTS. 1.6.0's owner ruling R-E makes the MCP and A2A planes PLUGIN CRATES: a crate
 # depending on `busbar-api` alone, which `busbar-core` depends on, exactly as it depends on
 # `busbar-auth-admin-tokens` today. So `crates/busbar-core/src/{mcp,a2a}` is a FACT ABOUT TODAY'S
@@ -14,8 +20,8 @@
 #                               scopes. Loud when the row's subject vanishes; silently NARROWER when
 #                               only the SCOPE moves out from under it.
 #   * blocking-ffi-lint.sh    — the planes are 71 of 238 scanned files and the scan floor is 100, so
-#     settings-leak-lint.sh     dropping them leaves the floor comfortably cleared and the lint
-#     response-header-lint.sh   reporting `ok` over a tree it no longer reads. The floor catches a
+#     settings-leak gate       dropping them leaves the floor comfortably cleared and the lint
+#     response-header gate     reporting `ok` over a tree it no longer reads. The floor catches a
 #                               root that MOVED. Nothing caught a root that SPLIT.
 #
 # Four copies of the same guess is four things to remember on the day the planes move, which is the
@@ -58,9 +64,25 @@ PLANE_ROOTS_ERR=""
 
 plane_roots_resolve() {   # $1.. = plane keys. Sets PLANE_ROOT_<key> per plane; returns 1 on any failure.
   local plane root grammar hits d owned n rc=0
+  PLANE_ROOTS_ERR=""
+  # ── ZERO PLANES IS NOT ZERO PROBLEMS ─────────────────────────────────────────────────────────────
+  # Everything below refuses a plane that resolves to no home or two homes, on the stated ground that
+  # zero is the passing answer to every ban the callers apply. That reasoning indicts the loop's own
+  # arity first: `for plane in "$@"` over an empty list runs zero times, leaves `rc` at 0 and
+  # PLANE_ROOTS_ERR empty, and hands the caller a silent success in which nothing was located and
+  # therefore nothing will be scanned. The four callers pass literal keys today, so this is the hole
+  # that has not opened yet rather than one that has — which is the only kind worth closing in a file
+  # four lints delegate their scan addresses to.
+  if [ "$#" -eq 0 ]; then
+    PLANE_ROOTS_ERR="PLANE-ROOTS-EMPTY: plane_roots_resolve was called with NO plane keys. Zero planes
+  resolved is zero planes located and zero files scanned, and zero is the passing answer to every rule
+  that asks this file where to look. Fix the caller's plane list (scripts/plane-keys.sh) rather than
+  resolving an empty set.
+"
+    return 1
+  fi
   root="${PLANE_ROOTS_SEARCH_ROOT:-crates}"
   grammar="${PLANE_ROOTS_GRAMMAR:-pub const PLANE_DECL}"
-  PLANE_ROOTS_ERR=""
   for plane in "$@"; do
     hits=$(find "$root" -type d -name "$plane" -not -path '*/target/*' 2>/dev/null | sort -u)
     # A NAME MATCH IS NOT AN OWNERSHIP CLAIM (see the file header). A candidate must directly hold a
@@ -69,7 +91,14 @@ plane_roots_resolve() {   # $1.. = plane keys. Sets PLANE_ROOT_<key> per plane; 
     owned=""
     while IFS= read -r d; do
       [ -z "$d" ] && continue
-      if find "$d" -maxdepth 1 -name '*.rs' -exec grep -l -- "$grammar" {} + >/dev/null 2>&1; then
+      # THE ANSWER IS THE MATCHED FILE, NOT find's EXIT STATUS. `-exec … +` runs the command once
+      # per batch of matched files, and a directory holding NO `.rs` file produces no batch at all:
+      # `grep` never runs, find has nothing to complain about, and find exits 0. Read as a status,
+      # that 0 says "this directory declares the plane's grammar" about a directory with no Rust in
+      # it — a plane root resolved to somewhere that cannot possibly own the plane, which then
+      # becomes the scan root every rule that names the plane uses. So the ownership claim is the
+      # grep's OUTPUT (the file that carries the declaration), and an empty output owns nothing.
+      if [ -n "$(find "$d" -maxdepth 1 -name '*.rs' -exec grep -l -- "$grammar" {} + 2>/dev/null)" ]; then
         owned="${owned}${d}
 "
       fi
@@ -146,6 +175,37 @@ plane_roots_selftest() {
   PLANE_ROOTS_SEARCH_ROOT="$tmp/none" plane_roots_resolve z >/dev/null 2>&1 && rc=1
   if [ "$rc" -ne 0 ]; then
     note "SELFTEST FAIL [plane-roots: no-declaring-home-is-an-error] no declaration resolved instead of being refused"
+    fails=$((fails + 1))
+  fi
+
+  # Case 3b: a same-named directory holding NO `.rs` FILE AT ALL. `find … -exec grep {} +` runs its
+  # command once per batch of matched files, so with nothing to match it never runs grep and find
+  # exits 0 — and the old ownership test read that 0 as "this directory declares the plane". The
+  # plane then resolved to a directory with no Rust in it, which became the scan root for every rule
+  # that names the plane: zero files scanned, and zero is the passing answer to a ban. Distinct from
+  # case 3 (a directory that HAS Rust but declares nothing), which took the other branch and was
+  # already refused.
+  mkdir -p "$tmp/norust/plane-w/src/w/docs"
+  printf 'not rust\n' >"$tmp/norust/plane-w/src/w/docs/NOTES.md"
+  cases=$((cases + 1))
+  rc=0
+  PLANE_ROOTS_SEARCH_ROOT="$tmp/norust" plane_roots_resolve w >/dev/null 2>&1 && rc=1
+  if [ "$rc" -ne 0 ]; then
+    note "SELFTEST FAIL [plane-roots: a-directory-with-no-rust-owns-nothing] a directory holding no .rs file resolved as the plane's declaring home"
+    fails=$((fails + 1))
+  fi
+
+  # Case 3c: NO PLANES AT ALL. Cases 1–3b drive the loop with a key and judge what it finds; this
+  # drives the loop with nothing and judges the arity. An empty plane list used to return 0 with an
+  # empty error string — a caller whose list came back empty was told every plane resolved.
+  cases=$((cases + 1))
+  rc=0
+  plane_roots_resolve >/dev/null 2>&1 && rc=1
+  if [ "$rc" -ne 0 ]; then
+    note "SELFTEST FAIL [plane-roots: no-planes-is-an-error] an empty plane list resolved successfully"
+    fails=$((fails + 1))
+  elif ! printf '%s' "$PLANE_ROOTS_ERR" | grep -q "PLANE-ROOTS-EMPTY"; then
+    note "SELFTEST FAIL [plane-roots: no-planes-is-named] the empty-list refusal did not name itself: $PLANE_ROOTS_ERR"
     fails=$((fails + 1))
   fi
 

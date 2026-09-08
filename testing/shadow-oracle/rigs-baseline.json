@@ -217,12 +217,19 @@
     "mcp.rig|tools-call-simple-text": "PASS",
     "mcp.rig|tools-call-with-progress": "PASS",
     "mcp.rig|tools-list": "PASS",
+    "voice.rig|admit-refusal": "PASS",
+    "voice.rig|audit-record": "PASS",
     "voice.rig|cross-parity": "PASS",
+    "voice.rig|exit-terminal": "PASS",
+    "voice.rig|gemini-live-route": "PASS",
     "voice.rig|governance": "PASS",
     "voice.rig|metering-lease": "PASS",
     "voice.rig|provider-credential": "PASS",
+    "voice.rig|provider-dial": "PASS",
     "voice.rig|replay": "PASS",
+    "voice.rig|route-failover": "PASS",
     "voice.rig|session-scope": "PASS",
-    "voice.rig|spec-per-dialect": "PASS"
+    "voice.rig|spec-per-dialect": "PASS",
+    "voice.rig|tool-reply": "PASS"
   }
 }

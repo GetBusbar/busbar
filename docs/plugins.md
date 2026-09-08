@@ -599,10 +599,25 @@ get code executed, and a compromised or replayed plugin must not load.
    and a skipped plugin is never `dlopen`ed: its initialization code never runs, not at boot, not
    from the admin catalog, not from `--list-plugins`.
 3. **Anti-downgrade.** A validly-signed but OLD release is still a signed artifact an attacker can
-   replay. First-party plugins are automatically floored at the running binary's version;
-   `plugins.min_versions` pins floors for third-party plugins by manifest name. A floored plugin
-   must prove, with a trusted signature over a version at or above the floor, that it meets it. No
-   opt-in flag relaxes a floor.
+   replay. First-party plugins are automatically floored at the **highest version of that plugin
+   this deployment has already seen and loaded** — a per-plugin-name high-water mark, raised only by
+   a load busbar itself performed. It needs no configuration. A name busbar has never loaded carries
+   no floor (a first install is not a downgrade), and the floor is per name, so it tracks each
+   plugin's own version line rather than the engine's. `plugins.min_versions` pins additional floors
+   by manifest name and applies to first- and third-party alike. A floored plugin must prove, with a
+   trusted signature over a version at or above the floor, that it meets it. No opt-in flag relaxes
+   a floor.
+
+   To install an older first-party version **deliberately**, roll the plugin back explicitly (the
+   audited `plugins.rollback` admin action). The pin it persists replaces the automatic floor for
+   that plugin name and no other, so rolling one plugin back never admits a stale copy of another.
+
+   With a fleet data directory configured, the marks persist beneath it as `plugin-highwater.json`
+   and the floor survives restarts. Without one busbar writes no file at all (a deployment with no
+   data directory creates no data-directory files) and the floor is held in memory for the life of
+   the process — which still refuses a swap performed against a running node, the window an attacker
+   with write access to the plugins directory actually operates in, but is re-established from
+   scratch at the next boot.
 4. **Structural fail-closed.** Before trust is even consulted, every tarball must unpack cleanly
    (bounded sizes, exactly two members, no path tricks), the manifest must be complete and
    well-formed, `sha256(lib)` must match, and the `abi_version` must be one this binary speaks.

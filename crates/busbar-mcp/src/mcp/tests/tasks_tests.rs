@@ -413,3 +413,40 @@ fn an_abandoned_active_task_is_cancelled_by_the_sweep_and_then_ages_out() {
         "the younger active task survives every sweep"
     );
 }
+
+// ── MOVED HERE FROM crates/busbar-core/src/trust/tests/validate_tests.rs ─────────────────
+//
+// The case below reads THIS crate's production source. It used to live in busbar-core and reach it
+// with `include_str!("../../../../busbar-mcp/src/mcp/...")` — a neutral crate splicing plane source
+// in around the plane ABI, which is the PATH-INCLUDE side channel scripts/plane-purity-lint.sh bans
+// outright, test scope included. Reading its own crate's file from its own crate's test is the same
+// assertion with no side channel: a source scan belongs where the source is.
+
+/// THE DETACHED TASK RUNNER FREEZES, AND THE FREEZE IS DISCLOSED BESIDE THE BOUND IT TRADES ON.
+///
+/// This is the second state the class permits, and permitting it is a judgement rather than an
+/// oversight: the task path charges the caller's budget once at creation, so re-resolving the
+/// principal mid-run would re-derive a grant against a settled charge. What is NOT permitted is
+/// freezing silently — a reader of `Runner` must find the disclosure and the number in the same
+/// place, because a bound nobody wrote down is a bound the next edit raises.
+///
+/// RED: delete the `TASK_TTL_MS` reference from the field's doc and this fails.
+#[test]
+fn the_detached_runner_discloses_its_frozen_principal_and_the_bound_it_trades_on() {
+    let source = include_str!("../tasks.rs");
+    let field = source
+        .split("pub(crate) struct Runner {")
+        .nth(1)
+        .expect("the runner still has a Runner struct")
+        .split("pub(crate) authorised:")
+        .next()
+        .expect("the runner still carries an authorised leg");
+    assert!(
+        field.contains("TASK_TTL_MS"),
+        "the frozen principal on `Runner` no longer names the bound that makes it survivable"
+    );
+    assert!(
+        field.contains("BOUNDED"),
+        "the freeze is no longer disclosed as a freeze"
+    );
+}

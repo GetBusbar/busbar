@@ -153,6 +153,8 @@ hooks:
 providers:
   openai:
     api_key: { env: OPENAI_KEY }          # a SECRET REFERENCE (no *_env fields)  → #providers
+    # … { file: /path } · { module: <secret-plugin> } · or `none` for a keyless local upstream.
+    # A reference that does not resolve REFUSES BOOT — it never degrades to an empty credential.
     # protocol / base_url / error_map / auth / health … override the shipped catalog
 
 models:                                    # a model is one LANE (a model at a provider)  → #models

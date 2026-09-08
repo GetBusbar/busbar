@@ -123,7 +123,7 @@ fn identically_named_tools_on_two_servers_are_two_distinct_identities() {
 // IDENTITY AND NEVER ON TEXT AN UPSTREAM AUTHORS — but its SUBJECT was a file path, and a test
 // whose subject stops existing does not fail; it stops being compiled.
 //
-// It is now `scripts/structure-lint.sh`'s decision-input purity invariant, three rows over
+// It is now the `structure-lint` gate's decision-input purity invariant, three rows over
 // `resolve`, `revalidate` and `visible_catalogue`. The rule stays function-scoped because
 // `description` is legitimate almost everywhere — the catalogue stores one, the listing publishes
 // the OPERATOR's one — and illegitimate in exactly the code that decides where a call goes.

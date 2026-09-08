@@ -23,7 +23,7 @@
 //! | state | claim | enforced how |
 //! |---|---|---|
 //! | `proven` | a named test exercises the capability ON that plane | the file must exist, the fn must be in it, and the file must live in a test location. A proven cell whose test vanishes or is renamed is RED. |
-//! | `missing` | the capability does not reach the plane, or nothing proves it does | allowed, pinned, and NAMED on every umbrella run (`scripts/capability-equality-summary.py`, wired into `scripts/full-gate.sh`). Closing a cell without flipping the pin leaves the queue lying, and the review that lands the closing test is expected to flip it in the same commit. |
+//! | `missing` | the capability does not reach the plane, or nothing proves it does | allowed, pinned, and NAMED on every umbrella run (`scripts/capability-equality-summary.py`, wired into `cargo xtask full-gate`). Closing a cell without flipping the pin leaves the queue lying, and the review that lands the closing test is expected to flip it in the same commit. |
 //! | `not-applicable` | the plane is not owed this capability | only WITH an argument long enough to actually argue. N/A is a claim, not an escape; an unexplained absent cell is the failure mode this gate exists to prevent, so there is no way to express one. |
 //!
 //! The matrix is EXACT: every capability x plane pair appears exactly once, no hole, no duplicate,
@@ -118,10 +118,15 @@ const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
     ("voice", &["voice-client", "voice-server"]),
 ];
 
-/// Floor on the capability axis. Sized below today's real number (13) so an ordinary addition does
-/// not trip it, and well above zero so a file that quietly lost its rows cannot report equality of
-/// nothing.
-const MIN_CAPABILITIES: usize = 12;
+/// Floor on the capability axis. Set AT today's real number (13), not below it. A floor of 12 was
+/// slack the gate could not afford: deleting one capability row together with its seven cells left
+/// `capabilities.len() == 12`, kept the cross-product tiling consistent (the row is gone from both
+/// axes), and left `proven` and `root_proven` above their own floors — so every test in this file
+/// stayed green while the matrix silently shrank, which is the one act the header forbids
+/// ("Never delete a capability to shrink the queue"). A floor that only catches wholesale loss
+/// does not catch the loss anyone would actually commit. Raise this line when a capability is
+/// ADDED; that edit is the deliberate act the doctrine wants to see in a diff.
+const MIN_CAPABILITIES: usize = 13;
 
 /// Floor on proven cells. A matrix where nothing is proven is a matrix nobody filled from the tree;
 /// today's honest count is well above this.
@@ -330,8 +335,8 @@ struct Summary {
 }
 
 /// THE ONE VERDICT. Both the real gate and the self-tests below drive this exact function -- a
-/// self-test that exercised a copy would prove the copy (the same reason `structure-lint.sh
-/// --selftest` runs the real `scan_rule`).
+/// self-test that exercised a copy would prove the copy (the same reason the `structure-lint`
+/// gate's self-test reaches its rules only through `Gate::run`).
 ///
 /// `required_planes` / `min_capabilities` are parameters so the self-tests can plant a small
 /// fixture matrix; [`the_gates_own_constants_are_the_doctrines`] pins the real constants.
@@ -770,7 +775,7 @@ fn pinned_equality_matrix_is_exact_and_every_proof_exists() {
     );
 
     // The named gap -- same honest-ledger shape as qa/method-coverage.missing. Green while the pin
-    // matches reality; the umbrella (scripts/full-gate.sh) prints this list on every run.
+    // matches reality; the umbrella (cargo xtask full-gate) prints this list on every run.
     println!(
         "EQUALITY: {} cells missing ({} proven, {} n/a) -- {}",
         summary.missing.len(),
@@ -919,7 +924,7 @@ fn the_gates_own_constants_are_the_doctrines() {
          bidirectional three); changing it is a doctrine change, not a refactor"
     );
     const {
-        assert!(MIN_CAPABILITIES >= 12 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
+        assert!(MIN_CAPABILITIES >= 13 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
     }
     assert_eq!(
         ROOT_LEGS,

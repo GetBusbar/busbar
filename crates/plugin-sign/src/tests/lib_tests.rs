@@ -77,11 +77,164 @@ fn policy(
         first_party_key: first_party.map(|k| k.verifying_key()),
         binary_version: "1.5.0".to_string(),
         first_party_floors: BTreeMap::new(),
+        first_party_high_water: BTreeMap::new(),
         publishers: pairs.iter().map(|(n, k)| (n.to_string(), **k)).collect(),
         allow_unsigned,
         allow_third_party,
         min_versions: BTreeMap::new(),
     }
+}
+
+// ── The first-party ANTI-DOWNGRADE FLOOR (docs/plugins.md security-model item 3) ────────────────
+// A validly-signed but OLD release is still a signed artifact an attacker with write access to
+// `plugins.dir` can replay. With no floor set, a genuine busbar-signed 1.0.0 carrying a known fixed
+// defect verifies against the embedded release key and loads as `first-party` with no warning. The
+// floor is the per-plugin-name HIGH-WATER MARK: the highest version of that name this deployment has
+// actually seen and loaded.
+
+/// A genuinely first-party-signed artifact BELOW the recorded high-water mark for its own name is
+/// REFUSED, and the refusal names both the floor and the operator's way past it (the rollback pin).
+#[test]
+fn a_first_party_replay_below_the_high_water_mark_is_refused() {
+    let release = test_key(1);
+    let artifact = b"genuine busbar-signed 1.0.0 with a known fixed defect";
+    let mut old = manifest(
+        "busbar-store-valkey-plugin",
+        "valkey",
+        FIRST_PARTY_PUBLISHER,
+    );
+    old.version = "1.0.0".into();
+    let old = sign(&release, old, artifact);
+
+    // With NO mark this deployment has never seen the name, so there is nothing to downgrade FROM
+    // and the artifact loads — a first install is not a replay.
+    let pol = policy(Some(&release), &[], false, false);
+    assert!(
+        matches!(
+            evaluate(artifact, &old, &pol),
+            Ok(Verdict::Trusted {
+                first_party: true,
+                ..
+            })
+        ),
+        "a name with no high-water mark carries no floor"
+    );
+
+    // This deployment HAS loaded 1.2.0 of this name. The genuine 1.0.0 is now a replay.
+    let mut pol = policy(Some(&release), &[], true, true);
+    pol.first_party_high_water.insert(
+        "busbar-store-valkey-plugin".to_string(),
+        "1.2.0".to_string(),
+    );
+    let err = evaluate(artifact, &old, &pol).unwrap_err();
+    assert_eq!(err.kind, RejectKind::AntiDowngrade);
+    assert!(err.reason.contains("1.2.0"), "names the floor: {err:?}");
+    assert!(
+        err.reason.contains("plugins.rollback") || err.reason.contains("rollback"),
+        "names the override: {err:?}"
+    );
+    // No opt-in flag can launder it: both are set above and it is still a hard reject.
+
+    // The artifact AT the mark, and above it, still load — the floor is a floor, not a pin.
+    for v in ["1.2.0", "1.3.0"] {
+        let mut cur = manifest(
+            "busbar-store-valkey-plugin",
+            "valkey",
+            FIRST_PARTY_PUBLISHER,
+        );
+        cur.version = v.into();
+        let cur = sign(&release, cur, artifact);
+        assert!(
+            matches!(
+                evaluate(artifact, &cur, &pol),
+                Ok(Verdict::Trusted {
+                    first_party: true,
+                    ..
+                })
+            ),
+            "{v} is at or above the mark and must load"
+        );
+    }
+}
+
+/// The EXPLICIT rollback pin is the documented override: it REPLACES the high-water floor for that
+/// name (and that name only), which is exactly what makes an audited rollback possible at all.
+#[test]
+fn an_explicit_rollback_pin_overrides_the_high_water_mark() {
+    let release = test_key(1);
+    let artifact = b"the 1.0.0 an operator deliberately rolled back to";
+    let mut old = manifest(
+        "busbar-store-valkey-plugin",
+        "valkey",
+        FIRST_PARTY_PUBLISHER,
+    );
+    old.version = "1.0.0".into();
+    let old = sign(&release, old, artifact);
+
+    let mut pol = policy(Some(&release), &[], false, false);
+    pol.first_party_high_water.insert(
+        "busbar-store-valkey-plugin".to_string(),
+        "1.2.0".to_string(),
+    );
+    // Without the pin: refused.
+    assert!(evaluate(artifact, &old, &pol).is_err());
+    // With the pin at the rollback target: admitted, for THIS NAME only.
+    pol.first_party_floors.insert(
+        "busbar-store-valkey-plugin".to_string(),
+        "1.0.0".to_string(),
+    );
+    assert!(
+        matches!(
+            evaluate(artifact, &old, &pol),
+            Ok(Verdict::Trusted {
+                first_party: true,
+                ..
+            })
+        ),
+        "an explicit, audited rollback pin replaces the high-water floor"
+    );
+
+    // A DIFFERENT unpinned name still faces its own mark — a rollback of A never admits an old B.
+    let mut b = manifest("busbar-hook-ranker", "ranker", FIRST_PARTY_PUBLISHER);
+    b.version = "1.0.0".into();
+    let b = sign(&release, b, artifact);
+    pol.first_party_high_water
+        .insert("busbar-hook-ranker".to_string(), "1.2.0".to_string());
+    assert!(
+        evaluate(artifact, &b, &pol).is_err(),
+        "pinning A must not lower B's floor"
+    );
+}
+
+/// The mark floors FIRST-PARTY artifacts only. A third-party plugin is judged by `min_versions`
+/// alone — the first-party lane's mark must never silently floor someone else's publisher.
+#[test]
+fn the_high_water_mark_does_not_floor_a_third_party_plugin() {
+    let release = test_key(1);
+    let vendor = test_key(2);
+    let artifact = b"a third-party artifact";
+    let mut m = manifest("acme-store-plugin", "acme", "acme");
+    m.version = "1.0.0".into();
+    let m = sign(&vendor, m, artifact);
+
+    let mut pol = policy(
+        Some(&release),
+        &[("acme", &vendor.verifying_key())],
+        false,
+        false,
+    );
+    pol.first_party_high_water
+        .insert("acme-store-plugin".to_string(), "1.2.0".to_string());
+    assert!(
+        matches!(
+            evaluate(artifact, &m, &pol),
+            Ok(Verdict::Trusted {
+                first_party: false,
+                ..
+            })
+        ),
+        "the first-party mark must not floor a third-party publisher"
+    );
 }
 
 #[test]

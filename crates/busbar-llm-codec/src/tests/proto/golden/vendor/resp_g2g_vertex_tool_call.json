@@ -1,0 +1,44 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "get_weather",
+              "args": {
+                "city": "Paris, France"
+              }
+            },
+            "thoughtSignature": "CqYCAY89a1+Ecvp1ZrK63X6WaOtZDmXR9sMsZF1w1siBWbtxq9gJ5wZ5Zmf/XowCu5s6O9IefL8FGqs2VGYTuwp6pSw3y9OQaEGuA8kWZuIRJonV+LWnrkeCJplvmX3EU6aMgOLpipvKC9TInMjxYwHNM4IO+Cx+QnuInamR510L3wCWjWjg0o2eVVyjCFR6BZDZiVqvB32f/FBJ33kgfdZDFkg513hsrLL8I63oDZP0g6rZz1txVnL41g1n8fX+UCDLXsoUfhuFwwWf0b51MY8lyGeJkzO3iDDH6Ut+HHPYaym8//3rMB54y5wOSkmWVc/7yVVsQVfCs2qr5IGsalbi5aOeVVxcUd5c25xnJJVNc9y3n5VVq8/Vgb5BmEWiZHMcmYdrSKBm"
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "avgLogprobs": -0.94924327305385048
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 47,
+    "candidatesTokenCount": 7,
+    "totalTokenCount": 121,
+    "trafficType": "ON_DEMAND",
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 47
+      }
+    ],
+    "candidatesTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 7
+      }
+    ],
+    "thoughtsTokenCount": 67
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "createTime": "2026-09-07T16:52:45.817893Z",
+  "responseId": "3eueauX1MbqAtsMP6oPj-AU"
+}

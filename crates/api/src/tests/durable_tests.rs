@@ -273,6 +273,15 @@ fn remove_unlinks_and_fsyncs_the_holding_dir() {
     fault_reset();
     write(&target, b"artifact").unwrap();
 
+    // RESET AGAIN, between the setup write and the removal under test. `fault_parent_fsynced()`
+    // returns `.last()` of a CUMULATIVE vec that only `fault_reset` clears, and the setup `write`
+    // above already pushed this same dir through `write_with` -> `sync_holding_dir`. Without this
+    // line the assertion below reads the WRITE's entry: deleting `sync_holding_dir(path)` from
+    // `remove` -- reverting it to a bare `std::fs::remove_file`, which is exactly the asymmetry
+    // this test is named for, and which lets a crash after a plugin delete resurrect the artifact
+    // -- left `.last()` still `Some(sc.dir)` and the test still green.
+    fault_reset();
+
     super::remove(&target).expect("the unlink succeeds");
     assert!(!target.exists(), "the artifact is gone");
     assert_eq!(

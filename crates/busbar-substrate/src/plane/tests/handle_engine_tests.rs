@@ -154,6 +154,17 @@ impl PlaneStore for MemStore {
     ) -> StoreResult<bool> {
         Ok(true)
     }
+    /// The multi-use capability check. `false` — the fail-closed direction the neutral trait
+    /// defaults to — because this fixture keeps no capability rows to be live.
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> StoreResult<bool> {
+        Ok(false)
+    }
 }
 
 /// The abandon/report closures the sweep takes — the DEMO plane cancels an idle handle.

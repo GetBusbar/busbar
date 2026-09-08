@@ -219,6 +219,35 @@ tier   = "fast"
 run    = "cargo build --release -p busbar-store-example-plugin -p busbar-hook-test-plugin && cargo test --release -p busbar-mcp --features test-support && cargo test --release -p busbar-a2a --features test-support && cargo clippy -p busbar-mcp --all-targets --features test-support -- -D warnings && cargo clippy -p busbar-a2a --all-targets --features test-support -- -D warnings"
 
 [[segment]]
+id     = "benches"
+status = "active"
+tier   = "live-mock"
+# THE BENCHES, COMPILED AND — for the one claim that is a GATE — ASSERTED.
+#
+# `cargo bench` ran nowhere: not in .github/workflows/, not in scripts/. `ci.yml`'s workspace test
+# leg passes neither `--benches` nor `--all-targets`, and the three bench targets
+# (crates/busbar/benches/hook_path.rs, crates/busbar-core/benches/pool_upstream_creds.rs,
+# crates/plane-abi-spike/benches/abi_bench.rs) all set `harness = false`, so libtest never picks them
+# up either. The only thing touching them at all was `cargo clippy --all-targets`, which COMPILES and
+# never runs. That left two different problems, and this segment answers both differently on purpose:
+#
+#  - A BENCH THAT NO LONGER COMPILES is a silent rot: nobody notices until the day somebody needs the
+#    number. `cargo bench --workspace --no-run` builds every bench target and asserts nothing about
+#    the figures, which is the right strength for a measurement instrument — a wall-clock number on a
+#    shared CI runner is not a thing to fail a release on.
+#  - A BENCH WHOSE HEADER READS AS A GATE is worse than no gate, because it is consulted and cannot
+#    fail. `abi_bench.rs` computed its 1µs/call verdict and its alloc-gate result and then printed
+#    them as the words "UNDER"/"OVER" and "PASS"/"FAIL". Those two claims now have an ASSERTED twin —
+#    `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate` — which is
+#    `#[ignore]`d by default and invoked explicitly here.
+#
+# WHY THIS TIER. The asserted twin measures WALL CLOCK and uses a process-global counting allocator,
+# so it is only meaningful running ALONE (`--ignored --test-threads=1`) on a machine that is not also
+# running a dozen other tests. That is the qa cadence, not the per-push one; and compiling criterion
+# for three bench targets is minutes of build the per-push suite should not be paying.
+run    = "cargo bench --workspace --no-run && cargo test --release -p plane-abi-spike --lib -- --ignored --test-threads=1"
+
+[[segment]]
 id     = "core-data-plane"
 status = "active"
 tier   = "live-mock"
@@ -298,7 +327,7 @@ tier   = "fast"
 # concrete plane key/dialect/record-type, or plane→busbar_core:: back-reach fails this gate RED.
 # The self-test (proving the scanner catches the four planted side channels) also runs per-push in
 # ci.yml, so the scanner's own honesty is continuously verified alongside the tree verdict.
-run    = "scripts/plane-purity-lint.sh --selftest && scripts/plane-purity-lint.sh --check"
+run    = "cargo xtask gate plane-purity --selftest && cargo xtask gate plane-purity"
 
 [[segment]]
 id     = "plane-grep"
@@ -365,6 +394,22 @@ tier   = "fast"
 run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --summary"
 
 [[segment]]
+id     = "documented-claims"
+status = "active"
+tier   = "fast"
+# THE DOCUMENTED-BEHAVIOUR CLAIM GATE (scripts/documented-claims-check.sh) — qa/documented-claims.json
+# records every README and CHANGELOG behaviour claim the ops inventory cross-checks, each pinned by a
+# shadow-oracle cell or excused in writing as untestable prose, plus the two rows the design calls
+# CONTRADICTED, which carry the CODE's behaviour as the parity target. The register was cited as a gate
+# by the design-bindings ledger while NOTHING in the tree opened it, and its own header claimed a
+# sibling gate verified its cell ids — neither was so. A data file compares nothing; it is an INPUT to
+# a gate, never a gate. `--check` asserts the shape, a complete and contiguous claim run for each
+# document, a `counts` block re-derived rather than trusted, every cited cell present in cells.json AND
+# recorded PASS by the pinned golden, and both CONTRADICTED rows still flagged and still pinned. The
+# --selftest (one planted defect per arm, and the committed register asserted green) runs FIRST.
+run    = "scripts/documented-claims-check.sh --selftest && scripts/documented-claims-check.sh --check"
+
+[[segment]]
 id     = "design-bindings"
 status = "active"
 tier   = "fast"
@@ -381,47 +426,48 @@ run    = "scripts/design-bindings.sh --selftest && scripts/design-bindings.sh --
 id     = "kernel-token-wire-purity"
 status = "active"
 tier   = "fast"
-# THE KERNEL TOKEN-WIRE PURITY LINT (scripts/kernel-token-wire-purity-lint.sh) — the kernel never
+# THE KERNEL TOKEN-WIRE PURITY GATE (cargo xtask gate kernel-token-wire-purity) — the kernel never
 # re-derives a usage token class from a raw provider wire field; it reads the plane-normalized
 # locator. A gate that carried a --selftest and a --check but was invoked by nothing: not by a
 # workflow, not by this manifest, not by verify-1.6.0-done.sh. A gate nobody runs measures nothing,
 # and this one is GREEN on the tree today, so wiring it here is what keeps it green. The --selftest
 # (a planted raw wire field flagged exactly once, plane-normalized reads and comment-only mentions
 # left clean, a /tests/ hit excluded) runs FIRST, as everywhere else in this file.
-run    = "scripts/kernel-token-wire-purity-lint.sh --selftest && scripts/kernel-token-wire-purity-lint.sh --check"
+run    = "cargo xtask gate kernel-token-wire-purity --selftest && cargo xtask gate kernel-token-wire-purity"
 
 [[segment]]
 id     = "no-deferral"
 status = "active"
 tier   = "fast"
-# THE NO-DEFERRAL GATE (scripts/no-deferral-gate.sh) — nothing known-and-deferred in shipped source:
+# THE NO-DEFERRAL GATE (cargo xtask gate no-deferral) — nothing known-and-deferred in shipped source:
 # every reachable `unimplemented!()`/`todo!()` (Class A) and every self-declared debt label
 # (Class B, e.g. SKELETON) must be a floor-checked entry in the committed scripts/no-deferral.waivers
 # allowlist. verify-1.6.0-done.sh runs the stricter `--strict-done` form as part of its DONE claim;
 # the per-push posture that keeps a NEW unwaived deferral from landing in the first place is this
-# `--check`, which no workflow and no segment ran. The --selftest (a planted Class-A macro and a
-# Class-B label each flagged, the anti-marker prose / cfg(test) / tests-file fixtures each left
-# clean, plus a discovery floor over the real tree) runs FIRST.
-run    = "scripts/no-deferral-gate.sh --selftest && scripts/no-deferral-gate.sh --check"
+# check, which no workflow and no segment ran. The --selftest (a planted Class-A macro and a
+# Class-B label each flagged, the anti-marker prose / cfg(all(test,…)) / cfg(not(test)) fixtures each
+# proven, the three waiver-shape refusals driven through the real loader, and the discovery floor
+# planted on the RUN path) runs FIRST.
+run    = "cargo xtask gate no-deferral --selftest && cargo xtask gate no-deferral"
 
 [[segment]]
 id     = "inventory-ref-lint"
 status = "active"
 tier   = "fast"
-# THE INVENTORY-REFERENCE LINT (scripts/inventory-ref-lint.py) — every ARCHITECTURE.md Appendix B
+# THE INVENTORY-REFERENCE LINT (cargo xtask gate inventory-ref) — every ARCHITECTURE.md Appendix B
 # binding's `inventory` column names a docs/design inventory file that EXISTS. It is the companion
 # to the design-bindings gate above: design-bindings proves each binding's CHECKS still exist, this
 # proves each binding's INVENTORY citation still resolves, so a renamed or deleted inventory file
 # cannot leave a binding pointing at nothing. Green on the tree today and run by nothing until now.
 # The --selftest (a real prefix clean, an unrecognized prefix exactly one problem, a bare source
 # backtick and a PB-N self-reference correctly not flagged) runs FIRST.
-run    = "python3 scripts/inventory-ref-lint.py --selftest && python3 scripts/inventory-ref-lint.py --check"
+run    = "cargo xtask gate inventory-ref --selftest && cargo xtask gate inventory-ref"
 
 [[segment]]
 id     = "changelog-register"
 status = "active"
 tier   = "fast"
-# THE CHANGELOG REGISTER GATE (scripts/changelog-register-check.sh) — every `kind: breaking` entry in
+# THE CHANGELOG REGISTER GATE (cargo xtask gate changelog-register) — every `kind: breaking` entry in
 # the shadow-oracle accepted-differences register names a CHANGELOG.md line that is present VERBATIM.
 # This is the second half of the register's money rule: diff-cells.py refuses at LOAD time to let an
 # `improvement` entry forgive a status or a billing figure (only a `breaking` entry with a changelog
@@ -431,13 +477,13 @@ tier   = "fast"
 # with no changelog field FAILs, zero breaking entries is zero rows not a false green, a missing
 # register file FAILs rather than crashes, a line wrapped across two source lines still PASSes)
 # runs FIRST.
-run    = "scripts/changelog-register-check.sh --selftest && scripts/changelog-register-check.sh --check"
+run    = "cargo xtask gate changelog-register --selftest && cargo xtask gate changelog-register"
 
 [[segment]]
 id     = "teller-steps"
 status = "active"
 tier   = "fast"
-# THE TELLER-STEPS MATRIX (scripts/teller-steps-check.py) — "conformance rigs carry one cell per
+# THE TELLER-STEPS MATRIX (cargo xtask gate teller-steps) — "conformance rigs carry one cell per
 # Teller step per plane" (tracker H2). `--check` proves every GATING plane x step cell in
 # qa/teller-steps.json names a real scenario rather than "none"; `--root-legs` goes further and
 # actually RUNS every root-leg proof cell the matrix names, with all five root legs compiled in, so
@@ -446,12 +492,12 @@ tier   = "fast"
 # would have been invisible until release. `--root-legs` builds the binary crate with
 # root-admin,root-mcp,root-a2a,root-voice,root-llm, which is why it is the slowest row in this
 # manifest; it is worth it, because it is the only one that proves the cells execute.
-# NOTE: there is no `--root-legs-gating` flag — teller-steps-check.py dispatches on `--selftest` and
-# `--root-legs` alone and silently ignores anything else, so spelling one would run plain
-# `--root-legs` while reading as if it had asked for more. The --selftest (a matrix with borrowed
-# root evidence, a labelled root verdict, an unanswered plane, and a leg proving zero steps each
-# REFUSED) runs FIRST.
-run    = "python3 scripts/teller-steps-check.py --selftest && python3 scripts/teller-steps-check.py --check && python3 scripts/teller-steps-check.py --root-legs"
+# NOTE: `--root-legs-gating` IS a real arm (the shipped root legs owe every gating step a cell over
+# the loop) and the runner refuses an unknown flag with exit 2 — the Python fell through into its
+# default path, so a mistyped arm ran a check nobody asked for. The --selftest (a matrix with
+# borrowed root evidence, a labelled root verdict, an unanswered plane, and a leg proving zero steps
+# each REFUSED) runs FIRST.
+run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs"
 
 # ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate
 # that cannot pass is a red that teaches people to ignore the manifest. Each names exactly what has

@@ -481,86 +481,8 @@ pub fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::V
 }
 
 #[cfg(test)]
-mod frame_terminator_tests {
-    use super::*;
-
-    /// The event-stream grammar names three line terminators — CRLF, a lone LF, a lone CR — and a
-    /// blank line is any terminator immediately followed by any terminator (nine pairings). A
-    /// scanner that only recognised `\n\n`/`\r\n\r\n` never framed a bare-CR stream, or a stream
-    /// mixing terminators across the frame boundary, at all.
-    #[test]
-    fn every_spec_line_terminator_pairing_ends_a_frame() {
-        assert_eq!(find_frame_terminator(b"data: a\r\rrest"), Some((7, 2)));
-        assert_eq!(find_frame_terminator(b"data: a\n\rrest"), Some((7, 2)));
-        assert_eq!(find_frame_terminator(b"data: a\r\n\rrest"), Some((7, 3)));
-        assert_eq!(find_frame_terminator(b"data: a\n\r\nrest"), Some((7, 3)));
-        assert_eq!(find_frame_terminator(b"data: a\r\n\n"), Some((7, 3)));
-        assert_eq!(find_frame_terminator(b"data: a\n\r\n"), Some((7, 3)));
-        // One terminator is not a blank line: the frame has not ended.
-        assert_eq!(find_frame_terminator(b"data: a\r\nrest"), None);
-        // A CRLF is ONE terminator, never two: mis-splitting it is the only real risk here.
-        assert_eq!(find_frame_terminator(b"a\r\nb\r\n\r\nc"), Some((4, 4)));
-        // A lone trailing CR is not yet knowable — it may still turn out to be a CRLF.
-        assert_eq!(find_frame_terminator(b"data: a\r"), None);
-        // The existing LF/CRLF offsets stay byte-identical.
-        assert_eq!(find_frame_terminator(b"data: a\n\nrest"), Some((7, 2)));
-        assert_eq!(find_frame_terminator(b"data: a\r\n\r\nrest"), Some((7, 4)));
-        assert_eq!(find_frame_terminator(b"data: a"), None);
-    }
-
-    /// `parse_sse_frame` used `str::lines()`, which does not split on a bare CR — a bare-CR frame
-    /// (correctly framed by `find_frame_terminator` above) yielded no `data:` line at all, and a
-    /// multi-field bare-CR frame swallowed later fields into the first value.
-    #[test]
-    fn parse_sse_frame_splits_on_bare_cr() {
-        assert_eq!(
-            parse_sse_frame(b"event: message\rdata: {\"a\":1}"),
-            Some(("message".to_string(), "{\"a\":1}".to_string()))
-        );
-        assert_eq!(
-            parse_sse_frame(b"data: line1\rdata: line2"),
-            Some((String::new(), "line1\nline2".to_string()))
-        );
-        // CRLF and LF frames stay byte-identical to today.
-        assert_eq!(
-            parse_sse_frame(b"event: message\r\ndata: {\"a\":1}\r\n"),
-            Some(("message".to_string(), "{\"a\":1}".to_string()))
-        );
-        assert_eq!(
-            parse_sse_frame(b"data: line1\ndata: line2"),
-            Some((String::new(), "line1\nline2".to_string()))
-        );
-    }
-
-    /// The cheap `event:`-name probe split on LF alone, so a bare-CR frame came back as the WHOLE
-    /// frame body (`message_delta\rdata: {…}`). The Anthropic same-protocol fast path matches that
-    /// name against its usage-bearing set, so a bare-CR stream's usage frames were skipped and the
-    /// request billed zero. The probe now walks the same terminator grammar the parser does.
-    #[test]
-    fn sse_event_type_splits_on_bare_cr() {
-        assert_eq!(
-            sse_event_type(b"event: message_delta\rdata: {\"x\":1}\r\r"),
-            "message_delta"
-        );
-        assert_eq!(
-            sse_event_type(b"event: message_start\rdata: {}"),
-            "message_start"
-        );
-        // The LAST `event:` line still wins across a bare-CR frame.
-        assert_eq!(sse_event_type(b"event: a\revent: b\rdata: {}"), "b");
-        // LF / CRLF / no-event frames stay byte-identical to today.
-        assert_eq!(
-            sse_event_type(b"event: message_delta\ndata: {}\n\n"),
-            "message_delta"
-        );
-        assert_eq!(
-            sse_event_type(b"event: message_delta\r\ndata: {}\r\n\r\n"),
-            "message_delta"
-        );
-        assert_eq!(sse_event_type(b"data: {}\n\n"), "");
-        assert_eq!(sse_event_type(b""), "");
-    }
-}
+#[path = "tests/proto_2.rs"]
+mod frame_terminator_tests;
 
 /// Neutral streaming byte-in/byte-out translator seam. The WHOLE concrete `StreamTranslate` (in the
 /// `busbar-llm` plugin) sits behind this trait so emission ORDER is preserved verbatim — the
@@ -1800,78 +1722,8 @@ pub fn warn_untranslatable_response_metadata(
 }
 
 #[cfg(test)]
-mod boot_fold_tests {
-    use super::*;
-
-    /// A name-only declaration: the boot fold and the test seam read nothing but `name`.
-    const fn named_decl(name: &'static str) -> ProtocolDecl {
-        ProtocolDecl {
-            name,
-            codec: None,
-            handler: None,
-            verbs: &[],
-            head_keys: &[],
-            streaming_content_type: None,
-            array_stream_shim_key: None,
-            native_tool_id_prefix: None,
-            ingress_auth: IngressAuth::Bearer,
-            egress_auth_headers: None,
-            egress_auth_lane_constant: false,
-            stream_usage_requires_opt_in: false,
-            requires_max_tokens: false,
-            stop_sequence_cap: None,
-            cache_markers_model_gated: false,
-            fills_thought_signature: false,
-            frame_after_message_start: None,
-            reshapes_body_at_path_base: false,
-            max_cache_control_breakpoints: None,
-            quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
-            ingress_is_eventstream: false,
-            emits_sse_done_terminator: false,
-            max_citations_per_delta: None,
-            egress_user_agent: crate::proxy::EGRESS_UA_DEFAULT,
-            has_model_in_url: false,
-            auth_failure_status_and_kind: (http::StatusCode::UNAUTHORIZED, ERR_TYPE_AUTHENTICATION),
-            ingress_relays_amzn_headers: false,
-            ingress_relayed_response_header_names: &[],
-            auth_failure_message: "authentication failed",
-            uses_array_stream_shim: false,
-            has_native_path_not_found: false,
-            egress_stream_accept: crate::proxy::TEXT_EVENT_STREAM,
-            models_list_envelope: None,
-            claims: None,
-            residual_claims: None,
-            residual_default: false,
-            vendor_response_metadata: None,
-            list_models_fingerprint_headers: &[],
-        }
-    }
-
-    static ROOTED: ProtocolDecl = named_decl("rooted");
-    static TEST_ONLY: ProtocolDecl = named_decl("test-only");
-
-    /// The one test in this binary that installs a root: `install_protocols` is once per process.
-    /// A test-built binary with a real composition root must fold to the same declaration list
-    /// as the shipped one, with no re-declaration for the boot fold to skip audibly.
-    #[test]
-    fn the_test_seam_does_not_redeclare_what_the_root_installed() {
-        install_protocols(vec![&ROOTED]);
-        register_test_protocol(&ROOTED);
-        register_test_protocol(&TEST_ONLY);
-        let names: Vec<&str> = test_registered_protocols().iter().map(|d| d.name).collect();
-        assert_eq!(
-            names,
-            ["test-only"],
-            "a root-installed name must not enter the test set"
-        );
-        let folded: Vec<&str> = registry().decls().iter().map(|d| d.name).collect();
-        assert_eq!(
-            folded,
-            ["rooted", "test-only"],
-            "installed first, each name once"
-        );
-    }
-}
+#[path = "tests/proto.rs"]
+mod boot_fold_tests;
 
 #[cfg(test)]
 #[path = "tests/proto_strip_tests.rs"]

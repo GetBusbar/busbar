@@ -162,16 +162,15 @@ fn a_failed_attempt_records_before_the_guard_can_release() {
     let released = log
         .iter()
         .position(|e| matches!(e, super::harness::Recorded::ProbeReleased(..)));
+    let observed = observed.expect("a failed attempt tells the breaker what happened");
+    // Unconditionally, not behind an `if let`: a guard that was armed and never released leaves
+    // `released` at `None`, and skipping the ordering assertion for the absence would report a
+    // wedged half-open cell — the member excluded from every later pick — as a pass.
+    let released = released.expect("the guard released the probe it armed");
     assert!(
-        observed.is_some(),
-        "a failed attempt tells the breaker what happened"
+        observed < released,
+        "the outcome is recorded first, which is what makes the guard's release a safe no-op"
     );
-    if let (Some(observed), Some(released)) = (observed, released) {
-        assert!(
-            observed < released,
-            "the outcome is recorded first, which is what makes the guard's release a safe no-op"
-        );
-    }
 }
 
 // ── the shed paths that dispatch nothing ────────────────────────────────────────────────────────

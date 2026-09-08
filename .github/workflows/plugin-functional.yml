@@ -139,21 +139,21 @@ jobs:
       # This repo (busbar) is always checked out: it carries the probe scripts + fixtures, and — on
       # the Direction A path — the busbar source itself.
       - name: Check out busbar (probes, fixtures, and this-tree source)
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The plugin repo's source is only needed on the this-tree build path (Direction B: the calling
       # plugin repo builds its OWN cdylib). On the release path we download the published tarball and
       # need no source at all.
       - name: Check out the plugin source (this-tree build path only)
         if: ${{ inputs.plugin_ref == 'this-tree' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: ${{ inputs.plugin_repo }}
           path: plugin-src
 
       - name: Install Rust (only when something is built from source)
         if: ${{ inputs.busbar_version == 'this-tree' || inputs.plugin_ref == 'this-tree' }}
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
 
       # ── Resolve the busbar binary. A failure here does NOT try to be clever: the probe step below
       # ── guards on the binary's presence and records `did not run`, which verdict.sh reports as RED.

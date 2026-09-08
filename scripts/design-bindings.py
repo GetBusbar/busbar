@@ -64,6 +64,7 @@ GOLDEN_LEDGER = ROOT / "testing" / "shadow-oracle" / "golden" / "1.5.5" / "ledge
 OUT_JSON = ROOT / "qa" / "design-bindings.json"
 OUT_MD = ROOT / "qa" / "DESIGN-BINDINGS.md"
 CRATES = ROOT / "crates"
+GAPS = ROOT / "qa" / "design-bindings-gaps.json"
 
 KINDS = ("test", "oracle-cell", "oracle-family", "lint", "conformance", "gate")
 
@@ -230,7 +231,12 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_untranslatable_2xx_does_not_charge_tokens", "a buffered untranslatable 2xx bills zero"),
         ("test", "test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged", "over the translate cap is 500 and uncharged"),
         ("test", "test_streaming_pre_first_byte_transport_error_refunds_budget", "the pre-first-byte cut refunds the lane unit"),
-        ("test", "test_truncated_body_does_not_refund_budget", "the post-first-byte cut does not refund the lane unit"),
+        # The refund rule turns on the CONTENT TYPE, not on `first_byte_sent`, so it takes two
+        # rows. This slot used to hold `test_truncated_body_does_not_refund_budget`, which is the
+        # buffered translate-cap TRUNCATION arm and not a stream cut at all — PB-27's refund clause
+        # had no witness on either half.
+        ("test", "test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit", "the post-first-byte cut refunds the lane unit on a NON-SSE body and does not on an SSE body"),
+        ("test", "test_streaming_nonsse_mid_body_transport_error_records_transient", "the non-SSE post-first-byte cut records its compensating transient and leaves the refund standing"),
         ("test", "test_cancel_drop_bills_partial_tokens", "a client disconnect bills the partial tokens"),
         ("test", "test_cancel_drop_mid_stream_refunds_budget", "a client disconnect refunds the lane unit"),
         ("test", "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx", "the flat fee is kept after 2xx headers"),
@@ -377,7 +383,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "metrics_route_declared_only_when_configured", "/metrics is declared only with export.prometheus"),
     ],
     "PB-54": [
-        ("lint", "scripts/tracing-lint.sh", "every instrument span declares an explicit level"),
+        ("lint", "xtask/src/gates/tracing.rs", "every instrument span declares an explicit level"),
         ("oracle-family", "cli", "CLI flags and env cells diffed against the 1.5.5 binary"),
     ],
     "PB-55": [
@@ -473,7 +479,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled", "no route headers for the SWRR floor even when enabled"),
         ("test", "route_policy_headers_present_only_when_both_gates_open", "route headers only when route_policy and a non-default ordering"),
         ("test", "test_emit_server_timing_moved_to_advanced_response_headers", "both flags default false"),
-        ("lint", "scripts/response-header-lint.sh", "every injected response header is an opt-in advanced.response_headers toggle from one site"),
+        ("lint", "xtask/src/gates/response_header.rs", "every injected response header is an opt-in advanced.response_headers toggle from one site"),
     ],
     "PB-74": [
         ("test", "reserved_hook_names_are_frozen", "RESERVED_HOOK_NAMES equals its frozen membership and a frozen word fails boot"),
@@ -521,7 +527,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline", "the MAX_INFLIGHT_HOOK_CALLS cap"),
         ("test", "dlopen_slow_gate_hits_the_deadline", "call_bounded cuts a slow gate at its budget"),
         ("test", "dlopen_plugin_panic_is_fail_closed_err", "a panicking plugin is a fail-closed error"),
-        ("lint", "scripts/blocking-ffi-lint.sh", "every plugin transport call is made from a blocking context"),
+        ("lint", "xtask/src/gates/blocking_ffi.rs", "every plugin transport call is made from a blocking context"),
     ],
     "PB-82": [
         ("test", "read_response_subtracts_cached_prefix_from_prompt_tokens", "openai: the cached count is subtracted from the prompt total"),
@@ -657,18 +663,61 @@ NOTES: dict[str, str] = {
     "PB-75": "The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial.",
     "PB-13": "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5.",
     "PB-15": "No WAL or high-water concept exists in crates/ yet; the neutrality tripwire (no_data_dir_neutrality.rs + the ops.scrape no-ledger-series cell) turns red the day a WAL series or boot line appears on a config without data_dir.",
-    "PB-48": "max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.",
+    "PB-48": "Resolved 2026-09-06: max_unit_duration DOES exist -- it is the fourth parameter of "
+             "`sweep()` at crates/busbar-kernel/src/tick.rs:141, and Sweep::AlarmOnly is the verdict "
+             "it returns when the protocol declares no idle bound. The old note was wrong on the "
+             "fact and the row was carried unproven on it. The sweep half is compared by "
+             "crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, which "
+             "drives sweep() past max_unit_duration with idle_bound_applies false, gets AlarmOnly, "
+             "and shows sweep_settle takes no hold and ends no unit on it; nothing in crates/ calls "
+             "sweep() on a production path at all, so the alarm is the most that can happen. The "
+             "stream half is compared on the SHIPPED proxy path by "
+             "crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::"
+             "a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier: the same "
+             "black-holed upstream is cut at 7 s under one configuration and at 23 s under another, "
+             "so the timer that fires is the operator's total deadline and no idle timer exists to "
+             "fire first. The binding's `main.rs:3179-3181` anchor was dead and is amended in "
+             "Appendix B to busbar-substrate/src/config/limits.rs:22 and "
+             "busbar-llm/src/engine/attempt/send.rs:63-76.",
     "PB-8": "The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet.",
     "PB-66": "CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.",
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
-    "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
-    "PB-61": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-    "PB-17": "The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are "
-             "the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric "
-             "SERIES are absent on a config with no data_dir -- a different surface, and not a count. "
-             "The boot.warning cells assert that individual warnings are PRESENT; none totals them. "
-             "The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 "
-             "corpus config and compare the total against the pinned golden's.",
+    "PB-58": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs "
+             "declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six "
+             "times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a "
+             "Decision::refuse at StepName::Admit. The row was carried unproven on a note that was "
+             "wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT "
+             "OCCUR, which no behavioural test can settle, so it is settled on the shipped "
+             "VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of "
+             "reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and "
+             "contains no money reason; the set it constructs inside `Refusal::new` contains "
+             "OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a "
+             "door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named "
+             "in one production file, the module defining the rule, so no shipped path branches on "
+             "the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The "
+             "behavioural half is where the behaviour is: admit.rs's "
+             "over_budget_refuses_with_no_charge_and_nothing_to_refund and meter.rs's "
+             "a_spend_past_the_reservation_is_carried_out_as_an_overdraft.",
+    "PB-61": "Resolved 2026-09-06: MAX_NEEDMORE_FRAMES is crates/busbar-contract/src/bounded.rs:41 and "
+             "the pump reads it at crates/busbar-kernel/src/pump.rs:128, where the run of consecutive "
+             "\"not yet\" answers is kept ON THE SESSION SLOT -- so `Scheduler::ask_again(None)` is the "
+             "`None => false` arm, and a transport with no session has no run to count. "
+             "crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session "
+             "reads SESSION off the SHIPPED HttpTransport and SseTransport (both false) and drives four "
+             "times the ceiling of NeedMore frames through the pump with no session in hand, and "
+             "::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count spools the SAME "
+             "byte cap twice -- once whole, once one byte per chunk, 256 times the frame ceiling in "
+             "chunks -- and gets the same SpillBudget refusal on the same byte, never Stalled.",
+    "PB-17": "Resolved 2026-09-06: the binding is a COUNT, and it is now counted. "
+             "crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did "
+             "migrates and validates each of the 69 shipped configs in tests/migration-corpus/from-tags "
+             "and compares the warning lines the current binary emits, per config, against the number "
+             "the PUBLISHED 1.5.5 binary emitted on the same config -- read out of the pinned golden's "
+             "own config.migrate|<tag>|validate-migrated recordings, so the baseline is measured and not "
+             "typed in. 1.5.5 warned 69 times over the 69 configs; this binary warns fewer, having "
+             "retired the BUSBAR_PROVIDERS deprecation, and a warning that APPEARS is reported with its "
+             "config and its text. The absence tripwire it used to cite is kept: it proves a different, "
+             "still-wanted thing about metric series.",
 }
 
 # ── Bindings the ledger's own note already says nothing proves ───────────────────────────────────
@@ -677,23 +726,6 @@ NOTES: dict[str, str] = {
 # some other subsystem happens to bear a matching name is the instrument lying. These are forced to
 # `unproven` and the note is the reason printed in the ledger's detail column.
 UNPROVEN_BY_NOTE: dict[str, str] = {
-    "PB-48": "the note on this row says the stall sweep is not built and the binding is vacuously true. "
-             "The tests it cites (a_slow_unit_is_not_a_lost_one, a_lost_task_is_settled_within_one_tick) "
-             "are unit-crate tests of the drop guard; none of them drives max_unit_duration, because "
-             "max_unit_duration does not exist. Nothing was compared.",
-    "PB-58": "the note on this row says OverBudget, OverdraftCeiling and StaleSlice do not exist in "
-             "crates/ and calls the binding vacuously true and untested. The four tests it cites are "
-             "admission-unit tests of the overdraft rule, which is a different subsystem from the "
-             "sealed-bucket refusal this binding is about. Nothing was compared.",
-    "PB-61": "the note on this row says MAX_NEEDMORE_FRAMES does not exist in crates/ and that no test "
-             "drives a multi-chunk body to the cap. The tests it cites bound a body by BYTES; the "
-             "binding is about the CHUNK-COUNT cap. Nothing was compared.",
-    "PB-17": "this row cites the shared absence tripwire (the ops.scrape no-ledger-series cell and "
-             "no_ledger_series_and_no_keyset_lines_without_data_dir), which asserts that certain metric "
-             "SERIES are absent. The binding is a COUNT of boot warning lines, and no check counts "
-             "them. A cell or test that counts the boot warning lines emitted on the 1.5.5 corpus "
-             "config and compares that count to the golden's would prove it; until one exists, the "
-             "tripwire proves a different thing about a different surface.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────
@@ -1036,7 +1068,8 @@ def build(arch_text: str, cells_doc: dict, existing: dict | None,
             entry["checks"] = [{"kind": suggest_kind(sug), "ref": "", "status": "unmapped", "suggestion": sug}]
         out_b.append(entry)
     # The status written here is the VERDICT the checks earn, not the fact that checks were listed.
-    classify(out_b, check_context(cells_doc, crates, root, ledger))
+    gaps_doc, _ = load_gaps(root / "qa" / "design-bindings-gaps.json")
+    classify(out_b, check_context(cells_doc, crates, root, ledger, gaps_doc))
     dropped = sorted(set(prior) - {b["id"] for b in bindings})
     return {
         "_comment": [
@@ -1084,6 +1117,7 @@ def counts(bindings: list[dict]) -> dict:
                 by_kind[c["kind"]] += 1
     return {"bindings": len(bindings), "mapped": by_status["mapped"],
             "unproven": by_status["unproven"], "unmapped": by_status["unmapped"],
+            "gap": by_status["gap"],
             "checks_by_kind": dict(sorted(by_kind.items()))}
 
 
@@ -1146,11 +1180,11 @@ def golden_recorded(ledger: Path) -> set[str]:
 #
 # WHAT COUNTS AS INVOKED, and why each source is in the set:
 #   * .github/workflows/*.yml -- the direct answer. Comment lines and step `name:` labels are
-#     stripped FIRST, exactly as scripts/full-gate.sh's own discovery strips them, because a script
+#     stripped FIRST, exactly as `cargo xtask full-gate`'s own discovery strips them, because a script
 #     named in a comment or in a step's human-readable title is being TALKED ABOUT, not run. Three of
 #     the refs this check found were in precisely that position.
-#   * scripts/full-gate.sh's discovered set -- the indirection the owner's rule names. It needs no
-#     separate scan: full-gate.sh derives that set by grepping ci.yml, which is already read above.
+#   * `cargo xtask full-gate`'s discovered set -- the indirection the owner's rule names. It needs no
+#     separate scan: full-gate derives that set by grepping ci.yml, which is already read above.
 #   * qa/segments.toml -- the qa full tier's manifest, and a real invocation path: qa-gate.yml runs
 #     `scripts/qa-gate-run.sh segment <id>`, which runs the segment's `run =` line. It is admitted
 #     ONLY when a workflow is seen driving that runner, so the manifest cannot vouch for itself.
@@ -1161,6 +1195,31 @@ _STEP_LABEL = re.compile(r"^[ \t]*-?[ \t]*name:.*$", re.M)
 _PATH_TOKEN = re.compile(r"(?:scripts|testing|qa|xtask)/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+")
 SEGMENT_RUNNER = "scripts/qa-gate-run.sh"
 RUNNABLE_SUFFIXES = (".sh", ".py", ".mjs", ".js", ".ts", ".rb")
+# ── A CONVERTED GATE IS STILL A GATE, AND STILL CITABLE ──────────────────────────────────────────
+# The batch-1 conversion moves each `scripts/*-lint.sh` into `cargo xtask gate <name>`, whose logic
+# lives in `xtask/src/gates/<name_with_underscores>.rs`. Neither spelling was resolvable here: the
+# command is not a path, and the module's `.rs` is not a RUNNABLE_SUFFIX -- so a binding citing a
+# converted gate read as "the ref vanished", which reds the binding for a reason that is entirely
+# about the rewrite. That is the failure this file exists to make impossible in the other direction,
+# and letting it happen here would push the next person toward deleting the citation instead.
+#
+# So: a `cargo xtask gate <name>` seen in a workflow (or in the segment manifest, on the same terms
+# as every other ref) admits that gate's MODULE as invoked, and `.rs` is citable. It is citable ONLY
+# -- `.rs` is deliberately NOT added to RUNNABLE_SUFFIXES, so the transitive closure never opens a
+# Rust file looking for further invocations. A gate module names the tree it scans; following it
+# would admit every path it mentions as something CI runs, which is exactly backwards.
+_XTASK_GATE_INVOCATION = re.compile(r"cargo[ \t]+xtask[ \t]+gate[ \t]+([a-z0-9][a-z0-9-]*)")
+XTASK_GATE_DIR = "xtask/src/gates"
+CITABLE_ONLY_SUFFIXES = (".rs",)
+
+
+def xtask_gate_module(name: str) -> str:
+    """The module path a `cargo xtask gate <name>` invocation runs.
+
+    One mechanical spelling, derived from the gate name rather than maintained beside it, so a gate
+    cannot be cited under a name the runner does not answer to.
+    """
+    return f"{XTASK_GATE_DIR}/{name.replace('-', '_')}.rs"
 # THIS FILE IS NEVER AN INVOKER. Its SEED table names every gate the ledger cites, so following it
 # would let the ledger vouch for its own citations: every ref would be "invoked" because the ledger
 # mentions it. A check whose evidence is its own claim has checked nothing.
@@ -1187,12 +1246,21 @@ def ci_invoked_refs(root: Path) -> set[str]:
     terminates on the finite set of paths in the tree; comments are stripped from each file first,
     for the same reason they are stripped from the workflows.
     """
+    # Every `cargo xtask gate <name>` seen in a text admits that gate's module, on exactly the same
+    # terms as a script path: the text must be one CI actually reaches, comments and step labels
+    # already stripped out of it.
+    gate_modules: set[str] = set()
+
+    def refs_in(text: str) -> set[str]:
+        gate_modules.update(xtask_gate_module(n) for n in _XTASK_GATE_INVOCATION.findall(text))
+        return set(_PATH_TOKEN.findall(text))
+
     wf_dir = root / ".github" / "workflows"
     workflows = "\n".join(_runnable_text(p) for p in sorted(wf_dir.glob("*.y*ml"))) if wf_dir.is_dir() else ""
-    invoked = set(_PATH_TOKEN.findall(workflows))
+    invoked = refs_in(workflows)
     segments = root / "qa" / "segments.toml"
     if SEGMENT_RUNNER in invoked and segments.is_file():
-        invoked |= set(_PATH_TOKEN.findall(_runnable_text(segments)))
+        invoked |= refs_in(_runnable_text(segments))
     frontier = set(invoked)
     while frontier:
         nxt: set[str] = set()
@@ -1200,17 +1268,106 @@ def ci_invoked_refs(root: Path) -> set[str]:
             if ref in NOT_AN_INVOKER:
                 continue
             p = root / ref
+            # `.rs` is NOT in RUNNABLE_SUFFIXES, so a gate module is never opened here. A gate names
+            # the tree it scans; following it would admit every path it mentions as something CI
+            # runs, which is exactly backwards.
             if p.is_file() and p.suffix in RUNNABLE_SUFFIXES:
-                nxt |= set(_PATH_TOKEN.findall(_runnable_text(p)))
+                nxt |= refs_in(_runnable_text(p))
         frontier = nxt - invoked
         invoked |= frontier
     # A path that is not executable is not invoked by anyone, however often it is named. A data file
     # READ by a script that CI runs is an input to a gate, not a gate: it compares nothing itself,
     # and citing one as a `gate` is the defect, not the scan missing an invocation.
-    return {r for r in invoked if r.endswith(RUNNABLE_SUFFIXES)}
+    #
+    # A gate MODULE is admitted only because an invocation of it was seen above, never because the
+    # path was mentioned -- which is why the two sets are built separately and unioned here rather
+    # than `.rs` being added to the suffix filter.
+    return {r for r in invoked if r.endswith(RUNNABLE_SUFFIXES)} | gate_modules
 
 
-def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> dict:
+# ── The declared-gap register ────────────────────────────────────────────────────────────────────
+# A binding whose proof rests on a cell that CANNOT BE RECORDED on this host is not proven, and
+# pretending otherwise is the one thing this file exists to prevent. But it is not the same failure
+# as a citation that names nothing: the check is real, the cell is real, and what is missing is a
+# backend. qa/design-bindings-gaps.json is where that difference is written down, under an owner, a
+# reason, the EXACT cells excused, and a ceiling on how many such rows may exist at all.
+#
+# The three rules the register is worth having only if it enforces:
+#   * a declared gap is reported GAP and NEVER PASS -- it is kept out of the owed set in both
+#     postures, so it is neither red nor masked, and never counted as proof;
+#   * an entry forgives ONLY the cells it names, on ONLY the binding it names. Any other check of
+#     that binding that settles nothing leaves the binding FAIL;
+#   * an entry that forgives NOTHING is RED. A waiver that outlives what it excused is how a gate
+#     is turned off one row at a time, and it is exactly as dishonest as the citation it replaced.
+def load_gaps(path: Path) -> tuple[dict, list[str]]:
+    """The register, plus any problem that makes it unreadable as a register at all."""
+    if not path.is_file():
+        return {"expected": 0, "gaps": []}, []
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"expected": 0, "gaps": []}, [f"{path.name}: unreadable gap register ({e})"]
+    bad: list[str] = []
+    if not isinstance(doc.get("expected"), int):
+        bad.append(f"{path.name}: no integer `expected` -- a register with no asserted ceiling "
+                   f"cannot be exceeded, so it can grow without ever going red")
+    if not isinstance(doc.get("gaps"), list):
+        bad.append(f"{path.name}: no `gaps` list")
+        doc["gaps"] = []
+    return doc, bad
+
+
+def gap_index(doc: dict) -> dict[str, set[str]]:
+    """binding id -> the exact cell ids that binding's entry excuses."""
+    out: dict[str, set[str]] = {}
+    for g in doc.get("gaps", []):
+        b = g.get("binding")
+        if b:
+            out.setdefault(b, set()).update(g.get("cells") or [])
+    return out
+
+
+def gap_register_problems(doc: dict, bindings: list[dict], ctx: dict) -> list[str]:
+    """Every reason the register itself is RED. Empty means the register is honest."""
+    bad: list[str] = []
+    gaps = doc.get("gaps") or []
+    expected = doc.get("expected")
+    if isinstance(expected, int) and len(gaps) > expected:
+        bad.append(f"the register declares {len(gaps)} gap(s) against an asserted ceiling of "
+                   f"{expected}. A gap over the ceiling is red with no further argument: raise "
+                   f"`expected` deliberately, or close a gap.")
+    by_id = {b.get("id"): b for b in bindings}
+    seen: set[str] = set()
+    for g in gaps:
+        gid, pb = g.get("id") or "<unnamed>", g.get("binding")
+        for field in ("id", "binding", "owner", "reason"):
+            if not str(g.get(field, "")).strip():
+                bad.append(f"gap {gid}: no `{field}` -- a gap is declared with an owner and a reason "
+                           f"or it is not declared")
+        cells = g.get("cells") or []
+        if not cells:
+            bad.append(f"gap {gid}: names no cells, so it forgives nothing in particular")
+        if pb in seen:
+            bad.append(f"gap {gid}: {pb} already has an entry; one binding, one gap")
+        if pb:
+            seen.add(pb)
+        b = by_id.get(pb)
+        if b is None:
+            bad.append(f"gap {gid}: names binding {pb}, which is in no row of the ledger")
+            continue
+        # AN UNUSED ENTRY IS A LIE. Recompute what this binding's checks settle with the register
+        # switched OFF, and require every cell the entry names to be genuinely unproven today.
+        unproven_refs = {ref for ref, _ in broken_refs(b, ctx)}
+        idle = [c for c in cells if c not in unproven_refs]
+        if idle:
+            bad.append(f"gap {gid}: forgives nothing on {pb} -- " + ", ".join(idle)
+                       + " settle(s) fine today. Delete the entry; a waiver that outlives what it "
+                         "excused is a gate turned off one row at a time.")
+    return bad
+
+
+def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path,
+                  gaps_doc: dict | None = None) -> dict:
     """Everything a per-check verdict needs, gathered once."""
     fam_cells: dict[str, list[str]] = defaultdict(list)
     for c in cells_doc.get("cells", []):
@@ -1223,6 +1380,7 @@ def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> di
         "families": Counter((c.get("family") or c.get("plane") or "?") for c in cells_doc.get("cells", [])),
         "root": root,
         "ci": ci_invoked_refs(root),
+        "gaps": gap_index(gaps_doc or {}),
     }
 
 
@@ -1276,6 +1434,22 @@ def check_verdict(c: dict, ctx: dict) -> tuple[bool, str]:
     return False, f"{k}:{r} (unknown check kind)"
 
 
+def broken_refs(b: dict, ctx: dict) -> list[tuple[str, str]]:
+    """(ref, why) for every cited check of this binding that settles nothing today.
+
+    The gap register is NOT consulted here: this is what the binding's citations earn on their own,
+    which is exactly what an entry claiming to excuse something must be measured against.
+    """
+    out: list[tuple[str, str]] = []
+    for c in b.get("checks", []):
+        if c.get("status") != "mapped" or not c.get("ref"):
+            continue
+        ok, why = check_verdict(c, ctx)
+        if not ok:
+            out.append((c["ref"], why))
+    return out
+
+
 def binding_verdict(b: dict, ctx: dict) -> tuple[str, str, str]:
     """One binding's (status, verdict, detail).
 
@@ -1291,19 +1465,31 @@ def binding_verdict(b: dict, ctx: dict) -> tuple[str, str, str]:
     if pb in UNPROVEN_BY_NOTE:
         return "unproven", "FAIL", "UNPROVEN, by the ledger's own note: " + NOTES.get(pb, UNPROVEN_BY_NOTE[pb])
     proving: list[dict] = []
-    broken: list[str] = []
+    broken: list[tuple[str, str]] = []
     for c in mapped:
         ok, why = check_verdict(c, ctx)
         if ok:
             proving.append(c)
         else:
-            broken.append(why)
+            broken.append((c["ref"], why))
+    # A DECLARED GAP FORGIVES ONLY THE CELLS IT NAMES. Everything else this binding cites is judged
+    # exactly as before, so an entry can never widen itself into a blanket waiver: a second broken
+    # citation the entry does not name leaves the binding FAIL, with only the unforgiven reasons
+    # printed, and the binding is never reported PASS on the strength of a gap.
+    forgiven_here = ctx.get("gaps", {}).get(pb, set())
+    excused = [r for r in broken if r[0] in forgiven_here]
+    broken = [r for r in broken if r[0] not in forgiven_here]
     if not proving:
         return "unproven", "FAIL", ("UNPROVEN: nothing this binding cites compares anything today -- "
-                                    + ", ".join(broken))
+                                    + ", ".join(w for _, w in broken + excused))
     if broken:
         return "unproven", "FAIL", ("partly proven; a referenced check settles nothing: "
-                                    + ", ".join(broken))
+                                    + ", ".join(w for _, w in broken))
+    if excused:
+        return "gap", "GAP", ("DECLARED GAP (qa/design-bindings-gaps.json): proven by "
+                              + ", ".join(f"{c['kind']}:{c['ref']}" for c in proving)
+                              + "; not proven on " + ", ".join(r for r, _ in excused)
+                              + " -- " + ", ".join(w for _, w in excused))
     return "mapped", "PASS", ", ".join(f"{c['kind']}:{c['ref']}" for c in proving)
 
 
@@ -1318,8 +1504,9 @@ def classify(bindings: list[dict], ctx: dict) -> list[dict]:
 
 
 def verify(doc: dict, cells_doc: dict, crates: Path, root: Path,
-           ledger: Path = GOLDEN_LEDGER) -> list[tuple[str, str, str, str]]:
-    ctx = check_context(cells_doc, crates, root, ledger)
+           ledger: Path = GOLDEN_LEDGER, gaps: Path = GAPS) -> list[tuple[str, str, str, str]]:
+    gaps_doc, _ = load_gaps(gaps)
+    ctx = check_context(cells_doc, crates, root, ledger, gaps_doc)
     rows: list[tuple[str, str, str, str]] = []
     for b in doc.get("bindings", []):
         title = f"{b['id']} {b['surface']}"[:70]
@@ -1411,17 +1598,44 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--crates", default=str(CRATES))
     ap.add_argument("--golden-ledger", default=str(GOLDEN_LEDGER),
                     help="the pinned golden's ledger.tsv; an oracle check is only proven by a PASS row here")
+    ap.add_argument("--gaps", default=str(GAPS),
+                    help="the declared-gap register; a gap is reported GAP, never PASS, and never masked")
+    ap.add_argument("--verify-gaps", action="store_true",
+                    help="judge the gap register itself: the ceiling, and that every entry still forgives something")
     a = ap.parse_args(argv)
 
     cells_doc = json.loads(Path(a.cells).read_text()) if Path(a.cells).exists() else {"cells": []}
     bp = Path(a.bindings)
     existing = json.loads(bp.read_text()) if bp.is_file() and bp.stat().st_size > 0 else None
 
+    if a.verify_gaps:
+        if existing is None:
+            print(f"design-bindings: {a.bindings} missing -- run --write first", file=sys.stderr)
+            return 2
+        gaps_doc, bad = load_gaps(Path(a.gaps))
+        ctx = check_context(cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger), gaps_doc)
+        bad += gap_register_problems(gaps_doc, existing.get("bindings", []), ctx)
+        n, ceiling = len(gaps_doc.get("gaps") or []), gaps_doc.get("expected")
+        if bad:
+            print(f"design bindings GAP REGISTER: RED -- {len(bad)} problem(s) in {a.gaps}:")
+            for b in bad:
+                print(f"  {b}")
+            print("::error title=design bindings::the declared-gap register is not honest. "
+                  "A gap is declared with an owner and a reason under an asserted ceiling, or it is "
+                  "not declared; a waiver that forgives nothing is deleted, never left standing.")
+            return 1
+        print(f"design bindings GAP REGISTER: {n} declared gap(s) of an asserted ceiling of {ceiling}; "
+              f"each names an owner, a reason and the exact cells it excuses, and each still forgives them")
+        for g in gaps_doc.get("gaps") or []:
+            print(f"  GAP  {g.get('binding'):<8} {g.get('id')}  [{g.get('owner')}]")
+            print(f"       excuses: {', '.join(g.get('cells') or [])}")
+        return 0
+
     if a.verify:
         if existing is None:
             print(f"design-bindings: {a.bindings} missing -- run --write first", file=sys.stderr)
             return 2
-        for r in verify(existing, cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger)):
+        for r in verify(existing, cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger), Path(a.gaps)):
             print("\t".join(x.replace("\t", " ") for x in r))
         return 0
 
@@ -1433,7 +1647,7 @@ def main(argv: list[str]) -> int:
         print(f"wrote {a.out_json} and {a.out_md}")
     c = doc["counts"]
     print(f"bindings {c['bindings']}  mapped {c['mapped']}  unproven {c['unproven']}  "
-          f"unmapped {c['unmapped']}  by kind {c['checks_by_kind']}")
+          f"unmapped {c['unmapped']}  gap {c.get('gap', 0)}  by kind {c['checks_by_kind']}")
     if doc["dropped_since_last_write"]:
         print("dropped (no longer in Appendix B): " + ", ".join(doc["dropped_since_last_write"]))
     return 0

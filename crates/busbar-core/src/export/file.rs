@@ -154,7 +154,7 @@ fn append_one(sink: &'static FileSink, line: String) {
 /// Reusing `durable::write` here would mean reading the whole log — sized by the operator via
 /// `rotate_mb` and legitimately hundreds of MB — into memory just to re-emit it as "new" bytes, to
 /// buy a dance designed for small state/config artifacts. This is a LEDGERED exemption in
-/// `scripts/structure-lint.sh`'s choke-point registry (row A-persistence), not a silent bypass.
+/// the `structure-lint` gate's choke-point registry (row A-persistence), not a silent bypass.
 fn rotate(path: &str) {
     // Free the oldest archive slot first so the shift below never collides with a still-occupied
     // name. Retention is a deliberate, documented bound (`ROTATE_ARCHIVE_LIMIT`) chosen by this

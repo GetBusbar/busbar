@@ -1,0 +1,75 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "What is the current temperature in Paris, France? Use the get_weather tool. Answer only after calling it."
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": {
+              "city": "Paris, France"
+            }
+          },
+          "thoughtSignature": "CqYCAY89a1+Ecvp1ZrK63X6WaOtZDmXR9sMsZF1w1siBWbtxq9gJ5wZ5Zmf/XowCu5s6O9IefL8FGqs2VGYTuwp6pSw3y9OQaEGuA8kWZuIRJonV+LWnrkeCJplvmX3EU6aMgOLpipvKC9TInMjxYwHNM4IO+Cx+QnuInamR510L3wCWjWjg0o2eVVyjCFR6BZDZiVqvB32f/FBJ33kgfdZDFkg513hsrLL8I63oDZP0g6rZz1txVnL41g1n8fX+UCDLXsoUfhuFwwWf0b51MY8lyGeJkzO3iDDH6Ut+HHPYaym8//3rMB54y5wOSkmWVc/7yVVsQVfCs2qr5IGsalbi5aOeVVxcUd5c25xnJJVNc9y3n5VVq8/Vgb5BmEWiZHMcmYdrSKBm"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {
+              "city": "Paris, France",
+              "temperature": 18,
+              "unit": "celsius",
+              "conditions": "partly cloudy"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Get the current temperature for a given city.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "City name"
+              },
+              "unit": {
+                "type": "string",
+                "enum": [
+                  "celsius",
+                  "fahrenheit"
+                ]
+              }
+            },
+            "required": [
+              "city"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0,
+    "maxOutputTokens": 512
+  }
+}

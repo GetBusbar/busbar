@@ -78,7 +78,7 @@ SELF-TEST. `--selftest` builds a fixture tree carrying a RED and a GREEN twin of
 (a providers catalog using `api_key_env:`, a non-busbar heredoc, an unrelated Rust string), and
 requires the scanner to flag exactly the RED set and stay silent on the GREEN set. It also asserts an
 extraction FLOOR, so a scanner that has quietly stopped finding anything fails instead of passing
-vacuously. In the discipline of `scripts/settings-leak-lint.sh`: a gate that passes vacuously is
+vacuously. In the discipline of `cargo xtask gate settings-leak`: a gate that passes vacuously is
 worse than no gate.
 
 The floor is not theoretical. Two vacuity bugs were caught by it, or by pointing the scanner at a

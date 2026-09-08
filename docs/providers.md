@@ -19,7 +19,7 @@ Providers live in `providers.yaml` as a map of name → definition. The shipped 
 | `subject` | no | JWT-bearer `sub` claim (RFC 7523 §3) for `auth: jwt-bearer`. Opt-in only. Leave unset for a plain service account (e.g. the default Vertex AI setup below); set it only for Google domain-wide-delegation impersonation or a third-party IdP that requires `sub`. |
 | `health` | no | Optional health-probe configuration. |
 
-The API key is **not** in this file. `config.yaml` supplies it as a secret reference (`api_key: { env: VAR }` / `{ file: /path }` / a secret plugin), so secrets never live in config.
+The API key is **not** in this file. `config.yaml` supplies it as a secret reference (`api_key: { env: VAR }` / `{ file: /path }` / a secret plugin, or `none` for an upstream that takes no credential), so secrets never live in config.
 
 ## Add one in three steps
 
@@ -105,7 +105,7 @@ Then use it from `config.yaml` as normal:
 ```yaml
 providers:
   ollama:
-    api_key: { env: OLLAMA_KEY }   # required, but unused: set OLLAMA_KEY=unused
+    api_key: none                  # this upstream takes NO credential — declare it
 
 models:
   llama-local:
@@ -128,8 +128,10 @@ Conventional ports, for the entry's `base_url`:
 | vLLM (`vllm serve`) | 8000 |
 
 Two wrinkles worth stating plainly. `api_key` is required on every provider, including one that wants
-no credential, so point it at an environment variable and set that variable to anything: the value
-goes to a server on your own machine that ignores it. And busbar permits plain `http://` only to a
+no credential — but you declare that rather than fake it: `api_key: none` starts the lane with no
+credential, sends no auth header and skips the health prober. (Pointing it at a variable you never
+set is not the workaround it used to be: a reference that does not resolve now refuses boot.) And
+busbar permits plain `http://` only to a
 LITERAL private or loopback address (`127.0.0.1`, `::1`, `10/8`, `172.16/12`, `192.168/16`,
 `100.64/10`, link-local). It does not resolve names in order to classify them, because a name it
 cannot classify might point anywhere, so it fails closed. There is no opt-out field.

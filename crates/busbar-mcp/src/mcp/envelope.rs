@@ -69,7 +69,7 @@ pub(crate) const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[PROTOCOL_VERSION];
 // see it. `client/jsonrpc.rs` now IMPORTS these rather than restating them, so the two directions
 // cannot disagree by construction.
 //
-// `structure-lint.sh`'s declaration census keeps it that way: each of these literals must occur
+// the `structure-lint` gate's declaration census keeps it that way: each of these literals must occur
 // EXACTLY ONCE in production code. A second spelling anywhere in the tree is RED, and so is zero
 // occurrences — a wire word that vanished took its census row's subject with it.
 

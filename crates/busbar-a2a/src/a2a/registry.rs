@@ -406,7 +406,7 @@ impl CatalogueItem for AgentRegistration {
 /// accept this shape of task or it cannot.
 ///
 /// Unrelated to `mcp/client/argguard.rs`'s `judge`, which asks whether an ARGUMENT is a URL-ish SSRF
-/// hazard. Same verb, unrelated subjects; `scripts/structure-lint.sh` carries that as a signed
+/// hazard. Same verb, unrelated subjects; the `structure-lint` gate carries that as a signed
 /// DISTINCT row rather than leaving it as duplication nobody noticed.
 fn judge(card: &AgentCard, shape: &TaskShape) -> Result<Option<String>, Excluded> {
     if shape.requires_streaming && !card.capabilities.streaming {

@@ -223,7 +223,7 @@ impl Transport {
     /// THE MCP CLIENT LEG'S ARM — the one and only place the transport's identity is asked on the
     /// path that calls an upstream MCP server, and the reason there is no second one.
     ///
-    /// `structure-lint.sh` bans the agnostic core from comparing a transport, and this is what
+    /// the `structure-lint` gate bans the agnostic core from comparing a transport, and this is what
     /// replaces the comparison it bans: the axis answers "which channel" ONCE and hands back a
     /// NEUTRAL discriminant, so `mcp/client/wire.rs` maps that to its own zero-sized vtable and
     /// `mcp/upstream.rs` sends bytes without this axis naming the plane's wire types. A `match` in

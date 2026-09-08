@@ -408,6 +408,21 @@ def row_quickstart_boots(ctx) -> str:
     )
 
 
+# The reusable workflow that mints the ARCHIVE attestations, and therefore the identity a verify
+# has to pin. `--repo` alone asserts only that SOME workflow in the repository signed these bytes,
+# which every workflow that can be given `id-token: write` + `attestations: write` satisfies equally
+# -- including one added on a branch by a PR that attested an archive the release path never built.
+#
+# It is `build-artifact.yml` and not its callers, and that is how GitHub issues the certificate
+# rather than a preference: `gh attestation verify --help` says "if your attestation was generated
+# via a reusable workflow then that reusable workflow is the signer whose identity needs to be
+# validated", because the Fulcio SAN is the `job_workflow_ref` of the job that requested the OIDC
+# token, not the `workflow_ref` of whatever called it. `actions/attest-build-provenance` runs inside
+# build-artifact.yml for archives (docker.yml is the image half's signer). Naming a caller here
+# would fail every verify on a healthy release.
+ARCHIVE_SIGNER_WORKFLOW = "GetBusbar/busbar/.github/workflows/build-artifact.yml"
+
+
 def row_attestation(ctx) -> str:
     if not shutil.which("gh"):
         raise RowFailure(
@@ -415,14 +430,19 @@ def row_attestation(ctx) -> str:
             "verified here. A row that cannot run is RED: an unproven attestation looks like "
             "provenance and is not."
         )
-    proc = run(["gh", "attestation", "verify", ctx.archive, "--repo", ctx.repo])
+    signer = os.environ.get("BUSBAR_ARCHIVE_SIGNER_WORKFLOW") or ARCHIVE_SIGNER_WORKFLOW
+    proc = run(["gh", "attestation", "verify", ctx.archive,
+                "--repo", ctx.repo, "--signer-workflow", signer])
     if proc.returncode != 0:
         raise RowFailure(
-            "`gh attestation verify %s --repo %s` failed (exit %d). This is the exact command the "
-            "documentation tells users to run, against the exact bytes the release serves.\n%s%s"
-            % (os.path.basename(ctx.archive), ctx.repo, proc.returncode, proc.stdout, proc.stderr)
+            "`gh attestation verify %s --repo %s --signer-workflow %s` failed (exit %d). This is "
+            "the exact command the documentation tells users to run, against the exact bytes the "
+            "release serves -- with the SIGNER pinned, so that an attestation minted by anything "
+            "other than the release build path is refused instead of accepted as ours.\n%s%s"
+            % (os.path.basename(ctx.archive), ctx.repo, signer,
+               proc.returncode, proc.stdout, proc.stderr)
         )
-    return "gh attestation verify passes against the released bytes"
+    return "gh attestation verify passes against the released bytes, signed by %s" % signer.rsplit("/", 1)[-1]
 
 
 def _evidence(ctx, name: str) -> str:
@@ -581,26 +601,82 @@ def row_image_runs_as_nonroot(ctx) -> str:
     return "runs as %s" % user
 
 
-def row_image_release_pubkey(ctx) -> str:
-    """The image carries its OWN musl build, so the tarballs' key proves nothing about it."""
-    ref = _image_ref(ctx)
-    if not ctx.pubkey:
-        raise AssertionError("no --pubkey was supplied, so this row could not run. Unknown is not green.")
-    out = _docker(ctx, ["-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", ref, "--list-plugins"])
-    blob = (out.stdout or "") + (out.stderr or "")
-    if "embeds no busbar release key" in blob:
-        raise AssertionError(
-            "the image's binary embeds NO release public key, so it refuses every correctly-signed "
-            "first-party plugin. `option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time "
-            "and fails silently to None: the image build must carry the variable. This is the "
-            "aarch64 defect, in the other artifact class."
-        )
+def _binary_out_of_image(ctx, ref: str, dest_name: str) -> str:
+    """Copy the shipped executable out of the image and return its local path.
+
+    Shared by the two image rows that must read the BYTES rather than ask the running program: a
+    program that is asked the wrong question answers agreeably.
+    """
+    out = run(["docker", "create", "--platform", ctx.spec["platform"], ref])
     if out.returncode != 0:
+        raise AssertionError("could not create a container to read the image: %s"
+                             % (out.stderr or "").strip()[:300])
+    cid = (out.stdout or "").strip()
+    try:
+        dest = os.path.join(ctx.work, dest_name)
+        os.makedirs(dest, exist_ok=True)
+        cp = run(["docker", "cp", "%s:/%s" % (cid, ctx.spec["exe"]), dest])
+        if cp.returncode != 0:
+            cp = run(["docker", "cp", "%s:/usr/local/bin/%s" % (cid, ctx.spec["exe"]), dest])
+        if cp.returncode != 0:
+            raise AssertionError(
+                "could not read %s out of the image: %s" % (ctx.spec["exe"], (cp.stderr or "").strip()[:300])
+            )
+        return os.path.join(dest, ctx.spec["exe"])
+    finally:
+        run(["docker", "rm", "-f", cid])
+
+
+def row_image_release_pubkey(ctx) -> str:
+    """The image carries its OWN musl build, so the tarballs' key proves nothing about it.
+
+    THIS ROW USED TO ASSERT NOTHING, AND ITS TARBALL TWIN IS WHY THAT IS KNOWN.
+
+    It ran `--list-plugins` against the image and failed only if the output CONTAINED the string
+    "embeds no busbar release key". The image ships with an EMPTY plugin directory, so busbar has
+    no plugin to refuse and never emits that string — it cannot, there is nothing to verify a
+    signature for. The row therefore passed on a keyless image exactly as it passed on a good one,
+    which is the #52 defect walking straight through the check written to catch it in the other
+    artifact class. The tarball twin (`row_release_pubkey`) does not have this hole: it opens the
+    binary and searches for the key's 64 hex bytes, a POSITIVE assertion that a missing key cannot
+    satisfy. Its own comment even says why — "an empty needle is found in every binary" — and the
+    same reasoning applies to an absent error message: the absence of a complaint is not evidence,
+    when nothing asked for one.
+
+    So this row now makes the same positive assertion the twin does, on the bytes that actually
+    ship inside the image, and keeps the runtime probe as a second, subordinate signal.
+    """
+    ref = _image_ref(ctx)
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", ctx.pubkey or ""):
         raise AssertionError(
-            "could not read the plugin surface from the image: exit=%d %s"
-            % (out.returncode, blob.strip()[:300])
+            "no usable BUSBAR_RELEASE_PUBKEY was supplied to the verifier (got %r), so this row "
+            "could not run. Unknown is not green, and an empty needle is found in every binary."
+            % ctx.pubkey
         )
-    return "the image's binary carries a release key"
+    exe = _binary_out_of_image(ctx, ref, "pubkey-probe")
+    with open(exe, "rb") as fh:
+        blob_bytes = fh.read()
+    if ctx.pubkey.lower().encode() not in blob_bytes.lower():
+        raise AssertionError(
+            "the binary INSIDE the image does not contain the 64-hex release public key, so it "
+            "refuses every correctly-signed first-party plugin. "
+            "`option_env!(\"BUSBAR_RELEASE_PUBKEY\")` is read at COMPILE time and fails silently to "
+            "None: the image build must carry the variable. This is the aarch64 defect (#52), in "
+            "the other artifact class. FIX: pass BUSBAR_RELEASE_PUBKEY into the musl build that "
+            "docker.yml packages, exactly as scripts/release-build.sh requires for the tarballs."
+        )
+    # Subordinate, and deliberately not the verdict: it is a runtime cross-check, and with an empty
+    # plugin directory it has nothing to say either way.
+    out = _docker(ctx, ["-e", "BUSBAR_ADMIN_TOKEN=verify-artifact-probe", ref, "--list-plugins"])
+    runtime = (out.stdout or "") + (out.stderr or "")
+    if "embeds no busbar release key" in runtime:
+        raise AssertionError(
+            "the key bytes are present in the image's binary but the running program still reports "
+            "that it embeds no release key — the key is in the file and not wired to the verifier, "
+            "which is a worse fault than a missing key because every static check would pass. "
+            "Output: %s" % runtime.strip()[:300]
+        )
+    return "the image's binary embeds the release key %s… in its bytes" % ctx.pubkey[:12]
 
 
 def row_image_version_anchored(ctx) -> str:
@@ -638,24 +714,7 @@ def row_image_matches_packaged_binary(ctx) -> str:
             "separately-built binary. A row that cannot run is RED, never skipped."
         )
     want = sha256_file(expected)
-    out = run(["docker", "create", "--platform", ctx.spec["platform"], ref])
-    if out.returncode != 0:
-        raise AssertionError("could not create a container to read the image: %s"
-                             % (out.stderr or "").strip()[:300])
-    cid = (out.stdout or "").strip()
-    try:
-        dest = os.path.join(ctx.work, "from-image")
-        os.makedirs(dest, exist_ok=True)
-        cp = run(["docker", "cp", "%s:/%s" % (cid, ctx.spec["exe"]), dest])
-        if cp.returncode != 0:
-            cp = run(["docker", "cp", "%s:/usr/local/bin/%s" % (cid, ctx.spec["exe"]), dest])
-        if cp.returncode != 0:
-            raise AssertionError(
-                "could not read %s out of the image: %s" % (ctx.spec["exe"], (cp.stderr or "").strip()[:300])
-            )
-        got = sha256_file(os.path.join(dest, ctx.spec["exe"]))
-    finally:
-        run(["docker", "rm", "-f", cid])
+    got = sha256_file(_binary_out_of_image(ctx, ref, "from-image"))
     if got != want:
         raise AssertionError(
             "the binary in the image is NOT the artifact the build produced for this platform.\n"
@@ -724,6 +783,108 @@ def _assert_contract_is_whole(contract: dict) -> list:
     return rows
 
 
+def row_coverage(rows: list, targets: dict) -> dict:
+    """Which declared rows does anything actually EXECUTE, and against which targets?
+
+    THE THIRD WAY A CONTRACT CAN LIE, AFTER "declared but unimplemented" AND "implemented but
+    undeclared". `_assert_contract_is_whole` catches both of those by set equality, and neither is
+    the state this repository is in. The state it is IN is: fourteen rows declared, fourteen
+    implemented, set equality satisfied, and FIVE of them run against nothing, ever.
+
+    The five `kind: image` rows apply only to targets whose `kind` is `image`. Both such targets in
+    .github/release-targets.json carry `published: false`, and release-stage.yml's `targets` job
+    built the verify matrix from the PUBLISHED targets only (deliberately — `cargo build --target
+    image-linux-amd64` is not a thing). So `image_boots_documented_quickstart`,
+    `image_runs_as_nonroot`, `image_release_pubkey`, `image_version_anchored` and
+    `image_matches_packaged_binary` were written, correct, reviewed, covered by set equality — and
+    had never executed. Every reader of the contract saw fourteen properties asserted about what
+    ships. Nine were.
+
+    That is worse than an absent check, because an absent check is visibly absent. This function
+    makes it visible: it returns, per row, the targets that make it applicable, split by whether
+    the release pipeline verifies that target at all. `main()` names every uncovered row in its
+    output and in the job summary, and `--coverage` exits non-zero on one, so the gap is a gate.
+
+    "VERIFIED" IS `published == true` OR `kind == image`, AND THE SECOND HALF IS NOT A CONCESSION.
+    It is the same rule as before — the set of targets release-stage.yml actually runs a contract
+    leg over — restated after that file grew a second such leg. `targets` now emits TWO matrices
+    from this same file: `matrix` (the published set, verified by the `verify-artifact` job against
+    the released archive) and `images` (the `kind: image` set, verified by the `verify-image` job
+    against the digest `stage-image` pushed, with the musl artifact the image packages passed in as
+    `--packaged-from`). Deriving this report from the same predicates the workflow derives its
+    matrices from is what keeps it from drifting into claiming coverage the pipeline does not
+    provide — in EITHER direction: claiming a gap that has been closed trains readers to ignore the
+    gap report, which costs exactly as much as missing a real one.
+
+    The two musl binaries remain `unverified_targets`: nothing runs the contract's binary rows
+    (archive_shape, release_pubkey, quickstart_boots, …) against a musl tarball. What the image leg
+    added is narrower and worth stating precisely — `image_matches_packaged_binary` proves the
+    binary inside the image IS the musl artifact, byte for byte, which makes the image rows' verdict
+    a verdict about those bytes too, but it is not the binary contract run against them.
+    """
+    specs = targets.get("targets") or []
+    verified_specs = [t for t in specs
+                      if t.get("published") is True or t.get("kind") == "image"]
+    out = {
+        "verified_targets": [t["target"] for t in verified_specs],
+        # The TARGET-level half of the same gap. The two musl binaries are `published: false` and
+        # `packaged_into` an image: they are built by the release, they are the bytes that end up
+        # inside the container a user runs, and no leg of the verify matrix ever opens one. They do
+        # not show up in the row list below, because their rows (archive_shape, release_pubkey, …)
+        # are covered on the six published targets — which is exactly the confusion worth naming:
+        # a row being covered SOMEWHERE is not that row being covered on THESE bytes.
+        # The complement of the verified set, computed FROM it rather than restated as its own
+        # predicate: two predicates for one partition drift, and this one did — the image targets
+        # went on being listed here as "opened by no contract run" the moment a job started running
+        # five contract rows against them.
+        "unverified_targets": [t["target"] for t in specs if t not in verified_specs],
+        "rows": {},
+        "gaps": [],
+    }
+    for row in rows:
+        covered = [t["target"] for t in verified_specs if applies(row, t)]
+        declared_for = [t["target"] for t in specs if applies(row, t)]
+        out["rows"][row["id"]] = {"covered_by": covered, "applies_to": declared_for}
+        if not covered:
+            out["gaps"].append(row["id"])
+    return out
+
+
+def print_coverage_gaps(cov: dict, contract_path: str) -> None:
+    """Name every unexecuted row, in the run's own output. Never a silent pass."""
+    if cov["unverified_targets"]:
+        print("\nUNVERIFIED TARGETS — declared in the targets file, opened by no contract run: %s"
+              % ", ".join(cov["unverified_targets"]))
+        print("  These are the musl binaries that go INSIDE the published container image. No leg runs")
+        print("  the BINARY rows (archive_shape, release_pubkey, quickstart_boots, …) against one, so")
+        print("  every such property proven below is proven about the tarballs. The image itself IS")
+        print("  verified — release-stage.yml's `verify-image` runs the image rows against the staged")
+        print("  digest — and `image_matches_packaged_binary` proves the image carries exactly these")
+        print("  bytes, which is a narrower claim than running the binary contract over them.")
+    if not cov["gaps"]:
+        print("coverage: every declared contract row is executed by at least one verified target.")
+        return
+    print("\n" + "=" * 96)
+    print("COVERAGE GAP — %d declared contract row(s) are executed by NOTHING:" % len(cov["gaps"]))
+    for rid in cov["gaps"]:
+        info = cov["rows"][rid]
+        where = ", ".join(info["applies_to"]) or "<no declared target at all>"
+        print("  GAP  %-36s applies to: %s" % (rid, where))
+        print("       ...none of which is verified (verified = published:true in the targets file)")
+    print(
+        "\nThese rows are declared in %s and implemented in this file, so set equality is satisfied\n"
+        "and nothing else in the pipeline can tell they never ran. A row that never executes is not\n"
+        "a property that holds; it is a property nobody has looked at. Fix, in one of two ways:\n"
+        "  (a) give the pipeline a leg that runs them — for the image rows that means invoking this\n"
+        "      verifier with --target image-linux-amd64/arm64 --image <digest> --packaged-from <musl\n"
+        "      artifact> from the job that stages the image, where the image and its musl input both\n"
+        "      exist; or\n"
+        "  (b) delete the rows, so the contract stops advertising coverage that does not exist.\n"
+        "Doing neither is the only outcome this report refuses to let pass quietly." % contract_path
+    )
+    print("=" * 96)
+
+
 def applies(row: dict, spec: dict) -> bool:
     """A row applies unless its `applies_when` disagrees with the target's OWN declaration."""
     for key, want in (row.get("applies_when") or {}).items():
@@ -732,6 +893,23 @@ def applies(row: dict, spec: dict) -> bool:
                 "contract row %r gates on %r, which no target declares in release-targets.json. A "
                 "gate on an absent field silently switches the row off for every target."
                 % (row["id"], key)
+            )
+        # A field whose TYPE drifted -- a bool that became the string "true" -- compares unequal and
+        # switches the row OFF in the GREEN direction. That is the exact drift the applicable-row
+        # floor in main() names ("a bool that became a string"), and the floor is far too coarse to
+        # catch it: flipping `published` and `pgo` to strings on one target drops first_party_plugin,
+        # attestation and pgo_applied -- the rows that catch the aarch64 key defect and the PGO proof
+        # -- and 6 remaining rows still clear a floor of 2. A type disagreement is a broken
+        # declaration, never a deliberate exemption, so it is fatal rather than a quiet non-match.
+        # `type(...) is not type(...)` rather than isinstance, because bool is a subclass of int.
+        if type(spec[key]) is not type(want):
+            raise SystemExit(
+                "contract row %r gates on %s == %r (%s), but target %r declares %r (%s). A field "
+                "whose type drifted compares unequal and switches the row off silently, in the "
+                "green direction -- the artifact would then be verified against fewer rows than the "
+                "contract promises and still report PASS."
+                % (row["id"], key, want, type(want).__name__,
+                   spec.get("target"), spec[key], type(spec[key]).__name__)
             )
         if spec[key] != want:
             return False
@@ -831,7 +1009,98 @@ def selftest() -> int:
         print("  [ok] %-38s -> refused (a gate on an absent field silently disables the row)"
               % "applies_when on an undeclared field")
 
-    total = len(cases) + 1
+    extra = 0
+
+    def check(label, cond, why):
+        nonlocal failures, extra
+        extra += 1
+        if cond:
+            print("  [ok] %-38s -> %s" % (label, why))
+        else:
+            print("  [FAILED] %-38s -> %s" % (label, why))
+            failures += 1
+
+    # ── A TYPE THAT DRIFTED IS REFUSED, NOT QUIETLY NON-MATCHED ──────────────────────────────────
+    # The undeclared-FIELD case above is the loud half; this is the silent half. `published: true`
+    # becoming `published: "true"` in release-targets.json is a well-formed file that switches
+    # first_party_plugin, attestation and pgo_applied off for that target -- the rows that catch the
+    # aarch64 embedded-key defect and the PGO proof -- while the run still prints PASS on the rows
+    # that survived. Planted against the real targets file: 9 applicable rows became 6 and nothing
+    # complained. Both directions are proven, because a guard that refuses everything is not a guard.
+    def applies_verdict(want, declared):
+        try:
+            return "matches" if applies({"id": "x", "applies_when": {"published": want}},
+                                        {"target": "t", "published": declared}) else "off"
+        except SystemExit:
+            return "refused"
+
+    check("a bool that became a string is refused",
+          applies_verdict(True, "true") == "refused",
+          "a well-formed type drift must not switch a row off in the green direction")
+    check("a matching bool still matches",
+          applies_verdict(True, True) == "matches",
+          "the guard must not reject the declarations every target actually carries")
+    check("an honestly non-matching bool still gates",
+          applies_verdict(True, False) == "off",
+          "published:false must still switch a published-only row off, as a real exemption")
+
+    # ── THE COVERAGE REPORT DISCRIMINATES ────────────────────────────────────────────────────────
+    # Set equality is satisfied by the real contract and always has been. The five image rows used
+    # to be executed by nothing, and this case asserted exactly that. release-stage.yml's
+    # `verify-image` job now runs them against the staged digest, so the assertion is INVERTED
+    # rather than deleted: the report must say they are covered. Deleting it would have left the
+    # report free to drift back to crying gap over a closed gap, which trains a reader to ignore
+    # the one output whose job is to say a check never ran. The negative case below keeps the other
+    # direction honest.
+    real_contract = json.load(open(DEFAULT_CONTRACT, encoding="utf-8"))
+    real_targets = json.load(open(DEFAULT_TARGETS, encoding="utf-8"))
+    real_rows = _assert_contract_is_whole(real_contract)
+    cov = row_coverage(real_rows, real_targets)
+    image_rows = sorted(r["id"] for r in real_rows
+                        if (r.get("applies_when") or {}).get("kind") == "image")
+    check("the image rows are covered, not named as gaps",
+          image_rows and not (set(image_rows) & set(cov["gaps"]))
+          and all(cov["rows"][r]["covered_by"] for r in image_rows),
+          "release-stage.yml's verify-image runs them against the staged digest; covered by %s"
+          % ", ".join(sorted({t for r in image_rows for t in cov["rows"][r]["covered_by"]})))
+    # THE OTHER DIRECTION, on the same rows: remove the image targets and the same five rows must be
+    # reported as gaps again. A report that can only ever say "covered" is not a report.
+    imageless = {"targets": [t for t in real_targets["targets"] if t.get("kind") != "image"]}
+    check("a row whose targets all disappeared IS named as a gap",
+          set(image_rows) <= set(row_coverage(real_rows, imageless)["gaps"]),
+          "with no kind:image target left, the five image rows are executed by nothing and say so")
+    check("a covered row is NOT named as a gap",
+          "release_pubkey" not in cov["gaps"] and cov["rows"]["release_pubkey"]["covered_by"],
+          "release_pubkey runs on %d verified target(s)" % len(cov["rows"]["release_pubkey"]["covered_by"]))
+    synthetic = {"targets": [dict(t, published=True) for t in real_targets["targets"]]}
+    check("publishing every target closes every gap",
+          not row_coverage(real_rows, synthetic)["gaps"],
+          "the report tracks what the pipeline verifies rather than asserting a fixed answer")
+
+    # ── ZERO APPLICABLE ROWS IS NOT A PASS ───────────────────────────────────────────────────────
+    # `main()` printed "PASS: all 0 applicable contract rows hold" and returned 0 for any target
+    # whose declaration stopped matching every `applies_when`. Driven end-to-end through main(),
+    # against a targets file carrying one target with an unrecognised kind, so the case covers the
+    # real exit path and not a re-implementation of it.
+    tmpdir = tempfile.mkdtemp(prefix="busbar-verify-selftest-")
+    try:
+        bogus = os.path.join(tmpdir, "targets.json")
+        base = dict(real_targets["targets"][0])
+        base.update({"target": "ghost-target", "kind": "no-such-kind", "published": False})
+        with open(bogus, "w", encoding="utf-8") as fh:
+            json.dump(dict(real_targets, targets=real_targets["targets"] + [base]), fh)
+        rc = "no-exit"
+        try:
+            main(["--target", "ghost-target", "--version", "9.9.9", "--targets", bogus])
+        except SystemExit as exc:
+            rc = str(exc)
+        check("a target no row applies to is refused",
+              rc != "no-exit" and "Zero rows is not a pass" in rc,
+              "an artifact nothing asserts anything about must not exit 0; got: %s" % str(rc)[:90])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    total = len(cases) + 1 + extra
     if failures:
         print("\nSELF-TEST FAILED: %d of %d checks did not hold" % (failures, total), file=sys.stderr)
         return 1
@@ -839,12 +1108,44 @@ def selftest() -> int:
     return 0
 
 
+def coverage_main(argv) -> int:
+    """`--coverage`: report which declared rows nothing executes, and exit non-zero on a gap.
+
+    Separate from the per-artifact run because it is a question about the PIPELINE, not about an
+    artifact: it needs no archive, no image and no runner, so it can run in the same cheap lint job
+    that already runs --selftest. Exits 1 on a gap so it can be adopted as a gate by a workflow.
+    """
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--coverage", action="store_true")
+    ap.add_argument("--targets", default=DEFAULT_TARGETS)
+    ap.add_argument("--contract", default=DEFAULT_CONTRACT)
+    a = ap.parse_args(argv)
+    contract = json.load(open(a.contract, encoding="utf-8"))
+    targets = json.load(open(a.targets, encoding="utf-8"))
+    rows = _assert_contract_is_whole(contract)
+    cov = row_coverage(rows, targets)
+    print("=== artifact-contract coverage ===")
+    print("verified targets (published:true): %s\n" % ", ".join(cov["verified_targets"]))
+    for rid in [r["id"] for r in rows]:
+        info = cov["rows"][rid]
+        verdict = "COVERED" if info["covered_by"] else "GAP"
+        print("%-8s %-36s %s" % (verdict, rid, ", ".join(info["covered_by"] or info["applies_to"]) or "-"))
+    print_coverage_gaps(cov, a.contract)
+    return 1 if cov["gaps"] else 0
+
+
 def main(argv=None) -> int:
-    if "--selftest" in (argv if argv is not None else sys.argv[1:]):
+    args_now = argv if argv is not None else sys.argv[1:]
+    if "--selftest" in args_now:
         return selftest()
+    if "--coverage" in args_now:
+        return coverage_main(args_now)
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--selftest", action="store_true",
                     help="prove the contract-wholeness guards discriminate, then exit")
+    ap.add_argument("--coverage", action="store_true",
+                    help="report which declared contract rows the pipeline executes against "
+                         "nothing, and exit non-zero if any. Needs no artifact.")
     ap.add_argument("--archive", default="", help="the artifact AS DOWNLOADED FROM THE RELEASE")
     ap.add_argument("--target", required=True)
     ap.add_argument("--version", required=True)
@@ -884,6 +1185,53 @@ def main(argv=None) -> int:
     spec = specs[a.target]
 
     applicable = [r for r in rows if applies(r, spec)]
+
+    # ── THE APPLICABLE-ROW FLOOR ────────────────────────────────────────────────────────────────
+    #
+    # `_assert_contract_is_whole` floors the DECLARED rows, which stops a truncated contract file.
+    # It says nothing about how many of them apply HERE, and the final line of this program was
+    #
+    #     print("\nPASS: all %d applicable contract rows hold for %s." % (len(applicable), target))
+    #
+    # which, with `applicable == []`, prints "PASS: all 0 applicable contract rows hold" and returns
+    # 0. Every `applies_when` gate is `spec[key] != want`, so ONE stale field in a target's row —
+    # `kind` renamed, `published` moved to a string, a new target added without `kind` at all (which
+    # raises, correctly) or with a `kind` nothing matches (which does not) — switches every row off
+    # for that target and the verifier reports a clean pass on bytes it never opened. That is the
+    # same shape as the vacuous-green the release gate is built to refuse, in the one program whose
+    # whole purpose is to say an artifact is sound.
+    #
+    # The floor is per-KIND and derived from the contract itself, so it tracks the file: a target
+    # must be matched by at least as many rows as its own kind declares. Nothing to keep in sync,
+    # and it cannot be satisfied by a contract that shrank, because the declared floor above runs
+    # first.
+    kind = spec.get("kind")
+    kind_rows = [r for r in rows if (r.get("applies_when") or {}).get("kind") == kind]
+    if not applicable:
+        raise SystemExit(
+            "NO contract row applies to target %r (kind=%r). Zero rows is not a pass: this program\n"
+            "would have printed \"all 0 applicable contract rows hold\" and exited 0 without opening\n"
+            "the artifact. Either the target's declaration in %s lost a field every row gates on, or\n"
+            "the contract has no row for kind %r at all. Fix one of those; do not ship on silence."
+            % (a.target, kind, a.targets, kind)
+        )
+    if kind_rows and len(applicable) < 2:
+        raise SystemExit(
+            "only %d contract row(s) apply to target %r (kind=%r), out of %d declared for that kind:\n"
+            "  applicable: %s\n  declared for this kind: %s\n"
+            "A single row is not a contract. This almost always means an `applies_when` field in the\n"
+            "target's own declaration drifted (a renamed key, a bool that became a string), which\n"
+            "switches rows OFF silently and in the green direction."
+            % (len(applicable), a.target, kind, len(kind_rows),
+               [r["id"] for r in applicable], [r["id"] for r in kind_rows])
+        )
+
+    # ── THE COVERAGE GAP, NAMED ON EVERY RUN ────────────────────────────────────────────────────
+    # Not fatal here — this leg's job is its own artifact, and failing it for a gap somewhere else
+    # would be blaming the wrong bytes. But it is printed, by name, on every single run, so "the
+    # artifact contract passed" can never be read as "the artifact contract was checked".
+    coverage = row_coverage(rows, targets)
+
     selected = applicable
     if a.rows:
         want = {s.strip() for s in a.rows.split(",") if s.strip()}
@@ -906,6 +1254,8 @@ def main(argv=None) -> int:
     print("archive : %s" % ctx.archive)
     print("runner  : %s (%s)" % (spec["runner"], sys.platform))
     print("rows    : %d applicable of %d declared\n" % (len(applicable), len(rows)))
+    print_coverage_gaps(coverage, a.contract)
+    print("")
 
     # Unpacking is a precondition of most rows, so it happens once and its own assertions live in
     # `archive_shape`. A failure here is reported as that row rather than as a crash.
@@ -952,7 +1302,19 @@ def main(argv=None) -> int:
             fh.write("### artifact contract - `%s`\n\n| row | verdict |\n| --- | --- |\n" % a.target)
             for rid, verdict, _ in results:
                 fh.write("| `%s` | %s |\n" % (rid, verdict))
+            # The gap belongs in the SUMMARY too, not only in a log nobody opens. A summary that
+            # lists nine green rows and says nothing about the five that never ran is the reading a
+            # human takes away, and it is wrong.
+            for rid in coverage["gaps"]:
+                fh.write("| `%s` | **GAP — executed by nothing** |\n" % rid)
             fh.write("\n")
+            if coverage["gaps"]:
+                fh.write(
+                    "> **%d declared contract row(s) are executed by no verified target**: `%s`. "
+                    "They are declared and implemented, so set equality passes; nothing runs them. "
+                    "See `scripts/verify-artifact.py --coverage`.\n\n"
+                    % (len(coverage["gaps"]), "`, `".join(coverage["gaps"]))
+                )
 
     shutil.rmtree(work, ignore_errors=True)
 
@@ -969,7 +1331,13 @@ def main(argv=None) -> int:
             % (a.target, ", ".join(failures))
         )
         return 1
-    print("\nPASS: all %d applicable contract rows hold for %s." % (len(applicable), a.target))
+    # The verdict says what it verified AND what nobody verified. "PASS" on its own reads as "the
+    # contract holds", and the contract does not hold — five of its rows have never been run.
+    print("\nPASS: all %d applicable contract rows hold for %s (of %d declared)."
+          % (len(applicable), a.target, len(rows)))
+    if coverage["gaps"]:
+        print("      NOT a statement about %d declared row(s) that NOTHING executes: %s. See --coverage."
+              % (len(coverage["gaps"]), ", ".join(coverage["gaps"])))
     return 0
 
 

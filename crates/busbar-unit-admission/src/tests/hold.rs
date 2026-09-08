@@ -84,6 +84,47 @@ fn headroom_is_what_the_tightest_capped_bucket_has_left() {
     assert_eq!(unit.headroom_nanos(&c), 40 * 10_000_000);
 }
 
+/// The headroom read has the same straddle arm as the check and the charge: a concurrent admission
+/// can roll the cell into the live window before this read's pinned epoch catches up, and the read
+/// has to follow it there rather than treat the rolled cell as an empty, fresh window.
+///
+/// Regressing the read's `>=` to `==` against the live cell's `window_start` would make a
+/// straddling read of a spent window answer with the FULL cap rather than what is left — a unit
+/// reading its headroom one tick before a boundary would see room that a request landing one tick
+/// later, on the same cell, would already have spent.
+#[test]
+fn headroom_follows_a_straddling_cell_into_the_live_window() {
+    let d = door();
+    let p = card(0, &[("m", 10.0, 0.0)]);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Budget, 100, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_h_straddle", Some("g"));
+
+    let later = 1_700_000_100;
+    let earlier = 1_700_000_099;
+    assert_ne!(
+        crate::window::budget_window(MINUTE, earlier),
+        crate::window::budget_window(MINUTE, later),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission rolls the cell into the newer minute and spends 60 of the 100 cents.
+    d.record_usage(&c, "", "m", &toks(60_000, 0), later);
+
+    // A headroom read pinned to the OLDER minute must still see that spend, not the full cap.
+    assert_eq!(
+        d.budget_headroom_cents(&p, &c, "", earlier),
+        Some(40),
+        "the straddling read must follow the live cell, not treat it as an untouched fresh window"
+    );
+}
+
 /// A window already at its cap has nothing left to grow a reservation into, and says so as zero.
 /// Zero is a top-up that does not happen; the next case is what it means for the unit.
 #[test]

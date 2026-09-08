@@ -44,6 +44,15 @@ use serde::Deserialize;
 pub const SECRET_MODULE_ENV: &str = "env";
 /// The built-in `file` secret module name (settings: `{ path: <FILE> }`).
 pub const SECRET_MODULE_FILE: &str = "file";
+/// The DECLARED-KEYLESS module name: `api_key: none` (a plain scalar — the only spelling) says
+/// "this upstream takes NO credential".
+///
+/// It exists because a secret reference that fails to resolve now REFUSES BOOT instead of degrading
+/// to an empty credential, and a keyless local upstream (ollama, vLLM) needs a way to say so on
+/// purpose rather than by pointing at a variable it knows is unset. It names no source and carries
+/// no settings, so it resolves to NOTHING: a resolver asked for its bytes is a hard error, and only
+/// a call site that genuinely permits an absent credential may accept it.
+pub const SECRET_MODULE_NONE: &str = "none";
 /// The `env` module's settings key naming the environment variable.
 pub const SECRET_ENV_SETTING_KEY: &str = "key";
 /// The `file` module's settings key naming the file path.
@@ -95,6 +104,20 @@ impl SecretRef {
         }
     }
 
+    /// The `none` reference: an EXPLICIT declaration that there is no credential. See
+    /// [`SECRET_MODULE_NONE`].
+    pub fn none() -> Self {
+        Self {
+            module: SECRET_MODULE_NONE.to_string(),
+            settings: serde_json::Map::new(),
+        }
+    }
+
+    /// True when this reference is the explicit keyless declaration (`api_key: none`).
+    pub fn is_none(&self) -> bool {
+        self.module == SECRET_MODULE_NONE
+    }
+
     /// The `env` module's variable name, when this ref uses the built-in `env` module.
     pub fn env_var(&self) -> Option<&str> {
         if self.module == SECRET_MODULE_ENV {
@@ -117,9 +140,12 @@ impl SecretRef {
         }
     }
 
-    /// A short display form for error messages: `env:VAR`, `file:/path`, or `module '<name>'`.
+    /// A short display form for error messages: `none`, `env:VAR`, `file:/path`, or
+    /// `module '<name>'`.
     pub fn describe(&self) -> String {
-        if let Some(var) = self.env_var() {
+        if self.is_none() {
+            SECRET_MODULE_NONE.to_string()
+        } else if let Some(var) = self.env_var() {
             format!("env:{var}")
         } else if let Some(path) = self.file_path() {
             format!("file:{path}")
@@ -142,8 +168,9 @@ impl<'de> Deserialize<'de> for SecretRef {
             fn inline_literal<E: de::Error>() -> E {
                 E::custom(
                     "a secret value must be a REFERENCE, never an inline literal (the value is \
-                     not echoed): use { env: <VAR> }, { file: <path> }, or \
-                     { module: <secret-module>, settings: {…} }",
+                     not echoed): use { env: <VAR> }, { file: <path> }, \
+                     { module: <secret-module>, settings: {…} }, or the bare scalar `none` to \
+                     declare an upstream that takes NO credential",
                 )
             }
         }
@@ -154,7 +181,7 @@ impl<'de> Deserialize<'de> for SecretRef {
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
                     "a secret reference map: { module: <secret-module>, settings: {…} }, \
-                     { env: <VAR> }, or { file: <path> }",
+                     { env: <VAR> }, { file: <path> }, or the bare scalar `none`",
                 )
             }
 
@@ -162,10 +189,19 @@ impl<'de> Deserialize<'de> for SecretRef {
             // mistake this type exists to prevent). Reject it with a message that NEVER echoes
             // the value — serde's default invalid-type error would print the value verbatim
             // into boot logs.
-            fn visit_str<E>(self, _v: &str) -> Result<SecretRef, E>
+            //
+            // The ONE exception is the reserved word `none`: the explicit "this upstream takes no
+            // credential" declaration (see [`SECRET_MODULE_NONE`]). It is a SCALAR and only a
+            // scalar — it names no source, so a `{ none: … }` map form would invite settings that
+            // mean nothing. A real secret that happened to be the literal string `none` would fail
+            // CLOSED here (no credential presented), never leak.
+            fn visit_str<E>(self, v: &str) -> Result<SecretRef, E>
             where
                 E: de::Error,
             {
+                if v == SECRET_MODULE_NONE {
+                    return Ok(SecretRef::none());
+                }
                 Err(Self::inline_literal())
             }
 
@@ -322,6 +358,10 @@ impl<'de> Deserialize<'de> for SecretRef {
 pub fn oneof_schema() -> serde_json::Value {
     serde_json::json!({
         "oneOf": [
+            // The explicit keyless declaration — the ONE scalar spelling a secret field accepts.
+            // Every other bare scalar is rejected as an inline literal, so this is a `const`, not a
+            // loosening of the "never a bare string" rule.
+            {"const": SECRET_MODULE_NONE},
             {
                 "type": "object",
                 "properties": {

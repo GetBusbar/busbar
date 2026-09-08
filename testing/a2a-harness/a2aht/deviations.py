@@ -32,6 +32,7 @@ un-evidenced entry is indistinguishable from a mute button.
 """
 
 import json
+import re
 
 from .model import FAIL, ERROR
 
@@ -49,6 +50,53 @@ VALID_VERDICTS = (
     "real-defect-in-control",
     "control-policy-choice",
 )
+
+# WHAT COUNTS AS EVIDENCE, and why the bar is here rather than in a reviewer's head.
+#
+# THE DEFECT THIS CLOSES. `apply` folds a FAIL to BASELINED when the record's `evidence` string
+# appears ANYWHERE in the failure detail. Evidence like "error" or "not found" appears in almost
+# every failure message a test can produce, so a record written for one deviation silently absorbed
+# a DIFFERENT and WORSE failure of the same test — the run stayed green and the regression was
+# reported as an accounted-for fact about the control. That is precisely the mute button this file's
+# own header says a deviation record must never be.
+#
+# Two independent bars now stand between a failure and a green row, and BOTH must clear:
+#
+#   1. THE RECORD MUST BE SPECIFIC (checked at load, below). A fragment that is a bare generic
+#      phrase, or too short, or too few words to name anything observed, is refused outright: an
+#      un-specific record cannot be told apart from a mute button, so it is not accepted as one.
+#   2. THE FAILURE MUST BE THE SAME ASSERTION (checked in `apply`). The clause the failing result
+#      CITES must share a spec reference with the clause the record was written against. A worse
+#      regression trips a different assert_must with a different citation, and a different citation
+#      can no longer be folded away by a fragment that happens to still appear in the text.
+MIN_EVIDENCE_CHARS = 12
+# Two, not three: the shortest legitimate record in the baselines quotes a two-word condition
+# ("without includeArtifacts=true") that names exactly one observed thing. The word count is only
+# here to refuse one-word phrases; the character floor and the blacklist do the rest, and the
+# clause-reference rule in `apply` is what actually stops a different failure being folded away.
+MIN_EVIDENCE_WORDS = 2
+
+# Bare phrases that appear in failure text regardless of WHICH failure it is. A record whose whole
+# evidence is one of these names nothing that was observed.
+BOILERPLATE_EVIDENCE = frozenset([
+    "error", "an error", "failed", "failure", "invalid", "not found",
+    "internal error", "timeout", "timed out", "mismatch", "unexpected",
+    "bad request", "no response", "none", "null", "empty", "missing",
+    "does not match", "is wrong", "was rejected", "not supported",
+])
+
+_SPEC_REF = re.compile(r"\b(?:SPEC|PROTO)\s+[A-Za-z0-9][A-Za-z0-9._]*")
+
+
+def clause_refs(text):
+    """The spec references named in a clause string, e.g. {'SPEC 3.3.2', 'SPEC 9.5'}.
+
+    Compared as SETS rather than as whole strings on purpose: a record quotes the clause in prose
+    ("SPEC 5.6.1 Timestamps: '...'") while the assertion cites it in its own wording ("SPEC 5.6.1:
+    '...'"). The REFERENCE is the stable part of both, and it is the part that identifies WHICH
+    rule was broken.
+    """
+    return {m.group(0).rstrip(".").upper() for m in _SPEC_REF.finditer(text or "")}
 
 
 class DeviationFileError(Exception):
@@ -77,6 +125,28 @@ def load(path):
                 "spec actually permits the behaviour then the TEST is wrong "
                 "and must be fixed, not baselined."
                 % (path, i, rec["verdict"], list(VALID_VERDICTS)))
+        evidence = " ".join(str(rec["evidence"]).split())
+        low = evidence.lower().strip(" .'\"")
+        if (len(evidence) < MIN_EVIDENCE_CHARS
+                or len(evidence.split()) < MIN_EVIDENCE_WORDS
+                or low in BOILERPLATE_EVIDENCE):
+            raise DeviationFileError(
+                "%s: deviation %d for %r has evidence %r, which is not "
+                "specific enough to identify one failure. A fragment this "
+                "generic appears in failure text whatever the failure is, so "
+                "it would fold a DIFFERENT and possibly WORSE failure of the "
+                "same test into a green BASELINED row. Quote the observed "
+                "message: at least %d characters and %d words naming what "
+                "this control actually did."
+                % (path, i, rec["test"], rec["evidence"],
+                   MIN_EVIDENCE_CHARS, MIN_EVIDENCE_WORDS))
+        if not clause_refs(rec["clause"]):
+            raise DeviationFileError(
+                "%s: deviation %d for %r cites clause %r, which names no SPEC "
+                "or PROTO reference. The reference is what ties the record to "
+                "ONE assertion; without it the record can absorb any failure "
+                "of the test."
+                % (path, i, rec["test"], rec["clause"]))
         if rec["test"] in seen:
             raise DeviationFileError(
                 "%s: duplicate deviation for test %r" % (path, rec["test"]))
@@ -96,7 +166,14 @@ def apply(report, doc):
             continue
         if result["outcome"] in (FAIL, ERROR):
             evidence = rec["evidence"]
-            if evidence in (result["detail"] or ""):
+            # BOTH BARS. The fragment must still be there AND the failure must cite a clause the
+            # record was written against. A regression that trips a different assertion inside the
+            # same test now stays RED even when the recorded fragment happens to survive in its
+            # message, which is the fold this file used to perform silently.
+            recorded_refs = clause_refs(rec["clause"])
+            actual_refs = clause_refs(result.get("clause") or "")
+            same_assertion = bool(recorded_refs & actual_refs) if actual_refs else False
+            if evidence in (result["detail"] or "") and same_assertion:
                 matched.add(result["id"])
                 result["outcome"] = BASELINED
                 result["baselined"] = {
@@ -113,8 +190,20 @@ def apply(report, doc):
                     "kind": DEVIATION_CHANGED,
                     "why": "this test still fails, but not in the recorded "
                            "way. The deviation CHANGED, which is new "
-                           "information and must be re-examined.",
+                           "information and must be re-examined."
+                           + ("" if evidence in (result["detail"] or "") else
+                              " The recorded evidence is not in the failure "
+                              "detail.")
+                           + ("" if same_assertion else
+                              " The failure cites %s, and this record was "
+                              "written against %s: a DIFFERENT assertion "
+                              "inside the same test, which a record may never "
+                              "absorb."
+                              % (sorted(actual_refs) or "no clause",
+                                 sorted(recorded_refs))),
                     "expected_evidence": evidence,
+                    "expected_clause_refs": sorted(recorded_refs),
+                    "actual_clause_refs": sorted(actual_refs),
                     "actual_detail": (result["detail"] or "")[:600],
                 })
         else:

@@ -534,10 +534,10 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
     let (peer, app) = rig(Behaviour::Errors).await;
     let caller = key_with_scopes("k-outcome", &[("mcp_server", SERVER)]);
     let auth = authorise(&app, Some(&caller)).expect("the gate admits a granted caller");
-    // Its OWN principal: the chain is per principal in a process-wide global, so a test asserting on
-    // a chain position must not read the one a sibling left behind.
-    let principal = "http-verb-outcome-principal";
-
+    // ITS OWN PRINCIPAL: the chain is per principal in a process-wide global, so a test asserting on
+    // a chain position must not read the one a sibling left behind. The isolation is carried by the
+    // key id `k-outcome` above, which `issue` attributes to; a second, unused `principal` binding
+    // here read as though it were doing that work and was discarded with `let _ = principal;`.
     let err = issue(
         &crate::mcp::runtime(&app).pool,
         &auth,
@@ -553,7 +553,6 @@ async fn an_upstream_error_is_recorded_as_dispatched_with_the_upstream_failed_re
     );
     assert_eq!(peer.mcp_hits(), 1, "and the call DID go out");
 
-    let _ = principal;
     // The record's own fields are asserted through the chain the dispatcher wrote to, which is the
     // caller's — `issue` attributes to `auth.caller.id`.
     let seq = engine().call_next_seq(&caller.id);

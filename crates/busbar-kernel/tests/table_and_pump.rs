@@ -39,6 +39,14 @@ fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
 fn the_reserve_is_a_tenth_of_the_table_and_only_where_sessions_exist() {
     assert_eq!(reserve_for(100, true), 10);
     assert_eq!(reserve_for(100, false), 0);
+    // A tenth OF THE TABLE, and not the number ten: one table size cannot tell the two apart, and a
+    // constant reserve on a large node is a reserve of a tenth of a percent.
+    assert_eq!(reserve_for(1_000, true), 100);
+    assert_eq!(reserve_for(40, true), 4);
+    assert_eq!(reserve_for(1_000, false), 0);
+    // Below ten slots a tenth rounds down to nothing, which is the whole table serving arrivals.
+    assert_eq!(reserve_for(5, true), 0);
+    assert_eq!(reserve_for(0, true), 0);
 }
 
 #[test]
@@ -151,7 +159,6 @@ fn the_cap_holds_when_everything_arrives_at_once() {
         }
         let admitted = racers
             .into_iter()
-            .filter(|_| true)
             .map(|racer| racer.join().expect("the thread finished"))
             .filter(|ok| *ok)
             .count();
@@ -175,7 +182,6 @@ fn a_session_pairs_no_ninth_upstream_however_the_dials_interleave() {
         }
         let paired = racers
             .into_iter()
-            .filter(|_| true)
             .map(|racer| racer.join().expect("the thread finished"))
             .filter(|ok| *ok)
             .count();
@@ -248,13 +254,19 @@ fn a_step_advancing_can_never_undo_the_interrupt() {
         let advance = std::thread::spawn(move || advancing.step().advance_to(StepName::Route));
         let supersede = std::thread::spawn(move || interrupting.step().supersede());
         advance.join().expect("the thread finished");
-        if supersede.join().expect("the thread finished") {
-            assert_eq!(
-                slot.step().get(),
-                Progression::Superseded,
-                "a step advance overwrote the interrupt"
-            );
-        }
+        // The interrupt is asserted to have WON, not merely checked if it happened to. Both racing
+        // steps are before the meter, so the compare-and-set has nothing that can refuse it — and
+        // under the `if` a `supersede` that had become a no-op returning false would skip the only
+        // assertion in the loop and leave a green test over two units relaying one direction.
+        assert!(
+            supersede.join().expect("the thread finished"),
+            "an interrupt raised before the meter lost its compare-and-set"
+        );
+        assert_eq!(
+            slot.step().get(),
+            Progression::Superseded,
+            "a step advance overwrote the interrupt"
+        );
     }
 }
 
@@ -527,10 +539,8 @@ fn a_supersede_frees_only_the_direction_the_superseded_unit_was_holding() {
 
 #[test]
 fn one_shots_run_under_a_small_fixed_concurrency() {
-    let kernel = Kernel::new();
     let table = InFlight::new(64, 0);
     let scheduler = Scheduler::new(2);
-    let _ = kernel;
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -791,10 +801,42 @@ fn the_session_budget_holds_when_everything_connects_at_once() {
     }
 }
 
+/// The canary balances a quiet table, balances a table that ran, and breaks when a side is short.
+///
+/// A fresh canary is all zeroes, so `balanced()` on it reads `0 == 0 && 0 == 0` — true no matter
+/// what the comparison says. Asserting only that case proves nothing about the relation the canary
+/// exists to check: replacing the whole body of `balanced()` with an unconditional `Ok(())` left
+/// the empty-canary assertion green. So the quiet case is kept and the two cases that actually
+/// pin the relation are asserted beside it — a draft matched by a hold and a settlement balances,
+/// and a draft whose settlement never arrived is reported as the break it is.
 #[test]
-fn a_canary_over_the_table_is_still_balanced_when_nothing_ran() {
+fn a_canary_over_the_table_balances_only_when_both_sides_agree() {
+    // Nothing ran: the quiet table is balanced.
     let canary = Canary::new();
     assert_eq!(canary.balanced(), Ok(()));
+
+    // A whole unit went through: drafted, held, settled. Both sides agree.
+    canary.draft_accepted();
+    canary.hold_opened();
+    canary.settled();
+    assert_eq!(canary.balanced(), Ok(()));
+
+    // An accrual settles into a parent's hold and posts its own settlement: still agreeing.
+    canary.draft_accepted();
+    canary.accrual_taken();
+    canary.settled();
+    assert_eq!(canary.balanced(), Ok(()));
+
+    // A draft that opened a hold but never settled: the canary reports the break, with the counts.
+    canary.draft_accepted();
+    canary.hold_opened();
+    let broken = canary
+        .balanced()
+        .expect_err("the unsettled hold is a break");
+    assert_eq!(broken.drafts, 3);
+    assert_eq!(broken.holds, 2);
+    assert_eq!(broken.accruals, 1);
+    assert_eq!(broken.settlements, 2);
 }
 
 /// A forged datagram is one datagram: it is discarded, it posts nothing, and the session stands.

@@ -2021,20 +2021,43 @@ pub const SAFE_MODE_OVERLAY_QUARANTINED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A provider api_key SecretRef did not resolve at boot; degraded to an empty key.
+/// RETIRED before 1.6.0 shipped, superseded by [`PROVIDER_API_KEY_UNRESOLVABLE`]: the degrade this
+/// code described no longer exists. The number is kept so a log line from a pre-release build still
+/// resolves to an entry that says what happened and what replaced it.
 pub const PROVIDER_API_KEY_UNRESOLVED: Diagnostic = Diagnostic {
     code: 8013,
     class: Class::Governance,
     slug: "provider-api-key-unresolved",
-    title: "Provider api_key did not resolve (degraded to an empty key)",
+    title: "Provider api_key did not resolve (degraded to an empty key) — RETIRED, see BUSBAR-8020",
     severity: Severity::Actionable,
-    summary: "A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that \
-              provider to an empty key. This is legitimate for keyless local upstreams (ollama/vLLM), \
-              but for a real provider it means egress will be unauthenticated and the upstream will \
-              reject with 401.",
-    action: "If the provider needs a key, fix its `api_key` secret reference (the secret is missing \
-             or the resolver could not read it) and restart. If the upstream is genuinely keyless, no \
-             action is needed.",
+    summary: "RETIRED. A provider's `api_key` secret reference did not resolve at boot, so busbar \
+              degraded that provider to an empty key and started the lane anyway. 1.6.0 removed that \
+              degrade: an `api_key` that does not resolve now REFUSES BOOT (BUSBAR-8020), and an \
+              upstream that genuinely takes no credential is declared with `api_key: none`.",
+    action: "Nothing emits this code. See BUSBAR-8020.",
+    since: "1.6.0",
+    retired: true,
+};
+
+/// A provider api_key SecretRef did not resolve; boot refuses.
+pub const PROVIDER_API_KEY_UNRESOLVABLE: Diagnostic = Diagnostic {
+    code: 8020,
+    class: Class::Governance,
+    slug: "provider-api-key-unresolvable",
+    title: "Provider api_key did not resolve (boot refuses)",
+    severity: Severity::Fatal,
+    summary: "A provider's `api_key` secret reference could not be resolved — an unset environment \
+              variable, a missing or empty file, an unknown module, or a secret plugin that failed — \
+              so busbar refuses to start. It does not fall back to an empty credential: that lane \
+              could never authenticate, would report healthy, would be skipped by the health prober \
+              (no key, no probe), and would answer every request routed to it with a 401 from the \
+              upstream. The diagnostic names the provider and the reference (`env:VAR`, \
+              `file:/path`), never the value.",
+    action: "Fix the reference so it resolves (set the variable, mount the file, install and trust \
+             the secret plugin), or — if this upstream genuinely takes NO credential, such as a \
+             local ollama or vLLM — declare that explicitly with `api_key: none`, which starts the \
+             lane with no credential and sends no auth header. `--validate` reports the same \
+             refusal before you deploy.",
     since: "1.6.0",
     retired: false,
 };
@@ -3445,6 +3468,46 @@ pub const CLI_LIST_PLUGINS_TRUST_INVALID: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The persisted first-party anti-downgrade floor could not be READ, so the node boots with none.
+pub const PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE: Diagnostic = Diagnostic {
+    code: 6011,
+    class: Class::Plugins,
+    slug: "plugin-firstparty-floor-unreadable",
+    title: "First-party anti-downgrade floor unreadable (booting with NO first-party floor)",
+    severity: Severity::Actionable,
+    summary: "The persisted per-plugin-name high-water marks — the automatic first-party \
+              anti-downgrade floor — could not be read or were not valid, so busbar booted with NO \
+              first-party floor. Security-relevant: while the floor is absent, a validly-signed but \
+              OLD first-party artifact planted in the plugins directory would load without being \
+              refused as a downgrade. The floor re-establishes itself as plugins load successfully. \
+              busbar fails SOFT here on purpose: refusing the boot would let anyone able to corrupt \
+              one file take the node down.",
+    action: "Check the data directory is readable and that `plugin-highwater.json` beneath it is \
+             intact (the log names the path and the exact problem). Deleting the file is safe — the \
+             floor rebuilds from the next successful load — but it does re-open the replay window \
+             until it does.",
+    since: "1.6.0",
+    retired: false,
+};
+
+/// The first-party anti-downgrade floor could not be PERSISTED; it still applies to this process.
+pub const PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE: Diagnostic = Diagnostic {
+    code: 6012,
+    class: Class::Plugins,
+    slug: "plugin-firstparty-floor-unwritable",
+    title: "First-party anti-downgrade floor could not be persisted (it will not survive a restart)",
+    severity: Severity::Actionable,
+    summary: "busbar raised the per-plugin-name high-water marks — the automatic first-party \
+              anti-downgrade floor — but could not write them to the data directory. The floor still \
+              applies to THIS process; it will not survive a restart, so the replay window reopens \
+              at the next boot until a load re-establishes it.",
+    action: "Make the configured data directory writable (the log names the underlying I/O error). \
+             A node that cannot write its data directory usually has a larger problem than this \
+             notice.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// A group `/usage` read could not derive a bucket's usage from the governance store. Read-path fault.
 pub const GROUP_USAGE_READ_FAILED: Diagnostic = Diagnostic {
     code: 8018,
@@ -3676,6 +3739,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &BUDGET_FLUSH_PARTIAL_FAILURE,
     &SAFE_MODE_OVERLAY_QUARANTINED,
     &PROVIDER_API_KEY_UNRESOLVED,
+    &PROVIDER_API_KEY_UNRESOLVABLE,
     &OPEN_RELAY_NO_AUTH,
     &STORE_SECRET_REF_UNRESOLVED,
     &GOVERNANCE_STORE_EPHEMERAL,
@@ -3753,6 +3817,8 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &METADATA_PROTECTION_DISABLED,
     &CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED,
     &CLI_LIST_PLUGINS_TRUST_INVALID,
+    &PLUGIN_FIRSTPARTY_FLOOR_UNREADABLE,
+    &PLUGIN_FIRSTPARTY_FLOOR_UNWRITABLE,
     &GROUP_USAGE_READ_FAILED,
     &BOOT_FATAL_ERROR,
     &WORKER_THREADS_INVALID,

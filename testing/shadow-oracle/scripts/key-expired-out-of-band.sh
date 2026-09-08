@@ -39,12 +39,12 @@ for p in "$LP" "$AP" "$MP"; do
 done
 command -v sqlite3 >/dev/null 2>&1 || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"sqlite3 not installed"}}' >"$RAW/captured.json"; exit 0; }
 
-tarball="$(bash "${here}/fetch-plugin.sh" store-sqlite)" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"
 alias_="$(tar -xzOf "$tarball" manifest.json | jq -r .alias)"
 DB="$W/governance.db"
 
-python3 "${here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
 # the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.
@@ -162,15 +162,23 @@ created_at="$(sqlite3 "$DB" "SELECT created_at FROM ${table} WHERE id = '${kid}'
 past_expires=$(( created_at + 1 ))
 sqlite3 "$DB" "UPDATE ${table} SET expires_at = ${past_expires} WHERE id = '${kid}';" || fail 3 "sqlite3 UPDATE failed on table ${table}"
 expires_now="$(sqlite3 "$DB" "SELECT expires_at FROM ${table} WHERE id = '${kid}';")"
-step created_at "$created_at"
-step expires_at_after_edit "$expires_now"
-step now_at_edit "$(date +%s)"
-
+# NO WALL CLOCK IN `effects`. diff-cells.py compares EVERY effects key a driver writes under
+# `effects.script`, rated MONEY — so a raw epoch second here differs on every replay by construction
+# (the golden was recorded at one instant, the candidate runs at another) and normalize.py cannot
+# save it: its TS_KEYS rewrite is an EXACT key-name match on an int/float, and `step` writes STRINGS
+# under names of this driver's own choosing (`created_at` matched the name but not the type;
+# `expires_at_after_edit` and `now_at_edit` matched neither). Three keys about nothing would have
+# made this cell permanently, unforgivably-except-as-`breaking` red the moment a cell drove it.
+# What the cell actually needs to assert is the RELATION the out-of-band edit was for: the row's
+# expires_at now sits behind the clock. That is a boolean, and it is the same boolean every run.
 # created_at (and so expires_at = created_at + 1) is a wall-clock second stamped just moments ago —
 # without a margin the second boot could still land in the SAME second, and expires_at would not
 # yet be in the past when the second spend fires (a false "not enforced" from a race, not a
 # finding). Sleep past it so expires_at is unambiguously behind wall-clock time at spend #2.
 while [ "$(date +%s)" -le "$past_expires" ]; do sleep 1; done
+# ASSERTED AFTER THE WAIT, not before it: before the sleep this is still `false` by construction,
+# and a `false` here would be the harness reporting its own impatience as a fact about the row.
+step expires_at_moved_into_past "$([ -n "$expires_now" ] && [ "$expires_now" -lt "$(date +%s)" ] 2>/dev/null && echo true || echo false)"
 
 # ── boot 2: restart on the SAME db, spend again with the SAME token ────────────────────────────
 pid="$(spawn "$W/busbar2.log")"; track_pid "$pid"

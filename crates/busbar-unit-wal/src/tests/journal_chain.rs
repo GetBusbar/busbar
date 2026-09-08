@@ -194,6 +194,76 @@ fn chain_verification_catches_a_mutated_header() {
     );
 }
 
+/// A GAP IN THE NUMBERING IS ITS OWN BREAK, and it is the one the other three cannot see.
+///
+/// The digests catch a record that was edited and the link catches one that was removed, because
+/// both change bytes the chain hash covers. A restart that resumed from the correct head but at the
+/// WRONG NUMBER changes nothing after the fact: every record it seals is internally consistent, its
+/// `prev_hash` links onto the record before it, and the run verifies against the first three checks
+/// exactly as a healthy one does. What it has done is skip identities — and the log answers an
+/// identity it already holds by passing the record over and reporting success, so the settlements in
+/// the gap are on no medium and every append said `Ok`.
+///
+/// So the fixture is built the way the defect is: a real journal, sealed properly, resumed from its
+/// own head at a number two past where it stopped. Nothing is edited by hand, which is what makes
+/// this a different failure from the three above.
+#[test]
+fn chain_verification_catches_a_gap_in_the_numbering() {
+    let shipper = BufferShipper::new();
+    let token = durability_token();
+
+    let mut journal = Journal::memory_buffered_to(5, Box::new(shipper.clone()));
+    let first = journal
+        .append(
+            &token,
+            StepName::Meter,
+            &entries(RecordClass::Transaction, 3, 1),
+        )
+        .expect("the store takes it")
+        .sealed;
+    assert_eq!(journal.next_seq(), 4, "the log ended on three");
+
+    // A node coming back up from the right head but at the wrong number: it skips 4 and 5.
+    let mut resumed = Journal::resuming(
+        Wal::memory_buffered_to(Box::new(BufferShipper::new())),
+        5,
+        journal.head(),
+        6,
+    );
+    let after = resumed
+        .append(
+            &token,
+            StepName::Meter,
+            &entries(RecordClass::Transaction, 2, 2),
+        )
+        .expect("the store takes it")
+        .sealed;
+    assert_eq!(after[0].node_seq, 6, "the fixture really did skip two");
+
+    // The run links and digests perfectly, and is still wrong.
+    let mut run = first.clone();
+    run.extend(after);
+    let broken = verify(&run).expect_err("a skipped identity must not verify");
+    assert_eq!(
+        broken.kind,
+        JournalBreakKind::SequenceMismatch {
+            expected: 4,
+            found: 6
+        },
+        "the break names the number that was owed and the one that arrived"
+    );
+    assert_eq!(broken.at_index, 4, "reported at the record that jumped");
+
+    // And it is NOT reported as one of the other three: the whole point is that a reader is told a
+    // gap happened rather than being sent looking for an edit that never occurred.
+    assert_ne!(broken.kind, JournalBreakKind::LinkMismatch);
+    assert_ne!(broken.kind, JournalBreakKind::BodyDigestMismatch);
+    assert_ne!(broken.kind, JournalBreakKind::ChainDigestMismatch);
+
+    // The healthy prefix on its own still verifies, so the break is at the gap and not before it.
+    verify(&first).expect("everything up to the gap is sound");
+}
+
 /// A record REMOVED from the middle breaks the link rather than passing as a shorter history.
 #[test]
 fn chain_verification_catches_a_removed_record() {

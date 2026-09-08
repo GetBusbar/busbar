@@ -1,6 +1,8 @@
-# The NO-DEFERRAL gate — `scripts/no-deferral-gate.sh` (spec)
+# The NO-DEFERRAL gate — `cargo xtask gate no-deferral` (spec)
 
-Status: **SPEC** (design; the script is not yet written). This document is the authoritative
+Status: **SPEC** (design). The gate this specifies is `xtask::gates::no_deferral`; the
+`scripts/no-deferral-gate.sh` it was first written against has retired into it, and the strict form
+below is the separately registered `no-deferral-strict-done`. This document is the authoritative
 specification for a CI gate whose single claim is: **the shipped source tree contains nothing
 known-and-deferred.** A green from this gate means every capability the tree declares, it also
 implements — no `todo!()` a caller can reach, no self-labelled "SKELETON / dev-only until DoD"
@@ -185,15 +187,16 @@ MUST clear before voice ships in 1.6.0.
 
 ```sh
 # in verify-1.6.0-done.sh, alongside the other release witnesses
-run_gate scripts/no-deferral-gate.sh            # nothing known-and-deferred in shipped src
+run_gate cargo xtask gate no-deferral-strict-done   # nothing known-and-deferred in shipped src
 ```
 
-- **Exit semantics.** `no-deferral-gate.sh` is `set -euo pipefail`, exits `0` only when the marker
-  count equals the allowlist floor AND (once voice DoD lands) the voice state assertion passes;
-  non-zero otherwise, printing every offending `file:line`.
+- **Exit semantics.** exit `0` only when every marker is a live allowlist row and every allowlist
+  row still describes a marker; non-zero otherwise, printing every offending `file:line`. A scan
+  below its discovery floor is UNPROVEN, not a pass, on the run path as well as in the self-test.
 - **Discovery, not a hand-list.** Like `full-gate.sh`, `verify-1.6.0-done.sh` should *discover*
-  this gate from CI rather than hard-code it; add `no-deferral-gate.sh` to `.github/workflows/ci.yml`
-  so `full-gate.sh` picks it up automatically and the local/CI claim stays identical.
+  this gate from CI rather than hard-code it; `cargo xtask gate no-deferral` is in
+  `.github/workflows/ci.yml` so `full-gate.sh` picks it up automatically and the local/CI claim
+  stays identical.
 - **Ordering.** Run it AFTER `cargo build`/`clippy` (a marker hidden behind a non-compiling body is
   caught earlier) and alongside `plane-abi-neutrality.sh` / `plane-purity-lint.sh` in the
   "boundary witnesses" group — same tree, orthogonal properties.

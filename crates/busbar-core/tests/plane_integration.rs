@@ -684,6 +684,29 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
             "{admissible} is declared MCP-admissible but no core route mounts it — the walk would              assert nothing about the plane it is named for"
         );
     }
+    // THE MATCHING FLOOR ON `DECLARED_PUBLIC`, and it is the half the walk below cannot supply.
+    //
+    // The loop's public arm is one-directional: it fires only for a route the table reports as
+    // `RouteAuth::None`, and asks whether that route was declared. Nothing anywhere asked the
+    // reciprocal — whether a path NAMED here is still mounted `None` at all. So a route silently
+    // leaving the unauthenticated bypass set (remounted `Key`, or unmounted outright) does not fail
+    // this test: it simply takes the guarded arm, or vanishes from the walk, and the entry here
+    // becomes a comment about a rule nothing checks.
+    //
+    // That is not hypothetical bookkeeping. Appendix B binding PB-33 cites THIS test, by name, as
+    // the proof that `/auth/token` is in the unauthenticated exact-path bypass set — a property the
+    // test could not observe. This floor is what makes the citation true, and it is the exact
+    // sibling of the `MCP_ADMISSIBLE` floor above (same argument, other axis).
+    for public in DECLARED_PUBLIC {
+        assert!(
+            core_routes
+                .iter()
+                .any(|(path, _, auth)| path == *public
+                    && *auth == busbar_plugin_loader::RouteAuth::None),
+            "{public} is declared unauthenticated-by-design but no core route mounts it with \
+             RouteAuth::None — the bypass set this names is not the one the router built"
+        );
+    }
     let boot_plugin_paths: Vec<String> = busbar_core::boot_route_paths_of(&app);
     assert!(
         !core_routes.is_empty(),

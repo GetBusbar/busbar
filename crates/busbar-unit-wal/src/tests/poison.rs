@@ -148,19 +148,34 @@ fn a_group_commit_costs_one_sync_however_many_records_are_in_it() {
 
 #[test]
 fn a_poisoned_segment_never_takes_another_write() {
-    let (mut wal, switch, _memory) = wal_with_faults();
+    let (mut wal, switch, memory) = wal_with_faults();
     let token = durability_token();
     switch.arm(Fault::SyncEio);
     wal.append_batch(&token, busbar_caps::StepName::Meter, &records(1, 1, 1, 10))
         .expect_err("armed");
+
+    // The poisoned segment's own bytes, held by a strong reference so they survive the roll that
+    // follows. A fresh segment NUMBER is not the claim: the claim is that the region of unknown
+    // state receives no further writes, and only the bytes can say that. Reading them back through
+    // `wal.read_back()` afterwards would read the NEW segment, which is why the factory is asked.
+    let poisoned_bytes = memory.segment_bytes(0);
+    let before = poisoned_bytes.lock().unwrap().clone();
+    assert!(
+        !before.is_empty(),
+        "the fixture is only interesting if the poisoned segment holds bytes"
+    );
+
     // The switch is one-shot, so the disk is healthy again — but the segment stays closed and the
     // log moves on rather than writing more bytes into a region of unknown state.
-    let segment_before = wal.read_back().unwrap();
     let ack = wal
         .append_batch(&token, busbar_caps::StepName::Meter, &records(1, 2, 1, 10))
         .unwrap();
     assert!(ack.segment > 0, "the write went to a fresh segment");
-    let _ = segment_before;
+    assert_eq!(
+        *poisoned_bytes.lock().unwrap(),
+        before,
+        "the poisoned segment took another write"
+    );
 }
 
 /// What the store is owed on disk is a QUEUE WITH A BOUND, not a list that grows for as long as the

@@ -10,8 +10,14 @@
     "benchmarks, Docker/Kubernetes manifest literals busbar itself never observes, CI-pipeline-only",
     "behaviour, Cargo/build metadata, or a bare pointer into another §'s own detailed cross-check —",
     "are `status: \"prose\"` with a one-line `reason`, never silently dropped.",
-    "Not hand-maintained cell-existence: scripts/design-bindings.sh --check verifies the `cell` ids",
-    "referenced below still exist in testing/shadow-oracle/cells.json."
+    "THIS FILE IS A REGISTER, NOT A GATE: it compares nothing on its own. The gate that asserts it is",
+    "scripts/documented-claims-check.sh (qa/segments.toml segment `documented-claims`), which checks the",
+    "shape of every claim, that the claim run for each document is complete and contiguous, that the",
+    "`counts` block below is what the claims actually add up to, that every `cell` id named here exists",
+    "in testing/shadow-oracle/cells.json AND was RECORDED PASS by the pinned golden, and that both",
+    "CONTRADICTED rows stay flagged, cell-pinned, and carry the behaviour the code actually has.",
+    "An earlier version of this note claimed scripts/design-bindings.sh --check verified the `cell` ids.",
+    "It did not: nothing in the tree opened this file at all."
   ],
   "source": "docs/design/inventory/1.5.5-ops-observability.md §8 (§8.3 :1047-1073, §8.4 :1087-1115)",
   "counts": { "total": 56, "readme": 27, "changelog": 29, "cell": 33, "prose": 23, "contradicted": 2 },

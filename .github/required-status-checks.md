@@ -27,6 +27,36 @@ already terminates in a single aggregator job — nothing further is needed insi
 only manual step is ticking these four in **Settings → Branches → branch protection → Require status
 checks to pass** for `main` and `qa`.
 
+## Mark this REQUIRED on `qa` ONLY — and deliberately **not** on `main`
+
+| Required status (context name) | Workflow | What it aggregates |
+| --- | --- | --- |
+| `CodeQL (rust)` | `codeql.yml` | Single-job workflow; its own status is the aggregator. Builds the CodeQL database for the Rust workspace (`build-mode: none`) and uploads the SARIF to code scanning. |
+
+**Why `qa` and not `main`, stated here because getting it wrong is silent.** `codeql.yml` triggers on
+`push: [qa]` and `workflow_dispatch` only — never on `dev`, never on `main`, never on
+`pull_request`. That is the cost boundary the branch model already draws: `dev` gets the cheap
+per-push gate, and the expensive pre-release analysis is part of what a dev→qa promotion buys.
+
+The consequence for branch protection is the one the `cargo-deny` note below warns about, pointed
+the other way: **a required status check that never reports does not pass — GitHub leaves the merge
+pending on it forever.** Ticking `CodeQL (rust)` on `main` would therefore block every qa→main
+promotion outright, because no push to `main` ever produces that context. Tick it on **`qa` only**.
+
+That is not a weaker gate. A push to `main` is a *promotion* of the exact bytes qa already analysed,
+so the verdict that matters has already been rendered — before the promotion, which is what `qa` is
+for. Re-running it on `main` would spend the analysis again to learn the same fact, and a red there
+would be a red against a commit already being released.
+
+> **`cargo-deny` is NOT path-filtered, and it must stay that way.** `security.yml` once triggered
+> only on changes to `Cargo.toml`, `Cargo.lock`, `deny.toml` and its own file. A required status
+> check that never reports does not pass — GitHub leaves the PR pending on it forever — so requiring
+> a path-filtered context outright blocks every PR that touches no dependency. The filter has been
+> removed: `security.yml` now runs on every push and every pull request, so the context reports on
+> every PR and can be required plainly. **Do not reintroduce a `paths:` filter on `security.yml`
+> while this context is branch-protection-required.** All five aggregators now run unconditionally
+> and none has a reporting caveat.
+
 ## Intentionally NOT branch-protection-required (and why)
 
 - **`release gate` (`release-fleet.yml`)** — verifies the bytes of the **latest published release**

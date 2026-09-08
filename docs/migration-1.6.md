@@ -38,6 +38,11 @@ and what is new to write if you want it.
 - **The reserved name `admin`** is still refused for a model, pool or provider, with the 1.5.5
   message.
 
+One exception, and `--validate` already tells you whether it applies to you: a provider whose
+`api_key` reference does not resolve no longer starts with an empty credential. If you were
+relying on that — most often to run a keyless local ollama or vLLM — you need one edit. See
+[§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot).
+
 ## 2. Deprecated env vars keep working, with a warning
 
 `BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
@@ -137,9 +142,55 @@ form, are gone in 1.6.0. Each has a migration path, so no config and no persiste
 
 ---
 
+## 6. A provider credential that cannot resolve refuses boot
+
+**What changed.** 1.5.5 resolved each provider's `api_key` reference at boot and, when that failed,
+logged `[warn] provider <name> api_key (<reference>) empty` and started the lane with an EMPTY
+credential. 1.6.0 refuses: an `api_key` reference that does not resolve — unset variable, missing or
+empty file, unknown module, secret-plugin error — stops boot under `BUSBAR-8020`, and stops an admin
+apply/reload the same way. The diagnostic names the provider and the reference (`env:VAR`,
+`file:/path`) and never the value.
+
+**Why.** The degraded lane could not work. It booted "healthy", the health prober skipped it (no
+key, no probe), and every request routed to it came back as a 401 from the upstream — with one
+warning line at boot as the only signal. Every other secret in busbar is fail-closed; the provider
+credential was the exception, and the exception bought nothing but a slower, more confusing failure.
+`busbar --validate` has refused exactly this since 1.5.3, so boot and validate now agree.
+
+**Keyless upstreams are DECLARED.** A local ollama or vLLM genuinely takes no credential. Say so:
+
+```yaml
+providers:
+  ollama:
+    api_key: none          # this upstream takes NO credential
+```
+
+`none` is a plain scalar (there is no `{ none: … }` form) and is accepted only on a provider
+`api_key`. A TLS cert, `auth.signing_key`, the authorization server's signing key, an admin token or
+an OIDC client secret has no credential-free mode, and `auth: jwt-bearer` / `auth:
+oauth-client-credentials` mint their token FROM the credential, so `none` is refused in all of those
+places. A lane declaring `none` starts, sends NO auth header upstream, and is skipped by the health
+prober — exactly what the empty-credential lane did, now on purpose.
+
+**What to do.** Run `busbar --validate` before upgrading; it names any provider that would now
+refuse.
+
+- If the reference should resolve, fix it: set the variable, mount the file, install and trust the
+  secret plugin.
+- If the upstream takes no credential, change the reference to `api_key: none`.
+
+`busbar --migrate-config` does NOT insert `none` for you. Whether an upstream needs a credential is
+a fact about your deployment, not something a migration can read off the config file — guessing
+wrong would silently disarm a provider that does need one.
+
+---
+
 ## Quick checklist
 
 - [ ] Install 1.6.0, `busbar --validate`, start. That is the whole upgrade.
+- [ ] If `--validate` names a provider `api_key` that does not resolve: fix the reference, or — for
+      an upstream that takes no credential (local ollama / vLLM) — declare `api_key: none`. It is
+      a boot refusal now, not a warning ([§6](#6-a-provider-credential-that-cannot-resolve-refuses-boot)).
 - [ ] If a log pipeline matches on the leading text of `[error]` / `[warn]` lines, allow for the
       `BUSBAR-NNNN:` prefix.
 - [ ] If any key's traffic routinely fails over to an OpenAI Chat Completions lane while streaming,

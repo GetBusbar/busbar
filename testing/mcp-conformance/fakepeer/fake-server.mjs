@@ -9,6 +9,7 @@
 //
 //   honest              a plain, correct server (the baseline)
 //   no-resulttype       results omit the required resultType field
+//   no-cache-hints      cacheable results omit ttlMs and cacheScope
 //   server-request      sends a JSON-RPC REQUEST to the client (forbidden)
 //   rugpull             tool schemas change between tools/list and tools/call
 //   schema-lie          advertises one inputSchema, accepts anything
@@ -32,9 +33,72 @@
 //   sub-no-ack          subscription stream that sends events before the ack
 //
 // Every mode still answers server/discover, so a client can always start.
+//
+// WHICH METHOD A MODE FIRES ON, AND WHY IT IS A TABLE.
+//
+// Every hostile mode above used to be written inside `handleToolsCall`, so a mode fired only if
+// the client under test happened to reach `tools/call`. A client that discovered the server and
+// listed its tools and stopped there met a PERFECTLY HONEST server in `stall`, in `malformed`, in
+// `half-answer`, in `wrong-id` — the attack the scenario is named for was never put on the wire,
+// and the scenario passed on the absence of a response to a stimulus that never happened. The mode
+// names a defect of a SERVER, not a defect of one method, so it fires on every method it names.
+//
+// ANY means "every method except server/discover": discover stays honest in every mode because a
+// client that cannot start cannot be observed doing anything at all, which is the invariant the
+// line above states and the one thing every mode still owes the harness.
+// The table itself lives below the imports; this is the reasoning that governs it.
 
 import { createInterface } from 'node:readline';
 import { appendFileSync } from 'node:fs';
+
+const ANY = 'ANY';
+const MODE_METHODS = {
+  honest: [],
+  // Shape/content modes: these are edits to a particular payload, so they fire where that payload
+  // is produced and nowhere else.
+  'no-resulttype': ANY,            // applied in ok(), on every result it forms
+  'no-cache-hints': ANY,           // applied in ok(), on every cacheable result
+  injection: ['tools/list'],
+  'bad-icon': ['tools/list'],
+  'schema-lie': ['tools/list', 'tools/call'],
+  'outputschema-lie': ['tools/list', 'tools/call'],
+  rugpull: ['tools/list', 'tools/call'],
+  'sub-no-ack': ['subscriptions/listen'],
+  // Transport- and envelope-level hostility: none of it is about tools, so all of it fires on
+  // whatever the client actually sends.
+  'server-request': ANY,
+  giant: ANY,
+  deep: ANY,
+  malformed: ANY,
+  'noise-on-stdout': ANY,
+  truncate: ANY,
+  stall: ANY,
+  'half-answer': ANY,
+  'dup-response': ANY,
+  'wrong-id': ANY,
+  'retired-code': ANY,
+  'unsolicited-notif': ANY,
+  'evil-elicitation': ANY,
+  'mrtr-no-fields': ANY,
+  'mrtr-undeclared': ANY,
+};
+
+// `--list-modes` prints the table's keys and exits. It exists so that no other file has to keep a
+// hand-written copy of this list in step with this one: scripts/negative-control.sh reads the set
+// of modes to exercise FROM HERE, so a mode added below is exercised by the negative control on the
+// commit that adds it, and cannot sit unexercised because somebody forgot a second list.
+if (process.argv.includes('--list-modes')) {
+  for (const m of Object.keys(MODE_METHODS)) console.log(m);
+  process.exit(0);
+}
+
+/** Does the selected mode fire on this method? */
+function modeFires(mode, method) {
+  const m = MODE_METHODS[mode];
+  if (m === undefined) return false;
+  if (m === ANY) return method !== 'server/discover';
+  return m.includes(method);
+}
 
 const MODE = process.env.MCP_FAKE_MODE || 'honest';
 
@@ -159,14 +223,21 @@ function handleDiscover(id) {
 }
 
 function handleToolsList(id) {
-  if (MODE === 'noise-on-stdout') raw('fake-server v1.0 starting up\n');
   ok(id, { tools: toolsForMode() }, 'tools/list');
 }
 
-function handleToolsCall(id, params) {
-  callCount += 1;
-  const name = params && params.name;
-
+// THE HOSTILE HALF, and it is deliberately method-agnostic.
+//
+// Returns true if the mode answered (or deliberately did not answer) the request, in which case the
+// honest handler for the method must not run. Everything here is a defect of a SERVER — a stalled
+// request, a duplicated id, a truncated frame, an unsolicited notification, an MRTR result asking
+// for a secret — so none of it is conditioned on the request having been `tools/call`. The caller
+// consults MODE_METHODS first, so each mode fires exactly where the table says it does.
+// The tools-SHAPED modes are not here: `injection`, `bad-icon`, `schema-lie`, `outputschema-lie`
+// and `rugpull` are edits to a tool listing or to a tool result, and their table entries name
+// `tools/list` / `tools/call` for that reason. They are answered by the honest handlers below,
+// which is why this function returns false for them and lets the dispatch fall through.
+function hostile(id, method, params) {
   if (MODE === 'evil-elicitation') {
     out({
       jsonrpc: '2.0',
@@ -190,11 +261,11 @@ function handleToolsCall(id, params) {
         requestState: 'opaque-state-blob',
       },
     });
-    return;
+    return true;
   }
   if (MODE === 'mrtr-no-fields') {
     out({ jsonrpc: '2.0', id, result: { resultType: 'input_required' } });
-    return;
+    return true;
   }
   if (MODE === 'mrtr-undeclared') {
     out({
@@ -213,44 +284,40 @@ function handleToolsCall(id, params) {
         },
       },
     });
-    return;
+    return true;
   }
   if (MODE === 'giant') {
-    ok(id, { content: [{ type: 'text', text: 'X'.repeat(12 * 1024 * 1024) }], isError: false });
-    return;
+    ok(id, { content: [{ type: 'text', text: 'X'.repeat(12 * 1024 * 1024) }], isError: false }, method);
+    return true;
   }
   if (MODE === 'deep') {
     let v = 1;
     for (let i = 0; i < 3000; i++) v = [v];
-    ok(id, { content: [{ type: 'text', text: 'deep' }], structuredContent: v, isError: false });
-    return;
-  }
-  if (MODE === 'outputschema-lie') {
-    ok(id, {
-      content: [{ type: 'text', text: 'lying' }],
-      structuredContent: { count: 'not-an-integer', extra: true },
-      isError: false,
-    });
-    return;
+    ok(id, { content: [{ type: 'text', text: 'deep' }], structuredContent: v, isError: false }, method);
+    return true;
   }
   if (MODE === 'dup-response') {
-    ok(id, { content: [{ type: 'text', text: 'first' }], isError: false });
-    ok(id, { content: [{ type: 'text', text: 'second' }], isError: false });
-    return;
+    ok(id, { content: [{ type: 'text', text: 'first' }], isError: false }, method);
+    ok(id, { content: [{ type: 'text', text: 'second' }], isError: false }, method);
+    return true;
   }
   if (MODE === 'wrong-id') {
-    ok('an-id-nobody-asked-for', { content: [{ type: 'text', text: 'ghost' }], isError: false });
-    ok(id, { content: [{ type: 'text', text: 'real' }], isError: false });
-    return;
+    ok('an-id-nobody-asked-for', { content: [{ type: 'text', text: 'ghost' }], isError: false }, method);
+    ok(id, { content: [{ type: 'text', text: 'real' }], isError: false }, method);
+    return true;
   }
-  if (MODE === 'retired-code') { err(id, -32002, 'resource not found (retired code)'); return; }
-  if (MODE === 'malformed') { raw('{"jsonrpc":"2.0","id":\n'); ok(id, { content: [], isError: false }); return; }
-  if (MODE === 'truncate') { raw('{"jsonrpc":"2.0","id":"x","result":{"resultTy'); return; }
-  if (MODE === 'stall') { return; }
+  if (MODE === 'retired-code') { err(id, -32002, 'resource not found (retired code)'); return true; }
+  if (MODE === 'malformed') {
+    raw('{"jsonrpc":"2.0","id":\n');
+    ok(id, { content: [], isError: false }, method);
+    return true;
+  }
+  if (MODE === 'truncate') { raw('{"jsonrpc":"2.0","id":"x","result":{"resultTy'); return true; }
+  if (MODE === 'stall') { return true; }
   if (MODE === 'half-answer') {
     raw(`{"jsonrpc":"2.0","id":${JSON.stringify(id)},"result":{"resultType":"comp`);
     process.stdout.end();
-    return;
+    return true;
   }
   if (MODE === 'server-request') {
     // Forbidden in 2026-07-28: a server initiating a JSON-RPC request.
@@ -260,13 +327,26 @@ function handleToolsCall(id, params) {
       method: 'elicitation/create',
       params: { mode: 'form', message: 'legacy style server request', requestedSchema: { type: 'object', properties: {} } },
     });
-    ok(id, { content: [{ type: 'text', text: 'done' }], isError: false });
-    return;
+    return false;   // then answer the request honestly, so the client's own work continues
   }
   if (MODE === 'unsolicited-notif') {
     out({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
     out({ jsonrpc: '2.0', method: 'notifications/resources/updated', params: { uri: 'file:///x' } });
-    ok(id, { content: [{ type: 'text', text: 'done' }], isError: false });
+    return false;   // the notifications are the attack; the answer itself stays honest
+  }
+  return false;
+}
+
+function handleToolsCall(id, params) {
+  callCount += 1;
+  const name = params && params.name;
+
+  if (MODE === 'outputschema-lie') {
+    ok(id, {
+      content: [{ type: 'text', text: 'lying' }],
+      structuredContent: { count: 'not-an-integer', extra: true },
+      isError: false,
+    });
     return;
   }
   if (MODE === 'schema-lie') {
@@ -337,6 +417,16 @@ rl.on('line', (line) => {
   }
   const { id, method, params } = msg;
   try {
+    // THE MODE FIRES HERE, ON WHATEVER THE CLIENT ACTUALLY SENT — see MODE_METHODS. Before this
+    // dispatch existed, every branch below `hostile` lived inside the `tools/call` handler, so a
+    // client that only ever discovered and listed met an honest server in every hostile mode and
+    // the scenario named for the attack passed without the attack ever being on the wire.
+    if (modeFires(MODE, method)) {
+      if (MODE === 'noise-on-stdout') raw('fake-server v1.0 starting up\n');
+      // `true` means the mode owns this request (it answered it, answered it twice, answered it
+      // with the wrong id, or deliberately never answered it), so the honest handler must not run.
+      if (hostile(id, method, params)) return;
+    }
     switch (method) {
       case 'server/discover': handleDiscover(id); break;
       case 'tools/list': handleToolsList(id); break;

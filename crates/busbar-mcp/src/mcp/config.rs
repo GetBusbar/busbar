@@ -882,7 +882,7 @@ impl Transport {
     /// addressing an endpoint.
     ///
     /// The ONE question the config grammar has of the transport, asked once and answered on the type
-    /// itself. It is a method rather than a comparison at the call site because `structure-lint.sh`
+    /// itself. It is a method rather than a comparison at the call site because the `structure-lint` gate
     /// bans the core from branching on the transport axis, and because an exhaustive match here is
     /// what makes a third transport a compile error in the one place that must decide.
     pub(crate) fn spawns_child(self) -> bool {
@@ -1213,7 +1213,7 @@ pub(crate) fn verify_policy_for(
 /// decisions and why each one is fail-closed.
 fn validate_endpoint(at: &str, def: &McpServerDefCfg) -> Result<(), String> {
     // `is_some_and` on the value rather than a comparison: this file may not branch on the transport
-    // axis (`structure-lint.sh`), so the transport answers the ONE question the grammar has of it
+    // axis (the `structure-lint` gate), so the transport answers the ONE question the grammar has of it
     // and the grammar never learns which variant answered.
     if !def.transport.is_some_and(Transport::spawns_child) {
         for (key, present) in [

@@ -33,6 +33,30 @@ function varianceMap(record) {
   return m;
 }
 
+// A MISSING ROW IS A ROW NOBODY RAN, AND IT COUNTS.
+//
+// THE DEFECT THIS REPLACES. `missing` was counted, rendered, and then left OUT of the exit-code
+// gate: `blocking = failures + regressions`. A control run of 63 scenarios against a subject run of
+// 15 therefore printed `missing tests : 48` and exited 0 — a differential whose whole claim is
+// "the control proves these scenarios are passable" reporting success while three quarters of them
+// were never put to the subject at all. That is the same false green as an unarmed leg, arriving
+// through the comparison instead of through the run.
+//
+// THE ONE LEGITIMATE MISSING ROW, and it must be DECLARED rather than assumed. A side that did not
+// measure a ROLE cannot have rows for it: the python control has no seam direction, a subject armed
+// only as a server has no CLI.* rows. Both runs already record `roleAudit.selected` — the roles the
+// run actually measured, written by the run itself — so a missing row whose role was not measured
+// by the side that lacks it is EXPLAINED: still listed, still counted separately, not blocking.
+// Anything else blocks. A side with no roleAudit at all (an old report) explains nothing.
+function explainMissing(role, side, roleAudit) {
+  if (!roleAudit || !Array.isArray(roleAudit.selected)) return null;
+  if (roleAudit.selected.includes(role)) return null;
+  const why = (roleAudit.unarmed || []).includes(role)
+    ? `the ${side} run did not ARM the ${role} role`
+    : `the ${side} run was narrowed with --role and did not request ${role}`;
+  return why;
+}
+
 export function compare(controlResults, subjectResults, opts = {}) {
   const control = indexById(controlResults);
   const subject = indexById(subjectResults);
@@ -42,13 +66,21 @@ export function compare(controlResults, subjectResults, opts = {}) {
   const divergences = [];
   const regressions = [];
   const missing = [];
+  const explained = [];
 
   for (const id of ids) {
     const c = control.get(id);
     const s = subject.get(id);
 
-    if (!s) { missing.push({ id, side: 'subject', title: c && c.title }); continue; }
-    if (!c) { missing.push({ id, side: 'control', title: s.title }); continue; }
+    if (!s || !c) {
+      const side = s ? 'control' : 'subject';
+      const present = s || c;
+      const audit = side === 'subject' ? opts.subjectRoleAudit : opts.controlRoleAudit;
+      const reason = explainMissing(present.role, side, audit);
+      const row = { id, side, title: present.title, role: present.role, reason };
+      if (reason) explained.push(row); else missing.push(row);
+      continue;
+    }
 
     // 1. MUST-level failures on the subject, cited.
     for (const a of failedAssertions(s)) {
@@ -109,11 +141,13 @@ export function compare(controlResults, subjectResults, opts = {}) {
       regressions: regressions.length,
       divergences: divergences.length,
       missing: missing.length,
+      explainedMissing: explained.length,
     },
     failures,
     regressions,
     divergences,
     missing,
+    explainedMissing: explained,
   };
 }
 
@@ -126,7 +160,8 @@ export function renderDifferential(report) {
   L.push(`  spec failures : ${report.counts.failures}`);
   L.push(`  regressions   : ${report.counts.regressions}  (control passed, subject did not)`);
   L.push(`  divergences   : ${report.counts.divergences}  (both legal, behaviour differs)`);
-  L.push(`  missing tests : ${report.counts.missing}`);
+  L.push(`  missing tests : ${report.counts.missing}  (ran on one side only, UNEXPLAINED — blocking)`);
+  L.push(`  explained     : ${report.counts.explainedMissing || 0}  (absent because that side did not measure the role)`);
   L.push('');
 
   if (report.failures.length) {
@@ -178,19 +213,31 @@ export function renderDifferential(report) {
 
   if (report.missing.length) {
     L.push('-'.repeat(78));
-    L.push('MISSING  (a test ran on one side only; usually a filter or version mismatch)');
+    L.push('MISSING  (a test ran on ONE SIDE ONLY and nothing explains it. BLOCKING: a scenario');
+    L.push('          the control passed and the subject never ran is not a scenario the subject');
+    L.push('          passed. Arm the role, narrow BOTH runs the same way, or fix the filter.)');
     L.push('-'.repeat(78));
     for (const m of report.missing) {
-      L.push(`  [${m.id}] not present in the ${m.side} run`);
+      L.push(`  [${m.id}] (role ${m.role}) not present in the ${m.side} run`);
+    }
+    L.push('');
+  }
+
+  if (report.explainedMissing && report.explainedMissing.length) {
+    L.push('-'.repeat(78));
+    L.push('EXPLAINED ABSENCES  (that side did not measure the role, and said so in its report)');
+    L.push('-'.repeat(78));
+    for (const m of report.explainedMissing) {
+      L.push(`  [${m.id}] absent from the ${m.side} run: ${m.reason}`);
     }
     L.push('');
   }
 
   L.push('='.repeat(78));
-  const gate = report.counts.failures + report.counts.regressions;
+  const gate = report.counts.failures + report.counts.regressions + report.counts.missing;
   L.push(gate === 0
-    ? 'RESULT: no spec failures and no regressions against the control.'
-    : `RESULT: ${gate} blocking finding(s). See SPEC FAILURES and REGRESSIONS above.`);
+    ? 'RESULT: no spec failures, no regressions, and every scenario ran on both sides.'
+    : `RESULT: ${gate} blocking finding(s). See SPEC FAILURES, REGRESSIONS and MISSING above.`);
   L.push('='.repeat(78));
   return L.join('\n');
 }

@@ -861,3 +861,55 @@ fn the_placebo_fix_would_still_have_been_a_placebo() {
          the same value more carefully"
     );
 }
+
+// ── MOVED HERE FROM crates/busbar-core/src/trust/tests/validate_tests.rs ─────────────────
+//
+// The case below reads THIS crate's production source. It used to live in busbar-core and reach it
+// with `include_str!("../../../../busbar-mcp/src/mcp/...")` — a neutral crate splicing plane source
+// in around the plane ABI, which is the PATH-INCLUDE side channel scripts/plane-purity-lint.sh bans
+// outright, test scope included. Reading its own crate's file from its own crate's test is the same
+// assertion with no side channel: a source scan belongs where the source is.
+
+// ── THE CLASS: A DECISION MADE AT OPEN AND TRUSTED WHILE OPEN ───────────────────────────────────
+//
+// The two tests below are the class test for choke point J. They read the production source of
+// every long-lived response in the tree and require each one to be in exactly one of two states:
+// it RE-RESOLVES its principal, or it FREEZES it and says so beside the bound it is trading on.
+//
+// A source scan and not a behaviour test, deliberately: the hazard is a FIELD — a principal carried
+// into a `'static` future — and a behaviour test can only cover the ways somebody thought to break
+// it. The behavioural half is above, driven against a real registry.
+
+/// `subscriptions/listen` RE-RESOLVES. Its code may not name `GovCtx` or `VirtualKey` at all, which
+/// is the mechanical signature of the defect: the file used to carry `gov: ctx.gov.clone()`, and
+/// that one field was the whole of it.
+///
+/// PROSE IS EXEMPT and must be — the module header explains the defect by naming both types, and
+/// that explanation is the most useful thing in the file. Whole-line comments are stripped and only
+/// the remaining code is judged, the same treatment the lifecycle's own plane-noun scan gets.
+#[test]
+fn the_long_lived_response_holds_no_principal_it_resolved_at_open() {
+    let source = include_str!("../subscribe.rs");
+    let code: String = source
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in ["GovCtx", "gov.clone()"] {
+        assert!(
+            !code.contains(banned),
+            "`{banned}` is back in the CODE of `subscriptions/listen`. A principal resolved at open \
+             and carried into the stream is an identity believed for the whole life of the \
+             response: hold a `trust::validate::Standing` and re-resolve per frame."
+        );
+    }
+    assert!(
+        code.contains("Standing::opened"),
+        "the stream no longer opens a standing permission, so nothing re-resolves its principal"
+    );
+    assert!(
+        code.contains("principal_standing"),
+        "the stream opens a standing permission and never asks it anything (re-asked through the \
+         `EngineHost::principal_standing` host seam, which drives `Standing::still_permitted` core-side)"
+    );
+}

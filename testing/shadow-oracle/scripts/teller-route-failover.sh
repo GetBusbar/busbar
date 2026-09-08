@@ -38,7 +38,7 @@ for p in "$LP" "$AP" "$MP" "$DEADP"; do
 done
 # lane-dead's port is deliberately left with nothing listening -- a connection refused, not a mock.
 
-ORACLE_MOCK_CAPTURE_DIR="$W/egress" python3 "${here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+ORACLE_MOCK_CAPTURE_DIR="$W/egress" python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
 # the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.

@@ -19,7 +19,7 @@
 #
 # Every check appends exactly one TSV row to $LEDGER:
 #
-#     <id> <TAB> PASS|FAIL|SKIP <TAB> <title> <TAB> <detail>
+#     <id> <TAB> PASS|FAIL|SKIP <TAB> <title> <TAB> <detail> <TAB> <version>
 #
 # and NEVER exits on failure. Aggregation happens once, in gate.sh, against the list of ids the
 # contract says MUST be reported (scripts/release-gate/expected-ids.sh). That inversion is the
@@ -54,11 +54,26 @@ mkdir -p "$(dirname "$LEDGER")"
 # Tabs and newlines are stripped from the free-text fields: the ledger is TSV and a check whose
 # detail contains a tab would silently corrupt every downstream column, which is precisely the
 # kind of invisible degradation this file is about.
+#
+# THE FIFTH COLUMN IS THE VERSION THE ROW IS ABOUT, AND IT IS NOT DECORATION.
+#
+# Ledgers arrive at gate.sh as downloaded workflow artifacts merged into one directory by name
+# pattern. Nothing in that path binds a row to the release under test: a leg that resolved a
+# different version (the `resolve` fallback picks "the current latest release" when no version is
+# supplied, so a re-run with a stale input, or a matrix leg that read a different resolve output,
+# reports about a DIFFERENT release), or a ledger left behind in $RUNNER_TEMP by an earlier local
+# run, contributed rows that gate.sh happily counted as evidence for THIS version. Every row now
+# carries the version its check was invoked for, gate.sh counts only rows that name the version it
+# was asked to gate, and a row that names anything else (or nothing) is reported and is RED — a
+# check that verified some other release is not a check that verified this one.
 record() {
   local id="$1" status="$2" title="$3" detail="${4:-}"
+  # Read at CALL time, not at source time: lib.sh is sourced before each check script assigns
+  # VERSION from its own argv, and the value that matters is the one the check actually ran against.
+  local ver="${VERSION:-}"
   title="$(printf '%s' "$title" | tr '\t\n' '  ')"
   detail="$(printf '%s' "$detail" | tr '\t\n' '  ')"
-  printf '%s\t%s\t%s\t%s\n' "$id" "$status" "$title" "$detail" >> "$LEDGER"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$status" "$title" "$detail" "$ver" >> "$LEDGER"
   case "$status" in
     PASS) printf 'PASS  %-46s %s\n' "$id" "$title" ;;
     FAIL)

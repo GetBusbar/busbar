@@ -315,7 +315,7 @@ fn approval_is_per_capability_on_one_pinned_server() {
 //
 // They defended a live invariant — THERE IS EXACTLY ONE TRUST COMPARISON — through a dead medium:
 // their subject was a path, and `mcp/` is being rebuilt. Both halves now live in
-// `scripts/structure-lint.sh`, which is file-agnostic and goes RED rather than quiet when its
+// the `structure-lint` gate, which is file-agnostic and goes RED rather than quiet when its
 // subject moves:
 //
 //   * the NEGATIVE half is choke point `I-trust-serve-derivation`, which bans those same raw-field

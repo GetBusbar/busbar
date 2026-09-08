@@ -15,15 +15,16 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 96,
-  "unproven": 7,
+  "mapped": 102,
+  "unproven": 1,
   "unmapped": 0,
+  "gap": 0,
   "checks_by_kind": {
-   "gate": 12,
-   "lint": 5,
-   "oracle-cell": 49,
-   "oracle-family": 4,
-   "test": 426
+   "gate": 13,
+   "lint": 4,
+   "oracle-cell": 58,
+   "oracle-family": 5,
+   "test": 453
   }
  },
  "owner_decisions": {
@@ -867,8 +868,8 @@
    "surface": "boot warnings",
    "binding": "none beyond 1.5.5's 228 unless a 1.6.0-additive key (`data_dir`, `peers`, `keyset_ref`, `wal_capacity`, …) is written",
    "inventory": "config",
-   "note": "The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: the binding is a COUNT, and it is now counted. crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did migrates and validates each of the 69 shipped configs in tests/migration-corpus/from-tags and compares the warning lines the current binary emits, per config, against the number the PUBLISHED 1.5.5 binary emitted on the same config -- read out of the pinned golden's own config.migrate|<tag>|validate-migrated recordings, so the baseline is measured and not typed in. 1.5.5 warned 69 times over the 69 configs; this binary warns fewer, having retired the BUSBAR_PROVIDERS deprecation, and a warning that APPEARS is reported with its config and its text. The absence tripwire it used to cite is kept: it proves a different, still-wanted thing about metric series.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -883,10 +884,17 @@
      "proves": "a 1.5.5-shaped config (no data_dir) exposes no busbar_ledger_/journal_/hold_/wal_ series and logs no keyset / data-dir / WAL / record-rate line",
      "source": "hand",
      "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "the COUNT itself: warning lines per shipped config, current binary vs the number the published 1.5.5 binary emitted on the same config, read from the pinned golden recordings"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's."
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:ops.scrape|metrics|no-ledger-series, test:no_ledger_series_and_no_keyset_lines_without_data_dir, test:crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did"
   },
   {
    "id": "PB-18",
@@ -1284,7 +1292,7 @@
   {
    "id": "PB-27",
    "surface": "zero-token ends",
-   "binding": "a response bills ZERO tokens (located and accrued figures internal evidence only) on every 1.5.5 not-billed arm: a stream ending with a terminal error signal (`terminal_error != None`); an SSE transport cut after the first byte (`stream_failed = true`); a buffered cross-protocol 2xx that fails after the upstream 2xx (transport failed mid-read → 502, over the translate cap → 500, untranslatable → 500); the `max_requests` lane unit is refunded on the pre-first-byte cut and the client disconnect, NOT on the post-first-byte transport cut; a client disconnect bills the partial tokens and refunds the LANE `max_requests` unit; the flat fee (`billable_requests`) is KEPT, as on every exit after 2xx headers were relayed (`ingress/mod.rs:574-579` refunds only on a non-2xx client status) — each arm one cell",
+   "binding": "a response bills ZERO tokens (located and accrued figures internal evidence only) on every 1.5.5 not-billed arm: a stream ending with a terminal error signal (`terminal_error != None`); an SSE transport cut after the first byte (`stream_failed = true`); a buffered cross-protocol 2xx that fails after the upstream 2xx (transport failed mid-read → 502, over the translate cap → 500, untranslatable → 500); the `max_requests` lane unit is refunded on the pre-first-byte cut, on the post-first-byte cut of a NON-SSE body, and on the client disconnect, and NOT on the post-first-byte cut of an SSE body — the discriminator is the content type, never `first_byte_sent`, because `FirstByteBody`'s `else` arm carries the pre-first-byte cut and the non-SSE mid-body cut together and refunds ungated on `had_first`, while the SSE arm touches `budget_spent` nowhere and sets `ended` so the Drop refund is suppressed too (proxy-hooks §3 :407 \"before first byte (or non-SSE mid-body) … budget refunded\"; governance 3.8.10 :319 \"pre-first-byte / mid-stream transport error\"; the §4 no-refund row :435 is the SSE row, and §4 carries no non-SSE post-first-byte row at all); a client disconnect bills the partial tokens and refunds the LANE `max_requests` unit; the flat fee (`billable_requests`) is KEPT, as on every exit after 2xx headers were relayed (`ingress/mod.rs:574-579` refunds only on a non-2xx client status) — each arm one cell",
    "inventory": "dialects; proxy-hooks (:430-436; `engine/mod.rs:329-378`, `:552-589`, `response_body.rs:283-345`); governance",
    "status": "mapped",
    "checks": [
@@ -1339,8 +1347,15 @@
     },
     {
      "kind": "test",
-     "ref": "test_truncated_body_does_not_refund_budget",
-     "proves": "the post-first-byte cut does not refund the lane unit",
+     "ref": "test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit",
+     "proves": "the post-first-byte cut refunds the lane unit on a NON-SSE body and does not on an SSE body",
+     "source": "curated",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "test_streaming_nonsse_mid_body_transport_error_records_transient",
+     "proves": "the non-SSE post-first-byte cut records its compensating transient and leaves the refund standing",
      "source": "curated",
      "status": "mapped"
     },
@@ -1367,7 +1382,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|after-upstream-down, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_truncated_body_does_not_refund_budget, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
+   "verdict_detail": "oracle-cell:billing|key-usage|after-upstream-down, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit, test:test_streaming_nonsse_mid_body_transport_error_records_transient, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
   },
   {
    "id": "PB-28",
@@ -1872,7 +1887,7 @@
    "surface": "ABI-2 store adapter fallback",
    "binding": "`call_with_legacy_default` verbatim: only `TransportErrorKind::Unsupported` opens a default, on `append_audit` / `list_audit` / `list_audit_tail` / `list_denylist`; everything else propagates",
    "inventory": "plugins-stores",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -1915,8 +1930,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:every_other_failure_shape_propagates_on_every_verb"
   },
   {
    "id": "PB-38",
@@ -2394,28 +2409,42 @@
   {
    "id": "PB-48",
    "surface": "stall sweep on `http`/`sse`",
-   "binding": "the `max_unit_duration` sweep alarms only; the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL reqwest deadline (default 300 s, `main.rs:3179-3181`); there is no idle timer",
+   "binding": "the `max_unit_duration` sweep alarms only (`busbar-kernel/src/tick.rs:141`, `Sweep::AlarmOnly`, which `sweep_outcome`/`sweep_settle` end nothing on); the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL deadline (default 300 s, `busbar-substrate/src/config/limits.rs:22`), armed once at send start and covering head and body (`busbar-llm/src/engine/attempt/send.rs:63-76`; at the tag this was reqwest's client-level total timeout, re-provided at the call site by the owned-client cutover); there is no idle timer",
    "inventory": "proxy-hooks, ops",
-   "note": "max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: max_unit_duration DOES exist -- it is the fourth parameter of `sweep()` at crates/busbar-kernel/src/tick.rs:141, and Sweep::AlarmOnly is the verdict it returns when the protocol declares no idle bound. The old note was wrong on the fact and the row was carried unproven on it. The sweep half is compared by crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, which drives sweep() past max_unit_duration with idle_bound_applies false, gets AlarmOnly, and shows sweep_settle takes no hold and ends no unit on it; nothing in crates/ calls sweep() on a production path at all, so the alarm is the most that can happen. The stream half is compared on the SHIPPED proxy path by crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier: the same black-holed upstream is cut at 7 s under one configuration and at 23 s under another, so the timer that fires is the operator's total deadline and no idle timer exists to fire first. The binding's `main.rs:3179-3181` anchor was dead and is amended in Appendix B to busbar-substrate/src/config/limits.rs:22 and busbar-llm/src/engine/attempt/send.rs:63-76.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "a_slow_unit_is_not_a_lost_one",
+     "ref": "crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one",
      "proves": "the max_unit_duration sweep on a protocol with no idle bound returns AlarmOnly, and settling an AlarmOnly verdict takes no hold and ends no unit; the kernel half of the binding (the total egress deadline is the engine's)",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_lost_task_is_settled_within_one_tick",
+     "ref": "crates/busbar-kernel/tests/recovery_and_ticks.rs::a_lost_task_is_settled_within_one_tick",
      "proves": "the sweep ends a unit only when the drop guard MARKED it, never merely for being silent",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier",
+     "proves": "the stream half of the binding on the SHIPPED proxy path: one black-holed upstream, two configurations of limits.upstream_request_timeout_secs, cut at exactly 7 s under one and exactly 23 s under the other. The timer that fires is the operator's total deadline (it tracks a number it would not know if it were a floor, a default or an interval of the runtime's own), and there is no idle timer, since the upstream is silent from the first instant and anything counting that silence would fire at the same moment in both runs",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::the_total_deadline_the_stream_rides_defaults_to_five_minutes",
+     "proves": "the deadline the binding names defaults to the 300 s it names",
      "source": "hand",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true."
+   "verdict": "PASS",
+   "verdict_detail": "test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_lost_task_is_settled_within_one_tick, test:crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier, test:crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::the_total_deadline_the_stream_rides_defaults_to_five_minutes"
   },
   {
    "id": "PB-49",
@@ -2622,7 +2651,7 @@
    "checks": [
     {
      "kind": "lint",
-     "ref": "scripts/tracing-lint.sh",
+     "ref": "xtask/src/gates/tracing.rs",
      "proves": "every instrument span declares an explicit level",
      "source": "curated",
      "status": "mapped"
@@ -2636,7 +2665,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "lint:scripts/tracing-lint.sh, oracle-family:cli"
+   "verdict_detail": "lint:xtask/src/gates/tracing.rs, oracle-family:cli"
   },
   {
    "id": "PB-55",
@@ -2753,40 +2782,75 @@
    "surface": "admitted units and money",
    "binding": "on every 1.5.5-shaped deployment an ADMITTED `http`/`sse` unit is never ended for money: no `Aborted(Kernel { OverBudget })`, no `Aborted(Kernel { OverdraftCeiling })`; the overdraft ceiling is unbounded (flag-only) on every Migration-sealed bucket; `OverdraftCeiling` and `StaleSlice` are never refusal reasons on a 1.5.5 config; token overshoot is bounded only by the in-flight admitted requests, exactly as at the tag",
    "inventory": "governance; proxy-hooks",
-   "note": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a Decision::refuse at StepName::Admit. The row was carried unproven on a note that was wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT OCCUR, which no behavioural test can settle, so it is settled on the shipped VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and contains no money reason; the set it constructs inside `Refusal::new` contains OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named in one production file, the module defining the rule, so no shipped path branches on the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The behavioural half is where the behaviour is: admit.rs's over_budget_refuses_with_no_charge_and_nothing_to_refund and meter.rs's a_spend_past_the_reservation_is_carried_out_as_an_overdraft.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "running_past_the_reservation_posts_the_overdraft_rather_than_refusing",
+     "ref": "crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing",
      "proves": "an admitted unit that spends past its reservation runs to its end and posts the full amount flagged Overdraft; the loop has no path that ends an admitted unit for money",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "running_out_mid_unit_carries_rather_than_refusing",
+     "ref": "crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing",
      "proves": "the overdraft rule below the ceiling is continue-and-carry, and a total window is continue-with-no-carry; neither refuses",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "only_the_dimensions_that_accrue_mid_unit_can_overdraw",
+     "ref": "crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw",
      "proves": "requests and concurrency are decided at the door, so only nano-units and class quantities can end a unit owing anything",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "the_leases_go_back_on_every_end_whatever_it_was",
+     "ref": "crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was",
      "proves": "the exit path releases the unit's concurrency leases on every end, so no admitted unit is held open by an accounting failure",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason",
+     "proves": "the set of reasons the production tree constructs inside Abort::Kernel is exactly {ClientGone, Drain}: there is no Aborted(Kernel { OverBudget }) and no Aborted(Kernel { OverdraftCeiling }) to be had, and a third abort added tomorrow is named by this scan rather than going unnoticed",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with",
+     "proves": "the set of reasons the production tree constructs inside Refusal::new contains OverBudget -- money refuses at a door, which is the binding's positive half and the scan's non-vacuity -- and contains neither OverdraftCeiling nor StaleSlice",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on",
+     "proves": "Overdraft::Ceiling is named in exactly one production file, the module that defines the rule, so no shipped path branches on the ceiling; and KernelVerb::SetOverdraftCeiling carries no payload anywhere in the tree -- unbounded and flag-only, as the binding says",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/unit/tests/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund",
+     "proves": "the behavioural half on the http/sse plane's own admission path: an over-budget request is a Decision::refuse at StepName::Admit carrying ReasonCode::OverBudget, charging nothing and leaving the ledger untouched -- a door, not an end",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/unit/tests/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft",
+     "proves": "the same plane's ADMITTED unit that spends past its reservation carries the excess out as an overdraft on the hold rather than being ended for it",
      "source": "hand",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested."
+   "verdict": "PASS",
+   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar-llm/src/unit/tests/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund, test:crates/busbar-llm/src/unit/tests/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft"
   },
   {
    "id": "PB-59",
@@ -2886,40 +2950,61 @@
    "surface": "chunked bodies",
    "binding": "a request body is accepted up to `request_body_max_bytes` (default 32 MiB, ceiling 1 GiB) regardless of chunk count; `MAX_NEEDMORE_FRAMES` never applies to body spooling",
    "inventory": "config",
-   "note": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: MAX_NEEDMORE_FRAMES is crates/busbar-contract/src/bounded.rs:41 and the pump reads it at crates/busbar-kernel/src/pump.rs:128, where the run of consecutive \"not yet\" answers is kept ON THE SESSION SLOT -- so `Scheduler::ask_again(None)` is the `None => false` arm, and a transport with no session has no run to count. crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session reads SESSION off the SHIPPED HttpTransport and SseTransport (both false) and drives four times the ceiling of NeedMore frames through the pump with no session in hand, and ::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count spools the SAME byte cap twice -- once whole, once one byte per chunk, 256 times the frame ceiling in chunks -- and gets the same SpillBudget refusal on the same byte, never Stalled.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count",
+     "ref": "crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session",
+     "proves": "the SHIPPED HttpTransport and SseTransport both declare SESSION = false, so the pump is handed no session slot and `Scheduler::ask_again` takes its `None => false` arm: four times MAX_NEEDMORE_FRAMES consecutive NeedMore frames still Wait on both transports, and the frame ceiling is unreachable rather than merely un-hit",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/body_chunk_bounds.rs::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count",
+     "proves": "the same configured request_body_max_bytes refuses on the same byte whether the body arrives whole or one byte per chunk over 256 times MAX_NEEDMORE_FRAMES chunks; the refusal reason is SpillBudget and never Stalled",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/body_chunk_bounds.rs::the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_ones",
+     "proves": "the knob the binding names is the operator's limits.request_body_max_bytes, at the default 32 MiB and hard ceiling 1 GiB the binding states",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-kernel/tests/table_and_pump.rs::a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count",
      "proves": "a body arriving in four thousand chunks is spooled and opens its unit; the only bound applied is the byte budget, and the frame bound is never consulted",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "the_spill_budget_refuses_rather_than_growing",
+     "ref": "crates/busbar-kernel/tests/table_and_pump.rs::the_spill_budget_refuses_rather_than_growing",
      "proves": "the spool's one refusal is the node-global byte budget, counted in actual bytes",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved",
+     "ref": "crates/busbar-kernel/tests/table_and_pump.rs::a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved",
      "proves": "a declared pointer is never read off a truncated prefix; the unit opens when the bytes holding it have arrived",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves",
+     "ref": "crates/busbar-grammar/tests/json_scanner.rs::a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves",
      "proves": "a body over a mebibyte whose lane key is serialised last resolves byte-identically",
      "source": "hand",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap."
+   "verdict": "PASS",
+   "verdict_detail": "test:crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session, test:crates/busbar/tests/body_chunk_bounds.rs::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count, test:crates/busbar/tests/body_chunk_bounds.rs::the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_ones, test:crates/busbar-kernel/tests/table_and_pump.rs::a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count, test:crates/busbar-kernel/tests/table_and_pump.rs::the_spill_budget_refuses_rather_than_growing, test:crates/busbar-kernel/tests/table_and_pump.rs::a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved, test:crates/busbar-grammar/tests/json_scanner.rs::a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves"
   },
   {
    "id": "PB-62",
@@ -3379,7 +3464,7 @@
    "surface": "documented behaviour",
    "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one cell family (`documented-vs-actual`)",
    "inventory": "ops",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-family",
@@ -3390,21 +3475,21 @@
     },
     {
      "kind": "gate",
-     "ref": "qa/documented-claims.json",
+     "ref": "scripts/documented-claims-check.sh",
      "status": "mapped",
      "source": "hand",
-     "proves": "the full 56-claim ledger: `cell` for every testable claim (with its cell id(s)), `prose` with a one-line reason for the 23 claims not testable through the binary — nothing silently dropped"
+     "proves": "the 27 README and 29 CHANGELOG documented-behaviour claims: every claim is pinned by a shadow-oracle cell the golden RECORDED or excused in writing as prose, the claim run for each document is complete and contiguous, the counts are re-derived rather than trusted, and both CONTRADICTED rows stay flagged, cell-pinned and code-wins. Reads qa/documented-claims.json, which is the register the gate asserts, not a gate itself."
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: gate:qa/documented-claims.json (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing)"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-family:documented, gate:scripts/documented-claims-check.sh"
   },
   {
    "id": "PB-72",
    "surface": "inventory precedence for bindings",
    "binding": "where a binding paraphrases an inventory row, the row (and the code at the tag behind it) wins; a binding found to misread its row is corrected, never the row — the round-3 corrections to PB-1, PB-4, PB-22, PB-26, PB-35, PB-38, PB-39, PB-52, PB-57 are the precedent",
    "inventory": "1.5.5-BEHAVIOUR precedence",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "lint",
@@ -3413,8 +3498,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "lint:scripts/inventory-ref-lint.py"
+   "verdict": "FAIL",
+   "verdict_detail": "UNPROVEN: nothing this binding cites compares anything today -- lint:scripts/inventory-ref-lint.py"
   },
   {
    "id": "PB-73",
@@ -3460,14 +3545,14 @@
     },
     {
      "kind": "lint",
-     "ref": "scripts/response-header-lint.sh",
+     "ref": "xtask/src/gates/response_header.rs",
      "proves": "every injected response header is an opt-in advanced.response_headers toggle from one site",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled, test:route_policy_headers_present_only_when_both_gates_open, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:scripts/response-header-lint.sh"
+   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled, test:route_policy_headers_present_only_when_both_gates_open, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:xtask/src/gates/response_header.rs"
   },
   {
    "id": "PB-74",
@@ -3828,14 +3913,14 @@
     },
     {
      "kind": "lint",
-     "ref": "scripts/blocking-ffi-lint.sh",
+     "ref": "xtask/src/gates/blocking_ffi.rs",
      "proves": "every plugin transport call is made from a blocking context",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline, test:dlopen_slow_gate_hits_the_deadline, test:dlopen_plugin_panic_is_fail_closed_err, lint:scripts/blocking-ffi-lint.sh"
+   "verdict_detail": "test:hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline, test:dlopen_slow_gate_hits_the_deadline, test:dlopen_plugin_panic_is_fail_closed_err, lint:xtask/src/gates/blocking_ffi.rs"
   },
   {
    "id": "PB-82",
@@ -4031,7 +4116,7 @@
    "checks": [
     {
      "kind": "lint",
-     "ref": "scripts/kernel-token-wire-purity-lint.sh",
+     "ref": "xtask/src/gates/kernel_token_wire_purity.rs",
      "status": "mapped",
      "source": "hand"
     },
@@ -4044,7 +4129,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "lint:scripts/kernel-token-wire-purity-lint.sh, gate:scripts/construction-gate.sh"
+   "verdict_detail": "lint:xtask/src/gates/kernel_token_wire_purity.rs, gate:scripts/construction-gate.sh"
   },
   {
    "id": "PB-87",
@@ -4226,7 +4311,7 @@
    "surface": "1.6.0-only store ops on an ABI-2 store",
    "binding": "the ABI-2 adapter answers every 1.6.0-only operation (`append_batch`, `record_put/get/scan`, `session_*`, `reserve/release`, `heads`, keyset seal) with a NODE-LOCAL in-memory shim (consistent with PB-13: the keyset is ephemeral and unused on such a deployment) — never an error, never a log line, never a boot refusal — so boot and serving on a 1.5.5 sqlite/postgres/mysql/valkey store are byte-identical; the journal on such a deployment is memory-buffered exactly as PB-13 states for `data_dir` unset; durability = the legacy rows' durability, the 1.5.5 rule",
    "inventory": "plugins-stores; governance",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -4269,8 +4354,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:a_real_answer_passes_through_untouched"
   },
   {
    "id": "PB-94",
@@ -4616,7 +4701,7 @@
      "ref": "admin.ops",
      "status": "mapped",
      "cites": 44,
-     "family_size": 234,
+     "family_size": 240,
      "source": "cells.json why"
     },
     {

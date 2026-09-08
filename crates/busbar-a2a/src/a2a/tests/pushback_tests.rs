@@ -1002,3 +1002,44 @@ fn every_push_config_verb_mirrors_and_nothing_else_does() {
     assert_eq!(pushback::mirrored_verb(LocalVerb::ListTasks), None);
     assert_eq!(pushback::mirrored_verb(LocalVerb::Subscribe), None);
 }
+
+/// **THE MAC COMPARE IS THE TREE'S ONE CONSTANT-TIME PRIMITIVE, asserted by CONSTRUCTION.**
+///
+/// A timing property cannot be measured honestly in a unit test — a wall-clock assertion over two
+/// `==` calls is noise on a loaded CI box, and the green it produces would be worth nothing. So this
+/// asserts the thing that actually decides the property: that the comparison in `task_of` is spelled
+/// `busbar_api::constant_time_eq` and not `==`, read off the source of the function that performs
+/// it.
+///
+/// It matters here more than at most call sites. This endpoint is `RouteAuth::None`; the party
+/// calling it is a fronted backend agent holding no busbar key, and the MAC is the only thing
+/// standing between it and a task. The attacker controls the presented value and can measure the
+/// answer, which is the exact shape a byte-at-a-time comparison turns into a MAC oracle — forge the
+/// first byte, keep what got slower, repeat.
+///
+/// The `==` needle is asserted absent as well as the helper present, because a fix that ADDED the
+/// helper beside a leftover fast-path compare would pass a presence-only check while leaking exactly
+/// as much as before.
+#[test]
+fn the_callback_mac_is_compared_in_constant_time() {
+    let source = include_str!("../pushback.rs");
+    let body = source
+        .split_once("fn task_of(")
+        .expect("`task_of` is the function that verifies a presented token")
+        .1
+        .split_once("\n}\n")
+        .expect("the function ends")
+        .0;
+
+    assert!(
+        body.contains("busbar_api::constant_time_eq"),
+        "the presented MAC is no longer compared through the tree's one constant-time primitive; \
+         on an unauthenticated endpoint whose caller controls the value and can time the answer, \
+         that is a MAC oracle"
+    );
+    assert!(
+        !body.contains("presented_mac =="),
+        "a variable-time compare of the presented MAC sits beside the constant-time one, which \
+         leaks exactly as much as having only the variable-time one"
+    );
+}

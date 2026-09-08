@@ -90,6 +90,28 @@ fn a_negative_configured_fee_is_clamped_at_resolve_and_can_never_credit_a_bucket
     );
 }
 
+/// THE PROJECTION PUTS EACH CONFIGURED RATE IN ITS OWN SLOT.
+///
+/// Every other call site in the tree passes `0.0` for both cache arguments, and the conversion
+/// agreement test in the cost crate reads only `.input` — so all four slots could be wired to the
+/// same argument, or the two cache slots transposed, and nothing in the workspace would notice.
+/// Four distinct rates, so any swap between any two of them moves an answer: cache-tier tokens
+/// would otherwise be judged at the door against a rate the ledger does not bill them at, which is
+/// the whole reason the two cache tiers are separate fields.
+#[test]
+fn each_configured_rate_lands_in_its_own_slot() {
+    assert_eq!(
+        RateNanos::from_micros_per_token(1.0, 2.0, 3.0, 4.0),
+        RateNanos {
+            input: 1_000,
+            output: 2_000,
+            cache_read: 3_000,
+            cache_write: 4_000,
+        },
+        "a transposed or duplicated slot bills a cache tier at another tier's rate"
+    );
+}
+
 /// Ordinary figures are untouched by the change: the fold is still an exact sum of four
 /// multiply-adds everywhere below the top of the range.
 #[test]

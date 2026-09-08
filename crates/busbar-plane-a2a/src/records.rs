@@ -23,7 +23,7 @@
 //! | keeps the caller's push configurations in a process-local map | a `push_config` leg, so a restart no longer forgets them |
 //! | keeps a callback's pinned address in a process-local map | a `pin` leg, for the same reason |
 //! | keeps a mapping from the identifier this node minted to the one the agent minted | a `tasks` `get`; the mapping is a member of the row, not a second store |
-//! | redeems a one-time callback token | a `push_config` leg, operation `redeem` |
+//! | authorises a callback token | a `push_config` leg, operation `verify_live`, and a `revoke` leg once the task is terminal |
 //!
 //! And the five reaches that are NOT records, because they were never this plane's to hold:
 //!
@@ -80,11 +80,39 @@ pub const OP_APPEND: &str = "append";
 /// Remove one record.
 pub const OP_DELETE: &str = "delete";
 
-/// Spend a one-time token, exactly once, and say whether this caller is the one who spent it.
-pub const OP_REDEEM: &str = "redeem";
+/// Ask whether a callback token is STILL LIVE, and spend nothing asking.
+///
+/// The verb a push callback is authorised by, and deliberately not a `redeem`. The token busbar
+/// registers with a backend names ONE TASK and is presented once per state that task moves through —
+/// `working`, then `input-required`, then `completed` — so it is a capability that lasts as long as
+/// the work does, not a one-time nonce. A `redeem` gets that wrong twice over: spent on the first
+/// callback it refuses the rest of an honest sequence, and answered `true` every time it accepts a
+/// captured one forever.
+///
+/// LIVE means all three of: the configuration is still there, the task it names has not reached a
+/// terminal state, and the task's deadline has not passed. The moment any of those stops holding the
+/// token is dead and every later callback carrying it is refused.
+pub const OP_VERIFY_LIVE: &str = "verify_live";
+
+/// Revoke a callback token, so nothing presenting it is authorised again.
+///
+/// Its own operation rather than a `delete`, because the two say different things to an operator
+/// reading the plan: a `delete` is the caller withdrawing a configuration it registered, and this is
+/// busbar retiring a capability whose task has finished. They happen at different moments for
+/// different reasons, and folding them together would make the revocation invisible in the one place
+/// the push-event plan is read.
+pub const OP_REVOKE: &str = "revoke";
 
 /// Every operation any of this plane's schemas declares.
-pub const OPERATIONS: &[&str] = &[OP_GET, OP_PUT, OP_SCAN, OP_APPEND, OP_DELETE, OP_REDEEM];
+pub const OPERATIONS: &[&str] = &[
+    OP_GET,
+    OP_PUT,
+    OP_SCAN,
+    OP_APPEND,
+    OP_DELETE,
+    OP_VERIFY_LIVE,
+    OP_REVOKE,
+];
 
 /// Which operations one schema declares.
 ///
@@ -95,66 +123,19 @@ pub fn operations_for(schema: RecordSchemaId) -> &'static [&'static str] {
     match schema.as_str() {
         s if s == SCHEMA_TASK.as_str() => &[OP_GET, OP_PUT, OP_SCAN, OP_DELETE],
         s if s == SCHEMA_TASK_EVENT.as_str() => &[OP_APPEND, OP_SCAN],
-        s if s == SCHEMA_PUSH_CONFIG.as_str() => &[OP_GET, OP_PUT, OP_SCAN, OP_DELETE, OP_REDEEM],
+        s if s == SCHEMA_PUSH_CONFIG.as_str() => &[
+            OP_GET,
+            OP_PUT,
+            OP_SCAN,
+            OP_DELETE,
+            OP_VERIFY_LIVE,
+            OP_REVOKE,
+        ],
         s if s == SCHEMA_PIN.as_str() => &[OP_GET, OP_PUT, OP_DELETE],
         _ => &[],
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{operations_for, OPERATIONS, RECORD_SCHEMAS, SCHEMA_TASK, SCHEMA_TASK_EVENT};
-
-    /// The two durable schemas carry the codec's own record kind names.
-    ///
-    /// If the codec renames a kind, this goes red rather than the plane quietly writing records
-    /// under a name nothing reads back.
-    #[test]
-    fn the_durable_schemas_are_the_codecs_own_kinds() {
-        assert_eq!(SCHEMA_TASK.as_str(), busbar_a2a_codec::record::KIND_TASK);
-        assert_eq!(
-            SCHEMA_TASK_EVENT.as_str(),
-            busbar_a2a_codec::record::KIND_TASK_EVENT
-        );
-    }
-
-    /// Every schema declares at least one operation, and every operation it declares is a known one.
-    #[test]
-    fn every_schema_declares_known_operations() {
-        for schema in RECORD_SCHEMAS {
-            let ops = operations_for(*schema);
-            assert!(!ops.is_empty(), "{schema} declares no operation");
-            for op in ops {
-                assert!(OPERATIONS.contains(op), "{schema} declares unknown op {op}");
-            }
-        }
-    }
-
-    /// A schema this plane does not declare has no operations at all.
-    #[test]
-    fn an_undeclared_schema_declares_nothing() {
-        let stranger = busbar_contract::ids::RecordSchemaId::new("ledger");
-        assert!(operations_for(stranger).is_empty());
-    }
-
-    /// The append-only history is append-and-read, never overwritten.
-    ///
-    /// The event rows are hash-linked, and a chain whose middle can be replaced is not a chain.
-    #[test]
-    fn the_history_cannot_be_overwritten() {
-        let ops = operations_for(SCHEMA_TASK_EVENT);
-        assert!(!ops.contains(&super::OP_PUT));
-        assert!(!ops.contains(&super::OP_DELETE));
-    }
-
-    /// No schema name is repeated.
-    #[test]
-    fn no_schema_is_declared_twice() {
-        for (i, schema) in RECORD_SCHEMAS.iter().enumerate() {
-            assert!(
-                !RECORD_SCHEMAS[..i].iter().any(|s| s == schema),
-                "{schema} is declared twice"
-            );
-        }
-    }
-}
+#[path = "tests/records.rs"]
+mod tests;

@@ -54,10 +54,12 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+pub mod governed;
 pub mod meta;
 pub mod oneshot;
 pub mod plane;
 pub mod session;
+pub mod tools;
 pub mod twilio;
 pub mod ulaw;
 

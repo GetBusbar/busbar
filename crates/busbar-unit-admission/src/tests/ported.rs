@@ -16,6 +16,46 @@
 
 use super::*;
 
+/// `retry_after` is a SECONDS-TO-WAIT hint, not the raw epoch the window rolls at, and not a
+/// constant: it is the distance from `now` to the window's roll.
+///
+/// `now = 1_700_000_000` sits 20 seconds into its minute (the minute started at 1_699_999_980, and
+/// ends at 1_700_000_040), so a refusal at that instant must carry exactly 40 — no more, no less.
+/// A regression that drops the `now` subtraction would carry the raw epoch (1_700_000_040, nine
+/// digits, not the two-digit hint an integrator sleeps on); a regression to a constant would carry
+/// something other than 40 regardless of where in the minute the refusal landed.
+#[test]
+fn retry_after_is_the_seconds_remaining_in_the_window_not_the_epoch_it_ends_at() {
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 1, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_retry", Some("g"));
+    let now = 1_700_000_000;
+    assert_eq!(
+        now % 60,
+        20,
+        "now must sit exactly 20s into its minute for this pin to hold"
+    );
+    d.try_admit(&p, &c, "", now).expect("1st");
+    match d.try_admit(&p, &c, "", now).unwrap_err() {
+        Blocked::Limit { retry_after, .. } => {
+            assert_eq!(
+                retry_after,
+                Some(40),
+                "40 seconds remain until the minute containing `now` rolls"
+            );
+        }
+        other => panic!("expected a Limit refusal, got {other:?}"),
+    }
+}
+
 /// Requests per MINUTE: N admissions charge and pass; N+1 in the same window is refused naming
 /// (group, requests, minute) with a retry hint to the minute roll; the NEXT window admits again.
 #[test]
@@ -564,6 +604,83 @@ fn key_with_no_group_is_unlimited() {
     assert_eq!(other, 0);
 }
 
+/// The fail-closed twin of a refund: a request whose chain could not be resolved still charged
+/// nothing, so [`Door::refund_unchained`] refunds the principal's own bucket defensively — it must
+/// reach the SAME bucket a normal charge on an unchained principal would (`key_with_no_group_is_
+/// unlimited`, above, shows that bucket is just the principal id under the all-time window), and it
+/// must floor at zero rather than underflow when there is nothing to give back.
+///
+/// This pins the function itself (`decide.rs:503`), not any wiring onto it — nothing in the crate's
+/// public seam calls it today.
+#[test]
+fn refund_unchained_reaches_the_principals_own_bucket_and_floors_at_zero() {
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[("g", group_cfg(None, true, Vec::new()))]);
+    let c = chain(&t, "vk_unchained", None); // no group = the request lands on the bare principal id
+    let now = 1_700_000_000;
+    d.try_admit(&p, &c, "", now).expect("no group = no caps");
+    assert_eq!(
+        d.cells()
+            .snapshot("vk_unchained")
+            .expect("the charge landed")
+            .billable_requests,
+        1
+    );
+
+    d.refund_unchained("vk_unchained", now);
+    assert_eq!(
+        d.cells()
+            .snapshot("vk_unchained")
+            .expect("cell")
+            .billable_requests,
+        0,
+        "the fee came back off the same bucket the charge reached"
+    );
+
+    // Nothing left to give back: a second refund is a no-op, not an underflow.
+    d.refund_unchained("vk_unchained", now);
+    assert_eq!(
+        d.cells()
+            .snapshot("vk_unchained")
+            .expect("cell")
+            .billable_requests,
+        0,
+        "a refund past zero floors rather than wraps"
+    );
+}
+
+/// [`Door::record_usage_unchained`] is the accrual half of the same fail-closed pair: tokens for a
+/// request whose chain could not be resolved degrade onto the principal's own bucket rather than
+/// being lost. An all-zero report is still a no-op (mirroring `record_usage`), and it ledgers under
+/// the all-time window the way every other unchained access does.
+///
+/// This pins the function itself (`decide.rs:549`), not any wiring onto it.
+#[test]
+fn record_usage_unchained_ledgers_onto_the_principals_bucket_and_ignores_an_all_zero_report() {
+    let d = door();
+    let now = 1_700_000_000;
+
+    // Nothing to ledger: no cell is created at all.
+    d.record_usage_unchained("vk_unchained2", "m", &toks(0, 0), now);
+    assert!(
+        d.cells().snapshot("vk_unchained2").is_none(),
+        "an all-zero report must not create a cell"
+    );
+
+    d.record_usage_unchained("vk_unchained2", "m", &toks(100, 50), now);
+    let cell = d
+        .cells()
+        .snapshot("vk_unchained2")
+        .expect("real usage created the cell");
+    assert_eq!(cell.total_tokens(), 150);
+    assert_eq!(
+        cell.window_start,
+        crate::window::budget_window(TOTAL, now),
+        "the unchained accrual ledgers under the all-time window"
+    );
+}
+
 /// A principal bound to a group MISSING from this node's config fails CLOSED at admission.
 #[test]
 fn missing_group_fails_closed() {
@@ -865,6 +982,56 @@ fn a_stranded_straddling_fee_would_hold_the_budget_cap_shut() {
             .billable_requests,
         held,
         "a refund pinned past the cell's window cannot erode a window it never charged"
+    );
+}
+
+/// A straddling request must read the LIVE cell's count for the CHECK, not treat the rolled cell as
+/// a fresh window — the pass-1 half of the same straddle the charge and refund cases above pin.
+///
+/// A concurrent admission has already rolled the cell into the newer minute and filled it to its
+/// requests cap. Our request pins an arrival epoch in the OLDER minute; if the check read that as a
+/// fresh window (`==` rather than `>=` against the live cell's `window_start`), it would see zero
+/// used and admit over the cap, and PASS 2 would then charge the same over-cap cell in place — the
+/// exact split `decide.rs:319-325` says the two passes exist to prevent.
+#[test]
+fn a_straddling_check_reads_the_live_cells_count_and_is_blocked_at_its_cap() {
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 1, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_req_straddle", Some("g"));
+
+    let later = 1_700_000_100;
+    let earlier = 1_700_000_099;
+    assert_ne!(
+        crate::window::budget_window(MINUTE, earlier),
+        crate::window::budget_window(MINUTE, later),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission rolls the cell into the newer minute and fills its cap of 1.
+    d.try_admit(&p, &c, "", later)
+        .expect("the roller admits and fills the cap");
+
+    // Our request's pinned arrival epoch is in the OLDER minute. If the check treated that as a
+    // fresh window it would admit; it must instead read the live, already-full cell and refuse.
+    assert_blocked(
+        d.try_admit(&p, &c, "", earlier).unwrap_err(),
+        "g",
+        Metric::Requests,
+        Some(MINUTE),
+        true,
+    );
+    assert_eq!(
+        d.cells().snapshot("group:g@minute").expect("cell").requests,
+        1,
+        "the refused straddler must not have been charged"
     );
 }
 

@@ -57,7 +57,9 @@ case "$parallel" in ''|*[!0-9]*) echo "pr-queue.sh: --parallel wants a number" >
 [ "$parallel" -ge 1 ] || { echo "pr-queue.sh: --parallel must be >= 1" >&2; exit 2; }
 
 ledger="${queue%.txt}.done"
-G="git -C $here"
+# `G="git -C $here"` used to stand here and every call site expanded it UNQUOTED, so a repository
+# root containing a space split into the wrong argv and `git -C` was handed a truncated path. The
+# call sites name `git -C "$here"` directly now; there is no command-in-a-string to re-split.
 
 # ── READ THE QUEUE ────────────────────────────────────────────────────────────────────────────────
 # Each surviving line becomes one record: "hashes<TAB>ignored-flags". The flags are kept, not
@@ -117,13 +119,27 @@ echo "pr-queue.sh: $lines landing(s) to open onto $base${stopped:+ (STOP marker 
 # is the union over its hashes. A merge commit in a queue would print nothing under -r without
 # -m, so it is refused rather than treated as touching no file — "touches nothing" is exactly the
 # answer that would make it disjoint from everything and batch it with anything.
+#
+# A merge commit is not the only commit that prints nothing. `git commit --allow-empty` is not a
+# merge, so it walked straight past the check above and handed back the EMPTY set, which `disjoint`
+# then reported as disjoint from every batch — the identical failure this function already refuses a
+# merge for. The rule is about the ANSWER, not about how the commit was made: a commit whose path
+# set is empty cannot be scheduled against anything, so it is refused too.
 files_of() {
+  local h fh
   for h in $1; do
-    if [ "$($G rev-list --no-walk --count --merges "$h" 2>/dev/null || echo 0)" != "0" ]; then
+    if [ "$(git -C "$here" rev-list --no-walk --count --merges "$h" 2>/dev/null || echo 0)" != "0" ]; then
       echo "pr-queue.sh: $h is a merge commit; the queue takes non-merge commits only" >&2
       return 1
     fi
-    $G diff-tree --no-commit-id --name-only -r "$h" || return 1
+    fh="$(git -C "$here" diff-tree --no-commit-id --name-only -r "$h")" || return 1
+    if [ -z "$fh" ]; then
+      echo "pr-queue.sh: $h touches no files; a commit with an empty path set is disjoint from" >&2
+      echo "             everything and would batch with anything — the queue takes file-bearing" >&2
+      echo "             commits only" >&2
+      return 1
+    fi
+    printf '%s\n' "$fh"
   done
 }
 
@@ -139,7 +155,15 @@ disjoint() { # $1,$2 newline-separated path sets
 opened=0; failed=0
 batch_files=""; batch_n=0
 
+# EVERY VARIABLE THIS FUNCTION READS IS `local`, AND THAT IS LOad-BEARING. flush_batch is called
+# from INSIDE the consume loop below, and that loop's cursor is also a record read with `read -r`.
+# When both used the same global name, the flush's own reader ran to EOF and left the cursor EMPTY,
+# so the very queue line whose overlap TRIGGERED the flush was appended to the next batch as a blank
+# record — landing nothing, calling the lander with no hash at all, writing an OPENED ledger row with
+# an empty hash column, and printing "N PR(s) opened, 0 red". On the default --parallel 1 every line
+# after the first is a trigger, so only the FIRST line of any queue was ever landed.
 flush_batch() {
+  local brec hashes ignored waitflag rc
   [ "$batch_n" -gt 0 ] || return 0
   # One PR per line in the batch. With a batch of one the PR is waited on to green; with more, the
   # PRs are opened and GitHub's merge queue orders them, because waiting serially on N PRs is
@@ -147,16 +171,19 @@ flush_batch() {
   waitflag="--wait"
   [ "$batch_n" -gt 1 ] && waitflag=""
   rc=0
-  while IFS= read -r rec; do
-    hashes="${rec%%	*}"; ignored="${rec#*	}"
-    [ "$ignored" = "$rec" ] && ignored=""
+  while IFS= read -r brec; do
+    hashes="${brec%%	*}"; ignored="${brec#*	}"
+    [ "$ignored" = "$brec" ] && ignored=""
+    if [ -z "$hashes" ]; then
+      echo "pr-queue.sh: INTERNAL — a batch record names no hash; refusing to call the lander blind" >&2
+      failed=$((failed + 1)); rc=1; break
+    fi
     [ -z "$ignored" ] || echo "pr-queue.sh: NOTE — ignoring the local proof flags on this line ($ignored). CI judges this landing, not this laptop."
     # shellcheck disable=SC2086  # $hashes and $waitflag are argv fragments by design
     if [ "$dry" = 1 ]; then
       echo "+ $PR_LAND $hashes --base $base $waitflag --dry-run"
       bash "$PR_LAND" $hashes --base "$base" $waitflag --dry-run || true
       opened=$((opened + 1))
-    # shellcheck disable=SC2086
     elif bash "$PR_LAND" $hashes --base "$base" $waitflag; then
       opened=$((opened + 1))
       printf '%s\t%s\tOPENED\tbase=%s\tignored=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$hashes" "$base" "${ignored:-none}" >>"$ledger"

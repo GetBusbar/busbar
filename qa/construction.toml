@@ -147,7 +147,7 @@ max_uninstalled = 0
 # ── 5. neutral-no-dialect ────────────────────────────────────────────────────────────────────────
 [rules.neutral-no-dialect]
 why = """The neutral crates (busbar-core, busbar-substrate, busbar-api) must not know a dialect or \
-a plane by name. This rule is a thin delegation to scripts/plane-purity-lint.sh, which owns the \
+a plane by name. This rule is a thin delegation to `cargo xtask gate plane-purity`, which owns the \
 scanner, the noun list and the frozen-wire allow-list; the construction gate only counts its \
 DIALECT and KEY rows so there is one policy, not two."""
 categories = ["DIALECT", "KEY"]
@@ -515,10 +515,10 @@ max_sites = 0
 # seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
 # debt this rule now PINS rather than debt it hides.
 known_sites = [
-  "crates/busbar-plane-admin/src/tests.rs",
+  "crates/busbar-plane-admin/src/tests/mod.rs",
   "crates/busbar-plane-voice/src/tests/harness.rs",
   "crates/busbar-transport-grpc/src/tests/battery.rs",
-  "crates/busbar-transport-http/src/tests.rs",
+  "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-tcp/src/tests.rs",
   "crates/busbar-transport-tls/src/tests.rs",
@@ -535,7 +535,7 @@ barred from unsafe by design, not merely asked nicely. Transport, ABI, loader, s
 crates carry at least `#![deny(unsafe_code)]` (weaker: a reviewed site may locally `#[allow]` it), \
 because these kinds legitimately touch FFI or the wire. This checks the attribute is present at the \
 crate root — not that every individual unsafe site is itself reviewed, which is a finer-grained \
-check left to `scripts/blocking-ffi-lint`-style tooling outside this gate."""
+check left to `cargo xtask gate blocking-ffi`-style tooling outside this gate."""
 forbid_kinds = ["plane", "hook", "pure_auth", "egress_auth", "secret"]
 deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # Ratchet: crates known to be missing the attribute today, so the gate does not go red the moment
@@ -1017,7 +1017,7 @@ verdict = "real"
 because = "the open door the assembly starts from, which the mount replaces with the deployment's own chain"
 
 [rules.no-test-doubles-in-production.known_sites.legacy-rows-read]
-file = "crates/busbar/src/root/units_admin.rs"
+file = "crates/busbar/src/root/units_admin/mod.rs"
 symbol = "RecordingRows"
 verdict = "real"
 because = "the read half's impl on the previous release's rows type; an impl constructs nothing"

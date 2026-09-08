@@ -646,17 +646,65 @@ def parse_enum(body: str, csd: dict) -> dict:
 MATCH_ARM_RE = re.compile(r'((?:"[^"\n]*"\s*\|\s*)*"[^"\n]*")\s*=>')
 STR_LIT_RE = re.compile(r'"([^"\n]*)"')
 
+# The serde `Visitor` methods a hand-written impl defines. Their NAMES are the input forms the impl
+# has an opinion about, and whether each one can return `Ok` is the opinion.
+VISIT_FN_RE = re.compile(r"\bfn\s+visit_([a-z0-9_]+)\s*(?:<[^>()]*>)?\s*\(")
+
+
+def refused_forms(src: str, start: int, end: int) -> list:
+    """The input forms a hand-written `Deserialize` impl REFUSES OUTRIGHT.
+
+    THIS EXISTS BECAUSE THE WIRE-KEY SET COULD NOT SEE THE HALF THAT MATTERS MOST.
+
+    `wire_keys` fingerprints the string match arms — the map keys a document may use — and that
+    genuinely catches a renamed or dropped spelling. What it cannot see is the other half of a
+    hand-written impl's grammar: which INPUT SHAPES it rejects. `SecretRef` exists to make
+    `api_key: "sk-live-…"` impossible, and it does that in `visit_str`/`visit_u64`/`visit_i64`/
+    `visit_f64`/`visit_bool`/`visit_bytes`, every one of which returns an error that deliberately
+    never echoes the value. None of that is a match arm, so relaxing ANY of them — letting a bare
+    scalar through — was a ZERO-DELTA change to this fingerprint. The freeze gate would have
+    reported "no schema delta" while the one property the type exists for quietly went away, and
+    the inline secret it was written to keep out of the boot log would go straight back into it.
+
+    A form is recorded as REFUSED when its body can only fail: it mentions `Err` and contains no
+    `Ok(` at all. That is deliberately CONSERVATIVE. A visitor that can sometimes succeed (the
+    `visit_map` that does the real parsing) is simply not recorded, so this never claims a refusal
+    that is not unconditional, and the one thing it asserts it can prove by reading the body.
+
+    Both directions of a change to this set are RED, and that is the documented STRICTER ARM — it
+    is not the plain additive-only rule the rest of this classifier applies:
+
+      * a refusal REMOVED widens the grammar, which additive-only would wave through. It is exactly
+        the regression above, so it is red on purpose.
+      * a refusal ADDED narrows it: a document that parsed before now fails, which is breaking under
+        the freeze in the ordinary sense.
+
+    Tightening a type legitimately is therefore a reviewed line in the waiver register, which is
+    where a deliberate break belongs."""
+    out = set()
+    for m in VISIT_FN_RE.finditer(src, start, end):
+        brace = src.find("{", m.end())
+        if brace == -1 or brace >= end:
+            continue
+        body = src[brace : match_block(src, brace)]
+        if "Err" in body and "Ok(" not in body:
+            out.add(m.group(1))
+    return sorted(out)
+
 
 def manual_de_detail(src: str, impl_open_idx: int, decls: dict, name: str):
     """Fingerprint a hand-written `impl<'de> Deserialize<'de> for X`.
 
-    Two halves, because a hand-written impl has two halves of grammar:
+    Three halves, because a hand-written impl has three halves of grammar:
       * the ACCEPTED WIRE KEYS — the impl's string match arms, i.e. the spellings a document may
         use. For `SecretRef` that is `module` / `settings` / `env` / `file`.
       * the TYPE of each wire-visible member, taken from `X`'s own struct declaration. `X` carries
         no `Deserialize` derive (that is the point of a hand-written impl), so the derive-gated walk
         skipped it entirely and `SecretRef { module: String, settings: Map<String, Value> }` could
         be retyped freely.
+      * the REFUSED INPUT FORMS — see `refused_forms`. The wire keys say what a map may contain;
+        they say nothing about whether a bare scalar is accepted at all, and for `SecretRef` that
+        is the whole point of the type.
 
     ONLY wire-visible members are recorded. A hand-impl'd type's declaration is also its PARSED
     RESULT, and those two things are not the same set: `LimitCfg` accepts `requests:`/`tokens:` and
@@ -674,6 +722,7 @@ def manual_de_detail(src: str, impl_open_idx: int, decls: dict, name: str):
     return {
         "kind": "manual",
         "wire_keys": sorted(keys),
+        "refused": refused_forms(src, impl_open_idx, end),
         "fields": {k: v for k, v in decl_fields.items() if k in keys},
     }
 
@@ -811,10 +860,12 @@ def extract(paths) -> dict:
             "frozen_at": "1.5.3",
             "generator": "scripts/config-schema.py gen",
             "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each "
-            "hand-impl'd type's declared shape and accepted wire keys) + the named-definition-map "
-            "type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the "
-            "busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar and the "
-            "MCP `tools:` grammar",
+            "hand-impl'd type's declared shape, accepted wire keys, and the input forms it REFUSES "
+            "outright -- the last frozen in BOTH directions, because a refusal that is dropped "
+            "widens the grammar to accept exactly the inline literal the type exists to reject) + "
+            "the named-definition-map type aliases, over the tracked source set (SOURCES in "
+            "scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the "
+            "A2A `agents:` grammar and the MCP `tools:` grammar",
         },
         "types": types,
     }
@@ -895,6 +946,51 @@ def variant_findings(tname: str, bvar, fvar, findings: list, what="enum variant"
                 "BREAKING",
                 f"{tname}::{v}",
                 f"{what} REMOVED/RENAMED (breaks a config using the old value)",
+            )
+        )
+
+
+def refusal_findings(tname: str, bref, fref, findings: list):
+    """The STRICTER ARM: the set of refused input forms is frozen in BOTH directions.
+
+    Everywhere else this classifier is additive-only — a widened grammar is green. Here it is not,
+    and the asymmetry is the entire point. A hand-written impl's refusals are the only place the
+    fingerprint can see "a bare scalar is rejected", and for `SecretRef` that rejection is the
+    property the type exists for. Waving a widening through as additive would let
+    `api_key: "sk-live-…"` become legal at zero delta.
+
+    See `refused_forms` for why a legitimate tightening goes in the waiver register rather than
+    being classified green here.
+
+    A BASELINE THAT PREDATES THIS ARM IS NOT A BASELINE WITH NO REFUSALS. `refused` is absent from
+    every snapshot rendered before it existed, and `None` there means "never recorded", not "the
+    empty set" — treating the two the same would report all six of `SecretRef`'s refusals as newly
+    ADDED and red the gate on the commit that introduced the check. So an absent key compares
+    against nothing and this rule simply does not fire; it starts biting on the next baseline, which
+    carries the key. An empty LIST is different and does compare, because a type that genuinely
+    refuses nothing has been measured and said so."""
+    if bref is None or fref is None:
+        return
+    bref, fref = set(bref), set(fref)
+    for v in sorted(bref - fref):
+        findings.append(
+            (
+                "BREAKING",
+                f"{tname}::visit_{v}",
+                "a REFUSED input form is no longer refused (the hand-written impl now accepts it). "
+                "This widens the grammar, which additive-only would wave through -- and for a "
+                "secret reference the widened form is an inline literal, the exact shape the type "
+                "exists to reject and the one that ends up in a boot log",
+            )
+        )
+    for v in sorted(fref - bref):
+        findings.append(
+            (
+                "BREAKING",
+                f"{tname}::visit_{v}",
+                "an input form that PARSED is now refused (breaks a config using it). Deliberate "
+                "tightening is legitimate and goes in the waiver register, where it is a reviewed "
+                "line rather than a silent narrowing",
             )
         )
 
@@ -1003,6 +1099,7 @@ def classify(baseline: dict, fresh: dict):
             variant_findings(
                 tname, b.get("wire_keys"), f.get("wire_keys"), findings, what="accepted wire key"
             )
+            refusal_findings(tname, b.get("refused"), f.get("refused"), findings)
         elif b["kind"] == "struct":
             field_findings(tname, b.get("fields", {}), f.get("fields", {}), findings)
         else:  # enum

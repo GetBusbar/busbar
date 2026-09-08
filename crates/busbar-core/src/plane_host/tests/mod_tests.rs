@@ -5,8 +5,8 @@
 
 use super::*;
 use busbar_plugin::hot::{
-    AdmissionId, AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, MetricSample, StatusClass,
-    Usage, UsageComponent, POD_VERSION,
+    AdmissionId, AuthQuery, AuthResolved, Decision, Facts, MeterOutcome, MetricSample,
+    RawUsageComponent, StatusClass, Usage, UsageComponent, POD_VERSION,
 };
 use core::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -142,7 +142,7 @@ fn wired_meter_charge_charges_a_usage_pod() {
         let usage = Usage {
             size: core::mem::size_of::<Usage>() as u32,
             version: POD_VERSION,
-            component: UsageComponent::Tokens,
+            component: RawUsageComponent::of(UsageComponent::Tokens),
             _reserved: 0,
             amount: 1_000,
             unit_cost_micros: 3,

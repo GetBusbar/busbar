@@ -155,6 +155,99 @@ def main():
     check("conformance_selection_contains_no_governance", ok,
           (p7.stdout + p7.stderr)[-600:])
 
+    # ---- 5. THE REQUIRED PROFILE: an INAPPLICABLE on a row every A2A server owes is RED.
+    #      RED half and GREEN half, because a rule that reddens everything proves as little as one
+    #      that reddens nothing. The synthetic report below is the shape a "no-lifecycle" agent
+    #      produces: it answers every request with a Message, so the whole task lifecycle reports
+    #      INAPPLICABLE and the run used to print BATTERY GREEN.
+    p8 = py("import io\n"
+            "from a2aht import runner\n"
+            "req = sorted(runner.REQUIRED_PROFILE)\n"
+            "def row(i, outcome, assertions=1):\n"
+            "    return {'id': i, 'outcome': outcome, 'role': 'server', 'defect': 'd',\n"
+            "            'detail': 'agent answered with a Message', 'clause': '', 'notes': [],\n"
+            "            'observations': {}, 'assertions': assertions}\n"
+            "holes = [row(i, 'INAPPLICABLE') for i in req]\n"
+            "filler = [row('filler.%d' % n, 'PASS') for n in range(40)]\n"
+            "rep = {'harness_version': '0', 'spec': {'repo': 'r', 'tag': 't'},\n"
+            "       'target': 't', 'generated_at': 'now', 'meta': {},\n"
+            "       'counts': {}, 'results': holes + filler}\n"
+            "for r in rep['results']:\n"
+            "    rep['counts'][r['outcome']] = rep['counts'].get(r['outcome'], 0) + 1\n"
+            "print('BAD_WITH_HOLES=%d' % runner.print_human(rep, io.StringIO()))\n"
+            "rep2 = {**rep, 'results': [row(i, 'PASS') for i in req] + filler}\n"
+            "print('BAD_WITHOUT_HOLES=%d' % runner.print_human(rep2, io.StringIO()))\n")
+    with_holes = None
+    for line in p8.stdout.splitlines():
+        if line.startswith("BAD_WITH_HOLES="):
+            with_holes = int(line.split("=", 1)[1])
+    check("inapplicable_on_a_required_row_is_red",
+          with_holes is not None and with_holes > 0,
+          (p8.stdout + p8.stderr)[-800:])
+    check("a_run_without_holes_is_green",
+          "BAD_WITHOUT_HOLES=0" in p8.stdout,
+          (p8.stdout + p8.stderr)[-800:])
+
+    # ---- 6. THE ASSERTED-ROW FLOOR: a run made of rows that asserted nothing is not a pass.
+    p9 = py("from a2aht import runner\n"
+            "def row(i, assertions):\n"
+            "    return {'id': i, 'outcome': 'PASS', 'assertions': assertions}\n"
+            "thin = [row('t.%d' % n, 0) for n in range(50)] + [row('a.%d' % n, 1)\n"
+            "                                                  for n in range(3)]\n"
+            "fat = [row('a.%d' % n, 1) for n in range(50)]\n"
+            "print('THIN=%r' % (runner.asserted_row_shortfall(thin) is not None))\n"
+            "print('FAT=%r' % (runner.asserted_row_shortfall(fat) is not None))\n"
+            "print('EMPTY=%r' % (runner.asserted_row_shortfall([]) is not None))\n")
+    check("asserted_row_floor_refuses_a_run_that_asserted_almost_nothing",
+          "THIN=True" in p9.stdout and "EMPTY=True" in p9.stdout,
+          (p9.stdout + p9.stderr)[-800:])
+    check("asserted_row_floor_accepts_a_real_run", "FAT=False" in p9.stdout,
+          (p9.stdout + p9.stderr)[-800:])
+
+    # ---- 7. A DEVIATION RECORD MAY NOT ABSORB A DIFFERENT FAILURE.
+    #      The RED half is the one that matters: same test, same recorded fragment still present in
+    #      the message, but a DIFFERENT assertion cited. That used to fold to BASELINED (green).
+    p10 = py("from a2aht import deviations as d\n"
+             "doc = {'deviations': [{'test': 't.one', 'clause': \"SPEC 5.6.1 Timestamps: 'Z'\",\n"
+             "                       'evidence': 'which does not end in Z',\n"
+             "                       'judgement': 'j', 'verdict': 'real-defect-in-control'}]}\n"
+             "def rep(clause):\n"
+             "    return {'results': [{'id': 't.one', 'outcome': 'FAIL', 'clause': clause,\n"
+             "                         'detail': 'a value which does not end in Z was returned'}]}\n"
+             "same, _ = d.apply(rep(\"SPEC 5.6.1: 'Timezone: UTC'\"), doc)\n"
+             "print('SAME_CLAUSE=%s' % same['results'][0]['outcome'])\n"
+             "other, _ = d.apply(rep(\"SPEC 9.5: '-32603 InternalError'\"), doc)\n"
+             "print('OTHER_CLAUSE=%s' % other['results'][0]['outcome'])\n")
+    check("a_failure_citing_a_different_clause_is_not_baselined",
+          "OTHER_CLAUSE=DEVIATION_CHANGED" in p10.stdout,
+          (p10.stdout + p10.stderr)[-800:])
+    check("the_recorded_failure_itself_still_baselines",
+          "SAME_CLAUSE=BASELINED" in p10.stdout,
+          (p10.stdout + p10.stderr)[-800:])
+
+    # ---- 8. BOILERPLATE EVIDENCE IS REFUSED AT LOAD, and a real record still loads.
+    p11 = py("import json, tempfile, os\n"
+             "from a2aht import deviations as d\n"
+             "def write(ev):\n"
+             "    fh = tempfile.NamedTemporaryFile('w', suffix='.json', delete=False)\n"
+             "    json.dump({'deviations': [{'test': 't', 'clause': 'SPEC 1.2',\n"
+             "                               'evidence': ev, 'judgement': 'j',\n"
+             "                               'verdict': 'real-defect-in-control'}]}, fh)\n"
+             "    fh.close(); return fh.name\n"
+             "for label, ev in (('BOILERPLATE', 'error'),\n"
+             "                  ('SPECIFIC', 'without includeArtifacts=true')):\n"
+             "    path = write(ev)\n"
+             "    try:\n"
+             "        d.load(path); print('%s=ACCEPTED' % label)\n"
+             "    except d.DeviationFileError:\n"
+             "        print('%s=REFUSED' % label)\n"
+             "    finally:\n"
+             "        os.unlink(path)\n")
+    check("boilerplate_evidence_is_refused", "BOILERPLATE=REFUSED" in p11.stdout,
+          (p11.stdout + p11.stderr)[-800:])
+    check("specific_evidence_is_accepted", "SPECIFIC=ACCEPTED" in p11.stdout,
+          (p11.stdout + p11.stderr)[-800:])
+
     # A selftest that ran no checks is not a pass.
     if len(RESULTS) < 8:
         print("\nSELFTEST RAN ONLY %d CHECKS. Checks were deleted or never reached." % len(RESULTS))

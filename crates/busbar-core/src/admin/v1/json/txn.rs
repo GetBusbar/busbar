@@ -64,7 +64,7 @@ use crate::state::{App, AppHandle};
 ///
 /// PRIVATE TO THIS FILE, deliberately (`static`, no accessor). `lock().await`-then-arbitrary-code
 /// cannot be written anywhere else in the tree because no other module can name this symbol —
-/// [`config_transaction`] is the only door. `scripts/structure-lint.sh` Invariant 6 fails the build
+/// [`config_transaction`] is the only door. the `structure-lint` gate Invariant 6 fails the build
 /// on a second `tokio::sync::Mutex` config lock appearing outside this file.
 ///
 /// Held as an `Arc` so the guard can be `lock_owned()` and MOVED off the caller's future — see

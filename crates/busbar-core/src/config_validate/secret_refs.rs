@@ -41,6 +41,30 @@ pub(crate) fn secret_refs(cfg: &RootCfg) -> Vec<(String, &crate::config::SecretR
     walk_secret_refs(cfg, TokenRefs::Every)
 }
 
+/// Whether `api_key: none` — the declaration that there is NO credential at all — is MEANINGFUL at
+/// the config path `what`, which is one of the paths [`walk_secret_refs`] mints.
+///
+/// True for a provider `api_key` and nothing else. A keyless upstream is a real thing: a local
+/// ollama or vLLM takes no credential, and since an unresolvable reference now refuses boot, the
+/// operator needs a way to say that on purpose. Every OTHER secret here protects something that has
+/// no credential-free mode — a TLS cert, `auth.signing_key`, the authorization server's ES256 key,
+/// an admin token, an OIDC client secret, a plane's outbound delegation credential. Accepting
+/// `none` on one of those would not configure anything; it would silently disarm the thing the
+/// secret exists to protect, which is the same class of quiet failure the degrade this replaces
+/// used to cause.
+///
+/// Written as a predicate over the PATH, and deliberately kept in this file: `providers.<name>.api_key`
+/// is minted by the provider loop a few lines below, so the shape this matches and the shape that
+/// exists are written within sight of each other. `tests::keyless_is_accepted_on_provider_api_keys_alone`
+/// drives it over the full walk of a fully-populated config, so a new secret-bearing path is
+/// classified by the test rather than by anyone remembering to look here.
+pub(crate) fn keyless_credential_allowed(what: &str) -> bool {
+    // A provider name may itself contain dots (`providers.my.local.llama.api_key`), so this is a
+    // prefix/suffix test, not a segment count. It cannot over-match: no other path this walk mints
+    // both starts under `providers.` and ends in `.api_key`.
+    what.starts_with("providers.") && what.ends_with(".api_key")
+}
+
 /// The subset of [`secret_refs`] that boot actually RESOLVES, for the strict `--validate` pass.
 ///
 /// `--validate` promises that a clean run means a clean boot, and the converse matters just as much:

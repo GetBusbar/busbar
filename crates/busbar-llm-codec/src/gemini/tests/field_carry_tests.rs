@@ -658,8 +658,10 @@ fn gemini_response_usage_buckets_survive() {
         Some(30),
         "cachedContentTokenCount must reach the IR"
     );
-    assert_eq!(ir.usage.input_tokens, 70);
-    // toolUsePromptTokenCount → the tool-use prompt sub-bucket.
+    // …plus the ADDITIVE tool-use prompt term, which `promptTokenCount` does not include:
+    // 100 - 30 cached + 12 tool-use = 82 (busbar 1.6.0 money change).
+    assert_eq!(ir.usage.input_tokens, 82);
+    // toolUsePromptTokenCount → the tool-use prompt attribution bucket.
     assert_eq!(
         ir.usage.detail.tool_use_prompt_tokens,
         Some(12),
@@ -670,6 +672,12 @@ fn gemini_response_usage_buckets_survive() {
     assert_eq!(
         out["usageMetadata"]["cachedContentTokenCount"], 30,
         "cachedContentTokenCount must be re-emitted: {out}"
+    );
+    // The wire shape is reconstructed, not the IR one: the tool-use term goes BESIDE the prompt
+    // count, so `promptTokenCount` is the original 100 and not 82 + 30.
+    assert_eq!(
+        out["usageMetadata"]["promptTokenCount"], 100,
+        "the tool-use term must not be double-counted into promptTokenCount: {out}"
     );
     assert_eq!(
         out["usageMetadata"]["toolUsePromptTokenCount"], 12,

@@ -33,7 +33,7 @@ for p in "$LP" "$AP" "$MP"; do
   assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
 done
 
-python3 "${here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/mock-upstream.py" "$MP" oracle-marker "$W/mock.control" >"$W/mock.log" 2>&1 & track_pid $!
 # CHECKED: an unchecked wait here let the cell run with NO upstream and record whatever busbar
 # answers to that as the contract. fail() is defined further down (it needs $eff), so refuse in
 # the same -1 shape the port-busy guard above uses -- record.sh reads it as UNSUPPORTED, not a pass.

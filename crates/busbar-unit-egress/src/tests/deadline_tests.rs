@@ -141,6 +141,34 @@ fn an_upstream_that_says_nothing_is_cut_by_the_per_attempt_cap() {
     );
 }
 
+/// The harness's fake sleep resolves at the same poll count for any nonzero duration (see
+/// `TwoPollSleep`), so nothing about WHICH of two racing sleeps "wins" can pin `attempt_cap_ms`'s
+/// clamp — the per-attempt cap always structurally beats the outer deadline in this harness
+/// whatever value either was given, once both are nonzero. What CAN be pinned is the value itself:
+/// `TestClock` now records every `ms` a caller asks it to sleep for, and `attempt_cap_ms` must have
+/// floored the member's raw cap to what the walk had left before handing it to the clock.
+#[test]
+fn a_per_attempt_cap_larger_than_the_walk_budget_is_clamped_to_it_before_it_reaches_the_clock() {
+    let mut node = Node::with_lanes(&["a"]);
+    let mut members = vec![member(DestinationId::new(0), "a")];
+    members[0].attempt_timeout_ms = Some(500_000); // far past any walk budget below
+    node.pool("primary", members);
+    node.timeout_secs = 2; // 2_000ms of walk budget
+    node.transport.script("a", Script::Hang);
+
+    let _ = node.route("primary");
+
+    let durations = node.clock.durations.lock().unwrap();
+    assert!(
+        !durations.contains(&500_000),
+        "the raw per-member cap must never reach the clock unclamped: {durations:?}"
+    );
+    assert!(
+        durations.contains(&2_000),
+        "the cap must be floored to the walk's remaining budget in ms: {durations:?}"
+    );
+}
+
 #[test]
 fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
     let mut node = Node::with_lanes(&["a"]);

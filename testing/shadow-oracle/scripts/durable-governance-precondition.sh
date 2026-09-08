@@ -66,7 +66,7 @@ rm -rf "$W"; mkdir -p "$W/plugins" "$W/tmp"
 export TMPDIR="$W/tmp"
 for p in "$LP" "$AP"; do assert_port_free "$p" || fail "port $p busy"; done
 
-tarball="$(bash "${here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
 cp "$tarball" "$W/plugins/"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 [ -s "$W/signing.key" ] || fail "--generate-signing-key produced no key"
@@ -124,15 +124,31 @@ kid="$(jq -r '.id // empty' <<<"$mint")"
 [ -n "$kid" ] || fail "mint failed: $mint"
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
+# The first boot is killed, and whether it got to remove its plugin staging directory before it
+# died is a matter of signal timing that differed between the recording hosts: darwin's second boot
+# swept an orphan and said so on stderr, linux's found nothing to sweep. That line is the driver's
+# artefact, not the cell's contract, so the driver removes any staging directory the first boot
+# left in the cell's own TMPDIR before the second boot looks. Only the recording's private tmp is
+# touched, and only the prefix busbar stages under.
+rm -rf "${TMPDIR:-/tmp}"/busbar-plugins-* 2>/dev/null || true
 
 # ---- corrupt/reconfigure between the two boots, per mode -------------------------------------------
 DB2="$DB"; cfg2_groups="$GROUPS_ORACLE"; cfg2_chain="keys"; expect_boot=refuse
 case "$MODE" in
   governance-init|budget-hydration)
     table=keys; [ "$MODE" = budget-hydration ] && table=usage_windows
-    rootpage="$(sqlite3 "$DB" "SELECT rootpage FROM sqlite_master WHERE name='${table}';" 2>/dev/null)"
+    # The store is read through python's bundled sqlite3 module, never the `sqlite3` CLI: the CLI is
+    # not on every recording host (a linux golden host lacked it), and a missing tool must not read
+    # as "the store has no such table" — that was a named gap on two boot refusals for one run.
+    rootpage="$(python3 - "$DB" "$table" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+row = con.execute("SELECT rootpage FROM sqlite_master WHERE name=?", (sys.argv[2],)).fetchone()
+print(row[0] if row else "")
+PY
+)"
     [ -n "$rootpage" ] || fail "could not find ${table}'s rootpage in the durable store"
-    pagesize="$(sqlite3 "$DB" "PRAGMA page_size;" 2>/dev/null)"
+    pagesize="$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA page_size").fetchone()[0])' "$DB")"
     DB2="$W/gov-corrupt.db"; cp "$DB" "$DB2"
     offset=$(( (rootpage - 1) * pagesize ))
     python3 - "$DB2" "$offset" <<'PY'
@@ -174,6 +190,6 @@ else
 fi
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-python3 "${here}/capture-exec.py" "$rc" "$RAW/stdout" "$RAW/stderr" \
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture-exec.py" "$rc" "$RAW/stdout" "$RAW/stderr" \
   --strip-path "$W" --strip-path "$RAW" --strip-path "$repo" --strip-path "$BIN" >"$RAW/captured.json" 2>"$RAW/capture.err" \
   || fail "capture-exec.py failed: $(tail -c 300 "$RAW/capture.err")"

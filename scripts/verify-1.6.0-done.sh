@@ -7,9 +7,10 @@
 # green") and the gate designs (gate-no-deferral.md, gate-isomorphism.md).
 #
 # WHAT "DONE" MEANS HERE — the umbrella asserts, as ONE verdict, that every sub-gate is green:
-#   build            the full-gate cargo battery (shell out to scripts/full-gate.sh; else an explicit
+#   build            the full-gate cargo battery (shell out to `cargo xtask full-gate`; else an explicit
 #                    cargo build/clippy/test-compile battery).
-#   plane-purity     scripts/plane-purity-lint.sh --check  (neutral crates 0 side channels / 0 backwards).
+#   plane-purity     cargo xtask gate plane-purity  (neutral crates 0 side channels / 0 backwards),
+#                    plus the strict ratchet, which nothing invoked while it was a shell flag.
 #   plane-delete     scripts/plane-delete-test.sh --all     (llm/mcp/a2a/voice each deletable).
 #   byte-identity    the MONEY PATH is byte-stable: openapi_json_matches_committed_file,
 #                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-llm-codec
@@ -23,7 +24,7 @@
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
 #                    scenario/script/leg/suite that owns it and the rigs behind them pass
 #                    (rigs-ledger.sh), and every root-leg cell it calls proven runs over the loop.
-#   no-deferral      scripts/no-deferral-gate.sh --strict-done (nothing deferred; voice markers CLEARED).
+#   no-deferral      cargo xtask gate no-deferral-strict-done (nothing deferred; voice markers CLEARED).
 #   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0). Its residual is
 #                    a LOCKED-legitimate floor, not zero and not a done condition, so what is asserted
 #                    is the floor itself: the run must PRODUCE a count (a gate that errored, or whose
@@ -40,7 +41,7 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
-#   changelog        scripts/changelog-register-check.sh --check: EVERY entry in
+#   changelog        cargo xtask gate changelog-register: EVERY entry in
 #                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
 #                    breaking, per ARCHITECTURE.md's owner rule -- has its `changelog` field's exact
 #                    line present, verbatim, in CHANGELOG.md, or an explicit null with a written
@@ -61,7 +62,7 @@
 # FLAGS:
 #   --fast   substitute `cargo build --workspace` for the heavy full-gate battery in the BUILD group
 #            (for a quick progress read); every other group still runs in full. Without it, BUILD runs
-#            the full scripts/full-gate.sh — the real DONE claim. A --fast run that comes out clean
+#            the full `cargo xtask full-gate` — the real DONE claim. A --fast run that comes out clean
 #            reports PROVISIONAL and exits 3, never the DONE banner and never exit 0: the banner and
 #            the exit code are all a wrapper, a CI step or the proof collator ever sees, so a
 #            provisional answer must not be spendable as the real one.
@@ -278,9 +279,9 @@ begin_group "BUILD — the cargo battery"
 if [ "$FAST" -eq 1 ]; then
   ylw "  --fast: substituting 'cargo build --workspace' for the full ci battery"
   step "cargo build --workspace" cargo build --workspace --quiet
-elif [ -x scripts/full-gate.sh ] || [ -f scripts/full-gate.sh ]; then
-  step "scripts/full-gate.sh --selftest" bash scripts/full-gate.sh --selftest
-  step "scripts/full-gate.sh"            bash scripts/full-gate.sh
+elif [ -f qa/full-gate.toml ]; then
+  step "cargo xtask full-gate --selftest" cargo xtask full-gate --selftest
+  step "cargo xtask full-gate"            cargo xtask full-gate
 else
   step "cargo build --workspace"                 cargo build --workspace --quiet
   step "cargo build -p busbar --no-default-features" cargo build -p busbar --no-default-features --quiet
@@ -290,8 +291,9 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "PLANE-PURITY — neutral crates carry no side channel (0/0)"
-step "plane-purity-lint --selftest" bash scripts/plane-purity-lint.sh --selftest
-step "plane-purity-lint --check"    bash scripts/plane-purity-lint.sh --check
+step "plane-purity --selftest" cargo xtask gate plane-purity --selftest
+step "plane-purity gate"       cargo xtask gate plane-purity
+step "plane-purity --strict"   cargo xtask gate plane-purity-strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -307,7 +309,7 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide) — the golden
   # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
   # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
-  # error-enum-matches), so the oracle's byte-identity check is real, matching full-gate.sh.
+  # error-enum-matches), so the oracle's byte-identity check is real, matching cargo xtask full-gate.
   step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
   step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-llm-codec
@@ -353,8 +355,8 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "NO-DEFERRAL — nothing deferred; voice skeleton markers CLEARED (strict-done)"
-step "no-deferral-gate --selftest"    bash scripts/no-deferral-gate.sh --selftest
-step "no-deferral-gate --strict-done" bash scripts/no-deferral-gate.sh --strict-done
+step "no-deferral --selftest"    cargo xtask gate no-deferral-strict-done --selftest
+step "no-deferral --strict-done" cargo xtask gate no-deferral-strict-done
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -455,33 +457,33 @@ if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
   sed 's/^/          /' /tmp/done-parity-env.$$
   rm -f /tmp/done-parity-env.$$
   CUR_RED=1; CUR_FIRST_NOTE="bless/repoint env not empty (parity)"
-elif [ -x testing/shadow-oracle/replay.sh ]; then
+elif [ -x bin/oracle ]; then
   rm -f /tmp/done-parity-env.$$
   printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
-  step "replay-selftest (the differ can see a diff)" bash testing/shadow-oracle/replay-selftest.sh
+  step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
   # --write for, would make this whole group measure a cell set that was never reviewed.
-  step "enumerate-cells --check (cells.json is what the generator derives)" python3 testing/shadow-oracle/enumerate-cells.py --check
-  step "fetch-golden --check (1.5.5 by pinned digest)" bash testing/shadow-oracle/fetch-golden.sh --check
+  step "enumerate-cells --check (cells.json is what the generator derives)" ./bin/oracle cells --check
+  step "fetch-golden --check (1.5.5 by pinned digest)" ./bin/oracle fetch-golden --check
   ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
   GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"
   CAND="$ORACLE_DIR/recordings/candidate"
   if [ ! -s "$GOLDEN/ledger.tsv" ]; then
-    step "record the golden (1.5.5)" bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"
+    step "record the golden (1.5.5)" ./bin/oracle record --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"
   fi
   rm -rf "$CAND"
   # BUILD THE THING THE ORACLE IS ABOUT TO DIFF. The candidate recording is taken from
-  # target/release/busbar, and nothing else in this run puts a binary there: full-gate.sh names the
+  # target/release/busbar, and nothing else in this run puts a binary there: cargo xtask full-gate names the
   # release build CI-only on purpose (a release build on a laptop re-measures the laptop), so on a
   # tree that has never been release-built the record step below either dies on a missing path or —
   # worse — records a STALE binary from some earlier checkout and calls the resulting zero
   # divergences a parity proof of HEAD. This step makes the candidate HEAD's by construction.
   step "cargo build -p busbar --release --locked" cargo build -p busbar --release --locked
-  step "record the candidate (target/release/busbar)" bash testing/shadow-oracle/record.sh --bin target/release/busbar --plane all --out "$CAND"
-  step "replay: candidate vs golden" bash testing/shadow-oracle/replay.sh --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
+  step "record the candidate (target/release/busbar)" ./bin/oracle record --bin target/release/busbar --plane all --out "$CAND"
+  step "replay: candidate vs golden" ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
 else
-  absent_step "shadow oracle" "testing/shadow-oracle/replay.sh"
+  absent_step "shadow oracle" "bin/oracle"
 fi
 end_group
 
@@ -505,11 +507,15 @@ begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothi
 # scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
 # recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
 # docs/design/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
-if [ -f scripts/audit-ledger.py ]; then
-  step "audit-ledger --selftest" python3 scripts/audit-ledger.py --selftest
-  step "audit-ledger --check"    python3 scripts/audit-ledger.py --check
+if [ -f qa/audit-ledger.json ]; then
+  # The gate's own RED proof runs first, as everywhere else. It judges the five rules about the
+  # REGISTER (is the instrument believable); `--check` below judges those five plus the two about
+  # the AUDIT (is coverage complete, is anything still open at HIGH/MEDIUM) — which are the ones
+  # that are red until the audit finishes, and this DONE claim is where that red belongs.
+  step "audit-ledger selftest" cargo xtask gate audit-ledger --selftest
+  step "audit-ledger --check"  cargo xtask ledger --check
 else
-  absent_step "audit ledger" "scripts/audit-ledger.py"
+  absent_step "audit ledger" "qa/audit-ledger.json"
 fi
 end_group
 
@@ -519,11 +525,15 @@ begin_group "CHANGELOG — every accepted register entry is named"
 # status/effects.usage without kind=breaking and a `changelog` field; this gate closes the other
 # half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared --
 # and it owes that of improvements too, which the owner rule accepts "named in the CHANGELOG".
-if [ -f scripts/changelog-register-check.sh ]; then
-  step "changelog-register-check --selftest" bash scripts/changelog-register-check.sh --selftest
-  step "changelog-register-check --check"    bash scripts/changelog-register-check.sh --check
+# The gate is `cargo xtask gate changelog-register` since the conversion; the guard follows it
+# rather than the file it used to live in. Note what the guard is FOR: absent_step is RED, so a
+# gate that moved and took its call site with it would have blocked the DONE claim rather than
+# quietly dropping a check -- which is the behaviour to keep, not to route around.
+if cargo xtask gate --list >/dev/null 2>&1; then
+  step "changelog-register --selftest" cargo xtask gate changelog-register --selftest
+  step "changelog-register"            cargo xtask gate changelog-register
 else
-  absent_step "changelog register gate" "scripts/changelog-register-check.sh"
+  absent_step "changelog register gate" "cargo xtask gate changelog-register"
 fi
 end_group
 
@@ -566,23 +576,36 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "TELLER-STEPS — H2: one conformance cell per Teller step per plane, and one root-leg cell beside it"
-if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
-  step "teller-steps-check self-test"  python3 scripts/teller-steps-check.py --selftest
-  step "teller-steps-check --check"    python3 scripts/teller-steps-check.py --check
+if [ -f qa/teller-steps.json ]; then
+  step "teller-steps self-test"  cargo xtask gate teller-steps --selftest
+  step "teller-steps matrix"     cargo xtask gate teller-steps
   # The ROOT column beside the rig column: every (plane x step) cell also names the root::units_*
-  # cell that drives that step through run_unit, or a named gap. --check verifies the column holds
+  # cell that drives that step through run_unit, or a named gap. The gate verifies the column holds
   # (a proven cell's fn exists in its own leg's file; a leg proving nothing is red); this RUNS every
   # named cell with all five legs on, so "proven" means watched rather than present on disk.
-  step "every root-leg step cell RUNS and passes" python3 scripts/teller-steps-check.py --root-legs
-  # And the same treatment for the RIG column the matrix's `cell` values name. --check above proves
+  step "every root-leg step cell RUNS and passes" cargo xtask teller-steps --root-legs
+  # And the same treatment for the RIG column the matrix's `cell` values name. The gate above proves
   # every id still resolves to the scenario, subject script, voice leg or suite that owns it; this
-  # RUNS the rigs behind them through testing/shadow-oracle/rigs-ledger.sh. It refuses (loudly)
-  # rather than skipping when there is no release binary to arm the MCP and A2A legs with.
-  step "the rig suites the matrix cites RUN and pass" python3 scripts/teller-steps-check.py --rig-legs
+  # RUNS the rigs behind them.
+  #
+  # THIS ARM IS DRIVEN FROM HERE, NOT FROM THE GATE RUNNER. `cargo xtask gate segregation` forbids
+  # xtask from running the oracle's own code — a runner that executes its subject is a runner whose
+  # verdict moves when the subject does — so the invocation lives with its caller. Its two refusals
+  # come with it: a missing rig ledger and a missing release binary are REFUSALS, not skips. Nothing
+  # ran, so nothing is proven.
+  if [ ! -f testing/shadow-oracle/rigs-ledger.sh ]; then
+    absent_step "the rig suites the matrix cites" "testing/shadow-oracle/rigs-ledger.sh"
+  elif [ ! -x target/release/busbar ]; then
+    absent_step "the rig suites the matrix cites" \
+      "target/release/busbar — the MCP and A2A legs are armed from it (MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN), so without it the rigs cannot run at all. Build it first: cargo build --release -p busbar"
+  else
+    step "the rig suites the matrix cites RUN and pass" \
+      bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
+  fi
   printf '  \033[36m[info]\033[0m '
-  python3 scripts/teller-steps-check.py --check 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
+  cargo xtask teller-steps 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
 else
-  absent_step "teller-steps-check" "scripts/teller-steps-check.py / qa/teller-steps.json"
+  absent_step "teller-steps" "qa/teller-steps.json"
 fi
 end_group
 

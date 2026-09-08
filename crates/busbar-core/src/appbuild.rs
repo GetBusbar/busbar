@@ -12,7 +12,7 @@ use crate::auth::AuthMiddleware;
 use crate::diagnostics::{
     diag_error, diag_warn, DEPRECATED_ENV_VAR_HONORED, DURABLE_KEYS_INERT,
     GOVERNANCE_STORE_EPHEMERAL, OAUTH_AS_EPHEMERAL_SIGNING_KEY, OPEN_RELAY_NO_AUTH,
-    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVED, SAFE_MODE_OVERLAY_QUARANTINED,
+    PLUGINS_FETCH_RELOAD_MISS, PROVIDER_API_KEY_UNRESOLVABLE, SAFE_MODE_OVERLAY_QUARANTINED,
     STATEFUL_PLANE_EPHEMERAL_STORE, STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
@@ -569,10 +569,11 @@ pub fn build_app_from_config(
     // require max_tokens). Captured here because `cfg.models` is consumed by this loop.
     let mut model_default_max_tokens: std::collections::HashMap<String, Option<u32>> =
         std::collections::HashMap::new();
-    // Single source of truth for each provider's resolved API key. The secret-bearing env read
-    // happens exactly once per provider here; both the empty-key warning below and the later
-    // `Lane.api_key` population reuse this value, so the warning and the captured key can never
-    // diverge (and we don't read the same env var twice).
+    // Single source of truth for each provider's resolved API key. The secret-bearing read happens
+    // exactly once per provider here and the later `Lane.api_key` population reuses it, so we never
+    // read the same env var (or call the same secret plugin) twice. An entry exists IFF the
+    // provider's reference resolved or was declared `none`: an unresolvable reference returns Err
+    // from this loop, so no App is built at all.
     let mut provider_api_keys: HashMap<String, String> = HashMap::new();
     // Build lanes in a DETERMINISTIC order (sorted by model name) rather than `cfg.models`'
     // HashMap iteration order, which is randomized per process start. Lane index is assigned here
@@ -618,24 +619,42 @@ pub fn build_app_from_config(
                 mc.provider
             ));
         };
-        let key = provider_api_keys.entry(mc.provider.clone()).or_insert_with(|| {
-            // Resolve the provider credential through its SECRET REFERENCE. An unresolvable
-            // secret degrades to the empty key with a loud warning (parity with the old empty
-            // env-var posture: keyless local upstreams - ollama/vLLM - are legitimate).
-            match secret_resolver.resolve_string(&provider_cfg.api_key) {
-                Ok(k) => k,
-                Err(e) => {
-                    diag_warn!(PROVIDER_API_KEY_UNRESOLVED, provider = %mc.provider, "provider api_key did not resolve: {e}");
-                    String::new()
-                }
-            }
-        });
-        if key.is_empty() {
-            eprintln!(
-                "[warn] provider {} api_key ({}) empty",
-                mc.provider,
-                provider_cfg.api_key.describe()
-            );
+        // Resolve the provider credential through its SECRET REFERENCE — FAIL-CLOSED, like every
+        // other secret. A reference that does not resolve (unset variable, missing/empty file,
+        // unknown module, secret-plugin error) REFUSES BOOT; it does not degrade to an empty
+        // credential. The degraded lane could never authenticate: it booted "healthy", the prober
+        // skipped it (no key, no probe), and it answered every request routed to it with a 401
+        // from the upstream — with one warning line at boot as the only signal. An upstream that
+        // genuinely takes NO credential is now DECLARED (`api_key: none`), never inferred from a
+        // failure to read one.
+        //
+        // The message names the provider and the reference (`env:VAR`, `file:/path`, `none`) and
+        // never a value: the resolver's own errors are value-free for exactly this reason.
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            provider_api_keys.entry(mc.provider.clone())
+        {
+            let resolved = if provider_cfg.api_key.is_none() {
+                String::new()
+            } else {
+                secret_resolver
+                    .resolve_string(&provider_cfg.api_key)
+                    .map_err(|e| {
+                        diag_error!(
+                            PROVIDER_API_KEY_UNRESOLVABLE,
+                            provider = %mc.provider,
+                            reference = %provider_cfg.api_key.describe(),
+                            "provider api_key did not resolve: {e}"
+                        );
+                        format!(
+                            "provider '{}' api_key ({}) did not resolve: {e}. A provider \
+                             credential that cannot resolve refuses boot; if this upstream takes \
+                             NO credential (a local ollama / vLLM), declare it: `api_key: none`",
+                            mc.provider,
+                            provider_cfg.api_key.describe()
+                        )
+                    })?
+            };
+            slot.insert(resolved);
         }
         let limited = mc.max_requests >= 0;
         // `max_concurrent` is an OPT-IN limiter: omitted (None) = UNBOUNDED. Realize "unbounded" as a

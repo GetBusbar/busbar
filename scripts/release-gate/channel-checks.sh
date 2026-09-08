@@ -188,14 +188,32 @@ fi
 # verify it. One real asset is enough here because the attestation is per-artifact and every
 # per-target leg would otherwise pay a Sigstore round trip; the artifact chosen is the linux/x86_64
 # tarball, the most-downloaded one.
+#
+# `--repo` ALONE IS NOT AN IDENTITY CHECK, AND THE SIGNER IS NAMED HERE.
+# `--repo` asserts only that SOME workflow in GetBusbar/busbar signed these bytes, so every workflow
+# in the repository that can be given `id-token: write` + `attestations: write` satisfies it equally
+# — including one added by a PR, on a branch, that attested an archive nothing in the release path
+# produced. `--signer-workflow` requires the attestation to have been minted by the ONE workflow
+# that actually builds and attests the archives.
+#
+# THAT WORKFLOW IS `build-artifact.yml`, NOT release.yml or release-stage.yml, and it is a fact
+# about how GitHub issues these certificates rather than a preference. `gh attestation verify --help`:
+# "if your attestation was generated via a reusable workflow then that reusable workflow is the
+# signer whose identity needs to be validated." The Fulcio certificate's SAN is the
+# `job_workflow_ref` — the file holding the job that requested the OIDC token — not the
+# `workflow_ref` of whatever called it. `actions/attest-build-provenance` runs inside
+# build-artifact.yml for the release archives (docker.yml is the image half's signer; release.yml's
+# resolve-staged names that one). Naming a CALLER here would fail every verify and make this row a
+# permanent red about a healthy release.
 probe_asset="busbar-x86_64-unknown-linux-gnu.tar.gz"
+SIGNER_WORKFLOW="${SIGNER_WORKFLOW:-GetBusbar/busbar/.github/workflows/build-artifact.yml}"
 if retry 5 10 curl "${CURL_OPTS[@]}" -o "${WORK}/${probe_asset}" \
      "https://github.com/${REPO}/releases/download/${TAG}/${probe_asset}"; then
-  if out="$(gh attestation verify "${WORK}/${probe_asset}" --repo "$REPO" 2>&1)"; then
-    record "attest:provenance" PASS "gh attestation verify passes on the real published ${probe_asset}" ""
+  if out="$(gh attestation verify "${WORK}/${probe_asset}" --repo "$REPO" --signer-workflow "$SIGNER_WORKFLOW" 2>&1)"; then
+    record "attest:provenance" PASS "gh attestation verify passes on the real published ${probe_asset}, signed by ${SIGNER_WORKFLOW##*/}" ""
   else
     record "attest:provenance" FAIL "the documented \`gh attestation verify\` FAILS on the real published bytes" \
-      "$(printf '%s' "$out" | tr '\n' '|' | tail -c 600). The docs tell users to run this before trusting a download; right now that instruction fails. Fix: confirm release.yml's actions/attest-build-provenance step ran for ${TAG} and covered this artifact's glob."
+      "$(printf '%s' "$out" | tr '\n' '|' | tail -c 600). The docs tell users to run this before trusting a download; right now that instruction fails. Fix: confirm build-artifact.yml's actions/attest-build-provenance step ran for ${TAG} and covered this artifact — and that the bytes on the Release page are the attested ones, since a re-upload after attestation breaks the digest binding. If the attestation verifies with --repo alone but not with --signer-workflow ${SIGNER_WORKFLOW}, something OTHER than the release build path attested this archive, which is the case this flag exists to refuse."
   fi
 else
   record "attest:provenance" FAIL "could not download ${probe_asset} to attest it" "see asset:x86_64-unknown-linux-gnu."
@@ -477,23 +495,51 @@ else
 fi
 
 # ── contract:drift — the contract still describes the thing it claims to describe ───────────────
-# The whole gate is derived from .github/release-targets.json. If release.yml grows a sixth target
-# and the contract does not, the gate keeps passing while an entire platform ships unverified — the
-# gate would be green and blind, which is worse than absent. So the target list is re-derived from
-# release.yml's own build matrix and compared.
-wf=".github/workflows/release.yml"
-if [ -f "$wf" ]; then
-  wf_targets="$(grep -oE '^ *- target: [A-Za-z0-9_.-]+' "$wf" | awk '{print $3}' | sort -u)"
-  contract_targets="$(published_targets | sort -u)"
-  if [ -z "$wf_targets" ]; then
-    record "contract:drift" FAIL "could not read any build targets out of ${wf}" \
-      "the matrix shape changed and this comparison is now asserting nothing — reported FAIL rather than passing on an empty set. Fix: update the parser in scripts/release-gate/channel-checks.sh."
-  elif [ "$wf_targets" = "$contract_targets" ]; then
-    record "contract:drift" PASS "${CONTRACT}'s published targets match ${wf}'s build matrix" ""
-  else
-    record "contract:drift" FAIL "${CONTRACT} and ${wf} disagree about which platforms a release ships" \
-      "release.yml builds: $(printf '%s' "$wf_targets" | tr '\n' ' '); the contract publishes: $(printf '%s' "$contract_targets" | tr '\n' ' '). A target in one and not the other either ships unverified or is verified and never built. Fix: reconcile the two — the contract is the source of truth for the gate, release.yml for the build."
-  fi
+#
+# The whole gate is derived from .github/release-targets.json. If the build grows a sixth target and
+# the contract does not, the gate keeps passing while an entire platform ships unverified — green and
+# blind, which is worse than absent.
+#
+# THIS ROW WAS READING A FILE THAT NO LONGER HOLDS THE MATRIX. It grepped release.yml for
+# `- target: <triple>` lines. The build moved to release-stage.yml when the pipeline split
+# (build+verify+record on qa, promote-only on main), and it moved as a DERIVATION rather than a
+# literal: release-stage.yml's `targets` job reads this very contract and filters on `published`.
+# So the grep matched nothing, the `-z "$wf_targets"` branch fired, and the row recorded FAIL on
+# every single run — a standing red that says "update the parser", which is a message about this
+# script rather than about the release, and which trains a reader to ignore the one row whose job is
+# to notice that the gate has gone blind.
+#
+# What can drift now is a different shape, so this asserts a different thing — and it is a STRONGER
+# property than the old list comparison, because a derivation cannot disagree with its own source:
+#
+#   1. release-stage.yml really does derive its build matrix FROM THIS CONTRACT, filtered on
+#      `published`. If that derivation is ever replaced by a literal list, the build's list and the
+#      gate's list become independent again and this row must go red the moment it happens.
+#   2. NO workflow carries a literal `- target: <triple>` build matrix. That is precisely the shape
+#      the old parser looked for, and finding one anywhere means a SECOND build path exists whose
+#      target list nothing compares to the contract — the original defect, relocated.
+wf=".github/workflows/release-stage.yml"
+contract_file="${CONTRACT##*/}"
+contract_targets="$(published_targets | sort -u)"
+# Deliberately over the whole workflows directory, not just $wf: the point is that no build path
+# ANYWHERE enumerates targets by hand, and a new file is exactly where one would reappear.
+literal_matrices="$(grep -rlE '^ *- target: [A-Za-z0-9_.-]+' .github/workflows 2>/dev/null | sort | tr '\n' ' ')"
+if [ ! -f "$wf" ]; then
+  record "contract:drift" FAIL "${wf} not found" \
+    "the build matrix lives in that file and the gate cannot check itself for drift without it. Fix: run this from a full checkout, or — if the staging workflow was renamed — update this row to name the file that now derives the matrix."
+elif [ -z "$contract_targets" ]; then
+  record "contract:drift" FAIL "${CONTRACT} declares no published targets" \
+    "every per-target id in the gate is derived from that list, so an empty one makes the entire platform fan-out vacuous and the gate green over nothing. Fix: restore the targets and their published flags in ${CONTRACT}."
+elif ! grep -qF "$contract_file" "$wf"; then
+  record "contract:drift" FAIL "${wf} no longer reads ${CONTRACT}" \
+    "its build matrix used to be derived from the same file this gate derives its expected checks from, which is what made drift impossible rather than unlikely. It is not derived from it now, so the built set and the verified set are independent lists again. Fix: restore the derivation in ${wf}'s \`targets\` job, or point this row at whatever file now derives the matrix."
+elif ! grep -qF 't["published"]' "$wf"; then
+  record "contract:drift" FAIL "${wf} reads ${CONTRACT} but no longer filters on \`published\`" \
+    "without that predicate the matrix picks up the musl and image entries, which are inputs to the container rather than release downloads — the build is asked for \`cargo build --target image-linux-amd64\` and the asset list asserts names nothing uploads. \`published\` is the field that says which is which, and scripts/release-gate/lib.sh's published_targets() filters on the same one. Fix: restore the filter in ${wf}'s \`targets\` job."
+elif [ -n "$literal_matrices" ]; then
+  record "contract:drift" FAIL "a workflow enumerates release targets by hand: ${literal_matrices}" \
+    "a literal \`- target: <triple>\` matrix is a second, independent statement of which platforms a release ships, and nothing compares it to ${CONTRACT}. That is how a platform comes to be built and never verified (or verified and never built). Fix: derive that matrix from ${CONTRACT} the way ${wf}'s \`targets\` job does."
 else
-  record "contract:drift" FAIL "${wf} not found" "the gate cannot check itself for drift. Fix: run this from a full checkout."
+  record "contract:drift" PASS "${wf} derives its build matrix from ${CONTRACT} (published only), and no workflow hardcodes one" \
+    "gate publishes: $(printf '%s' "$contract_targets" | tr '\n' ' ')"
 fi

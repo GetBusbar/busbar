@@ -269,7 +269,7 @@ mechanical). P4 is the serialization point (contract + plugins). P5 is last by c
 
 ## 6. THE ENFORCEMENT GATE (the deliverable that prevents recurrence)
 
-Two CI checks, in the style of `config-stability-gate.sh` / `structure-lint.sh` (each with a
+Two CI checks, in the style of `config-stability-gate.sh` / `cargo xtask gate structure-lint` (each with a
 `--selftest` proving the scanner catches a planted violation before its verdict is trusted).
 
 ### 6.1 Deletion-test build matrix

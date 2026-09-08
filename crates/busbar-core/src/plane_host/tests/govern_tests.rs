@@ -359,3 +359,36 @@ fn charge_without_attribution_falls_back_to_synth() {
     assert_eq!(counts.requests, 1);
     // The synthetic key is `plane:admission:99`, distinct from any real id.
 }
+
+/// A plane fills `Usage` ITSELF, so its `component` byte is plane-chosen. A byte no shipped
+/// [`UsageComponent`] names must be REFUSED at the seam — never decoded into an enum with an invalid
+/// discriminant the host then `match`es (UB before the match). Fail-closed: no charge, no metering row.
+#[test]
+fn out_of_range_usage_component_is_refused_not_matched() {
+    let gov = gov();
+    let app = crate::test_support::TestApp::new()
+        .governance(Arc::clone(&gov))
+        .build();
+    with_dispatch_scope(&app, |host, vt| {
+        let usage = Usage::charge(UsageComponent::Tokens, 10, 1, AdmissionId(99));
+        // A whole, correctly-ALIGNED `Usage` image whose component byte is `9` — exactly what a
+        // stale, newer or hostile plane hands in.
+        let mut image = MaybeUninit::<Usage>::uninit();
+        // SAFETY: `usage` is a live `Usage`; `image` is a whole, aligned `MaybeUninit<Usage>`.
+        unsafe {
+            core::ptr::copy_nonoverlapping(&*usage as *const Usage, image.as_mut_ptr(), 1);
+            image
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(core::mem::offset_of!(Usage, component))
+                .write(9);
+        }
+        assert_eq!(
+            (vt.meter_charge.unwrap())(host, image.as_ptr()),
+            MeterOutcome::Rejected,
+            "an unnamed usage component is refused, not dispatched on"
+        );
+    });
+    let (cells, _counts) = gov.pending_metering_totals();
+    assert_eq!(cells, 0, "a refused charge accrues no metering row");
+}

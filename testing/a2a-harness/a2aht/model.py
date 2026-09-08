@@ -110,7 +110,7 @@ class Context:
 
 class Result:
     def __init__(self, test, outcome, detail="", clause="", observations=None,
-                 notes=None, elapsed=0.0):
+                 notes=None, elapsed=0.0, assertions=0):
         self.test = test
         self.outcome = outcome
         self.detail = detail
@@ -118,10 +118,15 @@ class Result:
         self.observations = observations or {}
         self.notes = notes or []
         self.elapsed = elapsed
+        # HOW MANY SPEC ASSERTIONS ACTUALLY RAN IN THIS ROW. Carried into the report because a PASS
+        # with none is a row that looked at the target and judged nothing, and the run-level floor
+        # in runner.asserted_row_shortfall cannot tell those apart from the outside.
+        self.assertions = assertions
 
     def to_dict(self):
         return {
             "id": self.test.id,
+            "assertions": self.assertions,
             "defect": self.test.defect,
             "clause": self.clause or self.test.clause,
             "role": self.test.role,
@@ -152,19 +157,23 @@ class Test:
             self.fn(ctx)
         except Violation as exc:
             return Result(self, FAIL, exc.message, exc.clause,
-                          ctx.observations, ctx.notes, time.time() - started)
+                          ctx.observations, ctx.notes, time.time() - started,
+                          ctx.assertions)
         except NotConfigured as exc:
             return Result(self, NOT_CONFIGURED, str(exc), "",
-                          ctx.observations, ctx.notes, time.time() - started)
+                          ctx.observations, ctx.notes, time.time() - started,
+                          ctx.assertions)
         except Inapplicable as exc:
             return Result(self, INAPPLICABLE, str(exc), "",
-                          ctx.observations, ctx.notes, time.time() - started)
+                          ctx.observations, ctx.notes, time.time() - started,
+                          ctx.assertions)
         except Exception:
             return Result(self, ERROR, traceback.format_exc(limit=6), "",
-                          ctx.observations, ctx.notes, time.time() - started)
+                          ctx.observations, ctx.notes, time.time() - started,
+                          ctx.assertions)
         outcome = OBSERVED if (ctx.observations and not ctx.assertions) else PASS
         return Result(self, outcome, "", "", ctx.observations, ctx.notes,
-                      time.time() - started)
+                      time.time() - started, ctx.assertions)
 
 
 REGISTRY = []

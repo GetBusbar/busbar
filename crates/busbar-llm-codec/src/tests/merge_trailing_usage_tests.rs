@@ -116,6 +116,12 @@ fn trailing_detail_merge_is_exhaustive_over_every_bucket() {
         billed_input_tokens: Some(11),
         billed_output_tokens: Some(12),
         billed_classifications: Some(13),
+        usage_identity_note: Some(crate::ir::UsageIdentityNote {
+            reported_total: 222,
+            summed_total: 190,
+            unaccounted: 32,
+            identity: "gemini.usageMetadata",
+        }),
     };
     let mut acc = usage(0, 0, None, None);
     let mut trailing = usage(50, 20, None, None);

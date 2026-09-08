@@ -275,8 +275,10 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
     let store = host.lane_store();
     let lane = &rt.lanes[i];
 
-    // No key, no probe — we can't authenticate (e.g. a passthrough deployment with no static key),
-    // and a guaranteed 401 would only thrash the breaker.
+    // No key, no probe. Either there is nothing to authenticate WITH (a passthrough deployment with
+    // no static key) or nothing to authenticate at all (a provider declaring `api_key: none` for a
+    // keyless local upstream — ollama, vLLM). The probe would go out unauthenticated, and against a
+    // real provider the guaranteed 401 would only thrash the breaker.
     if lane.api_key.expose_secret().is_empty() {
         return;
     }

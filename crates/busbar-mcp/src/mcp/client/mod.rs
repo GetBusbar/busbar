@@ -46,7 +46,7 @@
 //! This plane supplies one adapter, [`catalogue::TransportPin`], and gets the whole lifecycle:
 //! register, connect, approve, per-capability approve/reject, `approve_pin`, suspend, unpin,
 //! quarantine-on-drift and the changes queue. Nothing here re-implements a transition, which is
-//! also what choke point F in `structure-lint.sh` exists to keep true.
+//! also what choke point F in the `structure-lint` gate exists to keep true.
 //!
 //! ## WHAT IS AND IS NOT WIRED, stated plainly so nobody plans against it
 //!

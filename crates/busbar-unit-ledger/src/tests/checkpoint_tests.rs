@@ -146,16 +146,45 @@ fn the_local_anchor_admits_it_is_self_attesting() {
     assert_eq!(head.body_hash, checkpoint.body_hash);
 }
 
+/// The threshold comparison, at the boundary in both directions.
+///
+/// The COUNTING itself is the caller's: `AnchorState::consecutive_failures` is a plain field with
+/// no incrementing method on this crate's side, so what this crate can be held to is the comparison
+/// and nothing else. Named accordingly rather than claiming the count is checked here.
 #[test]
-fn consecutive_anchor_failures_are_counted_so_they_can_be_alarmed_on() {
+fn the_alarm_threshold_is_reached_at_the_count_and_not_before() {
     use crate::checkpoint::AnchorState;
+    let fresh = AnchorState::default();
+    assert_eq!(fresh.consecutive_failures, 0);
+    assert!(
+        !fresh.should_alarm(1),
+        "a sink that has not failed does not alarm"
+    );
+    assert!(
+        fresh.should_alarm(0),
+        "a threshold of nothing is reached by nothing"
+    );
+
     let mut state = AnchorState::default();
     for _ in 0..3 {
         state.consecutive_failures += 1;
     }
-    assert!(!state.should_alarm(4));
-    assert!(state.should_alarm(3));
-    let _ = AnchorError::ReadBackDiffers;
+    assert!(!state.should_alarm(4), "one short of the threshold is quiet");
+    assert!(state.should_alarm(3), "the threshold itself alarms");
+    assert!(state.should_alarm(2), "and anything past it");
+
+    // The read-back failure is a DISTINCT fact from an unreachable sink, and its text is what an
+    // operator is handed. Previously this variant was constructed and discarded, which asserted
+    // nothing at all: a sink that silently returned a different checkpoint could be reported with
+    // the "not usable" wording and nobody would look for a rewrite.
+    assert_ne!(
+        AnchorError::ReadBackDiffers,
+        AnchorError::Unavailable("anything".into())
+    );
+    assert_eq!(
+        AnchorError::ReadBackDiffers.to_string(),
+        "the anchor sink read back something other than what was written"
+    );
 }
 
 #[test]

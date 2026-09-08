@@ -34,7 +34,7 @@ signatures, plane-named identifiers.
 `rtc/sdp/webrtc/twilio/dtmf/rtp/sideband/realtime/audio/mulaw/g711/barge` are banned by NO gate; a
 `SdpOffer` in a neutral crate would pass everything today.
 - **FIX:** none needed today (zero hits — voice keeps them in busbar-voice).
-- **PREVENT:** new `scripts/plane-transport-neutrality.sh --check` (+ `--selftest` + a Rust witness
+- **PREVENT:** new `cargo xtask gate plane-transport-neutrality` (+ `--selftest` + a Rust witness
   test) failing if any neutral crate names a transport/media noun; blocking in CI. Green today, red the
   instant one leaks. (In flight.)
 
@@ -94,7 +94,7 @@ coupling (planes use neutral seams), but it is why F3/F5 exist.
 ## Prevention summary (the mechanical backstops, once all land)
 1. `plane-purity-lint --check` — reverse (plane→core) + word-boundary forward. **Already blocking.**
 2. `plane-abi-neutrality.sh` — role-noun forward over `hot/` + `plane_host/` + `hooks/`. **→ blocking (F1).**
-3. `plane-transport-neutrality.sh` — voice/media noun forward over neutral crates. **→ blocking (F2).**
+3. `cargo xtask gate plane-transport-neutrality` — voice/media noun forward over neutral crates. **→ blocking (F2).**
 4. `EngineHost` universal-trait purity test — every universal host method used by ≥2 planes or
    allowlisted. **→ blocking (F3).**  ← the semantic-coupling backstop.
 5. Voice D2 billing oracle — voice money-path byte-pinned. **→ blocking (F4).**

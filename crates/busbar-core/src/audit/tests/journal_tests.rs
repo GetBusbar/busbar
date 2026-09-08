@@ -181,6 +181,17 @@ impl PlaneStore for MockStore {
     ) -> StoreResult<bool> {
         Ok(true)
     }
+    /// The multi-use capability check. `false` — the fail-closed direction the neutral trait
+    /// defaults to — because this fixture keeps no capability rows to be live.
+    fn plane_token_live(
+        &self,
+        _kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> StoreResult<bool> {
+        Ok(false)
+    }
 }
 
 fn write(j: &Journal<Widget>, tenant: &str, amount: u64) -> Widget {

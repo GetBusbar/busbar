@@ -25,6 +25,12 @@ busbar-core = { path = "../busbar-core", default-features = false }
 # binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is
 # the one composition-root edge, not a new leaf.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE PURE HALF OF THE SUBSTRATE, named directly. The value families — the clock readers, the proxy
+# vocabularies, the neutral request handler — were split out of `busbar-substrate` into this crate
+# and are only RE-EXPORTED from their historical paths. The composition root names the definition
+# site rather than the re-export, so the surface `busbar-substrate` still has to carry into the
+# kernel is the part that genuinely lives there and not a name that already moved.
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
 # coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a
@@ -98,7 +104,7 @@ busbar-transport-sse = { path = "../busbar-transport-sse" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
-# exact leak scripts/duplex-ws-default-edge.sh exists to catch. `plane-voice` carries the edge.
+# exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-voice` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
 busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }

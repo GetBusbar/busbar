@@ -1,0 +1,92 @@
+# CodeQL — static analysis on the qa full tier, and only there.
+#
+# ── WHY qa AND NOT dev ───────────────────────────────────────────────────────────────────────────
+#
+# The branch model (see qa-gate.yml's header and scripts/release-check.sh) puts a hard cost boundary
+# between the two branches: `dev` gets the cheap per-push gate (ci.yml) and is meant to be pushed to
+# often; promoting dev→`qa` is what spends the expensive, real-money, pre-release soak. A whole-
+# workspace CodeQL database build belongs on the second side of that line. It is minutes of analysis
+# per run, it says nothing that ci.yml's clippy has not already said about the vast majority of
+# pushes, and putting it on `dev` would tax exactly the branch the model wants to keep cheap.
+#
+# It is a SEPARATE workflow rather than a job inside qa-gate.yml for two reasons, both structural:
+#
+#   * qa-gate.yml is a DISPATCHER whose `on:`/`permissions:` block is read from the DEFAULT branch by
+#     `workflow_run`, and `qa-gate-dispatch-lint.py` fails the build when this commit's copy has
+#     drifted from main's. Adding a job there means the analysis cannot gate the commit that
+#     introduced it until the next release. CodeQL has no such constraint, so it does not pay that
+#     cost.
+#   * CodeQL needs `security-events: write` to upload results. qa-gate.yml deliberately declares NO
+#     `permissions:` block (its header explains why: the sibling-clone steps authenticate to other
+#     GetBusbar repos with `github.token`, and pinning the scope there would be a silent auth change
+#     riding along). Granting a SARIF-upload scope inside that file would be precisely the silent
+#     scope change it refuses. Here the scope is stated, minimal, and applies to one job.
+#
+# `workflow_dispatch` is the same manual lever qa-gate.yml carries, so the analysis can be re-run
+# against a branch on demand without waiting for a promotion — the qa gate's dispatch and this one
+# are pulled together when someone is re-proving a candidate.
+#
+# NO `pull_request:` AND NO `push:` TO dev/main. A push to `main` is a PROMOTION of bytes qa already
+# analysed; re-analysing them there would spend the run again to learn the same thing, and a red on
+# main would be a red on a commit that is already being released. The verdict belongs before the
+# promotion, which is what `qa` is.
+name: CodeQL
+
+on:
+  push:
+    branches: [qa]
+  workflow_dispatch: {}
+
+# Read-only by default; the one job that needs to WRITE anything says so itself and says exactly
+# what. Without a block here the job would inherit the repository/org default, which is invisible
+# from this file and can be `write-all`.
+permissions:
+  contents: read
+
+# A second push to qa supersedes the first: the analysis is a statement about the tip, and an
+# in-flight run against a commit that has already been superseded is spend with no consumer.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The check-run name branch protection points at is this `name:`. It is listed in
+  # .github/required-status-checks.md under the qa full tier.
+  analyze:
+    name: CodeQL (rust)
+    runs-on: ubuntu-latest
+    # A hang is a failure. The database build plus query run is single-digit-to-low-double-digit
+    # minutes on this workspace; 90 is real headroom over that without letting a wedged extractor
+    # sit for the six hours GitHub would otherwise allow.
+    timeout-minutes: 90
+    permissions:
+      # The whole reason this job exists: uploading the SARIF results to the repository's code
+      # scanning alerts.
+      security-events: write
+      # Checking out the code under analysis. Nothing here writes to the repository.
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # rust-toolchain.toml pins 1.98.0 and rustup honours it for every cargo invocation in this
+      # repo, INCLUDING the ones CodeQL's extractor makes to resolve the workspace. Installing it
+      # explicitly, at the same version every other workflow names, means the extractor reads the
+      # workspace with the toolchain the workspace is written against rather than triggering an
+      # implicit mid-run rustup download of it.
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+
+      # `build-mode: none` is correct for Rust and is not a shortcut: the Rust extractor reads the
+      # source and the cargo manifests directly instead of observing a compiler invocation, so there
+      # is no `cargo build` to trace and forcing one would only spend the workspace's `lto = "fat"`
+      # link for nothing.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: rust
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: "/language:rust"

@@ -167,6 +167,12 @@ fn the_declared_verbs_are_the_verbs_the_handler_serves() {
 /// rustc gate's replacement.
 #[test]
 fn every_declared_verb_has_a_serving_handler() {
+    // Prime the process registry exactly as the sibling registry tests do. Without this the
+    // `declared_verbs()` fold below reads whatever a PREVIOUS test happened to push into the
+    // process-global test registry, so this test's verdict is decided by scheduling: it fails when
+    // run alone (`--exact …::every_declared_verb_has_a_serving_handler`) and passes under a full
+    // run only because another test registered first.
+    crate::ensure_test_protocols_registered();
     // The whole declared vocabulary — the registry's own answer to "which operations exist", folded
     // from the declarations at boot. Non-empty or the registry has forgotten the LLM/plane verbs.
     assert!(
@@ -194,6 +200,11 @@ fn every_declared_verb_has_a_serving_handler() {
 /// provider out of the config-validated set without anything comparing the name "mcp".
 #[test]
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {
+    // Prime the six codec dialects FIRST, so the `known_protocols()` exclusion below is asserted
+    // against a NON-EMPTY fold. Run alone (or scheduled first) the process registry is empty, and
+    // `!known_protocols().contains("mcp")` is then trivially true — the codec-less-declaration leak
+    // this test exists to catch would pass unseen in exactly the run where the fold is smallest.
+    crate::ensure_test_protocols_registered();
     // Register the REAL MCP protocol declaration the way the composition root does — MCP is an
     // extracted crate (`busbar-mcp`), and the deleted `#[path]` witness used to net its codec into
     // core's test binary. `busbar-llm` dev-depends on `busbar-mcp` solely for this assertion.

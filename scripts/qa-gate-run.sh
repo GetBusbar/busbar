@@ -51,7 +51,7 @@ TARBALL_DEFAULT="/tmp/busbar-target.tzst"
 # is the one on the DEFAULT branch, not the one in the commit being gated. A policy written in the
 # workflow therefore cannot take effect until it has already shipped — so a qa-gate improvement
 # could never gate the release that carried it, and the run would go green having done less than
-# anyone reading it thinks. `qa-gate-dispatch-lint.py` exists to catch exactly that, and its own
+# anyone reading it thinks. `cargo xtask gate qa-gate-dispatch` exists to catch exactly that, and its own
 # remedy is this: gate LOGIC belongs in this script, which rides the commit.
 #
 # The two contexts still want different answers, and they still get them. `release-check.sh`
@@ -151,13 +151,22 @@ cmd_fast() {
 
   # Reserved live-mock slots get no runner of their own (see cmd_matrix); report them here so every
   # manifest entry is still accounted for on every run.
+  #
+  # THE FEED IS READ INTO A VARIABLE FIRST, AND ITS EXIT CODE IS CHECKED. This used to be
+  # `done <<<"$(./scripts/qa-segments.sh --list)"`, and `set -e` does NOT fire on a command
+  # substitution used as a herestring: a feed that failed (an unreadable manifest, a registry that
+  # would not answer) produced empty input, the loop body never ran, not one reserved slot was
+  # reported, and this job exited 0 having quietly dropped the accounting the header two paragraphs
+  # up promises. The same class of silence as a segment that runs nothing.
   log "reserved live-mock slots (defined-but-inert; PASS/SKIP)"
-  local id status tier
+  local id status tier feed
+  feed="$(./scripts/qa-segments.sh --list)" || die "qa-segments.sh --list failed - the reserved live-mock slots could NOT be enumerated, so this run cannot claim every manifest entry was accounted for"
+  [ -n "$feed" ] || die "qa-segments.sh --list returned an EMPTY feed - refusing to report a reserved set of nothing"
   while IFS=$'\t' read -r id status tier _; do
     [ -n "$id" ] || continue
     [ "$status" = "reserved" ] && [ "$tier" = "live-mock" ] || continue
     ./scripts/qa-segments.sh --segment "$id"
-  done <<<"$(./scripts/qa-segments.sh --list)"
+  done <<<"$feed"
 }
 
 # ── build: compile ONCE for the whole fan-out ────────────────────────────────────────────────────

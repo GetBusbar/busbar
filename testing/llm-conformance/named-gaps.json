@@ -38,6 +38,39 @@
         "llm|bedrock|bedrock|request|over_budget_total#response"
       ],
       "why": "`ServiceQuotaExceededException` is a real, documented Bedrock Runtime error type that the Converse and ConverseStream operation shapes leave out of their own error unions. It is the one that says what happened here: the caller's budget is spent, and no amount of waiting changes that. Every error Converse does declare would say something false — `ThrottlingException` tells an SDK to back off and retry a request that can never succeed, and `ValidationException` blames the request. The refusal keeps the accurate type and the gap is named instead, because a router that lies about WHY it refused costs the caller a retry storm."
+    },
+    {
+      "id": "gemini-vertex-traffic-type",
+      "owner": "llm plane owner",
+      "rule": "additionalProperties",
+      "detail_contains": "property 'trafficType' is not declared by the spec",
+      "cells": [
+        "llm|gemini|gemini|vertex|ok#response",
+        "llm|gemini|gemini|vertex|ok_stream#response"
+      ],
+      "why": "These two rows are not busbar's bytes — they are GOOGLE'S, captured verbatim off Vertex AI (gemini-2.5-flash, us-central1, 2026-09-07) and committed under crates/busbar-llm-codec/src/tests/proto/golden/vendor/. Every response Vertex returns carries `usageMetadata.trafficType` (the ON_DEMAND vs PROVISIONED billing lane), and the pinned generativelanguage discovery document does not declare it, because that document describes the Gemini API surface and this is the Vertex one. The producer and the schema are both Google's, so there is nothing here for busbar to fix: the recording is what the API sends. Naming it keeps the row honest about the ONE thing it is here to prove — that a field carrying billing-lane meaning reaches busbar undeclared — instead of letting it fail for a reason nobody reads."
+    },
+    {
+      "id": "gemini-vertex-create-time",
+      "owner": "llm plane owner",
+      "rule": "additionalProperties",
+      "detail_contains": "property 'createTime' is not declared by the spec",
+      "cells": [
+        "llm|gemini|gemini|vertex|ok#response",
+        "llm|gemini|gemini|vertex|ok_stream#response"
+      ],
+      "why": "Same recording, same cause as `gemini-vertex-traffic-type`: Vertex stamps every `GenerateContentResponse` with a top-level `createTime` that the pinned generativelanguage schema's response object does not declare. Google's own bytes against Google's own published schema. busbar neither emits nor consumes the field on these rows — it is passing through what the vendor sent — so the disagreement is the schema's to close, not busbar's."
+    },
+    {
+      "id": "gemini-vertex-grounding-chunk-domain",
+      "owner": "llm plane owner",
+      "rule": "additionalProperties",
+      "detail_contains": "property 'domain' is not declared by the spec",
+      "cells": [
+        "llm|gemini|gemini|vertex|ok#response",
+        "llm|gemini|gemini|vertex|ok_stream#response"
+      ],
+      "why": "A grounded turn returns `groundingMetadata.groundingChunks[].web` objects carrying `domain` alongside the declared `uri` and `title`. The pinned schema's GroundingChunkWeb declares the other two and not this one, so Google's live grounding response cannot validate against Google's published grounding schema. Recorded rather than fixed for the same reason as its two siblings: these rows exist to measure the VENDOR, and editing the recording to satisfy the schema would destroy the only evidence that the two disagree."
     }
   ]
 }

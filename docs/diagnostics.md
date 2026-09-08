@@ -1369,6 +1369,28 @@ A plugin rollback's rebuild failed AFTER the lowered pin was persisted, and the 
 
 **What to do:** Fix the `plugins.trust` block (the logged error names the problem), then re-run `--list-plugins` or `--validate`.
 
+<a id="plugin-firstparty-floor-unreadable"></a>
+### BUSBAR-6011 — First-party anti-downgrade floor unreadable (booting with NO first-party floor)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-firstparty-floor-unreadable`
+
+The persisted per-plugin-name high-water marks — the automatic first-party anti-downgrade floor — could not be read or were not valid, so busbar booted with NO first-party floor. Security-relevant: while the floor is absent, a validly-signed but OLD first-party artifact planted in the plugins directory would load without being refused as a downgrade. The floor re-establishes itself as plugins load successfully. busbar fails SOFT here on purpose: refusing the boot would let anyone able to corrupt one file take the node down.
+
+**What to do:** Check the data directory is readable and that `plugin-highwater.json` beneath it is intact (the log names the path and the exact problem). Deleting the file is safe — the floor rebuilds from the next successful load — but it does re-open the replay window until it does.
+
+<a id="plugin-firstparty-floor-unwritable"></a>
+### BUSBAR-6012 — First-party anti-downgrade floor could not be persisted (it will not survive a restart)
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plugin-firstparty-floor-unwritable`
+
+busbar raised the per-plugin-name high-water marks — the automatic first-party anti-downgrade floor — but could not write them to the data directory. The floor still applies to THIS process; it will not survive a restart, so the replay window reopens at the next boot until a load re-establishes it.
+
+**What to do:** Make the configured data directory writable (the log names the underlying I/O error). A node that cannot write its data directory usually has a larger problem than this notice.
+
 ## 7xxx — Plane protocols
 
 <a id="stateful-plane-ephemeral-store"></a>
@@ -1858,15 +1880,15 @@ busbar was booted with `--safe-mode`, so the persisted config overlay (API-regis
 **What to do:** This is an operator-requested state. Repair or remove the offending overlay entry, then boot WITHOUT `--safe-mode` to re-apply the overlay. Until then, API-registered hooks are not in effect.
 
 <a id="provider-api-key-unresolved"></a>
-### BUSBAR-8013 — Provider api_key did not resolve (degraded to an empty key)
+### BUSBAR-8013 — Provider api_key did not resolve (degraded to an empty key) — RETIRED, see BUSBAR-8020 *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `provider-api-key-unresolved`
 
-A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that provider to an empty key. This is legitimate for keyless local upstreams (ollama/vLLM), but for a real provider it means egress will be unauthenticated and the upstream will reject with 401.
+RETIRED. A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that provider to an empty key and started the lane anyway. 1.6.0 removed that degrade: an `api_key` that does not resolve now REFUSES BOOT (BUSBAR-8020), and an upstream that genuinely takes no credential is declared with `api_key: none`.
 
-**What to do:** If the provider needs a key, fix its `api_key` secret reference (the secret is missing or the resolver could not read it) and restart. If the upstream is genuinely keyless, no action is needed.
+**What to do:** Nothing emits this code. See BUSBAR-8020.
 
 <a id="open-relay-no-auth"></a>
 ### BUSBAR-8014 — auth.chain is empty — OPEN RELAY (every request admitted unauthenticated)
@@ -1933,6 +1955,17 @@ An admin group `/usage` read could not derive a bucket's usage from the governan
 The write-behind metering accumulator (pending_metering) reached its cap while a NEW (key_id, bucket, model, provider) cell arrived — a sustained governance-store outage with diverse keys/models, where every flush re-queues the failed cells while new ones keep arriving. Rather than grow without bound OR silently drop billable usage, busbar COALESCES the arriving cell's counts into a per-bucket overflow sentinel: the day's token and request TOTALS are preserved, only their per-key/model/provider ATTRIBUTION is collapsed. Each coalesce also increments busbar_metering_pending_coalesced_total. Per-event detail is at debug; this is the human-cadence signal.
 
 **What to do:** Restore the governance store — the accumulator overflows only under a sustained write outage. Usage is not lost (totals are retained under the overflow sentinel key), but once the store recovers the retained deltas flush and normal per-key attribution resumes. A steadily climbing coalesced counter means the outage has outlasted the cap.
+
+<a id="provider-api-key-unresolvable"></a>
+### BUSBAR-8020 — Provider api_key did not resolve (boot refuses)
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `provider-api-key-unresolvable`
+
+A provider's `api_key` secret reference could not be resolved — an unset environment variable, a missing or empty file, an unknown module, or a secret plugin that failed — so busbar refuses to start. It does not fall back to an empty credential: that lane could never authenticate, would report healthy, would be skipped by the health prober (no key, no probe), and would answer every request routed to it with a 401 from the upstream. The diagnostic names the provider and the reference (`env:VAR`, `file:/path`), never the value.
+
+**What to do:** Fix the reference so it resolves (set the variable, mount the file, install and trust the secret plugin), or — if this upstream genuinely takes NO credential, such as a local ollama or vLLM — declare that explicitly with `api_key: none`, which starts the lane with no credential and sends no auth header. `--validate` reports the same refusal before you deploy.
 
 ## 9xxx — Boot & lifecycle
 
