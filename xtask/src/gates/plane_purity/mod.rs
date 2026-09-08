@@ -65,8 +65,13 @@ pub fn strict_reach_row(key: &str) -> String {
     format!("plane-purity-strict:test-reach:{key}")
 }
 
-/// The env var `scripts/construction-gate.sh` points at the hit artefact, kept BY NAME so the
-/// delegated scan's one consumer does not have to move on the same day this gate does.
+/// Where a caller OUTSIDE this process asks for the hit artefact to be written.
+///
+/// The construction gate used to be that caller, through `scripts/construction-gate.sh`; it is now
+/// linked into the same binary and reads [`check_hits_artefact`] directly, so nothing in the tree
+/// sets this today. The env var stays because it is the seam for a consumer that CANNOT be a
+/// function call — a script, another process — and because the two paths render the same bytes
+/// from the same derivation, which is what keeps them from drifting if one appears.
 pub const HITS_OUT_ENV: &str = "PLANE_PURITY_HITS_OUT";
 
 /// The core walk's own denominator floor. The two big walks carry theirs in [`ROW_DENOMINATOR`]

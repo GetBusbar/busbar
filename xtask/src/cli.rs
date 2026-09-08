@@ -14,7 +14,7 @@ use crate::selftest;
 
 const USAGE: &str = "\
 usage:
-  cargo xtask gate <name> [--selftest] [--report] [--write] [--format=tsv]
+  cargo xtask gate <name> [--selftest] [--report] [--strict] [--write] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
@@ -266,11 +266,25 @@ fn gate(args: &[String]) -> i32 {
         };
     }
 
-    let verdict = gates::execute(gate.as_ref(), &cx);
+    // `--strict` REFUSES THE GATE'S OWN SKIP ALLOWLIST. A named gap is a reported gap in the plain
+    // form and a red one here, which is what makes "DONE means no gap" a claim rather than a hope.
+    let verdict = if args.iter().any(|a| a == "--strict") {
+        gates::execute_strict(gate.as_ref(), &cx)
+    } else {
+        gates::execute(gate.as_ref(), &cx)
+    };
     if tsv {
         gates::print_rows_tsv(&verdict.rows);
     } else {
         gates::print_verdict(reg.name, &verdict);
+    }
+    // `--report` PRINTS THE VERDICT AND DOES NOT IMPOSE IT. This is the arm a runner uses when it
+    // wants the rows in the log without the run's exit status turning on them — the posture the
+    // construction gate has had since it was written, and which its shell spelled `--summary`.
+    // Every row is still measured and still reconciled; only the exit code is withheld, which is
+    // the difference between reporting a fact and scoring it.
+    if cx.env().report_only {
+        return 0;
     }
     i32::from(verdict.red)
 }
