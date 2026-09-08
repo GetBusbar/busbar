@@ -771,7 +771,32 @@ fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkEr
         if name == "target" || name == ".git" {
             continue;
         }
-        if path.is_dir() {
+        // A SYMLINKED TREE IS A TREE THIS WALK CANNOT BOUND.
+        //
+        // The recursion used to be guarded by `path.is_dir()`, which FOLLOWS a symlink. With no
+        // visited set and no depth cap, a directory symlink pointing at an ancestor was walked
+        // over and over — the same file counted many times where the loop happened to terminate,
+        // and a stack exhausted where it did not, which ABORTS the process rather than returning a
+        // verdict. An abort is none of the four exit codes this runner contracts, and it takes
+        // every other gate in a batched run with it.
+        //
+        // Refusing is what the walk can honestly say. Skipping the link quietly is the same "an
+        // unreadable subtree is an empty one" the arm above just stopped doing, and a depth cap
+        // names "too deep" instead of naming the link, so it cannot tell a cycle from a
+        // legitimately deep tree. `symlink_metadata` does not follow, so this decides on the link
+        // itself.
+        let meta =
+            std::fs::symlink_metadata(&path).map_err(|e| walk_io(&path, root, &e.to_string()))?;
+        if meta.file_type().is_symlink() {
+            return Err(walk_io(
+                &path,
+                root,
+                "the walk does not follow symlinks: a symlinked tree is a tree this walk cannot \
+                 bound, and following one silently counts the same file twice or exhausts the \
+                 stack. Point the root at the real directory.",
+            ));
+        }
+        if meta.is_dir() {
             collect(&path, root, out)?;
         } else if let Ok(rel) = path.strip_prefix(root) {
             out.push(rel.to_path_buf());
