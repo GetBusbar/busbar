@@ -47,7 +47,9 @@
 //! at — never a false negative, and the allowlist is how a real one gets recorded.
 
 use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
+};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
 use crate::planes::PlaneRoots;
@@ -748,28 +750,17 @@ impl Gate for BlockingFfiGate {
             Err(e) => report.note_infra_failure(format!("blocking-ffi selftest: {e}")),
         }
 
-        // THE PLANE ROOTS: a plane that SPLIT away is invisible to every floor.
-        let planes = PlaneRoots::at(cx.abs("crates")).grammar("a grammar no source declares");
-        let errs = planes.resolve_all(PLANE_KEYS).1;
-        if errs.is_empty() {
-            report.note_infra_failure(
-                "blocking-ffi selftest: an impossible grammar still resolved a plane, so the \
-                 unresolved-plane arm proves nothing"
-                    .to_string(),
-            );
-        } else {
-            report.push(crate::gates::Case {
-                name: "a plane that cannot be located is refused, not scanned as a smaller tree"
-                    .to_string(),
-                covers: vec![ROW_PLANE_ROOTS.to_string()],
-                expected: crate::gates::Expect::Red {
-                    naming: vec!["PLANE-ROOT-MISSING".to_string()],
-                },
-                got: crate::gates::Expect::Red {
-                    naming: errs.iter().map(ToString::to_string).collect(),
-                },
-            });
-        }
+        // THE PLANE ROOTS: a plane that SPLIT away is invisible to every floor. Driven THROUGH
+        // `Gate::run` over a fixture tree in which no plane declares its grammar, because the
+        // plane resolver reads `std::fs` and no overlay can reach it.
+        report.push(prove_rows_red_at(
+            cx,
+            self,
+            "a plane that cannot be located is refused, not scanned as a smaller tree",
+            &[ROW_PLANE_ROOTS],
+            PLANE_ROOT_MISSING_FIXTURE,
+            &["PLANE-ROOT-MISSING"],
+        ));
 
         report
     }

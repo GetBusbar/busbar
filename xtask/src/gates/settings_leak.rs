@@ -32,7 +32,9 @@
 //! other reason is the bug this gate exists to catch, in a costume.
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
+};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
 use crate::planes::PlaneRoots;
@@ -563,6 +565,20 @@ impl Gate for SettingsLeakGate {
             }
             Err(_) => { /* already reported by the case above */ }
         }
+
+        // THE PLANE ROOTS: the row this gate's header calls the only thing that can catch a plane
+        // that split, and which had no red proof at all — a plane that left takes its projections
+        // with it, and every remaining root still clears its floor. Driven THROUGH `Gate::run`
+        // over a fixture tree in which no plane declares its grammar; the plane resolver reads
+        // `std::fs`, so no overlay can plant this.
+        report.push(prove_rows_red_at(
+            cx,
+            self,
+            "a plane that cannot be located is refused, not scanned as a smaller tree",
+            &[ROW_PLANE_ROOTS],
+            PLANE_ROOT_MISSING_FIXTURE,
+            &["PLANE-ROOT-MISSING"],
+        ));
 
         report
     }
