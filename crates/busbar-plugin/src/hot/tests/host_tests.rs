@@ -153,3 +153,112 @@ fn stub_slot_is_unimplemented() {
     let g = Facts::new(1, 10, 0, 0, 0, b"p");
     (vt.govern_admit.unwrap())(core::ptr::null_mut(), &*g as *const Facts);
 }
+
+// ── The table's own sized-struct guard: `size` is now READ, and clamped in both directions ──────
+// `PlaneHostVtable::size` was written at construction and never read by anything, so the one
+// compensating control for `check_preamble`'s deliberately open MINOR window was inert.
+
+/// A well-formed table checks out and honours exactly its own size.
+#[test]
+fn a_well_formed_vtable_honours_its_own_size() {
+    let vt = PlaneHostVtable::STUB;
+    // SAFETY: `vt` is a whole, live `PlaneHostVtable`.
+    let honoured = unsafe { PlaneHostVtable::check(&vt as *const PlaneHostVtable) }
+        .expect("a table this build built checks out");
+    assert_eq!(honoured as usize, core::mem::size_of::<PlaneHostVtable>());
+}
+
+/// An OVER-LARGE attested size is refused, with a diagnostic naming BOTH numbers. The peer attests
+/// its own size and nothing here can measure its real extent — and a wrong vtable slot is a
+/// fn-pointer this side would CALL, so the over-claim is refused rather than trusted.
+#[test]
+fn an_over_large_vtable_size_is_refused_with_a_diagnostic() {
+    let mut vt = PlaneHostVtable::EMPTY;
+    let ours = core::mem::size_of::<PlaneHostVtable>() as u32;
+    vt.size = ours + 32;
+    // SAFETY: `vt` is a whole, live `PlaneHostVtable`; only its attested `size` is a lie.
+    let err = unsafe { PlaneHostVtable::check(&vt as *const PlaneHostVtable) }
+        .expect_err("an over-large attested size must be refused");
+    assert_eq!(
+        err,
+        VtableRefusal::SizeTooLarge {
+            advertised: ours + 32,
+            ours
+        }
+    );
+    let diag = err.to_string();
+    assert!(diag.contains(&(ours + 32).to_string()), "names the claim");
+    assert!(diag.contains(&ours.to_string()), "names this build's size");
+}
+
+/// A size that cannot even cover the FROZEN header is refused too — the other end of the clamp.
+#[test]
+fn an_under_sized_vtable_size_is_refused() {
+    let mut vt = PlaneHostVtable::EMPTY;
+    vt.size = PlaneHostVtable::MIN_SIZE - 1;
+    // SAFETY: `vt` is a whole, live `PlaneHostVtable`.
+    let err = unsafe { PlaneHostVtable::check(&vt as *const PlaneHostVtable) }
+        .expect_err("a size below the frozen header must be refused");
+    assert_eq!(
+        err,
+        VtableRefusal::SizeTooSmall {
+            advertised: PlaneHostVtable::MIN_SIZE - 1,
+            minimum: PlaneHostVtable::MIN_SIZE,
+        }
+    );
+}
+
+/// The FROZEN preamble is checked FIRST — before `size` is even considered.
+#[test]
+fn a_bad_vtable_preamble_is_refused_before_size() {
+    let mut vt = PlaneHostVtable::EMPTY;
+    vt.abi.magic = 0xDEAD_BEEF;
+    vt.size = 0; // would also be `SizeTooSmall`; the preamble must win.
+                 // SAFETY: `vt` is a whole, live `PlaneHostVtable`.
+    let err = unsafe { PlaneHostVtable::check(&vt as *const PlaneHostVtable) }
+        .expect_err("a bad magic must be refused");
+    assert!(matches!(err, VtableRefusal::Preamble(_)), "got {err:?}");
+}
+
+/// The load-bearing half: a SHORTER (older) peer's table is NOT a refusal, but its trailing slots
+/// read as ABSENT rather than as bytes past the end of its allocation. `host_slot!` is what makes
+/// that true — before it, a build with more slots than the peer formed `&PlaneHostVtable` over the
+/// short table and loaded a garbage fn-pointer it would then call.
+#[test]
+fn a_shorter_vtable_hides_its_trailing_slots() {
+    let vt = PlaneHostVtable::STUB;
+    // A peer that predates the minor-19 metering-lease slots: it attests everything up to (but not
+    // including) `cost_reserve`.
+    let short = core::mem::offset_of!(PlaneHostVtable, cost_reserve) as u32;
+    let p = &vt as *const PlaneHostVtable;
+
+    // A leading slot every version has ever had is still granted.
+    assert!(
+        host_slot!(p, short, govern_admit).is_some(),
+        "a slot the peer's size covers is read"
+    );
+    // The two trailing slots the peer never wrote read as ABSENT — no fn-pointer is produced.
+    assert!(
+        host_slot!(p, short, cost_reserve).is_none(),
+        "a slot past the peer's attested size must read as absent"
+    );
+    assert!(
+        host_slot!(p, short, cost_settle).is_none(),
+        "a slot past the peer's attested size must read as absent"
+    );
+    // At the honoured full size the same slots ARE granted — the guard hides only what it must.
+    let full = core::mem::size_of::<PlaneHostVtable>() as u32;
+    assert!(host_slot!(p, full, cost_settle).is_some());
+}
+
+/// The POD-side upper clamp: a peer's self-attested `size` is clamped to this build's own struct, so
+/// an over-claim can never widen the read window past what this build compiled.
+#[test]
+fn an_over_large_attested_size_is_clamped_to_this_builds_struct() {
+    let ours = core::mem::size_of::<PlaneHostVtable>();
+    assert_eq!(crate::honoured_size(u32::MAX, ours), ours as u32);
+    assert_eq!(crate::honoured_size(ours as u32 + 1, ours), ours as u32);
+    // A shorter claim is honoured verbatim — that is the append-only rule, untouched.
+    assert_eq!(crate::honoured_size(16, ours), 16);
+    assert_eq!(crate::honoured_size(ours as u32, ours), ours as u32);
+}

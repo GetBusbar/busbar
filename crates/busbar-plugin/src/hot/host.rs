@@ -595,6 +595,144 @@ const _: fn() = || {
     assert_send_sync::<PlaneHostVtable>();
 };
 
+/// Why a peer-attested [`PlaneHostVtable`] was REFUSED. Fail-closed: any non-`Ok` outcome means the
+/// table must not be read at all — never a partial read, never a slot call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VtableRefusal {
+    /// The FROZEN airlock header did not check out (bad magic / incompatible major).
+    Preamble(crate::PreambleError),
+    /// The attested `size` does not even cover the frozen header (`abi` + `size` + `version`), so it
+    /// cannot describe a `PlaneHostVtable` at all.
+    SizeTooSmall {
+        /// The size the peer attested.
+        advertised: u32,
+        /// The smallest size that could describe this table.
+        minimum: u32,
+    },
+    /// The attested `size` is LARGER than this build's own `PlaneHostVtable`. Nothing on this side
+    /// can verify a claim about bytes it has no definition for, and the cost of being wrong is a
+    /// garbage fn-pointer this side CALLS — so the over-claim is refused rather than clamped.
+    SizeTooLarge {
+        /// The size the peer attested.
+        advertised: u32,
+        /// `size_of::<PlaneHostVtable>()` in this build.
+        ours: u32,
+    },
+}
+
+impl core::fmt::Display for VtableRefusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            VtableRefusal::Preamble(e) => {
+                write!(f, "host vtable preamble refused: {e:?}")
+            }
+            VtableRefusal::SizeTooSmall {
+                advertised,
+                minimum,
+            } => write!(
+                f,
+                "host vtable attested size {advertised} is below the {minimum}-byte frozen header, \
+                 so it cannot describe a PlaneHostVtable"
+            ),
+            VtableRefusal::SizeTooLarge { advertised, ours } => write!(
+                f,
+                "host vtable attested size {advertised} exceeds this build's own \
+                 PlaneHostVtable ({ours} bytes); this build has no definition for the extra bytes \
+                 and will not call a slot it cannot describe — rebuild both sides against one \
+                 busbar-plugin ABI minor"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VtableRefusal {}
+
+impl PlaneHostVtable {
+    /// The smallest attested `size` that could describe this table: the FROZEN header alone
+    /// (`abi` + `size` + `version`), before the first slot.
+    pub const MIN_SIZE: u32 = (core::mem::size_of::<AbiPreamble>() + 8) as u32;
+
+    /// CHECK a peer-supplied `*const PlaneHostVtable` before ANY slot is read, and return the number
+    /// of bytes this side will honour — the missing half of the sized-struct discipline on the table
+    /// itself. `size` was written at construction (`EMPTY`/`STUB`) and, until this existed, was never
+    /// read by anything: the field the guard was written for was inert.
+    ///
+    /// Two refusals and one clamp:
+    ///
+    /// * the FROZEN preamble is checked FIRST (magic, then major) — before any other byte is
+    ///   interpreted, exactly as `check_preamble` is used everywhere else;
+    /// * an attested `size` below [`MIN_SIZE`](Self::MIN_SIZE) cannot describe this table at all;
+    /// * an attested `size` LARGER than this build's own `size_of::<PlaneHostVtable>()` is refused.
+    ///   A newer peer's trailing bytes are unverifiable from here, and unlike a POD field — where an
+    ///   over-claim yields at worst bad data — a vtable slot is a fn-pointer this side then CALLS, so
+    ///   the honest answer is to refuse rather than clamp. The forward path for a newer table is a
+    ///   MINOR bump on BOTH sides (the hot lane's planes are version-locked to this crate; a
+    ///   published cold-lane plugin never sees this table, so wire compatibility is untouched).
+    ///
+    /// A SHORTER attested size is NOT a refusal — that is the append-only rule working as intended
+    /// (an older host simply granted fewer slots). It is the returned honoured size that makes it
+    /// safe: read every slot through [`read_sized_field`](crate::read_sized_field) against it, so a
+    /// trailing slot the peer never wrote reads as absent instead of as bytes past the end of its
+    /// allocation.
+    ///
+    /// # Safety
+    /// `vt` must be non-null and address at least [`MIN_SIZE`](Self::MIN_SIZE) live, initialized
+    /// bytes laid out as the leading prefix of a `PlaneHostVtable`. It need not be aligned, and it
+    /// need NOT be a whole table — that latitude is the entire reason this takes a raw pointer and
+    /// never forms a `&PlaneHostVtable`.
+    ///
+    /// # Errors
+    /// [`VtableRefusal`], whose `Display` is the operator diagnostic.
+    pub unsafe fn check(vt: *const PlaneHostVtable) -> Result<u32, VtableRefusal> {
+        // The frozen header is read WITHOUT forming a reference to the whole table: the peer's
+        // allocation may be shorter than this build's struct, and `&PlaneHostVtable` would assert the
+        // whole thing is there the instant it exists — the claim this check is here to avoid making.
+        // SAFETY: the caller guarantees `vt` addresses at least `MIN_SIZE` live bytes shaped as the
+        // leading prefix of the table, which covers `abi`, `size` and `version`; `addr_of!` computes
+        // addresses only and `read_unaligned` assumes no alignment the peer did not promise.
+        let (abi, advertised) = unsafe {
+            (
+                core::ptr::read_unaligned(core::ptr::addr_of!((*vt).abi)),
+                core::ptr::read_unaligned(core::ptr::addr_of!((*vt).size)),
+            )
+        };
+        crate::check_preamble(&abi).map_err(VtableRefusal::Preamble)?;
+        if advertised < Self::MIN_SIZE {
+            return Err(VtableRefusal::SizeTooSmall {
+                advertised,
+                minimum: Self::MIN_SIZE,
+            });
+        }
+        let ours = core::mem::size_of::<PlaneHostVtable>() as u32;
+        if advertised > ours {
+            return Err(VtableRefusal::SizeTooLarge { advertised, ours });
+        }
+        Ok(advertised)
+    }
+}
+
+/// Read ONE capability slot out of a peer-attested [`PlaneHostVtable`], yielding `None` unless the
+/// table's own attested `size` proves the peer WROTE that slot. The vtable-shaped spelling of
+/// [`read_sized_field`](crate::read_sized_field): `Some(fn)` = granted, `None` = absent (an older
+/// peer that never had the slot, or a peer that left it null).
+///
+/// This is what makes a trailing slot safe. Without it, a build whose `PlaneHostVtable` has more
+/// slots than the peer's forms the reference over the peer's SHORTER allocation and loads a trailing
+/// slot from bytes past the end — a garbage fn-pointer it then calls.
+///
+/// `$size` must be the honoured size [`PlaneHostVtable::check`] returned, not the raw attested field.
+///
+/// # Safety
+/// Expands inline, so its obligation is documented rather than compiler-enforced: `$ptr` must address
+/// at least `$size` live, initialized bytes laid out as the leading prefix of a `PlaneHostVtable` —
+/// which is exactly what a successful `check` establishes about its argument.
+#[macro_export]
+macro_rules! host_slot {
+    ($ptr:expr, $size:expr, $slot:ident) => {{
+        $crate::read_sized_field!($ptr, $size, $crate::hot::host::PlaneHostVtable, $slot).flatten()
+    }};
+}
+
 impl PlaneHostVtable {
     /// An EMPTY vtable: the FROZEN preamble/size/version filled, EVERY capability `None` (absent /
     /// not-granted). This is the honest default a host starts from and grants into — the NULL-slot
