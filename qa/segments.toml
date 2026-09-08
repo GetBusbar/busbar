@@ -527,15 +527,11 @@ run    = "scripts/plane-config-noun-gate.sh --selftest && GREP_GATE_REPORT_ONLY=
 id     = "inventory-coverage"
 status = "reserved"   # -> active when the three unnamed ids are covered or named (see below)
 tier   = "fast"
-# THE INVENTORY COVERAGE SCOREBOARD (scripts/inventory-coverage.sh, a thin wrapper over
-# scripts/inventory-coverage.py — the wrapper is what is named here on purpose: a second row for the
-# .py would be a second copy of the same gate, the drift this manifest's template rule exists to make
-# unrepresentable). Every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or
-# is a NAMED gap in qa/inventory-gaps.json; an id with neither is red. Its `--selftest` is GREEN
-# (dropping a cell flips its id covered -> none; naming an id as a gap keeps it out of the failure
-# list), but `--check` is RED: one config-inventory row — the one naming the plugin that backs a
-# configured hook — is neither covered by a citing cell nor named in qa/inventory-gaps.json. That is
-# a real finding, not a broken gate — which is why this slot is reserved and NAMED in the umbrella's
-# scope line rather than armed into a standing red.
-# Arming: cover or name that row, confirm `--check` green, flip status to "active".
-run    = "scripts/inventory-coverage.sh --selftest && scripts/inventory-coverage.sh --check"
+# THE INVENTORY COVERAGE SCOREBOARD (cargo xtask gate inventory-coverage), the Rust successor to
+# scripts/inventory-coverage.py (scripts/inventory-coverage.sh, its thin bash wrapper, is retired —
+# `cargo xtask gate` is now the uniform entry point the wrapper existed to fake). Every
+# docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in
+# qa/inventory-gaps.json; an id with neither is red. This slot stays `reserved` on the same terms
+# the Python left it on: arming to `active` is a decision about the underlying coverage finding, not
+# about this port, and is left to whoever owns that call.
+run    = "cargo xtask gate inventory-coverage --selftest && cargo xtask gate inventory-coverage"

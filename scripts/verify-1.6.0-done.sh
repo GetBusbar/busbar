@@ -560,12 +560,8 @@ begin_group "INVENTORY-COVERAGE — every docs/design/inventory/*.md row id is b
 # Appendix B says every inventory row is a parity binding AND an oracle cell; this is the check that
 # was missing. qa/inventory-gaps.json names every row id with no citing cell yet, so a gap is a
 # visible, owned line item rather than a silent hole. DONE means no id has no cell and no name.
-if [ -f scripts/inventory-coverage.sh ]; then
-  step "inventory-coverage --selftest" bash scripts/inventory-coverage.sh --selftest
-  step "inventory-coverage --check"    bash scripts/inventory-coverage.sh --check
-else
-  absent_step "inventory coverage gate" "scripts/inventory-coverage.sh"
-fi
+step "inventory-coverage --selftest" cargo xtask gate inventory-coverage --selftest
+step "inventory-coverage --check"    cargo xtask gate inventory-coverage
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
