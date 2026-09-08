@@ -324,13 +324,12 @@ pub fn provision_dial(
 ///
 /// ## What this driver does NOT do yet, said plainly
 ///
-/// **A completed unit's answer document.** The loop's `Encode` step answers with a `Frame`, and
-/// `Ended` does not carry it: what comes back from `run_unit` is the ending and the posting, so
-/// there is nothing for this driver to hand `encode_response`. A unit that completes therefore
-/// answers with the outcome and no body. Encoding something anyway — the request's own document
-/// echoed back, say — would be the driver inventing an answer no plane wrote, which is the one thing
-/// the whole seam exists to prevent. The fix is on the loop's side: the ending has to carry the
-/// encode step's frame.
+/// **A completed unit's answer document — CLOSED.** The loop's `Encode` step answers with a
+/// `Frame`, and the ending now carries it, so a unit that completes answers with the bytes its own
+/// plane wrote rather than with the outcome and nothing. What is still true is the rule that kept
+/// this open: the driver does not encode anything itself, because a driver inventing an answer no
+/// plane wrote is the one thing the whole seam exists to prevent. It passes the frame along unread.
+/// A completed unit whose Encode step declined to write still leaves with no body.
 ///
 /// **A plane's own steps.** `ProductionUnits` answers every non-admin step with a refusal, by
 /// design — the bodies arrive one plane at a time and admin is the one that has landed — so a unit
@@ -523,6 +522,33 @@ pub fn refusal_of(
     })
 }
 
+/// What the plane WROTE for an ending that completed, if it wrote anything.
+///
+/// The counterpart to [`refusal_of`], and deliberately not symmetrical with it. A refusal is
+/// RECONSTRUCTED here, out of the step and reason the ending carries, because a refusal is a fact
+/// about the loop that any renderer can be told. A completed unit's answer is not reconstructible
+/// from anything: it exists exactly once, as the frame the plane's own `Encode` step wrote, and the
+/// only honest thing this driver can do with it is pass it along unread.
+///
+/// `None` on every other ending — a refusal renders through `refusal_of`, and `AlreadySettled`
+/// produced no ending of its own. `None` for a completed unit whose Encode step declined to write
+/// means exactly that: no body, rather than a body this file invented.
+#[cfg(feature = "root-admin")]
+#[must_use]
+pub fn completed_bytes(ended: &busbar_kernel::teller::Ended) -> Option<Vec<u8>> {
+    let busbar_kernel::teller::Ended::Settled { end, frame, .. } = ended else {
+        return None;
+    };
+    match end.outcome() {
+        busbar_caps::Outcome::Completed => {}
+        busbar_caps::Outcome::Refused(_, _)
+        | busbar_caps::Outcome::Failed(_, _)
+        | busbar_caps::Outcome::Aborted(_)
+        | busbar_caps::Outcome::TimedOut(_) => return None,
+    }
+    frame.as_ref().map(|f| f.bytes.as_slice().to_vec())
+}
+
 #[cfg(feature = "root-admin")]
 impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
     fn drive(
@@ -561,9 +587,20 @@ impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
                 // THE PLANE WRITES. Never this driver's prose and never the transport's: an ending
                 // the plane has no rendering for leaves with no body at all, which says less than a
                 // sentence this file made up and is the only thing that is true.
-                let body = refusal_of(&ended)
-                    .and_then(|refusal| self.plane.encode_refusal(&refusal, draft, None, ctx).ok())
-                    .map(|bytes| bytes.as_slice().to_vec())
+                //
+                // A COMPLETED unit answers with what its own Encode step wrote, carried out of the
+                // loop on the ending. A REFUSED one is rendered by the plane from the ending's step
+                // and reason. Neither branch is this driver's prose, and an ending that yields
+                // neither leaves with no body at all — which says less than a sentence this file
+                // made up, and is the only thing that is true.
+                let body = completed_bytes(&ended)
+                    .or_else(|| {
+                        refusal_of(&ended)
+                            .and_then(|refusal| {
+                                self.plane.encode_refusal(&refusal, draft, None, ctx).ok()
+                            })
+                            .map(|bytes| bytes.as_slice().to_vec())
+                    })
                     .unwrap_or_default();
                 (outcome, body)
             });
