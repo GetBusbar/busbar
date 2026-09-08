@@ -192,6 +192,56 @@ fn a_walk_below_its_floor_is_an_error_not_a_clean_tree() {
     assert!(matches!(err, WalkError::BelowFloor { .. }));
 }
 
+/// A DIRECTORY THAT CANNOT BE READ IS NOT AN EMPTY ONE.
+///
+/// `collect` backs EVERY `Ctx::walk`, so this one line decides what a walk means. It used to answer
+/// an unreadable directory with `Ok(())`: the subtree contributed zero files, no `WalkError` was
+/// raised, and the floor — where a walk has one at all — sits far below the real corpus, so a lost
+/// subtree stayed invisible. The module header claims this walk fixes the two things `find` gets
+/// wrong; this was a third one it did not fix.
+///
+/// The probe is not a uid check. Under `root` (the usual CI container) mode `0o000` is ignored and
+/// `read_dir` still succeeds, and a case that cannot arrange its own premise must say so rather
+/// than assert into a tree it did not manage to break.
+#[cfg(unix)]
+#[test]
+fn a_directory_that_cannot_be_read_is_a_walk_error_not_an_empty_one() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tmpdir("unreadable");
+    let victim = dir.join("locked");
+    std::fs::create_dir_all(&victim).expect("the victim directory");
+    std::fs::write(victim.join("a.rs"), "pub fn a() {}\n").expect("one file inside it");
+    std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o000))
+        .expect("the mode change");
+
+    let still_readable = std::fs::read_dir(&victim).is_ok();
+    let rel = dir
+        .strip_prefix(repo_root())
+        .expect("the scratch dir is under the repo root")
+        .display()
+        .to_string();
+    let walked = cx().walk(&WalkSpec::new([rel]).ext("rs"));
+    let _ = std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o755));
+    std::fs::remove_dir_all(&dir).expect("the scratch dir is removable again");
+
+    if still_readable {
+        // Running as a user the mode does not bind. The premise could not be arranged, so nothing
+        // is asserted — and that is said out loud rather than passing quietly.
+        eprintln!(
+            "SKIPPED: this process can read a 0o000 directory, so the unreadable-subtree case \
+             could not be set up"
+        );
+        return;
+    }
+    assert!(
+        matches!(walked, Err(WalkError::Io { .. })),
+        "an unreadable subtree contributes zero files and zero files is the passing answer to \
+         every ban; got {:?}",
+        walked.map(|f| f.len())
+    );
+}
+
 #[test]
 fn a_missing_walk_root_is_an_error_rather_than_being_silently_dropped() {
     let c = cx();
