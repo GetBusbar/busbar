@@ -12,26 +12,23 @@ use crate::*;
 /// lives beside the crate rather than inside it and is pulled in here for the test that keeps it
 /// from going empty or stale.
 mod lint {
-    include!("../fixtures/lint_rules.rs");
+    include!("../../fixtures/lint_rules.rs");
 }
 
 /// The renderings every one of these types hand-rolls, read back — including the two that carry
 /// something they are not allowed to say.
 ///
-/// The `#[path]` is not decoration: this file is itself reached by one, so a child module of it
-/// would otherwise be looked for beside `lib.rs` — in `src/`, where it would spend the crate's
-/// surface ceiling. Under `src/tests/` it is classified as the proof it is.
-#[path = "tests/what_the_record_reads.rs"]
+/// This module now lives at `src/tests/mod.rs`, so its children resolve beside it in `src/tests/`
+/// by the ordinary directory-module rule — no `#[path]` needed to keep them classified as the proof
+/// they are.
 mod what_the_record_reads;
 
 /// The posting's arithmetic at the edges: the width the priced total does not share with the
 /// reservation, the line between spending the reservation and spending past it, and a unit that
 /// runs past the end more than once.
-#[path = "tests/the_posting_arithmetic.rs"]
 mod the_posting_arithmetic;
 
 /// Where a reported quantity came from, and the three questions the crate asks about it.
-#[path = "tests/what_the_usage_report_says.rs"]
 mod what_the_usage_report_says;
 
 /// Everything a test needs to act as the kernel, in one place, so no test quietly reaches for the
@@ -815,7 +812,7 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
 /// the gate confines to a path is a hole the size of that path.
 #[test]
 fn the_construction_gate_scans_for_every_symbol_this_crate_names() {
-    let toml = include_str!("../../../qa/construction.toml");
+    let toml = include_str!("../../../../qa/construction.toml");
 
     for rule in lint::all() {
         let named = format!("symbol = {:?}", rule.symbol);
