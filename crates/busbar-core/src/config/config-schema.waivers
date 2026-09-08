@@ -22,9 +22,3 @@
 # line here, the change needs a human decision, not a config edit.
 #
 # EMPTY BY DEFAULT. It should stay that way.
-
-# busbar 1.6.0 (owner decision 2026-09-07, "no carve outs"): a provider api_key that does not resolve
-# refuses boot, and the ONE way to declare a keyless upstream is the bare scalar `none`. SecretRef
-# therefore accepts that single string where it refused every string before. Registered breaking
-# (shadow-oracle register F-016); every other string is still refused, proven by secret-ref tests.
-manual-de SecretRef::visit_str = busbar 1.6.0 accepts the bare scalar `none` on a provider api_key (registered breaking F-016); all other inline strings stay refused
