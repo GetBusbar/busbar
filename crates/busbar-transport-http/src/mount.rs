@@ -272,10 +272,16 @@ pub fn captures_map<'a>(captures: &'a [Capture<'a>]) -> HashMap<&'a str, &'a str
 /// is that this function does not run anything: it hands over, and the arena, the context, the plane
 /// call and the loop are all on the other side.
 ///
+/// Named for the handing over rather than for the running, because the name is the seam. No kind's
+/// ABI exposes `mount`, `serve`, `bind` or `on_upgrade`: each names something the kernel does, and
+/// a plugin offering a function by one of those names is offering to do it instead. This body was
+/// always innocent — it builds an arrival and gives it away — but the signature is what a caller
+/// reaches for, and one reaching for `serve` on a transport is reaching for the wrong seam.
+///
 /// The composed chain travels because a claim's transport is compared against the TOP of it, and a
 /// stack that reported itself wrongly would let a request matched as one layer be served as another.
 #[must_use]
-pub fn serve<'a>(
+pub fn hand_to_driver<'a>(
     driver: &dyn UnitDriver,
     surface: &WireSurface,
     request: &'a Request<'a>,
