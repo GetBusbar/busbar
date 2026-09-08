@@ -2634,7 +2634,7 @@ count = "34"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "contract-transport"
-count = "70"
+count = "82"
 
 [[cell]]
 crate = "busbar-transport-ws"
@@ -2644,7 +2644,7 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-ws"
 kind = "transport"
-count = "165"
+count = "177"
 
 [[cell]]
 crate = "busbar-unit-admission"
