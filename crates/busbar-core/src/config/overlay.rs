@@ -684,6 +684,10 @@ impl OverlaySection {
     /// /overlay/{section}` 400 body, the error taxonomy's documented condition prose) renders through
     /// THIS one function, so the wording cannot drift between the wire response and the docs it
     /// generates.
+    ///
+    /// This is the spelling the PRODUCT TEXT uses — the `DELETE /overlay/{section}` 400 body an
+    /// operator reads. The OpenAPI document uses [`OverlaySection::valid_names_piped`] instead; see
+    /// that function for why the two spellings are deliberate rather than drift.
     pub(crate) fn valid_names_oxford() -> String {
         let names: Vec<String> = OverlaySection::all()
             .iter()
@@ -695,6 +699,36 @@ impl OverlaySection {
             [a, b] => format!("{a} or {b}"),
             [init @ .., last] => format!("{}, or {last}", init.join(", ")),
         }
+    }
+
+    /// The valid section names as the 1.5.5 OPENAPI DOCUMENT spells them: backticked and joined by
+    /// a bare pipe — `` `a`|`b`|`c`|`d` `` — with the four 1.6.0 named-map sections appended after
+    /// the original four in [`OverlaySection::all`] order.
+    ///
+    /// TWO SPELLINGS, ON PURPOSE, FROM ONE LIST. 1.5.5 did not use one spelling for both surfaces:
+    /// its `DELETE /overlay/{section}` 400 BODY said `` expected `groups`, `hooks`, `root`, or
+    /// `plugin_versions` `` while its openapi.json 400 DESCRIPTION said `` (expected
+    /// `groups`|`hooks`|`root`|`plugin_versions`) ``. Rendering both through
+    /// [`OverlaySection::valid_names_oxford`] therefore did not remove drift — it INTRODUCED it, by
+    /// rewriting a published document string that PB-75 requires to stay verbatim.
+    ///
+    /// Owner ruling (PB-75, 2026-09-08): openapi.json descriptions are verbatim except REGISTERED
+    /// factual corrections, and an Oxford-comma rewrite is neither verbatim nor a correction. So the
+    /// DOCUMENT keeps 1.5.5's pipe spelling and the MESSAGE keeps 1.5.5's Oxford spelling. The
+    /// document is a frozen contract; the message is product text. What must never diverge is the
+    /// SET of names, and it cannot: both spellings render from the same [`OverlaySection::all`], so
+    /// a new section reaches both surfaces or neither.
+    // Its ONE caller is `Cond::phrase`, which is `#[cfg(feature = "openapi-schema")]` — the shipped
+    // binary serves the pre-generated openapi.json and never renders this. Gated the same way the
+    // superset test's `V155_FIXTURE`/`ACCEPTED` are, so a plain `cargo test`/`clippy -D warnings`
+    // without that feature does not read it as dead.
+    #[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
+    pub(crate) fn valid_names_piped() -> String {
+        OverlaySection::all()
+            .iter()
+            .map(|s| format!("`{}`", s.as_str()))
+            .collect::<Vec<_>>()
+            .join("|")
     }
 }
 

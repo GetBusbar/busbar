@@ -38,12 +38,17 @@ const ACCEPTED: &[(&str, &str)] = &[
     (
         // plane-purity: frozen-wire the OpenAPI 3.1 keyword in a pointer, not the LLM dialect
         "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/responses/400/description",
-        "The overlay `section` enumeration, which is DERIVED from `OverlaySection::valid_names()` \
-         and grew with the 1.6.0 sections. Owned by the overlay-section change, not restated here.",
+        "The overlay `section` enumeration, DERIVED from `OverlaySection::all()` and grown by the \
+         1.6.0 sections. LIST GROWTH ONLY: the spelling is 1.5.5's own bare-pipe run (the DOCUMENT's \
+         spelling, not the 400 body's Oxford one — see the PB-75 ruling on \
+         `OverlaySection::valid_names_piped`), and \
+         `the_openapi_section_list_keeps_1_5_5_pipe_spelling` below pins these bytes against the \
+         1.5.5 fixture, so this allowance covers the appended names and nothing else.",
     ),
     (
         "/paths/~1api~1v1~1admin~1overlay~1{section}/delete/summary",
-        "Same derived section enumeration as the 400 description above.",
+        "Same derived section enumeration, and the same bare-pipe spelling, as the 400 description \
+         above; pinned by the same test.",
     ),
     (
         // plane-purity: frozen-wire the OpenAPI 3.1 keyword in a pointer, not the LLM dialect
@@ -203,6 +208,87 @@ fn the_1_5_5_schema_descriptions_are_frozen_verbatim() {
             "{schema}/{rel} drifted from its 1.5.5 text. schemars generates this from a doc \
              comment, so editing that comment edits the PUBLISHED contract. Put the new prose on a \
              1.6.0 field instead — a new property's description is additive."
+        );
+    }
+}
+
+/// THE DOCUMENT'S SPELLING OF THE SECTION LIST IS 1.5.5's, NOT THE MESSAGE'S.
+///
+/// The overlay-section enumeration reaches TWO surfaces, and 1.5.5 spelled them differently: the
+/// `DELETE /overlay/{section}` 400 BODY an operator reads used an Oxford list (`` `a`, `b`, or
+/// `c` ``), while openapi.json's 400 DESCRIPTION used a bare-pipe list (`` `a`|`b`|`c` ``). Routing
+/// both through `OverlaySection::valid_names_oxford` therefore did not remove drift — it INTRODUCED
+/// it, rewriting a published document string into the message's punctuation.
+///
+/// Owner ruling PB-75 (2026-09-08): openapi.json descriptions are verbatim except REGISTERED
+/// factual corrections, and an Oxford-comma rewrite is neither verbatim nor a correction. So the
+/// document keeps 1.5.5's pipe spelling (`OverlaySection::valid_names_piped`) and the message keeps
+/// 1.5.5's Oxford spelling (`OverlaySection::valid_names_oxford`). The document is a frozen
+/// contract; the message is product text. The SET cannot drift between them — both render from
+/// `OverlaySection::all` — so only the punctuation is per-surface.
+///
+/// This asserts the served prose is 1.5.5's bytes with ONLY the list grown: 1.5.5's string, with
+/// its four-name pipe run replaced by the eight-name pipe run, must equal what is served, byte for
+/// byte. A separator change, a reworded frame or a reordered list each fail here, on the exact
+/// leaf, instead of surfacing as an anonymous pointer in a shadow-oracle diff days later.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn the_openapi_section_list_keeps_1_5_5_pipe_spelling() {
+    use crate::config::overlay::OverlaySection;
+
+    let old: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(V155_FIXTURE).expect("read the 1.5.5 fixture"),
+    )
+    .expect("1.5.5 fixture is JSON");
+    let new = crate::admin::v1::json::openapi_doc();
+
+    // 1.5.5's own four, in 1.5.5's order, spelled the way each DOCUMENT leaf spelled them. The two
+    // leaves differ: the 400 description backticks each name, the operation summary does not. Both
+    // join with a bare pipe, and both are 1.5.5's bytes — so both are reproduced, not normalised.
+    let bare: Vec<&str> = OverlaySection::all().iter().map(|s| s.as_str()).collect();
+    let runs: [(&str, String); 2] = [
+        (
+            "`groups`|`hooks`|`root`|`plugin_versions`",
+            OverlaySection::valid_names_piped(),
+        ),
+        ("groups|hooks|root|plugin_versions", bare.join("|")),
+    ];
+    for (old_run, new_run) in &runs {
+        assert!(
+            new_run.starts_with(old_run),
+            "the document's section list must keep 1.5.5's four names first, in 1.5.5's order and \
+             spelling; got {new_run}"
+        );
+    }
+
+    let path = "/api/v1/admin/overlay/{section}";
+    for (rel, (old_run, new_run)) in [
+        &["responses", "400", "description"][..],
+        &["summary"][..],
+    ]
+    .into_iter()
+    .zip(&runs)
+    {
+        let mut o = &old["paths"][path]["delete"];
+        let mut n = &new["paths"][path]["delete"];
+        for seg in rel {
+            o = &o[seg];
+            n = &n[seg];
+        }
+        let o = o.as_str().expect("1.5.5 fixture leaf is a string");
+        let n = n.as_str().expect("served leaf is a string");
+        assert!(
+            o.contains(old_run),
+            "the 1.5.5 fixture leaf no longer carries the pipe run this test is about: {o}"
+        );
+        assert_eq!(
+            n,
+            o.replace(old_run, new_run),
+            "the served overlay-section prose at delete/{} is not 1.5.5's bytes with only the list \
+             grown. 1.5.5's DOCUMENT spells this list with bare pipes; the Oxford spelling belongs \
+             to the 400 BODY, not here. Render `OverlaySection::valid_names_piped` from the error \
+             taxonomy, never `valid_names_oxford`.",
+            rel.join("/")
         );
     }
 }
