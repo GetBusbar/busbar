@@ -510,7 +510,7 @@ EOF
       # THE KIND-ISOLATION GATE IS MEASURED ON EVERY LANDING, unconditionally — it is the owner's
       # ship criterion (2026-09-07), and a criterion only measured when somebody remembers to ask is
       # not one. It is an xtask-registry gate, not a construction row, so it runs through the
-      # registry rather than being grepped out of construction-gate.sh's log. Self-test FIRST.
+      # registry rather than being grepped out of the construction gate's log. Self-test FIRST.
       (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
         || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
       (cd "$here" && cargo xtask gate kind-isolation --selftest >/dev/null) \
@@ -522,9 +522,9 @@ EOF
     gate)
       # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
       # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
-      # at all (missing python, missing ceilings file) is red, not green.
+      # at all (an unreadable ceilings file, an unbuildable runner) is red, not green.
       local glog="$here/target/land-gate-$stamp.log"
-      "$here/scripts/construction-gate.sh" >"$glog" 2>&1 || true
+      ( cd "$here" && cargo xtask gate construction --report ) >"$glog" 2>&1 || true
       local rows; rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
       [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; return 1; }
       local named; named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
