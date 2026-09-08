@@ -109,11 +109,13 @@ fn scan_file(rel: &str, text: &str) -> Findings {
     let mut in_attr = false;
     let mut start_line = 0usize;
     let mut code = String::new();
+    let mut lex = scan::LexState::default();
 
     for (i, line) in text.lines().enumerate() {
         let is_comment = line.trim_start().starts_with("//");
-        // A paren inside a STRING LITERAL is text, not structure.
-        let nostr = scan::blank_literals(line);
+        // A paren inside a STRING LITERAL or a COMMENT is text, not structure. The state is carried
+        // so a `fields(…)` list interrupted by a multi-line literal is still read as one attribute.
+        let nostr = scan::blank_code(line, &mut lex);
 
         if !in_attr {
             if is_comment || !opens_instrument_attr(line) {

@@ -163,7 +163,9 @@ pub fn scan_fn_body(lines: &[ScopeLine], def: &Ere, pat: &Ere, unless: Option<&E
         if !in_fn {
             continue;
         }
-        let d = c.matches('{').count() as i32 - c.matches('}').count() as i32;
+        // The pattern match above reads `code` (literal contents included, on purpose); the DEPTH
+        // reads the blanked copy, so `rel.contains('{')` inside a body no longer opens a brace.
+        let d = scan::delta(&line.counted, '{', '}');
         depth += d;
         if d != 0 {
             opened = true;

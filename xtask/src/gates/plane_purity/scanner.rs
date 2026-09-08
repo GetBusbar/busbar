@@ -149,6 +149,7 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
     let mut test_depth: i32 = 0;
     let mut pend = false;
     let mut prev_frozen = false;
+    let mut lex = crate::scan::LexState::default();
 
     let istestfile = name.contains("/tests/") || ends_with_tests_rs(name);
 
@@ -157,8 +158,14 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
         let code = strip(raw, &mut in_block);
         let padded = format!(" {code} ");
         let lc = padded.to_lowercase();
-        let nopen = code.matches('{').count() as i32;
-        let nclose = code.matches('}').count() as i32;
+        // `code` keeps literal contents because a plane key or dialect name spelled in a `"…"` is
+        // still the crate naming it — that is what the categories below are counting. The
+        // `#[cfg(test)] mod` DEPTH is a different question and reads the blanked copy, so a brace
+        // inside a literal can no longer hold the test window open (which would silently drop
+        // production hits) or shut it early (which would count test hits as production).
+        let counted = crate::scan::blank_code(raw, &mut lex);
+        let nopen = counted.matches('{').count() as i32;
+        let nclose = counted.matches('}').count() as i32;
 
         // FROZEN-WIRE pragma, read on the RAW line so the marker lives in a comment. A BARE PRAGMA
         // IS NOT A PRAGMA: the contract is one pragma per excused line, each justifying itself in

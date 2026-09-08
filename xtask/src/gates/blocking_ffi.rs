@@ -51,6 +51,7 @@ use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
 use crate::planes::PlaneRoots;
+use crate::scan;
 
 pub const ROW_PLANE_ROOTS: &str = "blocking-ffi:plane-roots";
 pub const ROW_SCAN_FLOOR: &str = "blocking-ffi:scan-floor";
@@ -308,18 +309,6 @@ fn carries_allow_marker(line: &str) -> bool {
     false
 }
 
-fn delta(line: &str, open: char, close: char) -> i64 {
-    let mut n = 0i64;
-    for c in line.chars() {
-        if c == open {
-            n += 1;
-        } else if c == close {
-            n -= 1;
-        }
-    }
-    n
-}
-
 /// What one file's scan produced, and whether it finished in a state the reader can trust.
 struct FileScan {
     hits: Vec<String>,
@@ -341,6 +330,7 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
     let mut test_at: i64 = -1;
     let mut t_entered = false;
     let mut prev_allow = false;
+    let mut lex = scan::LexState::default();
 
     for (idx, line) in text.lines().enumerate() {
         let comment = is_comment(line);
@@ -348,8 +338,12 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
         let allow = marker || prev_allow;
         prev_allow = marker || (comment && prev_allow);
 
-        let db = delta(line, '{', '}');
-        let dp = delta(line, '(', ')');
+        // The seam patterns below read the RAW line; the two depth counters read the blanked copy.
+        // A `}` inside a string literal used to drive `depth` below `async_at` and close the async
+        // window early, disarming every seam check for the rest of the function.
+        let counted = scan::blank_code(line, &mut lex);
+        let db = i64::from(scan::delta(&counted, '{', '}'));
+        let dp = i64::from(scan::delta(&counted, '(', ')'));
 
         if !comment {
             if off_b < 0 && OFFLOAD_OPENERS.iter().any(|o| bare_call(line, o)) {
