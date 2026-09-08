@@ -1531,7 +1531,7 @@ jobs:
           # The armv8.0 compat digest gets the same treatment: it is a release artifact of equal
           # standing, so a record that lost it would let the compat tag silently never publish.
           if [ -z "${DIGEST:-}" ]; then
-            echo "::error::stage-image reported no manifest digest. Refusing to write a staged"                  "record the promote could not verify against. Re-run this workflow." >&2
+            echo "::error::stage-image reported no manifest digest. Refusing to write a staged record the promote could not verify against. Re-run this workflow." >&2
             exit 1
           fi
           if [ -z "${COMPAT_DIGEST:-}" ]; then
@@ -1544,14 +1544,14 @@ jobs:
           tok="$(curl -fsS --max-time 30 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:getbusbar/busbar:pull' | jq -r '.token // .access_token')"
           hub="$(curl -fsS --max-time 30 -I             -H "Authorization: Bearer $tok"             -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json'             "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/${STAGING_TAG}"             | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}')"
           if [ "$hub" != "$DIGEST" ]; then
-            echo "::error::docker.io getbusbar/busbar:${STAGING_TAG} resolves to '${hub:-<none>}'"                  "but this run's build reported '${DIGEST}'. The record would name bytes the"                  "registry does not serve. Refusing to write it; re-run this workflow." >&2
+            echo "::error::docker.io getbusbar/busbar:${STAGING_TAG} resolves to '${hub:-<none>}' but this run's build reported '${DIGEST}'. The record would name bytes the registry does not serve. Refusing to write it; re-run this workflow." >&2
             exit 1
           fi
           # Same registry re-derivation for the armv8.0 compat staging tag (docker.yml derives the
           # name as <staging_tag>-armv8.0; this is the same derivation, in the same run).
           hub_compat="$(curl -fsS --max-time 30 -I             -H "Authorization: Bearer $tok"             -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json'             "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/${STAGING_TAG}-armv8.0"             | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}')"
           if [ "$hub_compat" != "$COMPAT_DIGEST" ]; then
-            echo "::error::docker.io getbusbar/busbar:${STAGING_TAG}-armv8.0 resolves to"                  "'${hub_compat:-<none>}' but this run's build reported '${COMPAT_DIGEST}'."                  "Refusing to write a record naming compat bytes the registry does not serve." >&2
+            echo "::error::docker.io getbusbar/busbar:${STAGING_TAG}-armv8.0 resolves to '${hub_compat:-<none>}' but this run's build reported '${COMPAT_DIGEST}'. Refusing to write a record naming compat bytes the registry does not serve." >&2
             exit 1
           fi
           # The asset list is a REFUSAL if it is missing or empty: a record whose `assets` is absent
