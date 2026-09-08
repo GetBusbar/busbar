@@ -122,3 +122,10 @@ mod tests;
 /// feature so only store plugins pay for the `busbar-api` dependency.
 #[cfg(feature = "store")]
 pub mod store_conformance;
+
+/// The plugin TARBALL fixture — a scratch plugins dir, a manifest and an unsigned archive — for a
+/// battery that drives the real loader rather than a mock. Behind the `loader-fixtures` feature so
+/// an ordinary plugin's dev tree does not compile the loader and the signer for helpers it never
+/// calls.
+#[cfg(feature = "loader-fixtures")]
+pub mod loader_fixtures;
