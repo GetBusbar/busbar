@@ -6,7 +6,7 @@
 //! `json.dump(doc, fh, indent=1, ensure_ascii=False, sort_keys=False)` exactly, so `sync --write`
 //! under the Rust produces the same 147KB the Python produced.
 //!
-//! Five properties are the whole instrument, and each is a rule here rather than a convention:
+//! Seven properties are the whole instrument, and each is a rule here rather than a convention:
 //!
 //! 1. **THE UNIVERSE IS EVERY TRACKED FILE.** Coverage is computed against `git ls-tree -r HEAD`,
 //!    not against a hand-kept list, so a new crate cannot be silently uncovered. A file in no scope
@@ -17,14 +17,24 @@
 //!    THIRD, ahead of `in_progress`, `open`, `fixed` and `clean`, so no result kind can outrun it.
 //! 3. **CLEAN IS TWO ZERO ROUNDS FROM DISTINCT AUDITORS AT THE CURRENT HASH.** One auditor finding
 //!    nothing is `unconfirmed`, which is not a pass. The rounds list is APPEND-ONLY; `record` never
-//!    edits or replaces a round, and `sync` carries the list across verbatim.
+//!    edits or replaces a round, and `sync` carries the list across verbatim. An auditor is
+//!    identified by [`auditor_identity`], not by the bytes typed: `alice`, `alice ` and `Alice` are
+//!    ONE reader, and the two rounds must also be two DIFFERENT rounds.
 //! 4. **`fixed` IS NOT SELF-CERTIFYING.** Stamping a fix re-hashes the scope to the fix commit, so
 //!    the fixer's own pre-fix zero rounds cannot match the new hash — and a scope whose recorded
-//!    HIGH count is non-zero stays RED until somebody records a confirming zero round against the
-//!    fixed tree. You cannot close your own finding by asserting you closed it.
+//!    HIGH or MEDIUM count is non-zero stays RED until SOMEBODY ELSE records a confirming zero round
+//!    against the fixed tree. You cannot close your own finding by asserting you closed it, and the
+//!    bar is the same HIGH/MEDIUM bar `--check` holds an open scope to.
 //! 5. **AN UNREADABLE ENTRY IS RED, NEVER GUESSED.** A result outside the four known values, a
 //!    `counts` that is not an object, an unknown severity, a negative or boolean count — each is
-//!    `invalid`, and `invalid` can never fall through to `clean`.
+//!    `invalid`, and `invalid` can never fall through to `clean`. Every ROUND is held to the same
+//!    bar as the record it belongs to, and the top-level record must BE the last round.
+//! 6. **A RECORDED FINDING DOES NOT EXPIRE BECAUSE A LATER ROUND SAID `in_progress`.** The decisive
+//!    record about a tree is the latest round that REACHED A VERDICT — `zero` or `findings`. A round
+//!    that is merely running cannot outrank one that finished, so `record --result in_progress`
+//!    cannot take a scope off the worklist or out of `--check`.
+//! 7. **A TREE THAT CANNOT BE PRODUCED IS NOT A TREE THAT MATCHED.** When git cannot resolve the
+//!    commit a record names, the anti-forgery rule is RED, never silent — see [`audited_tree_hash`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -489,47 +499,147 @@ pub fn tree_hash(sc: &Json, all: &BTreeMap<String, String>) -> Option<String> {
     Some(h.hexdigest())
 }
 
-/// The hash the scope's files ACTUALLY had at the commit the record claims to have read. A record
-/// whose stored hash disagrees with this was stamped against a tree it did not read.
-pub fn audited_tree_hash(sc: &Json, git: &Git) -> Option<String> {
-    let at = sc.get("audited_at").as_str()?;
-    let files = git.files_at(at).ok()?;
-    tree_hash(sc, &files)
+/// The hash the scope's files ACTUALLY had at the commit `rec` claims to have read. A record whose
+/// stored hash disagrees with this was stamped against a tree it did not read.
+///
+/// AN UNRESOLVABLE COMMIT IS AN ERROR, NOT AN ABSENT ANSWER. The whole purpose of this rule is
+/// catching a stamp against a tree nobody read; a commit git cannot produce — hand-written, rebased
+/// away, pruned — is precisely the case it exists for, so it must reach the caller as a refusal it
+/// has to handle rather than as a `None` that reads like "nothing to say". `Ok(None)` stays the
+/// honest "the scope owned no file at that commit", which is a different sentence.
+pub fn audited_tree_hash(sc: &Json, git: &Git) -> Result<Option<String>, String> {
+    let Some(at) = record_at(sc) else {
+        return Err("the record names no audited_at commit".to_string());
+    };
+    let files = git.files_at(at)?;
+    Ok(tree_hash(sc, &files))
+}
+
+/// The commit a record — a scope's top-level record or one of its rounds — claims to have read.
+pub fn record_at(rec: &Json) -> Option<&str> {
+    rec.get("audited_at").as_str()
 }
 
 // ---------------------------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------------------------
 
-/// The distinct auditors whose ZERO rounds stand at the CURRENT hash.
+/// ONE AUDITOR IDENTITY, from whatever bytes were typed into `--auditor`.
 ///
-/// A pre-`rounds` register counts as one auditor, and only when the rounds scan produced none — a
-/// legacy fallback that must not add a second voice to a register that already has one.
-pub fn confirming_auditors(sc: &Json, current_hash: Option<&str>) -> BTreeSet<String> {
-    let mut who = BTreeSet::new();
+/// Surrounding and repeated whitespace collapse and the case folds, because `alice`, `alice ` and
+/// `Alice` are one person who read the tree once. The whole of property 3 is that TWO PEOPLE read
+/// it, and a rule that answers that question with `!=` over raw bytes answers a different question:
+/// a trailing space is not a second reader. A name that is empty once normalised is NO identity at
+/// all, so it can never be one of the two.
+pub fn auditor_identity(v: &Json) -> Option<String> {
+    let name = v
+        .as_str()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    (!name.is_empty()).then_some(name)
+}
+
+/// One ZERO round standing at the current hash: WHO read it, and WHICH round it was.
+pub struct Confirmation {
+    pub auditor: String,
+    pub round: Option<i64>,
+}
+
+/// The zero rounds that stand at the CURRENT hash, each with its normalised auditor identity.
+///
+/// A pre-`rounds` register counts as one confirmation, and only when the rounds scan produced none —
+/// a legacy fallback that must not add a second voice to a register that already has one.
+pub fn confirmations(sc: &Json, current_hash: Option<&str>) -> Vec<Confirmation> {
+    let mut out = Vec::new();
     if let Some(rounds) = sc.get("rounds").as_array() {
         for r in rounds {
-            let auditor = r.get("auditor");
             if r.get("result").as_str() == Some("zero")
                 && r.get("tree_hash").as_str() == current_hash
-                && auditor.truthy()
             {
-                if let Some(a) = auditor.as_str() {
-                    who.insert(a.to_string());
+                if let Some(auditor) = auditor_identity(r.get("auditor")) {
+                    out.push(Confirmation {
+                        auditor,
+                        round: r.get("round").as_i64(),
+                    });
                 }
             }
         }
     }
-    if who.is_empty()
+    if out.is_empty()
         && sc.get("result").as_str() == Some("zero")
         && sc.get("tree_hash").as_str() == current_hash
-        && sc.get("auditor").truthy()
     {
-        if let Some(a) = sc.get("auditor").as_str() {
-            who.insert(a.to_string());
+        if let Some(auditor) = auditor_identity(sc.get("auditor")) {
+            out.push(Confirmation {
+                auditor,
+                round: sc.get("round").as_i64(),
+            });
         }
     }
-    who
+    out
+}
+
+/// The distinct auditor IDENTITIES whose zero rounds stand at the current hash.
+pub fn confirming_auditors(sc: &Json, current_hash: Option<&str>) -> BTreeSet<String> {
+    confirmations(sc, current_hash)
+        .into_iter()
+        .map(|c| c.auditor)
+        .collect()
+}
+
+/// TWO ZERO ROUNDS FROM TWO PEOPLE — the bar `clean` is held to.
+///
+/// Both halves are required and neither implies the other. Two identities on one round is one
+/// reading credited to two names; two rounds under one identity is one person reading twice. Only a
+/// pair that differs in BOTH is a second, independent reading, and a round whose number cannot be
+/// read cannot be shown to be a different round, so it does not count as one.
+pub fn confirmed(sc: &Json, current_hash: Option<&str>) -> bool {
+    let seen = confirmations(sc, current_hash);
+    seen.iter().enumerate().any(|(i, a)| {
+        seen[i + 1..].iter().any(|b| {
+            a.auditor != b.auditor && matches!((a.round, b.round), (Some(x), Some(y)) if x != y)
+        })
+    })
+}
+
+/// The latest round that REACHED A VERDICT about the current tree — `zero` or `findings`.
+///
+/// `in_progress` and `unaudited` are not verdicts, they are notes that a reading is or is not
+/// happening, and a note cannot outrank a finding. Without this, `record --result in_progress` over
+/// a recorded HIGH finding erased it from every red rule and from the worklist at once.
+pub fn decisive_round<'a>(sc: &'a Json, current_hash: Option<&str>) -> Option<&'a Json> {
+    sc.get("rounds").as_array()?.iter().rev().find(|r| {
+        matches!(r.get("result").as_str(), Some("zero" | "findings"))
+            && r.get("tree_hash").as_str() == current_hash
+    })
+}
+
+/// The findings that STAND against the current tree with no fix stamped, as the record that carries
+/// their counts — a round when the rounds list has one, the scope's own record otherwise.
+pub fn open_findings<'a>(sc: &'a Json, current_hash: Option<&str>) -> Option<&'a Json> {
+    if sc.get("fixed_at").truthy() {
+        return None;
+    }
+    if let Some(round) = decisive_round(sc, current_hash) {
+        return (round.get("result").as_str() == Some("findings")).then_some(round);
+    }
+    // NO ROUND REACHED A VERDICT ABOUT THIS TREE, so fall back to the latest verdict about ANY
+    // tree. A finding recorded against an older tree has not been answered just because the tree
+    // moved and a later `in_progress` note landed on top of it; it reads `stale`, which is a red
+    // status, rather than vanishing. Without this the six `findings`-then-`in_progress` scopes whose
+    // trees had since moved stayed hidden behind the top-level note.
+    if let Some(round) = sc.get("rounds").as_array().and_then(|rs| {
+        rs.iter()
+            .rev()
+            .find(|r| matches!(r.get("result").as_str(), Some("zero" | "findings")))
+    }) {
+        return (round.get("result").as_str() == Some("findings")).then_some(round);
+    }
+    // No round reached a verdict at all: the scope's own record is all there is, and when it says
+    // `findings` it is still saying it — including when the tree has since moved (`stale`).
+    (sc.get("result").as_str() == Some("findings")).then_some(sc)
 }
 
 /// The scope's DERIVED status. Never stored — a stored status is a status that stops being true.
@@ -540,7 +650,11 @@ pub fn status_of(sc: &Json, current_hash: Option<&str>) -> &'static str {
     if !RESULTS.contains(&result) {
         return "invalid";
     }
-    if result == "unaudited" || sc.get("audited_at").as_str().is_none() {
+    // A STANDING FINDING SURVIVES A LATER `unaudited` OR `in_progress` RECORD. Both of those are
+    // writable by `record`, and either one would otherwise return the scope to "never audited" or
+    // "somebody is on it" over findings nobody fixed.
+    let open = open_findings(sc, current_hash).is_some();
+    if !open && (result == "unaudited" || sc.get("audited_at").as_str().is_none()) {
         return "unaudited";
     }
     // STALENESS SITS THIRD, ahead of every result kind. A result describes one tree; when the tree
@@ -548,8 +662,8 @@ pub fn status_of(sc: &Json, current_hash: Option<&str>) -> &'static str {
     if sc.get("tree_hash").as_str() != current_hash {
         return "stale";
     }
-    if result == "in_progress" {
-        return "in_progress";
+    if open {
+        return "open";
     }
     if result == "findings" {
         return if sc.get("fixed_at").truthy() {
@@ -558,14 +672,89 @@ pub fn status_of(sc: &Json, current_hash: Option<&str>) -> &'static str {
             "open"
         };
     }
-    if confirming_auditors(sc, current_hash).len() >= 2 {
+    if result == "in_progress" {
+        return "in_progress";
+    }
+    if confirmed(sc, current_hash) {
         "clean"
     } else {
         "unconfirmed"
     }
 }
 
+/// The keys that MAKE a record — the ones `record` writes into the scope and into the round it
+/// appends, in that order. The two copies are one statement, so they must agree byte for byte.
+pub const RECORD_KEYS: [&str; 7] = [
+    "round",
+    "result",
+    "auditor",
+    "audited_at",
+    "tree_hash",
+    "counts",
+    "report",
+];
+
+/// Every way ONE record — a scope's top-level record or one of its rounds — is unreadable.
+fn record_problems(label: &str, rec: &Json, bad: &mut Vec<String>) {
+    let res = rec.get("result").as_str().unwrap_or("unaudited");
+    if !RESULTS.contains(&res) {
+        bad.push(format!(
+            "{label}: result {} is not one of {}",
+            json_lite::py_repr_json(rec.get("result")),
+            RESULTS.join(", ")
+        ));
+    }
+    // A RECORD WITH NO AUDITOR AND NO REPORT IS AN ASSERTION WITH NOBODY BEHIND IT. `unaudited` is
+    // the one result that is allowed to have neither, because it says nothing was read.
+    if res != "unaudited" {
+        for key in ["auditor", "report"] {
+            let cited = rec.get(key);
+            let named = cited.as_str().is_some_and(|s| !s.trim().is_empty());
+            if !named {
+                bad.push(format!(
+                    "{label}: {key} is {}, and a {res} result must name one",
+                    json_lite::py_repr_json(cited)
+                ));
+            }
+        }
+    }
+    let counts = rec.get("counts");
+    if !counts.truthy() {
+        return;
+    }
+    let Some(counts) = counts.as_object() else {
+        bad.push(format!(
+            "{label}: counts is {}, want an object",
+            json_lite::py_type_name(counts)
+        ));
+        return;
+    };
+    for (key, val) in counts.iter() {
+        if !SEVERITIES.contains(&key) {
+            bad.push(format!(
+                "{label}: unknown severity {} in counts (want {})",
+                json_lite::py_repr(key),
+                SEVERITIES.join(", ")
+            ));
+        }
+        // BOOLEANS AND NEGATIVES ARE NOT COUNTS. `HIGH: true` reads as 1 in Python and would
+        // otherwise quietly hold a scope open, or worse, quietly let one close.
+        let ok = matches!(val, Json::Int(n) if *n >= 0);
+        if !ok {
+            bad.push(format!(
+                "{label}: severity {key} = {} is not a count",
+                json_lite::py_repr_json(val)
+            ));
+        }
+    }
+}
+
 /// Every way a register entry is unreadable, in scope order then `counts` order.
+///
+/// EVERY ROUND IS HELD TO THE SAME BAR AS THE SCOPE, and the scope's top-level record must BE the
+/// last round. `clean` is computed from the rounds list, so a rounds list nothing validates is a
+/// rounds list anybody can append a second auditor to; and a top-level record that has drifted from
+/// the round it came from means one of the two is a hand edit, whichever one it is.
 pub fn register_problems(doc: &Json) -> Vec<String> {
     let mut bad = Vec::new();
     let Some(scopes) = doc.get("scopes").as_array() else {
@@ -573,41 +762,52 @@ pub fn register_problems(doc: &Json) -> Vec<String> {
     };
     for sc in scopes {
         let sid = sc.get("id").as_str().unwrap_or("<no id>").to_string();
-        let res = sc.get("result").as_str().unwrap_or("unaudited");
-        if !RESULTS.contains(&res) {
-            bad.push(format!(
-                "{sid}: result {} is not one of {}",
-                json_lite::py_repr_json(sc.get("result")),
-                RESULTS.join(", ")
-            ));
-        }
-        let counts = sc.get("counts");
-        if !counts.truthy() {
+        record_problems(&sid, sc, &mut bad);
+
+        let rounds = sc.get("rounds");
+        if !rounds.truthy() {
             continue;
         }
-        let Some(counts) = counts.as_object() else {
+        let Some(rounds) = rounds.as_array() else {
             bad.push(format!(
-                "{sid}: counts is {}, want an object",
-                json_lite::py_type_name(counts)
+                "{sid}: rounds is {}, want an array",
+                json_lite::py_type_name(rounds)
             ));
             continue;
         };
-        for (key, val) in counts.iter() {
-            if !SEVERITIES.contains(&key) {
+        for (i, r) in rounds.iter().enumerate() {
+            let label = format!("{sid}: round[{i}]");
+            if r.as_object().is_none() {
                 bad.push(format!(
-                    "{sid}: unknown severity {} in counts (want {})",
-                    json_lite::py_repr(key),
-                    SEVERITIES.join(", ")
+                    "{label} is {}, want an object",
+                    json_lite::py_type_name(r)
+                ));
+                continue;
+            }
+            record_problems(&label, r, &mut bad);
+            if !matches!(r.get("round"), Json::Int(n) if *n >= 0) {
+                bad.push(format!(
+                    "{label}: round {} is not a round number",
+                    json_lite::py_repr_json(r.get("round"))
                 ));
             }
-            // BOOLEANS AND NEGATIVES ARE NOT COUNTS. `HIGH: true` reads as 1 in Python and would
-            // otherwise quietly hold a scope open, or worse, quietly let one close.
-            let ok = matches!(val, Json::Int(n) if *n >= 0);
-            if !ok {
+            if r.get("audited_at").as_str().is_none() {
                 bad.push(format!(
-                    "{sid}: severity {key} = {} is not a count",
-                    json_lite::py_repr_json(val)
+                    "{label}: audited_at is {}, and a round that names no commit names no tree",
+                    json_lite::py_repr_json(r.get("audited_at"))
                 ));
+            }
+        }
+        if let Some(last) = rounds.last() {
+            for key in RECORD_KEYS {
+                if last.get(key) != sc.get(key) {
+                    bad.push(format!(
+                        "{sid}: the scope's {key} is {} but its last round's is {} -- the top-level \
+                         record must BE the last round",
+                        json_lite::py_repr_json(sc.get(key)),
+                        json_lite::py_repr_json(last.get(key))
+                    ));
+                }
             }
         }
     }

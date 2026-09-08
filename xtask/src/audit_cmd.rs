@@ -37,6 +37,26 @@ struct Args {
     sub: Option<String>,
 }
 
+/// The options this command takes a value for. AN UNKNOWN OPTION IS AN ERROR, never a value
+/// quietly filed under a name nothing reads: `--att 4d5a05af` would otherwise stamp HEAD while the
+/// auditor believed they had named the commit they read, and the record would claim a tree nobody
+/// looked at. An unexpected positional has always been an error; a misspelt flag is the same
+/// mistake.
+const OPTIONS: [&str; 10] = [
+    "ledger",
+    "report-md",
+    "scope",
+    "round",
+    "result",
+    "report",
+    "auditor",
+    "counts",
+    "at",
+    "commit",
+];
+
+const SWITCHES: [&str; 3] = ["check", "selftest", "write"];
+
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut out = Args {
         map: BTreeMap::new(),
@@ -47,15 +67,20 @@ fn parse(args: &[String]) -> Result<Args, String> {
     while i < args.len() {
         let a = &args[i];
         if let Some(name) = a.strip_prefix("--") {
-            match name {
-                "check" | "selftest" | "write" => out.flags.push(name.to_string()),
-                _ => {
-                    let Some(v) = args.get(i + 1) else {
-                        return Err(format!("`--{name}` needs a value"));
-                    };
-                    out.map.insert(name.to_string(), v.clone());
-                    i += 1;
-                }
+            if SWITCHES.contains(&name) {
+                out.flags.push(name.to_string());
+            } else if OPTIONS.contains(&name) {
+                let Some(v) = args.get(i + 1) else {
+                    return Err(format!("`--{name}` needs a value"));
+                };
+                out.map.insert(name.to_string(), v.clone());
+                i += 1;
+            } else {
+                return Err(format!(
+                    "unknown option `--{name}` (options: {}; switches: {})",
+                    OPTIONS.join(", "),
+                    SWITCHES.join(", ")
+                ));
             }
         } else if out.sub.is_none() {
             out.sub = Some(a.clone());
@@ -416,6 +441,17 @@ fn cmd_record(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
             audit::RESULTS.join(", ")
         ));
     }
+    // A RECORD IS A CLAIM SOMEBODY MAKES, and both halves of "who says so" have to be there. An
+    // empty `--report` or `--auditor` writes a row the report renders as evidence and the confirming
+    // rule reads as a voice, out of a flag that was passed and left blank.
+    for (flag, value) in [("report", report), ("auditor", auditor)] {
+        if value.trim().is_empty() {
+            return die(format!(
+                "--{flag} {} is blank -- a record names who read the scope and what they wrote",
+                json_lite::py_repr(value)
+            ));
+        }
+    }
 
     let counts = match parse_counts(a.map.get("counts").map(String::as_str)) {
         Ok(c) => c,
@@ -567,15 +603,25 @@ fn cmd_fixed(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
     // THE ROUND MUST HAVE READ THE TREE IT CLAIMS. If the stored hash is not the hash of the scope
     // at the commit the round names, the round was stamped against a tree it did not read, and a
     // fix stamped on top of that inherits the lie.
-    let audited = audit::audited_tree_hash(sc, git);
-    if let Some(audited) = &audited {
-        if Some(audited.as_str()) != sc.get("tree_hash").as_str() {
-            let at = sc.get("audited_at").as_str().unwrap_or("?").to_string();
+    //
+    // AND A COMMIT GIT CANNOT PRODUCE IS NOT A COMMIT THAT AGREED. Refusing to resolve the audited
+    // commit is exactly the shape this rule exists to catch, so it is a refusal here, not a skip.
+    let at = sc.get("audited_at").as_str().unwrap_or("?").to_string();
+    let at = at[..8.min(at.len())].to_string();
+    match audit::audited_tree_hash(sc, git) {
+        Ok(actual) if actual.as_deref() == sc.get("tree_hash").as_str() => {}
+        Ok(_) => {
             return die(format!(
-                "{sid}: the recorded hash is not the tree at the audited commit {} -- the round \
-                 was stamped against a tree it did not read. Re-record it before stamping a fix.",
-                &at[..8.min(at.len())]
-            ));
+                "{sid}: the recorded hash is not the tree at the audited commit {at} -- the round \
+                 was stamped against a tree it did not read. Re-record it before stamping a fix."
+            ))
+        }
+        Err(e) => {
+            return die(format!(
+                "{sid}: the audited commit {at} cannot be resolved in this repository ({e}) -- the \
+                 tree the round claims to have read cannot be produced, so the stamp cannot be \
+                 checked. Re-record it before stamping a fix."
+            ))
         }
     }
 
@@ -637,6 +683,30 @@ impl CheckFindings {
     }
 }
 
+/// Every commit a record names, resolved at most once. `Err` is cached too: a commit that cannot be
+/// produced cannot be produced on the second ask either, and asking again would be one process per
+/// round for the answer that is already known.
+type TreeCache = BTreeMap<String, Result<BTreeMap<String, String>, String>>;
+
+/// The hash `rec`'s scope's files ACTUALLY had at the commit `rec` names, through the cache.
+fn stamped_hash(
+    git: &Git,
+    trees: &mut TreeCache,
+    sc: &Json,
+    rec: &Json,
+) -> Result<Option<String>, String> {
+    let Some(at) = audit::record_at(rec) else {
+        return Err("the record names no audited_at commit".to_string());
+    };
+    let files = trees
+        .entry(at.to_string())
+        .or_insert_with(|| git.files_at(at));
+    match files {
+        Ok(files) => Ok(audit::tree_hash(sc, files)),
+        Err(e) => Err(e.clone()),
+    }
+}
+
 /// The whole `--check` computation, once, for both the printer and the gate.
 pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, String> {
     let doc = audit::load(register)?;
@@ -660,6 +730,11 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
 
     f.problems = audit::register_problems(&doc);
 
+    // ONE `ls-tree` PER COMMIT, not one per record. 150 scopes carrying 236 rounds name a couple of
+    // dozen distinct commits between them, and re-resolving each one per round is the difference
+    // between a check and a coffee break.
+    let mut trees: TreeCache = BTreeMap::new();
+
     for r in &rows {
         let sc = &r.scope;
         if r.status == "invalid" {
@@ -672,11 +747,16 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
 
         // OPEN AT HIGH/MEDIUM, and a scope with findings but NO recorded severities counts too —
         // "we found things but did not say what" is not a lower severity than HIGH.
-        if matches!(r.status, "open" | "stale")
-            && sc.get("result").as_str() == Some("findings")
-            && !sc.get("fixed_at").truthy()
-        {
-            let counts = sc.get("counts");
+        //
+        // The severities come from the RECORD THAT FOUND THEM, which is not always the scope's
+        // top-level record: a later `record --result in_progress` overwrites `counts` with `{}`, and
+        // reading the counts from there would report "severities unrecorded" about a round that
+        // recorded them, or drop the scope entirely.
+        if let (true, Some(found)) = (
+            matches!(r.status, "open" | "stale"),
+            audit::open_findings(sc, r.current_hash.as_deref()),
+        ) {
+            let counts = found.get("counts");
             let empty = !counts.truthy();
             let high = counts.get("HIGH").as_i64().unwrap_or(0);
             let medium = counts.get("MEDIUM").as_i64().unwrap_or(0);
@@ -699,36 +779,72 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
                 f.opens.push(format!(
                     "{}  round {}  {sev}{stale}",
                     r.id,
-                    dash(sc.get("round").as_i64())
+                    dash(found.get("round").as_i64())
                 ));
             }
         }
 
         // A RECORD WHOSE HASH IS NOT THE TREE AT THE COMMIT IT NAMES was stamped against a tree it
-        // did not read, and every later reading of it is a reading of nothing.
-        if let Some(at) = sc.get("audited_at").as_str() {
-            if !sc.get("fixed_at").truthy() {
-                if let Some(actual) = audit::audited_tree_hash(sc, git) {
-                    if Some(actual.as_str()) != sc.get("tree_hash").as_str() {
-                        f.stamped
-                            .push(format!("{}  audited_at {}", r.id, &at[..8.min(at.len())]));
-                    }
-                }
+        // did not read, and every later reading of it is a reading of nothing. EVERY ROUND is a
+        // record: `clean` is computed from the rounds list, so a round nobody re-hashes is a round
+        // anybody can append. The top-level record is exempt once a fix is stamped, because `fixed`
+        // deliberately re-hashes it to the fix commit.
+        let mut records: Vec<(String, &Json)> = Vec::new();
+        if !sc.get("fixed_at").truthy() {
+            records.push((r.id.clone(), sc));
+        }
+        for (i, round) in sc
+            .get("rounds")
+            .as_array()
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            records.push((format!("{} round[{i}]", r.id), round));
+        }
+        for (label, rec) in records {
+            let Some(at) = audit::record_at(rec) else {
+                continue;
+            };
+            let short = &at[..8.min(at.len())];
+            match stamped_hash(git, &mut trees, sc, rec) {
+                Ok(actual) if actual.as_deref() == rec.get("tree_hash").as_str() => {}
+                Ok(_) => f.stamped.push(format!("{label}  audited_at {short}")),
+                // FAILING TO RESOLVE THE COMMIT IS THE FINDING, not the absence of one. A rule whose
+                // whole purpose is catching a stamp against an unread tree cannot go quiet exactly
+                // when the named tree is the one git cannot produce.
+                Err(e) => f.stamped.push(format!(
+                    "{label}  audited_at {short} cannot be resolved in this repository, so the tree \
+                     it claims to have read cannot be produced ({e})"
+                )),
             }
         }
 
-        // `fixed` IS NOT SELF-CERTIFYING. A scope whose HIGH count is non-zero stays red until
-        // somebody records a confirming zero round against the RE-HASHED tree.
-        if r.status == "fixed"
-            && sc.get("counts").get("HIGH").as_i64().unwrap_or(0) != 0
-            && audit::confirming_auditors(sc, r.current_hash.as_deref()).is_empty()
-        {
-            f.owed.push(format!(
-                "{}  round {}  HIGH={}",
-                r.id,
-                dash(sc.get("round").as_i64()),
-                json_lite::py_repr_json(sc.get("counts").get("HIGH"))
-            ));
+        // `fixed` IS NOT SELF-CERTIFYING. A scope whose HIGH or MEDIUM count is non-zero stays red
+        // until SOMEBODY ELSE records a confirming zero round against the RE-HASHED tree. The bar is
+        // the HIGH/MEDIUM bar an open scope is held to — a MEDIUM that closes itself is the same
+        // hole as a HIGH that does, one severity down — and the fixer's own name, however it is
+        // spelled this time, is not somebody else.
+        let counts = sc.get("counts");
+        let owing: Vec<String> = ["HIGH", "MEDIUM"]
+            .iter()
+            .filter(|k| counts.get(k).as_i64().unwrap_or(0) != 0)
+            .map(|k| format!("{k}={}", json_lite::py_repr_json(counts.get(k))))
+            .collect();
+        if r.status == "fixed" && !owing.is_empty() {
+            let fixer = audit::auditor_identity(sc.get("auditor"));
+            let others: Vec<String> = audit::confirming_auditors(sc, r.current_hash.as_deref())
+                .into_iter()
+                .filter(|a| Some(a) != fixer.as_ref())
+                .collect();
+            if others.is_empty() {
+                f.owed.push(format!(
+                    "{}  round {}  {}",
+                    r.id,
+                    dash(sc.get("round").as_i64()),
+                    owing.join(", ")
+                ));
+            }
         }
     }
 
@@ -783,7 +899,7 @@ fn cmd_check(git: &Git, register: &std::path::Path) -> i32 {
     );
     block(
         &f.owed,
-        "scope(s) whose HIGH findings are stamped fixed with no confirming round:",
+        "scope(s) whose HIGH/MEDIUM findings are stamped fixed with no confirming round:",
         "  ",
     );
 
