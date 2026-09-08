@@ -115,6 +115,10 @@ fn installed_decls() -> Vec<(&'static str, &'static PlaneDecl)> {
 /// plane features below are compiled in. Every other build carries at least one, so on those
 /// builds an empty reflection means the reflection saw nothing — not that no plane is linked — and
 /// that must fail loudly rather than let the caller return having asserted nothing at all.
+// The `cfg!(...)` condition is a compile-time constant per build, which is the point: the runtime
+// half of this check is the caller only reaching it when `installed_decls()` came back empty, and
+// this then asks whether that emptiness is the one build where it is legitimate.
+#[allow(clippy::assertions_on_constants)]
 fn assert_emptiness_is_the_no_default_features_build() {
     assert!(
         cfg!(not(any(
