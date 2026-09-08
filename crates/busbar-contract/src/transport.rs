@@ -52,6 +52,13 @@ pub use busbar_contract_transport::surface::{
     Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
 };
 
+/// The seam a transport hands an arrival across, and the closed vocabulary it gets back.
+///
+/// Re-exported for the one reader who is neither a transport author nor a plugin author: the
+/// composition root IMPLEMENTS this, and it reaches the transport contract through this crate.
+pub use busbar_contract_transport::driver;
+pub use busbar_contract_transport::driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
+
 /// Everything a transport declares about itself.
 pub trait TransportMeta {
     /// The transport's registry key.

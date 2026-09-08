@@ -25,6 +25,7 @@
 #![deny(missing_debug_implementations)]
 
 pub mod dest;
+pub mod driver;
 pub mod registry;
 pub mod surface;
 pub mod wire;
@@ -38,6 +39,7 @@ pub mod wire;
 pub struct AbiVersion(pub u16);
 
 pub use dest::UpstreamAddress;
+pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 pub use registry::{check_composition, facts, CompositionError, Registered, TRANSPORT_ABI};
 pub use surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
