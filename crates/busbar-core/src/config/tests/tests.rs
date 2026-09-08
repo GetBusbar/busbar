@@ -2768,6 +2768,42 @@ fn test_pools_reserved_hooks_key() {
     );
 }
 
+/// BOOT-P07 — THE RESERVED-NAME REFUSAL, BYTE FOR BYTE.
+///
+/// The sentence is the one 1.5.5 shipped, which is what an operator's runbook, log alert and CI
+/// grep were written against. `split_section` now writes it for three planes from ONE template,
+/// and a shared template is exactly where a helpful extra clause slips in and moves bytes nobody
+/// meant to move — so the `pools:` spelling is pinned with `assert_eq!` rather than `contains`.
+/// The sibling test above deliberately keeps its loose `contains` assertion: it is about the
+/// mechanism (a map-valued reserved key is refused), this one is about the exact bytes.
+///
+/// ONE ASSERTION PER REFUSAL, in its own test, so BOOT-P09's sentence below cannot be shadowed by
+/// this one failing first — a second sentence pinned after a failed `assert_eq!` is a sentence
+/// nothing checks.
+#[test]
+fn test_pools_reserved_name_refusal_is_byte_identical_to_1_5_5() {
+    let e = serde_yaml::from_str::<crate::config::PoolsCfg>("hooks:\n  members: []\n")
+        .expect_err("a pool named `hooks` must be rejected");
+    assert_eq!(
+        e.to_string(),
+        "a pool may not be named `hooks`: that key is RESERVED at the `pools:` section level \
+         (the all-pools `hooks:` attach list and `upstream_credentials:` default). Rename the pool."
+    );
+}
+
+/// BOOT-P09 — THE ALL-POOLS CREDENTIAL-MODE REFUSAL, BYTE FOR BYTE. Same rule and same reason as
+/// BOOT-P07 above: 1.5.5's sentence, written from the shared three-plane template.
+#[test]
+fn test_pools_credential_mode_refusal_is_byte_identical_to_1_5_5() {
+    let e = serde_yaml::from_str::<crate::config::PoolsCfg>("upstream_credentials: borrowed\n")
+        .expect_err("an unknown all-pools credential mode must be rejected");
+    assert_eq!(
+        e.to_string(),
+        "the reserved `pools.upstream_credentials:` all-pools default must be `own` or \
+         `passthrough`: unknown variant `borrowed`, expected `own` or `passthrough`"
+    );
+}
+
 /// `resolve` projects the ADMIN chain module names from `auth.admin_auth:` onto
 /// `RootCfg.admin_auth` in order, and defaults to `[admin-tokens]` when the whole `auth:` block
 /// is absent.

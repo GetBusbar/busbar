@@ -390,12 +390,16 @@ where
             ))
         })?,
     };
+    // THE SENTENCE IS 1.5.5's, TO THE BYTE, with the section word substituted in — the same rule
+    // the reserved-name refusal below is held to. `must be a credential mode (`own` or
+    // `passthrough`)` says no more than `must be `own` or `passthrough`` and says it in different
+    // bytes, and different bytes are what an operator's log alert notices.
     let upstream_credentials = match raw.shift_remove("upstream_credentials") {
         None => None,
         Some(v) => Some(busbar_api::UpstreamCreds::deserialize(v).map_err(|e| {
             D::Error::custom(format!(
-                "the reserved `{section}.upstream_credentials:` all-{section} default must be a \
-                 credential mode (`own` or `passthrough`): {e}"
+                "the reserved `{section}.upstream_credentials:` all-{section} default must be \
+                 `own` or `passthrough`: {e}"
             ))
         })?),
     };
@@ -424,13 +428,15 @@ where
 /// THE SENTENCE an operator reads when they name a registration with a reserved section word,
 /// written once for all three planes and for both spellings that reach it.
 ///
-/// It names the section, what the two words ARE, and that the rule holds on every plane — because the
-/// surprise the reservation exists to prevent is precisely learning the word space once and
-/// discovering it differs somewhere else.
+/// IT IS 1.5.5's SENTENCE, TO THE BYTE, with `pools:`/`pool` substituted in — the wording an
+/// operator's runbook, log alert and CI grep were written against. The generalisation to the other
+/// planes is the section/noun substitution and NOTHING ELSE: a clause this refusal did not carry in
+/// 1.5.5 (however true) changes the line a matcher matches, so it stays out. It names the section,
+/// what the two words ARE, and what to do instead.
 fn reserved_name_refusal(section: &str, noun: &str, name: &str) -> String {
     format!(
-        "`{name}` may not be used as a name in `{section}:`: that key is RESERVED at the \
+        "a {noun} may not be named `{name}`: that key is RESERVED at the \
          `{section}:` section level (the all-{section} `hooks:` attach list and \
-         `upstream_credentials:` default), on every plane. Rename the {noun}."
+         `upstream_credentials:` default). Rename the {noun}."
     )
 }
