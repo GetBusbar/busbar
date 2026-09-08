@@ -72,6 +72,21 @@ use super::sanitize;
 /// answering `405` without that being a statement that busbar cannot notify a client).
 pub(crate) use busbar_mcp_codec::codec::IMPLEMENTED_METHODS;
 
+/// THE ACTION EVERY TOOL CALL IS AUDITED UNDER, written once.
+///
+/// The dispatch below emits this word from eleven places — the tasks gate, the caller-ask arms, the
+/// hook gate, the generation re-check, the egress gate, the upstream leg and the two terminal arms —
+/// and every one of them has to be the SAME word, because the administrative audit surface is
+/// queried by action and a row emitted under a spelling of one's own is a call that happened and
+/// cannot be found. It was a literal at each of those sites; a literal repeated eleven times is
+/// eleven chances for ten of them to be renamed.
+///
+/// **Read from outside this crate by source, not by import.** The composition root carries its own
+/// `units_mcp::AUDIT_ACTION_TOOL_CALL` — the root may not name this crate — and pins the two
+/// together with a test that reads THIS FILE'S source for the quoted literal. So the value stays
+/// written here exactly once, which is what that pin reads and what this constant now is.
+pub(crate) const AUDIT_ACTION_TOOL_CALL: &str = "mcp_tool.call";
+
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
 ///
 /// This is an INVARIANT of the dispatch design, not a default. An upstream's `input_required` ask
@@ -1347,7 +1362,7 @@ async fn tools_call(
         && !super::tasks::client_declares_tasks(ctx.capabilities)
     {
         ctx.host.audit_emit(
-            "mcp_tool.call",
+            AUDIT_ACTION_TOOL_CALL,
             &format!("mcp_tool:{}", selected.namespaced),
             busbar_substrate::audit::vocab::OUTCOME_REJECTED,
             ctx.actor,
@@ -1585,7 +1600,7 @@ async fn tools_call(
         } = outcome
         {
             ctx.host.audit_emit(
-                "mcp_tool.call",
+                AUDIT_ACTION_TOOL_CALL,
                 &format!("mcp_tool:{}", selected.namespaced),
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
@@ -1671,7 +1686,7 @@ async fn tools_call(
                 hook,
             } => {
                 ctx.host.audit_emit(
-                    "mcp_tool.call",
+                    AUDIT_ACTION_TOOL_CALL,
                     &format!("mcp_tool:{}", selected.namespaced),
                     busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                     ctx.actor,
@@ -1903,7 +1918,7 @@ async fn tools_call(
                      recogniser did not catch it"
                 );
                 ctx.host.audit_emit(
-                    "mcp_tool.call",
+                    AUDIT_ACTION_TOOL_CALL,
                     &resource,
                     busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                     ctx.actor,
@@ -1948,7 +1963,7 @@ async fn tools_call(
                             "mcp upstream returned structuredContent violating the published outputSchema"
                         );
                         ctx.host.audit_emit(
-                            "mcp_tool.call",
+                            AUDIT_ACTION_TOOL_CALL,
                             &resource,
                             busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                             ctx.actor,
@@ -1973,7 +1988,7 @@ async fn tools_call(
                 }
             }
             ctx.host.audit_emit(
-                "mcp_tool.call",
+                AUDIT_ACTION_TOOL_CALL,
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_APPLIED,
                 ctx.actor,
@@ -1985,7 +2000,7 @@ async fn tools_call(
         }
         Outcome::Refused(refusal) => {
             ctx.host.audit_emit(
-                "mcp_tool.call",
+                AUDIT_ACTION_TOOL_CALL,
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
@@ -2036,7 +2051,7 @@ async fn tools_call(
         // succeeded, and this one did not.
         Outcome::UpstreamFailed(reason) => {
             ctx.host.audit_emit(
-                "mcp_tool.call",
+                AUDIT_ACTION_TOOL_CALL,
                 &resource,
                 busbar_substrate::audit::vocab::OUTCOME_REJECTED,
                 ctx.actor,
@@ -2197,7 +2212,7 @@ async fn create_task(
         },
     );
     ctx.host.audit_emit(
-        "mcp_tool.call",
+        AUDIT_ACTION_TOOL_CALL,
         &format!("mcp_tool:{}", selected.namespaced),
         busbar_substrate::audit::vocab::OUTCOME_APPLIED,
         ctx.actor,
@@ -2410,7 +2425,7 @@ fn refuse_setup(
     id: Option<serde_json::Value>,
 ) -> Response {
     ctx.host.audit_emit(
-        "mcp_tool.call",
+        AUDIT_ACTION_TOOL_CALL,
         &format!("mcp_tool:{namespaced}"),
         busbar_substrate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
@@ -2446,7 +2461,7 @@ fn refuse_catalogue(
 ) -> Response {
     use busbar_substrate::ingress::protocol::Words as _;
     ctx.host.audit_emit(
-        "mcp_tool.call",
+        AUDIT_ACTION_TOOL_CALL,
         &format!("mcp_tool:{name}"),
         busbar_substrate::audit::vocab::OUTCOME_REJECTED,
         ctx.actor,
