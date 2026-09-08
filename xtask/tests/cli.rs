@@ -24,6 +24,63 @@ fn an_unknown_gate_is_an_argument_error_and_never_falls_through_into_running_som
     assert_eq!(run(&["selftest", "no-such-gate"]), 2);
 }
 
+/// A FLAG THIS DISPATCHER DOES NOT KNOW IS AN ARGUMENT ERROR, NOT A QUIETLY LOOSER RUN.
+///
+/// A few gates run a stricter arm at release time than on every push, and the arm is selected by a
+/// flag. Scanning for the flags it recognises and discarding the rest means one transposed letter
+/// silently selects the ORDINARY arm and reports green: `--require-verison=99.99.99` ran the
+/// changelog gate's push arm, exited 0, and owed two fewer rows than the release arm it was meant
+/// to be. The reconciler cannot notice, because the owed set is computed from the same gate object
+/// that was built without the release arm — the gate reported green having checked less than the
+/// caller asked for, and nothing in the run said so.
+///
+/// `--selftests` is the same mistake with a worse consequence: it turns a RED-ability PROOF into an
+/// ordinary run over the tree, and an ordinary run over a clean tree exits 0.
+#[test]
+fn a_misspelt_flag_is_an_argument_error_and_never_a_quietly_looser_run() {
+    assert_eq!(run(&["gate", "changelog", "--require-verison=99.99.99"]), 2);
+    assert_eq!(run(&["gate", "changelog", "--selftests"]), 2);
+    assert_eq!(run(&["gate", "segregation", "--format=json"]), 2);
+    assert_eq!(run(&["gate", "--al"]), 2);
+
+    // A SECOND BARE TOKEN is the same silent-ignore wearing different clothes: the first
+    // non-`--` token is taken as the gate name and every one after it is discarded, so
+    // `gate changelog 1.6.0` runs the push arm having been handed a version.
+    assert_eq!(run(&["gate", "changelog", "1.6.0"]), 2);
+
+    // AND THE FLAGS THAT ARE REAL STILL WORK — a refusal that refused everything would pass the
+    // cases above while being a worse bug than the one they are about.
+    assert_eq!(run(&["gate", "--list"]), 0);
+    assert_eq!(run(&["gate", "segregation", "--format=tsv"]), 0);
+    assert_eq!(run(&["gate", "segregation", "--report"]), 0);
+    // The release arms are asserted to have been ACCEPTED and to have reached a verdict, never to
+    // have liked the tree: `--require-dated-top` is legitimately RED on a branch whose changelog
+    // top is still `UNRELEASED`, and a case that fails for a reason it is not about is a case
+    // somebody deletes. 2 is the answer this test exists to refuse.
+    for arm in ["--require-dated-top", "--require-version=1.6.0"] {
+        let code = run(&["gate", "changelog", arm]);
+        assert!(
+            code == 0 || code == 1,
+            "`{arm}` is a real flag and must reach a verdict, not be refused; got {code}"
+        );
+    }
+
+    // The legacy argv after a bare `--` belongs to the script being compared against, not to this
+    // dispatcher, and must not be judged by it. `/usr/bin/true` writes no ledger, so the parity
+    // harness answers 3 (could not run) — never 2 (the arguments were wrong).
+    assert_eq!(
+        run(&[
+            "gate",
+            "segregation",
+            "--parity",
+            "--",
+            "/usr/bin/true",
+            "--a-flag-of-the-legacy-scripts-own"
+        ]),
+        3
+    );
+}
+
 #[test]
 fn list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree() {
     assert_eq!(run(&["gate", "--list"]), 0);
