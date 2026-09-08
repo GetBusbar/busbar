@@ -133,8 +133,8 @@ impl DemotionRecord {
             .to_plane_record()
             .and_then(|rec| store.upsert_plane_record(&rec))
         {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,
+            busbar_substrate::diag_error!(
+                busbar_substrate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,
                 server = %server,
                 reason = %reason,
                 error = %e,
@@ -152,8 +152,8 @@ impl DemotionRecord {
             return;
         };
         if let Err(e) = store.delete_plane_record(KIND_DEMOTION, server) {
-            crate::diagnostics::diag_error!(
-                crate::diagnostics::PLANE_DEMOTION_CLEAR_FAILED,
+            busbar_substrate::diag_error!(
+                busbar_substrate::diagnostics::PLANE_DEMOTION_CLEAR_FAILED,
                 server = %server,
                 error = %e,
                 "the durable demotion record for this upstream could NOT be cleared: it is \
@@ -176,8 +176,8 @@ impl DemotionRecord {
         match read {
             Ok(rows) => rows,
             Err(e) => {
-                crate::diagnostics::diag_error!(
-                    crate::diagnostics::PLANE_DEMOTIONS_UNREAD,
+                busbar_substrate::diag_error!(
+                    busbar_substrate::diagnostics::PLANE_DEMOTIONS_UNREAD,
                     error = %e,
                     "the durable demotion records could NOT be read at boot; any upstream this \
                      deployment had demoted is re-opened until the first sweep looks again"
