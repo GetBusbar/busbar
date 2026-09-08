@@ -4,9 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::config::RootCfg;
-use crate::diagnostics::{
-    diag_warn, CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT,
-    CONFIG_PASSTHROUGH_UNUSED_APIKEY, CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{
+    CONFIG_AUTH_CHAIN_FULL_SCOPE, CONFIG_OPEN_ADMIN_MINT, CONFIG_PASSTHROUGH_UNUSED_APIKEY,
+    CONFIG_POOL_HETEROGENEOUS, CONFIG_RATE_CARD_ALL_ZERO,
 };
 
 /// Maximum byte-length of an `affinity.header_name`. HTTP header field-names must be ASCII; an
@@ -296,7 +297,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // empty codec set and refuse a valid provider. Production is unaffected — there `registry()` is
     // the direct substrate re-export and the composition root installed the protocols in `main`.
     validate_providers_with(
-        crate::proto::registry::registry().codec_protocols(),
+        busbar_substrate::proto::registry().codec_protocols(),
         cfg,
         unset_env_vars,
         &mut errors,
@@ -937,7 +938,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     ));
                 }
                 if let Some(scope) = binding.admin_scope.as_deref() {
-                    if crate::admin::v1::contract::Scope::parse(scope).is_none() {
+                    if busbar_substrate::config::auth::max_admin_scope_token(scope).is_none() {
                         errors.push(format!(
                             "role_bindings.{module}.{role} has unknown admin_scope '{scope}': \
                              expected read-only or full"
@@ -968,7 +969,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     scope,
                 ) {
                     Err(e) => errors.push(e),
-                    Ok(crate::admin::v1::contract::Scope::Full) => diag_warn!(
+                    Ok(busbar_substrate::config::auth::MAX_ADMIN_SCOPE_FULL) => diag_warn!(
                         CONFIG_AUTH_CHAIN_FULL_SCOPE,
                         module = %entry.module,
                         "auth chain entry grants max_admin_scope: full - principals identified by \
@@ -1155,11 +1156,11 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // Bedrock-ingress passthrough provider signs per-request via SigV4 and needs no static key.
         // 1.5.3: the mode moved off `auth:` onto the `pools:` section — the all-pools
         // default plus any per-pool override. The warning fires if ANY of them is `passthrough`.
-        let any_passthrough = cfg.upstream_credentials == crate::auth::UpstreamCreds::Passthrough
+        let any_passthrough = cfg.upstream_credentials == busbar_api::UpstreamCreds::Passthrough
             || cfg
                 .pools
                 .values()
-                .any(|p| p.upstream_credentials == Some(crate::auth::UpstreamCreds::Passthrough));
+                .any(|p| p.upstream_credentials == Some(busbar_api::UpstreamCreds::Passthrough));
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key =
@@ -1617,12 +1618,13 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
 }
 
 /// The native-API root SEGMENT — `api`, derived from the ONE constant the auth middleware
-/// classifies admin requests with ([`crate::auth::ADMIN_PATH`] = `/api`), never a copied literal.
+/// classifies admin requests with ([`busbar_substrate::admin_verbs::ADMIN_PATH`] = `/api`), never
+/// a copied literal.
 /// This is what keeps [`reserved_admin_name`] and the middleware's `is_admin` boundary from
 /// drifting: the drift this replaces is exactly what let a lane named `api` pass validation while
 /// the middleware routed `/api/v1/messages` to the admin surface.
 fn admin_root_segment() -> &'static str {
-    crate::auth::ADMIN_PATH.trim_start_matches('/')
+    busbar_substrate::admin_verbs::ADMIN_PATH.trim_start_matches('/')
 }
 
 /// True when a `role_bindings` role name would shadow the built-in operator PRINCIPAL ID (`admin`,
