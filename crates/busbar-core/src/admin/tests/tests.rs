@@ -47,6 +47,56 @@ async fn serve_with_gov(gov: Arc<GovState>) -> (std::net::SocketAddr, tokio::tas
 // scope probe, a `config_version` reading — now asks a read this router still answers: `/pools` for
 // the door, `/config` for the version (the same counter, on the read that carries it as `version`).
 
+/// A CROSSED path keeps its `405` and keeps its `Allow`, on every method the operation never had.
+///
+/// The half of a crossing that is easiest to get wrong, because nothing about it is the operation.
+/// `DELETE /api/v1/admin/info` has always answered `405` with the frozen envelope and
+/// `Allow: GET,HEAD`, and neither byte is about the read that moved: the status comes from the PATH
+/// being mounted and the header from the METHOD being registered. Delete the route and the request
+/// answers `404`; mount the path with no method and it answers `405` with an empty `Allow`, claiming
+/// this node serves nothing there when the composition serves a `GET`.
+///
+/// So this asks the crossed paths the one question that still belongs to this router, and asks it of
+/// every one of them rather than of the single path an oracle cell happens to cover.
+#[tokio::test]
+async fn a_crossed_path_still_refuses_a_wrong_method_the_way_it_always_did() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let (addr, handle) = serve_with_gov(gov).await;
+    let client = reqwest::Client::new();
+
+    // `/admin-auth` is not here: its `PUT` has NOT crossed, so it is a path this router still serves
+    // an operation on, and its `Allow` is a different (and equally truthful) list.
+    for path in ["/info", "/auth", "/models", "/providers"] {
+        let r = client
+            .delete(format!("http://{addr}/api/v1/admin{path}"))
+            .header("x-admin-token", "admintok")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            r.status().as_u16(),
+            405,
+            "{path}: a crossed path that stopped being mounted answers 404 to a wrong method"
+        );
+        assert_eq!(
+            r.headers()
+                .get(axum::http::header::ALLOW)
+                .and_then(|v| v.to_str().ok()),
+            Some("GET,HEAD"),
+            "{path}: the refusal must still name the method this node answers"
+        );
+        assert_eq!(
+            r.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+            "method_not_allowed",
+            "{path}: the refusal must speak the frozen envelope"
+        );
+    }
+
+    handle.abort();
+}
+
 /// The topology read surface THIS ROUTER STILL ANSWERS (`/api/v1/admin/pools`) flows through the
 /// service and projects the pool view. Built on a two-lane, two-provider fixture so the pool
 /// membership and each member's weight are observable.
