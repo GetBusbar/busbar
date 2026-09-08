@@ -128,6 +128,21 @@ pub const CORPUS_DEPENDENT: &[&str] = &[
     census::ROW_COUNT,
 ];
 
+/// [`CORPUS_DEPENDENT`], each id carrying the one reason it did not run.
+pub fn corpus_took_them_down() -> Vec<(&'static str, String)> {
+    CORPUS_DEPENDENT
+        .iter()
+        .map(|id| {
+            (
+                *id,
+                "the candidate corpus was below its floor, so this rule scanned (almost) nothing \
+                 — its verdict is meaningless, and meaningless is NOT a pass"
+                    .to_string(),
+            )
+        })
+        .collect()
+}
+
 /// Every finding this gate found, one list per owed row id. BOTH the run and the legacy translator
 /// fill this in and then hand it to the SAME row constructors, so the only thing a parity diff can
 /// be about is which offenders were named — never how a title is worded.
@@ -169,8 +184,10 @@ pub struct Findings {
     pub bootctx_subject: Vec<String>,
     pub bootctx_not_narrowed: Vec<String>,
     pub bootctx_widened: Vec<String>,
-    /// The rules the corpus took down with it, if it was below its floor.
-    pub did_not_run: Vec<&'static str>,
+    /// The rules that did not run, each with the reason it did not — a scan set below its floor, a
+    /// scope that would not list. The REASON travels with the id because "the rule did not run"
+    /// answered with the wrong cause is a remedy pointed at the wrong file.
+    pub did_not_run: Vec<(&'static str, String)>,
 }
 
 impl Findings {
@@ -238,15 +255,9 @@ impl Findings {
         rows.extend(plane_store::rows(self));
         // A rule the empty corpus took down reports DID NOT RUN, replacing whatever its own
         // constructor would otherwise have said about a scan set it never had.
-        for id in &self.did_not_run {
+        for (id, why) in &self.did_not_run {
             if let Some(slot) = rows.iter_mut().find(|r| r.id == *id) {
-                *slot = Row::fail(
-                    *id,
-                    "the rule did not run",
-                    "the candidate corpus was below its floor, so this rule scanned (almost) \
-                     nothing — its verdict is meaningless, and meaningless is NOT a pass"
-                        .to_string(),
-                );
+                *slot = Row::fail(*id, "the rule did not run", why.clone());
             }
         }
         rows
@@ -345,7 +356,7 @@ impl StructureLintGate {
             }
             Err(why) => {
                 f.candidate_floor.push(why);
-                f.did_not_run = CORPUS_DEPENDENT.to_vec();
+                f.did_not_run = corpus_took_them_down();
                 // The rules that read the tree DIRECTLY rather than through the corpus still run:
                 // an empty candidate list says nothing about whether a subject file exists.
                 oversized::scan(cx, &tables, &mut f);
