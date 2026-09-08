@@ -94,8 +94,14 @@ pub fn decode(frame: &[u8]) -> Result<TwilioEvent, TwilioError> {
         "connected" => Ok(TwilioEvent::Connected),
         "start" => {
             let start = v.get("start").ok_or(TwilioError::Malformed)?;
+            // NON-EMPTY, at bind time. The one anti-forgery check this dialect has compares a
+            // later `media` frame's `streamSid` against what this event bound, and a `media` frame
+            // that omits the field decodes to the empty string. An empty binding therefore matched
+            // every sid-less frame on the session and the guard passed all of them. A `start` that
+            // names no stream names nothing this session can be bound by.
             let stream_sid = str_field(start, "streamSid")
                 .or_else(|| str_field(&v, "streamSid"))
+                .filter(|sid| !sid.is_empty())
                 .ok_or(TwilioError::Malformed)?;
             let call_sid = str_field(start, "callSid").unwrap_or_default();
             let mf = start.get("mediaFormat").ok_or(TwilioError::Malformed)?;

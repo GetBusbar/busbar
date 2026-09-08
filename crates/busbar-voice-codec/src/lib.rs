@@ -18,6 +18,13 @@
 //! its old path, so `busbar_voice::ir::…` and `busbar_voice::topology::twilio::…` resolve exactly
 //! what they always did. The split is a MOVE: no item changed shape crossing it.
 
+// THE SAME LINT GATE THE PLANE CRATE CARRIES (`busbar-plane-voice/src/lib.rs`). This crate is inside
+// a pure plane's scanned transitive closure and calls itself the pure half of the plugin, and it
+// carried no lint gate at all — so the one crate in that closure that transcodes raw media bytes was
+// also the one crate free to reach for `unsafe` to do it faster. There is none today; this is what
+// keeps that true without a reviewer having to notice.
+#![forbid(unsafe_code)]
+
 pub mod ir;
 
 /// The one topology module that is a GRAMMAR rather than a dial: it keeps its `topology::` parent

@@ -45,7 +45,17 @@ pub struct EchoToolExecutor;
 #[async_trait]
 impl ToolExecutor for EchoToolExecutor {
     async fn execute(&self, name: &str, arguments: &[u8]) -> Vec<u8> {
-        let args = String::from_utf8_lossy(arguments);
-        format!(r#"{{"tool":"{name}","echo":{args}}}"#).into_bytes()
+        // The SERIALIZER decides what a string may contain, not this call site. `name` arrives off
+        // the provider's JSON with no charset restriction, and spliced into a hand-written object it
+        // only had to contain a quote to write attacker-chosen KEYS into the echoed result — from a
+        // `pub` module of a production crate, however plainly this type is documented as test/dev.
+        // Arguments that are not JSON travel as the string they are, rather than as a fragment
+        // pasted where a value belongs.
+        let echo = serde_json::from_slice::<serde_json::Value>(arguments).unwrap_or_else(|_| {
+            serde_json::Value::String(String::from_utf8_lossy(arguments).into_owned())
+        });
+        // An object of a string and an already-parsed value has no unrepresentable shape; the
+        // fallback keeps the signature total rather than making a test double a panic site.
+        serde_json::to_vec(&serde_json::json!({ "tool": name, "echo": echo })).unwrap_or_default()
     }
 }
