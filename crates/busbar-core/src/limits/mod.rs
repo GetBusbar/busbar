@@ -19,8 +19,8 @@
 pub(crate) mod admission;
 
 use crate::config::{
-    LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_POLICY_TIMEOUT_MS,
-    DEFAULT_PROBE_INTERVAL_SECS, DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
+    LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_PROBE_INTERVAL_SECS,
+    DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
     DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
 // The body-cap default is no longer read by any accessor on this page (the translate cap moved to
@@ -139,12 +139,11 @@ pub(crate) fn default_probe_timeout_secs() -> u64 {
         .unwrap_or(DEFAULT_PROBE_TIMEOUT_SECS)
 }
 
-/// Global default routing-policy timeout (ms). Per-policy `policy.timeout_ms` overrides.
-pub(crate) fn default_policy_timeout_ms() -> u64 {
-    get()
-        .map(|l| l.default_policy_timeout_ms)
-        .unwrap_or(DEFAULT_POLICY_TIMEOUT_MS)
-}
+// `default_policy_timeout_ms` went with its only reader: the hook engine's `policy_timeout`, now in
+// `busbar_core_hooks::limits`. It reads the SAME process-global slot this module reads
+// (`busbar_substrate::config::limits::installed()`) and falls back to the same
+// `DEFAULT_POLICY_TIMEOUT_MS` const, so an operator who raises the knob does not find that half the
+// process observed it. Keeping an accessor here with no caller would be a second place to change it.
 
 #[cfg(test)]
 #[path = "tests/limits_tests.rs"]

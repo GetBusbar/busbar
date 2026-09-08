@@ -9,12 +9,12 @@
 //! nothing about the field somebody adds next. Comparing the entire object means a new key cannot
 //! reach a hook without this file being edited, which is where the decision belongs.
 
-use crate::hooks::gate::{decide, GateSubject, GateVerdict};
-use crate::hooks::{
+use crate::gate::{decide, GateSubject, GateVerdict};
+use crate::{
     Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest,
 };
-use crate::ir::invoke::InvokeReq;
+use busbar_substrate::ir::invoke::InvokeReq;
 use std::sync::{Arc, Mutex};
 
 /// A gate that ANSWERS a fixed decision and RECORDS the exact wire document it was handed — built
@@ -34,8 +34,8 @@ impl RoutingPolicy for Spy {
         ctx: &RoutingContext<'_>,
         _budget: std::time::Duration,
     ) -> PolicyResult {
-        let doc = serde_json::to_value(crate::hooks::wire::build(
-            crate::hooks::wire::OP_DECIDE,
+        let doc = serde_json::to_value(crate::wire::build(
+            crate::wire::OP_DECIDE,
             req,
             candidates,
             ctx,
@@ -90,7 +90,7 @@ impl RoutingPolicy for ReplyGate {
     ) -> PolicyResult {
         // Byte-for-byte the `HookReply::Reply(v)` arm in `busbar_plugin_loader::hook`: hand the
         // reply Value to the engine's shared projector and return its `PolicyResult` unchanged.
-        (crate::hooks::plugin::projectors().normalize)(self.reply.clone(), candidates)
+        (crate::plugin::projectors().normalize)(self.reply.clone(), candidates)
     }
 
     fn name(&self) -> &'static str {
@@ -502,8 +502,8 @@ async fn no_attached_gate_builds_no_projection() {
         walks: std::sync::atomic::AtomicUsize,
     }
     impl crate::ir::facts::IrFacts for Counting {
-        fn verb(&self) -> crate::operation::Operation {
-            crate::operation::Operation::INVOKE
+        fn verb(&self) -> busbar_api::operation::Operation {
+            busbar_api::operation::Operation::INVOKE
         }
         fn wants_stream(&self) -> bool {
             false
@@ -546,7 +546,7 @@ async fn no_attached_gate_builds_no_projection() {
 
 // ── Incremental scan (session-substrate tenant) ─────────────────────────────────────────────────
 
-use crate::hooks::gate::IncrementalScan;
+use crate::gate::IncrementalScan;
 use crate::session::{SessionKey, SessionStore};
 
 /// A long session re-screens only NEW content: a piece cleared on one turn is not sent to the hook
