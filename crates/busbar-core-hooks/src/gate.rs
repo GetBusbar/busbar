@@ -57,14 +57,14 @@
 // installed); the allow is unconditional so the neutral seam names no plane feature.
 #![allow(dead_code)]
 
-use crate::hooks::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
 use crate::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
+use crate::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
 use std::borrow::Cow;
 
 /// The answer a firing site acts on. Deliberately NOT the model plane's `PolicyOutcome`: that type
 /// carries `Order`/`Restrict`/`Weighted`, three answers about a candidate set, and a caller here
 /// would have to know they cannot happen. A two-armed verdict cannot be misread.
-pub(crate) enum GateVerdict {
+pub enum GateVerdict {
     /// No gate objected (or none is attached). The request proceeds.
     Proceed,
     /// A gate refused the request. `status` is CLAMPED to the 4xx band and `message` is the hook's
@@ -81,29 +81,29 @@ pub(crate) enum GateVerdict {
 
 /// Everything the seam needs about one request, gathered so no argument can be transposed with
 /// another. Borrowed throughout: nothing here is stored past the call.
-pub(crate) struct GateSubject<'a> {
+pub struct GateSubject<'a> {
     /// The request, behind the family-blind seam. The ONLY thing this module learns about it.
     ///
     /// `+ Sync` because this borrow is held across the gate's `.await`, and an axum handler's future
     /// must be `Send`. It is a bound on the OBJECT, not a new obligation on the IR: every IR type is
     /// plain owned data.
-    pub(crate) facts: &'a (dyn IrFacts + Sync),
+    pub facts: &'a (dyn IrFacts + Sync),
     /// The CONTAINER the request is addressed to — a pool, an MCP server, an A2A agent. This is
     /// the routing fact `IrFacts` deliberately cannot answer (see that trait's note on the absent
     /// `target()`), so the firing site, which resolved it, supplies it.
-    pub(crate) container: &'a str,
+    pub container: &'a str,
     /// The dialect label, verbatim onto the wire. DATA: no code here compares it.
-    pub(crate) ingress_protocol: &'a str,
+    pub ingress_protocol: &'a str,
     /// The request-spine correlation id, so a hook can join this decision to the request's other
     /// records.
-    pub(crate) request_id: u64,
+    pub request_id: u64,
     /// The caller's resolved governance key, for the `user: ro` identity projection. `None` when
     /// governance is disabled or the plane resolved no key.
-    pub(crate) key: Option<&'a busbar_api::VirtualKey>,
+    pub key: Option<&'a busbar_api::VirtualKey>,
     /// Incremental scan: when `Some`, screen only the content pieces this session has not already had
     /// cleared for each hook (the session-substrate tenant, design G5). `None` = screen the full
     /// projection every time — the default, byte-identical to pre-incremental behaviour.
-    pub(crate) incremental: Option<IncrementalScan<'a>>,
+    pub incremental: Option<IncrementalScan<'a>>,
 }
 
 /// The gate's tenant of the session substrate: a per-`(session, hook)` set of the content-piece
@@ -115,13 +115,13 @@ pub(crate) struct GateSubject<'a> {
 /// re-screened — never wrong, only less optimised. A BLOCKED (rejected) piece is never recorded, so it
 /// is re-screened on retry. An OPAQUE piece is always re-surfaced (a presence signal, never cleared).
 #[derive(Clone, Copy)]
-pub(crate) struct IncrementalScan<'a> {
+pub struct IncrementalScan<'a> {
     /// The neutral session substrate the cleared-set lives in.
-    pub(crate) store: &'a crate::session::SessionStore,
+    pub store: &'a crate::session::SessionStore,
     /// This request's session identity (a stable hash of the session key already read at ingress).
-    pub(crate) session: crate::session::SessionKey,
+    pub session: crate::session::SessionKey,
     /// Epoch millis for the substrate's TTL — passed in, no ambient clock here.
-    pub(crate) now_ms: u64,
+    pub now_ms: u64,
 }
 
 /// hook name → the set of content-piece digests cleared for it this session.
@@ -145,7 +145,7 @@ impl IncrementalScan<'_> {
     ///
     /// Domain-separated: each field is length-tagged and delimited so no boundary can alias into
     /// another (principal `"a"` + sid `"b"` can never collide with principal `""` + sid `"ab"`).
-    pub(crate) fn derive_session_key(
+    pub fn derive_session_key(
         sid: &str,
         principal_id: &str,
         hook_generation: u64,
@@ -210,10 +210,7 @@ impl IncrementalScan<'_> {
 /// ZERO COST when nothing is attached: an empty slice returns before any projection is built, which
 /// is the same shape (and the same guarantee) as the model plane's `global_gates.is_empty()`
 /// early-out.
-pub(crate) async fn decide(
-    gates: &[(u16, ResolvedPolicy)],
-    subject: &GateSubject<'_>,
-) -> GateVerdict {
+pub async fn decide(gates: &[(u16, ResolvedPolicy)], subject: &GateSubject<'_>) -> GateVerdict {
     if gates.is_empty() {
         return GateVerdict::Proceed;
     }
@@ -375,7 +372,7 @@ fn project<'a>(
         system_chars: items.counts().1,
         max_tokens: shape.max_tokens,
         stream: subject.facts.wants_stream(),
-        prompt: send_prompt.then(|| crate::hooks::PromptProjection {
+        prompt: send_prompt.then(|| crate::PromptProjection {
             system: join_system(items),
             messages: items
                 .iter()
@@ -383,7 +380,7 @@ fn project<'a>(
                 .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
                 .collect(),
         }),
-        identity: send_user.then(|| crate::hooks::CallerIdentity {
+        identity: send_user.then(|| crate::CallerIdentity {
             key_id: subject.key.map(|k| k.id.clone()),
             key_name: subject.key.map(|k| k.name.clone()),
             // The BODY's end-user field, which is a different fact from the key: a protocol whose

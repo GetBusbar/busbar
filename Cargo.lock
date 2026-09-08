@@ -521,6 +521,7 @@ dependencies = [
  "busbar-a2a-codec",
  "busbar-api",
  "busbar-auth-admin-tokens",
+ "busbar-core-hooks",
  "busbar-hooks-ranking",
  "busbar-llm",
  "busbar-mcp",
@@ -584,6 +585,26 @@ dependencies = [
  "url",
  "webpki-roots",
  "zeroize",
+]
+
+[[package]]
+name = "busbar-core-hooks"
+version = "1.6.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "busbar-api",
+ "busbar-hooks-ranking",
+ "busbar-plugin-loader",
+ "busbar-plugin-sign",
+ "busbar-plugin-testkit",
+ "busbar-substrate",
+ "busbar-substrate-values",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

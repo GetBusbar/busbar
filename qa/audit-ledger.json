@@ -746,6 +746,24 @@
    ]
   },
   {
+   "id": "crates/busbar-core-hooks/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core-hooks/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core-hooks/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-grammar/src",
    "kind": "production",
    "paths": [
@@ -4180,6 +4198,21 @@
      "report": "busbar-landq-state/gate/audits/tests-core.md"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-core-hooks/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core-hooks/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-grammar/tests",

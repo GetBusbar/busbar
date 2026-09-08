@@ -141,6 +141,15 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                         "crates/api/src/durable.rs".into(),
                         format!("{core}/test_support/mod.rs"),
                         "crates/busbar-unit-wal/src/backend.rs".into(),
+                        // LEDGERED EXEMPTION: the plugin TARBALL FIXTURE's scratch directory. It is
+                        // a `std::env::temp_dir()` path that exists to be filled with a throwaway
+                        // archive and then deleted, and durability is not a property anything wants
+                        // of it — a fixture directory that did not survive a power cut is a fixture
+                        // directory that did its job. It is production-CLASSIFIED only because a
+                        // test helper another crate calls has to live in the library rather than
+                        // behind `cfg(test)`; it was test-classified, and exempt by that, while it
+                        // sat in `busbar_core::tests`.
+                        "crates/plugin-testkit/src/loader_fixtures.rs".into(),
                     ],
                 ),
             ],

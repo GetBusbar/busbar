@@ -99,6 +99,17 @@ them). Each axis is blind to the other two; only the kernel composes them.
   connection and listener handles, the detached stream, the closed transport failure and close
   codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
   generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
+  A fourth crate carries a surface ceiling for a different reason — not a plugin-author budget but a
+  ratchet on a CORE crate whose whole claim is that it stayed one thing: `busbar-core-hooks`, the
+  hook POLICY engine (which hook runs, with which grants, on which terminal, from which pool's
+  configuration — the kernel SEATS a hook after Admit, but choosing is policy and policy is core's)
+  — ≤ **2k**, gated as `surface-ceiling:core-hooks`, measured at 1,672 the day it was extracted from
+  `busbar-core` (owner ruling, 2026-09-08). It names **no plane, no dialect and no transport**, and
+  that is readable from its manifest rather than promised: its vocabulary is the hook contract
+  (`RoutingPolicy` and its read-only projections, `busbar_substrate::hooks::wire`) plus the config
+  leaf structs the operator wrote, and a request reaches its gate as an `IrFacts` projection and as
+  nothing else. The built-in ranking hooks stay a PLUGIN, reached through the same contract as a
+  dlopened one.
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
