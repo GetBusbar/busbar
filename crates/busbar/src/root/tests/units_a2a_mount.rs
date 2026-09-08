@@ -198,12 +198,23 @@ fn a_mounted_surface(calls: Arc<SurfaceCalls>) -> axum::Router {
 const THIS_NODES_AUDIENCE: &str = "http://127.0.0.1:8080/a2a";
 
 /// Every source the leg needs, with the auth chain the caller asks for.
+/// This deployment's rates, at one flat figure and with no card — the shape a deployment that
+/// configured no `rate_card:` resolves. Declared here as well as beside the leg's own cells because
+/// a fixture shared between two test modules would be a production item existing for tests.
+fn rates_of(flat: i64) -> Arc<crate::root::kernel::RootRates> {
+    let holder = crate::root::kernel::RootHistory::default();
+    holder.apply(busbar_unit_cost::RateCard::absent(flat), 0);
+    holder
+        .pin_rates(0)
+        .expect("the apply put rates in place")
+}
+
 fn sources_with_chain(
     kernel: &busbar_kernel::teller::Kernel,
     auth: busbar_unit_auth::Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
 ) -> crate::root::units_a2a_leg::A2aLegSources<'_> {
-    use busbar_unit_admission::{Door, GroupTable, InMemoryCells, Pricer};
+    use busbar_unit_admission::{Door, GroupTable, InMemoryCells};
     crate::root::units_a2a_leg::A2aLegSources {
         plane: busbar_plane_a2a::A2aPlane::EMPTY,
         kernel,
@@ -215,8 +226,7 @@ fn sources_with_chain(
         pinned: Some(Vec::new()),
         door: Some(Door::new(InMemoryCells::new())),
         groups: Some(GroupTable::default()),
-        pricer: Some(Pricer::flat(0)),
-        bytes_nanos: Some(0),
+        rates: Some(rates_of(0)),
         store: Some(Arc::new(busbar_core::governance::MemoryStore::new())),
         meter_policy: Some(crate::root::policy::build(
             &crate::root::policy::MeterPolicyConfig::default(),
