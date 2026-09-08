@@ -66,10 +66,10 @@ impl RegistrationPolicy for OpenRegistration {
 /// is that a client picks a different name, and the cost of a false negative is a consent screen
 /// that lies to a user about who is asking.
 ///
-/// `pub(super)` because [`super::cimd`] applies the SAME refusal to a metadata document's
+/// `pub(crate)` because [`crate::cimd`] applies the SAME refusal to a metadata document's
 /// `client_name`: a client that arrives by the replacement mechanism must not be able to say the
 /// word the deprecated one is refused for.
-pub(super) fn name_impersonates_the_deployment(name: &str) -> bool {
+pub(crate) fn name_impersonates_the_deployment(name: &str) -> bool {
     name.to_ascii_lowercase().contains("busbar")
 }
 
@@ -79,7 +79,7 @@ pub(super) fn name_impersonates_the_deployment(name: &str) -> bool {
 /// from the metadata document, so the always-advertised `registration_endpoint` here and the
 /// always-mounted `/register` in `routes::mount` are two views of the same ruling and must agree.
 pub(crate) fn registration_config(
-    identity: &super::config::AsIdentity,
+    identity: &crate::config::AsIdentity,
 ) -> Box<oauth_as::registration::RegistrationConfig> {
     let mut config = oauth_as::registration::RegistrationConfig::new();
     // Derived from the issuer rather than from the path, because this member is an absolute URL
@@ -110,7 +110,7 @@ pub(crate) fn registration_config(
 /// spellings of "what a self-registered client gets" is exactly the drift that would make the
 /// adversarial test below true of one mechanism and false of the other.
 pub(crate) fn default_grant_scopes(
-    identity: &super::config::AsIdentity,
+    identity: &crate::config::AsIdentity,
 ) -> oauth_as::scope::ScopeSet {
     // `expect` is sound and is not a shortcut: `AsIdentity::from_cfg` already refused every entry
     // that is not an RFC 6749 section 3.3 scope token, at BOOT, naming the offending value. An

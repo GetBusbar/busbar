@@ -1,93 +1,105 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! BUSBAR AS AN OAUTH 2.1 AUTHORIZATION SERVER (`oauth_as:`), off unless configured.
+//! THE NODE'S HALF of busbar-as-an-OAuth-2.1-authorization-server — which, after the 1.6.0
+//! control-kind ruling, is very nearly nothing.
 //!
-//! ## What this plane is for
+//! ## What moved, and where the rest of it went
 //!
-//! busbar already speaks OAuth as a RESOURCE server: an operator points it at Okta, Entra or Auth0,
-//! and busbar refuses any token not minted for its own canonical URI. That covers the deployment
-//! that has an identity provider and can get a client registered in it.
+//! Everything that IS the authorization server — the `oauth_as:` grammar and its boot refusals, the
+//! ES256 signer, the consent sessions, the registration ceiling, the Client ID Metadata Document
+//! checks, the running server object and the route table — is now `busbar-control-oauth2`, a
+//! CONTROL-kind crate. `docs/design/control-oauth2.md` is the module map; `docs/design/PLUGIN-TREE.md`
+//! carries the control-kind row and the rule this obeys: *a control surface declares routes as data;
+//! no plugin names a transport.*
 //!
-//! The clients people actually run cannot do that. Codex, ChatGPT and Claude.ai discover an MCP
-//! server, register themselves, and expect a token — and an enterprise identity team will not turn
-//! on RFC 7591 dynamic registration to let them. So a gateway whose only OAuth answer is "point at
-//! your IdP" cannot connect the agents its users already have. This plane closes that: with
-//! `oauth_as:` configured, busbar IS the authorization server, and an agent that has never heard of
-//! this deployment completes a login against it with nothing configured on either side.
+//! Two things stayed, and each stayed for a reason that is about the NODE rather than about OAuth:
 //!
-//! ## It costs nothing when it is off, and that is a property rather than an aspiration
+//! * [`fetch`] — the guarded CIMD fetch. The URL is attacker-supplied on an endpoint that takes no
+//!   credential, so what makes it safe is [`crate::net_guard`]'s resolve-then-pin, which is the
+//!   node's security control and must have exactly one copy. The surface declares the seam and its
+//!   own bounds; the node supplies the mechanism.
+//! * The re-exports below, so the config lowering, the secret-ref walker and the boot path keep
+//!   naming `crate::oauth_as::…` while the types they name live in the surface crate. Those are a
+//!   TRANSITION, not a design: they disappear when the `oauth_as:` lowering moves to the config home
+//!   and the surface is constructed by the composition root rather than by `appbuild`. See the
+//!   design doc's staging section — this is the one edge that is named there as owed.
 //!
-//! `oauth-as` is a NORMAL dependency, so the shipped binary can always serve this plane and an
-//! operator never meets a config block the binary in front of them cannot honour. What "off" means
-//! is that [`crate::state::App::oauth_as`] is `None`: no [`oauth_as::server::AuthorizationServer`]
-//! is constructed, no store is allocated, no signing key is generated or read, no sweeper task is
-//! spawned, and no route is mounted — so the auth middleware has nothing to consult and the route
-//! table has nothing to describe. That is the same posture `mcp:` takes.
+//! ## What it costs when it is off
 //!
-//! It is CHECKED rather than asserted, and the check is `tests/mount_tests.rs`: it subtracts the
-//! unconfigured route table from the configured one, requires the difference to be exactly the
-//! plane's path inventory, and then requires the unconfigured table to contain none of it. The
-//! second half is the claim; the first half is what stops the second half from passing because the
-//! mount was deleted. What that leaves outside the type system is the linked bytes, which is a
-//! measurement rather than a test — see the release notes.
-//!
-//! ## The three registration mechanisms: ALL THREE ON, NO TOGGLES
-//!
-//! The `2026-07-28` MCP revision lists three ways a client obtains a `client_id`, in the order a
-//! client should prefer them: pre-registration, **Client ID Metadata Documents**, and **Dynamic
-//! Client Registration** — the last of which it marks *deprecated, retained for backwards
-//! compatibility*. The 1.6.0 ruling is that busbar serves ALL THREE whenever `oauth_as:` is
-//! configured, with no per-mechanism switches — the decision a reviewer can find is the config
-//! block itself, and what makes always-on self-registration safe is that registration confers no
-//! authority (the [`policy`] ceiling):
-//!
-//! * **Pre-registration**: the host provisions a [`oauth_as::client::Client`] into the store
-//!   directly ([`plane::AsServer::register_client`]).
-//! * **DCR** ([`policy`]) because it is what the clients shipping today actually speak. Mounted
-//!   UNCONDITIONALLY at `{issuer}/register`, and confined by a ceiling the registrant cannot move.
-//! * **CIMD** ([`cimd`]) — the `SHOULD`. The seam is `Storage::get_client`: a `client_id` that
-//!   parses as an HTTPS URL and is absent from the store is fetched, validated (`client_id` equal
-//!   to the URL, `redirect_uris` taken from the document and exact-matched against the request by
-//!   `oauth-as`) and materialised as an ephemeral [`oauth_as::client::Client`] under the SAME
-//!   [`policy::default_grant_scopes`] ceiling registration uses. The document VALIDATION is
-//!   busbar's own for now: `oauth-as` ships a CIMD validator behind an off-by-default `cimd`
-//!   feature this tree does not enable — the handover is a marked TODO in [`cimd`] tied to
-//!   `chore/1.6.0-oauth-as-0.9.3`, and it replaces one call, not the seam. That
-//!   fetch is an SSRF surface by construction — the URL is attacker-supplied — and it goes through
-//!   [`crate::net_guard`]'s resolve-then-pin guard rather than a second copy of it; a drifted copy
-//!   of exactly that guard was a live cloud-metadata bypass on the MCP plane.
-//!
-//!   **It reaches for CORE, not for a plane.** An earlier draft of this note pointed at
-//!   `a2a::fetch::fetch_card`, which would have made an authorization server's security control a
-//!   dependency on the A2A plane's internals — and would have meant that deleting that plane broke
-//!   the AS. The guard now lives in `net_guard` with the knobs as parameters, so this path supplies
-//!   its OWN bounds — a client metadata document is a few kilobytes and the fetch is on an
-//!   interactive authorization request, so 5 KB and 10 s, not the card fetch's 512 KB — and gets
-//!   the same resolve-then-pin, the same unconditional cloud-metadata refusal and the same
-//!   re-guarded redirect chain as every other guarded fetch in the tree.
+//! Nothing, and it is CHECKED rather than asserted. "Off" is the composition holding no
+//! `OAuth2Control`: no server, no store, no signing key, no sweeper, no route — so the auth
+//! middleware has nothing to consult and the route table has nothing to describe. The check is
+//! [`mount_tests`]: it subtracts the unconfigured route table from the configured one, requires the
+//! difference to be exactly the surface's declared path inventory, and then requires the
+//! unconfigured table to contain none of it. The second half is the claim; the first half is what
+//! stops the second half from passing because the mount was deleted.
 
-pub(crate) mod cimd;
-pub(crate) mod consent;
+pub(crate) mod control;
+pub(crate) mod fetch;
 
-/// RETIRING re-export shim (D33 wave 5). The `oauth_as:` VALUE GRAMMAR — the deserialized
-/// [`config::OauthAsCfg`] block, the [`config::AsCfgError`] refusals and the derived
-/// [`config::AsIdentity`] — is pure serde data over `SecretRef` and `String`: it names no store, no
-/// signing key, no route and no session. It lives with the rest of the config grammar in
-/// [`busbar_substrate::config::oauth_as`], where the config document root reaches it WITHOUT
-/// reaching up into this module, and where the authorization server's own crate can read it
-/// without depending on busbar-core. The runtime half (`plane`, `routes`, `signer`, `consent`,
-/// `cimd`, `policy`) names it through this path unchanged.
+pub use control::CONTROL_DECL;
+
+// ── THE TRANSITIONAL RE-EXPORTS ────────────────────────────────────────────────────────────────
+// Each of these is one name a core call site still spells `crate::oauth_as::…`. They are listed
+// individually rather than as a glob so that the surface this node still couples to is READABLE:
+// the day the list is empty is the day the edge is gone, and a glob would hide the difference
+// between a list of four and a list of forty.
+
+/// The `oauth_as:` grammar and the validated identity every endpoint is derived from. Read by
+/// `config::resolve` (which lowers the block), `config::prepass` (which lifts it) and
+/// `config_validate::secret_refs` (which DESTRUCTURES `AsIdentity` exhaustively, so that a newly
+/// added secret-bearing field is a compile error rather than an oversight).
 pub(crate) mod config {
-    pub(crate) use busbar_substrate::config::oauth_as::*;
+    pub(crate) use busbar_control_oauth2::config::{AsIdentity, OauthAsCfg};
 }
-pub(crate) mod plane;
-pub(crate) mod policy;
-pub(crate) mod routes;
-pub(crate) mod signer;
 
-// THE GATING PROOF, attached to the module root rather than to `routes`, because what it checks is
-// not a property of the mount alone: it spans the config lowering, `App::oauth_as` and the route
+/// The running surface, held for one config generation. Built by `appbuild`, read by the control
+/// mount, dropped with the generation.
+pub(crate) mod surface {
+    pub(crate) use busbar_control_oauth2::surface::{spawn_sweeper, OAuth2Control, SweepFault};
+}
+
+/// The consent sessions' vocabulary and the `Set-Cookie` enumeration, named by the flow proof.
+#[cfg(test)]
+pub(crate) mod consent {
+    pub(crate) use busbar_control_oauth2::consent::SESSION_TTL;
+}
+
+/// The declared route table's own vocabulary and the `Set-Cookie` enumeration behind it, named by
+/// the flow proof and by the mount proof.
+#[cfg(test)]
+pub(crate) mod routes {
+    pub(crate) use busbar_control_oauth2::routes::session_cookies;
+}
+
+/// The Client ID Metadata Document seam — the trait `fetch::GuardedFetch` implements, and the one
+/// the flow proof stands a stub in for.
+#[cfg(test)]
+pub(crate) mod cimd {
+    pub(crate) use busbar_control_oauth2::cimd::CimdFetch;
+}
+
+/// THE BUILT SURFACE FOR ONE GENERATION, read back out of the control-slot map — `None` when this
+/// deployment is not an authorization server.
+///
+/// The two proofs below used to spell this `app.oauth_as`, a typed `Option` field. It is a downcast
+/// now because `App` holds control surfaces the way it holds planes: type-erased, keyed by the
+/// surface's own registry key, so core names no control surface in a struct field. `None` and
+/// "absent from the map" are the same fact, which is what makes the gating proof's `is_none()` arm
+/// mean what it meant.
+#[cfg(test)]
+pub(crate) fn surface_of(app: &crate::state::App) -> Option<&surface::OAuth2Control> {
+    app.control_slots
+        .get(busbar_control_oauth2::meta::KEY)
+        .map(|slot| {
+            slot.downcast_ref::<surface::OAuth2Control>()
+                .expect("the oauth2 control slot holds an OAuth2Control")
+        })
+}
+
+// THE GATING PROOF, attached to the module root rather than to a mount, because what it checks is
+// not a property of the mount alone: it spans the config lowering, the built surface and the route
 // table, and it is only a proof if it holds across all three at once.
 #[cfg(test)]
 #[path = "tests/mount_tests.rs"]

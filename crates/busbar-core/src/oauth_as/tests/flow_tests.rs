@@ -269,8 +269,7 @@ async fn serve_with_admin_chain(admin_chain: Vec<String>) -> (String, Arc<crate:
         .build();
 
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    app.oauth_as
-        .as_ref()
+    crate::oauth_as::surface_of(&app)
         .expect("configured")
         .server()
         .register_client(Client {
@@ -560,9 +559,7 @@ async fn the_authorization_code_flow_mints_and_exchanges_a_code() {
 
     // 6. The token is USABLE: the server that minted it knows it, for the client and the subject
     //    and the scope the operator actually approved. A token the AS cannot introspect is a string.
-    let record = app
-        .oauth_as
-        .as_ref()
+    let record = crate::oauth_as::surface_of(&app)
         .expect("configured")
         .server()
         .introspect(&access)
@@ -727,9 +724,7 @@ async fn dynamic_client_registration_admits_a_client_end_to_end() {
         .to_string();
 
     let access = mint_access_token(&origin, &client_id).await;
-    let record = app
-        .oauth_as
-        .as_ref()
+    let record = crate::oauth_as::surface_of(&app)
         .expect("configured")
         .server()
         .introspect(&access)
@@ -749,6 +744,14 @@ const CIMD_CLIENT_ID: &str = "https://client.example/oauth-client";
 struct StubDocumentHost(serde_json::Value);
 
 impl crate::oauth_as::cimd::CimdFetch for StubDocumentHost {
+    /// The stub answers the SAME grammar question the guarded fetch answers, and it has to: the
+    /// store asks this before it asks for bytes, so a stub that said "no" to the test's own
+    /// `client_id` would make the end-to-end proof green for the wrong reason — the client would be
+    /// unknown because nothing was fetched, not because a document admitted it.
+    fn names_a_document(&self, client_id: &str) -> bool {
+        crate::oauth_as::fetch::GuardedFetch.names_a_document(client_id)
+    }
+
     fn fetch<'a>(
         &'a self,
         url: &'a str,
@@ -770,8 +773,7 @@ impl crate::oauth_as::cimd::CimdFetch for StubDocumentHost {
 #[tokio::test]
 async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
     let (origin, app) = serve().await;
-    app.oauth_as
-        .as_ref()
+    crate::oauth_as::surface_of(&app)
         .expect("configured")
         .server()
         .store()
@@ -784,9 +786,7 @@ async fn a_client_id_metadata_document_admits_a_client_end_to_end() {
         }))));
 
     let access = mint_access_token(&origin, CIMD_CLIENT_ID).await;
-    let record = app
-        .oauth_as
-        .as_ref()
+    let record = crate::oauth_as::surface_of(&app)
         .expect("configured")
         .server()
         .introspect(&access)
@@ -852,8 +852,7 @@ const OFFSITE_REDIRECT_URI: &str = "https://client.example/cb";
 async fn the_consent_screen_names_the_client_and_the_redirect_host() {
     let (origin, app) = serve().await;
     let scopes = ScopeSet::from_tokens([SCOPE]).expect("scope");
-    app.oauth_as
-        .as_ref()
+    crate::oauth_as::surface_of(&app)
         .expect("configured")
         .server()
         .register_client(Client {

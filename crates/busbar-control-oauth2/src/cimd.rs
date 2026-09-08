@@ -9,7 +9,7 @@
 //! as an HTTPS URL and is absent from the store is FETCHED, validated (`client_id` equal to the
 //! URL it was fetched from, `redirect_uris` taken from the document and exact-matched by
 //! `oauth-as` against the request), and materialised as an EPHEMERAL
-//! [`oauth_as::client::Client`] under the SAME [`super::policy::default_grant_scopes`] ceiling
+//! [`oauth_as::client::Client`] under the SAME [`crate::policy::default_grant_scopes`] ceiling
 //! registration uses. Ephemeral means ephemeral: the materialised client is never written to the
 //! store, so there is nothing to revoke, nothing to sweep, and nothing a restart resurrects — the
 //! document is re-fetched and re-judged on every request that names it.
@@ -22,14 +22,22 @@
 //! would turn an attacker-supplied URL into a 500 an attacker can mint, and would make the
 //! refusal distinguishable from "no such client", which is an oracle.
 //!
-//! ## The fetch is an SSRF surface by construction, and the guard is core's
+//! ## The fetch is an SSRF surface by construction, and the guard is THE NODE'S
 //!
-//! The URL is attacker-supplied. [`GuardedFetch`] goes through [`crate::net_guard`]'s
-//! resolve-then-pin — the same unconditional cloud-metadata refusal and the same judged-answer
-//! pin as every other guarded fetch in the tree — with this path's OWN bounds: a client metadata
-//! document is a few kilobytes and the fetch is on an interactive authorization request, so
-//! 5 KB and 10 s, not the card fetch's 512 KB. No redirects: the document lives at the
-//! `client_id` or it is not that client's document.
+//! The URL is attacker-supplied, so the fetch has to go through a resolve-then-pin guard with an
+//! unconditional cloud-metadata refusal and a judged answer for every address. That guard is the
+//! NODE'S and this crate does not carry a copy of it: a control surface holding its own SSRF guard
+//! would be the second copy of one security control in one tree, which is the exact
+//! divergence-by-duplication failure mode a drifted copy of that guard already caused once on the
+//! MCP plane. So the fetch is a SEAM — [`CimdFetch`] — and the composition installs the node's
+//! guarded implementation, with this path's own bounds (a client metadata document is a few
+//! kilobytes on an interactive authorization request, so 5 KB and 10 s, not a card fetch's 512 KB;
+//! no redirects, because the document lives at the `client_id` or it is not that client's
+//! document).
+//!
+//! [`CimdFetch::names_a_document`] is on the same seam and for the same reason: deciding that a
+//! `client_id` is a URL this fetch could go and get is a judgment about NAMES AND ADDRESSES, which
+//! is the guard's vocabulary and not an authorization server's.
 //!
 //! ## The validator seam, honestly labelled
 //!
@@ -52,20 +60,35 @@ use oauth_as::scope::ScopeSet;
 use oauth_as::store::{MemoryStorage, RevocationWindow, Storage, StorageError, WriteOutcome};
 use oauth_as::token::{IssuedToken, RefreshTokenRecord};
 
-use crate::net_guard::{self, GuardPolicy};
+/// THE BODY CEILING for one metadata document, DECLARED HERE and enforced by whoever implements
+/// [`CimdFetch`]. A few kilobytes IS the document class; anything larger is either not a metadata
+/// document or an allocation the URL's owner chose the size of.
+///
+/// The bound is this surface's own statement about its own protocol, so it is declared with the
+/// protocol; the MECHANISM that honours it belongs to the node's guard. That split is the whole
+/// shape of the seam below.
+pub const MAX_DOCUMENT_BYTES: usize = 5 * 1024;
 
-/// The body ceiling for one metadata document. A few kilobytes IS the document class; anything
-/// larger is either not a metadata document or an allocation the URL's owner chose the size of.
-pub(crate) const MAX_DOCUMENT_BYTES: usize = 5 * 1024;
+/// End-to-end ceiling for one fetch, declared here for the same reason as [`MAX_DOCUMENT_BYTES`].
+/// The fetch sits on an INTERACTIVE authorization request, so a slow document host must fail the one
+/// login rather than parking a handler for a minute.
+pub const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// End-to-end ceiling for one fetch. The fetch sits on an INTERACTIVE authorization request, so a
-/// slow document host must fail the one login rather than parking a handler for a minute.
-pub(crate) const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// THE FETCH, AS A SEAM. The composition installs the node's guarded fetch; the flow tests install
+/// a stub, so the end-to-end proof drives the real authorize/consent/token wire without a second
+/// listener standing in for "the public internet".
+///
+/// Both methods are on the seam because both are judgments about NAMES AND ADDRESSES, which is the
+/// node guard's vocabulary and not an authorization server's — see the module header.
+pub trait CimdFetch: Send + Sync {
+    /// Does this `client_id` name a metadata document at all — an HTTPS URL with a parseable
+    /// authority and no fragment? Anything else is an ordinary opaque identifier and gets the
+    /// ordinary answer: unknown unless registered.
+    ///
+    /// Asked BEFORE [`CimdFetch::fetch`], and asked of the same implementation, so a deployment
+    /// cannot end up judging a URL by one grammar and dialling it by another.
+    fn names_a_document(&self, client_id: &str) -> bool;
 
-/// THE FETCH, AS A SEAM. Production installs [`GuardedFetch`]; the flow tests install a stub, so
-/// the end-to-end proof drives the real authorize/consent/token wire without a second listener
-/// standing in for "the public internet".
-pub(crate) trait CimdFetch: Send + Sync {
     /// The document's bytes, or why there are none. The URL arrives exactly as the request spelled
     /// the `client_id`; an implementation must not normalise it, because the document's `client_id`
     /// member is compared byte-for-byte against it afterwards.
@@ -75,133 +98,27 @@ pub(crate) trait CimdFetch: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
 }
 
-/// THE PRODUCTION FETCH: resolve-then-pin through [`crate::net_guard`], then one GET to the
-/// pinned address.
-#[derive(Default)]
-pub(crate) struct GuardedFetch;
+/// A [`CimdFetch`] that names no document and fetches nothing — for the tests whose subject is the
+/// registration ceiling or the route table rather than the document mechanism.
+///
+/// Not a "CIMD off" switch and must not become one: the 1.6.0 ruling is that all three registration
+/// mechanisms are on whenever this surface is, so a deployment never installs this. It exists so a
+/// test that is about something else does not have to invent a fetch to say it is not using one.
+#[cfg(any(test, feature = "test-support"))]
+pub struct NoDocuments;
 
-/// This fetch's knobs. Fail-closed in every direction: public HTTPS only, no redirects, a small
-/// body and a short clock. There is deliberately no `allow_private` here — a CIMD `client_id` is a
-/// stranger's URL by definition, so there is no operator intent for a knob to carry.
-fn fetch_policy() -> GuardPolicy {
-    GuardPolicy {
-        allow_private: false,
-        allow_plaintext: false,
-        max_redirects: 0,
-        max_body_bytes: MAX_DOCUMENT_BYTES,
-        timeout: FETCH_TIMEOUT,
+#[cfg(any(test, feature = "test-support"))]
+impl CimdFetch for NoDocuments {
+    fn names_a_document(&self, _client_id: &str) -> bool {
+        false
     }
-}
 
-impl CimdFetch for GuardedFetch {
     fn fetch<'a>(
         &'a self,
         url: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>> {
-        Box::pin(async move {
-            let policy = fetch_policy();
-            let (https, host, port, _path) =
-                net_guard::split_url(url).map_err(|e| e.to_string())?;
-            net_guard::judge_scheme(url, https, policy).map_err(|e| e.to_string())?;
-            // THE GUARD: structural name refusals, EXACTLY ONE resolution, every answered address
-            // judged, then the pin. All of it core's, including the ordering that keeps the
-            // cloud-metadata arm ahead of everything a knob could say.
-            let pin = net_guard::resolve_and_pin_async(&host, port, https, policy)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            // THE PINNED ENGINE CLIENT (`EngineSpec::pinned`): the pin IS the resolver — the
-            // socket goes to the address the guard judged while the `Host` header, TLS SNI and
-            // the certificate's name check all stay on the name, and every OTHER name refuses
-            // with the one shared doctrine text. This deletes the fetch's private copy of the
-            // refuse-second-lookup resolver — the third copy of that security control in the
-            // tree, which is exactly the divergence-by-duplication failure mode `net_guard`'s
-            // header warns about. Redirect non-following is structural in hyper; the 3xx is
-            // still surfaced to `refuse_redirect` below so the refusal keeps its own wording.
-            let client = busbar_substrate::egress::engine::build_client(
-                &busbar_substrate::egress::engine::EngineSpec::pinned(
-                    Arc::from(host.as_str()),
-                    pin.socket_addr().ip(),
-                    None,
-                    Vec::new(),
-                ),
-            )
-            .map_err(|e| format!("building the fetch client failed: {e}"))?;
-
-            let uri: http::Uri = url
-                .parse()
-                .map_err(|e| format!("`{url}` does not parse as a URI: {e}"))?;
-            let request = busbar_substrate::egress::engine::request(
-                http::Method::GET,
-                uri,
-                http::HeaderMap::new(),
-                bytes::Bytes::new(),
-            );
-            // ONE deadline for the whole exchange, exactly the client-level total the retired
-            // reqwest builder carried: send to head, then every body chunk, under one instant.
-            let deadline = tokio::time::Instant::now() + policy.timeout;
-            let resp = busbar_substrate::egress::engine::send_bounded(&client, request, deadline)
-                .await
-                .map_err(|e| format!("fetching `{url}` failed: {}", e.into_cause()))?;
-            let status = resp.status();
-            net_guard::refuse_redirect(
-                status.as_u16(),
-                resp.headers()
-                    .get(http::header::LOCATION)
-                    .and_then(|v| v.to_str().ok()),
-            )
-            .map_err(|e| e.to_string())?;
-            if !status.is_success() {
-                return Err(format!("`{url}` answered HTTP {status}"));
-            }
-
-            // A CAPPED READ, not a read-then-measure: the ceiling is enforced while the bytes
-            // arrive, so an oversized document costs the cap and not itself — and the deadline
-            // keeps ticking through it.
-            use http_body_util::BodyExt;
-            let mut frames = resp.into_body();
-            let mut body: Vec<u8> = Vec::new();
-            loop {
-                let frame = tokio::time::timeout_at(deadline, frames.frame())
-                    .await
-                    .map_err(|_| {
-                        format!(
-                            "reading `{url}` failed: {}",
-                            busbar_substrate::egress::engine::HOP_DEADLINE_CAUSE
-                        )
-                    })?;
-                match frame {
-                    None => break,
-                    Some(Err(e)) => return Err(format!("reading `{url}` failed: {e}")),
-                    Some(Ok(frame)) => {
-                        let Ok(chunk) = frame.into_data() else {
-                            continue; // trailers carry no document bytes.
-                        };
-                        if body.len() + chunk.len() > policy.max_body_bytes {
-                            return Err(net_guard::refuse_oversized_body(
-                                url,
-                                body.len() + chunk.len(),
-                                policy,
-                            )
-                            .expect_err("over the cap by construction")
-                            .to_string());
-                        }
-                        body.extend_from_slice(&chunk);
-                    }
-                }
-            }
-            Ok(body)
-        })
+        Box::pin(async move { Err(format!("no document fetch is installed for `{url}`")) })
     }
-}
-
-/// Does this `client_id` name a metadata document at all? HTTPS, a parseable authority, and no
-/// fragment. Anything else is an ordinary opaque identifier and gets the ordinary answer:
-/// unknown unless registered.
-fn is_cimd_client_id(client_id: &str) -> bool {
-    client_id.starts_with("https://")
-        && !client_id.contains('#')
-        && net_guard::split_url(client_id).is_ok()
 }
 
 /// VALIDATE THE DOCUMENT AND MATERIALISE THE CLIENT, under the operator's ceiling.
@@ -294,7 +211,7 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
     // registration policy applies holds here: a client that arrives by the replacement mechanism
     // must not get to say the word the deprecated one is refused for.
     let name = doc.get("client_name").and_then(|v| v.as_str());
-    if name.is_some_and(super::policy::name_impersonates_the_deployment) {
+    if name.is_some_and(crate::policy::name_impersonates_the_deployment) {
         return Err("the document's client_name impersonates this deployment".to_string());
     }
 
@@ -338,7 +255,7 @@ fn materialize(url: &str, body: &[u8], ceiling: &ScopeSet) -> Result<Client, Str
 /// client. Everything `oauth-as` decides about the request (redirect URI exact-match, grant
 /// admissibility, scope) it decides against that materialised record, exactly as it would against
 /// a stored one.
-pub(crate) struct CimdStore {
+pub struct CimdStore {
     inner: MemoryStorage,
     /// The operator's `default_grant`, as the ceiling every materialised client lands under.
     ceiling: ScopeSet,
@@ -362,8 +279,12 @@ impl CimdStore {
     /// Install a different fetch. Test-only: the end-to-end flow proof needs the real wire and a
     /// controlled document, and a second HTTP listener playing "the internet" would put the SSRF
     /// guard's loopback refusal between the test and the property under test.
-    #[cfg(test)]
-    pub(crate) fn set_fetcher(&self, fetcher: Arc<dyn CimdFetch>) {
+    ///
+    /// Behind `test-support` as well as `cfg(test)` because the end-to-end proof now lives in a
+    /// DIFFERENT crate from this one (it drives a whole node), and `cfg(test)` is false in the
+    /// artifact that crate links. The feature is never enabled by a release build.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_fetcher(&self, fetcher: Arc<dyn CimdFetch>) {
         *self
             .fetcher
             .write()
@@ -389,7 +310,7 @@ impl Storage for CimdStore {
             return Ok(Some(found));
         }
         let url = client_id.as_str();
-        if !is_cimd_client_id(url) {
+        if !self.fetcher().names_a_document(url) {
             return Ok(None);
         }
         let body = match self.fetcher().fetch(url).await {

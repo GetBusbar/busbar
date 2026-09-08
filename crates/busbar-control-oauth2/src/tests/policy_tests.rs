@@ -4,7 +4,7 @@
 //! REGISTRATION IS NOT A GRANT. Adversarially, against a real server.
 //!
 //! Every test here drives `oauth_as::server::AuthorizationServer` built by the SAME code the boot
-//! path builds it with — `super::super::plane::AsPlane::build` — rather than a hand-assembled
+//! path builds it with — `super::super::plane::OAuth2Control::build` — rather than a hand-assembled
 //! `ServerConfig` that could be configured more strictly than production is. A test that builds its
 //! own subject proves something about the test.
 //!
@@ -18,12 +18,12 @@
 
 use oauth_as::registration::{ClientMetadata, RegistrationFailure};
 
-use crate::oauth_as::config::{AsIdentity, OauthAsCfg};
-use crate::oauth_as::plane::AsPlane;
+use crate::config::{AsIdentity, OauthAsCfg};
+use crate::surface::OAuth2Control;
 
 /// A plane with the operator's ceiling set to `grant`. Registration needs no turning on: the
 /// 1.6.0 ruling is that it is on whenever the plane is.
-fn plane(grant: &[&str]) -> AsPlane {
+fn plane(grant: &[&str]) -> OAuth2Control {
     let cfg = OauthAsCfg {
         issuer: "https://gw.example.com".to_string(),
         signing_key: None,
@@ -32,10 +32,11 @@ fn plane(grant: &[&str]) -> AsPlane {
         access_token_ttl_secs: None,
     };
     let identity = AsIdentity::from_cfg(&cfg).expect("a valid oauth_as block");
-    AsPlane::build(
+    OAuth2Control::build(
         identity,
         None,
         vec!["https://gw.example.com/mcp".to_string()],
+        std::sync::Arc::new(crate::cimd::NoDocuments),
     )
     .expect("the plane builds")
 }
@@ -172,8 +173,13 @@ async fn registration_is_on_whenever_the_plane_is() {
         "/register",
         "every validated identity derives the registration path; there is nothing to switch"
     );
-    let plane =
-        AsPlane::build(identity, None, vec!["https://gw.example.com/mcp".into()]).expect("builds");
+    let plane = OAuth2Control::build(
+        identity,
+        None,
+        vec!["https://gw.example.com/mcp".into()],
+        std::sync::Arc::new(crate::cimd::NoDocuments),
+    )
+    .expect("builds");
     assert_eq!(
         plane.server().metadata().registration_endpoint.as_deref(),
         Some("https://gw.example.com/register"),

@@ -55,15 +55,15 @@ use oauth_as::http::{ApprovalDecision, ApprovalRequest};
 /// to nothing else, so it is not sent to the token endpoint, to the JWKS, or to any other plane on
 /// this origin. The scoping itself lives at the one place that writes the header; see
 /// `routes::session_cookies` for the enumeration and for why it takes two `Set-Cookie`s.
-pub(crate) const SESSION_COOKIE: &str = "busbar_as_session";
+pub const SESSION_COOKIE: &str = "busbar_as_session";
 
 /// How long an operator stays logged in to the consent screen. Short: this is not a product session,
 /// it is the window in which one agent finishes one login.
 ///
-/// Visible to [`super::routes`] because it is also the cookie's `Max-Age`: a browser that kept
+/// Visible to [`crate::routes`] because it is also the cookie's `Max-Age`: a browser that kept
 /// presenting a session this table has already dropped would be sending a dead credential, and two
 /// independently written lifetimes are how those two drift apart.
-pub(crate) const SESSION_TTL: Duration = Duration::from_secs(600);
+pub const SESSION_TTL: Duration = Duration::from_secs(600);
 
 /// A bound on live sessions, so an unauthenticated flood cannot grow this map. Reaching it evicts
 /// the oldest, which is the correct failure: an operator whose session was evicted logs in again.
@@ -75,7 +75,7 @@ const MAX_SESSIONS: usize = 64;
 /// sections are microseconds, and two locks in a consent path is an ordering rule somebody has to
 /// remember.
 #[derive(Default)]
-pub(crate) struct Sessions {
+pub struct Sessions {
     inner: Mutex<Inner>,
 }
 
@@ -94,11 +94,11 @@ struct Inner {
 /// login screen is three lines below. Returning the sentinel lets [`decide`] answer the same request
 /// with a redirect to the login screen, which is the RFC 6749 §10.12 shape: the authorization
 /// endpoint is a browser endpoint and is allowed to respond with a page.
-pub(crate) const PENDING: &str = "\u{0}pending";
+pub const PENDING: &str = "\u{0}pending";
 
 impl Sessions {
     /// Record that this browser is the operator, and return the session id to set as a cookie.
-    pub(crate) fn open(&self, subject: &str, id: String) -> String {
+    pub fn open(&self, subject: &str, id: String) -> String {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         let now = Instant::now();
         inner.live.retain(|_, (_, exp)| *exp > now);
@@ -130,7 +130,7 @@ impl Sessions {
     }
 
     /// Stake ONE approval for `key` against this session.
-    pub(crate) fn stake(&self, id: &str, key: String) {
+    pub fn stake(&self, id: &str, key: String) {
         let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         if inner.live.contains_key(id) {
             inner.staked.entry(id.to_string()).or_default().push(key);
@@ -176,7 +176,7 @@ fn approval_key(client_id: &str, scope: &oauth_as::scope::ScopeSet) -> String {
 /// Hand-parsed rather than through a cookie crate: this reads ONE cookie by exact name out of a
 /// header whose grammar is `name=value; name=value`, and a general-purpose parser would be a
 /// dependency and an attack surface for a `split(';')`.
-pub(crate) fn session_id(headers: &http::HeaderMap) -> Option<String> {
+pub fn session_id(headers: &http::HeaderMap) -> Option<String> {
     let raw = headers.get(http::header::COOKIE)?.to_str().ok()?;
     raw.split(';')
         .filter_map(|pair| pair.split_once('='))
@@ -187,7 +187,7 @@ pub(crate) fn session_id(headers: &http::HeaderMap) -> Option<String> {
 /// The subject resolver `oauth-as` calls at the authorization endpoint.
 ///
 /// Returns [`PENDING`] rather than `None` for an unauthenticated browser; see the constant.
-pub(crate) fn subject_resolver(
+pub fn subject_resolver(
     sessions: Arc<Sessions>,
 ) -> impl Fn(&http::HeaderMap) -> Option<String> + Send + Sync + 'static {
     move |headers| {
@@ -212,7 +212,7 @@ pub(crate) fn subject_resolver(
 /// authorization request and a code, which is the property this plane wants: every request is
 /// shown, every request is approved on its own, and there is no stored grant that a later request
 /// could be silently matched against.
-pub(crate) fn approval_resolver(
+pub fn approval_resolver(
     sessions: Arc<Sessions>,
     login_url: String,
 ) -> impl Fn(&ApprovalRequest<'_>) -> ApprovalDecision + Send + Sync + 'static {

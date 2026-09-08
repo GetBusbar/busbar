@@ -1,94 +1,86 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE MOUNT: which paths this plane serves, at what admission bar, and why each one is what it is.
+//! THE BODIES behind the declared route table — what each row of [`crate::claims::ROUTES`] actually
+//! answers with.
 //!
-//! Every route here goes through [`crate::core_routes::CoreRouter`], which wires the handler and
-//! declares its admission bar in the same act. `oauth-as` also ships an `axum` feature that hands
-//! back a ready-made `Router`, and busbar does not use it: that router is a single `fallback`, so
-//! its paths would enter the tree with NO entry in `CoreRouteTable` — and a served path the table
-//! does not describe is the one state that table exists to make unrepresentable. The paths are
-//! therefore registered here, concretely, derived from the operator's issuer at mount time, exactly
-//! as the MCP plane registers its own.
+//! ## What is here and what is NOT
 //!
-//! ## The bars, and the one that looks wrong until you read the RFC
+//! This module used to be called `mount`, and it took a core router and wired seven routes onto it.
+//! It no longer mounts anything, and that is the control-kind rule rather than a tidy-up: a control
+//! surface DECLARES its routes as data ([`crate::claims`]) and the composition mounts them, so no
+//! plugin names a router, a transport, or the act of binding. What is left here is the three bodies
+//! — [`forward`], [`consent_screen`] and [`consent_submit`] — each a plain async fn over the
+//! surface and the request.
 //!
-//! | route | bar | why |
-//! |---|---|---|
-//! | metadata, JWKS | `None` | RFC 8414 §3 and RFC 7517: read by a client that has no credential yet. Requiring one is a discovery loop with no entrance. |
-//! | authorize | `None` | A browser endpoint. The resource owner is authenticated by the consent screen, and by nothing before it. |
-//! | token, register | `None` | These carry OAuth's OWN client authentication in the request, which `oauth-as` performs. busbar's data-plane bar knows nothing about a `client_secret_post` body and would refuse every conforming client. |
-//! | consent | `Admin` | The one route here that busbar authenticates itself, through the EXISTING admin chain. See [`super::consent`] on why the operator is the resource owner on this plane. |
+//! `oauth-as` also ships an `axum` feature that hands back a ready-made `Router`, and busbar does
+//! not use it: that router is a single `fallback`, so its paths would enter the tree with NO entry
+//! in the composition's route table — and a served path the table does not describe is the one state
+//! that table exists to make unrepresentable. The paths are declared instead, and derived from the
+//! operator's issuer at mount time.
 //!
-//! `RouteAuth::None` on four of them is not an absence of authentication; it is authentication that
-//! belongs to a different protocol and is performed by the library that implements it. What it does
-//! mean is that those four handlers must never read anything from busbar's governance state, and
-//! they do not: each one forwards bytes to `oauth-as` and returns what it answers.
+//! ## The bar, and why NO body here checks a credential
+//!
+//! Five of the seven declared rows are [`crate::claims::Bar::Open`] and one endpoint's two rows are
+//! [`crate::claims::Bar::Operator`]; the table in [`crate::claims`] says why each one is what it is.
+//! The consequence for THIS module is the part worth stating at the code: `Bar::Open` is not an
+//! absence of authentication, it is authentication that belongs to a different protocol and is
+//! performed by the library that implements it — so [`forward`] must never read anything from
+//! busbar's governance state, and it does not. And `Bar::Operator` means the operator has ALREADY
+//! been identified by the node's admin chain before [`consent_screen`] runs, so there is no
+//! credential check in it and there must not be: a second opinion about who an operator is, held by
+//! the authorization server, is the exact duplication this surface was built not to have.
 
-use std::sync::Arc;
-
+use axum::extract::FromRequest as _;
 use axum::response::{IntoResponse, Response};
-use busbar_plugin_loader::{RouteAuth, RouteMethod};
 
-use crate::core_routes::CoreRouter;
-use crate::state::AppHandle;
+use crate::surface::OAuth2Control;
 
-/// Mount the authorization server's routes, or none of them.
+/// The request one body is handed: the parts of it these three actually read.
 ///
-/// `None` returns the router untouched — no route, no table entry, nothing for the auth middleware
-/// to consult. That is the zero-cost-when-off property at the routing layer.
-pub(crate) fn mount(router: CoreRouter, plane: Option<&Arc<super::plane::AsPlane>>) -> CoreRouter {
-    let Some(plane) = plane else {
-        return router;
-    };
-    let id = plane.identity();
-    router
-        .route(
-            id.metadata_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.jwks_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.authorize_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.token_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::None,
-            forward,
-        )
-        .route(
-            id.consent_path().to_string(),
-            RouteMethod::Get,
-            RouteAuth::Admin,
-            consent_screen,
-        )
-        .route(
-            id.consent_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::Admin,
-            consent_submit,
-        )
-        // RFC 7591 registration, mounted UNCONDITIONALLY: the 1.6.0 ruling is that all three
-        // registration mechanisms are on whenever the plane is, with no toggles. The advertised
-        // `registration_endpoint` in `policy::registration_config` is likewise unconditional, so
-        // the metadata document and the route table cannot disagree about this path.
-        .route(
-            id.register_path().to_string(),
-            RouteMethod::Post,
-            RouteAuth::None,
-            forward,
-        )
+/// A struct rather than a set of extractors, because the composition builds it — this crate names no
+/// router state and no extractor, and a body that took `axum::extract::State<Arc<AppHandle>>` would
+/// be reaching the whole engine through the router, which is exactly the edge the control-kind rule
+/// removes.
+pub struct ControlRequest {
+    /// The full request URI (path + query), exactly as it arrived. The consent screen reads its
+    /// `?return=` out of this.
+    pub uri: axum::http::Uri,
+    /// The request headers, verbatim — the session cookie is read from here and from nowhere else.
+    pub headers: axum::http::HeaderMap,
+    /// The buffered request body, already subject to the composition's body-size cap.
+    pub body: axum::body::Bytes,
+}
+
+impl ControlRequest {
+    /// Rebuild an `http::Request` for the one body that hands the whole thing onward.
+    ///
+    /// `method` is supplied by the caller rather than carried on the struct because it comes from
+    /// the DECLARED row ([`crate::claims::Method`]), and a body that read the method off the request
+    /// could answer a row it was not declared for. Taking the surface's OWN enum rather than
+    /// `http::Method` is also what keeps the composition from having to name an HTTP vocabulary to
+    /// wire a control route: it hands back the row it read.
+    fn into_http(self, method: crate::claims::Method) -> axum::extract::Request {
+        let method = match method {
+            crate::claims::Method::Get => axum::http::Method::GET,
+            crate::claims::Method::Post => axum::http::Method::POST,
+        };
+        let mut builder = axum::http::Request::builder().method(method).uri(self.uri);
+        // Header-by-header rather than `*builder.headers_mut() = …`, so a repeated header name
+        // (a second `Cookie`, which a browser is allowed to send) survives as two values rather
+        // than as one that replaced the other.
+        if let Some(headers) = builder.headers_mut() {
+            for (name, value) in self.headers.iter() {
+                headers.append(name.clone(), value.clone());
+            }
+        }
+        builder
+            .body(axum::body::Body::from(self.body))
+            // Unreachable: every part came off a request this process already parsed. A refusal
+            // rather than an unwrap, because this is a request path — and an empty request answers
+            // the library's own `400` rather than panicking a worker.
+            .unwrap_or_default()
+    }
 }
 
 /// Hand one request to `oauth-as` and return what it answers, unchanged.
@@ -97,19 +89,20 @@ pub(crate) fn mount(router: CoreRouter, plane: Option<&Arc<super::plane::AsPlane
 /// re-decided on the way through: the RFCs define these responses down to the header, and a gateway
 /// that "improves" one of them is a gateway that fails a conformance suite for a reason nobody can
 /// find.
-async fn forward(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    request: axum::extract::Request,
+///
+/// The `Option`/`not_found` arm this body used to open with is GONE, and its absence is the point:
+/// it existed because the handler reached the surface through `App::oauth_as`, which is an `Option`
+/// the type system could not tell had been checked at mount time. The body now takes the surface
+/// itself, so "mounted but not configured" is not a state that can be spelled.
+pub async fn forward(
+    surface: &OAuth2Control,
+    method: crate::claims::Method,
+    request: ControlRequest,
 ) -> Response {
-    let Some(plane) = app.oauth_as.as_ref() else {
-        // Unreachable while the mount and the config are created in the same act, and a clean
-        // refusal rather than an unwrap because this is a request path.
-        return not_found();
-    };
     // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one call
     // site — cold relative to the data planes, and boxing keeps this handler's future small; see
     // the walk.rs precedent.
-    Box::pin(plane.service().handle(request))
+    Box::pin(surface.service().handle(request.into_http(method)))
         .await
         .map(|body| axum::body::Body::from(body.into_bytes()))
         .into_response()
@@ -117,17 +110,20 @@ async fn forward(
 
 /// `GET {issuer}/consent` — the screen that names the client and the scopes and asks the operator.
 ///
-/// Reached ONLY after the admin chain has identified the caller, because the route declares
-/// `RouteAuth::Admin`. There is therefore no credential check in this handler, and there must not
-/// be: a second opinion about who an operator is, held by the authorization server, is the exact
-/// duplication this plane was built not to have.
-async fn consent_screen(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    axum::extract::Query(query): axum::extract::Query<ConsentQuery>,
-) -> Response {
-    let Some(plane) = app.oauth_as.as_ref() else {
-        return not_found();
-    };
+/// Reached ONLY after the admin chain has identified the caller, because the row declares
+/// [`crate::claims::Bar::Operator`]. There is therefore no credential check in this handler, and
+/// there must not be: a second opinion about who an operator is, held by the authorization server,
+/// is the exact duplication this surface was built not to have.
+pub async fn consent_screen(surface: &OAuth2Control, request: ControlRequest) -> Response {
+    let plane = surface;
+    // `Query::try_from_uri` rather than a hand-rolled query walk: it is the SAME
+    // `serde_urlencoded` read the `Query` extractor performed when this was an axum handler, so a
+    // query this deployment used to accept and one it accepts now cannot differ. A query that does
+    // not deserialize takes the same branch an absent one does — the field is an `Option`, so the
+    // only way to fail here is a query that is not a query, and the answer to that is the same page.
+    let query = axum::extract::Query::<ConsentQuery>::try_from_uri(&request.uri)
+        .map(|axum::extract::Query(q)| q)
+        .unwrap_or(ConsentQuery { return_to: None });
     let Some(target) = query.return_to.as_deref().filter(|t| is_local_path(t)) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
@@ -179,7 +175,7 @@ async fn consent_screen(
 ///
 /// | reader | path | what reads it |
 /// |---|---|---|
-/// | the approval, and the resource owner behind it | `{issuer}/authorize` | [`super::consent::subject_resolver`] and [`super::consent::approval_resolver`], which `oauth-as` calls from its authorization handler |
+/// | the approval, and the resource owner behind it | `{issuer}/authorize` | [`crate::consent::subject_resolver`] and [`crate::consent::approval_resolver`], which `oauth-as` calls from its authorization handler |
 /// | the approval submission | `{issuer}/consent` | [`consent_submit`], which takes the session from the cookie and never from the form |
 ///
 /// That is the WHOLE list: it is the two mounts in [`mount`] whose handlers reach a
@@ -194,8 +190,8 @@ async fn consent_screen(
 /// busbar serves, including the token endpoint above and every data-plane path on the same origin;
 /// `Path={issuer}/` is the same mistake wearing a prefix. Two cookies of one name at two disjoint
 /// paths is unambiguous by construction: no request path can match both, so no request ever carries
-/// two of them, and [`super::consent::session_id`] never has to choose.
-pub(super) fn session_cookies(identity: &super::config::AsIdentity, id: &str) -> [String; 2] {
+/// two of them, and [`crate::consent::session_id`] never has to choose.
+pub fn session_cookies(identity: &crate::config::AsIdentity, id: &str) -> [String; 2] {
     // `Secure` follows the ISSUER'S SCHEME rather than being unconditional. Unconditional would be
     // the stricter-looking choice and it would break the `http://` deployment outright — a browser
     // discards a `Secure` cookie arriving over plain HTTP, so the flow would fail exactly as it did
@@ -217,9 +213,9 @@ pub(super) fn session_cookies(identity: &super::config::AsIdentity, id: &str) ->
     // server stops honouring it; a longer cookie would send a credential that is already dead.
     let attrs = format!(
         "HttpOnly{secure}; SameSite=Lax; Max-Age={}",
-        super::consent::SESSION_TTL.as_secs()
+        crate::consent::SESSION_TTL.as_secs()
     );
-    let name = super::consent::SESSION_COOKIE;
+    let name = crate::consent::SESSION_COOKIE;
     [
         format!("{name}={id}; Path={}; {attrs}", identity.authorize_path()),
         format!("{name}={id}; Path={}; {attrs}", identity.consent_path()),
@@ -233,13 +229,23 @@ pub(super) fn session_cookies(identity: &super::config::AsIdentity, id: &str) ->
 /// carries, which the handler learns by re-reading the `return` URL it is about to redirect to
 /// rather than from the form: a form field naming the scope would be a value the browser could
 /// change between being shown one thing and approving another.
-async fn consent_submit(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    headers: axum::http::HeaderMap,
-    axum::extract::Form(form): axum::extract::Form<ConsentForm>,
-) -> Response {
-    let Some(plane) = app.oauth_as.as_ref() else {
-        return not_found();
+pub async fn consent_submit(surface: &OAuth2Control, request: ControlRequest) -> Response {
+    let plane = surface;
+    let headers = request.headers.clone();
+    // THE SAME `Form` EXTRACTOR, run here rather than in a handler signature. Not a hand-rolled
+    // `serde_urlencoded` call: `Form`'s rejections are part of this route's answers — a wrong
+    // content type is a `415` and a malformed body is a `400`, each with the extractor's own text —
+    // and re-deriving them by hand is how a refusal an operator's client already knows how to read
+    // becomes a different one. The request is rebuilt from the parts and handed to the extractor
+    // that used to receive it.
+    let form = match axum::extract::Form::<ConsentForm>::from_request(
+        request.into_http(crate::claims::Method::Post),
+        &(),
+    )
+    .await
+    {
+        Ok(axum::extract::Form(form)) => form,
+        Err(rejection) => return rejection.into_response(),
     };
     let Some(target) = form.return_to.as_deref().filter(|t| is_local_path(t)) else {
         return (
@@ -251,7 +257,7 @@ async fn consent_submit(
     // The session comes from the COOKIE, never from the form. A form field naming the session
     // would be a value the page could be made to carry, which turns "the operator approved" into
     // "somebody submitted a form that says so".
-    let Some(session) = super::consent::session_id(&headers) else {
+    let Some(session) = crate::consent::session_id(&headers) else {
         return (
             axum::http::StatusCode::BAD_REQUEST,
             axum::response::Html(PAGE_NO_REQUEST.to_string()),
@@ -277,7 +283,7 @@ async fn consent_submit(
 }
 
 /// The subject an approval on this plane is granted BY. One value, because there is one party this
-/// deployment can authenticate without an identity provider; see [`super::consent`].
+/// deployment can authenticate without an identity provider; see [`crate::consent`].
 const ADMIN_SUBJECT: &str = "busbar-operator";
 
 /// `?return=` on the consent screen.
@@ -433,13 +439,12 @@ fn not_representable() -> Response {
         .into_response()
 }
 
-fn not_found() -> Response {
-    (
-        axum::http::StatusCode::NOT_FOUND,
-        axum::Json(serde_json::json!({ "error": "not_found" })),
-    )
-        .into_response()
-}
+// `not_found()` USED TO BE HERE and is deliberately not replaced. It answered the arm where a body
+// was reached but `App::oauth_as` was `None` — a state the old shape could spell (the surface
+// arrived as an `Option` through the router's state) and which the new one cannot: every body takes
+// `&OAuth2Control`, so a mounted route and a built surface are the same fact. Deleting an
+// unreachable refusal is not a loss of defence; keeping one that no input can produce is a line a
+// reviewer has to reason about and a coverage report has to excuse.
 
 /// What the operator sees when they land on the consent screen with no pending request — which is
 /// what a bookmark, a refresh after approval, or a link somebody sent them all produce.
@@ -497,7 +502,3 @@ fn escape(s: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
 }
-
-/// Handlers take `Arc<AppHandle>` state through the `CurrentApp` extractor; naming the type here
-/// keeps the mount signature honest about what it is building against.
-type _State = Arc<AppHandle>;

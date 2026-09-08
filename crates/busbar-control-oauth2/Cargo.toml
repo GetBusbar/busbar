@@ -1,0 +1,65 @@
+# busbar-control-oauth2 — busbar's OAuth 2.1 authorization server, as a CONTROL SURFACE.
+#
+# WHAT A CONTROL SURFACE MAY NAME, and why this list is short. A control surface is an unmetered way
+# of reaching busbar's controls and obtaining a credential; it is not a data plane and does not run
+# the nine metered steps. It declares its routes as DATA, carries its own bodies, runs only on the
+# control path (verify → admit → audit → answer), and reaches node state through contracts. It may
+# therefore name the CONTRACT, the crates that speak its own protocol, and the cryptography it
+# signs with — and NOTHING of a transport, a plane, a dialect, a unit, or another control surface.
+# See docs/design/control-oauth2.md for the module map and docs/design/PLUGIN-TREE.md for the
+# control-kind row and the control-route rule this manifest is judged against.
+[package]
+name = "busbar-control-oauth2"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "busbar as an OAuth 2.1 authorization server: the control surface that mints credentials for the clients an identity team will not register."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_control_oauth2"
+path = "src/lib.rs"
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin of any kind may name.
+busbar-contract = { path = "../busbar-contract" }
+# The operator's `signing_key:` reference, carried verbatim and unresolved. `SecretRef` is the
+# grammar of a reference, not a resolver: nothing in this crate reads a secret, and the resolution
+# happens in the composition that hands `build` the already-resolved material.
+busbar-secret-ref = { path = "../secret-ref" }
+# THE PROTOCOL. `oauth-as` is the RFC 6749/8414/7591/9068/9207 implementation this surface serves;
+# the surface is the deployment's policy around it, not a second copy of it.
+oauth-as = { workspace = true }
+# The `http` 1.x vocabulary and the response type the declared routes answer with, taken through
+# axum's re-export rather than as a direct edge so the version this crate speaks cannot drift from
+# the one the wire speaks. Naming axum is NOT naming a transport plugin: it is the request/response
+# vocabulary, the same one `busbar-substrate`'s neutral route seam is written in.
+axum = { workspace = true }
+# ES256 over `ring` — the crypto the tree already links as rustls's provider, rather than a SECOND
+# complete elliptic-curve implementation. See `src/signer.rs`'s header for the measurement.
+ring = { workspace = true }
+# base64: the JOSE alphabet for the JWKS coordinates, and the PKCS#8 document the operator hands in.
+base64 = { workspace = true }
+serde = { workspace = true }
+# The Client ID Metadata Document is JSON this crate validates itself; `src/cimd.rs`.
+serde_json = { workspace = true }
+# The sweeper: `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and
+# it runs when it is called and never otherwise.
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
+# Two `debug!` lines on the CIMD path, both routine authorization denials.
+tracing = { workspace = true }
+
+[features]
+# Exposes `CimdStore::set_fetcher` to a DEPENDENT crate's tests — the end-to-end flow proof, which
+# drives a whole node and therefore lives in the composition's crate rather than this one. Never on
+# in a release build; adds no code to the shipped binary beyond the one setter.
+test-support = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+# `oauth_as::signer_conformance` — the UPSTREAM harness `src/tests/signer_tests.rs` drives the
+# ES256 signer through, against the RFC 7515 appendix A.3 vector. A value neither half of busbar
+# produced, which is what catches the one encoding trap this signer can fall into (the ASN.1 DER
+# form compiles just as happily as the fixed-width `r||s` one). Test-only.
+oauth-as = { workspace = true, features = ["test-util"] }

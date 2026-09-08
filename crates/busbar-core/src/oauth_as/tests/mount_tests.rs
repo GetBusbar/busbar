@@ -35,8 +35,6 @@
 //! is then a COMPILE ERROR here until somebody has decided, in this file, whether it names a mounted
 //! route. Omission is not something anybody has to remember.
 
-use std::sync::Arc;
-
 use crate::oauth_as::config::{AsIdentity, OauthAsCfg};
 use crate::test_support::TestApp;
 
@@ -99,7 +97,7 @@ fn inventory(id: &AsIdentity) -> Vec<String> {
 /// `base_data_router` rather than a hand-rolled router: a table assembled here could describe a
 /// surface no deployment serves, and then every assertion below would be about a fiction.
 fn served_paths(app: &crate::state::App) -> std::collections::BTreeSet<String> {
-    crate::base_data_router(&app.plugin_routes, &app.plane_slots, app.oauth_as.as_ref())
+    crate::base_data_router(&app.plugin_routes, &app.plane_slots, &app.control_slots)
         .1
         .routes()
         .iter()
@@ -118,7 +116,7 @@ fn without_the_config_block_the_plane_serves_nothing() {
     crate::metrics::init();
     let app = TestApp::new().build();
     assert!(
-        app.oauth_as.is_none(),
+        crate::oauth_as::surface_of(&app).is_none(),
         "the default TestApp must not be an authorization server"
     );
     let served = served_paths(&app);
@@ -158,7 +156,7 @@ fn the_inventory_is_exactly_what_the_mount_registers() {
     let block = cfg();
     let app = TestApp::new().oauth_as(&block).build();
     assert!(
-        app.oauth_as.is_some(),
+        crate::oauth_as::surface_of(&app).is_some(),
         "the config block was given, so the plane must exist"
     );
     let with = served_paths(&app);
@@ -236,8 +234,7 @@ fn an_absent_block_resolves_to_no_authorization_server() {
 fn the_mounted_surface_and_the_app_state_cannot_disagree() {
     crate::metrics::init();
     let app = TestApp::new().oauth_as(&cfg()).build();
-    let plane: &Arc<crate::oauth_as::plane::AsPlane> =
-        app.oauth_as.as_ref().expect("configured, so present");
+    let plane = crate::oauth_as::surface_of(&app).expect("configured, so present");
     let served = served_paths(&app);
     for path in inventory(plane.identity()) {
         assert!(

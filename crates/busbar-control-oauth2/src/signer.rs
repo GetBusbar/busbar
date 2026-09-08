@@ -55,7 +55,7 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 /// Not `Clone`: a signing key is the one secret whose compromise forges every token this deployment
 /// will ever issue, so it is held once, behind an `Arc` when it must be shared, and never copied
 /// around by value.
-pub(crate) struct RingEs256Key {
+pub struct RingEs256Key {
     pair: ring::signature::EcdsaKeyPair,
     rng: ring::rand::SystemRandom,
     /// The PUBLIC half, derived once at construction. See the module note on why this is cached.
@@ -64,7 +64,7 @@ pub(crate) struct RingEs256Key {
 
 /// Why a signing key could not be loaded or generated. Carries no key material, ever.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum KeyError {
+pub enum KeyError {
     /// `ring` refused the PKCS#8 document.
     NotAP256Key(String),
     /// The platform RNG failed, which is not a condition a token endpoint may paper over.
@@ -183,7 +183,7 @@ impl Es256Signer for RingEs256Key {
 ///
 /// A unit struct, because verification holds no state: every key arrives with the credential.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RingEs256Verifier;
+pub struct RingEs256Verifier;
 
 impl Es256Verifier for RingEs256Verifier {
     /// `true` means, and may only mean, that `signature` is a valid ES256 signature over exactly

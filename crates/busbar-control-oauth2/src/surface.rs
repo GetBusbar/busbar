@@ -3,10 +3,11 @@
 
 //! THE RUNNING AUTHORIZATION SERVER: what exists only when `oauth_as:` is configured.
 //!
-//! Everything expensive on this plane is reachable from [`AsPlane`], and [`AsPlane`] is built in
-//! exactly one place — [`AsPlane::build`], called once, from the boot path, only when the operator
-//! wrote the config block. That is the whole of the zero-cost-when-off property: `App::oauth_as` is
-//! `Option<Arc<AsPlane>>`, and `None` allocates nothing, spawns nothing, and mounts nothing.
+//! Everything expensive on this surface is reachable from [`OAuth2Control`], and [`OAuth2Control`]
+//! is built in exactly one place — [`OAuth2Control::build`], called once, from the composition's
+//! boot path, only when the operator wrote the config block. That is the whole of the
+//! zero-cost-when-off property: the composition holds an `Option`, and `None` allocates nothing,
+//! spawns nothing, and mounts nothing.
 //!
 //! ## What is deliberately NOT durable, said here rather than discovered
 //!
@@ -24,24 +25,22 @@ use std::sync::Arc;
 use oauth_as::server::{AuthorizationServer, ServerConfig, SystemClock};
 use oauth_as::store::MemoryStorage;
 
-use crate::diagnostics::{diag_debug, diag_warn, OAUTH_AS_SWEEP_FAILED};
+use crate::config::AsIdentity;
+use crate::signer::{RingEs256Key, RingEs256Verifier};
 
-use super::config::AsIdentity;
-use super::signer::{RingEs256Key, RingEs256Verifier};
-
-/// The store this plane runs on: [`MemoryStorage`] behind the ONE changed read that serves Client
-/// ID Metadata Documents. See [`super::cimd::CimdStore`].
-pub(crate) type AsStore = super::cimd::CimdStore;
+/// The store this surface runs on: [`MemoryStorage`] behind the ONE changed read that serves Client
+/// ID Metadata Documents. See [`crate::cimd::CimdStore`].
+pub type AsStore = crate::cimd::CimdStore;
 
 /// The concrete server type, named once so the three places that hold it agree by construction
 /// rather than by three matching turbofishes.
-pub(crate) type AsServer = AuthorizationServer<AsStore, SystemClock>;
+pub type AsServer = AuthorizationServer<AsStore, SystemClock>;
 
 /// The HTTP service over [`AsServer`]: `http::Request` in, `http::Response` out, no framework.
-pub(crate) type AsService = oauth_as::http::AuthorizationService<AsStore, SystemClock>;
+pub type AsService = oauth_as::http::AuthorizationService<AsStore, SystemClock>;
 
-/// EVERYTHING THIS PLANE ALLOCATES. Absent unless `oauth_as:` is configured.
-pub(crate) struct AsPlane {
+/// EVERYTHING THIS SURFACE ALLOCATES. Absent unless `oauth_as:` is configured.
+pub struct OAuth2Control {
     identity: AsIdentity,
     service: AsService,
     server: Arc<AsServer>,
@@ -49,16 +48,16 @@ pub(crate) struct AsPlane {
     /// well so the consent ROUTE can open a session and stake an approval — the two halves of the
     /// screen are a busbar handler and an `oauth-as` callback, and they have to be looking at the
     /// same table.
-    sessions: Arc<super::consent::Sessions>,
+    sessions: Arc<crate::consent::Sessions>,
 }
 
 /// Why the plane could not be built. Distinct from [`busbar_substrate::config::oauth_as::AsCfgError`] because these are
 /// failures of the RUNTIME (a key that will not load, an endpoint the library refuses to route)
 /// rather than of the grammar, and an operator needs to be able to tell the two apart.
 #[derive(Debug)]
-pub(crate) enum AsBuildError {
+pub enum AsBuildError {
     /// The configured signing key could not be loaded.
-    SigningKey(super::signer::KeyError),
+    SigningKey(crate::signer::KeyError),
     /// The signing key secret reference did not resolve, or did not decode as base64.
     SigningKeyMaterial(String),
     /// `oauth-as` refused to build its service. In practice this is an advertised endpoint that is
@@ -82,17 +81,22 @@ impl std::fmt::Display for AsBuildError {
     }
 }
 
-impl AsPlane {
+impl OAuth2Control {
     /// Build the plane. Called ONCE, from the boot path, only when `oauth_as:` is present.
     ///
     /// `key_material` is the resolved secret, already read from wherever the `SecretRef` pointed;
     /// `None` means the operator configured no key and accepts an ephemeral one. This function does
     /// not resolve secrets itself, so it stays testable without a secret module and so the one
     /// place that reads operator secrets remains the config layer.
-    pub(crate) fn build(
+    ///
+    /// `fetch` is the Client ID Metadata Document seam ([`crate::cimd::CimdFetch`]), supplied by the
+    /// composition rather than constructed here: that fetch is an SSRF surface and the guard that
+    /// makes it safe is the NODE'S, not an authorization server's. See the `cimd` module header.
+    pub fn build(
         identity: AsIdentity,
         key_material: Option<&str>,
         protected_resources: Vec<String>,
+        fetch: Arc<dyn crate::cimd::CimdFetch>,
     ) -> Result<Self, AsBuildError> {
         let key = match key_material {
             Some(b64) => {
@@ -114,7 +118,7 @@ impl AsPlane {
         config.authorization_endpoint = Some(format!("{}/authorize", identity.issuer()));
         config.token_endpoint = Some(format!("{}/token", identity.issuer()));
         config.jwks_uri = Some(identity.jwks_uri());
-        config.registration = Some(super::policy::registration_config(&identity));
+        config.registration = Some(crate::policy::registration_config(&identity));
         config.access_token_ttl = identity.access_token_ttl();
         config.scopes_supported =
             (!identity.default_grant().is_empty()).then(|| identity.default_grant().to_vec());
@@ -153,10 +157,10 @@ impl AsPlane {
         // The store: `MemoryStorage` behind the CIMD read. The ceiling handed to it is the SAME
         // `default_grant_scopes` the registration config above is built from, so a client arriving
         // by document and one arriving by registration land under one ceiling by construction.
-        let store = super::cimd::CimdStore::new(
+        let store = crate::cimd::CimdStore::new(
             MemoryStorage::new(),
-            super::policy::default_grant_scopes(&identity),
-            Arc::new(super::cimd::GuardedFetch),
+            crate::policy::default_grant_scopes(&identity),
+            fetch,
         );
         let server = Arc::new(
             AuthorizationServer::new(config, store)
@@ -165,13 +169,13 @@ impl AsPlane {
                 // day `dpop` or `client-assertion` is switched on, a MISSING verifier would be a
                 // silent refusal of every conforming client rather than a build error.
                 .with_es256_verifier(Arc::new(RingEs256Verifier))
-                .with_registration_policy(Box::new(super::policy::OpenRegistration)),
+                .with_registration_policy(Box::new(crate::policy::OpenRegistration)),
         );
 
-        let sessions = Arc::new(super::consent::Sessions::default());
+        let sessions = Arc::new(crate::consent::Sessions::default());
         let service = oauth_as::http::ServiceBuilder::new(Arc::clone(&server))
-            .with_subject_resolver(super::consent::subject_resolver(Arc::clone(&sessions)))
-            .with_approval_resolver(super::consent::approval_resolver(
+            .with_subject_resolver(crate::consent::subject_resolver(Arc::clone(&sessions)))
+            .with_approval_resolver(crate::consent::approval_resolver(
                 Arc::clone(&sessions),
                 identity.consent_url(),
             ))
@@ -186,21 +190,40 @@ impl AsPlane {
         })
     }
 
-    pub(crate) fn identity(&self) -> &AsIdentity {
+    pub fn identity(&self) -> &AsIdentity {
         &self.identity
     }
 
-    pub(crate) fn service(&self) -> &AsService {
+    pub fn service(&self) -> &AsService {
         &self.service
     }
 
-    pub(crate) fn server(&self) -> &Arc<AsServer> {
+    pub fn server(&self) -> &Arc<AsServer> {
         &self.server
     }
 
-    pub(crate) fn sessions(&self) -> &Arc<super::consent::Sessions> {
+    pub fn sessions(&self) -> &Arc<crate::consent::Sessions> {
         &self.sessions
     }
+}
+
+/// A SWEEP THAT FAILED, reported to whoever asked for the sweeper.
+///
+/// The report is a VALUE rather than a log line because a diagnostic ID is the NODE's vocabulary:
+/// `OAUTH_AS_SWEEP_FAILED` is a registered code an operator greps for, and a control surface that
+/// stamped one would be minting node vocabulary from outside the node. So this surface says what
+/// happened and the composition says it in the node's words — including whether it says it at `warn`
+/// or at `debug`, which is what [`SweepFault::first`] is for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweepFault {
+    /// The store's own words for why the sweep failed.
+    pub error: String,
+    /// TRUE on the TRANSITION into the failing state, FALSE on every tick that stays there.
+    ///
+    /// The sweep runs every tick and a store fault persists, so an unlatched report would be a
+    /// warning per tick for as long as the fault lasts. The latch lives here, with the loop that
+    /// knows about the ticks, and the composition reads the flag rather than keeping a second one.
+    pub first: bool,
 }
 
 /// SWEEP EXPIRED RECORDS, forever, on busbar's own timer.
@@ -208,9 +231,14 @@ impl AsPlane {
 /// `Storage::sweep_expired` is the ONLY thing that reclaims anything in `oauth-as`, and it runs when
 /// it is called and never otherwise. Expiry is enforced on read, so an unswept deployment is not a
 /// security hole — it is a memory one, and the endpoints that fill it take no credential, so an
-/// unauthenticated caller sets the rate. A failure is logged and the loop continues: a sweeper that
-/// exits on the first transient error is a sweeper that is not running by the time anyone looks.
-pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
+/// unauthenticated caller sets the rate. A failure is reported through `fault` and the loop
+/// continues: a sweeper that exits on the first transient error is a sweeper that is not running by
+/// the time anyone looks.
+pub fn spawn_sweeper(
+    server: Arc<AsServer>,
+    every: std::time::Duration,
+    fault: Arc<dyn Fn(SweepFault) + Send + Sync>,
+) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(every);
         // The first tick fires immediately, which would sweep an empty store at boot for nothing.
@@ -238,19 +266,12 @@ pub(crate) fn spawn_sweeper(server: Arc<AsServer>, every: std::time::Duration) {
                     tracing::debug!(reclaimed = n, "oauth_as: swept expired records");
                 }
                 Err(e) => {
-                    if !SWEEP_FAILED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        diag_warn!(
-                            OAUTH_AS_SWEEP_FAILED,
-                            error = %e,
-                            "oauth_as: sweeping expired records failed; retrying on the next tick"
-                        );
-                    } else {
-                        diag_debug!(
-                            OAUTH_AS_SWEEP_FAILED,
-                            error = %e,
-                            "oauth_as: sweeping expired records failed; retrying on the next tick"
-                        );
-                    }
+                    let first =
+                        !SWEEP_FAILED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed);
+                    fault(SweepFault {
+                        error: e.to_string(),
+                        first,
+                    });
                 }
             }
         }
