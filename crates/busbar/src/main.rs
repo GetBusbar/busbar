@@ -610,7 +610,10 @@ fn register_protocols() {
     // seams. `install_protocols_with_path_ingress` asserts at boot that every `has_model_in_url` decl
     // has an arrival, so the two registrations cannot drift into a silent 404-shaped fall-through.
     #[allow(unused_mut)]
-    let mut path_ingress: Vec<(&'static str, busbar_core::ingress::PathIngress)> = Vec::new();
+    let mut path_ingress: Vec<(
+        &'static str,
+        busbar_substrate::ingress::arrival::PathIngress,
+    )> = Vec::new();
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
