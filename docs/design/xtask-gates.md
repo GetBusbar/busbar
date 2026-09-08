@@ -86,8 +86,8 @@ Two more sit in the job but were named by the owner into later batches:
 | `loc-surface.py` | the per-crate surface-LOC meter the construction gate's ceilings are expressed in | sh (`construction-gate.sh`) | no | folds into `xtask::gates::construction` | 2 |
 | `design-bindings.sh` | THE DESIGN BINDINGS GATE — every Appendix B binding resolves and its golden cell recorded PASS | ci, seg, sh | yes | `design-bindings` | 2 |
 | `design-bindings.py` | the generator/checker behind it (`--write` refreshes `qa/design-bindings.json` + `qa/DESIGN-BINDINGS.md`); reads the oracle's `golden/1.5.5/ledger.tsv` as data | ci, sh | yes | folds into `design-bindings` | 2 |
-| `config-stability-gate.sh` | the config drift guard and additive-only classifier | ci, seg, sh | yes | `config-stability` | 2 |
-| `config-schema.py` | that gate's engine — derives the frozen 1.5.5 config grammar down to serde's `expected one of` lists | sh | no | folds into `config-stability` | 2 |
+| `config-stability-gate.sh` | the config drift guard and additive-only classifier | ci, seg, sh | yes | **`config-schema` (LANDED)** | 2 |
+| `config-schema.py` | that gate's engine — derives the frozen 1.5.5 config grammar down to serde's `expected one of` lists | sh | no | **folded into `config-schema` (LANDED)** | 2 |
 | `audit-ledger.py` | THE AUDIT LEDGER — the 1.6.0 audit's row store and its queries | sh (`verify-1.6.0-done.sh`) | yes | `audit-ledger` | 2 |
 | `full-gate.sh` | runs locally what CI runs; DISCOVERS the gate and cargo sets out of `ci.yml` and fails closed on an unclassified invocation | sh | yes | `full` (see section 3.3) | 2 |
 | `teller-steps-check.py` | the Teller step order and root legs | ci (3 arms), seg, sh | yes | `teller-steps` | 2 |

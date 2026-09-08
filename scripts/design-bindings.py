@@ -324,7 +324,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_admin_v1_config_reload_swaps_disk_truth_and_carries_health", "config/reload re-reads disk and keeps config_version on a rejected reload"),
     ],
     "PB-40": [
-        ("gate", "scripts/config-stability-gate.sh", "the config grammar is frozen against a committed snapshot; deny_unknown_fields flips and breaking deltas are red"),
+        ("gate", "xtask/src/gates/config_schema/mod.rs", "the config grammar is frozen against a committed snapshot; deny_unknown_fields flips and breaking deltas are red"),
         ("test", "test_plugins_trust_allow_unsigned_injection_already_fails_via_deny_unknown_fields", "an unknown key is refused by deny_unknown_fields"),
     ],
     "PB-43": [
@@ -484,7 +484,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
     "PB-74": [
         ("test", "reserved_hook_names_are_frozen", "RESERVED_HOOK_NAMES equals its frozen membership and a frozen word fails boot"),
         ("test", "test_validate_allows_api_prefixed_but_boundary_safe_names", "reserved_admin_name membership"),
-        ("gate", "scripts/config-stability-gate.sh", "no legal earlier config.yaml becomes a boot failure (additive-only grammar)"),
+        ("gate", "xtask/src/gates/config_schema/mod.rs", "no legal earlier config.yaml becomes a boot failure (additive-only grammar)"),
     ],
     "PB-75": [
         ("test", "openapi_json_matches_committed_file", "the committed openapi.json byte-equals a fresh render"),
@@ -567,7 +567,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "every_shipped_config_migrates_to_a_valid_current_config", "the shipped corpus, which carries these keys, still migrates and validates"),
         ("test", "every_patch_mirrors_every_field_of_its_section", "the limits keys still exist and are mirrored by the patch"),
         ("test", "resolved_billing_and_limits_config_is_byte_stable", "resolved billing and limits are byte-stable across the corpus"),
-        ("gate", "scripts/config-stability-gate.sh", "a key cannot silently stop landing (additive-only grammar)"),
+        ("gate", "xtask/src/gates/config_schema/mod.rs", "a key cannot silently stop landing (additive-only grammar)"),
     ],
     "PB-91": [
         ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot", "a refund returns the fee but never the requests slot"),
@@ -1213,13 +1213,28 @@ XTASK_GATE_DIR = "xtask/src/gates"
 CITABLE_ONLY_SUFFIXES = (".rs",)
 
 
-def xtask_gate_module(name: str) -> str:
+def xtask_gate_module(name: str, root: Path | None = None) -> str:
     """The module path a `cargo xtask gate <name>` invocation runs.
 
-    One mechanical spelling, derived from the gate name rather than maintained beside it, so a gate
+    Mechanical spellings, derived from the gate name rather than maintained beside it, so a gate
     cannot be cited under a name the runner does not answer to.
+
+    A GATE THAT GREW INTO A DIRECTORY IS STILL THAT GATE. Rust spells one module two ways, and the
+    bigger converted gates use the second: `config-schema` lives in `gates/config_schema/mod.rs`,
+    not `gates/config_schema.rs`, because its generator, classifier and scrape are three files. Only
+    the flat spelling was resolvable here, so a binding citing a directory gate read as "the ref
+    vanished" — reddening the binding for a reason entirely about how the gate's source is laid
+    out, which is the same failure the block above exists to prevent, one refactor later.
+
+    The directory form is used ONLY when the flat file is absent, so nothing that resolves today
+    moves, and both spellings are still derived from the gate name alone.
     """
-    return f"{XTASK_GATE_DIR}/{name.replace('-', '_')}.rs"
+    flat = f"{XTASK_GATE_DIR}/{name.replace('-', '_')}.rs"
+    if root is not None and not (root / flat).is_file():
+        nested = f"{XTASK_GATE_DIR}/{name.replace('-', '_')}/mod.rs"
+        if (root / nested).is_file():
+            return nested
+    return flat
 # THIS FILE IS NEVER AN INVOKER. Its SEED table names every gate the ledger cites, so following it
 # would let the ledger vouch for its own citations: every ref would be "invoked" because the ledger
 # mentions it. A check whose evidence is its own claim has checked nothing.
@@ -1252,7 +1267,7 @@ def ci_invoked_refs(root: Path) -> set[str]:
     gate_modules: set[str] = set()
 
     def refs_in(text: str) -> set[str]:
-        gate_modules.update(xtask_gate_module(n) for n in _XTASK_GATE_INVOCATION.findall(text))
+        gate_modules.update(xtask_gate_module(n, root) for n in _XTASK_GATE_INVOCATION.findall(text))
         return set(_PATH_TOKEN.findall(text))
 
     wf_dir = root / ".github" / "workflows"

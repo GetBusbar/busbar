@@ -105,7 +105,7 @@ pub(crate) use busbar_substrate::plane::config::{judge_hook_ref, HookRefError};
 /// in such a build names a plane that is not present; `resolve` REFUSES it (see the config
 /// deletion-gate leg), exactly as the protocol registry refuses a config naming a deleted dialect.
 ///
-/// This type lives OUTSIDE `config/` on purpose: `scripts/config-schema.py` fingerprints the
+/// This type lives OUTSIDE `config/` on purpose: `cargo xtask gate config-schema` fingerprints the
 /// `config/` directory, and the `#[cfg(feature = "plane-<x>")]` twin field (declared LAST) is what
 /// that fingerprint records — so the `tools:`/`mcp:`/`agents:` schema is unchanged by this capture. A
 /// `RawPlaneSection` type declared under `config/` would add a new fingerprinted type and drift the

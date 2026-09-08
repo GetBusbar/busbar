@@ -21,7 +21,7 @@
 //!
 //! ## It IS in the config-schema tracked set
 //!
-//! Exactly like `tools:`/`agents:`, this file is fingerprinted by `scripts/config-schema.py` (it is a
+//! Exactly like `tools:`/`agents:`, this file is fingerprinted by `cargo xtask gate config-schema` (it is a
 //! `SOURCES` entry). Both the neutral `StreamsSection` FIELD on `DeployCfg` AND this per-key grammar —
 //! the three plane-imposed session ceilings — are covered by the additive-only gate, so a deployment's
 //! live-voice CEILINGS cannot be retyped or removed without the gate flagging it.

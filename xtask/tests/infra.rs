@@ -240,7 +240,11 @@ fn an_overlay_delete_makes_a_file_absent_to_read_and_exists_and_walk() {
     let files = planted
         .walk(&WalkSpec::new(["xtask/src"]).ext("rs").min_files(0))
         .unwrap();
-    assert!(files.iter().all(|f| !f.rel.ends_with("scan.rs")));
+    // THE EXACT PATH, not the file NAME. `Path::ends_with` matches whole trailing components, so
+    // `ends_with("scan.rs")` also matches `xtask/src/gates/config_schema/scan.rs` — a second,
+    // unrelated `scan.rs` that this case never deleted. The claim is "the file the plant deleted is
+    // gone from the walk", and a basename is not that claim.
+    assert!(files.iter().all(|f| f.rel_str() != "xtask/src/scan.rs"));
 }
 
 #[test]

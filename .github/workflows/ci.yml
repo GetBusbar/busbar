@@ -832,16 +832,35 @@ jobs:
         with:
           # Need history so the additive check can diff against the PR base (not just the tip).
           fetch-depth: 0
+      # THIS JOB NOW NEEDS A TOOLCHAIN. The gate used to be a stdlib-python fingerprint and this job
+      # installed nothing; the conversion moves it onto the one gate runner, and the cost is
+      # declared here rather than assumed. It is bounded the same way every other converted gate's
+      # is: the segregation gate holds the runner's dependency count at one, and the cache is keyed
+      # on `xtask` so this job does not pay for the workspace's build.
+      - name: Install Rust toolchain (the gate runner)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+
+      # The self-test runs FIRST, as it does for every other gate: never trust a verdict before
+      # proving the gate can still go RED. It plants 55 cases, every one of them through
+      # `Gate::run`, so a rule that stopped firing is caught rather than reported as a clean tree.
+      - name: Config-schema gate self-test (prove RED/GREEN before trusting the verdict)
+        run: cargo xtask gate config-schema --selftest
       # On a PR, the anti-launder baseline is the BASE branch's snapshot (a break committed alongside
       # a refreshed snapshot on the PR tip is still caught against the base). On a push, HEAD is the
-      # baseline (no-op delta). schemars is NOT needed — the gate is a stdlib-python fingerprint, so
-      # this job needs no Rust toolchain and stays cheap.
-      - name: Config-stability gate self-test (prove RED/GREEN before trusting the verdict)
-        run: scripts/config-stability-gate.sh --selftest
-      - name: Config-stability gate (drift + additive-only)
+      # baseline (no-op delta). `fetch-depth: 0` above is what makes either resolvable — the gate
+      # refuses an unresolvable ref rather than skipping the check, because a skipped additive check
+      # is a free bypass.
+      - name: Config-schema gate (drift + additive-only)
         env:
           CONFIG_SCHEMA_BASELINE_REF: ${{ github.base_ref && format('origin/{0}', github.base_ref) || 'HEAD' }}
-        run: scripts/config-stability-gate.sh --check
+        run: cargo xtask gate config-schema
 
   # GENERATED-ARTIFACT DRIFT gate. Sibling to the openapi (`openapi-schema`) and config-schema
   # (`config-stability`) drift guards, closing the third and fourth committed-but-generated files

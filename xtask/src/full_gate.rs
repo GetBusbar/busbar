@@ -132,6 +132,8 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate changelog-register",
     "cargo xtask gate ci-umbrella --selftest",
     "cargo xtask gate ci-umbrella",
+    "cargo xtask gate config-schema --selftest",
+    "cargo xtask gate config-schema",
     "cargo xtask gate field-inventory --selftest",
     "cargo xtask gate field-inventory",
     "cargo xtask gate inventory-ref --selftest",
