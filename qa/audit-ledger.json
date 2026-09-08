@@ -5237,6 +5237,21 @@
    "fixed_at": null
   },
   {
+   "id": "crates/store-example-plugin/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/store-example-plugin/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/store-memory/src/tests",
    "kind": "test",
    "paths": [
