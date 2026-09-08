@@ -233,6 +233,14 @@ pub struct Env {
     /// arm and its drift arm are the same derivation, so they cannot disagree; what the flag
     /// changes is whether the answer is compared or committed.
     pub write: bool,
+    /// `CONFIG_SCHEMA_BASELINE_REF` — which git ref the config-schema gate's additive-only check
+    /// reads its baseline from. Captured here rather than read by the gate because
+    /// `scripts/verify-1.6.0-done.sh` refuses a DONE run that sets it, and a variable a gate reads
+    /// straight out of the process environment is one no runner can see it reading.
+    pub config_baseline_ref: Option<String>,
+    /// `CONFIG_SCHEMA_BOOTSTRAP` — that gate's declared, one-run escape from having no baseline at
+    /// all. Declared, never inferred; it announces itself and it is not a pass.
+    pub config_bootstrap: bool,
 }
 
 impl Env {
@@ -242,6 +250,10 @@ impl Env {
             runner_temp: std::env::var_os("RUNNER_TEMP").map(PathBuf::from),
             report_only: false,
             write: false,
+            config_baseline_ref: std::env::var("CONFIG_SCHEMA_BASELINE_REF")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            config_bootstrap: std::env::var("CONFIG_SCHEMA_BOOTSTRAP").as_deref() == Ok("1"),
         }
     }
 }
@@ -509,6 +521,67 @@ impl Ctx {
 
     pub fn git_lines(&self, args: &[&str]) -> Result<Vec<String>, String> {
         gitp::git_lines(&self.root, args)
+    }
+
+    /// Does `r` name a commit this repository can resolve?
+    ///
+    /// SYNTHETIC REFS ARE DECLARED, NOT DISCOVERED. An overlay may plant `git-ref:<r>` to describe
+    /// a ref that does not exist in the real repository, which is what lets the config-schema
+    /// gate's self-test drive its baseline arms — a ref that does not resolve, a ref that resolves
+    /// and carries no snapshot, a ref carrying a PLANTED baseline — without writing an object, a
+    /// branch or a commit into the tree the developer is standing in. `"1"` resolves, anything else
+    /// does not.
+    ///
+    /// A ref the overlay says nothing about is asked of git, so the ordinary run is unaffected.
+    pub fn git_ref_resolves(&self, r: &str) -> bool {
+        if let Some(planted) = self.planted_ref(r) {
+            return planted == "1";
+        }
+        gitp::git(
+            &self.root,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("{r}^{{commit}}"),
+            ],
+        )
+        .is_ok()
+    }
+
+    /// `git show <r>:<path>` — the bytes `path` had at `r`, never the working tree's.
+    ///
+    /// THE BASELINE IS READ FROM A REF FOR A REASON: rewriting the committed snapshot must not be
+    /// able to launder a break, so the additive check's left-hand side comes from history and not
+    /// from the file the same commit is free to edit.
+    ///
+    /// A SYNTHETIC REF IS ANSWERED ENTIRELY FROM THE OVERLAY. When `git-ref:<r>` is planted, this
+    /// ref is the self-test's and git is never consulted: an overlay that planted the ref but no
+    /// `git-show:<r>:<path>` is describing a ref that RESOLVES AND CARRIES NO SUCH FILE, which is
+    /// the arm that used to be a free bypass and must stay reachable in a test. Falling through to
+    /// the real repository there would answer with the real HEAD's snapshot and quietly turn that
+    /// case green.
+    pub fn git_show(&self, r: &str, path: &str) -> Result<String, String> {
+        let key = format!("git-show:{r}:{path}");
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return Ok(out.clone());
+            }
+        }
+        if self.planted_ref(r).is_some() {
+            return Err(format!(
+                "ref '{r}' resolves but carries no {path} (planted)"
+            ));
+        }
+        gitp::git(&self.root, &["show", &format!("{r}:{path}")])
+    }
+
+    /// The overlay's answer for `git-ref:<r>`, if it planted one.
+    fn planted_ref(&self, r: &str) -> Option<&str> {
+        self.overlay()?
+            .commands
+            .get(&format!("git-ref:{r}"))
+            .map(String::as_str)
     }
 
     /// Run a command and REFUSE to hand back stdout on a non-zero status. The shell's

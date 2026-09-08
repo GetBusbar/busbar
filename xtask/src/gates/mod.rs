@@ -23,6 +23,7 @@ pub mod blocking_ffi;
 pub mod changelog;
 pub mod changelog_register;
 pub mod ci_umbrella;
+pub mod config_schema;
 pub mod denylist_gate;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
@@ -703,6 +704,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(teller_steps::TellerStepsGate),
         summary: "one cell per Teller step per plane, each with a second verdict over the root leg",
+    },
+    Registration {
+        name: "config-schema",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(config_schema::ConfigSchemaGate),
+        summary:
+            "the config grammar is frozen at 1.5.3: snapshot drift plus additive-only vs a git ref",
     },
     Registration {
         name: "audit-ledger",
