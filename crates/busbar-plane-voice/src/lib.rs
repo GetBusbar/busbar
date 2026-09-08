@@ -54,6 +54,7 @@
 #![deny(missing_docs)]
 
 pub mod claims;
+pub mod governed;
 pub mod meta;
 pub mod oneshot;
 pub mod plane;
