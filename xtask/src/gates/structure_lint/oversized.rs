@@ -31,6 +31,14 @@ pub const ROW_OVERSIZED: &str = "structure-lint:oversized";
 
 pub const MAX_LINES_IMPL: usize = 2500;
 
+/// THE FLOOR ON THE SCAN SET, because an empty offender list is this rule's PASSING answer and a
+/// walk that read nothing produces exactly that. The tree holds 748 non-test `.rs` files under
+/// `crates/` today; the number is the sibling candidate corpus's
+/// [`super::corpus::CANDIDATE_FLOOR`], already vetted at a third of reality, and it is a `const`
+/// with no environment override for the same reason that one is — a floor a caller can lower is a
+/// floor a caller can turn off.
+pub const SCAN_FLOOR: usize = super::corpus::CANDIDATE_FLOOR;
+
 const EXCLUDE_TESTS: &str = "/tests/";
 
 /// PRE-EXISTING DEBT, GRANDFATHERED. `admin/v1/service.rs` is the one entry that is not a moved
@@ -56,6 +64,18 @@ pub fn finding(rel: &str, lines: usize) -> String {
     format!("OVERSIZED: {rel} ({lines} lines, over the {MAX_LINES_IMPL}-line cap)")
 }
 
+/// A WALK THAT COULD NOT RUN IS A FINDING, not a clean tree. This rule's answer to "no offenders"
+/// and its answer to "no files" are the same empty list, so the two must be told apart before the
+/// list is read — a root that moved, an unreadable subtree, or a scan set below its floor all
+/// arrive here rather than as a PASS with detail `CLEAN`.
+pub fn finding_scan_failed(why: &str) -> String {
+    format!(
+        "OVERSIZED-SCAN-FAILED: the impl-file walk could not run ({why}), so this rule read no \
+         file at all — and no file read carries no oversized file, which is the passing answer to \
+         this cap"
+    )
+}
+
 /// `wc -l`, not `lines().count()`: a file whose last line carries no newline is one line shorter to
 /// `wc` than to a line iterator, and a cap is a comparison against a number somebody read off a
 /// terminal.
@@ -67,12 +87,17 @@ pub fn scan(cx: &Ctx, t: &Tables, f: &mut Findings) {
     // A SEPARATE WALK from the candidate corpus, and deliberately: `benches/` is exempt from the
     // choke-point registry because a bench is harness code, but a 4,000-line bench is exactly as
     // unnavigable as a 4,000-line module.
-    let Ok(files) = cx.walk(
+    let files = match cx.walk(
         &WalkSpec::new([super::roots::CRATES])
             .ext("rs")
-            .exclude([EXCLUDE_TESTS]),
-    ) else {
-        return;
+            .exclude([EXCLUDE_TESTS])
+            .min_files(SCAN_FLOOR),
+    ) {
+        Ok(files) => files,
+        Err(e) => {
+            f.oversized.push(finding_scan_failed(&e.to_string()));
+            return;
+        }
     };
     for s in files {
         let n = wc_l(&s.text);
