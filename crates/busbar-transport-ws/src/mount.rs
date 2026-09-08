@@ -90,6 +90,23 @@ pub struct Upgrade<'u> {
     pub target: &'u str,
     /// The peer's source address as the bottom layer saw it.
     pub peer: &'u str,
+    /// The credential the caller presented on the upgrade, exactly as it arrived.
+    ///
+    /// THE ONLY REQUEST THIS SESSION EVER HAS. A one-shot arrival presents its credential on every
+    /// request and can be challenged on any of them; a session presents one on the upgrade and never
+    /// again, because after it the protocol has changed and there is no request left to carry one. So
+    /// a mount that dropped this would leave a declared [`Bar::Credential`] binding with nothing to
+    /// resolve for the whole life of the session, and the only posture left to the driver would be
+    /// the anonymous one.
+    ///
+    /// Whole and unstripped, for the reason the one-shot mount publishes it whole: the scheme word is
+    /// the authentication chain's to read, and a transport that stripped the wrong prefix would turn
+    /// one caller's secret into a different string.
+    ///
+    /// `None` is an upgrade that presented none, which is a posture a declaration can legitimately
+    /// admit and is NOT the same as an empty one — a driver handed an empty credential is being told
+    /// one was presented and is blank.
+    pub credential: Option<&'u str>,
 }
 
 /// The reserved fact keys a mounted session publishes.
@@ -98,7 +115,7 @@ pub struct Upgrade<'u> {
 /// module holds the two lists to each other. A reserved key published but never declared is a value
 /// a plane reads that no boot check knows about, which is the failure the reserved-key registry
 /// exists to make impossible.
-pub const SESSION_FACTS: &[&str] = &[tfacts::PATH, tfacts::PEER];
+pub const SESSION_FACTS: &[&str] = &[tfacts::PATH, tfacts::PEER, tfacts::CREDENTIAL];
 
 /// Which declared binding an upgrade was addressed to, and what this transport stands on.
 ///
@@ -158,7 +175,15 @@ pub fn address<'s>(
 /// the path it was opened at would be a session answered about somewhere else.
 #[must_use]
 pub fn published_facts<'a>(upgrade: &'a Upgrade<'a>) -> Vec<(&'a str, &'a str)> {
-    vec![(tfacts::PATH, upgrade.target), (tfacts::PEER, upgrade.peer)]
+    let mut facts = vec![(tfacts::PATH, upgrade.target), (tfacts::PEER, upgrade.peer)];
+    // Pushed only where the upgrade actually carried one, because an ABSENT fact and an EMPTY one
+    // are different statements and the difference is a security one here: a driver reading an empty
+    // credential is being told one was presented and is blank, and a caller that presented none did
+    // not present a blank one. An anonymous caller has to stay representable.
+    if let Some(credential) = upgrade.credential {
+        facts.push((tfacts::CREDENTIAL, credential));
+    }
+    facts
 }
 
 // ── opening, on the far side of the seam ────────────────────────────────────────────────────────
