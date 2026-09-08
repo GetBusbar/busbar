@@ -413,7 +413,7 @@ fn serving_hands_the_driver_what_arrived() {
     let driver = Recorder::default();
     let r = request("/things/t-7", "GET");
     let addressed = resolve(&SURFACE, &r).expect("a declared target");
-    let answer = serve(&driver, &SURFACE, &r, &addressed, "http", &["tcp", "http"]);
+    let answer = hand_to_driver(&driver, &SURFACE, &r, &addressed, "http", &["tcp", "http"]);
     assert_eq!(answer.body, b"the plane's own bytes");
     assert_eq!(answer.media, "application/json");
     assert_eq!(answer.answering, Answering::Unary);
@@ -438,7 +438,7 @@ fn serving_a_mount_hands_the_driver_no_operation() {
     let driver = Recorder::default();
     let r = request("/rpc", "POST");
     let addressed = resolve(&SURFACE, &r).expect("a declared mount");
-    let _ = serve(&driver, &SURFACE, &r, &addressed, "http", &["http"]);
+    let _ = hand_to_driver(&driver, &SURFACE, &r, &addressed, "http", &["http"]);
     assert!(driver.op.lock().expect("recorder").is_none());
 }
 
@@ -482,7 +482,7 @@ fn an_unaddressed_target_has_its_own_status() {
 fn the_detached_driver_refuses_without_blaming_the_caller() {
     let r = request("/things/summary", "GET");
     let addressed = resolve(&SURFACE, &r).expect("a declared target");
-    let answer = serve(
+    let answer = hand_to_driver(
         &busbar_contract_transport::driver::Detached,
         &SURFACE,
         &r,
