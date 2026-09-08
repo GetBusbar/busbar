@@ -1453,9 +1453,10 @@ fn a_callback_token_past_its_deadline_is_refused() {
 /// default — which is the posture every deployment whose store predates this verb runs on. For a
 /// read, "this store remembers nothing" and "there is nothing to remember" are the same answer;
 /// for a capability check they are opposites, and this asserts which one the default takes. The
-/// sibling `redeem_plane_token` default is deliberately `Ok(true)` and stays that way — a store
-/// that keeps no ledger genuinely has spent nothing — so the two are asserted apart here rather
-/// than assumed to agree.
+/// sibling `redeem_plane_token` default is a REFUSAL rather than an answer — a store that keeps no
+/// single-use ledger cannot say whether a redemption is the first one, so it declines to say yes —
+/// so the two are asserted apart here rather than assumed to agree: one answers `false`, the other
+/// does not answer at all.
 #[test]
 fn the_default_liveness_answer_is_a_refusal() {
     use busbar_api::Store as _;
@@ -1469,11 +1470,10 @@ fn the_default_liveness_answer_is_a_refusal() {
          deployment on an older store would accept a replayed callback"
     );
     assert!(
-        store
-            .redeem_plane_token("ask", "n-1", u64::MAX, 0)
-            .expect("the default answers"),
-        "the single-use redeem's default is the opposite one on purpose, and moving it would \
-         break approvals rather than fix a replay"
+        store.redeem_plane_token("ask", "n-1", u64::MAX, 0).is_err(),
+        "the single-use redeem's default REFUSES on purpose: a store keeping no ledger cannot \
+         assert that this redemption is the first one, and answering yes would let a captured \
+         token be spent twice"
     );
 }
 
