@@ -1209,17 +1209,17 @@
         "type": "object"
       },
       "HookView": {
-        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see\n[`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is\nno `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the\ntop-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and\nATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it\nglobal, or at one pool's own `hooks:` list. On THIS API the same hook is written with\n`global: true`; the wire and the config file are deliberately different surfaces. Live connection\nstatus (`health`) is a separate endpoint. Additive-only.\n\n`groups:` and `phase:` are the config-file SELECTION axes (which callers, which pipeline stages),\nand this view used to omit both. That was not a decision to keep them file-only: both are\nWRITABLE over this API (`POST`/`PUT /hooks` deserialize `config::HookCfg` verbatim, which is the\ndocumented \"paste a `hooks:` entry\" contract), so omitting them made a field an operator can set\nthrough the API one they could not read back through it. `groups` and the stage pair\n(`phase` + `fires_at`) close that.",
+        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see\n[`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is\nno `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the\ntop-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and\nATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it\nglobal, or at one pool's own `hooks:` list. `groups:` and `phase:` are the config-file selection\naxes (which callers, which pipeline stages). On THIS API the same hook is written with\n`global: true`; the wire and the config file are deliberately different surfaces. Live connection\nstatus (`health`) is a separate endpoint. Additive-only.",
         "properties": {
           "at": {
-            "description": "The LEGACY single-valued tap stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or\n`null`. Kept for back-compat and NOT the field to read: `null` here does NOT mean \"a gate\"\nand does not mean \"unscoped\". Every hook written in the current top-level `hooks:` grammar\nhas `at: null` by construction (`config::hook_cfg_from_def` never sets it, and\n`--migrate-config` rewrites a legacy `at:` into `phase:`), so this field is `null` for\nessentially every hook a running deployment has. Read `fires_at`.\n1.6.0 owner rule: a 1.5.5 client reading this view must see this field byte-for-byte, so it\nis RESTORED alongside `phase`/`fires_at`.",
+            "description": "TAP observation stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or `None` for a gate.",
             "type": [
               "string",
               "null"
             ]
           },
           "fires_at": {
-            "description": "The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never\nempty. This is the field that answers \"when does this hook run\", and it is computed by\n`config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate the firing\npath uses, so it cannot disagree with runtime behavior. It reflects the frozen precedence\n(a non-empty `phase:` wins, else the legacy single `at:`, else the four core stages) without\nasking the reader to re-derive it from the two spellings above.",
+            "description": "NEW IN 1.6.0. The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline\norder, never empty. This is the field that answers \"when does this hook run\", and it is\ncomputed by `config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate\nthe firing path uses, so it cannot disagree with runtime behavior. It reflects the frozen\nprecedence (a non-empty `phase:` wins, else the legacy single `at:`, else the four core\nstages) without asking the reader to re-derive it from the two spellings above.\n\nREAD THIS ONE, not `at`. `at` is the LEGACY single-valued spelling and is a trap: `null`\nthere does NOT mean \"a gate\" and does not mean \"unscoped\". Every hook written in the current\ntop-level `hooks:` grammar has `at: null` by construction — `config::hook_cfg_from_def`\nnever sets it, and `--migrate-config` rewrites a legacy `at:` into `phase:` — so `at` is\n`null` for essentially every hook a running deployment has, while this field still says\nexactly when the hook runs.",
             "items": {
               "type": "string"
             },
@@ -1230,7 +1230,7 @@
             "type": "boolean"
           },
           "groups": {
-            "description": "The `groups:` CALLER SCOPE exactly as configured: the caller groups this hook fires for,\nempty meaning ALL callers (unscoped). The other half of \"when does this hook run\", and the\nsame writable-but-unreadable gap `phase` had.",
+            "description": "NEW IN 1.6.0. The `groups:` CALLER SCOPE exactly as configured: the caller groups this hook\nfires for, empty meaning ALL callers (unscoped). The other half of \"when does this hook\nrun\", and it closed the same writable-but-unreadable gap `phase` did.",
             "items": {
               "type": "string"
             },
@@ -1248,7 +1248,7 @@
             "type": "string"
           },
           "phase": {
-            "description": "The `phase:` STAGE LIST exactly as configured, empty when unset. The literal config echo,\nfor an operator diffing what they wrote against what busbar parsed. It is NOT the effective\nanswer on its own: empty means \"fall back\", and what it falls back TO is `at:` if set and the\nfour core stages otherwise. For the effective answer read `fires_at`.",
+            "description": "NEW IN 1.6.0. The `phase:` STAGE LIST exactly as configured, empty when unset. The literal\nconfig echo, for an operator diffing what they wrote against what busbar parsed. It is NOT\nthe effective answer on its own: empty means \"fall back\", and what it falls back TO is `at:`\nif set and the four core stages otherwise. For the effective answer read `fires_at`.\n\nWhy this field exists: `phase:` is one of the two config-file SELECTION axes (which pipeline\nstages; `groups` is the other, which callers), and this view used to omit both. That was\nnever a decision to keep them file-only — both are WRITABLE over this API (`POST`/`PUT\n/hooks` deserialize `config::HookCfg` verbatim, the documented \"paste a `hooks:` entry\"\ncontract), so omitting them made a field an operator can SET through the API one they could\nnot READ BACK through it.",
             "items": {
               "type": "string"
             },
@@ -1843,7 +1843,7 @@
         "type": "object"
       },
       "NamedDefView": {
-        "description": "ONE definition of ONE 1.5.3 PLUGIN-INSTANCE named-DEFINITION map: the read shape of the generic\nnamed-map CRUD for the two sections that shipped in 1.5.5 —\n`GET /api/v1/admin/identity-providers[/{name}]` and `GET /api/v1/admin/export[/{name}]`.\n\nONE view for both rather than one per kind: they share the frozen `{module, settings}` spine and\ndiffer only by optional kind-specific fields, which are `skip_serializing_if`-omitted for the\nsection that has none. So `/export` serves exactly `{name, module, settings_keys}` while\n`/identity-providers` additionally carries its ceiling.\n\nTHIS TYPE IS FROZEN TO ITS 1.5.5 SHAPE and is not the place a new section adds a field. PB-75\nbinds the served `openapi.json` to 1.5.5 byte-for-byte except for additive endpoints, and this\nschema is referenced by twelve operations that all shipped in 1.5.5. 1.6.0 briefly widened it to\ncover the two NEW plane sections (`tools:`, `agents:`) as well, and that cost real contract\nground: `agents:` entries name no plugin, so `module` acquired a `skip_serializing_if` and\nschemars duly dropped it from `required` — narrowing the contract for `/export` and\n`/identity-providers`, whose bodies had never once omitted it. A section whose entries are not\nplugin instances belongs on [`PlaneNamedDefView`] instead; the two schemas are separate precisely\nso neither can drag the other's guarantees down.\n\nSECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,\nwhich is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET\nREFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator\nlegitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),\nso projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets\nthrough `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps\nthe introspection the read surface exists for (\"what is configured here?\") with no field a value\ncould ride out on: the same discipline `token_configured` already applies to the reference.",
+        "description": "ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD\n(`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and\n`tools:`/`agents:` when they land).\n\nDeliberately ONE view for every section rather than one per kind: the sections share the frozen\n`{module, settings}` spine and differ only by optional kind-specific fields, which are\n`skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly\n`{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,\nand a new section adds fields here (additive) instead of a parallel view + a parallel handler.\n\nSECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,\nwhich is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET\nREFERENCE collapsed to a boolean, and the module's opaque settings are a bag an operator\nlegitimately puts a credential VALUE in (an OIDC `client_secret`, a webhook `auth_header` value),\nso projecting it verbatim would hand every READ-ONLY admin credential the deployment's secrets\nthrough `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps\nthe introspection the read surface exists for (\"what is configured here?\") with no field a value\ncould ride out on: the same discipline `token_configured` already applies to the reference.",
         "properties": {
           "browser_login_configured": {
             "description": "`identity-providers` ONLY: whether a `browser_login:` block is configured, the presence that\nputs a button on the hosted login page.",
@@ -1853,14 +1853,14 @@
             ]
           },
           "max_admin_scope": {
-            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no\n`none` token: `Scope::parse_ceiling` rejects it, because a ceiling\ncaps what a grant can reach and cannot express the absence of one.\n`None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted\nentirely for a section that carries no ceiling.",
+            "description": "`identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).\n`None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely\nfor a section that carries no ceiling.",
             "type": [
               "string",
               "null"
             ]
           },
           "module": {
-            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nALWAYS SERIALIZED, and therefore always in the schema's `required` list — the 1.5.5\nguarantee, restored. Both sections this view serves demand a non-empty `module:` on every\nwrite path (`NamedMapSection::requires_module`), so the only way to reach an empty one is an\n`unparseable` overlay entry whose raw document had no `module` key; that case emits\n`\"module\":\"\"`, exactly as 1.5.5 did, rather than dropping the key. A section whose entries\nlegitimately have no module is not modelled here at all — see [`PlaneNamedDefView`].",
+            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).",
             "type": "string"
           },
           "name": {
@@ -1922,7 +1922,7 @@
             "type": "integer"
           },
           "reset": {
-            "description": "The section that was reset. This endpoint's `section` path parameter enumerates the valid\nset; it is deliberately not restated here, because the hand-written copy that used to sit on\nthis line went stale the moment a section was added.",
+            "description": "The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).",
             "type": "string"
           }
         },

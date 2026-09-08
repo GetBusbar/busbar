@@ -34,24 +34,15 @@ pub fn ap(rel: &str) -> String {
     format!("{ADMIN_PREFIX}{rel}")
 }
 
-/// ONE definition of ONE 1.5.3 PLUGIN-INSTANCE named-DEFINITION map: the read shape of the generic
-/// named-map CRUD for the two sections that shipped in 1.5.5 —
-/// `GET /api/v1/admin/identity-providers[/{name}]` and `GET /api/v1/admin/export[/{name}]`.
+/// ONE definition of ONE 1.5.3 named-DEFINITION map: the read shape of the GENERIC named-map CRUD
+/// (`GET /api/v1/admin/identity-providers[/{name}]`, `GET /api/v1/admin/export[/{name}]`, and
+/// `tools:`/`agents:` when they land).
 ///
-/// ONE view for both rather than one per kind: they share the frozen `{module, settings}` spine and
-/// differ only by optional kind-specific fields, which are `skip_serializing_if`-omitted for the
-/// section that has none. So `/export` serves exactly `{name, module, settings_keys}` while
-/// `/identity-providers` additionally carries its ceiling.
-///
-/// THIS TYPE IS FROZEN TO ITS 1.5.5 SHAPE and is not the place a new section adds a field. PB-75
-/// binds the served `openapi.json` to 1.5.5 byte-for-byte except for additive endpoints, and this
-/// schema is referenced by twelve operations that all shipped in 1.5.5. 1.6.0 briefly widened it to
-/// cover the two NEW plane sections (`tools:`, `agents:`) as well, and that cost real contract
-/// ground: `agents:` entries name no plugin, so `module` acquired a `skip_serializing_if` and
-/// schemars duly dropped it from `required` — narrowing the contract for `/export` and
-/// `/identity-providers`, whose bodies had never once omitted it. A section whose entries are not
-/// plugin instances belongs on [`PlaneNamedDefView`] instead; the two schemas are separate precisely
-/// so neither can drag the other's guarantees down.
+/// Deliberately ONE view for every section rather than one per kind: the sections share the frozen
+/// `{module, settings}` spine and differ only by optional kind-specific fields, which are
+/// `skip_serializing_if`-omitted for a section that has none. So `/export` serves exactly
+/// `{name, module, settings_keys}` while `/identity-providers` additionally carries its ceiling,
+/// and a new section adds fields here (additive) instead of a parallel view + a parallel handler.
 ///
 /// SECRETS ARE NEVER PROJECTED, by construction, and that claim covers the `settings:` bag too,
 /// which is why this view carries `settings_keys` and NOT the bag itself. A `token:` is a SECRET
@@ -61,19 +52,33 @@ pub fn ap(rel: &str) -> String {
 /// through `GET /identity-providers/{name}` / `GET /export/{name}`. Projecting the KEY NAMES keeps
 /// the introspection the read surface exists for ("what is configured here?") with no field a value
 /// could ride out on: the same discipline `token_configured` already applies to the reference.
+//
+// THE DOC COMMENT ABOVE IS THE 1.5.5 TYPE DESCRIPTION, VERBATIM, AND IS FROZEN. schemars generates
+// the schema's `description` from it, so editing the prose edits the PUBLISHED contract, and PB-75
+// binds this document to 1.5.5 byte-for-byte outside additive endpoints. Two corrections that
+// therefore live down here, in a comment the generator does not read:
+//
+//   * "and `tools:`/`agents:` when they land" — they landed, and NOT here. They are served by
+//     `PlaneNamedDefView`; see its own doc.
+//   * "a new section adds fields here (additive) instead of a parallel view" — no longer the rule,
+//     and 1.6.0 is why. Widening this view to cover `agents:` (whose entries name no plugin) gave
+//     `module` a `skip_serializing_if`, which dropped it from `required` — NARROWING the contract
+//     for `/export` and `/identity-providers`, whose bodies had never once omitted it, across the
+//     twelve 1.5.5 operations that `$ref` this schema. A section whose entries are not plugin
+//     instances gets its own view now, so neither can drag the other's guarantees down.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct NamedDefView {
     /// The instance NAME: the map key, and the token every reference site uses.
     pub name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
-    ///
-    /// ALWAYS SERIALIZED, and therefore always in the schema's `required` list — the 1.5.5
-    /// guarantee, restored. Both sections this view serves demand a non-empty `module:` on every
-    /// write path (`NamedMapSection::requires_module`), so the only way to reach an empty one is an
-    /// `unparseable` overlay entry whose raw document had no `module` key; that case emits
-    /// `"module":""`, exactly as 1.5.5 did, rather than dropping the key. A section whose entries
-    /// legitimately have no module is not modelled here at all — see [`PlaneNamedDefView`].
+    //
+    // 1.5.5 text, VERBATIM and frozen. ALWAYS SERIALIZED — no `skip_serializing_if` — which is what
+    // keeps it in the schema's `required` list. Both sections this view serves demand a non-empty
+    // `module:` on every write path (`NamedMapSection::requires_module`), so the only way to reach
+    // an empty one is an `unparseable` overlay entry whose raw document had no `module` key; that
+    // case emits `"module":""`, exactly as 1.5.5 did, rather than dropping the key. A section whose
+    // entries legitimately have no module is not modelled here at all — see `PlaneNamedDefView`.
     pub module: String,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
     /// redacted projection of `settings:`. Operator/API-owned and never interpreted here, but also
@@ -81,11 +86,22 @@ pub struct NamedDefView {
     /// and this surface is reachable at READ-ONLY admin scope. An empty bag ⇒ an empty list. The
     /// values are readable only where they are writable: the config file and the config overlay.
     pub settings_keys: Vec<String>,
-    /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`read-only` | `full`). There is no
-    /// `none` token: `Scope::parse_ceiling` rejects it, because a ceiling
-    /// caps what a grant can reach and cannot express the absence of one.
-    /// `None` ⇒ the definition names no ceiling, so the most restrictive default applies. Omitted
-    /// entirely for a section that carries no ceiling.
+    /// `identity-providers` ONLY: the per-provider ADMIN CEILING (`none` | `read-only` | `full`).
+    /// `None` ⇒ the definition names none, so the most restrictive default applies. Omitted entirely
+    /// for a section that carries no ceiling.
+    //
+    // 1.5.5 text, VERBATIM and frozen — AND KNOWN TO BE WRONG about `none`. Flagged here rather
+    // than fixed because the fix is a wire-visible change to a 1.5.5 schema description and PB-75
+    // makes that the owner's call, not this file's.
+    //
+    // THE DEFECT IS 1.5.5'S OWN, not a 1.6.0 regression. There is no `none` token and there never
+    // was one on this surface: `Scope` has exactly two variants (`ReadOnly`, `Full`) in 1.5.5 and
+    // in 1.6.0, and `Scope::parse_ceiling` is byte-identical between the two releases — both reject
+    // `none` with the same message ("There is no `none`: omit the key for the most restrictive
+    // default ... the ceiling caps what a grant can reach, it cannot express the absence of one").
+    // So a 1.5.5 client that believed this description and sent `max_admin_scope: none` got a 400
+    // from 1.5.5 too. Restoring the text restores byte-parity with a published document that was
+    // already lying; correcting it is a separate, deliberate amendment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_admin_scope: Option<String>,
     /// `identity-providers` ONLY: whether a `token:` secret REFERENCE is configured (the built-in
