@@ -277,10 +277,7 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
                 .push(expected_aud.map(str::to_string));
             (credential == "tok"
                 && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
-            .then(|| KeyFacts {
-                id: "key-voice-1".to_string(),
-                name: "an approved key".to_string(),
-            })
+            .then(|| KeyFacts::unrestricted("key-voice-1", "an approved key"))
         }
 
         fn revoked(&self, _credential: &str) -> bool {
@@ -1499,10 +1496,7 @@ fn a_paid_turns_record_names_its_principal() {
         ) -> Option<KeyFacts> {
             (credential == "tok"
                 && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
-            .then(|| KeyFacts {
-                id: "key-voice-1".to_string(),
-                name: "an approved key".to_string(),
-            })
+            .then(|| KeyFacts::unrestricted("key-voice-1", "an approved key"))
         }
 
         fn revoked(&self, _credential: &str) -> bool {
@@ -2204,10 +2198,8 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
                 "mcp-tok" => "mcp",
                 _ => return None,
             };
-            (expected_aud == Some(minted_for)).then(|| KeyFacts {
-                id: "key-voice-1".to_string(),
-                name: "an approved key".to_string(),
-            })
+            (expected_aud == Some(minted_for))
+                .then(|| KeyFacts::unrestricted("key-voice-1", "an approved key"))
         }
 
         fn revoked(&self, _credential: &str) -> bool {
