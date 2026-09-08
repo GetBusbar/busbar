@@ -541,6 +541,7 @@ fn a_supersede_frees_only_the_direction_the_superseded_unit_was_holding() {
 fn one_shots_run_under_a_small_fixed_concurrency() {
     let table = InFlight::new(64, 0);
     let scheduler = Scheduler::new(2);
+    assert_eq!(scheduler.one_shots(), 0, "nothing has started yet");
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -551,6 +552,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
         ),
         Dispatch::OpenOneShot
     );
+    assert_eq!(scheduler.one_shots(), 1, "the accessor reflects the open the dispatch just won");
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -561,6 +563,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
         ),
         Dispatch::OpenOneShot
     );
+    assert_eq!(scheduler.one_shots(), 2, "both permits are now out");
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -572,7 +575,13 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
         Dispatch::Wait,
         "the third waits rather than crowding out the open conversation"
     );
+    assert_eq!(
+        scheduler.one_shots(),
+        2,
+        "a wait takes no permit, so the count does not move past the ceiling"
+    );
     scheduler.finish_one_shot();
+    assert_eq!(scheduler.one_shots(), 1, "the accessor reflects the permit given back");
     assert_eq!(
         scheduler.dispatch(
             None,
@@ -583,6 +592,7 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
         ),
         Dispatch::OpenOneShot
     );
+    assert_eq!(scheduler.one_shots(), 2);
 }
 
 #[test]
