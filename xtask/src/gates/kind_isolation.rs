@@ -384,6 +384,11 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     ("secret", "api"),
     ("secret", "plugin-tooling"),
     ("store", "api"),
+    // `busbar-store-memory` — the first implementor of the record contract's
+    // `record_put`/`record_get`/`record_scan`. PLUGIN-TREE.md §4 gives every store/auth/secret/hook/
+    // export crate `busbar-core-contract` as an allowed edge, so this is the table catching up with
+    // a measurement the tree took after the graph was first written, not a new allowance.
+    ("store", "contract"),
     ("store", "plugin-tooling"),
     ("store", "store"),
     ("substrate", "api"),
@@ -408,15 +413,43 @@ const UNSCORED_SOURCES: &[&str] = &["root", "legacy"];
 // the shape and the battery
 // ------------------------------------------------------------------------------------------------
 
-/// THE CLEANEST SIBLING PER KIND. Its top-level module skeleton IS the kind's skeleton, and its
-/// single entry implementation is what every sibling of that kind owes. Naming an exemplar rather
-/// than writing the skeleton down is the point: the canonical shape is a crate somebody maintains,
-/// so it cannot rot into a description of a crate that no longer looks like that.
+/// THE CLEANEST SIBLING PER KIND — the crate whose SINGLE ENTRY IMPLEMENTATION is what every
+/// sibling of that kind owes. It is no longer the source of the kind's SKELETON: see
+/// [`kind_skeleton`].
 const EXEMPLARS: &[(&str, &str)] = &[
     ("plane", "busbar-plane-a2a"),
     ("transport", "busbar-transport-http"),
     ("unit", "busbar-unit-auth"),
 ];
+
+/// THE KIND SKELETON IS THE SPEC'S, NEVER THE EXEMPLAR'S FILE LIST (`PLUGIN-TREE.md` §3).
+///
+/// It was the exemplar's top-level module set, which reads every DOMAIN module of one crate as part
+/// of its kind's shape: `busbar-unit-wal` was charged with missing `challenge`, `carrier`,
+/// `principal`, `chain`, `exchange`, `detect`, `cache`, `admin` and `module` — the auth unit's
+/// subject matter, which the WAL unit has no business carrying — and all six sibling transports
+/// were charged with missing `raw`, which is `busbar-transport-http`'s own body-reader. A shape
+/// rule that grows a row every time the exemplar grows a file is not measuring shape; it is
+/// measuring one crate's domain, and the only way to go green is to copy it.
+///
+/// §3 names the intersection instead, and it is small on purpose: `src/lib.rs` (the single `pub`
+/// entry — checked as `no-lib`), `src/meta.rs` (the associated consts), `src/claims.rs` for the
+/// kinds that CLAIM, the kind's own entry file (`unit.rs` / `plane.rs` / `transport.rs`), and
+/// `src/tests/conformance.rs` (checked by the battery rule). Everything else is `src/<verb>.rs` —
+/// "one file per declared responsibility" — which is per-crate by definition and is not skeleton.
+fn kind_skeleton(kind: &str) -> BTreeSet<String> {
+    let mut want: BTreeSet<String> = BTreeSet::new();
+    want.insert("meta".to_string());
+    // The entry file is named for the kind: a sibling's reader finds the same file in each.
+    want.insert(kind.to_string());
+    if CLAIMING_KINDS.contains(&kind) {
+        want.insert("claims".to_string());
+    }
+    want
+}
+
+/// The kinds that declare CLAIMS (`PLUGIN-TREE.md` §3): what the crate answers for.
+const CLAIMING_KINDS: &[&str] = &["plane", "dialect", "transport"];
 
 /// The kinds that owe a shared conformance battery. The plugin kinds are here because a plugin is
 /// exactly the thing whose contract is checked from outside; the three exemplar kinds are here
@@ -973,13 +1006,21 @@ fn rule_deps(crates: &[CrateInfo]) -> Row {
             format!("{} edge class(es): {}", seen.len(), render_graph(&seen)),
         );
     }
+    // THE MESSAGE AND THE TABLE AGREE. The failure detail used to print `seen` — the graph OBSERVED
+    // in the tree — under the label "measured graph", so a finding could read `store -> contract is
+    // not in the measured graph` directly above a "measured graph" listing `store->contract`. The
+    // ratchet a reader has to edit is `MEASURED_EDGES`, so that is what is printed under its own
+    // name; the observed set is printed beside it, labelled as what it is.
     Row::fail(
         ROW_DEPS,
         "a dependency crosses a kind boundary the measured graph does not have",
         format!(
-            "{} finding(s): {} || measured graph: {}",
+            "{} finding(s): {} || MEASURED_EDGES ({}): {} || observed in the tree ({}): {}",
             offenders.len(),
             offenders.join(" | "),
+            measured.len(),
+            render_graph(&measured),
+            seen.len(),
             render_graph(&seen)
         ),
     )
@@ -1331,11 +1372,44 @@ struct SourceIndex {
     conformance: BTreeSet<String>,
 }
 
+/// The `<…>` immediately after `impl`, skipped as a BALANCED group: `impl<S: CellStore>` and
+/// `impl<'a, T: Into<Vec<u8>>>` both end at the `>` that closes the one this opened, not at the
+/// first `>` in the line.
+fn skip_generic_params(s: &str) -> Option<&str> {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[i + c.len_utf8()..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `impl <Ident> for` at the head of a production line, with literals blanked first.
+///
+/// THE GENERIC HEAD IS PARSED, NOT REFUSED. `strip_prefix("impl ")` could not see
+/// `impl<S: CellStore> Unit for AdmissionUnit<'_, S>` — the space is a `<` — so three unit crates
+/// implemented their kind's entry trait and were reported as implementing it ZERO times, forever.
+/// The generic parameter list says nothing about WHICH trait is implemented, which is the only
+/// thing this function is asked, so it is skipped as the balanced group it is.
 fn impl_trait_on(code: &str) -> Option<String> {
     let t = code.trim_start();
-    let rest = t.strip_prefix("impl ")?;
-    // A generic `impl<T> …` head is not the shape being counted here.
+    let rest = t.strip_prefix("impl")?;
+    let rest = if rest.starts_with('<') {
+        skip_generic_params(rest)?
+    } else if rest.starts_with(' ') {
+        rest
+    } else {
+        // `impl_of(…)`, `implement`, … — `impl` has to be the keyword, not a prefix.
+        return None;
+    };
     let (head, _) = rest.split_once(" for ")?;
     let head = head.trim();
     if head.is_empty() || head.contains('<') || head.contains(':') || head.contains('&') {
@@ -1419,7 +1493,7 @@ fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
                  declaration every crate of the kind owes"
             ));
         }
-        let skeleton = idx.skeleton.get(*ex_dir).cloned().unwrap_or_default();
+        let skeleton = kind_skeleton(kind);
 
         for c in crates.iter().filter(|c| c.kind == Some(*kind)) {
             checked += 1;
@@ -1446,15 +1520,15 @@ fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
                     ));
                 }
             }
-            if &c.name == exemplar {
-                continue;
-            }
+            // THE EXEMPLAR IS NOT EXEMPT. It was skipped because the skeleton was its own file
+            // list, which made the comparison vacuous for it; the skeleton is now the spec's, and a
+            // spec applies to the crate that models it first of all.
             let mine = idx.skeleton.get(&c.dir).cloned().unwrap_or_default();
             let missing: Vec<&String> = skeleton.difference(&mine).collect();
             if !missing.is_empty() {
                 offenders.push(format!(
                     "skeleton\t{}/src/lib.rs\t{} is missing {} of the `{kind}` skeleton \
-                     ({exemplar}): {}",
+                     (PLUGIN-TREE.md §3): {}",
                     c.dir,
                     c.name,
                     missing.len(),
@@ -1940,6 +2014,49 @@ impl Gate for KindIsolationGate {
             &[ROW_SHAPE],
             ov,
             &["entry-count", "busbar-transport-tcp"],
+        ));
+
+        // A GENERIC ENTRY IMPL IS AN ENTRY IMPL. `impl_trait_on` read `impl ` and stopped, so
+        // `impl<S: CellStore> Unit for AdmissionUnit<'_, S>` — the shape three unit crates are
+        // written in — counted ZERO, and those crates reported an entry count of 0 forever while
+        // implementing their trait in plain sight. This plant adds a SECOND entry implementation in
+        // the generic spelling and nothing else: with the generic parameter list parsed the count is
+        // 2 and the rule fires; without it the count is 1, the rule is silent, and this case is
+        // GREEN. That is the whole difference, and it is what the case is here to hold.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_generic_entry.rs",
+            "pub struct Generic<'a, S>(&'a S);\n\
+             impl<'a, S: Send + Sync> Transport for Generic<'a, S> {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an entry implementation written with generic parameters is counted",
+            &[ROW_SHAPE],
+            ov,
+            &["entry-count", "busbar-transport-tcp", "2 time(s)"],
+        ));
+
+        // THE SKELETON IS THE SPEC'S, NOT THE EXEMPLAR'S FILE LIST. This crate declares `meta` and
+        // nothing else, so it is missing EXACTLY ONE thing: its kind's entry file. Under the old
+        // rule — the exemplar's own top-level modules — it would have been charged with ten,
+        // `busbar-unit-auth`'s domain among them (`carrier`, `challenge`, `principal`, …), and the
+        // only way to go green would have been to copy another crate's subject matter. The count in
+        // the naming is what pins the difference.
+        let mut ov = manifest_plant("crates/busbar-unit-planted", "busbar-unit-planted", &[]);
+        ov.set("crates/busbar-unit-planted/src/lib.rs", "pub mod meta;\n");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a crate of a kind is judged against its kind's skeleton, not the exemplar's file list",
+            &[ROW_SHAPE],
+            ov,
+            &[
+                "busbar-unit-planted",
+                "is missing 1 of the `unit` skeleton",
+                "§3): unit",
+            ],
         ));
 
         report.push(prove_rows_red(

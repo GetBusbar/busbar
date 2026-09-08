@@ -263,6 +263,10 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str, Excuse)] = &[
          scripts/verify-1.6.0-done.sh, on the same terms as plane-purity-strict: a per-push red \
          would only restate that the work is in flight, and a gate that is red every push is a \
          gate somebody puts a `|| true` in front of.",
+        Excuse::ReleaseScript(
+            "scripts/verify-1.6.0-done.sh",
+            "cargo xtask gate kind-isolation-ship",
+        ),
     ),
     (
         "no-deferral-strict-done",
