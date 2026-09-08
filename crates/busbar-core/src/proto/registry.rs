@@ -22,10 +22,17 @@
 //! resolves them through the neutral ABI rather than reaching BACK into `busbar-core`. This module
 //! re-exports every one of them at its historical `busbar_core::proto::registry::…` path so every
 //! in-core / plugin caller compiles unchanged and the values are byte-identical. What STAYS here is
-//! the population glue core alone owns: the built-in table (empty in production; core's own test
-//! set named in a `tests/` file the lint excludes and handed to the substrate through its
-//! `set_test_builtins` hook), and [`install_protocols_with_path_ingress`], which names the core-only
-//! `Arrival`.
+//! the population glue core alone owns and nothing else: the built-in table (empty in production;
+//! core's own test set named in a `tests/` file the lint excludes and handed to the substrate through
+//! its `set_test_builtins` hook) and the `cfg(test)` accessors that seed it.
+//!
+//! The composition root's two-seam write, `install_protocols_with_path_ingress`, is NOT here. It was,
+//! and the reason given was that it named "the core-only `Arrival`" — but that type relocated to
+//! `busbar_substrate::ingress::arrival::PathIngress` and core's spelling of it had become a `pub use`
+//! of the substrate's. With both halves neutral the fold is neutral, so it lives at
+//! `busbar_substrate::proto::install_protocols_with_path_ingress`, beside the two seams it folds, and
+//! the composition root names no retiring crate to register a protocol. No shim is left here: a
+//! re-export would be the same reach under a longer name.
 
 // WHICH INBOUND AUTH SCHEME a protocol's clients present. DECLARED metadata, never a branch: the
 // verification itself stays in the auth layer. Relocated to the neutral `busbar_substrate::proto`
@@ -47,16 +54,19 @@ pub use busbar_substrate::proto::{
 };
 
 // THE REGISTRY RUNTIME — relocated to `busbar_substrate::proto`, re-exported here at its historical
-// paths so `crate::proto::registry::{Registry, install_protocols, decl_for, …}` resolve unchanged.
+// paths so `crate::proto::registry::{Registry, merged_boot_decls, decl_for, …}` resolve unchanged.
 // The detection/lookup accessors get a `cfg(test)` veneer below (they seed the substrate's core-test
-// built-in hook); `Registry`, `install_protocols`, and the pure folds are direct re-exports.
-pub use busbar_substrate::proto::{
-    first_path_model_without_arrival, install_protocols, merged_boot_decls, Registry,
-};
+// built-in hook); the type and the pure boot fold are direct re-exports.
+//
+// `install_protocols` and `first_path_model_without_arrival` are NOT re-exported. They had one caller
+// each and it was the two-seam fold, which now lives on the substrate beside them; an alias kept here
+// for nobody would be exactly the longer-named reach this cut removed.
+pub use busbar_substrate::proto::{merged_boot_decls, Registry};
 
 /// THE BUILT-INS — one line per protocol, and every line is DATA. Production carries NO built-in
 /// protocol rows: every protocol is a plugin crate the composition root installs through
-/// [`install_protocols`]. Naming a protocol crate's `&DECL` here would be a protocol-crate symbol
+/// [`busbar_substrate::proto::install_protocols`]. Naming a protocol crate's `&DECL` here would be a
+/// protocol-crate symbol
 /// reference in neutral source — a side channel around the ABI — so this stays empty.
 ///
 /// Core's OWN test binary still needs the shipped protocol set; the plugin crates are dev-dependencies
@@ -141,37 +151,4 @@ pub fn residual_default_protocol() -> Option<&'static str> {
 pub fn declared_verbs() -> &'static [crate::operation::Operation] {
     busbar_substrate::proto::set_test_builtins(builtin_decls);
     busbar_substrate::proto::declared_verbs()
-}
-
-/// THE COMPOSITION ROOT'S ONE WRITE INTO BOTH PROTOCOL SEAMS — the declarations AND their path-model
-/// arrivals, registered together so the second seam [`install_protocols`] gained when `path_ingress`
-/// split off `ProtocolDecl` (Batch C-6) cannot drift from the first. Folds the two installs into one
-/// call and, before either lands, asserts the PARITY that keeps the split honest:
-///
-/// **Every declaration whose model is in the URL path (`has_model_in_url`) MUST register a
-/// `path_ingress` arrival.** A path-model protocol installed WITHOUT its arrival would resolve no
-/// arrival and SILENTLY fall through to the body-model branch — a wrong-behavior 404-shaped bug.
-/// Asserting it here makes that drift a LOUD PANIC at boot. Stays in `busbar-core` because it names
-/// the core-only `Arrival` (`crate::ingress::path_ingress`).
-///
-/// # Panics
-/// - if a `has_model_in_url` decl has no registered arrival (the parity failure above).
-/// - if either underlying install was already called (two composition roots).
-#[allow(dead_code)] // pub-widened and called by the busbar binary's `register_protocols`
-pub fn install_protocols_with_path_ingress(
-    decls: Vec<&'static ProtocolDecl>,
-    path_ingress: Vec<(&'static str, crate::ingress::path_ingress::PathIngress)>,
-) {
-    if let Some(name) = first_path_model_without_arrival(
-        &decls,
-        &path_ingress.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
-    ) {
-        panic!(
-            "protocol '{name}' declares has_model_in_url == true but registered no path_ingress \
-             arrival: a request naming its URL model would silently fall through to the body-model \
-             branch. Register its arrival alongside its declaration."
-        );
-    }
-    install_protocols(decls);
-    crate::ingress::path_ingress::install_path_ingress(path_ingress);
 }
