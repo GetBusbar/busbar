@@ -684,7 +684,20 @@ fn the_opening_unit_seals_under_the_declared_operation_class() {
         .record
         .sealed();
     assert_eq!(after, before + 1, "exactly one record for one unit");
-    assert_eq!(UnitShape::SessionOpen.op_class(), meta::OP_SESSION_OPEN);
+
+    // Read back what the record itself would carry, not a separate mapping the audit step never
+    // touches: `UnitShape::op_class()` and `meta::OP_SESSION_OPEN` are the same expression on both
+    // sides of that comparison, so it cannot see a class written wrong onto the record's own field.
+    let inputs = unit.audit_inputs(
+        &ctx(1),
+        busbar_caps::Outcome::Completed,
+        busbar_contract::FinishClass::Complete,
+    );
+    assert_eq!(
+        inputs.what.op_class,
+        busbar_unit_audit::record::OpClassId::new("voice.session.open"),
+        "the record's own op_class field must carry the plane's literal class name"
+    );
 }
 
 /// A lease that answers "nothing left" closes the session it answered for.
