@@ -193,6 +193,38 @@ fn an_anchored_fragment_outranks_the_same_length_floating_one() {
     );
 }
 
+/// A handshake name is one name however it is capitalised, and the boot check has to read it the
+/// way the contract does.
+///
+/// The contract compares `Sni` case-insensitively, because a connection presenting either spelling
+/// presents the same name. A boot check that compares it byte for byte proves two planes disjoint
+/// that a single connection matches both of, and which one serves it falls to the precedence order
+/// rather than to a decision an operator was ever shown.
+#[test]
+fn two_planes_claiming_one_handshake_name_in_different_cases_are_not_disjoint() {
+    let upper = Selector::Sni("API.Example.com");
+    let lower = Selector::Sni("api.example.com");
+    assert!(
+        overlaps(&upper, &lower),
+        "the boot check reads one handshake name as two"
+    );
+
+    let claims = vec![
+        PlaneClaim {
+            plane: "left",
+            claim: claim("wire", upper),
+        },
+        PlaneClaim {
+            plane: "right",
+            claim: claim("wire", lower),
+        },
+    ];
+    assert!(
+        check_claims(&claims).is_err(),
+        "boot sealed two planes on one handshake name as disjoint"
+    );
+}
+
 #[test]
 fn claims_on_different_transports_never_collide() {
     let claims = vec![
