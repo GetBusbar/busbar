@@ -31,6 +31,7 @@
 mod client;
 mod codec;
 mod conn;
+pub mod mount;
 mod server;
 mod transport;
 
