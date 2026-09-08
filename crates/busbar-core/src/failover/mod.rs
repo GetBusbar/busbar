@@ -136,78 +136,16 @@ use busbar_substrate::store::LaneRuntime;
 // `crate::breaker`. Glob, so the re-export is never an unused import when a plane consumer is out.
 pub use busbar_substrate::failover::*;
 
-/// ONE POOL OF INTERCHANGEABLE UPSTREAMS, as the operator writes it — the ENTIRE config vocabulary
-/// this feature adds, and it is CORE's rather than a plane's.
-///
-/// ```yaml
-/// tool_pools:                       # MCP: one server image, deployed twice
-///   search:
-///     members: [search-eu, search-us]
-///     repeatable: [search_code]     # operations safe to perform TWICE. Default: none.
-///
-/// agent_pools:                      # A2A: one agent, registered twice
-///   planner:
-///     members: [planner-eu, planner-us]
-/// ```
-///
-/// ## Why it mirrors `pools:` and why it is ONE type for both planes
-///
-/// The model plane's `pools:` already means *"these members are interchangeable for this request; use
-/// whichever is healthy"*. That is the same sentence on all three planes, so an operator learns the
-/// concept ONCE — a member list keyed by a pool name, referenced by bare name, never crossing a
-/// plane boundary. Two plane-local copies of this struct would be two grammars for one idea and would
-/// diverge the first time either grew a key; there is one, in core, and each plane's section merely
-/// says which registry the bare names are resolved against.
-///
-/// ## It is OPT-IN and the default is UNCHANGED
-///
-/// Owner's steer: *"maybe in a config we dont allow it or maybe we dont suggest it be done."* An
-/// absent section is no pools, which is exactly the behaviour of every deployment that exists today:
-/// one registration, one destination, no failover, nothing to reason about. Nothing here turns on by
-/// itself.
-///
-/// ## `repeatable:` is a LIST OF OPERATIONS and there is no key that disables the safety rule
-///
-/// The dangerous half of this feature is repeating a call that already went out, so the declaration
-/// is per OPERATION and enumerated by hand. There is deliberately NO `repeatable: all` and no
-/// `retry: always`: an operator who wants `send_email` repeated has to write `send_email` down next
-/// to the tools they thought about, which is a different act from flipping a switch. See [`Stage`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-declare a safety rule.
-pub struct CandidatePoolCfg {
-    /// The interchangeable registrations, by bare name, resolved against the section's own plane
-    /// registry (`tools:` for `tool_pools:`, `agents:` for `agent_pools:`). ORDERED: the first is the
-    /// PRIMARY, and its approved fingerprint is the one every other member must match.
-    ///
-    /// Naming a member is NOT what makes two upstreams interchangeable — busbar checks the pins it
-    /// already computed and refuses the pool at dispatch if they disagree. The operator is asserting
-    /// *"these names are the same deployment"*, a claim busbar can and does verify.
-    #[serde(default)]
-    pub members: Vec<String>,
-    /// The operations that may be performed TWICE — reads, searches, queries. An operation not named
-    /// here is never repeated after a dispatch has gone out.
-    ///
-    /// EMPTY BY DEFAULT, which is the fail-safe posture: an operator who says nothing gets
-    /// reroute-before-first-byte (which duplicates nothing) and no retries at all.
-    #[serde(default)]
-    pub(crate) repeatable: Vec<String>,
-}
-
-impl CandidatePoolCfg {
-    /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
-    /// never be got wrong by a second caller spelling the lookup differently.
-    // Read only by the per-call dispatch path a protocol plane drives; a plane whose relay never
-    // repeats a dispatch has no caller here. Unconditional allow — the neutral seam names no plane
-    // feature.
-    #[allow(dead_code)]
-    pub fn repeatability(&self, operation: &str) -> Repeatable {
-        if self.repeatable.iter().any(|o| o == operation) {
-            Repeatable::Yes
-        } else {
-            Repeatable::No
-        }
-    }
-}
+// 1.6.0 R-config unblock (1): `CandidatePoolCfg` — the `tool_pools:`/`agent_pools:` value grammar —
+// relocated VERBATIM to `busbar_substrate::config::pools`, the config grammar's home, alongside
+// `PoolCfg`/`FailoverCfg` and the two failover defaults it is written against. It is config
+// GRAMMAR, not a disposition half: the config layer named `crate::failover::CandidatePoolCfg` at
+// seven sites, which is an edge from the config document root UP into busbar-core, and that edge is
+// what blocks the config layer from leaving. Re-exported here so `crate::failover::CandidatePoolCfg`
+// still resolves for the plane-side dispatch callers that read `repeatability`. The
+// `config-schema` gate tracks BOTH `busbar-core/src/failover/mod.rs` and
+// `busbar-substrate/src/config`, so the recorded serde surface is unchanged by the move.
+pub use busbar_substrate::config::pools::CandidatePoolCfg;
 
 /// THE SEAM'S SPELLING OF [`walk_with`]: the operator's `members:` order, admitted breaker-only.
 ///
