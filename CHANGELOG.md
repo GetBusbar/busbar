@@ -120,6 +120,37 @@ named next.
   can influence; the full detail still goes to the operator's journal, where it was always meant to
   be. Refusal status codes are unchanged.
 
+- **A credential in continuous use is re-verified again, so a revocation lands.** The ingress
+  credential cache stores a module's verdict for a bounded TTL, and that TTL is the whole of the
+  cached-allow window an operator is promised. The chain re-inserted the row on every request, hit
+  or miss, which reset the row's expiry each time — so a credential presented more often than its
+  own TTL never expired, never went back to its module, and a revocation performed upstream was
+  honoured only for traffic that happened to pause for longer than the TTL. Busy traffic, which is
+  what a revocation is issued about, kept the door open indefinitely. Only a cache MISS now writes
+  the row, which is the rule the chain's own documentation always stated, so an upstream revocation
+  arrives within one TTL of continuous use. Nothing else about the cache moved: the TTLs, the
+  eviction rule, the admin flush endpoint and the deny path are unchanged.
+
+### Fixed
+
+- **A `chain: [keys]` deployment is no longer reported as an open front door.** The built-in
+  signed-key verifier is an engine arm rather than a chain module, so it leaves the module list
+  empty, and the admin API's `open` flag asked only whether that list was empty. `GET
+  /api/v1/admin/auth` and `GET /api/v1/admin/config/effective` therefore described a node that
+  denies every unsigned request as one that admits everything unconditionally. The flag now asks
+  both halves — no module AND no keys arm — which is what the request path itself has always asked
+  before admitting anonymously. This was a REPORT, never a decision: no code path used the flag to
+  skip verification, so no request was ever admitted on the strength of it.
+
+- **A signed-key chain no longer re-runs the modules in front of it on every request.** When the
+  keys arm identifies a caller, the `Pass` verdicts the cacheable modules ahead of it had already
+  earned are committed to the credential cache, as they are when a chain module identifies. They
+  were dropped instead, so a `chain: [<directory module>, keys]` node paid a directory round-trip
+  per request for a lookup it had already done and its cache never held the row that would have
+  stopped it. The arm remains cache-exempt for its OWN verdict — a signed key is verified per
+  request, and caching that would widen its revocation window — and a chain that ends denied still
+  admits nothing to the cache.
+
 ### Improvements
 
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
