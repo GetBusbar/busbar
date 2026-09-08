@@ -191,12 +191,11 @@ pub mod governance;
 // re-exports included, is spelled exactly as before and no wire form moves a byte.
 pub mod config {
     //! The config value grammar, at its historical path. Every shape lives in
-    //! `busbar_substrate_values::config` — see this module's siblings there — and is re-exported
-    //! here module for module, so `busbar_substrate::config::<anything>` resolves exactly as it did
-    //! and no reader, in or out of this crate, changes a spelling.
-    pub use busbar_substrate_values::config::{
-        auth, groups, hooks, pools, projection, providers, sections, PolicyOnError, ProviderAuth,
-    };
+    //! `busbar_substrate_values::config` and is re-exported here by GLOB — a hand-kept list is one
+    //! module out of date the first time the grammar gains one — so `busbar_substrate::config::` +
+    //! anything resolves as it always did. `limits` alone is declared below, and a local item
+    //! shadows a glob, which is exactly the precedence that needs.
+    pub use busbar_substrate_values::config::*;
 
     pub mod limits {
         //! `limits` is the ONE module that does not re-export whole: the resolved-limits grammar is

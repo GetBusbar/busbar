@@ -114,8 +114,8 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         format!("{CORE}/auth/mod.rs"),
         format!("{a2a}/config.rs"),
         // `oauth_as:` — including the `default_grant` CEILING that decides what a self-registered
-        // client may ever hold.
-        format!("{CORE}/oauth_as/config.rs"),
+        // client may ever hold — moved DOWN with the rest of the config grammar's pure shapes and is
+        // covered by the `crates/busbar-substrate/src/config` directory entry above.
         format!("{a2a}/creds.rs"),
         format!("{mcp}/config.rs"),
         // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
