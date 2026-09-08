@@ -2920,32 +2920,52 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
 /// crossed reads answer THROUGH — see [`HandleTopology`].
 #[cfg(feature = "root-admin")]
 fn a_composition_over_two_providers() -> axum::Router {
-    use busbar_core::test_support::{LaneSpec, TestApp};
+    a_composition_over(&[("model-a", "prov-x"), ("model-b", "prov-y")]).0
+}
 
+/// One node, its administrative surface, the loop in front of it, and the HANDLE both answer off.
+///
+/// The handle comes back with the router because the crossed reads answer THROUGH it — see
+/// [`HandleTopology`] — so a test about what a config apply does to those reads has to be able to
+/// put a new generation on the same handle the composition is holding.
+#[cfg(feature = "root-admin")]
+fn a_composition_over(
+    lanes: &[(&str, &str)],
+) -> (axum::Router, Arc<busbar_core::state::AppHandle>) {
     busbar_core::metrics::init();
     // THE PLANE THE TABLES BELONG TO. A node's lanes are a plane's runtime slot, projected to the
     // neutral view through that plane's declaration — so a process with no plane registered has no
-    // lanes to read, and the fixture below would build two and the composition would answer zero.
-    // This is the composition root's own `register_planes` write, in its test-support form.
+    // lanes to read, and a fixture would build two and the composition would answer zero. This is
+    // the composition root's own `register_planes` write, in its test-support form.
     busbar_llm::testkit::install_test_seams();
-    let app = TestApp::new()
-        // An OPEN admin posture: this fixture is about which half ANSWERS, and a door in front of it
-        // would make every assertion below a statement about the door instead.
-        .admin_chain(vec![])
-        .lane(LaneSpec::new("model-a", "anthropic", "http://127.0.0.1:1/").provider("prov-x"))
-        .lane(LaneSpec::new("model-b", "anthropic", "http://127.0.0.1:1/").provider("prov-y"))
-        .build();
     let (_data, admin, handle) =
-        busbar_core::build_split_routers_with_limits(app, 1 << 20, 0, false);
-    mount(
+        busbar_core::build_split_routers_with_limits(a_node_over(lanes), 1 << 20, 0, false);
+    let held = Arc::clone(&handle);
+    let router = mount(
         admin,
         busbar_kernel::teller::Kernel::new(),
         1 << 20,
         move |dispatch| {
             crate::root::kernel::ProductionUnits::admin_only(dispatch)
-                .with_admin_topology(Arc::new(HandleTopology::new(Arc::clone(&handle))))
+                .with_admin_topology(Arc::new(HandleTopology::new(held)))
         },
-    )
+    );
+    (router, handle)
+}
+
+/// One generation of a node: the lanes it routes over, and an OPEN admin posture.
+///
+/// Open because these fixtures are about which half ANSWERS and off which generation; a door in
+/// front of them would make every assertion a statement about the door instead.
+#[cfg(feature = "root-admin")]
+fn a_node_over(lanes: &[(&str, &str)]) -> Arc<busbar_core::state::App> {
+    use busbar_core::test_support::{LaneSpec, TestApp};
+
+    let mut app = TestApp::new().admin_chain(vec![]);
+    for (model, provider) in lanes {
+        app = app.lane(LaneSpec::new(model, "anthropic", "http://127.0.0.1:1/").provider(provider));
+    }
+    app.build()
 }
 
 /// One GET through the composition, as the status, the content type and the body bytes.
@@ -3002,6 +3022,45 @@ async fn the_crossed_providers_read_is_answered_by_the_loop_in_the_retired_handl
         body,
         "{\"items\":[{\"provider\":\"prov-x\",\"model_count\":1},\
          {\"provider\":\"prov-y\",\"model_count\":1}],\"next_cursor\":null}"
+    );
+}
+
+/// READ-AFTER-WRITE COHERENCE ACROSS THE TWO HALVES: a crossed read answers off the generation the
+/// last apply left current, not off the one the composition was built over.
+///
+/// This is the property the whole seam is shaped around, and it is the one a crossing gets wrong for
+/// free. A node's tables are replaced WHOLESALE by a config apply — the surface underneath writes a
+/// new `App` and swaps it onto the handle — so a seam that had taken an `Arc<App>` when the loop was
+/// composed would go on answering off the retired generation for the life of the process. The
+/// operator applies a pool, reads the topology back, and sees the topology they had before: from
+/// outside, indistinguishable from the apply never landing, and silent.
+///
+/// So the write half here is the apply's own move (a fresh generation onto the same handle the
+/// composition holds) and the read half is the crossed operation through the loop. A seam that
+/// captured a generation fails the second read while passing the first, which is exactly the shape
+/// of the fault this is pinning.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_crossed_read_answers_off_the_generation_the_last_apply_left_current() {
+    let (router, handle) = a_composition_over(&[("model-a", "prov-x")]);
+
+    let (_, _, before) = get_through_the_composition(&router, "/api/v1/admin/providers").await;
+    assert_eq!(
+        before, "{\"items\":[{\"provider\":\"prov-x\",\"model_count\":1}],\"next_cursor\":null}",
+        "the first read is off the generation the composition was built over"
+    );
+
+    // THE WRITE, in the form the surface underneath performs it: a whole new generation, swapped
+    // onto the handle. Nothing about the loop, the units or the router is rebuilt — which is the
+    // point, because in production nothing about them is.
+    handle.swap(a_node_over(&[("model-a", "prov-x"), ("model-b", "prov-y")]));
+
+    let (_, _, after) = get_through_the_composition(&router, "/api/v1/admin/providers").await;
+    assert_eq!(
+        after,
+        "{\"items\":[{\"provider\":\"prov-x\",\"model_count\":1},\
+         {\"provider\":\"prov-y\",\"model_count\":1}],\"next_cursor\":null}",
+        "the crossed read is still answering off the generation the apply retired"
     );
 }
 
