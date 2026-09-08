@@ -40,22 +40,72 @@
 //! decided, for less time than the module suggested, and never holds a rejection at all.
 
 use busbar_unit_auth::cache::CredentialCache;
-use busbar_unit_auth::chain::{KeyVerifier, ResolvedKey, RevocationView};
+use busbar_unit_auth::chain::{KeyScope, KeyVerifier, ResolvedKey, RevocationView};
 use std::sync::Arc;
 
 /// The facts the chain reads out of a verified key.
 ///
-/// Two strings, because two strings are what the unit's own `ResolvedKey` carries and what the
-/// principal it builds is made of. The key's policy — its group, its pools, its labels — is the
-/// governance state's business and is deliberately not in this shape: a value carried through here
-/// would be a value the authenticate step could act on, and the authenticate step decides who is
-/// calling and nothing else.
+/// The shape is the unit's own [`ResolvedKey`], field for field, because there is exactly ONE shape
+/// of the enforced key and a port that carried a second one would be a second answer to "what is a
+/// key" maintained a `map` away from the first. It carries identity, scope, expiry and revocation.
+///
+/// It does NOT carry the key's `group`. That is the charging-pot reference — the whole of the money
+/// the legacy key ever held — and it belongs to the cost and ledger views, which own the arithmetic
+/// and the rows respectively. A value carried through here would be a value the authenticate step
+/// could act on, and the authenticate step decides who is calling and nothing else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyFacts {
     /// The key's stable subject id — the principal's id, the ledger bucket, the audit attribution.
     pub id: String,
     /// The key's operator-facing label.
     pub name: String,
+    /// The scopes this key may target, kind-tagged. `None` is the wildcard; an empty list is the
+    /// empty set. See [`ResolvedKey::scope_allowed`].
+    pub scopes: Option<Vec<KeyScope>>,
+    /// The principal's own hard expiry, distinct from any token's `exp` claim.
+    pub expires_at: Option<u64>,
+    /// Whether the key is switched on.
+    pub enabled: bool,
+    /// Tombstone marker: `None` is live.
+    pub deleted_at: Option<u64>,
+}
+
+impl KeyFacts {
+    /// The facts a live, unexpiring, unrestricted key presents — the shape a directory that knows
+    /// only an id and a label can honestly answer with.
+    #[must_use]
+    pub fn unrestricted(id: impl Into<String>, name: impl Into<String>) -> Self {
+        KeyFacts::from(ResolvedKey::unrestricted(id, name))
+    }
+}
+
+// The port's answer and the unit's shape are the same shape, so the conversion is a move and not a
+// projection. Written as `From` in both directions so neither side is the one that "really" owns
+// it: the root names the port, the unit names the key, and this is the one line where that is said.
+impl From<ResolvedKey> for KeyFacts {
+    fn from(k: ResolvedKey) -> Self {
+        KeyFacts {
+            id: k.id,
+            name: k.name,
+            scopes: k.scopes,
+            expires_at: k.expires_at,
+            enabled: k.enabled,
+            deleted_at: k.deleted_at,
+        }
+    }
+}
+
+impl From<KeyFacts> for ResolvedKey {
+    fn from(f: KeyFacts) -> Self {
+        ResolvedKey {
+            id: f.id,
+            name: f.name,
+            scopes: f.scopes,
+            expires_at: f.expires_at,
+            enabled: f.enabled,
+            deleted_at: f.deleted_at,
+        }
+    }
 }
 
 /// The port the root reaches a node's virtual-key directory through.
@@ -109,10 +159,7 @@ impl KeyVerifier for DirectoryArm {
     ) -> Option<ResolvedKey> {
         self.0
             .verify(token, now, expected_aud)
-            .map(|facts| ResolvedKey {
-                id: facts.id,
-                name: facts.name,
-            })
+            .map(ResolvedKey::from)
     }
 }
 
@@ -221,6 +268,26 @@ impl VirtualKeyDirectory for GovernanceDirectory {
             .map(|key| KeyFacts {
                 id: key.id.clone(),
                 name: key.name.clone(),
+                // The legacy row's `allowed_scopes` is already kind-tagged, so this is a rename of
+                // the carrier and not a reinterpretation: the same two strings, in the same order,
+                // read by the same membership test. `None` stays `None`, and it still means every
+                // scope of every kind.
+                scopes: key.allowed_scopes.as_ref().map(|list| {
+                    list.iter()
+                        .map(|s| KeyScope {
+                            kind: s.kind.clone(),
+                            value: s.value.clone(),
+                        })
+                        .collect()
+                }),
+                expires_at: key.expires_at,
+                enabled: key.enabled,
+                deleted_at: key.deleted_at,
+                // `key.group` is NOT read here, and its absence is the ruling: the charging pot is
+                // the cost and ledger views' business. `verify_token` has already refused a
+                // disabled, tombstoned or rotated key, so the three liveness fields above are the
+                // key's own state carried forward for the readers that re-ask later — never a
+                // second gate applied here, which would be a second opinion about admission.
             })
     }
 
