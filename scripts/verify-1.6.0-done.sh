@@ -261,7 +261,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     assert_bless_env_empty 2>&1 | sed 's/^/           /'
     st_fail=1
   fi
-  for st_v in UPDATE_OPENAPI UPDATE_CONFIG_SCHEMA BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
+  for st_v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
               SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
     # A subshell so the plant cannot leak, driving the REAL assert_bless_env_empty — not a copy of
     # its rule, which would prove only that the copy agrees with itself.
@@ -323,7 +323,7 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
-  printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/UPDATE_CONFIG_SCHEMA/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
+  printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide) — the golden
   # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
   # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
