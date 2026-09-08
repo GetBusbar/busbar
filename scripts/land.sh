@@ -173,6 +173,18 @@ if [ -n "$tests" ]; then
   echo "land.sh: tests and clippy green for: $tests"
 fi
 
+# THE KIND-ISOLATION GATE IS MEASURED ON EVERY LANDING, unconditionally — it is the owner's ship
+# criterion (2026-09-07), and a criterion only measured when somebody remembers to ask is not one.
+# It is an xtask-registry gate, not a construction row, so it runs through the registry rather than
+# being grepped out of construction-gate.sh's log. Self-test FIRST, as everywhere else.
+(cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
+  || { echo "land.sh: RED — the gate runner will not build" >&2; exit 1; }
+(cd "$here" && cargo xtask gate kind-isolation --selftest >/dev/null) \
+  || { echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself)" >&2; exit 1; }
+(cd "$here" && cargo xtask gate kind-isolation) \
+  || { echo "land.sh: RED — kind-isolation (a plugin kind was fused; rows above)" >&2; exit 1; }
+proof_notes="$proof_notes kind-isolation green;"
+
 if [ -n "$gate" ]; then
   # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
   # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
