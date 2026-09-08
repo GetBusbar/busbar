@@ -99,8 +99,7 @@ fn all_sources(kernel: &Kernel) -> A2aLegSources<'_> {
         pinned: Some(Vec::new()),
         door: Some(Door::new(InMemoryCells::new())),
         groups: Some(GroupTable::default()),
-        pricer: Some(Pricer::flat(0)),
-        bytes_nanos: Some(0),
+        rates: Some(rates_of(0)),
         store: Some(Arc::new(busbar_core::governance::MemoryStore::new())),
         meter_policy: Some(crate::root::policy::build(
             &crate::root::policy::MeterPolicyConfig::default(),
@@ -126,6 +125,157 @@ fn all_sources(kernel: &Kernel) -> A2aLegSources<'_> {
 /// The shape the rig's own boundary proof reads back off the served protected-resource metadata:
 /// `<public_url>/a2a`, and never a name this test invented for the plane.
 const THIS_NODES_AUDIENCE: &str = "http://127.0.0.1:8080/a2a";
+
+/// This deployment's rates, at one flat figure and with no card.
+///
+/// The shape a deployment that configured no `rate_card:` genuinely resolves: an ABSENT card, whose
+/// classes price at nothing, beside the per-request figure the door admits against.
+fn rates_of(flat: i64) -> Arc<crate::root::kernel::RootRates> {
+    let holder = crate::root::kernel::RootCard::default();
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::absent(
+            busbar_unit_cost::RateCardVersion::new("root-llm"),
+            flat,
+        )),
+        Pricer::flat(flat),
+    );
+    holder.pin_rates().expect("the apply put rates in place")
+}
+
+/// One deployment's rates WITH a card, so a lane's own class price can be read back.
+fn rates_with_card(lane: &str, per_input_unit: f64) -> Arc<crate::root::kernel::RootRates> {
+    let holder = crate::root::kernel::RootCard::default();
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::from_micro_rates(
+            busbar_unit_cost::RateCardVersion::new("root-llm"),
+            [(
+                busbar_unit_cost::LaneClass::new(lane, CLASS_BYTES.as_str()),
+                per_input_unit,
+            )],
+            0,
+        )),
+        Pricer::flat(0),
+    );
+    holder.pin_rates().expect("the apply put rates in place")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE MONEY IS THE NODE'S LIVE RESOLUTION, NEVER THE ONE THE LEG WAS BUILT ON
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// **A leg assembled with no resolved rates REFUSES BOOT.**
+///
+/// Not a nicety about ordering: a leg composed before this deployment's rates were resolved has
+/// nothing to admit a unit against, and the only two honest answers are to refuse or to invent a
+/// price. Covered by the by-name refusal cell above; restated here because the FIELD it refuses on
+/// is `pricer`, and a reader looking for where the money source is proved should find it named.
+#[test]
+fn a_leg_with_no_resolved_rates_refuses_boot_on_the_money() {
+    let kernel = a_kernel();
+    let mut sources = all_sources(&kernel);
+    sources.rates = None;
+    let refusal = A2aLeg::assemble(sources).expect_err("no rates have been resolved");
+    assert_eq!(refusal.field, "pricer");
+    assert!(
+        refusal.source.contains("ROOT_CARD") || refusal.source.contains("live"),
+        "the refusal points at the LIVE holder, which is where this price comes from: got `{}`",
+        refusal.source
+    );
+}
+
+/// **The price a unit is admitted against is the holder's LIVE one, and an apply moves it.**
+///
+/// The r31g blocker, made a cell. A leg that captured its price at assembly would go on admitting
+/// against a fee the operator had already replaced — the engine's own spend projection reprices on
+/// every apply, and a boot-bound door would not, so the identity that says the two are one money
+/// would hold exactly until somebody edited a figure.
+///
+/// Asserted against a holder of this cell's own, never the process's: repricing the binary's card
+/// to observe a leg would reprice it for everything else running in the same test binary.
+#[test]
+fn the_price_a_unit_is_admitted_against_follows_the_apply() {
+    let kernel = a_kernel();
+    let mut sources = all_sources(&kernel);
+    sources.rates = Some(rates_of(3));
+    let leg = A2aLeg::assemble(sources).expect("every source is present");
+
+    let holder = crate::root::kernel::RootCard::default();
+    holder.apply(
+        Arc::new(busbar_unit_cost::RateCard::absent(
+            busbar_unit_cost::RateCardVersion::new("root-llm"),
+            41,
+        )),
+        Pricer::flat(41),
+    );
+    assert_eq!(
+        leg.rates_from(&holder).pricer().price_per_request_cents(),
+        41,
+        "the apply did not reach the door this leg admits against"
+    );
+}
+
+/// **And a holder that has heard no apply leaves the leg on the rates it was assembled over.**
+///
+/// The fallback arm, and the reason it is that value rather than a zero: the figures this node last
+/// genuinely resolved are the only honest answer to "what does this cost" when the holder is empty,
+/// and a zero would be a price nobody wrote serving as though somebody had.
+#[test]
+fn an_empty_holder_leaves_the_leg_on_the_rates_it_was_assembled_over() {
+    let kernel = a_kernel();
+    let mut sources = all_sources(&kernel);
+    sources.rates = Some(rates_of(9));
+    let leg = A2aLeg::assemble(sources).expect("every source is present");
+    let empty = crate::root::kernel::RootCard::default();
+    assert_eq!(
+        leg.rates_from(&empty).pricer().price_per_request_cents(),
+        9
+    );
+}
+
+/// The agent set a byte-price cell reads its lanes off.
+static TWO_AGENTS: &[busbar_plane_a2a::Agent] = &[
+    busbar_plane_a2a::Agent {
+        id: "cheap",
+        lane: busbar_contract::ids::LaneId::new("cheap"),
+        host: "cheap.example.com",
+        transport: busbar_plane_a2a::claims::TRANSPORT_HTTP,
+    },
+    busbar_plane_a2a::Agent {
+        id: "dear",
+        lane: busbar_contract::ids::LaneId::new("dear"),
+        host: "dear.example.com",
+        transport: busbar_plane_a2a::claims::TRANSPORT_HTTP,
+    },
+];
+
+/// **The byte price the door estimates against is the DEAREST of this deployment's own lanes.**
+///
+/// An estimate is an upper bound on what the unit about to run could cost, taken before anything is
+/// known about which agent it reaches. A mean would under-reserve on the dearest lane and an
+/// arbitrary pick would under-reserve on every lane but one — and an under-reserved unit is one
+/// admitted against headroom the deployment does not have.
+#[test]
+fn the_byte_price_estimated_against_is_the_dearest_configured_lane() {
+    let kernel = a_kernel();
+    let mut sources = all_sources(&kernel);
+    sources.plane = A2aPlane::new(TWO_AGENTS);
+    let leg = A2aLeg::assemble(sources).expect("every source is present");
+
+    let dear = rates_with_card("dear", 2.0);
+    assert_eq!(
+        leg.bytes_nanos(dear.card()),
+        busbar_unit_cost::nano_rate(2.0),
+        "the card prices the dear lane and the estimate must take it"
+    );
+}
+
+/// **A deployment with no agents estimates nothing, rather than panicking on an empty maximum.**
+#[test]
+fn a_deployment_with_no_agents_estimates_no_byte_price() {
+    let kernel = a_kernel();
+    let leg = A2aLeg::assemble(all_sources(&kernel)).expect("every source is present");
+    assert_eq!(leg.bytes_nanos(rates_of(0).card()), 0);
+}
 
 /// A breaker that benches nothing, so a cell about assembly is not also a cell about readiness.
 struct EveryLaneOpen;
@@ -188,8 +338,10 @@ fn a_binding_with_no_source_refuses_boot_naming_the_field() {
     refuses!("pinned", pinned);
     refuses!("door", door);
     refuses!("chain", groups);
-    refuses!("pricer", pricer);
-    refuses!("bytes_nanos", bytes_nanos);
+    // The two money bindings share ONE source — the process's live rates — so there is one case
+    // for them and it is named for the first of the pair, exactly as the group table's case is
+    // named `chain`.
+    refuses!("pricer", rates);
     refuses!("records", store);
     refuses!("meter_policy", meter_policy);
     refuses!("scope_policy", scope_policy);
@@ -716,7 +868,18 @@ fn admit_with_no_chain(
     );
     // Everything the leg would have bound, and `chain: None` — the caller bound to a group this
     // node's configuration does not have.
-    let bindings = leg.bindings(&pools, &kinds, &[], None, 1_700_000_000, 0, Some(surface));
+    let rates = rates_of(0);
+    let bindings = leg.bindings(
+        &pools,
+        &kinds,
+        &[],
+        None,
+        1_700_000_000,
+        0,
+        Some(surface),
+        rates.pricer(),
+        0,
+    );
     let units = A2aUnits::new(bindings, draft, Grants::of(Scope::ReadOnly));
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let slip = busbar_kernel::slice::GroupLeaseSlip::new();

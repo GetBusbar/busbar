@@ -69,7 +69,9 @@ use crate::root::durability::Durability;
 use crate::root::kernel::auth_bindings::AuthBindings;
 use crate::root::policy::{MeterPolicyHandle, ScopePolicy};
 use crate::root::registrations::{KindRules, Kinds, NetSeam, Pools};
-use crate::root::units_a2a::{A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs};
+use crate::root::units_a2a::{
+    A2aBindings, A2aDraft, A2aUnits, Decoded, RecordLegs, CLASS_BYTES,
+};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE FIELD → SOURCE TABLE
@@ -163,13 +165,14 @@ pub const SOURCES: &[(&str, &str)] = &[
     ),
     (
         "pricer",
-        "config `per_request_fee` → `Pricer::flat`, the same value every other plane prices \
-                its flat fee from",
+        "root: `kernel::ROOT_CARD`, the process's LIVE rates — read on every walk and never \
+                captured, so an apply moves this door and the engine's own spend projection \
+                together",
     ),
     (
         "bytes_nanos",
-        "config `rate_card:`, read for this plane's one class the way the MCP plane's \
-                     own class-price helper in the root reads its two",
+        "root: the SAME live rates, asked for this plane's one class on the lanes this \
+                     deployment's own agents are reached over",
     ),
     // ── the durable half ─────────────────────────────────────────────────────────────────────────
     (
@@ -390,10 +393,17 @@ pub struct A2aLegSources<'k> {
     pub door: Option<Door<InMemoryCells>>,
     /// The configured group table the caller's bucket chain is walked out of.
     pub groups: Option<GroupTable>,
-    /// What the door prices a unit against.
-    pub pricer: Option<Pricer>,
-    /// What the card charges for a byte of this plane's priced document, in nano-units.
-    pub bytes_nanos: Option<u64>,
+    /// THE DEPLOYMENT'S RESOLVED RATES, as the process's own holder had them when this leg was
+    /// assembled.
+    ///
+    /// NOT the price this leg charges. It is the proof that a resolution has HAPPENED — a leg
+    /// composed before the boot's rate apply would have nothing to price against, and refusing at
+    /// assembly is how that ordering mistake is found at boot rather than on the first request. The
+    /// price a unit is actually admitted against is read from the same holder on every walk, so an
+    /// operator's apply moves this door and the engine's own spend projection together; the value
+    /// kept here is what a walk falls back to if the holder is somehow emptied under it, which is
+    /// the last rates this node genuinely resolved and never a figure nobody wrote.
+    pub rates: Option<Arc<crate::root::kernel::RootRates>>,
     /// The node's one store, for this plane's durable records.
     pub store: Option<Arc<dyn busbar_api::Store>>,
     /// What the usage unit folds against.
@@ -446,8 +456,10 @@ pub struct A2aLeg {
     pinned: Vec<String>,
     door: Door<InMemoryCells>,
     groups: GroupTable,
-    pricer: Pricer,
-    bytes_nanos: u64,
+    /// The rates this node had resolved when the leg was assembled. See [`A2aLegSources::rates`]:
+    /// what a walk prices against is the holder's LIVE value, and this is the fallback and the proof
+    /// that a resolution had happened before a listener was bound.
+    rates_at_assembly: Arc<crate::root::kernel::RootRates>,
     records: RecordLegs,
     meter_policy: MeterPolicyHandle,
     scope_policy: ScopePolicy,
@@ -497,8 +509,7 @@ impl A2aLeg {
             pinned: sources.pinned.ok_or_else(|| missing("pinned"))?,
             door: sources.door.ok_or_else(|| missing("door"))?,
             groups: sources.groups.ok_or_else(|| missing("chain"))?,
-            pricer: sources.pricer.ok_or_else(|| missing("pricer"))?,
-            bytes_nanos: sources.bytes_nanos.ok_or_else(|| missing("bytes_nanos"))?,
+            rates_at_assembly: sources.rates.ok_or_else(|| missing("pricer"))?,
             records: RecordLegs::new(sources.store.ok_or_else(|| missing("records"))?),
             meter_policy: sources
                 .meter_policy
@@ -647,6 +658,57 @@ impl A2aLeg {
         self.groups.chain_for(who.as_str(), group).ok()
     }
 
+    /// **WHAT THIS NODE PRICES A UNIT AT RIGHT NOW**, read from the process's holder per walk.
+    ///
+    /// Never captured. A leg that pinned its price at assembly would go on admitting against a fee
+    /// the operator had already replaced: the engine's own spend projection reprices on every apply
+    /// and reload, and a boot-bound door would not — so the identity that says the two are one money
+    /// would hold exactly until somebody edited a figure. One `Arc` per walk, taken once at the top,
+    /// so every step of one unit is judged against ONE resolution even if an apply lands mid-walk.
+    ///
+    /// The fallback is the rates this leg was assembled over, which the assembly refused to be
+    /// without. It is the last figures this node genuinely resolved and never a price nobody wrote.
+    fn rates(&self) -> Arc<crate::root::kernel::RootRates> {
+        self.rates_from(&crate::root::kernel::ROOT_CARD)
+    }
+
+    /// [`A2aLeg::rates`] against one named holder.
+    ///
+    /// The holder is a parameter and the process's own is supplied one line up, so the reading can
+    /// be exercised against a holder of its own rather than by repricing the binary's. A cell that
+    /// had to move the node's card in order to observe this would be a cell that moved it for every
+    /// other cell in the same process.
+    fn rates_from(
+        &self,
+        holder: &crate::root::kernel::RootCard,
+    ) -> Arc<crate::root::kernel::RootRates> {
+        holder
+            .pin_rates()
+            .unwrap_or_else(|| Arc::clone(&self.rates_at_assembly))
+    }
+
+    /// WHAT A BYTE OF THIS PLANE'S PRICED DOCUMENT COSTS, off the card, for the admission estimate.
+    ///
+    /// The MAXIMUM over the lanes this deployment's own agents are reached on, because that is what
+    /// the estimate the door reads is FOR: an upper bound on what the unit about to run could cost,
+    /// taken before anything is known about which agent it reaches. A mean would under-reserve on
+    /// the dearest lane and an arbitrary pick would under-reserve on all but one.
+    ///
+    /// A lane the card does not name prices at nothing HERE and is refused elsewhere — the card's
+    /// own `lane_unpriced` is what fails an unpriced lane closed, and folding that refusal into a
+    /// maximum would turn "this lane has no entry" into "this lane is free".
+    fn bytes_nanos(&self, card: &busbar_unit_cost::RateCard) -> u64 {
+        self.plane
+            .agents()
+            .iter()
+            .map(|agent| {
+                card.lane_rates(agent.lane.as_str())
+                    .map_or(0, |rates| rates.nanos_per_unit(CLASS_BYTES.as_str()))
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The bindings one unit runs over, borrowed from this leg for the length of one call.
     #[allow(clippy::too_many_arguments)]
     fn bindings<'r>(
@@ -658,6 +720,8 @@ impl A2aLeg {
         now: u64,
         mono: u64,
         dispatch: Option<&'r dyn crate::root::transports::MountDispatch>,
+        pricer: &'r Pricer,
+        bytes_nanos: u64,
     ) -> A2aBindings<'r, InMemoryCells> {
         A2aBindings {
             auth: &self.auth,
@@ -672,8 +736,8 @@ impl A2aLeg {
             pinned,
             door: &self.door,
             chain,
-            pricer: &self.pricer,
-            bytes_nanos: self.bytes_nanos,
+            pricer,
+            bytes_nanos,
             records: &self.records,
             meter_policy: &self.meter_policy,
             scope_policy: &self.scope_policy,
@@ -893,8 +957,23 @@ impl A2aLeg {
         // the authenticate step says otherwise, which is what the chain is keyed on: the door reads
         // the caller's own attribution bucket, and a caller bound to no group has one uncapped one.
         let chain = self.chain_for(&busbar_caps::PrincipalId::new(""), None);
+        // THE MONEY, PINNED ONCE, HERE, exactly as the two clocks above are and for the same
+        // reason: a unit admitted against one resolution and settled against another is a request
+        // priced by how long it took.
+        let rates = self.rates();
+        let bytes_nanos = self.bytes_nanos(rates.card());
 
-        let bindings = self.bindings(&pools, &kinds, &pinned, chain.as_ref(), now, mono, dispatch);
+        let bindings = self.bindings(
+            &pools,
+            &kinds,
+            &pinned,
+            chain.as_ref(),
+            now,
+            mono,
+            dispatch,
+            rates.pricer(),
+            bytes_nanos,
+        );
         // THE GRANTS ARE THE CALLER'S, and this arrival presented no credential, so they are the
         // anonymous set. Read-only is what an unidentified caller holds; the approve step compares
         // it against the policy's own entry for the class and refuses what it does not cover.
