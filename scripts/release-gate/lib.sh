@@ -127,6 +127,124 @@ record() {
   esac
 }
 
+# ── Staged-record digests ───────────────────────────────────────────────────────────────────────
+#
+# Reading a recorded digest and comparing it to an observed one. WHETHER a row is owed at all is
+# decided elsewhere — expected-ids.sh emits the staged-comparison ids only when a record was
+# supplied, and the checks guard on the same condition — so nothing here changes what is owed. These
+# are the arithmetic, extracted so gate.sh --selftest can drive THE code rather than a copy of it.
+#
+# Every lookup collapses "we could not look it up" into one answer: nothing on stdout and a non-zero
+# status. No record path, no such file, unparseable JSON, no entry for this name, an entry whose
+# digest is "" or null — the caller reports all of them the same way, because they are the same
+# fact, and the empty string is trivially "we did not check". "We could not check whether these are
+# the staged bytes" must never read as "they are".
+
+# sha256_file <path> -> the lowercase hex digest on stdout; non-zero if it cannot be computed.
+# Three spellings because this runs on ubuntu, macos and windows runners: `sha256sum` is coreutils,
+# `shasum` is what macOS ships, and python3 is on every GitHub-hosted image as the last resort.
+sha256_file() {
+  local f="$1"
+  [ -f "$f" ] || return 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$f" | awk '{print tolower($1)}'
+  else
+    local py=python3; command -v python3 >/dev/null 2>&1 || py=python
+    "$py" -c 'import hashlib,sys
+h=hashlib.sha256()
+with open(sys.argv[1],"rb") as fh:
+    for b in iter(lambda: fh.read(1 << 20), b""):
+        h.update(b)
+print(h.hexdigest())' "$f"
+  fi
+}
+
+# staged_record_path -> the path to the staged record, or the empty string.
+# The caller passes it in; there is no default guess. A gate that fell back to "some staged.json
+# somewhere on the runner" would bind the release to whatever file happened to be lying around,
+# which is a worse answer than none.
+staged_record_path() { printf '%s' "${STAGED_RECORD:-}"; }
+
+# staged_asset_sha256 <asset-name> -> the sha256 the staged record binds to that asset name.
+staged_asset_sha256() {
+  local name="$1" rec want
+  rec="$(staged_record_path)"
+  [ -n "$rec" ] || return 1
+  [ -f "$rec" ] || return 1
+  want="$(jq -r --arg n "$name" '(.assets // [])[] | select(.name == $n) | .sha256 // empty' "$rec" 2>/dev/null)" || return 1
+  # jq prints every match; a record naming one asset twice with two digests does not have AN answer
+  # for it, and picking the first would be the ledger's own first-row-wins defect in another file.
+  case "$(printf '%s' "$want" | awk 'NF{n++} END{print n+0}')" in
+    1) ;;
+    *) return 1 ;;
+  esac
+  want="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  printf '%s' "$want" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  printf '%s' "$want"
+}
+
+# digest_matches <observed> <expected> -> 0 only when both are real 64-hex digests AND equal.
+# A named function rather than `=` because the comparison it replaces says "equal" when both sides
+# are empty, and the case that proves it is one no release can stage.
+# Either side may carry the `sha256:` prefix an image digest is spelled with or omit it as an asset
+# digest does; what may not be forgiven is a side that is not a digest at all.
+digest_matches() {
+  local got="${1:-}" want="${2:-}"
+  printf '%s' "$got"  | grep -Eq '^(sha256:)?[0-9a-fA-F]{64}$' || return 1
+  printf '%s' "$want" | grep -Eq '^(sha256:)?[0-9a-fA-F]{64}$' || return 1
+  got="$(printf '%s'  "$got"  | tr '[:upper:]' '[:lower:]')";  got="${got#sha256:}"
+  want="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"; want="${want#sha256:}"
+  [ "$got" = "$want" ]
+}
+
+# ── Version matching ────────────────────────────────────────────────────────────────────────────
+#
+# ANCHORED ON BOTH SIDES, IN ONE PLACE. `grep -q "1.5.2"` matches "1.5.20", so a gate looking for
+# the release it just cut passes against a page, a chart or a binary advertising a DIFFERENT one —
+# and it hides until the patch number rolls into two digits, i.e. until exactly the release where it
+# matters. The left anchor is equally load-bearing: "21.5.4" contains "1.5.4". `.` is escaped too,
+# or "1.5.2" matches "1X5Y2".
+version_re() {  # version_re <version> -> an ERE matching exactly that version, anchored both sides
+  printf '(^|[^0-9.])v?%s([^0-9.]|$)' "${1//./\\.}"
+}
+
+# For use immediately after a literal left context that already supplies the left boundary
+# (`busbar:`, `appVersion: `, …). Only the RIGHT anchor is added; adding the left one too would
+# require a character between the prefix and the version and match nothing.
+version_re_after() {  # version_re_after <version>
+  printf 'v?%s([^0-9.]|$)' "${1//./\\.}"
+}
+
+_digest_from() {  # _digest_from <value> -> normalised sha256:<hex>, or non-zero
+  local d="${1:-}"
+  d="$(printf '%s' "$d" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  case "$d" in sha256:*) ;; *) return 1 ;; esac
+  printf '%s' "${d#sha256:}" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  printf '%s' "$d"
+}
+
+# The env var wins over the record so a caller can hand the digest straight across from the job that
+# staged it; the record is the durable form. Either way it is a RECORDED value, never one this run
+# resolved for itself.
+staged_image_digest() {
+  if [ -n "${STAGED_IMAGE_DIGEST:-}" ]; then _digest_from "$STAGED_IMAGE_DIGEST"; return $?; fi
+  local rec; rec="$(staged_record_path)"
+  [ -n "$rec" ] && [ -f "$rec" ] || return 1
+  _digest_from "$(jq -r '.digest // empty' "$rec" 2>/dev/null)"
+}
+
+# The armv8.0-compat arm64 image is a first-class release artifact on its own digest, so it gets its
+# own recorded anchor. A record that lost it would let the compat name be checked against the
+# default image, which boots everywhere EXCEPT the boards the name exists for.
+staged_compat_digest() {
+  if [ -n "${STAGED_COMPAT_DIGEST:-}" ]; then _digest_from "$STAGED_COMPAT_DIGEST"; return $?; fi
+  local rec; rec="$(staged_record_path)"
+  [ -n "$rec" ] && [ -f "$rec" ] || return 1
+  _digest_from "$(jq -r '.compat_digest // empty' "$rec" 2>/dev/null)"
+}
+
 # ── Retries ─────────────────────────────────────────────────────────────────────────────────────
 # Bounded exponential backoff, capped. Registries, CDNs and package indexes settle at their own
 # pace and a release-day race is not a defect; a permanent breakage survives every attempt, so the
