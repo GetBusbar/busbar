@@ -29,14 +29,23 @@ pub use groups::GroupCfg;
 pub(crate) use groups::LimitCfg;
 pub use secret::SecretRef;
 
-// Re-export status_class_from_str for config validation. Named at its NEUTRAL home
-// (`busbar-substrate-values`) rather than through `crate::breaker`'s re-export shim: the config
-// layer must not carry an edge into a busbar-core module for a value that is already a leaf.
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection};
-pub(crate) use busbar_substrate::breaker::status_class_from_str; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+
+// Re-export status_class_from_str for config validation. Named at its NEUTRAL home
+// (`busbar_substrate::breaker`, re-exported from `busbar-substrate-values`) rather than through
+// `crate::breaker`'s shim: the config layer must not carry an edge into a busbar-core module for a
+// value that is already a leaf.
+//
+// DECLARED BELOW THE `use crate::…` GROUP, DELIBERATELY. rustfmt sorts `pub(crate) use` after
+// plain `use`, so writing this line above the group made rustfmt move it BENEATH the
+// `crate::plane::config` import — and a trailing `// plane-purity: frozen-wire` pragma is
+// positional, so the reorder silently transferred `McpEndpointSection`'s excuse onto THIS line and
+// left the type it excuses uncovered. `plane-purity:type` caught it. Keeping the declaration in
+// the position rustfmt would put it in is what stops the reorder from happening again.
+pub(crate) use busbar_substrate::breaker::status_class_from_str;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
