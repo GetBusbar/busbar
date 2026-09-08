@@ -104,11 +104,11 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     handle.abort();
 }
 
-/// The topology read surface (`/api/v1/admin/pools`, `/models`, `/providers`) flows through the
-/// service and projects the pool/model/provider views. Built on a two-lane, two-provider fixture
-/// so the provider aggregation + pool membership are observable.
+/// The topology read surface THIS ROUTER STILL ANSWERS (`/api/v1/admin/pools`, `/models`) flows
+/// through the service and projects the pool/model views. Built on a two-lane, two-provider fixture
+/// so the pool membership and the per-lane provider are observable.
 #[tokio::test]
-async fn test_admin_v1_topology_reads_pools_models_providers() {
+async fn test_admin_v1_topology_reads_pools_and_models() {
     use crate::test_support::LaneSpec;
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -176,11 +176,10 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
         .iter()
         .any(|m| m["model"] == "model-b" && m["provider"] == "prov-y"));
 
-    let providers = get("/api/v1/admin/providers".into()).await;
-    let p_items = providers["items"].as_array().unwrap();
-    let px = p_items.iter().find(|p| p["provider"] == "prov-x").unwrap();
-    assert_eq!(px["model_count"].as_u64(), Some(1));
-    assert!(p_items.iter().any(|p| p["provider"] == "prov-y"));
+    // THE `/providers` THIRD OF THIS TEST MOVED. `GET /providers` crossed to the composition root's
+    // loop in 1.6.0's admin Cut 1, so this router has no route for it and the projection it renders
+    // is asked of the composition instead — see the root's `units_admin` tests. The lane-count
+    // projection both readings share lives once, in the substrate.
 
     handle.abort();
 }
@@ -4227,11 +4226,21 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/openapi.json` returns a valid OpenAPI 3.1 doc, and — the DRIFT GUARD — every GET
-/// path it documents (from V1_GET_PATHS) actually resolves on the live router (never a phantom
-/// endpoint in the discovery contract). Also asserts the stable error `code` enum is present.
+/// `GET /api/v1/admin/openapi.json` returns a valid OpenAPI 3.1 doc: the version, the title, the
+/// stable error `code` enum, and the two runtime hook mutations the discovery contract must declare.
+///
+/// THE PHANTOM-ENDPOINT GUARD USED TO BE HERE and is gone from this crate. It looped over
+/// `V1_GET_PATHS` asking THIS crate's router whether each documented GET resolves — a claim one crate
+/// made about itself, which 1.6.0's admin Cut 1 makes false on purpose: an operation that crosses to
+/// the composition root's loop leaves this router, and the guard would then call a document the
+/// COMPOSITION serves correctly a phantom. `GET /providers` is the first to do it.
+///
+/// The claim did not weaken, it moved to the only place that can still make it:
+/// `crates/busbar/tests/admin_verb_ownership.rs` asks the same question of the COMPOSITION — every
+/// documented GET is answered by the loop or by this surface, and never by both — against the served
+/// document rather than against a const.
 #[tokio::test]
-async fn test_admin_v1_openapi_paths_all_resolve() {
+async fn test_admin_v1_openapi_doc_declares_its_frozen_shape() {
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let gov = gov_with_signer(store, Some("admintok".to_string()));
@@ -4269,29 +4278,6 @@ async fn test_admin_v1_openapi_paths_all_resolve() {
         doc["paths"]["/api/v1/admin/hooks/{name}"]["delete"].is_object(),
         "DELETE /api/v1/admin/hooks/{{name}} (remove) must be in the openapi doc"
     );
-
-    // DRIFT GUARD: every documented GET path is both listed in the doc AND actually mounted.
-    // V1_GET_PATHS entries are RELATIVE; the wire path derives from the contract prefix (whose
-    // literal value is pinned by its own golden test in contract.rs).
-    for (rel, _) in crate::admin::v1::json::V1_GET_PATHS {
-        let path = format!("{}{rel}", crate::admin::v1::contract::ADMIN_PREFIX);
-        assert!(
-            doc["paths"][&path]["get"].is_object(),
-            "documented path {path} missing from openapi doc"
-        );
-        let status = client
-            .get(format!("http://{addr}{path}"))
-            .header("x-admin-token", "admintok")
-            .send()
-            .await
-            .unwrap()
-            .status();
-        assert_ne!(
-            status.as_u16(),
-            404,
-            "openapi documents {path} but the router does not mount it (phantom endpoint)"
-        );
-    }
 
     handle.abort();
 }
@@ -12687,8 +12673,8 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
 /// to the router and the doc and simply never appear here, and its declared 4xx set would go
 /// unaudited forever. The committed doc is a projection of the code (`openapi_json_matches_committed_file`
 /// fails the build the moment it drifts) and every path in it is proven mounted
-/// (`test_admin_v1_openapi_paths_all_resolve`), so keying off it closes the loop: router → doc →
-/// this audit.
+/// (by the composition-level ownership pin in the root's test suite, which asks the composition and
+/// not this crate), so keying off it closes the loop: router → doc → this audit.
 fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy::MethodTag)> {
     use crate::admin::v1::contract::taxonomy::MethodTag;
     let doc: serde_json::Value = serde_json::from_str(&crate::admin::v1::json::openapi_json())
