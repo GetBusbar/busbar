@@ -14,6 +14,7 @@
 //! is what a reader needs to see that the child was spawned with the variables it was configured
 //! with, and it is all they get.
 
+use busbar_contract_transport::registry::facts;
 use busbar_contract_transport::UpstreamAddress;
 
 const TOKEN: &str = "sk-live-8f2b1c";
@@ -27,6 +28,7 @@ fn spawned() -> UpstreamAddress {
             ("HOME", "/var/empty"),
             ("EMPTY", ""),
         ],
+        extras: &[],
     }
 }
 
@@ -66,6 +68,7 @@ fn a_program_with_an_empty_environment_says_so_rather_than_saying_nothing() {
         path: "/bin/true",
         args: &[],
         env: &[],
+        extras: &[],
     };
     let rendered = format!("{bare:?}");
     assert!(rendered.contains("Program"), "{rendered}");
@@ -74,13 +77,14 @@ fn a_program_with_an_empty_environment_says_so_rather_than_saying_nothing() {
 }
 
 #[test]
-fn the_socket_and_grpc_arms_print_the_facts_that_tell_a_dial_apart() {
+fn the_socket_and_call_per_path_arms_print_the_facts_that_tell_a_dial_apart() {
     // Neither arm carries a secret, and both are read off a log line while a dial is failing: the
     // pinned address, the certificate name it is checked against, and — for the family whose wire
-    // names every call by a path — the method.
+    // names every call by a path — the method, now a declared extra rather than a shape of its own.
     let socket = UpstreamAddress::Socket {
         authority: "10.0.0.7:443",
         sni: Some("api.example.com"),
+        extras: &[],
     };
     let rendered = format!("{socket:?}");
     assert!(rendered.contains("Socket"), "{rendered}");
@@ -93,13 +97,15 @@ fn the_socket_and_grpc_arms_print_the_facts_that_tell_a_dial_apart() {
     assert!(rendered.contains("None"), "{rendered}");
     assert_eq!(UpstreamAddress::socket("10.0.0.7:443").sni(), None);
 
-    let grpc = UpstreamAddress::Grpc {
+    // A call-per-path family is still a SOCKET — the same shape — with its method declared beside
+    // the address under the reserved key the arrival grammar already spells a method with.
+    let grpc = UpstreamAddress::Socket {
         authority: "10.0.0.8:443",
         sni: None,
-        method: "/busbar.Ledger/Settle",
+        extras: &[(facts::METHOD, "/busbar.Ledger/Settle")],
     };
     let rendered = format!("{grpc:?}");
-    assert!(rendered.contains("Grpc"), "{rendered}");
+    assert!(rendered.contains("Socket"), "{rendered}");
     assert!(rendered.contains("10.0.0.8:443"), "{rendered}");
     assert!(rendered.contains("/busbar.Ledger/Settle"), "{rendered}");
 }
