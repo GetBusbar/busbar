@@ -3,10 +3,15 @@
 
 //! The per-node, in-process idempotency-replay cache — moved verbatim from
 //! `busbar-core::admin::mod` (`IDEMPOTENCY_TTL_SECS`, `IdemState`, `IdemReservation`, and the
-//! create/rotate call sites' cache logic). Same TTL (600 s), same key shapes
-//! (`(actor, header)` for a mint, `(actor, "rotate:{id}:{k}")` for a rotate), same
-//! semantics: no body hash, so a retry with the same key but a DIFFERENT body still replays the
-//! first response (parity clause — 1.5.5 never hashed the body either).
+//! create/rotate call sites' cache logic). Same TTL (600 s) and the same semantics: no body hash,
+//! so a retry with the same key but a DIFFERENT body still replays the first response (parity
+//! clause — 1.5.5 never hashed the body either). The key is `(actor, header)` for a mint and
+//! `(actor, <framed id and header>)` for a rotate; the caller builds it, and see
+//! `verbs::rotate_replay_key` for why the rotate's two halves are length-prefixed rather than
+//! joined on a separator.
+//!
+//! The sweep is NOT the same as 1.5.5's: it steps over the in-flight sentinel. See
+//! [`IdempotencyCache::probe`].
 //!
 //! Generic over the cached value `V` rather than pinned to `serde_json::Value`, because this crate
 //! has no serializer dependency (see the crate-level `// contract:` note in `lib.rs`): the
@@ -37,8 +42,8 @@ pub trait ReplayEncoder<T> {
 /// requiring a JSON value type).
 type Slot<V> = (u64, Option<V>);
 
-/// The cache itself. `(String, String)` is `(actor, header)` for a mint or
-/// `(actor, "rotate:{id}:{k}")` for a rotate — the caller builds the key, this type only stores it.
+/// The cache itself. `(String, String)` is `(actor, header)` for a mint or `(actor, <framed id and
+/// header>)` for a rotate — the caller builds the key, this type only stores it.
 pub struct IdempotencyCache<V> {
     slots: Mutex<HashMap<(String, String), Slot<V>>>,
 }
@@ -68,12 +73,28 @@ impl<V: Clone> IdempotencyCache<V> {
         }
     }
 
-    /// Probe (and, on a first sighting, reserve) `key` at time `now` (unix seconds). Sweeps every
-    /// entry whose age exceeds [`IDEMPOTENCY_TTL_SECS`] first — bounded exactly as 1.5.5's
-    /// `cache.retain(...)` call at each mint/rotate site was.
+    /// Probe (and, on a first sighting, reserve) `key` at time `now` (unix seconds). Sweeps first.
+    ///
+    /// THE SWEEP APPLIES TO COMMITTED VALUES ONLY. The two things stored under a key answer two
+    /// different questions, and only one of them is bounded by the replay window:
+    ///
+    /// * A committed value answers "what did the completed call reply". That is what
+    ///   [`IDEMPOTENCY_TTL_SECS`] bounds, and dropping one early costs a retry an extra run of a
+    ///   mutation nobody has run yet.
+    /// * A sentinel (`None`) answers "is somebody running this right now". Ten minutes is not an
+    ///   upper bound on a mutation — a store gone slow, a mint blocked on an unreachable signer —
+    ///   and the longer one is stuck the MORE retries arrive to be admitted. Sweeping a sentinel
+    ///   tells the next retry it is the first, so two live reservations exist for one idempotency
+    ///   key and two credentials are minted where the sentinel existed so that one would.
+    ///
+    /// So a sentinel is stepped over however old it is, and is bounded by its own [`Reservation`]
+    /// instead: `commit`, `clear` and `Drop` each release it. The one path that leaves a sentinel
+    /// behind is [`Reservation::leak`], which is reserved for a mutation handed to an uncancellable
+    /// path — so a leaked sentinel is bounded by real work in flight, never by a header a client
+    /// chooses, and this is not a way to grow the map without limit.
     pub fn probe(&self, key: (String, String), now: u64) -> Probe<'_, V> {
         let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|_, (t, _)| now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
+        guard.retain(|_, (t, v)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
         match guard.get(&key) {
             Some((_, Some(v))) => Probe::Replay(v.clone()),
             Some((_, None)) => Probe::InFlight,
