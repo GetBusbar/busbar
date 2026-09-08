@@ -54,8 +54,14 @@ pub fn assert_contract_trait_implemented(
 
 /// The universal config contract, for a kind whose crates expose the shared `open` seam.
 ///
-/// One call instead of four in every conformance file, so a new universal check added to this
-/// crate reaches every kind at once — which is the whole reason the batteries are shared.
+/// One call instead of two in every conformance file, so a new universal check added to this crate
+/// reaches every kind at once — which is the whole reason the batteries are shared.
+///
+/// **Not wired by any of the seven crates today**, and that is the second half of the same finding:
+/// none of `auth-admin-tokens`, `auth-static-plugin`, `secret-example-plugin`, `secret-ref`,
+/// `hook-test-plugin`, `hooks-ranking` or `export-example-plugin` exposes an
+/// `open(cfg) -> Result<_, String>` seam at all, so there is nothing for the universal battery to
+/// be pointed at. It lands with the re-base, on the same line item.
 pub fn assert_universal_config<T>(open: impl Fn(&str) -> Result<T, String> + Copy) {
     crate::assert_empty_config_rejected(open);
     crate::assert_malformed_json_rejected(open);
