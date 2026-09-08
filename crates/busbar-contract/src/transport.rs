@@ -39,6 +39,19 @@ pub use busbar_contract_transport::registry::{
     check_composition, facts, CompositionError, Registered, TRANSPORT_ABI,
 };
 
+/// A plane's SERVED SURFACE as data — the operations, how each is addressed on each binding, how it
+/// answers, and the media types on either side.
+///
+/// Re-exported here for the one reader who is not a transport author: a PLANE declares this, and a
+/// plane's manifest may name `busbar-contract` and nothing else in the workspace. The declaration
+/// itself is plane-agnostic and lives with the rest of the transport-facing vocabulary, because it
+/// is read by every mount and by no plugin author who is not writing one.
+pub use busbar_contract_transport::surface;
+pub use busbar_contract_transport::surface::{
+    binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
+    Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
+};
+
 /// Everything a transport declares about itself.
 pub trait TransportMeta {
     /// The transport's registry key.
