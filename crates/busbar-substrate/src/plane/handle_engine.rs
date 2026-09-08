@@ -511,7 +511,10 @@ impl DurableHandleEngine {
     /// racing in the same second produce one sweep, not two — and every other submit that second
     /// still INSERTS, so the working set is never stale in the direction that matters.
     ///
-    /// Nothing here sweeps on a TIMER. The trigger is still a submit; it is just not every submit.
+    /// Nothing here sweeps on a TIMER, and nothing needs to: the claim is what makes the TRIGGER
+    /// cheap to add to. A submit claims it, and so does any other caller that reaches
+    /// [`sweep_now`](Self::sweep_now) — which is how a deadline here stops depending on new work
+    /// arriving without a thread being spawned to watch a clock.
     fn claim_sweep(&self, now: u64) -> bool {
         let mut last = self.last_swept.load(Ordering::Relaxed);
         loop {
@@ -528,6 +531,34 @@ impl DurableHandleEngine {
                 Err(seen) => last = seen,
             }
         }
+    }
+
+    /// **RUN THE RETENTION SWEEP WITHOUT A SUBMIT.** The same sweep, the same bounds and the same
+    /// once-a-second claim — only the trigger is different.
+    ///
+    /// [`submit`](Self::submit) was the ONLY trigger, and that made every deadline this engine
+    /// enforces conditional on new work arriving. On a busy node it is invisible; on a node that has
+    /// stopped taking submissions it means an idle ACTIVE handle is never abandoned, however long it
+    /// idles, because the one thing that would have noticed is the thing that is not happening. That
+    /// is not a slow deadline, it is an absent one, and anything a plane hangs off the terminal
+    /// transition — a capability retired when its handle ends, for instance — silently outlives its
+    /// bound with it.
+    ///
+    /// So a caller that has a REASON to believe time has passed can say so. It costs nothing to be
+    /// wrong: [`claim_sweep`](Self::claim_sweep) still hands the work to the first caller of each
+    /// second and every other one returns having done no scan, so a hot path may call this on every
+    /// request without paying for more than an atomic load. It returns whether this call was the one
+    /// that swept, which is what a test asserts on.
+    pub fn sweep_now<A, R>(&self, now: u64, bounds: SweepBounds, abandon: A, report_fail: R) -> bool
+    where
+        A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
+        R: Fn(&str, &StoreError),
+    {
+        if !self.claim_sweep(now) {
+            return false;
+        }
+        self.sweep(now, bounds, &abandon, &report_fail);
+        true
     }
 
     /// SUBMIT a new handle: `plan` builds its row + records + genesis event from the genesis position
