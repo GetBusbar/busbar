@@ -349,7 +349,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 The accepted-differences register for this release has exactly eight entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
-from the hook view, one refusal that now comes out of the resolver rather than the validator, one
+from the hook view, one CLI text surface that grew a line, one
 key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
 edit stops repricing history it should not touch, and one provider credential that no longer
 degrades to an empty key.
@@ -407,6 +407,20 @@ identically, and every 1.5.5 key and minted secret carries over.
   after a rate-card change, they no longer do; use the new `amend-rate-history` verb to post an
   attributed correction instead. See [the 1.6.0 migration guide](docs/migration-1.6.md).
 
+- 1.6.0 Breaking: `busbar --version` prints a second build-provenance line, and `busbar --help`
+  documents the flags and modes 1.6.0 added. `--version`/`-V` printed one line in 1.5.5,
+  `busbar <version>`; it now prints that line unchanged and, under it,
+  `build: profile=… opt-level=… lto=… debug-assertions=… pgo=… target=… target-cpu=…`, so an
+  operator correlating a latency number to a binary can tell from the binary alone whether it was
+  the optimized release build. `--help`/`-h` gained a `CONFIG INPUTS` section for `-c`/`--config`
+  and `--providers`, entries for the new `--build-info` verb and `--mcp-stdio` serve mode, and the
+  note that `BUSBAR_CONFIG` is overridden by `-c`; every 1.5.5 line is still there, saying the same
+  thing, in the same order — including the first line under `USAGE:`, which a 1.6.0 development
+  build had rewritten as a flag synopsis and which is restored to the published 1.5.5 bytes.
+  **Migration:** a script that read `busbar --version` as a single-line version string must read
+  the first line (`busbar --version | head -1`); the new `busbar --build-info` prints the
+  provenance stamp alone, without the version prefix, for anything that wants to parse it. No
+  config change is needed, and no flag or behaviour was removed.
 - 1.6.0 Breaking: a provider whose `api_key` reference does not resolve now refuses boot; keyless
   local upstreams must declare `api_key: none`. 1.5.5 logged
   `[warn] provider <name> api_key (<reference>) empty` and started the lane with an empty
