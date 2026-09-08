@@ -1,5 +1,11 @@
 use super::*;
 
+// R5-store: the two health-snapshot carriers are named from their DEFINING crate rather than through
+// a `crate::store::…` re-export. They live in `busbar_substrate::store` and this engine — the config-
+// apply export/restore path (`export_health`/`restore_health_impl`) — is their only reader left in
+// core, so the shim had exactly one caller and is deleted instead of repointed twice.
+use busbar_substrate::store::{LaneHealthSnapshot, PoolCellHealthSnapshot};
+
 use crate::diagnostics::{diag_warn, LANE_HARD_DOWN};
 
 mod availability;

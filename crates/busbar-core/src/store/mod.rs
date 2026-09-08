@@ -131,29 +131,28 @@ fn now_for_test() -> u64 {
 // caller is unchanged.
 //
 // ── Lane availability taxonomy ── relocated to `busbar-substrate` in Phase-B B1 (it travels with
-// `failover::walk_with`, the neutral walk that carries it). Core re-exports the taxonomy and the two
-// consumer-facing recovery floors so every `crate::store::…` name resolves unchanged;
-// `PROBE_RETRY_FLOOR_MS` moved with its only reader (`recovery_hint_ms`) and stays substrate-private.
-pub use busbar_substrate::store::{
-    BreakerState, Unavailable, AT_CAPACITY_RECOVERY_FLOOR_MS, SHED_RETRY_FLOOR_MS,
-};
+// `failover::walk_with`, the neutral walk that carries it). Core re-exports the taxonomy so every
+// `crate::store::…` name resolves unchanged; `PROBE_RETRY_FLOOR_MS` moved with its only reader
+// (`recovery_hint_ms`) and stays substrate-private.
+//
+// R5-store: the two consumer-facing recovery floors (`AT_CAPACITY_RECOVERY_FLOOR_MS`,
+// `SHED_RETRY_FLOOR_MS`) had NO consumer at either the `crate::store::…` or the
+// `busbar_core::store::…` path — the readers that used to name them moved down with the taxonomy —
+// so the two re-exports are deleted rather than repointed. Every remaining reader names
+// `busbar_substrate::store::…` directly.
+pub use busbar_substrate::store::{BreakerState, Unavailable};
 
-// `Permit` (the RAII concurrency token) is neutral (pure `tokio::sync`, no config/serde coupling), so
-// it now lives in the neutral `busbar_substrate::store` — the LLM plane's `walk` mints it and
-// `LaneRuntime::try_admit` returns it, both naming the ONE type without the plane reaching into
-// `busbar-core`. Re-exported here for core's own `crate::store::Permit` call sites (`Admit`, the
-// `LaneRuntime` trait signatures, the FSM).
-pub use busbar_substrate::store::Permit;
-
-// App-retype WEDGE 1 (1.6.0): the `LaneRuntime` TRAIT and the three carriers its signatures name
-// (`Admit`, `LaneSnapshot`, `LaneHealthSnapshot`, plus the latter's per-pool `PoolCellHealthSnapshot`)
-// relocated DOWN to `busbar_substrate::store` so the LLM plane names the lane-runtime seam via the ABI
-// instead of reaching into `busbar_core::store`. Re-exported here by-identity so the in-memory breaker
-// engine's `impl LaneRuntime for HealthState`, `/stats`, the `/metrics` scrape, and the config-apply
-// export/restore path resolve `crate::store::…` unchanged. `PoolCellHealthSnapshot` is re-exported
-// `pub(crate)` to preserve its original core-private visibility (it is only ever named inside core).
-pub(crate) use busbar_substrate::store::PoolCellHealthSnapshot;
-pub use busbar_substrate::store::{Admit, LaneHealthSnapshot, LaneRuntime, LaneSnapshot};
+// App-retype WEDGE 1 (1.6.0): the `LaneRuntime` TRAIT and the carriers its signatures name (`Admit`,
+// `LaneSnapshot`, plus `Permit`, the RAII concurrency token) relocated DOWN to
+// `busbar_substrate::store` so the LLM plane names the lane-runtime seam via the ABI instead of
+// reaching into `busbar_core::store`. Re-exported here by-identity so the in-memory breaker engine's
+// `impl LaneRuntime for HealthState`, `/stats`, the `/metrics` scrape, and the config-apply
+// export/restore path resolve `crate::store::…` unchanged.
+//
+// R5-store: `LaneHealthSnapshot` and `PoolCellHealthSnapshot` are NOT re-exported — the only readers
+// left (`in_memory/availability.rs`, `in_memory/mod.rs`) name `busbar_substrate::store::…` directly,
+// so the shim carried no caller.
+pub use busbar_substrate::store::{Admit, LaneRuntime, LaneSnapshot, Permit};
 
 mod in_memory;
 pub use in_memory::*;
