@@ -390,17 +390,40 @@ def rename_fn_for(csd: dict, ident: str):
     return fn
 
 
+STRING_LIT = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
 def field_serde(attrs: str):
-    """Per-field serde knobs. Returns (serde_rename|None, has_default, skip, flatten)."""
+    """Per-field serde knobs. Returns (serde_rename|None, has_default, skip, flatten).
+
+    THE BOOLEAN KNOBS ARE MATCHED OVER THE ATTRIBUTE TEXT WITH STRING LITERALS REMOVED, and that is
+    the fix, not a tidy-up. `has_default` was `\\bdefault\\b` over the RAW attribute text — which the
+    rename VALUE is part of. So a field written
+
+        #[serde(rename = "default")]
+        pub kind: String,
+
+    matched `\\bdefault\\b` inside its own new wire name and was fingerprinted `optional: true`. It is
+    REQUIRED. A required field frozen as optional is the worst direction for this snapshot to be
+    wrong in: `field_findings` reads optionality to decide whether a change is additive, so making
+    that field genuinely optional later — or, on the other side, the requirement quietly appearing —
+    passes the additive gate in silence. `skip` and `flatten` had the identical bug (`rename =
+    "skip_bad_records"`, `rename = "flatten_output"`), and `default` is a perfectly ordinary key for
+    an operator to write.
+
+    Blanking the literals first asks the question that was always meant: does this attribute carry
+    the KNOB, not does the attribute mention the word."""
     rename = None
     m = re.search(r'#\[serde\([^)]*\brename\s*=\s*"([^"]+)"', attrs)
     if m:
         rename = m.group(1)
-    has_default = bool(re.search(r"#\[serde\([^)]*\bdefault\b", attrs))
+    # Every string literal becomes `""`, so no VALUE can be read as a knob NAME.
+    keys = STRING_LIT.sub('""', attrs)
+    has_default = bool(re.search(r"#\[serde\([^)]*\bdefault\b", keys))
     skip = bool(
-        re.search(r"#\[serde\([^)]*\bskip(_deserializing)?\b", attrs)
+        re.search(r"#\[serde\([^)]*\bskip(_deserializing)?\b", keys)
     )
-    flatten = bool(re.search(r"#\[serde\([^)]*\bflatten\b", attrs))
+    flatten = bool(re.search(r"#\[serde\([^)]*\bflatten\b", keys))
     return rename, has_default, skip, flatten
 
 
@@ -835,6 +858,14 @@ def extract(paths) -> dict:
             types.setdefault(name, {"kind": "struct", "fields": {}, "deserialize": "manual"})
             open_idx = src.find("{", m.end())
             if open_idx != -1:
+                # THE COLLISION RULE APPLIES HERE TOO. It did not: `collide()` guarded only the
+                # derive walk above, so two files each hand-impl'ing `Deserialize` for a type of the
+                # same bare name wrote the same `manual-de X` key and the second silently REPLACED
+                # the first — the replaced grammar stops being fingerprinted at all and the
+                # classifier reports the swap as a break in something nobody edited. That is
+                # verbatim the failure `collide` was written for (the two planes' `PinMechanism`),
+                # in a namespace it was never applied to.
+                collide(f"manual-de {name}", path)
                 types[f"manual-de {name}"] = manual_de_detail(src, open_idx, decls, name)
 
         # ── HOLE 2: `pub type HookDefs = IndexMap<String, HookDefCfg>;` — the named-DEFINITION-map
@@ -848,6 +879,10 @@ def extract(paths) -> dict:
             # internal signature change can't masquerade as a config break.
             if "dyn " in target or "Fn(" in target:
                 continue
+            # Same rule, same reason, third namespace: two `pub type HookDefs = …` declarations in
+            # different tracked files would otherwise have the second overwrite the first, and the
+            # alias TARGET is the shape of the section itself (`IndexMap<String, T>` vs `Vec<T>`).
+            collide(f"type {m.group('name')}", path)
             types[f"type {m.group('name')}"] = {
                 "kind": "alias",
                 "target": target,
@@ -1102,8 +1137,27 @@ def classify(baseline: dict, fresh: dict):
             refusal_findings(tname, b.get("refused"), f.get("refused"), findings)
         elif b["kind"] == "struct":
             field_findings(tname, b.get("fields", {}), f.get("fields", {}), findings)
-        else:  # enum
+        elif b["kind"] == "enum":
             variant_findings(tname, b.get("variants"), f.get("variants"), findings)
+            # AN ENUM CAN CARRY FIELDS TOO. The arm this replaces was a bare `else:  # enum`, so it
+            # was ALSO the arm every kind the classifier does not know about fell into — and it
+            # compares variants ONLY. Any `fields` on such a type were never compared: removing one,
+            # retyping one, or making a required one optional produced no finding at all. Comparing
+            # them is free when they are absent (two empty maps) and is the whole verdict when they
+            # are not.
+            field_findings(tname, b.get("fields", {}), f.get("fields", {}), findings)
+        else:
+            # A KIND THIS CLASSIFIER DOES NOT KNOW. It used to land in the enum arm and be judged on
+            # its variants, which an unknown kind may not have — so it was compared on nothing and
+            # read as unchanged. Silence over a shape nobody taught this function to read is not a
+            # pass; it is the classifier declining to answer, and it must say so.
+            findings.append((
+                "BREAKING",
+                tname,
+                f"unknown kind {b.get('kind')!r}: this classifier has no comparison for it, so it "
+                "would be judged on nothing. Teach classify() the kind rather than letting it fall "
+                "through — a shape compared on nothing always reads as unchanged",
+            ))
     return findings
 
 
@@ -1182,6 +1236,36 @@ def cmd_classify(argv):
     baseline = json.loads(Path(argv[0]).read_text(encoding="utf-8"))
     fresh = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
     waivers = load_waivers(argv[2]) if len(argv) == 3 else {}
+
+    # ── AN EMPTY BASELINE AGREED WITH EVERYTHING ────────────────────────────────────────────────
+    # `classify` walks `set(baseline) | set(fresh)` and reports a type the baseline lacks as
+    # ADDITIVE. Over an EMPTY baseline that is every type in the tree, so every finding is additive
+    # and the gate exits 0 — a truncated, emptied or wrong-shaped baseline file is the most
+    # permissive input this gate accepts, and it accepts it silently. The whole grammar would be
+    # un-frozen by a file that failed to write.
+    #
+    # The check is over the SET, not just emptiness: a baseline that shares NOT ONE type name with
+    # the fresh render is not a baseline of this surface at all (a stale path, a fixture handed in
+    # by mistake, a half-written file), and "everything is new" is never the honest reading of it.
+    bt, ft = baseline.get("types", {}), fresh.get("types", {})
+    if not isinstance(bt, dict) or not bt:
+        print(
+            "config-schema: the BASELINE carries no types. Every type in the fresh render would "
+            "then read as ADDITIVE and this gate would exit 0 over a completely un-frozen grammar "
+            "— an empty baseline agrees with everything. Restore the snapshot from git; do not "
+            "regenerate it, which would freeze whatever the tree says today.",
+            file=sys.stderr,
+        )
+        return 2
+    if isinstance(ft, dict) and ft and not (set(bt) & set(ft)):
+        print(
+            f"config-schema: the baseline ({len(bt)} type(s)) and the fresh render ({len(ft)} "
+            "type(s)) share NO type name at all. That is not an additive change to this surface, "
+            "it is a comparison against the wrong document — and it would be reported as every "
+            "type removed and every type added, whose additive half exits 0 under a waiver file.",
+            file=sys.stderr,
+        )
+        return 2
 
     findings = classify(baseline, fresh)
     additive = [x for x in findings if x[0] == "ADDITIVE"]

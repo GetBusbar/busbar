@@ -123,6 +123,54 @@ PY
     fi
   }
 
+  # A case that mutates BOTH sides. `run_case` only ever mutates the fresh render, which cannot
+  # express "the baseline itself is wrong/unreadable" or "both sides carry a shape the classifier
+  # does not know" — and both of those are ways this gate reported success over a comparison it had
+  # not actually made.
+  run_case_both() { # <name> <want-exit> <baseline mutation> <fresh mutation>
+    local name="$1" want="$2" bmut="$3" fmut="$4"
+    "$PY" - "$tmp/base.json" "$tmp/b2.json" "$tmp/f2.json" <<PY
+import json, sys
+d = json.load(open(sys.argv[1]))
+$bmut
+json.dump(d, open(sys.argv[2], "w"))
+d = json.load(open(sys.argv[2]))
+$fmut
+json.dump(d, open(sys.argv[3], "w"))
+PY
+    "$PY" "$GEN" classify "$tmp/b2.json" "$tmp/f2.json" >/dev/null 2>&1
+    rc=$?
+    verdict "$name" "$want" "$rc"
+  }
+
+  # ── THE BASELINE ITSELF (exit 2 = the inputs are not a comparison) ──
+  # An EMPTY baseline is the most permissive input this gate accepts: `classify` walks
+  # `set(baseline) | set(fresh)` and calls every type the baseline lacks ADDITIVE, so over an empty
+  # one EVERY finding is additive and the gate exits 0 with the whole grammar un-frozen. A snapshot
+  # that failed to write would have silently unfrozen the config surface.
+  run_case_both "baseline: an EMPTY baseline is REFUSED, not agreed with"  2 \
+    'd["types"]={}' 'pass'
+  run_case_both "baseline: a baseline with no `types` key at all is REFUSED" 2 \
+    'd.pop("types")' 'pass'
+  run_case_both "baseline: sharing NO type name with the fresh render is REFUSED" 2 \
+    'pass' 'd["types"]={"Totally"+k:v for k,v in d["types"].items()}'
+  run_case_both "control: a NORMAL baseline/fresh pair still classifies"   0 \
+    'pass' 'pass'
+
+  # ── THE CATCH-ALL ARM (a kind the classifier does not know) ──
+  # `else:  # enum` was BOTH the enum arm and the arm every unrecognised kind fell into, judged on
+  # its variants — which an unknown kind may not have, so it was compared on nothing and read as
+  # unchanged. Silence over a shape nobody taught the classifier to read is not a pass.
+  run_case_both "unknown kind is REFUSED, never judged on nothing"         3 \
+    'd["types"]["Root"]["kind"]="newtype-wrapper"' \
+    'd["types"]["Root"]["fields"]["keep"]["type"]="u32"'
+  # And an ENUM that carries fields has them compared, which the variants-only arm never did.
+  run_case_both "enum FIELDS are compared, not only its variants"          3 \
+    'd["types"]["HookStage"]["fields"]={"when":{"type":"String","optional":False}}' \
+    'del d["types"]["HookStage"]["fields"]["when"]'
+  run_case_both "control: an untouched enum with fields is GREEN"          0 \
+    'd["types"]["HookStage"]["fields"]={"when":{"type":"String","optional":False}}' 'pass'
+
   # ── GREEN (additive) cases ──
   run_case "additive: new OPTIONAL field is GREEN"        0 'd["types"]["Root"]["fields"]["added"]={"type":"String","optional":True}'
   run_case "additive: new whole section is GREEN"         0 'd["types"]["NewSection"]={"kind":"struct","fields":{"x":{"type":"u32","optional":True}}}'
@@ -528,6 +576,79 @@ assert f["carried_key"] == {"type": "CarriedCfg", "optional": True}, f["carried_
   if "$PY" "$GEN" plane-dir z "$tmp/addr/none" >/dev/null 2>&1; then rc=1; else rc=0; fi
   verdict "addressing: NO grammar home is an error, never a skip" 0 "$rc"
 
+  # ── THE KNOB READ, and the two namespaces the collision rule never covered ──────────────────────
+  hdr "self-test: GENERATOR knob-reading and the bare-name collision rule"
+
+  # A SERDE KNOB IS A KEY, NOT A WORD IN THE ATTRIBUTE TEXT. `has_default` was `\bdefault\b` over
+  # the RAW attribute, and the rename VALUE is part of that text — so `#[serde(rename = "default")]`
+  # on a REQUIRED field matched inside its own new wire name and froze the field as OPTIONAL. A
+  # required field recorded optional is the worst direction for this snapshot to be wrong in:
+  # `field_findings` reads optionality to decide what is additive, so the requirement appearing or
+  # disappearing later passes in silence. `skip` and `flatten` had the identical bug.
+  mkdir -p "$tmp/knob"
+  cat >"$tmp/knob/fixture.rs" <<'RS'
+#[derive(Deserialize)]
+pub struct KnobFx {
+    #[serde(rename = "default")]
+    pub kind: String,
+    #[serde(rename = "skip_bad_records")]
+    pub mode: String,
+    #[serde(rename = "flatten_output")]
+    pub shape: String,
+    #[serde(default)]
+    pub really_optional: String,
+}
+RS
+  "$PY" "$GEN" gen "$tmp/knob" >"$tmp/knob.json" 2>/dev/null
+  verdict "knobs: \`gen\` over the knob fixture succeeds" 0 "$?"
+  py_assert "knobs: a field renamed TO \"default\" stays REQUIRED" \
+    'assert t["KnobFx"]["fields"]["default"]["optional"] is False, t["KnobFx"]["fields"]' \
+    "$tmp/knob.json"
+  py_assert "knobs: a field renamed to \"skip_bad_records\" is not read as skipped" \
+    'assert "skip_bad_records" in t["KnobFx"]["fields"], t["KnobFx"]["fields"]' \
+    "$tmp/knob.json"
+  py_assert "knobs: a field renamed to \"flatten_output\" is not read as flattened" \
+    'assert "flatten_output" in t["KnobFx"]["fields"], t["KnobFx"]["fields"]' \
+    "$tmp/knob.json"
+  py_assert "knobs: a REAL #[serde(default)] is still read as optional" \
+    'assert t["KnobFx"]["fields"]["really_optional"]["optional"] is True, t["KnobFx"]["fields"]' \
+    "$tmp/knob.json"
+
+  # THE COLLISION RULE COVERED ONE NAMESPACE OF THREE. `collide()` guarded the derive walk only, so
+  # two tracked files each hand-impl'ing `Deserialize` for the same bare name wrote the same
+  # `manual-de X` key — the second silently REPLACING the first, whose grammar then stopped being
+  # fingerprinted at all while the classifier reported the swap as a break nobody made. That is
+  # verbatim the failure `collide` was written for (the two planes' `PinMechanism`). Same for the
+  # `type X` alias keys, whose target IS the shape of a section.
+  mkdir -p "$tmp/dup-de" "$tmp/dup-alias" "$tmp/dup-ok"
+  cat >"$tmp/dup-de/a.rs" <<'RS'
+impl<'de> Deserialize<'de> for DupFx {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> {
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "alpha" => alpha = Some(map.next_value()?),
+                other => return Err(de::Error::unknown_field(other, FIELDS)),
+            }
+        }
+    }
+}
+RS
+  sed 's/"alpha"/"beta"/' "$tmp/dup-de/a.rs" >"$tmp/dup-de/b.rs"
+  if "$PY" "$GEN" gen "$tmp/dup-de" >/dev/null 2>&1; then rc=1; else rc=0; fi
+  verdict "collide: two hand-impl'd Deserialize for one bare name is REFUSED" 0 "$rc"
+
+  printf 'pub type DupAliasFx = indexmap::IndexMap<String, AFx>;\n' >"$tmp/dup-alias/a.rs"
+  printf 'pub type DupAliasFx = Vec<AFx>;\n'                        >"$tmp/dup-alias/b.rs"
+  if "$PY" "$GEN" gen "$tmp/dup-alias" >/dev/null 2>&1; then rc=1; else rc=0; fi
+  verdict "collide: two \`type X\` aliases for one bare name is REFUSED" 0 "$rc"
+
+  # The GREEN control: distinct names across two files are fine, so the refusals above are about
+  # the collision and not about there being two files.
+  printf 'pub type AliasOneFx = indexmap::IndexMap<String, AFx>;\n' >"$tmp/dup-ok/a.rs"
+  printf 'pub type AliasTwoFx = Vec<AFx>;\n'                        >"$tmp/dup-ok/b.rs"
+  "$PY" "$GEN" gen "$tmp/dup-ok" >/dev/null 2>&1
+  verdict "collide: DISTINCT bare names across two files are accepted" 0 "$?"
+
   # ── COVERAGE: the assertions above are about fixtures. These are about the REAL tracked set, so
   # the gate cannot be capable-in-principle while covering nothing that ships.
   hdr "self-test: COVERAGE of the real tracked source set"
@@ -651,7 +772,12 @@ assert t["AuthDeployCfg"]["fields"]["policy"]["type"] == "AuthPolicyCfg", t["Aut
   # coverage is itself RED.
   # 64 before the REFUSED-input-forms arm landed; +4 for it (two gen_case red proofs, one fixture
   # assertion, one over the real tree). The floor only ever rises.
-  local want_cases=68
+  # 83 today. Raised from 68 with the fifteen cases that prove the four holes closed in the
+  # classifier and generator: the empty/mismatched BASELINE (which agreed with everything), the
+  # catch-all arm that judged an unknown kind on nothing and an enum on its variants alone, the
+  # serde knob read that saw `default` inside a rename VALUE and froze a required field as
+  # optional, and the bare-name collision rule covering one namespace of three.
+  local want_cases=83
   if [ "$cases" -lt "$want_cases" ]; then
     red "  FAIL  self-test executed only $cases case(s); expected at least $want_cases."
     red "        Coverage was deleted, or the suite exited early — either way this is NOT a pass."
