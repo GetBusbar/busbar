@@ -1664,7 +1664,7 @@ count = "104"
 [[cell]]
 crate = "busbar-core"
 kind = "substrate"
-count = "4"
+count = "5"
 
 [[cell]]
 crate = "busbar-core"

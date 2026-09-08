@@ -249,8 +249,8 @@ because = """DECLARED: `[[cell]] busbar x transport` 939 -> 941. Two hits, both 
 [gate.ceiling_raises."cell.71.count"]
 file = "qa/kind-isolation.toml"
 from = 1
-to = 4
-because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it. The dead `ir/` re-export shims are DELETED from `busbar-core` rather than aliased, so the spellings that used to reach through core now name the crate that actually holds them. The falls are in this same diff and are re-pinned with it -- `busbar-core x dialect` 1196 -> 1195 and `busbar-core x plane` 3067 -> 3049 -- which is what makes this a move and not a growth; `ceiling-slack` holds every ratcheted row to what it measures, so an un-re-pinned fall would be drift hiding as slack. This row is `[[cell]] busbar-core x substrate`, 1 -> 4: `src/ir/mod.rs` and `src/diagnostics/mod.rs` name `busbar-substrate-values` where a shim used to stand between them. Core naming the substrate BY ITS NAME is the drain working -- it is the direction the retirement runs in."""
+to = 5
+because = """A SIDEWAYS MOVE, re-pinned on BOTH sides in the commit that makes it, and RE-STATED rather than stacked: `[[cell]] busbar-core x substrate` 1 -> 5. Two commits back this row was declared 1 -> 4 for the `ir/` shims; a declaration cannot cover the next raise of the same ceiling, so this commit rewrites the entry with the number it lands on. The fifth spelling is one more core site naming `busbar-substrate-values` directly, where a diagnostics re-export used to stand. The falls this fold earned (`busbar-core x dialect` 1195, `busbar-core x plane` 3030) are already pinned by the two commits before it; nothing in core is aliased, every shim is deleted."""
 
 [gate.ceiling_raises."cell.226.count"]
 file = "qa/kind-isolation.toml"

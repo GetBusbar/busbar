@@ -1,9 +1,10 @@
 use super::*;
 
-use crate::diagnostics::{
-    diag_debug, diag_warn, BREAKER_UNEXPECTED_STATE_CLASSIFY, BREAKER_UNEXPECTED_STATE_PROBE,
+use busbar_substrate::diagnostics::{
+    BREAKER_UNEXPECTED_STATE_CLASSIFY, BREAKER_UNEXPECTED_STATE_PROBE,
     BREAKER_UNEXPECTED_STATE_READ, BREAKER_UNEXPECTED_STATE_RECORD_FAILURE,
 };
+use busbar_substrate::{diag_debug, diag_warn};
 
 /// Bounded sliding window of recent request outcomes, each tagged success/error, used to compute
 /// the error-rate trip signal. Backed by a `VecDeque` so dropping the oldest entry at capacity is
