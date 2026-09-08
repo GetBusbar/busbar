@@ -170,12 +170,25 @@ struct MarkedConfig {
 /// (allowing blank lines) by a ```yaml fence, and extract that fence's body.
 fn extract_marked_configs() -> Vec<MarkedConfig> {
     let root = repo_root();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("docs"))
-        .expect("docs/ exists")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "md"))
-        .collect();
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut stack = vec![root.join("docs")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                files.push(path);
+            }
+        }
+    }
+    assert!(
+        !files.is_empty(),
+        "docs/ must be walkable and contain at least one .md file, or this walk is reading nothing"
+    );
     files.push(root.join("README.md"));
 
     let mut out = Vec::new();
