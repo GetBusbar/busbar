@@ -813,7 +813,13 @@ pub fn required_scopes() -> Vec<(OpClassId, Scope)> {
                 | ops::OP_COMPLETION
                 | ops::OP_TASK_GET
                 | ops::OP_ROOTS_LIST
-                | ops::OP_SUBSCRIPTIONS_LISTEN => Scope::ReadOnly,
+                | ops::OP_SUBSCRIPTIONS_LISTEN
+                // The two console-era verbs read nothing and change nothing: the handshake names
+                // the revision this build speaks and the liveness verb answers the empty document.
+                // Read-only is the honest requirement, and requiring more would put a credential
+                // bar in front of the one exchange a client makes before it has anything else.
+                | ops::OP_INITIALIZE
+                | ops::OP_PING => Scope::ReadOnly,
                 _ => Scope::Full,
             };
             (*op, scope)
@@ -1621,6 +1627,35 @@ pub enum MountRefusal {
     /// Not every credentialed claim declares the same alternatives, so there is no one set for the
     /// authenticate step to narrow within.
     InconsistentSchemes,
+    /// Two registrations carry the same name.
+    ///
+    /// The name is the pool key, the breaker key and the resource the scope unit judges, all three.
+    /// Two rows under one name is a deployment where the breaker one of them opened is the breaker
+    /// the other is refused by, and where a grant written for one authorizes the other.
+    DuplicateRegistration(&'static str),
+    /// A registration names a transport no claim of this plane declares.
+    ///
+    /// The arrival step refuses a unit on an undeclared transport, so a registration reached over
+    /// one is a server nothing could ever answer from. Refusing at boot is the same answer, sooner.
+    UnclaimedTransport {
+        /// The registration.
+        server: &'static str,
+        /// The transport it named.
+        transport: &'static str,
+    },
+    /// A registration names no priced lane.
+    ///
+    /// The lane is what the rate card hangs a price on and what the breaker keys its cells by. A
+    /// registration with none is one every dialled unit is refused at as unpriced — which is the
+    /// right refusal and the wrong place for it, because nothing about the request caused it.
+    UnpricedRegistration(&'static str),
+    /// An operation the plane says it answers is not one the plane declares.
+    UnansweredClass(&'static str),
+    /// The plane's served surface is not one a mount will boot on.
+    ///
+    /// The vocabulary's own check, asked here: an operation nothing can address, two rows at one
+    /// address, a malformed mount, or a dispatch naming a binding the surface does not declare.
+    SurfaceRefused(busbar_contract::transport::SurfaceError),
 }
 
 impl std::fmt::Display for MountRefusal {
@@ -1640,6 +1675,25 @@ impl std::fmt::Display for MountRefusal {
                     f,
                     "the mcp plane's claims declare different scheme alternatives"
                 )
+            }
+            MountRefusal::DuplicateRegistration(server) => {
+                write!(f, "two mcp registrations are both named {server}")
+            }
+            MountRefusal::UnclaimedTransport { server, transport } => {
+                write!(
+                    f,
+                    "the mcp registration {server} is reached over {transport}, which no claim of \
+                     this plane declares"
+                )
+            }
+            MountRefusal::UnpricedRegistration(server) => {
+                write!(f, "the mcp registration {server} names no priced lane")
+            }
+            MountRefusal::UnansweredClass(op) => {
+                write!(f, "the mcp plane answers {op} and does not declare it")
+            }
+            MountRefusal::SurfaceRefused(error) => {
+                write!(f, "the mcp plane's served surface will not mount: {error}")
             }
         }
     }
@@ -1664,21 +1718,57 @@ pub struct Mount {
 /// Check, at boot, everything about this plane that would otherwise be discovered as a refused
 /// request, and produce the scope table the policy is told about.
 ///
-/// Four checks, and each of them is a thing the tree cannot state any other way: a schema nothing can
-/// reach, a leg naming an operation its schema never declared, a metering binding posting under a
-/// class the plane does not have, and a claim set whose alternatives disagree. All four are cheap,
-/// all four are answered once, and none of them can be answered by the plane alone — the plane
-/// declares, and the root is what compares one declaration against another.
+/// Each check is a thing the tree cannot state any other way: a schema nothing can reach, a leg
+/// naming an operation its schema never declared, a metering binding posting under a class the plane
+/// does not have, a claim set whose alternatives disagree, a served surface no mount will boot on,
+/// an operation the plane says it answers and does not declare — and, over the argument, the four
+/// things a REGISTRATION can be wrong about. All of them are cheap, all of them are answered once,
+/// and none of them can be answered by the plane alone: the plane declares, and the root is what
+/// compares one declaration against another.
 ///
-/// This half takes no store, because none of the four questions is about one. That is what lets the
+/// ## The argument is read, and that is the substance of this function rather than a detail
+///
+/// It used to open with `let _ = plane;`. Every check below the discard was over the plane's
+/// associated CONSTANTS, which are the same on every deployment — so the function was a boot check
+/// of the build and never of the node, and the whole class of thing an operator can get wrong went
+/// unasked. A registration named twice, reached over a transport no claim declares, or priced on no
+/// lane was discovered as a refused request in production, one request at a time, by whoever hit it.
+///
+/// This half takes no store, because none of these questions is about one. That is what lets the
 /// boot sequence ask them where every other declaration is checked — before the configuration has
 /// resolved and long before any listener is bound.
 ///
 /// # Errors
 ///
-/// Any of the four checks failed.
+/// Any of the checks failed.
 pub fn seal(plane: &McpPlane) -> Result<Vec<(OpClassId, Scope)>, MountRefusal> {
-    let _ = plane;
+    // ── THE REGISTRATIONS, which are this node's and not this build's ────────────────────────────
+    for (index, server) in plane.servers().iter().enumerate() {
+        if plane.servers()[..index].iter().any(|s| s.id == server.id) {
+            return Err(MountRefusal::DuplicateRegistration(server.id));
+        }
+        if !claims::declares(server.transport) {
+            return Err(MountRefusal::UnclaimedTransport {
+                server: server.id,
+                transport: server.transport,
+            });
+        }
+        if server.lane.as_str().is_empty() {
+            return Err(MountRefusal::UnpricedRegistration(server.id));
+        }
+    }
+
+    // ── THE SERVED SURFACE, asked of the vocabulary that will mount it ───────────────────────────
+    busbar_contract::transport::check_surface(&busbar_plane_mcp::surface::SURFACE)
+        .map_err(MountRefusal::SurfaceRefused)?;
+
+    // ── WHAT THE PLANE SAYS IT ANSWERS, against what it declares ─────────────────────────────────
+    for op in busbar_plane_mcp::served::ANSWERED {
+        if !<McpPlane as PlaneMeta>::OP_CLASSES.contains(op) {
+            return Err(MountRefusal::UnansweredClass(op.as_str()));
+        }
+    }
+
     for schema in <McpPlane as PlaneMeta>::RECORD_SCHEMAS {
         if records::operations_for(*schema).is_empty() {
             return Err(MountRefusal::SchemaWithoutOperations(schema.as_str()));
