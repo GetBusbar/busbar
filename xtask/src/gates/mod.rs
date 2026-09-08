@@ -34,6 +34,7 @@ pub mod no_self_filed_issues;
 pub mod plane_abi_neutrality;
 pub mod plane_purity;
 pub mod plane_transport_neutrality;
+pub mod population;
 pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod response_header;
@@ -393,8 +394,60 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
     }
 }
 
+/// THE EVIDENCE FOR ONE ROW, and nothing else in the verdict.
+///
+/// A row goes red in two shapes and both are this row going red: a non-PASS row carrying the id, or
+/// a reconciler problem about THAT id — `DID NOT RUN`, `SKIP`, `CONFLICT`. The second shape is why
+/// this is not simply a row filter: a plant that stops the gate from emitting the row at all is the
+/// strongest red there is for that row, and reading only `verdict.rows` would score it GREEN.
+fn evidence_for(verdict: &Verdict, id: &str) -> Vec<String> {
+    let mut out: Vec<String> = verdict
+        .rows
+        .iter()
+        .filter(|r| r.id == id && r.status != crate::ledger::Status::Pass)
+        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
+        .collect();
+    let prefix = format!("{id}: ");
+    out.extend(
+        verdict
+            .problems
+            .iter()
+            .filter(|p| p.starts_with(&prefix))
+            .cloned(),
+    );
+    out
+}
+
+/// THE RED ROWS MUST COVER THE CASE'S `covers` SET, or the case proved nothing it claimed.
+///
+/// `Expect::Green` here means "this case's rules did not go red", whatever else in the gate did.
+/// An empty `covers` is refused the same way: a red case that names no row is a red nobody can
+/// attribute, and `verify_report` counts its (empty) claim as coverage of nothing.
+fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
+    if covers.is_empty() {
+        return Expect::Green;
+    }
+    let mut evidence = Vec::new();
+    for id in covers {
+        let for_id = evidence_for(verdict, id);
+        if for_id.is_empty() {
+            return Expect::Green;
+        }
+        evidence.extend(for_id);
+    }
+    Expect::Red { naming: evidence }
+}
+
 /// Plant an overlay, run the gate THROUGH `execute`, and require RED naming every string in
 /// `naming`. The only way a gate's selftest touches its gate.
+///
+/// THE RED IS READ OFF THE COVERED ROWS ONLY (F11). It used to be enough that the gate went red and
+/// that something anywhere in its report said the word: over a gate with thirty-six rows, on a tree
+/// that carries real debt in some of them, that is satisfiable by a row the case is not about — so a
+/// case could "prove" rule X while rule Y was what went red, and X was then deletable with `cargo
+/// xtask selftest` still green. Now every id in `covers` must itself be red, which makes this
+/// function and [`prove_rows_red`] the same proof; the latter survives as the name that says so at
+/// the call site.
 pub fn prove_red(
     cx: &Ctx,
     gate: &dyn Gate,
@@ -405,13 +458,7 @@ pub fn prove_red(
 ) -> Case {
     let planted = cx.with_overlay(overlay);
     let verdict = execute(gate, &planted);
-    let got = if verdict.red {
-        Expect::Red {
-            naming: reported_text(&verdict),
-        }
-    } else {
-        Expect::Green
-    };
+    let got = narrowed_got(&verdict, covers);
     Case {
         name: name.into(),
         covers: covers.iter().map(|s| (*s).to_string()).collect(),
@@ -440,23 +487,13 @@ pub fn prove_rows_red(
 ) -> Case {
     let planted = cx.with_overlay(overlay);
     let verdict = execute(gate, &planted);
-    let reported: Vec<String> = verdict
-        .rows
-        .iter()
-        .filter(|r| r.status != crate::ledger::Status::Pass && covers.contains(&r.id.as_str()))
-        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
-        .collect();
     Case {
         name: name.into(),
         covers: covers.iter().map(|s| (*s).to_string()).collect(),
         expected: Expect::Red {
             naming: naming.iter().map(|s| (*s).to_string()).collect(),
         },
-        got: if reported.is_empty() {
-            Expect::Green
-        } else {
-            Expect::Red { naming: reported }
-        },
+        got: narrowed_got(&verdict, covers),
     }
 }
 
@@ -534,21 +571,11 @@ pub fn prove_rows_red_at(
         };
     };
     let verdict = execute(gate, &fixture_cx);
-    let reported: Vec<String> = verdict
-        .rows
-        .iter()
-        .filter(|r| r.status != crate::ledger::Status::Pass && covers.contains(&r.id.as_str()))
-        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
-        .collect();
     Case {
         name,
         covers: covers_owned,
         expected,
-        got: if reported.is_empty() {
-            Expect::Green
-        } else {
-            Expect::Red { naming: reported }
-        },
+        got: narrowed_got(&verdict, covers),
     }
 }
 

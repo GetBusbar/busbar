@@ -515,8 +515,13 @@ pub fn run(gate: &StructureLintGate, cx: &Ctx) -> Report {
     ));
     report.push(table_case(
         cx,
+        // COVERS `:scope` AND NOT `:scan-set`. A scope that moved is refused BY THE SCOPE ROW and
+        // stops there — the scan-set rule never gets a scope to count production source under, so
+        // it stays green here and is proven by the plant below that leaves the scope in place and
+        // empties it. Claiming both rows was the F11 shape: the red belonged to one of them, and
+        // the other's coverage was a declaration nobody checked.
         "a census scope that moved is refused",
-        &[census::ROW_SCOPE, census::ROW_SCAN_SET],
+        &[census::ROW_SCOPE],
         with_census_scope_moved(&t),
         &["SCOPE-MISSING"],
     ));
