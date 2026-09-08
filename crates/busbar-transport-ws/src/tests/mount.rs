@@ -33,7 +33,7 @@ use busbar_contract_transport::wire::{CloseReason, TransportError};
 
 use super::{
     address, close_code, open_session, published_facts, pump, reason_for, FrameSink, FrameSource,
-    Upgrade, SESSION_FACTS,
+    SessionBudgets, Upgrade, SESSION_FACTS,
 };
 use crate::WsTransport;
 
@@ -411,6 +411,7 @@ async fn frames_travel_in_order_in_both_directions() {
         SessionHandle(7),
         FakeSource::of(&["one", "two", "three"]),
         &mut sink,
+        SessionBudgets::default(),
     )
     .await;
 
@@ -449,6 +450,7 @@ async fn a_refused_frame_does_not_end_the_session() {
         SessionHandle(7),
         FakeSource::of(&["one", "two"]),
         &mut sink,
+        SessionBudgets::default(),
     )
     .await;
     assert_eq!(driver.seen().len(), 2, "the second frame was still served");
@@ -471,7 +473,14 @@ async fn a_full_sink_ends_the_session_and_stops_the_reading() {
     ]);
     let mut sink = FakeSink::accepting(2);
     let mut source = FakeSource::of(&["one", "two", "three", "four"]);
-    let end = pump(&driver, SessionHandle(7), &mut source, &mut sink).await;
+    let end = pump(
+        &driver,
+        SessionHandle(7),
+        &mut source,
+        &mut sink,
+        SessionBudgets::default(),
+    )
+    .await;
 
     assert_eq!(sink.frames(), vec!["a1", "a2"], "no frame was dropped");
     assert_eq!(
@@ -495,7 +504,14 @@ async fn a_full_sink_ends_the_session_and_stops_the_reading() {
 async fn a_peer_that_closes_is_the_clients_cut() {
     let driver = FakeDriver::new(Vec::new());
     let mut sink = FakeSink::open();
-    let end = pump(&driver, SessionHandle(7), FakeSource::of(&[]), &mut sink).await;
+    let end = pump(
+        &driver,
+        SessionHandle(7),
+        FakeSource::of(&[]),
+        &mut sink,
+        SessionBudgets::default(),
+    )
+    .await;
     assert_eq!(
         end,
         SessionEnd {
@@ -513,7 +529,14 @@ async fn a_failed_read_is_the_clients_cut_with_nothing_written_back() {
     let mut sink = FakeSink::open();
     let mut source = FakeSource::of(&["one"]);
     source.frames.push_back(Err(TransportError::Reset));
-    let end = pump(&driver, SessionHandle(7), &mut source, &mut sink).await;
+    let end = pump(
+        &driver,
+        SessionHandle(7),
+        &mut source,
+        &mut sink,
+        SessionBudgets::default(),
+    )
+    .await;
     assert_eq!(
         end,
         SessionEnd {
@@ -535,7 +558,14 @@ async fn a_driver_that_ends_it_is_the_upstream_cut() {
     let driver = FakeDriver::new(vec![ending]);
     let mut sink = FakeSink::open();
     let mut source = FakeSource::of(&["one", "two"]);
-    let end = pump(&driver, SessionHandle(7), &mut source, &mut sink).await;
+    let end = pump(
+        &driver,
+        SessionHandle(7),
+        &mut source,
+        &mut sink,
+        SessionBudgets::default(),
+    )
+    .await;
 
     assert_eq!(
         sink.frames(),
@@ -574,11 +604,151 @@ async fn every_ending_closes_the_session_exactly_once() {
     ];
     for (driver, source, accepts) in endings {
         let mut sink = FakeSink::accepting(accepts);
-        let end = pump(&driver, SessionHandle(7), source, &mut sink).await;
+        let end = pump(
+            &driver,
+            SessionHandle(7),
+            source,
+            &mut sink,
+            SessionBudgets::default(),
+        )
+        .await;
         let closes = driver.closes();
         assert_eq!(closes.len(), 1, "one ending, one close");
         assert_eq!(closes[0], (SessionHandle(7), end));
     }
+}
+
+// ── the whole-session deadline ──────────────────────────────────────────────────────────────────
+
+/// A source that never yields anything and never ends: the peer that connected and then said
+/// nothing, which is the cheapest way to hold a slot on this node.
+struct SilentSource;
+
+impl FrameSource for SilentSource {
+    async fn next_frame(&mut self) -> Option<Result<Vec<u8>, TransportError>> {
+        std::future::pending().await
+    }
+}
+
+/// A source that always has another frame: the peer that never stops talking, which a read-scoped
+/// timeout would never bound at all.
+struct EndlessSource {
+    served: u64,
+}
+
+impl FrameSource for &mut EndlessSource {
+    async fn next_frame(&mut self) -> Option<Result<Vec<u8>, TransportError>> {
+        self.served += 1;
+        // A frame per simulated millisecond. Under a paused clock this is what makes the exchange
+        // consume the budget rather than spin: without it the loop would never yield to the timer.
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        Some(Ok(b"more".to_vec()))
+    }
+}
+
+/// A peer that connected and then said nothing is cut by THIS side when the budget runs out.
+///
+/// All three halves are the cell: the reason is `Timeout` rather than a carrier failure, the cut is
+/// this node's because the deadline was this node's, and the driver is still closed exactly once —
+/// the expiry is a fifth way out of the loop and the one most likely to be the one that leaks.
+#[tokio::test(start_paused = true)]
+async fn a_session_that_outruns_its_deadline_is_cut_by_this_side() {
+    let driver = FakeDriver::new(Vec::new());
+    let mut sink = FakeSink::open();
+    let end = pump(
+        &driver,
+        SessionHandle(7),
+        SilentSource,
+        &mut sink,
+        SessionBudgets::within(std::time::Duration::from_secs(30)),
+    )
+    .await;
+
+    assert_eq!(
+        end,
+        SessionEnd {
+            cut: Cut::Upstream,
+            reason: CloseReason::Timeout
+        }
+    );
+    assert_eq!(
+        sink.closes,
+        vec![1011],
+        "a deadline this node was waiting on is this node's own fault to report"
+    );
+    let closes = driver.closes();
+    assert_eq!(closes.len(), 1, "one ending, one close");
+    assert_eq!(closes[0], (SessionHandle(7), end));
+}
+
+/// A peer that never stops talking is cut by the SAME budget.
+///
+/// The property a read-scoped timeout does not have: every individual read here completes well
+/// inside the deadline, and the session still ends at it, because the budget is the session's rather
+/// than any one frame's.
+#[tokio::test(start_paused = true)]
+async fn a_peer_that_never_stops_talking_still_meets_the_deadline() {
+    let driver = FakeDriver::new(Vec::new());
+    let mut sink = FakeSink::open();
+    let mut source = EndlessSource { served: 0 };
+    let end = pump(
+        &driver,
+        SessionHandle(7),
+        &mut source,
+        &mut sink,
+        SessionBudgets::within(std::time::Duration::from_secs(30)),
+    )
+    .await;
+
+    assert_eq!(
+        end,
+        SessionEnd {
+            cut: Cut::Upstream,
+            reason: CloseReason::Timeout
+        }
+    );
+    assert!(
+        source.served > 1,
+        "the peer was served frames before the budget ran out, not cut on its first read"
+    );
+}
+
+/// A session that finishes inside its budget ends the way it would have with no budget at all.
+///
+/// The other half of the cell above: a deadline that cut a healthy exchange would be indistinguishable
+/// from one that never fired, if only the firing were asserted.
+#[tokio::test(start_paused = true)]
+async fn a_session_inside_its_deadline_ends_on_its_own_terms() {
+    let driver = FakeDriver::new(vec![reply(&["a"], Outcome::Completed)]);
+    let mut sink = FakeSink::open();
+    let end = pump(
+        &driver,
+        SessionHandle(7),
+        FakeSource::of(&["one"]),
+        &mut sink,
+        SessionBudgets::within(std::time::Duration::from_secs(30)),
+    )
+    .await;
+
+    assert_eq!(
+        end,
+        SessionEnd {
+            cut: Cut::Client,
+            reason: CloseReason::PeerClosed
+        }
+    );
+    assert_eq!(sink.frames(), vec!["a"]);
+    assert_eq!(sink.closes, vec![1000]);
+}
+
+/// The unbounded budget is the default, and it is what an embedder driving a pair it owns gets.
+#[test]
+fn the_default_budget_bounds_nothing() {
+    assert_eq!(SessionBudgets::default().deadline, None);
+    assert_eq!(
+        SessionBudgets::within(std::time::Duration::from_secs(5)).deadline,
+        Some(std::time::Duration::from_secs(5))
+    );
 }
 
 // ── the numbers this wire spells ────────────────────────────────────────────────────────────────

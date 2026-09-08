@@ -45,6 +45,22 @@
 //! duplex session hands the far side a state machine that silently disagrees with this one, which is
 //! worse than an honest close.
 //!
+//! ## The one budget the pump itself owns
+//!
+//! [`SessionBudgets`] carries a WHOLE-SESSION deadline and nothing else, and the "nothing else" is
+//! the deliberate half. The other two bounds a duplex session runs under live where the thing they
+//! bound lives: the message ceiling is the carrier's, because the carrier is what buffers a partial
+//! message before anyone above it has been handed anything, and a pump-side check would only refuse
+//! bytes already in this node's heap; and the keepalive answer is the carrier's for the same reason,
+//! because a ping is a frame of the wire's own protocol that no plane may ever see. A pump that owned
+//! either would be a pump that had to know what the wire's frames are, which is the knowledge this
+//! module is arranged not to have.
+//!
+//! What is left is the one bound that is genuinely about the SESSION rather than about a frame: how
+//! long the whole thing may run. It is measured from the pump's first read and it ends the session
+//! with [`CloseReason::Timeout`] as this side's cut — a deadline this node was waiting on is this
+//! node's own decision, not a caller's failure to meet one.
+//!
 //! ## What this transport therefore does NOT know
 //!
 //! Which plane answered. What a frame meant. What the session accumulated. What any of it cost. It
@@ -253,33 +269,100 @@ pub fn reason_for(error: TransportError) -> CloseReason {
     }
 }
 
+/// The bounds one mounted session runs under, as the transport that composed the mount states them.
+///
+/// One field, and this module's own header says why the other two bounds a duplex session has are
+/// not here. `Default` is the unbounded session, which is what an embedder driving the pump over a
+/// pair it already owns wants: the deadline exists to bound a session opened by a stranger.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionBudgets {
+    /// How long the whole session may run, measured from the pump's first read.
+    ///
+    /// `None` is unbounded, and it is a real choice rather than a missing value: a session between
+    /// two things this deployment composed itself has no stranger on either end, and a deadline on
+    /// one would cut a healthy long-lived exchange for no reason anybody could act on.
+    pub deadline: Option<std::time::Duration>,
+}
+
+impl SessionBudgets {
+    /// A session bounded to run no longer than `deadline`.
+    #[must_use]
+    pub fn within(deadline: std::time::Duration) -> Self {
+        Self {
+            deadline: Some(deadline),
+        }
+    }
+}
+
 /// RUN ONE OPEN SESSION to its end, and report which end cut it.
 ///
 /// One frame at a time, in order, with no queue in either direction — see this module's own header
 /// for why the absence of the queue is the backpressure posture rather than a missing feature.
 ///
 /// [`SessionDriver::close`] is called exactly once, on every ending: the peer's orderly close, a
-/// carrier that failed under the read, a sink that would not take a frame, and the driver's own
-/// decision to end it. A pump that skipped it on the ugly endings would leak precisely the sessions
-/// that failed.
+/// carrier that failed under the read, a sink that would not take a frame, the whole-session deadline
+/// running out, and the driver's own decision to end it. A pump that skipped it on the ugly endings
+/// would leak precisely the sessions that failed.
 pub async fn pump<Src, Snk>(
     driver: &dyn SessionDriver,
     session: SessionHandle,
     mut source: Src,
     mut sink: Snk,
+    budgets: SessionBudgets,
 ) -> SessionEnd
 where
     Src: FrameSource,
     Snk: FrameSink,
 {
-    let end = run(driver, session, &mut source, &mut sink).await;
+    let end = run(driver, session, &mut source, &mut sink, budgets).await;
     driver.close(session, end);
     end
 }
 
+/// The deadline, wrapped around the whole exchange rather than around one read.
+///
+/// Around the WHOLE of it, because the budget is a statement about the session and a peer can spend
+/// it in either direction: one that sends a frame a second forever and one that sends nothing at all
+/// have both been on this node for the same length of time. A timeout on the read alone would bound
+/// only the second, and would let the first run for as long as it kept talking.
+///
+/// The expiry drops the exchange and then writes the close on the sink the exchange was using, which
+/// is why the future is bound to a local first: a future left as a match scrutinee lives to the end
+/// of the match, and the borrow it holds on the sink with it.
+async fn run<Src, Snk>(
+    driver: &dyn SessionDriver,
+    session: SessionHandle,
+    source: &mut Src,
+    sink: &mut Snk,
+    budgets: SessionBudgets,
+) -> SessionEnd
+where
+    Src: FrameSource,
+    Snk: FrameSink,
+{
+    let Some(deadline) = budgets.deadline else {
+        return frames(driver, session, source, sink).await;
+    };
+    let bounded = tokio::time::timeout(deadline, frames(driver, session, source, sink)).await;
+    match bounded {
+        Ok(end) => end,
+        Err(_) => {
+            // This side's cut, and this side's fault in the only sense a close code can say: the
+            // deadline was this node's, the caller never agreed to it, and nothing the caller did
+            // was wrong. The courtesy close still goes out — the peer is there, by definition, or
+            // the read would have ended instead.
+            sink.write_close(close_code(CloseReason::Timeout)).await;
+            SessionEnd {
+                cut: Cut::Upstream,
+                reason: CloseReason::Timeout,
+            }
+        }
+    }
+}
+
 /// The loop itself, split out so that [`pump`] has exactly one exit and the `close` call cannot be
 /// forgotten on one of the four ways out.
-async fn run<Src, Snk>(
+async fn frames<Src, Snk>(
     driver: &dyn SessionDriver,
     session: SessionHandle,
     source: &mut Src,
