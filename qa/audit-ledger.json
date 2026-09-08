@@ -1434,8 +1434,8 @@
     "MEDIUM": 0,
     "LOW": 1
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plugin/src/tests"
@@ -1457,7 +1457,7 @@
     {
      "round": 2,
      "result": "findings",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "1d41ec5939e4835e31401eafb9ea0e3c731a51d1a6fa33f4a583ce3e207b8ca8",
      "counts": {
@@ -1465,7 +1465,7 @@
       "MEDIUM": 0,
       "LOW": 1
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3161,8 +3161,8 @@
     "MEDIUM": 0,
     "LOW": 1
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-pack/src/tests"
@@ -3184,7 +3184,7 @@
     {
      "round": 2,
      "result": "findings",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "c4eee4b0205e454824878bfa779aeffb42caead81efdb062e8c3daa98f0a7f85",
      "counts": {
@@ -3192,7 +3192,7 @@
       "MEDIUM": 0,
       "LOW": 1
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3211,8 +3211,8 @@
     "MEDIUM": 0,
     "LOW": 1
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sdk/src/tests"
@@ -3248,7 +3248,7 @@
     {
      "round": 7,
      "result": "findings",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "34a10e3aced4ac756871a07cbde23fb71d78f8b16cb5eb962742d90ffcc758d7",
      "counts": {
@@ -3256,7 +3256,7 @@
       "MEDIUM": 0,
       "LOW": 1
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3275,8 +3275,8 @@
     "MEDIUM": 0,
     "LOW": 0
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sign/src/tests"
@@ -3298,7 +3298,7 @@
     {
      "round": 2,
      "result": "zero",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "5f4c91cdb52915b2a182e4a96c08743758a2ecd32cf2048e059029a22f7b5364",
      "counts": {
@@ -3306,7 +3306,7 @@
       "MEDIUM": 0,
       "LOW": 0
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3325,8 +3325,8 @@
     "MEDIUM": 1,
     "LOW": 0
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-testkit/src/tests"
@@ -3348,7 +3348,7 @@
     {
      "round": 2,
      "result": "findings",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "4721b81ba45d84cd262a119b1f128455767c0b47f32bda368d65e4670fe1d965",
      "counts": {
@@ -3356,7 +3356,7 @@
       "MEDIUM": 1,
       "LOW": 0
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — 11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -4248,8 +4248,8 @@
     "MEDIUM": 0,
     "LOW": 0
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
@@ -4264,7 +4264,7 @@
     {
      "round": 2,
      "result": "zero",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "ca963de88b5595f90b883824ad626048e13c6e6caf3ec8c86ec81ef429f95a78",
      "counts": {
@@ -4272,7 +4272,7 @@
       "MEDIUM": 0,
       "LOW": 0
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
     }
    ]
   },
@@ -5090,14 +5090,14 @@
     "MEDIUM": 0,
     "LOW": 0
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
      "round": 1,
      "result": "zero",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "44fae6ebeab54f12cf8b1481d76b9c4a8ce984096df6c1609f07d817e7ce6951",
      "counts": {
@@ -5105,7 +5105,7 @@
       "MEDIUM": 0,
       "LOW": 0
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
     }
    ]
   },
@@ -5124,14 +5124,14 @@
     "MEDIUM": 0,
     "LOW": 0
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
      "round": 1,
      "result": "zero",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "c94caec0fcc26700f00abbe15f72aae0d09e8bdd9fbf6dbc195f8395eb2e8acd",
      "counts": {
@@ -5139,7 +5139,7 @@
       "MEDIUM": 0,
       "LOW": 0
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
     }
    ]
   },
@@ -5174,14 +5174,14 @@
     "MEDIUM": 0,
     "LOW": 0
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
      "round": 1,
      "result": "zero",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "e8c354c126a2d9f42397fed1b66182f2b3da220b5117f8a01969765f2a44ac17",
      "counts": {
@@ -5189,7 +5189,7 @@
       "MEDIUM": 0,
       "LOW": 0
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
     }
    ]
   },
@@ -5208,14 +5208,14 @@
     "MEDIUM": 0,
     "LOW": 0
    },
-   "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
-   "auditor": "opus-codeaudit-plugins-r1",
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
      "round": 1,
      "result": "zero",
-     "auditor": "opus-codeaudit-plugins-r1",
+     "auditor": "opus-plugins-auditor-a",
      "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
      "tree_hash": "cee6c95caa42cd80108087fa5a7a151f28aba7d5138af43ee8054f543561cbb9",
      "counts": {
@@ -5223,7 +5223,7 @@
       "MEDIUM": 0,
       "LOW": 0
      },
-     "report": "audits/codeaudit-plugin-toolchain-r1.md — tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
     }
    ]
   },
