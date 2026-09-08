@@ -199,12 +199,14 @@ const MAX_OPEN_TOOLS: usize = OPENAI_FAMILY_MAX_OPEN_TOOLS;
 /// this provider's own `/v1/responses` `input_tokens_details.cache_write_tokens` populate — is what
 /// prices it at that tier and what carries the count across a cross-protocol hop.
 ///
-/// Read as an integer, the same way every other count on this usage object is read here.
+/// Read through the double-tolerant token reader for the same reason every count here is: an
+/// OpenAI-COMPATIBLE backend is free to serialize a count as `8000.0`, which `as_u64` answers `None`
+/// for, silently ledgering a real billed count as zero.
 fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
     usage_val
         .get("prompt_tokens_details")
         .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(serde_json::Value::as_u64)
+        .and_then(crate::usage_tail::token_count)
 }
 
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend

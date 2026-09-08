@@ -10,7 +10,7 @@ impl ProtocolReader for OpenAiReader {
         let cached = v
             .get("prompt_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
-            .and_then(|x| x.as_u64());
+            .and_then(super::super::usage_tail::token_count);
         let cache_write = super::read_cache_write_tokens(&v);
         Some(
             crate::ir::IrUsage {

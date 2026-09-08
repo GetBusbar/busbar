@@ -84,3 +84,34 @@ pub fn isolate_tail_usage_object(tail: &[u8], key: &[u8]) -> Option<serde_json::
     let obj = balanced_object_after(tail, key_pos + key.len())?;
     busbar_substrate_values::json::parse(obj).ok()
 }
+
+/// Read a TOKEN COUNT off a wire value that the provider's spec types as a JSON *number*, not an
+/// integer. Cohere's published OpenAPI types every count in `Usage` — `tokens.input_tokens`,
+/// `tokens.output_tokens`, the whole `billed_units` bucket and `cached_tokens` — as `type: number`,
+/// so `11.0` is a SPEC-VALID way for Cohere to report eleven tokens. `serde_json`'s `as_u64` returns
+/// `None` for `11.0` (it is an `f64` in the parsed tree, not an integer), and every reader that
+/// reached for `as_u64` then fell through to its `unwrap_or(0)` — ledgering a real, billed token
+/// count as ZERO with no error anywhere. Nothing about the body is malformed; only the JSON number
+/// form differs, so this is a silent, total loss of the count for that request.
+///
+/// An integer parses exactly as before. A finite non-negative float is accepted; a non-integral
+/// value is rounded UP, because a partially-consumed billing unit is still a whole unit charged and
+/// this must never bill LESS than the provider reported. Negative, non-finite and out-of-range
+/// values stay `None` (there is no such token count) rather than saturating into a fabricated one.
+#[must_use]
+pub fn token_count(v: &serde_json::Value) -> Option<u64> {
+    if let Some(n) = v.as_u64() {
+        return Some(n);
+    }
+    let f = v.as_f64()?;
+    if !f.is_finite() || f < 0.0 {
+        return None;
+    }
+    let ceil = f.ceil();
+    // `u64::MAX` is not exactly representable as an `f64`; compare against the next power of two so
+    // the cast below can never be undefined-adjacent or wrap.
+    if ceil >= 18_446_744_073_709_551_616.0 {
+        return None;
+    }
+    Some(ceil as u64)
+}
