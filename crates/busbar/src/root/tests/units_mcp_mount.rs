@@ -290,6 +290,7 @@ async fn a_unit_of_this_plane_travels_through_the_loop_and_the_surfaces_answer_r
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
 
@@ -327,6 +328,7 @@ async fn the_trailing_slash_form_travels_the_same_loop() {
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
 
@@ -355,6 +357,7 @@ async fn a_path_this_plane_does_not_claim_goes_straight_to_the_surface() {
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
 
@@ -377,6 +380,7 @@ async fn a_method_this_plane_does_not_name_is_answered_by_the_surface_and_not_by
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
 
@@ -415,6 +419,7 @@ async fn the_discovery_document_is_claimed_and_is_served_by_the_surface() {
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
 
@@ -440,6 +445,7 @@ async fn a_body_over_the_operators_cap_goes_straight_to_the_surface() {
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
         busbar_kernel::teller::Kernel::new(),
+        Arc::new(crate::root::data_plane::NodeParts::new()),
         // One byte, which every well-formed request of this protocol exceeds.
         1,
     );

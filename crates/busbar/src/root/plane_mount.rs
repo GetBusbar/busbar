@@ -90,6 +90,23 @@ pub trait MountedLeg: Send + Sync + 'static {
     /// The claims this plane declares, walked by [`claims_a_path`] and never restated here.
     fn claims(&self) -> &'static [Claim];
 
+    /// The plane's DECLARED SURFACE, where this protocol has one.
+    ///
+    /// A second declaration of the same protocol's addresses, and it is asked as well as the claim
+    /// table because the two answer different questions: the claim table is what the kernel routes
+    /// on, the surface is what a transport serves with. An address either of them names is an
+    /// address this protocol owns, so a mount that asked only one would hand away every address the
+    /// other had that it did not — silently, with a route answering around the loop while the plane
+    /// still said it owned it.
+    ///
+    /// `None` for a plane that declares no wire surface, which is an honest absence rather than a
+    /// default: a protocol whose addresses live only in its claim table is completely described by
+    /// the claim table, and inventing a surface for it here would be this file declaring a plane's
+    /// addresses on the plane's behalf.
+    fn surface(&self) -> Option<&'static busbar_contract::transport::surface::WireSurface> {
+        None
+    }
+
     /// Whether these bytes are a unit THIS PLANE has, asked of the plane's own decode.
     fn recognises(&self, arrival: &busbar_contract::transport::Arrival<'_>) -> bool;
 
@@ -530,16 +547,26 @@ pub fn mount(
     inner: axum::Router,
     leg: Arc<dyn MountedLeg>,
     kernel: busbar_kernel::teller::Kernel,
+    parts: Arc<crate::root::data_plane::NodeParts>,
     request_body_max_bytes: usize,
 ) -> axum::Router {
     let runtime = tokio::runtime::Handle::current();
     let errands = drive(inner.clone(), &runtime);
+    // THE PLANE'S OTHER DECLARATION, resolved once at composition rather than per request. A chain
+    // that could not be composed over the surface is a surface the contract's own check refused, and
+    // a mount that answered from a refused declaration would be serving addresses nothing verified —
+    // so the claim question falls back to the claim table alone, which is what it always was.
+    let chain = leg
+        .surface()
+        .and_then(|surface| {
+            crate::root::data_plane::PlaneChain::over_parts(surface, Arc::clone(&parts)).ok()
+        })
+        .map(Arc::new);
     let node = Arc::new(MountedNode {
         leg,
         kernel,
-        gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-        canary: busbar_caps::Canary::new(),
-        next_key: std::sync::atomic::AtomicU64::new(1),
+        parts,
+        chain,
     });
 
     axum::Router::new().fallback(axum::routing::any(
@@ -554,7 +581,7 @@ pub fn mount(
                 // routes that are deliberately outside it, and walking those through a loop whose
                 // decode reads a table they were never in would refuse a route that has always
                 // answered.
-                if !claims_a_path(node.leg.claims(), req.uri().path()) {
+                if !node.claims(req.uri().path(), req.method().as_str()) {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
 
@@ -881,12 +908,30 @@ fn with_arrival<T>(
 struct MountedNode {
     leg: Arc<dyn MountedLeg>,
     kernel: busbar_kernel::teller::Kernel,
-    gauge: busbar_kernel::slice::ConcurrencyGauge,
-    canary: busbar_caps::Canary,
-    next_key: std::sync::atomic::AtomicU64,
+    /// THE NODE'S OWN PARTS, and not this mount's. A gauge or a canary made here would count one
+    /// plane's traffic against an empty node, and a second plane doing the same would make two
+    /// nodes out of one process. Composed once by the boot and lent to every mount on it.
+    parts: Arc<crate::root::data_plane::NodeParts>,
+    /// This plane's declared surface, over the same parts, where the plane declares one.
+    chain: Option<Arc<crate::root::data_plane::PlaneChain>>,
 }
 
 impl MountedNode {
+    /// **Whether these bytes are addressed to THIS PLANE**, asked of every declaration it has.
+    ///
+    /// The claim table is what the kernel routes on and is asked first; the declared surface is what
+    /// a transport serves with, and is asked as well. Two tables of one protocol's addresses exist
+    /// because they answer two different questions, and an address either of them names is an
+    /// address this protocol owns — so a request is handed to the surface below only when NEITHER
+    /// claims it.
+    fn claims(&self, path: &str, method: &str) -> bool {
+        claims_a_path(self.leg.claims(), path)
+            || self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| chain.claims_the_target(path, method))
+    }
+
     /// Walk one arrival through the loop and answer with what it produced.
     ///
     /// **ASYNC, AND THE LEG'S RESPONSE IS RETURNED UNTOUCHED.** There is no `http_response` on this
@@ -900,43 +945,18 @@ impl MountedNode {
         arrival: &busbar_contract::transport::Arrival<'_>,
         dispatch: &dyn MountDispatch,
     ) -> MountedReply {
-        let key = busbar_caps::UnitKey::new(
-            self.next_key
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        );
-        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
-            &self.kernel.admit_token(),
-            busbar_caps::PrincipalId::new(""),
-            0,
-        ));
-        let leases = busbar_kernel::slice::LeaseCell::new();
-        let meter = busbar_kernel::teller::AccrualMeter::new();
-        let ctx = busbar_kernel::teller::UnitCtx {
-            key,
-            origin: busbar_caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            // A data listener, and a unit of an ordinary plane. Both are answered with what is true
-            // for this mount rather than derived: a node that served this on its administrative
-            // listener would be running these units as kernel verbs, which is the wrong answer
-            // arrived at silently.
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
+        // THE NODE'S PARTS, composed by the thing that owns them. This file supplies the leg and the
+        // seam; the unit key, the hold cell, the leases, the meter and the two node-wide counters
+        // are the node's, which is what makes one process one node however many planes are mounted
+        // on it.
+        let cells = self.parts.open(&self.kernel);
         let (ended, answer) = self
             .leg
             .serve(
                 arrival,
                 &self.kernel,
-                &ctx,
-                busbar_kernel::teller::Run {
-                    cell: &cell,
-                    parent: None,
-                    leases: &leases,
-                    gauge: &self.gauge,
-                    canary: &self.canary,
-                    meter: &meter,
-                },
+                &cells.ctx,
+                self.parts.lend(&cells),
                 Some(dispatch),
             )
             .await;
@@ -1055,6 +1075,11 @@ pub fn compose_mounts(
 ) -> (axum::Router, Vec<Mounted>) {
     let mut composed = router;
     let mut report = Vec::new();
+    // THE NODE'S PARTS, COMPOSED ONCE FOR THE PROCESS and lent to every mount this fold builds. One
+    // set per mount would be one node per plane: each gauge bounding its own plane's share of the
+    // traffic, each canary balancing its own plane's half of the books, and every one of them
+    // looking healthy because none of them can see the others.
+    let parts = Arc::new(crate::root::data_plane::NodeParts::new());
     for row in crate::root::registry::mount_rows() {
         match (row.compose)(inputs) {
             Ok(leg) => {
@@ -1065,6 +1090,7 @@ pub fn compose_mounts(
                     composed,
                     leg,
                     crate::root::kernel::new_kernel(),
+                    Arc::clone(&parts),
                     inputs.request_body_max_bytes,
                 );
                 report.push(Mounted {
