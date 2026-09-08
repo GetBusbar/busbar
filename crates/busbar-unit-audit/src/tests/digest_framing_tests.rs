@@ -5,28 +5,44 @@
 //!
 //! An audit digest exists to make one claim: these bytes are the mutation that happened, and no
 //! other. That claim is only as strong as the map from fields to preimage being INJECTIVE — two
-//! different mutations must never produce one preimage. The legacy pipe join was not injective,
-//! because `resource` and `principal` are free text a caller hands in and a bar inside either moved
-//! the field boundaries.
+//! different mutations must never produce one preimage. A separator join is not injective whenever
+//! a field can contain the separator, because a bar the caller put inside one field moves the
+//! boundary the join relies on.
+//!
+//! This crate carries TWO framings, and which one a record uses is not data:
+//! [`ChainedRecord::FRAMING`] is an associated const, a wire fact of the records already on disk.
+//!
+//! * [`crate::record::AuditRecord`], the NEW fixed record, is [`Framing::LengthPrefixed`]. Every
+//!   field in it can hold arbitrary caller-influenced text, so the boundary is made unforgeable.
+//! * [`AuditEntry`], the previous release's admin mutation chain, is [`Framing::PipeSeparated`],
+//!   kept byte for byte because its records are already persisted. Changing it would report every
+//!   deployment's history as TAMPERED at its next boot.
 //!
 //! So these are the properties the framing owes, stated as tests rather than as prose:
 //!
-//! 1. **NO TWO DISTINCT MUTATIONS SHARE A DIGEST.** Demonstrated on the exact pair the legacy
-//!    framing collides, which must separate under the new one.
-//! 2. **THE VERSION IS INSIDE WHAT IS SIGNED.** An entry relabelled from one scheme to the other
-//!    stops verifying, so a chain cannot be walked backwards into the ambiguous framing.
-//! 3. **A LEGACY CHAIN STILL VERIFIES**, and a chain that CROSSES the upgrade verifies as one
-//!    chain, each entry under its own framing.
+//! 1. **NO TWO DISTINCT MUTATIONS SHARE A DIGEST** under the length-framed scheme, demonstrated on
+//!    the exact pair a separator join collides.
+//! 2. **THE FRAMING IS NOT A FIELD.** It is a per-type const, so there is no byte a tamper can flip
+//!    to move a record into the other preimage space. Both consts are pinned here, because nothing
+//!    else in the crate fails if one of them changes.
+//! 3. **A LEGACY CHAIN STILL VERIFIES**, and is still tamper-evident: the old framing is ambiguous,
+//!    not absent.
 //! 4. **EVERY FIELD CARRIES ITS OWN LENGTH**, checked on the preimage bytes themselves rather than
 //!    inferred from a digest agreeing with itself.
 
-use crate::legacy::chain::{digest, seal, verify_chain, Digest, Framing};
-use crate::legacy::entry::{DIGEST_SCHEME_LEGACY_PIPE, DIGEST_SCHEME_LEN_PREFIXED};
-use crate::legacy::{AuditEntry, AuditInput, ADMIN_LOG, OUTCOME_APPLIED, OUTCOME_REJECTED};
+use busbar_caps::{
+    Audit as AuditStep, KernelSeal, Origin, OriginKind, Outcome, UnitKey, UnitToken,
+};
 
-/// Build an entry at a position under a chosen scheme, sealed with the digest that scheme implies.
-fn sealed_under(
-    scheme: u8,
+use crate::legacy::chain::{digest, seal, verify_chain, ChainedRecord, Digest, Framing};
+use crate::legacy::{AuditEntry, AuditInput, ADMIN_LOG, OUTCOME_APPLIED, OUTCOME_REJECTED};
+use crate::record::{
+    Amount, Audit, AuditChain, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts,
+    QuantitySource, Subject, UsageLine, What,
+};
+
+/// Build an admin entry at a position, sealed with the digest its record type's framing implies.
+fn sealed(
     seq: u64,
     prev_hash: &str,
     action: &str,
@@ -43,14 +59,37 @@ fn sealed_under(
         principal: principal.to_string(),
         prev_hash: prev_hash.to_string(),
         hash: String::new(),
-        digest_scheme: scheme,
         recorded_here: false,
     };
     entry.hash = digest(&entry);
     entry
 }
 
-/// THE COLLISION THE LEGACY FRAMING ADMITS, AND THE ONE THE NEW FRAMING MUST NOT.
+/// The admin entry's chained fields, fed into a canonicaliser of the caller's choosing. This is the
+/// same field list and the same order [`AuditEntry::digest_fields`] uses; feeding it under BOTH
+/// framings is how the collision below is demonstrated rather than asserted about.
+fn admin_preimage(
+    framing: Framing,
+    prev_hash: &str,
+    seq: u64,
+    ts: u64,
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+) -> String {
+    let mut d = Digest::new(framing);
+    d.text(prev_hash)
+        .num(seq)
+        .num(ts)
+        .text(action)
+        .text(resource)
+        .text(outcome)
+        .text(principal);
+    d.finish()
+}
+
+/// THE COLLISION A SEPARATOR JOIN ADMITS, AND THE ONE THE LENGTH FRAMING MUST NOT.
 ///
 /// Two mutations that disagree about the two things an audit log exists to record — WHAT HAPPENED
 /// and WHO DID IT — hash identically when the fields are joined by a bar, because the bar the
@@ -60,27 +99,29 @@ fn sealed_under(
 /// * resource `hook:x|rejected`, outcome `applied`, principal `mallory`
 ///
 /// One of those says a change was refused and blames a principal whose name contains a bar; the
-/// other says the change was APPLIED by mallory. Under the pipe join the chain verifier passes
-/// either against the other's digest, so the log agrees with the lie. Under the length-framed
-/// scheme the two preimages differ in the length words themselves, which no caller writes.
+/// other says the change was APPLIED by mallory. Under the pipe join the two preimages are one, so
+/// a verifier passes either against the other's digest. Under the length-framed scheme the two
+/// differ in the length words themselves, which no caller writes.
 #[test]
-fn two_admin_mutations_that_collide_under_the_pipe_join_have_distinct_length_framed_digests() {
-    let honest = |scheme| {
-        sealed_under(
-            scheme,
-            7,
+fn two_mutations_that_collide_under_the_pipe_join_have_distinct_length_framed_digests() {
+    let honest = |framing| {
+        admin_preimage(
+            framing,
             "cafe",
+            7,
+            1_700_000_007,
             "hook.register",
             "hook:x",
             OUTCOME_REJECTED,
             "applied|mallory",
         )
     };
-    let lie = |scheme| {
-        sealed_under(
-            scheme,
-            7,
+    let lie = |framing| {
+        admin_preimage(
+            framing,
             "cafe",
+            7,
+            1_700_000_007,
             "hook.register",
             "hook:x|rejected",
             OUTCOME_APPLIED,
@@ -88,38 +129,28 @@ fn two_admin_mutations_that_collide_under_the_pipe_join_have_distinct_length_fra
         )
     };
 
-    // The defect, demonstrated rather than asserted about: under the legacy framing the two are one
+    // The defect, demonstrated rather than asserted about: under a separator join the two are one
     // digest. If this ever stops holding the collision pair above has drifted and the rest of this
     // test is no longer testing what it says.
     assert_eq!(
-        honest(DIGEST_SCHEME_LEGACY_PIPE).hash,
-        lie(DIGEST_SCHEME_LEGACY_PIPE).hash,
-        "the pipe join is expected to collide on this pair -- it is why the framing was replaced"
+        honest(Framing::PipeSeparated),
+        lie(Framing::PipeSeparated),
+        "the pipe join is expected to collide on this pair -- it is why the new record is framed"
     );
 
-    // The property: the same two mutations are two digests under the framing every new entry is
+    // The property: the same two mutations are two digests under the framing every NEW record is
     // sealed with.
     assert_ne!(
-        honest(DIGEST_SCHEME_LEN_PREFIXED).hash,
-        lie(DIGEST_SCHEME_LEN_PREFIXED).hash,
+        honest(Framing::LengthPrefixed),
+        lie(Framing::LengthPrefixed),
         "a caller's own bytes moved a field boundary under the length-framed scheme"
-    );
-
-    // And the digest each entry carries is the one its own framing produces, so the verifier
-    // separates them too: the honest record's digest must not verify the lie.
-    let mut forged = lie(DIGEST_SCHEME_LEN_PREFIXED);
-    forged.hash = honest(DIGEST_SCHEME_LEN_PREFIXED).hash.clone();
-    assert_ne!(
-        digest(&forged),
-        forged.hash,
-        "an entry re-sealed with a different mutation's digest verified"
     );
 }
 
 /// A BAR ANYWHERE A CALLER CAN PUT ONE STILL SEPARATES.
 ///
-/// The pair above is one witness; the property is general. Every field a caller supplies is walked,
-/// a bar is planted in it, and the mutation that results must digest differently from the one whose
+/// The pair above is one witness; the property is general. Adjacent fields are walked, a bar is
+/// planted in one of them, and the mutation that results must digest differently from the one whose
 /// bar sits in the neighbouring field instead.
 #[test]
 fn moving_a_caller_supplied_bar_between_adjacent_fields_always_changes_the_digest() {
@@ -139,92 +170,164 @@ fn moving_a_caller_supplied_bar_between_adjacent_fields_always_changes_the_diges
         ),
     ];
     for (left, right) in pairs {
-        let a = sealed_under(
-            DIGEST_SCHEME_LEN_PREFIXED,
-            3,
+        let a = admin_preimage(
+            Framing::LengthPrefixed,
             "beef",
+            3,
+            1_700_000_003,
             left.0,
             left.1,
             left.2,
             left.3,
         );
-        let b = sealed_under(
-            DIGEST_SCHEME_LEN_PREFIXED,
-            3,
+        let b = admin_preimage(
+            Framing::LengthPrefixed,
             "beef",
+            3,
+            1_700_000_003,
             right.0,
             right.1,
             right.2,
             right.3,
         );
-        assert_ne!(
-            a.hash, b.hash,
-            "{left:?} and {right:?} share a length-framed digest"
-        );
+        assert_ne!(a, b, "{left:?} and {right:?} share a length-framed digest");
     }
 }
 
-/// THE SCHEME TAG IS INSIDE THE PREIMAGE, NOT BESIDE IT.
+fn token() -> UnitToken<AuditStep> {
+    UnitToken::mint(&KernelSeal::acquire_for_kernel())
+}
+
+/// One set of record inputs, with the two caller-named text fields under the test's control.
+fn record_inputs(op_class: &str, destination: &str) -> AuditInputs {
+    AuditInputs {
+        subject: Subject::PrincipalId("pseudonym-1".into()),
+        what: What {
+            unit_key: UnitKey::new(1),
+            op_class: OpClassId::new(op_class),
+            destination: Some(destination.into()),
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: 1_700_000_000,
+        mono: 1_000,
+        origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+        outcome: OutcomeFacts {
+            unit_end: Outcome::Completed,
+            step: None,
+            finish: FinishClass::Complete,
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        amount: Amount {
+            lines: vec![UsageLine {
+                class: busbar_caps::MeterClassId::new("tokens_out"),
+                quantity: 120,
+                source: QuantitySource::Locator {
+                    direction: busbar_contract::ClassDirection::Response,
+                    ptr: busbar_caps::LocatorPtr::new("/usage/output_tokens"),
+                },
+                estimated: false,
+            }],
+            pre_tier: 600,
+            priced: 540,
+            tier_bp: 9_000,
+            fee_count: 1,
+            currency: "USD".into(),
+            rate_card_version: 3,
+            bucket_chain_ref: "chain:free>paid".into(),
+        },
+        controls: Controls {
+            hold_ref: None,
+            settle_ref: None,
+            slice_ref: None,
+            lease_ref: None,
+            lease_epoch: 0,
+            policy_epoch: 0,
+            hooks_applied: Vec::new(),
+            replayed: false,
+            children: Vec::new(),
+        },
+        correlation_label: None,
+    }
+}
+
+/// THE NEW RECORD'S OWN FIELDS SEPARATE, ON THE RECORD'S OWN DIGEST PATH.
 ///
-/// Relabelling an entry's `digest_scheme` must not be a way to get it verified under the other
-/// framing: if the version merely SELECTED a framing without entering the bytes, an attacker who
-/// could flip the byte could move a record into whichever preimage space suited them.
+/// The two tests above work on the canonicaliser directly. This one goes through the thing a
+/// deployment actually verifies with — [`AuditChain::digest_of`] — because a framing that were
+/// correct in isolation and mis-wired at the record would still let the log agree with a lie. The
+/// operation class and the destination are adjacent caller-named text fields, which is exactly the
+/// adjacency a separator join cannot defend: `("a|b", "c")` and `("a", "b|c")` join to the same
+/// `a|b|c` and must not digest the same.
 #[test]
-fn an_entry_relabelled_into_the_other_scheme_stops_verifying() {
-    let modern = sealed_under(
-        DIGEST_SCHEME_LEN_PREFIXED,
-        4,
-        "d00d",
-        "key.rotate",
-        "key:9",
-        OUTCOME_APPLIED,
-        "alice",
-    );
-    let mut downgraded = modern.clone();
-    downgraded.digest_scheme = DIGEST_SCHEME_LEGACY_PIPE;
+fn a_bar_moved_between_two_caller_named_fields_of_the_new_record_changes_its_digest() {
+    let mut chain = AuditChain::new();
+    let left = chain.seal(record_inputs("chat.completion|upstream-a", "eu"), &token());
+
+    let mut chain = AuditChain::new();
+    let right = chain.seal(record_inputs("chat.completion", "upstream-a|eu"), &token());
+
     assert_ne!(
-        digest(&downgraded),
-        downgraded.hash,
-        "a scheme 2 entry relabelled as scheme 1 still verified"
+        AuditChain::digest_of(&left),
+        AuditChain::digest_of(&right),
+        "moving a bar between the operation class and the destination did not change the digest"
     );
 
-    let legacy = sealed_under(
-        DIGEST_SCHEME_LEGACY_PIPE,
-        4,
-        "d00d",
-        "key.rotate",
-        "key:9",
-        OUTCOME_APPLIED,
-        "alice",
-    );
-    let mut upgraded = legacy.clone();
-    upgraded.digest_scheme = DIGEST_SCHEME_LEN_PREFIXED;
+    // And the digest each record carries is the one its own fields produce, so a record re-sealed
+    // with the other's digest does not verify.
+    let mut forged = right.clone();
+    forged.hash = left.hash.clone();
     assert_ne!(
-        digest(&upgraded),
-        upgraded.hash,
-        "a scheme 1 entry relabelled as scheme 2 still verified"
-    );
-
-    // The two spaces are disjoint even for identical field values.
-    assert_ne!(
-        modern.hash, legacy.hash,
-        "the two schemes produced one digest for one set of fields"
+        AuditChain::digest_of(&forged),
+        forged.hash,
+        "a record re-sealed with a different record's digest verified"
     );
 }
 
-/// A CHAIN WRITTEN ENTIRELY BEFORE THE UPGRADE STILL VERIFIES.
+/// THE FRAMING IS A PROPERTY OF THE RECORD TYPE, NOT A FIELD A TAMPER CAN FLIP.
 ///
-/// This is the migration this module may never do silently: a store full of 1.5.5 entries is read
-/// back at the next boot and every one of them must still check out under the framing it was sealed
-/// with. A verifier that only knew the new framing would report every deployment's history as
-/// tampered.
+/// There is no per-record scheme byte. Which framing a stream uses is [`ChainedRecord::FRAMING`],
+/// fixed at the type, so an attacker who can edit a stored record cannot move it into whichever
+/// preimage space suits them — the choice is not in the bytes to edit. That safety is structural,
+/// which is precisely why it needs pinning: nothing else in this crate fails if either const is
+/// changed, and changing one silently re-frames a stream that already has records on disk.
+#[test]
+fn each_stream_names_its_framing_at_the_type_and_the_two_do_not_agree() {
+    assert_eq!(
+        <AuditEntry as ChainedRecord>::FRAMING,
+        Framing::PipeSeparated,
+        "the previous release's admin chain changed framing -- every persisted chain would now \
+         report itself tampered"
+    );
+
+    // The new fixed record is the length-framed one. Asserted through the digest rather than a
+    // const, because the record's chain is not a `ChainedRecord` implementation: what matters is
+    // that the bytes it hashes are the length-framed bytes, which the collision test above shows
+    // the pipe join cannot produce.
+    let mut chain = AuditChain::new();
+    let record = chain.seal(record_inputs("chat.completion", "upstream-a"), &token());
+    assert_eq!(
+        AuditChain::digest_of(&record),
+        record.hash,
+        "a freshly sealed record did not verify against its own digest path"
+    );
+}
+
+/// A CHAIN WRITTEN ENTIRELY UNDER THE LEGACY FRAMING STILL VERIFIES.
+///
+/// This is the migration this module may never do silently: a store full of the previous release's
+/// entries is read back at the next boot and every one of them must still check out under the
+/// framing it was sealed with. A verifier that only knew the new framing would report every
+/// deployment's history as tampered.
 #[test]
 fn a_chain_sealed_entirely_under_the_legacy_framing_verifies() {
     let mut chain = Vec::new();
     let mut prev = String::new();
     for seq in 1..=5u64 {
-        let e = sealed_under(
-            DIGEST_SCHEME_LEGACY_PIPE,
+        let e = sealed(
             seq,
             &prev,
             "hook.register",
@@ -244,61 +347,26 @@ fn a_chain_sealed_entirely_under_the_legacy_framing_verifies() {
         verify_chain(&tampered).is_err(),
         "a legacy chain accepted an altered entry"
     );
-}
 
-/// ONE CHAIN, TWO FRAMINGS, ACROSS THE UPGRADE BOUNDARY.
-///
-/// A node that upgrades mid-life has legacy entries linked to modern ones in a single sequence. The
-/// per-entry scheme is what makes that verifiable without asking anyone to choose between keeping
-/// their history and being safe, so a mixed chain is not a degraded case — it is the expected shape
-/// of every upgraded deployment's log, and it must verify as one chain.
-#[test]
-fn a_chain_that_crosses_the_framing_upgrade_verifies_as_one_chain() {
-    let mut chain = Vec::new();
-    let mut prev = String::new();
-    for seq in 1..=6u64 {
-        // The first three predate the upgrade, the last three postdate it.
-        let scheme = if seq <= 3 {
-            DIGEST_SCHEME_LEGACY_PIPE
-        } else {
-            DIGEST_SCHEME_LEN_PREFIXED
-        };
-        let e = sealed_under(
-            scheme,
-            seq,
-            &prev,
-            "hook.register",
-            "hook:x",
-            OUTCOME_APPLIED,
-            "alice",
-        );
-        prev = e.hash.clone();
-        chain.push(e);
-    }
-    verify_chain(&chain).expect("a chain spanning the upgrade must verify as one chain");
-
-    // The boundary is real: the entries either side were sealed under different framings.
-    assert_eq!(chain[2].digest_scheme, DIGEST_SCHEME_LEGACY_PIPE);
-    assert_eq!(chain[3].digest_scheme, DIGEST_SCHEME_LEN_PREFIXED);
-
-    // A tamper on EITHER side of the boundary is still caught -- the mixed chain does not verify
-    // vacuously on the half whose framing the verifier was not expecting.
-    for i in [1usize, 4] {
+    // A tamper at either end is caught too, not just one in the middle.
+    for i in [0usize, 4] {
         let mut tampered = chain.clone();
         tampered[i].principal = "mallory".to_string();
         assert!(
             verify_chain(&tampered).is_err(),
-            "a tamper at index {i} of a mixed chain went undetected"
+            "a tamper at index {i} went undetected"
         );
     }
 }
 
-/// EVERY ENTRY THIS BUILD SEALS IS SEALED UNDER THE INJECTIVE FRAMING.
+/// EVERY ENTRY THIS BUILD SEALS ONTO THE ADMIN CHAIN GOES THROUGH ONE CONSTRUCTION PATH.
 ///
-/// There is exactly one construction path and it has no branch, which is what stops a caller
-/// reintroducing the ambiguous framing by asking for it.
+/// [`seal`] is the only thing that may set a hash, and it takes the sequence and the previous hash
+/// as arguments from whatever owns the position rather than from the caller's payload. So a caller
+/// cannot choose its own link, and there is no branch by which one could ask for a different
+/// framing.
 #[test]
-fn the_only_construction_path_seals_under_the_length_framed_scheme() {
+fn the_only_construction_path_seals_with_the_chains_own_framing() {
     let entry: AuditEntry = seal(
         ADMIN_LOG,
         1,
@@ -312,13 +380,23 @@ fn the_only_construction_path_seals_under_the_length_framed_scheme() {
         },
     );
     assert_eq!(
-        entry.digest_scheme, DIGEST_SCHEME_LEN_PREFIXED,
-        "a freshly sealed entry did not name the injective framing"
-    );
-    assert_eq!(
         digest(&entry),
         entry.hash,
         "a freshly sealed entry did not verify"
+    );
+    assert_eq!(
+        entry.hash,
+        admin_preimage(
+            <AuditEntry as ChainedRecord>::FRAMING,
+            "",
+            1,
+            1_700_000_000,
+            "hook.register",
+            "hook:x",
+            OUTCOME_APPLIED,
+            "alice",
+        ),
+        "the sealed digest is not the one the record type's framing produces over its own fields"
     );
 }
 
@@ -350,11 +428,7 @@ fn every_field_of_a_length_framed_preimage_is_preceded_by_its_own_eight_byte_len
         fields.push(buf[at..at + len].to_vec());
         at += len;
     }
-    assert_eq!(
-        at,
-        buf.len(),
-        "the preimage did not end on a field boundary"
-    );
+    assert_eq!(at, buf.len(), "the preimage did not end on a field boundary");
     assert_eq!(
         fields,
         vec![

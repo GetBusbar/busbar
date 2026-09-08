@@ -285,7 +285,6 @@ fn a_broken_admin_chain_names_the_admin_log_in_its_report() {
         principal: "alice".to_string(),
         prev_hash: String::new(),
         hash: String::new(),
-        digest_scheme: crate::legacy::entry::DIGEST_SCHEME_LEN_PREFIXED,
         recorded_here: false,
     };
     entry.hash = crate::legacy::chain::digest(&entry);
