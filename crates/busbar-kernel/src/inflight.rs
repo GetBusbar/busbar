@@ -773,7 +773,13 @@ impl Sessions {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, Arc::clone(&slot));
-        if displaced.is_some() {
+        if let Some(displaced) = displaced {
+            // A slot that leaves the table is closed on the way out, whichever way it leaves.
+            // `remove` has always paired its eviction with the close; this path gave the budget
+            // slot back and left the flag alone, so the displaced slot stayed open forever while
+            // being unreachable from `get` and from `snapshot` — one identity, two live slots, and
+            // the invisible one is the one the tick can never sweep for idleness.
+            displaced.close();
             self.count.fetch_sub(1, Ordering::AcqRel);
         }
         Ok(slot)
