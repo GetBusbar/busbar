@@ -486,7 +486,10 @@ run    = "cargo xtask gate changelog-register --selftest && cargo xtask gate cha
 [[segment]]
 id     = "teller-steps"
 status = "active"
-tier   = "fast"
+# FULL, not fast, since the gate acquired a row that BOOTS THE SHIPPED BINARY. `--root-legs`
+# already built the binary crate, so this segment was never a text-only row in practice; the tier
+# now says so.
+tier   = "full"
 # THE TELLER-STEPS MATRIX (cargo xtask gate teller-steps) — "conformance rigs carry one cell per
 # Teller step per plane" (tracker H2). `--check` proves every GATING plane x step cell in
 # qa/teller-steps.json names a real scenario rather than "none"; `--root-legs` goes further and
@@ -506,6 +509,13 @@ tier   = "fast"
 # a labelled root verdict, a note padded to length three different ways, a rig cell id that is only a
 # prefix of a scenario that still exists, an unanswered plane, and a leg proving zero steps each
 # REFUSED) runs FIRST.
+# THE SIXTH ROW MEASURES. `teller-steps:shipped-path` builds the DEFAULT-feature release binary,
+# boots it against a config that claims every plane, sends one request per leg and reads which half
+# of the binary answered out of the per-unit records the binary itself writes at DEBUG. Every other
+# row here reads the tree; this one reads a process. It exists because the matrix used to assert, in
+# its own header, that the loop was the shipped path for four planes — false for three of them —
+# and nothing checked it: `--root-legs` proves the named CELLS execute, never that a served request
+# reaches them. The row is red in BOTH directions, so the day a leg flips, the claim flips with it.
 run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs-gating && cargo xtask teller-steps --root-legs"
 
 # ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate

@@ -576,6 +576,16 @@ impl Ctx {
         gitp::git(&self.root, &["show", &format!("{r}:{path}")])
     }
 
+    /// The overlay's canned answer for a DERIVED INPUT keyed by `key`, if one was planted.
+    ///
+    /// The seam every non-file input a gate reads must come through. A gate that measures a
+    /// RUNNING PROCESS cannot be self-tested by editing files — there is no file to edit — so the
+    /// measurement is planted here instead, and the selftest's red cases are measurements that
+    /// disagree with the tree's claims rather than trees that disagree with themselves.
+    pub fn planted(&self, key: &str) -> Option<&str> {
+        self.overlay()?.commands.get(key).map(String::as_str)
+    }
+
     /// The overlay's answer for `git-ref:<r>`, if it planted one.
     fn planted_ref(&self, r: &str) -> Option<&str> {
         self.overlay()?
