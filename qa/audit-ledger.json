@@ -3505,6 +3505,21 @@
    ]
   },
   {
+   "id": "crates/api/tests",
+   "kind": "test",
+   "paths": [
+    "crates/api/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/auth-admin-tokens/src/tests",
    "kind": "test",
    "paths": [
@@ -3538,6 +3553,21 @@
      "report": "zero; read fully"
     }
    ]
+  },
+  {
+   "id": "crates/auth-admin-tokens/tests",
+   "kind": "test",
+   "paths": [
+    "crates/auth-admin-tokens/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/auth-static-plugin/src/tests",
@@ -3665,6 +3695,21 @@
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-caps/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-caps/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-contract/tests",
@@ -4487,6 +4532,36 @@
    ]
   },
   {
+   "id": "crates/busbar-transport-tcp/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-tcp/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-tls/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-tls/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-transport-ws/src/tests",
    "kind": "test",
    "paths": [
@@ -4932,6 +5007,21 @@
    ]
   },
   {
+   "id": "crates/hooks-ranking/tests",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/plugin-loader/src/tests",
    "kind": "test",
    "paths": [
@@ -5130,6 +5220,21 @@
    "auditor": null,
    "fixed_at": null,
    "rounds": []
+  },
+  {
+   "id": "crates/secret-ref/tests",
+   "kind": "test",
+   "paths": [
+    "crates/secret-ref/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/store-memory/src/tests",
