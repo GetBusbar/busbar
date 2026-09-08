@@ -22,16 +22,23 @@
 //     the binary's own profile — the reliable source), and
 //   * `lto = "fat"` on [profile.release] is enforced by scripts/profile-lock.sh (a source-level check
 //     over the workspace Cargo.toml), since no build-time API reveals it.
-// PGO is detected two independent ways (belt and suspenders): the `-Cprofile-use` flag appearing in
-// CARGO_ENCODED_RUSTFLAGS, OR the explicit `BUSBAR_PGO=1` that scripts/pgo-build.sh exports on its
-// optimized (-Cprofile-use) build. A plain `cargo build --release` sets neither, so it reports
-// `pgo=false` — which is the whole point.
+// PGO IS DERIVED FROM THE COMPILER'S OWN ACCOUNT, AND FROM NOTHING ELSE: the `-Cprofile-use` flag
+// as it appears in CARGO_ENCODED_RUSTFLAGS. There used to be a second arm here — an explicit
+// `BUSBAR_PGO=1` env var — and it made the whole stamp worthless for the one field it exists to
+// prove: `BUSBAR_PGO=1 cargo build --release` stamped `pgo=true` on a binary the compiler had
+// never seen a profile for, and every gate that asserts `pgo=true` would have passed it. An env
+// var is the BUILDER'S account of what it meant to do; CARGO_ENCODED_RUSTFLAGS is cargo's account
+// of what it actually passed to rustc. Only the second is evidence about the bytes.
+//
+// scripts/pgo-build.sh deliberately stopped exporting BUSBAR_PGO for this reason; the env arm is
+// now gone from this file too, and `scripts/build-provenance-gate.sh --selftest` asserts (over
+// this source) that it does not come back. A plain `cargo build --release` passes no
+// `-Cprofile-use`, so it reports `pgo=false` — which is the whole point.
 
 use std::env;
 
 fn main() {
-    // Re-run when the PGO signal or the rustflags change, so the stamp never goes stale.
-    println!("cargo:rerun-if-env-changed=BUSBAR_PGO");
+    // Re-run when the rustflags change, so the stamp never goes stale.
     println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
     println!("cargo:rerun-if-changed=build.rs");
 
@@ -44,12 +51,8 @@ fn main() {
         .filter(|s| !s.is_empty())
         .collect();
 
-    // PGO: an explicit signal from pgo-build.sh, OR the presence of -Cprofile-use in the rustflags.
-    let pgo_env = env::var("BUSBAR_PGO")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-    let pgo_flag = flags.iter().any(|f| f.contains("profile-use"));
-    let pgo = pgo_env || pgo_flag;
+    // PGO: the presence of -Cprofile-use in the rustflags cargo actually applied. No env arm.
+    let pgo = flags.iter().any(|f| f.contains("profile-use"));
 
     // target-cpu, if pinned via RUSTFLAGS (`-Ctarget-cpu=<x>` or `target-cpu=<x>`); else the rustc
     // default for the target.
