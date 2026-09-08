@@ -29,12 +29,14 @@ pub use groups::GroupCfg;
 pub(crate) use groups::LimitCfg;
 pub use secret::SecretRef;
 
-// Re-export status_class_from_str for config validation
-pub(crate) use crate::breaker::status_class_from_str;
+// Re-export status_class_from_str for config validation. Named at its NEUTRAL home
+// (`busbar-substrate-values`) rather than through `crate::breaker`'s re-export shim: the config
+// layer must not carry an edge into a busbar-core module for a value that is already a leaf.
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection}; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
+use crate::plane::config::{AgentsSection, McpEndpointSection, StreamsSection, ToolsSection};
+pub(crate) use busbar_substrate::breaker::status_class_from_str; // plane-purity: frozen-wire McpEndpointSection is the snapshot-recorded type of the mcp: field
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
 /// into the raw config text BEFORE parsing. `interpolate_env` splices each value in verbatim, so a
@@ -926,13 +928,13 @@ fn check_failover_pool(
     // The plane breaker store's lane table is FIXED (process-lifetime, sized
     // `store::MAX_POOL_MEMBERS`; see `store/planes.rs` for why it cannot track config), so a pool
     // must fit it — refused here, where the operator can act, rather than indexed past at dispatch.
-    if def.members.len() > crate::store::MAX_POOL_MEMBERS {
+    if def.members.len() > busbar_substrate::config::pools::MAX_POOL_MEMBERS {
         errors.push(format!(
             "{section}.{pool}: {} members exceeds the supported maximum of {} per failover pool \
              (the breaker's per-member lane table is fixed at process start). Split the pool or \
              drop members.",
             def.members.len(),
-            crate::store::MAX_POOL_MEMBERS
+            busbar_substrate::config::pools::MAX_POOL_MEMBERS
         ));
     }
     // A pool named after a REGISTRATION on its own plane would alias the registration's degenerate

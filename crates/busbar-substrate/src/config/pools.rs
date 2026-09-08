@@ -697,3 +697,14 @@ impl CandidatePoolCfg {
         }
     }
 }
+
+/// The CEILING on a `tool_pools:`/`agent_pools:` member list, enforced at config validation
+/// (`config::check_failover_pool`), relocated here from
+/// `busbar-core/src/store/planes.rs` so the bound sits with the list it bounds so an admission can never index past the plane store's fixed
+/// lane table. A constant rather than a config-derived size because the plane store's `PlaneBreakers` lane table is
+/// PROCESS-LIFETIME (learned reliability survives every apply) while pool sizes are per-generation
+/// config — a table sized to one generation's pools would need rebuilding, and rebuilding is
+/// exactly the state loss the process-lifetime rule exists to prevent. Eight is generous for the
+/// canonical case (one deployment, registered a handful of times); raising it is a one-line change
+/// plus the validation message.
+pub const MAX_POOL_MEMBERS: usize = 8;
