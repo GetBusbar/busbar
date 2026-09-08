@@ -535,6 +535,63 @@ impl A2aLeg {
         &self.plane
     }
 
+    /// **Whether these bytes are a unit THIS PLANE has** — asked of the plane, answered by the plane.
+    ///
+    /// The question a mount has to ask before it takes a request off the surface that already
+    /// answers it. A body whose operation this plane cannot name is not a unit of this plane; it is a
+    /// request the mounted router's own routing answers, with the document, the 404 or the 405 that
+    /// release pinned, and a loop that took it would be manufacturing a status for bytes it never
+    /// claimed.
+    ///
+    /// It runs the plane's decode and nothing else — no step, no seam, no clock that a unit would be
+    /// judged against — so asking it costs one reading of the body and decides nothing.
+    #[must_use]
+    pub fn recognises(&self, arrival: &busbar_contract::transport::Arrival<'_>) -> bool {
+        self.decode(arrival, 0).op.is_some()
+    }
+
+    /// **The plane's own refusal document for one ending**, for a mount that has to write it.
+    ///
+    /// Rendered by the PLANE, through the same two helpers the generic driver uses, so a caller
+    /// refused by the mounted loop and one refused by the driven loop read the same bytes — carrying
+    /// their own request identifier back to them, which is the whole reason a refusal is the plane's
+    /// to write rather than the mount's.
+    ///
+    /// `None` for an ending this plane has no rendering for: an abort and a timeout name no reason,
+    /// so a document for one would have to have a reason invented for it. A missing body is the
+    /// truthful answer to "what did the plane say about this".
+    #[must_use]
+    pub fn render_refusal(
+        &self,
+        arrival: &busbar_contract::transport::Arrival<'_>,
+        ended: &busbar_kernel::teller::Ended,
+    ) -> Option<Vec<u8>> {
+        let refusal = crate::root::transports::refusal_of(ended)?;
+        let clock = busbar_contract::unit::Clock {
+            unix_secs: 0,
+            monotonic_nanos: 0,
+        };
+        crate::root::plane_ctx::with_frames(arrival, clock, |ctx, frames| {
+            use busbar_contract::Plane as _;
+            // The draft is read again, HERE, because the encoder needs it to put the caller's own
+            // request identifier on the answer — and it borrows the arena this context carries, so
+            // it cannot have been kept from the walk. That is the same seam the leg's own decode
+            // names: an answer correlated to the wrong request is worse than an uncorrelated one, so
+            // it is re-read rather than cached on anything an attacker chooses.
+            let read = self.plane.decode_ingress(frames, None, ctx);
+            let draft = match &read {
+                Ok(busbar_contract::Ingress::OneShot(d))
+                | Ok(busbar_contract::Ingress::Open(d))
+                | Ok(busbar_contract::Ingress::Handshake(d)) => Some(&**d),
+                _ => None,
+            };
+            self.plane
+                .encode_refusal(&refusal, draft, None, ctx)
+                .ok()
+                .map(|bytes| bytes.as_slice().to_vec())
+        })
+    }
+
     /// The pool view for one caller, over this deployment's agents.
     fn pools(&self) -> Pools<busbar_plane_a2a::Agent> {
         Pools::over(
