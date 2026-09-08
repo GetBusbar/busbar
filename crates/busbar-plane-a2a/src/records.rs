@@ -22,7 +22,8 @@
 //! | sets or clears a task's callback address | a `push_config` leg, operation `put` or `delete` |
 //! | keeps the caller's push configurations in a process-local map | a `push_config` leg, so a restart no longer forgets them |
 //! | keeps a callback's pinned address in a process-local map | a `pin` leg, for the same reason |
-//! | keeps a mapping from the identifier this node minted to the one the agent minted | a `tasks` `get`; the mapping is a member of the row, not a second store |
+//! | remembers what the backend calls a task busbar minted its own id for | an `idmap` leg, operation `put` |
+//! | resolves the backend's id for a task, scoped to the caller who owns it | an `idmap` leg, operation `get` |
 //! | authorises a callback token | a `push_config` leg, operation `verify_live`, and a `revoke` leg once the task is terminal |
 //!
 //! And the five reaches that are NOT records, because they were never this plane's to hold:
@@ -35,12 +36,20 @@
 //! | asks governance whether the caller may spend | the admission unit |
 //! | resolves a credential for an outbound hop | the egress-auth unit; the plane names the scheme and never sees the secret |
 //!
-//! ## Two of the four schemas are the codec's own names
+//! ## Two of the five schemas are the codec's own names
 //!
 //! The task and task-event schemas take their identifiers from the codec's own record kinds, so
 //! there is one answer to "what is this record called" rather than two that agree today. The other
-//! two name state the codec keeps in memory today and therefore forgets on restart; declaring them
+//! three name state the codec keeps in memory today and therefore forgets on restart; declaring them
 //! here is what makes that forgetting visible.
+//!
+//! ## `idmap` is process-local today, and its own header says so
+//!
+//! `crate::idmap` (`busbar-a2a/src/a2a/idmap.rs:27-30`) states its own limitation: "this mapping is
+//! PROCESS-LOCAL and does not survive a restart. The durable place for it is…". This schema is that
+//! durable place, declared. It carries no `scan` and no `delete`: the process-local table is
+//! bounded and evicts oldest-first rather than ever being asked to drop one entry, and there is no
+//! caller that lists every mapping rather than resolving one busbar-minted id at a time.
 
 use busbar_contract::ids::RecordSchemaId;
 
@@ -57,12 +66,17 @@ pub const SCHEMA_PUSH_CONFIG: RecordSchemaId = RecordSchemaId::new("push_config"
 /// The pinned callback addresses a delivery is allowed to reach.
 pub const SCHEMA_PIN: RecordSchemaId = RecordSchemaId::new("pin");
 
+/// The busbar-minted task id → the backend's own task id, so the mapping `crate::idmap` keeps
+/// process-local today survives a restart. See `busbar-a2a/src/a2a/idmap.rs:27-30`.
+pub const SCHEMA_IDMAP: RecordSchemaId = RecordSchemaId::new("idmap");
+
 /// The record schemas this plane keeps kernel-held durable records under.
 pub const RECORD_SCHEMAS: &[RecordSchemaId] = &[
     SCHEMA_TASK,
     SCHEMA_TASK_EVENT,
     SCHEMA_PUSH_CONFIG,
     SCHEMA_PIN,
+    SCHEMA_IDMAP,
 ];
 
 /// Read one record back by key.
@@ -132,6 +146,8 @@ pub fn operations_for(schema: RecordSchemaId) -> &'static [&'static str] {
             OP_REVOKE,
         ],
         s if s == SCHEMA_PIN.as_str() => &[OP_GET, OP_PUT, OP_DELETE],
+        // No `scan`, no `delete`: see this module's doc comment on why.
+        s if s == SCHEMA_IDMAP.as_str() => &[OP_GET, OP_PUT],
         _ => &[],
     }
 }
