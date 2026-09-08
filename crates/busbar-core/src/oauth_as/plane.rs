@@ -52,7 +52,7 @@ pub(crate) struct AsPlane {
     sessions: Arc<super::consent::Sessions>,
 }
 
-/// Why the plane could not be built. Distinct from [`super::config::AsCfgError`] because these are
+/// Why the plane could not be built. Distinct from [`busbar_substrate::config::oauth_as::AsCfgError`] because these are
 /// failures of the RUNTIME (a key that will not load, an endpoint the library refuses to route)
 /// rather than of the grammar, and an operator needs to be able to tell the two apart.
 #[derive(Debug)]
