@@ -118,7 +118,7 @@ use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
-    Framing as AbiFraming, JournalStreamDesc, ReframeOut, StatusClass, POD_VERSION,
+    Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, StatusClass, POD_VERSION,
 };
 use core::mem::MaybeUninit;
 
@@ -184,7 +184,7 @@ pub(crate) fn register_call_stream_as(kind_id: u32, app: &Arc<crate::state::App>
     let desc = JournalStreamDesc {
         size: core::mem::size_of::<JournalStreamDesc>() as u32,
         version: POD_VERSION,
-        framing: AbiFraming::LengthPrefixed,
+        framing: RawFraming::of(AbiFraming::LengthPrefixed),
         digests_scope: 1,
         kind_id,
         _reserved: 0,

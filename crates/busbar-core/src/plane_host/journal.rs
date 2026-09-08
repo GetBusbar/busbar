@@ -46,8 +46,8 @@ use crate::audit::{frame_prelude, Chain, ChainLabels, ChainedRecord, Digest, Fra
 use crate::plane::store::PlaneStoreView;
 use busbar_plugin::hot::host::{HostCtx, JournalReframeFn};
 use busbar_plugin::hot::{
-    ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, ReframeOut,
-    RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
+    ChainBreakHdr, Framing as AbiFraming, FramingDesc, JournalQuery, JournalStreamDesc, RawFraming,
+    ReframeOut, RestoredHdr, Seq, StatusClass, VerifyChainHdr, POD_VERSION,
 };
 use core::mem::MaybeUninit;
 use std::collections::HashMap;
@@ -495,13 +495,18 @@ fn register_stream(
         let Some(kind) = read_scope(d.kind_ptr, d.kind_len) else {
             return StatusClass::Refused;
         };
+        // Decode the plane-written framing byte BEFORE the stream enters the registry: a framing this
+        // build cannot name is `Unsupported`, never a stream registered under a guessed framing.
+        let Some(framing) = map_framing(d.framing) else {
+            return StatusClass::Unsupported;
+        };
         let journal = Arc::new(Journal::<PlaneJournalRecord>::new(cap));
         if let Some(gov) = state.app.governance.as_ref() {
             journal.set_sink(PlaneStoreView::narrow(gov.store()));
         }
         let stream = DurableStream {
             kind,
-            framing: map_framing(d.framing),
+            framing,
             digests_scope: d.digests_scope != 0,
             reframe,
             journal,
@@ -1003,11 +1008,17 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<u32, ScopeState>> {
     journals().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn map_framing(f: AbiFraming) -> Framing {
-    match f {
+/// Decode the plane-written raw framing byte into core's own [`Framing`], or `None` for a byte no
+/// shipped [`AbiFraming`] names. The descriptor is filled ENTIRELY by the plane, so this is a
+/// checked decode of untrusted memory, never a `match` on a bare enum: an unnamed byte would
+/// otherwise be an invalid discriminant the instant the field is read. There is no neutral
+/// fallback — reproducing a stream's stored bytes in the WRONG framing breaks every digest in its
+/// chain — so the caller fails closed instead.
+fn map_framing(f: RawFraming) -> Option<Framing> {
+    Some(match f.framing()? {
         AbiFraming::LengthPrefixed => Framing::LengthPrefixed,
         AbiFraming::PipeSeparated => Framing::PipeSeparated,
-    }
+    })
 }
 
 /// WIRED `journal_append` → [`crate::audit::Chain::append`] for the scope. Frames the prelude in the
@@ -1030,6 +1041,11 @@ pub(crate) extern "C-unwind" fn journal_append(
         }
         // SAFETY: a non-null `framing` is a live, initialized `FramingDesc` for the call (ABI).
         let fd = unsafe { &*framing };
+        // The plane writes this byte. A framing this build cannot name yields the RESERVED invalid
+        // sequence — never a record appended (and digested) under a guessed framing.
+        let Some(record_framing) = map_framing(fd.framing) else {
+            return Seq::NONE;
+        };
         let content: Vec<u8> = if content_ptr.is_null() || content_len == 0 {
             Vec::new()
         } else {
@@ -1038,7 +1054,7 @@ pub(crate) extern "C-unwind" fn journal_append(
         };
         let input = PlaneJournalInput {
             content,
-            framing: map_framing(fd.framing),
+            framing: record_framing,
             digests_scope: fd.digests_scope != 0,
         };
         let scope_str = scope.to_string();

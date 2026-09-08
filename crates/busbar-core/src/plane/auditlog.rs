@@ -45,7 +45,7 @@ use crate::plane_host::journal::PlaneJournalRecord;
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
 use busbar_plugin::hot::host::HostCtx;
 use busbar_plugin::hot::{
-    Framing as AbiFraming, JournalStreamDesc, ReframeOut, Seq, StatusClass, POD_VERSION,
+    Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, Seq, StatusClass, POD_VERSION,
 };
 use core::mem::MaybeUninit;
 
@@ -111,7 +111,7 @@ pub(crate) fn register_audit_stream_as(kind_id: u32, app: &Arc<crate::state::App
     let desc = JournalStreamDesc {
         size: core::mem::size_of::<JournalStreamDesc>() as u32,
         version: POD_VERSION,
-        framing: AbiFraming::PipeSeparated,
+        framing: RawFraming::of(AbiFraming::PipeSeparated),
         digests_scope: 0,
         kind_id,
         _reserved: 0,

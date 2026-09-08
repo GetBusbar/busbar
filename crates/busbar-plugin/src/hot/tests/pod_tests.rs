@@ -127,3 +127,46 @@ fn raw_fault_class_survives_encode_decode_for_every_named_class() {
         assert_eq!(RawFault::of(c).class(), c);
     }
 }
+
+/// The metering side of the same class: a plane fills `Usage` itself, so its component byte carries
+/// the raw form. Every named component round-trips; every unnamed byte decodes to `None`, which is
+/// what makes the host's metering slot REFUSE rather than dispatch on an invalid discriminant.
+#[test]
+fn raw_usage_component_round_trips_and_refuses_unnamed_bytes() {
+    for c in [
+        UsageComponent::Tokens,
+        UsageComponent::Bytes,
+        UsageComponent::Frames,
+        UsageComponent::Queries,
+    ] {
+        assert_eq!(RawUsageComponent::of(c).component(), Some(c));
+    }
+    assert_eq!(RawUsageComponent(4).component(), None);
+    assert_eq!(RawUsageComponent(255).component(), None);
+}
+
+/// The journal side: `FramingDesc`/`JournalStreamDesc` are plane-built, so their framing byte carries
+/// the raw form too. An unnamed framing decodes to `None` — the host answers `Unsupported` / the
+/// reserved invalid sequence instead of reproducing a stream's bytes under a guessed framing.
+#[test]
+fn raw_framing_round_trips_and_refuses_unnamed_bytes() {
+    for f in [Framing::LengthPrefixed, Framing::PipeSeparated] {
+        assert_eq!(RawFraming::of(f).framing(), Some(f));
+    }
+    assert_eq!(RawFraming(2).framing(), None);
+    assert_eq!(RawFraming(255).framing(), None);
+}
+
+/// The carriers are `#[repr(transparent)]` over `u8`, so swapping the bare enums for them changed no
+/// wire byte: the two descriptors and `Usage` keep their exact 1.5.5 layout, and a published plugin's
+/// image is read identically. This is the compile-time proof the fix stayed additive.
+#[test]
+fn the_raw_carriers_are_layout_identical_to_the_bare_enums() {
+    assert_eq!(core::mem::size_of::<RawUsageComponent>(), 1);
+    assert_eq!(core::mem::align_of::<RawUsageComponent>(), 1);
+    assert_eq!(core::mem::size_of::<RawFraming>(), 1);
+    assert_eq!(core::mem::align_of::<RawFraming>(), 1);
+    assert_eq!(core::mem::offset_of!(Usage, component), 6);
+    assert_eq!(core::mem::offset_of!(FramingDesc, framing), 6);
+    assert_eq!(core::mem::offset_of!(JournalStreamDesc, framing), 6);
+}

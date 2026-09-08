@@ -205,6 +205,13 @@ fn virtual_key(id: String, group: Option<String>) -> busbar_api::VirtualKey {
 /// time-series. A malformed breakdown REFUSES the charge (fail-closed). Called from inside the slot's
 /// `catch_unwind`; a panic maps to `Rejected`.
 pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
+    // The plane FILLS this struct, so `component` is a plane-chosen byte. Decode it through the
+    // checked carrier BEFORE anything dispatches on it: a byte this build does not name has no
+    // defensible cost line and no defensible token projection, so the charge is REFUSED rather than
+    // billed against a guess (and the bare enum is never materialized, so there is no UB to reach).
+    let Some(component) = usage.component.component() else {
+        return MeterOutcome::Rejected;
+    };
     // The neutral money scalar this usage settles, in nanodollars (the engine's ledger unit).
     let micros = u128::from(usage.amount).saturating_mul(u128::from(usage.unit_cost_micros));
     let amount = CostAmount(micros.saturating_mul(NANOS_PER_MICRO));
@@ -214,7 +221,7 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
     let components = if amount == CostAmount::ZERO {
         Vec::new()
     } else {
-        vec![CostComponent::top(component_label(usage.component), amount)]
+        vec![CostComponent::top(component_label(component), amount)]
     };
     if CostBreakdown::new(amount, components).is_err() {
         return MeterOutcome::Rejected;
@@ -236,7 +243,7 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
                 PROVIDER_UNATTRIBUTED,
             ),
         };
-        let token_usage = token_usage_for(usage);
+        let token_usage = token_usage_for(component, usage.amount);
         let now = crate::store::now_ms() / 1_000;
         gov.record_metering(key_id, model, provider, token_usage.as_ref(), now);
     }
@@ -275,10 +282,10 @@ fn resolved_attribution(usage: &Usage) -> Option<(String, String, String)> {
 /// accrual counts — only when the component is `Tokens`. Other components (bytes / frames / queries)
 /// record a request with no token counts (`None`), which is faithful: the metering time-series counts
 /// tokens, and Phase 2 adds the per-component projections.
-fn token_usage_for(usage: &Usage) -> Option<crate::billing::TokenUsage> {
-    match usage.component {
+fn token_usage_for(component: UsageComponent, amount: u64) -> Option<crate::billing::TokenUsage> {
+    match component {
         UsageComponent::Tokens => Some(crate::billing::TokenUsage {
-            input: usage.amount,
+            input: amount,
             ..Default::default()
         }),
         UsageComponent::Bytes | UsageComponent::Frames | UsageComponent::Queries => None,

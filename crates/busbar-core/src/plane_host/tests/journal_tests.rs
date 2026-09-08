@@ -20,7 +20,7 @@ fn framing_desc(framing: AbiFraming, digests_scope: u8) -> FramingDesc {
     FramingDesc {
         size: core::mem::size_of::<FramingDesc>() as u32,
         version: POD_VERSION,
-        framing,
+        framing: RawFraming::of(framing),
         digests_scope,
     }
 }
@@ -366,7 +366,7 @@ fn register(host: HostCtx, vt: &PlaneHostVtable, kind_id: u32, framing: AbiFrami
     let desc = JournalStreamDesc {
         size: core::mem::size_of::<JournalStreamDesc>() as u32,
         version: POD_VERSION,
-        framing,
+        framing: RawFraming::of(framing),
         digests_scope: 1,
         kind_id,
         _reserved: 0,
@@ -774,7 +774,7 @@ fn register_stream(
     let desc = JournalStreamDesc {
         size: core::mem::size_of::<JournalStreamDesc>() as u32,
         version: POD_VERSION,
-        framing,
+        framing: RawFraming::of(framing),
         digests_scope,
         kind_id,
         _reserved: 0,
@@ -932,4 +932,79 @@ fn unpack_bodies_fails_closed_on_oversized_count() {
         unpack_bodies(&good),
         Some(vec![b"abc".to_vec(), b"xyz".to_vec()])
     );
+}
+
+// ── The plane-WRITTEN `framing` byte is raw, never a bare enum ────────────────────────────────
+// `FramingDesc` and `JournalStreamDesc` are filled ENTIRELY by the plane, so their `framing` byte is
+// plane-chosen. A byte no shipped `Framing` names must fail CLOSED at the seam — never decode into an
+// enum with an invalid discriminant the host then `match`es (UB before the match).
+
+/// `journal_append` over a `FramingDesc` carrying an unnamed framing byte returns the reserved
+/// invalid sequence, never a fabricated one — and never dispatches on the byte.
+#[test]
+fn out_of_range_append_framing_is_refused_not_matched() {
+    let scope = fresh_scope();
+    let good = framing_desc(AbiFraming::LengthPrefixed, 1);
+    let mut image = MaybeUninit::<FramingDesc>::uninit();
+    // SAFETY: `image` is a whole, aligned `MaybeUninit<FramingDesc>`; the byte write lands on the
+    // one-byte `framing` field.
+    unsafe {
+        core::ptr::copy_nonoverlapping(&good as *const FramingDesc, image.as_mut_ptr(), 1);
+        image
+            .as_mut_ptr()
+            .cast::<u8>()
+            .add(core::mem::offset_of!(FramingDesc, framing))
+            .write(7);
+    }
+    with_test_state(|host, vt| {
+        let content = b"|ts1|first";
+        let seq = (vt.journal_append.unwrap())(
+            host,
+            scope,
+            content.as_ptr(),
+            content.len(),
+            image.as_ptr(),
+        );
+        assert_eq!(
+            seq,
+            Seq::NONE,
+            "an unnamed framing is refused, not dispatched on"
+        );
+    });
+}
+
+/// `journal_register` over a `JournalStreamDesc` carrying an unnamed framing byte is REFUSED, so the
+/// stream never enters the registry under a framing this build cannot name.
+#[test]
+fn out_of_range_register_framing_is_refused_not_matched() {
+    let app = durable_app();
+    let kind_id = fresh_kind_id();
+    let kind = b"durable_test_event";
+    let good = JournalStreamDesc {
+        size: core::mem::size_of::<JournalStreamDesc>() as u32,
+        version: POD_VERSION,
+        framing: RawFraming::of(AbiFraming::LengthPrefixed),
+        digests_scope: 1,
+        kind_id,
+        _reserved: 0,
+        kind_ptr: kind.as_ptr(),
+        kind_len: kind.len(),
+    };
+    let mut image = MaybeUninit::<JournalStreamDesc>::uninit();
+    // SAFETY: `image` is a whole, aligned `MaybeUninit<JournalStreamDesc>`.
+    unsafe {
+        core::ptr::copy_nonoverlapping(&good as *const JournalStreamDesc, image.as_mut_ptr(), 1);
+        image
+            .as_mut_ptr()
+            .cast::<u8>()
+            .add(core::mem::offset_of!(JournalStreamDesc, framing))
+            .write(7);
+    }
+    with_dispatch_scope(&app, |host, vt| {
+        assert_eq!(
+            (vt.journal_register.unwrap())(host, image.as_ptr(), neutral_reframe),
+            StatusClass::Unsupported,
+            "an unnamed framing is refused, not registered"
+        );
+    });
 }
