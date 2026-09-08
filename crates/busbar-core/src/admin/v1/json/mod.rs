@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::{header::CONTENT_TYPE, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{get, patch, post};
 use axum::{extract::Path, extract::Query, Router};
 use serde::Serialize;
 use serde_json::json;
@@ -69,18 +69,21 @@ impl AdminTransport for JsonV1 {
         // JSON wire.
         #[cfg_attr(not(test), allow(clippy::let_and_return))]
         let router = Router::new()
-            // NO `/info` ROUTE. `get_info` CROSSED in 1.6.0's admin Cut 1b — the widest of the
-            // crossings, because the answer is the node's release, its compiled-in proof, its boot
-            // epoch, its table counts and its config generation all at once. The composition root
-            // reads every one of them through neutral accessors and renders the bytes; nothing
-            // admin-shaped travels to do it.
+            // `/info` CROSSED in 1.6.0's admin Cut 1b — the widest of the crossings, because the
+            // answer is the node's release, its compiled-in proof, its boot epoch, its table counts
+            // and its config generation all at once. The composition root reads every one of them
+            // through neutral accessors and renders the bytes; nothing admin-shaped travels to do
+            // it. What is left on the path is a refusal — see `crossed()`.
+            .route("/info", crossed())
             .route("/pools", get(list_pools))
             .route("/pools/{name}", get(get_pool))
-            // NO `/models` AND NO `/providers` ROUTE. Both CROSSED to the loop in 1.6.0's admin Cut 1:
-            // the composition root reads the node's routing tables through its own neutral seam and
-            // renders the answers, so this surface has nothing left to mount for them. The document
-            // still declares both operations — they are still answered, by the other half — and the
-            // ownership pin in the root's test suite is what holds each to exactly one answerer.
+            // `/models` AND `/providers` CROSSED to the loop in 1.6.0's admin Cut 1: the
+            // composition root reads the node's routing tables through its own neutral seam and
+            // renders the answers, so this surface answers neither. The
+            // document still declares both operations — they are still answered, by the other half
+            // — and the ownership pin in the root's test suite holds each to exactly one answerer.
+            .route("/models", crossed())
+            .route("/providers", crossed())
             .route(PATH_HOOKS, get(list_hooks).post(register_hook))
             .route(
                 "/hooks/{name}",
@@ -127,10 +130,11 @@ impl AdminTransport for JsonV1 {
             .route("/plugins/rollback", post(rollback_plugin))
             .route("/plugins/{file}", axum::routing::delete(remove_plugin))
             .route("/plugins/{file}/schema", get(plugin_schema))
-            // NO `/auth` ROUTE. `get_auth` CROSSED in 1.6.0's admin Cut 1b: the composition root
-            // reads this generation's front door through its own neutral seam and renders the
-            // answer. The `AuthView` this crate builds is still built — the effective-config read
-            // embeds it — off the very same fold, which is why the two cannot disagree.
+            // `/auth` CROSSED in 1.6.0's admin Cut 1b: the composition root reads this
+            // generation's front door through its own neutral seam and renders the answer. The
+            // `AuthView` this crate builds is still built — the effective-config read embeds it —
+            // off the very same fold, which is why the two cannot disagree.
+            .route("/auth", crossed())
             // NO `get` ON `/admin-auth`. `get_admin_auth` CROSSED to the loop in 1.6.0's admin
             // Cut 1b: the composition root reads this generation's admin guard chain through its
             // own neutral seam and renders the answer, `ETag` and all. The `PUT` stays here — it is
@@ -138,7 +142,7 @@ impl AdminTransport for JsonV1 {
             // answering off whichever generation is current: the write swaps a new one onto the
             // handle the loop reads through, so a read-after-write is coherent ACROSS the two
             // halves. The ownership pin in the root's test suite holds them to exactly one answer.
-            .route(PATH_ADMIN_AUTH, put(put_auth))
+            .route(PATH_ADMIN_AUTH, crossed().put(put_auth))
             .route("/usage", get(get_usage))
             .route("/config", get(get_config))
             .route("/audit", get(get_audit))
@@ -538,6 +542,35 @@ fn if_match_version(headers: &axum::http::HeaderMap) -> Result<Option<u64>, Resp
             Cond::MalformedIfMatch,
         )
     })
+}
+
+/// What a CROSSED `GET` leaves on this router: the path and the method still declared, and a refusal
+/// where the handler used to be.
+///
+/// A crossing deletes the HANDLER, and it would be easy to read that as deleting the route. It is
+/// not, and the difference is wire-visible twice over.
+///
+/// FIRST, THE PATH. `DELETE /api/v1/admin/info` has always answered `405` with the frozen
+/// `method_not_allowed` envelope, because the path was mounted and `DELETE` was not one of its
+/// methods. Drop the path and that same request falls through to the unmatched-path fallback and
+/// answers `404` — a byte a client can see, on a request that has nothing to do with the operation
+/// that moved.
+///
+/// SECOND, THE `Allow` HEADER. That `405` carries `Allow: GET,HEAD`, and axum builds it from the
+/// methods REGISTERED on the path. A path mounted with no method at all answers the same `405` with
+/// an empty `Allow`, which is a different byte and a false statement besides: this node does answer
+/// `GET /info` — the composition root's loop does, in front of this router.
+///
+/// So the method stays REGISTERED and its handler refuses. Nothing reaches that refusal on a real
+/// node, because the loop answers the operation before this router is asked; what the registration
+/// is for is the truthful `Allow` on every OTHER method's `405`.
+///
+/// It also makes the ownership pin's question sharper rather than softer. "Does the surface answer
+/// this operation" is measured by asking the row's own method, and a `405` is this router declining
+/// it — which is exactly "no". The same answer `/admin-auth` gives a `GET`, where the `PUT` has not
+/// crossed and is still served here.
+fn crossed() -> axum::routing::MethodRouter<Arc<AppHandle>> {
+    get(|| async { err_json(&AdminError::MethodNotAllowed) })
 }
 
 /// The stale-guard rejection every version-guarded mutation shares: the caller's `If-Match` version
