@@ -132,7 +132,7 @@ fn raw_fault_class_survives_encode_decode_for_every_named_class() {
 /// the raw form. Every named component round-trips; every unnamed byte decodes to `None`, which is
 /// what makes the host's metering slot REFUSE rather than dispatch on an invalid discriminant.
 #[test]
-fn raw_usage_component_round_trips_and_refuses_unnamed_bytes() {
+fn raw_usage_component_encodes_decodes_and_refuses_unnamed_bytes() {
     for c in [
         UsageComponent::Tokens,
         UsageComponent::Bytes,
@@ -149,7 +149,7 @@ fn raw_usage_component_round_trips_and_refuses_unnamed_bytes() {
 /// the raw form too. An unnamed framing decodes to `None` — the host answers `Unsupported` / the
 /// reserved invalid sequence instead of reproducing a stream's bytes under a guessed framing.
 #[test]
-fn raw_framing_round_trips_and_refuses_unnamed_bytes() {
+fn raw_framing_encodes_decodes_and_refuses_unnamed_bytes() {
     for f in [Framing::LengthPrefixed, Framing::PipeSeparated] {
         assert_eq!(RawFraming::of(f).framing(), Some(f));
     }

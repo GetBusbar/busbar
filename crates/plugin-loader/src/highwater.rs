@@ -207,9 +207,11 @@ impl HighWaterMarks {
     /// Persist the marks, if this store has a data dir. A no-op (and `Ok`) when memory-only —
     /// PB-13: a deployment with no `data_dir` writes no data-dir files.
     ///
-    /// Written to a sibling temp file and RENAMED over the target, so a crash mid-write leaves the
-    /// previous floor intact rather than a truncated one (a truncated floor is a silently disarmed
-    /// control). Mode `0600` on unix, like every other data-dir file.
+    /// Routed through the ONE durable-write primitive (`busbar_api::durable::write_with`), which
+    /// owns the temp naming, the contents fsync, the atomic rename and the parent fsync. That
+    /// matters here for a specific reason: a TRUNCATED floor is a silently disarmed security
+    /// control, so a crash mid-write must leave the previous floor intact rather than a shorter one.
+    /// `mode: 0600`, like every other data-dir file.
     ///
     /// # Errors
     /// The underlying I/O error. A failure to persist is NOT fatal to the caller: the in-memory
@@ -218,32 +220,18 @@ impl HighWaterMarks {
         let Some(path) = self.path.as_deref() else {
             return Ok(());
         };
-        let Some(dir) = path.parent() else {
-            return Ok(());
-        };
-        std::fs::create_dir_all(dir)?;
         let mut body = serde_json::to_vec_pretty(&self.marks)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         body.push(b'\n');
-        let tmp = path.with_extension("json.tmp");
-        write_private(&tmp, &body)?;
-        std::fs::rename(&tmp, path)
+        busbar_api::durable::write_with(
+            path,
+            &body,
+            busbar_api::durable::DurableOpts {
+                mode: Some(0o600),
+                exclusive: false,
+            },
+        )
     }
-}
-
-/// Write `body` to `path`, replacing any existing file, `0600` on unix.
-fn write_private(path: &Path, body: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
-    f.write_all(body)?;
-    f.sync_all()
 }
 
 #[cfg(test)]

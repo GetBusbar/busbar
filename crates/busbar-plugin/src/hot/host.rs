@@ -603,7 +603,7 @@ pub enum VtableRefusal {
     Preamble(crate::PreambleError),
     /// The attested `size` does not even cover the frozen header (`abi` + `size` + `version`), so it
     /// cannot describe a `PlaneHostVtable` at all.
-    SizeTooSmall {
+    SizeUnderHeader {
         /// The size the peer attested.
         advertised: u32,
         /// The smallest size that could describe this table.
@@ -612,7 +612,7 @@ pub enum VtableRefusal {
     /// The attested `size` is LARGER than this build's own `PlaneHostVtable`. Nothing on this side
     /// can verify a claim about bytes it has no definition for, and the cost of being wrong is a
     /// garbage fn-pointer this side CALLS — so the over-claim is refused rather than clamped.
-    SizeTooLarge {
+    SizeOverBuild {
         /// The size the peer attested.
         advertised: u32,
         /// `size_of::<PlaneHostVtable>()` in this build.
@@ -626,7 +626,7 @@ impl core::fmt::Display for VtableRefusal {
             VtableRefusal::Preamble(e) => {
                 write!(f, "host vtable preamble refused: {e:?}")
             }
-            VtableRefusal::SizeTooSmall {
+            VtableRefusal::SizeUnderHeader {
                 advertised,
                 minimum,
             } => write!(
@@ -634,7 +634,7 @@ impl core::fmt::Display for VtableRefusal {
                 "host vtable attested size {advertised} is below the {minimum}-byte frozen header, \
                  so it cannot describe a PlaneHostVtable"
             ),
-            VtableRefusal::SizeTooLarge { advertised, ours } => write!(
+            VtableRefusal::SizeOverBuild { advertised, ours } => write!(
                 f,
                 "host vtable attested size {advertised} exceeds this build's own \
                  PlaneHostVtable ({ours} bytes); this build has no definition for the extra bytes \
@@ -698,14 +698,14 @@ impl PlaneHostVtable {
         };
         crate::check_preamble(&abi).map_err(VtableRefusal::Preamble)?;
         if advertised < Self::MIN_SIZE {
-            return Err(VtableRefusal::SizeTooSmall {
+            return Err(VtableRefusal::SizeUnderHeader {
                 advertised,
                 minimum: Self::MIN_SIZE,
             });
         }
         let ours = core::mem::size_of::<PlaneHostVtable>() as u32;
         if advertised > ours {
-            return Err(VtableRefusal::SizeTooLarge { advertised, ours });
+            return Err(VtableRefusal::SizeOverBuild { advertised, ours });
         }
         Ok(advertised)
     }

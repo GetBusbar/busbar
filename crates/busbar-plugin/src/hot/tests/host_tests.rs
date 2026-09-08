@@ -181,7 +181,7 @@ fn an_over_large_vtable_size_is_refused_with_a_diagnostic() {
         .expect_err("an over-large attested size must be refused");
     assert_eq!(
         err,
-        VtableRefusal::SizeTooLarge {
+        VtableRefusal::SizeOverBuild {
             advertised: ours + 32,
             ours
         }
@@ -201,7 +201,7 @@ fn an_under_sized_vtable_size_is_refused() {
         .expect_err("a size below the frozen header must be refused");
     assert_eq!(
         err,
-        VtableRefusal::SizeTooSmall {
+        VtableRefusal::SizeUnderHeader {
             advertised: PlaneHostVtable::MIN_SIZE - 1,
             minimum: PlaneHostVtable::MIN_SIZE,
         }
@@ -213,7 +213,7 @@ fn an_under_sized_vtable_size_is_refused() {
 fn a_bad_vtable_preamble_is_refused_before_size() {
     let mut vt = PlaneHostVtable::EMPTY;
     vt.abi.magic = 0xDEAD_BEEF;
-    vt.size = 0; // would also be `SizeTooSmall`; the preamble must win.
+    vt.size = 0; // would also be `SizeUnderHeader`; the preamble must win.
                  // SAFETY: `vt` is a whole, live `PlaneHostVtable`.
     let err = unsafe { PlaneHostVtable::check(&vt as *const PlaneHostVtable) }
         .expect_err("a bad magic must be refused");
