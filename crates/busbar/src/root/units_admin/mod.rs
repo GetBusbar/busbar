@@ -566,6 +566,28 @@ pub trait NodeFacts: Send + Sync {
     /// One entry per LANE and not per model: two lanes may configure the same model name against
     /// different providers, and the operation this renders has always answered both.
     fn models(&self) -> Vec<(String, String)>;
+
+    /// The ADMIN-plane guard chain this node runs, in order, AND the config generation it was read
+    /// off.
+    ///
+    /// ONE METHOD FOR ONE READ, which is the rule every fact on this trait follows and the reason
+    /// the version rides with the chain instead of being a method of its own. The answer this
+    /// renders carries an `ETag` naming that generation, and a mutating caller chains `If-Match` off
+    /// it; two calls would read two generations, and an `ETag` naming a generation the body beside
+    /// it did not come from lets a caller chain a change onto a state that never existed.
+    ///
+    /// The empty chain is a real answer and not a missing one — it is the open dev posture — so the
+    /// `configured` flag the read renders is derived from emptiness here rather than carried as a
+    /// second fact that could disagree with the list beside it.
+    fn admin_guard(&self) -> (Vec<String>, u64);
+
+    /// This node's INGRESS front door: the auth-chain module names in order, the upstream-credential
+    /// mode as the word it is reported by, and whether the door is open.
+    ///
+    /// The mode arrives as its WORD rather than as a value to translate here, because the surface
+    /// underneath renders the same three facts into the effective-config read and a mapping written
+    /// twice is a mapping that can be written differently twice.
+    fn ingress_door(&self) -> (Vec<String>, String, bool);
 }
 
 /// The facts of a node this composition never handed its handle to.
@@ -583,6 +605,19 @@ impl NodeFacts for UnboundFacts {
 
     fn models(&self) -> Vec<(String, String)> {
         Vec::new()
+    }
+
+    fn admin_guard(&self) -> (Vec<String>, u64) {
+        // The OPEN posture at the boot generation: nothing guards a surface that is not there, and a
+        // binding with no node behind it has applied no config. The same honesty the two lists above
+        // answer with.
+        (Vec::new(), 0)
+    }
+
+    fn ingress_door(&self) -> (Vec<String>, String, bool) {
+        // An OPEN door signing with its own credentials, which is what a node with no ingress really
+        // is: no chain to run, and nothing to forward a caller's credential to.
+        (Vec::new(), "own".to_string(), true)
     }
 }
 
@@ -621,6 +656,30 @@ impl NodeFacts for HandleFacts {
     fn models(&self) -> Vec<(String, String)> {
         let generation = self.handle.load();
         generation.engine_tables_view().models_by_lane()
+    }
+
+    fn admin_guard(&self) -> (Vec<String>, u64) {
+        // WHICHEVER GENERATION IS CURRENT, which is the whole of what makes the read coherent with
+        // the `PUT` that still lives on the surface underneath: that write builds the next
+        // generation and swaps it onto this handle, so the very next read through here sees it.
+        // ONE load for both, so the chain and the version this answer's `ETag` names are the same
+        // generation's.
+        let generation = self.handle.load();
+        (
+            generation.admin_guard_chain().to_vec(),
+            generation.config_version,
+        )
+    }
+
+    fn ingress_door(&self) -> (Vec<String>, String, bool) {
+        // THE FOLD IS THE NODE'S, so this reading and the effective-config read's are the same three
+        // facts rather than two readings that agree today. See its own note for why.
+        let (chain, upstream_credentials, open) = self.handle.load().ingress_door_facts();
+        (
+            chain.into_iter().map(ToString::to_string).collect(),
+            upstream_credentials.to_string(),
+            open,
+        )
     }
 }
 
@@ -727,8 +786,8 @@ impl busbar_unit_verbs::Governance for CoreGovernance {
         // produces the answer for is the composition's question, not the unit's — so the branch is
         // here, before the seam that asks the surface underneath. There is nothing to ask: the route
         // was deleted in the commit that crossed the verb.
-        if let Some(body) = render_crossed_view(verb, self.facts.as_ref()) {
-            return Ok(crossed_answer(body).pack());
+        if let Some(answer) = render_crossed_view(verb, self.facts.as_ref()) {
+            return Ok(answer.pack());
         }
         Ok(self.run())
     }
@@ -793,14 +852,19 @@ fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>
     })
 }
 
-/// The operations of the sixty-six whose answer the LOOP now produces, from the node's own tables.
+/// The operations of the sixty-six whose answer the LOOP now produces, from the node's own facts.
 ///
-/// A closed set with one member, and it is written as a set rather than as a condition inside the
-/// match below for the reason every closed set in this file is: `answered_by` and the renderer have
-/// to agree about which verbs have crossed, and two matches that each decide it separately are two
-/// answers to one question. The ownership pin measures the consequence — a crossed verb must have no
-/// route on the surface underneath, and an uncrossed one must have one.
-const CROSSED_VERBS: &[KernelVerb] = &[KernelVerb::GetModels, KernelVerb::GetProviders];
+/// A closed set, and it is written as a set rather than as a condition inside the match below for
+/// the reason every closed set in this file is: `answered_by` and the renderer have to agree about
+/// which verbs have crossed, and two matches that each decide it separately are two answers to one
+/// question. The ownership pin measures the consequence — a crossed verb must have no route on the
+/// surface underneath, and an uncrossed one must have one.
+const CROSSED_VERBS: &[KernelVerb] = &[
+    KernelVerb::GetAdminAuth,
+    KernelVerb::GetAuth,
+    KernelVerb::GetModels,
+    KernelVerb::GetProviders,
+];
 
 /// The answer a crossed read produces: a 200 carrying JSON, and no other header.
 ///
@@ -815,21 +879,93 @@ fn crossed_answer(body: Vec<u8>) -> AdminAnswer {
     }
 }
 
-/// The bytes one crossed read answers with, or `None` for a verb that has not crossed.
+/// Stamp the config-plane `ETag` a config-plane READ carries, in the shape an `If-Match` writer
+/// sends back: the generation counter, quoted, as a strong validator.
+///
+/// It goes AFTER the content type because that is the order the retired handler emitted the two in —
+/// its `respond` set the type and its wrapper inserted the tag — and this crate hands the transport
+/// an ordered list rather than a map.
+fn with_config_etag(mut answer: AdminAnswer, version: u64) -> AdminAnswer {
+    answer
+        .headers
+        .push(("etag".to_string(), format!("\"{version}\"")));
+    answer
+}
+
+/// The whole answer one crossed read produces, or `None` for a verb that has not crossed.
 ///
 /// `None` is the uncrossed answer and it is load-bearing: it is what sends every other one of the
 /// sixty-six on to the dispatch, so a verb is answered here only by being named above.
-fn render_crossed_view(verb: KernelVerb, facts: &dyn NodeFacts) -> Option<Vec<u8>> {
+///
+/// The ANSWER and not just its body, because a crossed read's headers are as pinned as its bytes:
+/// `GET /admin-auth` has always carried the config-plane `ETag` its `PUT` chains `If-Match` off, and
+/// a renderer that returned only bytes would leave that fact to be re-decided somewhere else.
+fn render_crossed_view(verb: KernelVerb, facts: &dyn NodeFacts) -> Option<AdminAnswer> {
     if !CROSSED_VERBS.contains(&verb) {
         return None;
     }
     Some(match verb {
-        KernelVerb::GetModels => render_models(&facts.models()).into_bytes(),
-        KernelVerb::GetProviders => render_providers(&facts.providers()).into_bytes(),
+        KernelVerb::GetModels => crossed_answer(render_models(&facts.models()).into_bytes()),
+        KernelVerb::GetProviders => {
+            crossed_answer(render_providers(&facts.providers()).into_bytes())
+        }
+        KernelVerb::GetAdminAuth => {
+            let (modules, version) = facts.admin_guard();
+            with_config_etag(
+                crossed_answer(render_admin_auth(&modules).into_bytes()),
+                version,
+            )
+        }
+        KernelVerb::GetAuth => {
+            let (chain, upstream_credentials, open) = facts.ingress_door();
+            crossed_answer(render_auth(&chain, &upstream_credentials, open).into_bytes())
+        }
         // Unreachable while the set above and this match name the same verbs, which is the
         // invariant the set exists to make checkable rather than a case to invent a body for.
         _ => return None,
     })
+}
+
+/// `GET /api/v1/admin/admin-auth` — the guard chain the ADMINISTRATIVE plane itself runs behind.
+///
+/// The retired handler's shape, field for field and in its order. `configured` is DERIVED from the
+/// chain rather than carried beside it: an empty chain is the open dev posture, and a node whose
+/// guard is open while a flag beside it said "configured" would be the one disagreement this read
+/// exists to make impossible. See [`render_providers`] for why it is written by hand.
+fn render_admin_auth(modules: &[String]) -> String {
+    let mut out = String::from("{\"configured\":");
+    out.push_str(if modules.is_empty() { "false" } else { "true" });
+    out.push_str(",\"modules\":[");
+    for (i, module) in modules.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        json_string(module, &mut out);
+    }
+    out.push_str("]}");
+    out
+}
+
+/// `GET /api/v1/admin/auth` — the node's INGRESS front door: its auth chain, its upstream-credential
+/// mode, and whether the door is open.
+///
+/// The retired handler's shape, field for field and in its order. Never a secret — module names, one
+/// word and one flag, which is the whole of what this read has ever carried. See [`render_providers`]
+/// for why it is written by hand.
+fn render_auth(chain: &[String], upstream_credentials: &str, open: bool) -> String {
+    let mut out = String::from("{\"chain\":[");
+    for (i, module) in chain.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        json_string(module, &mut out);
+    }
+    out.push_str("],\"upstream_credentials\":");
+    json_string(upstream_credentials, &mut out);
+    out.push_str(",\"open\":");
+    out.push_str(if open { "true" } else { "false" });
+    out.push('}');
+    out
 }
 
 /// `GET /api/v1/admin/providers` — the distinct upstream providers and how many lanes reach each.

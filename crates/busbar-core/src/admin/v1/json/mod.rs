@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::{header::CONTENT_TYPE, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use axum::{extract::Path, extract::Query, Router};
 use serde::Serialize;
 use serde_json::json;
@@ -123,8 +123,18 @@ impl AdminTransport for JsonV1 {
             .route("/plugins/rollback", post(rollback_plugin))
             .route("/plugins/{file}", axum::routing::delete(remove_plugin))
             .route("/plugins/{file}/schema", get(plugin_schema))
-            .route("/auth", get(get_auth))
-            .route(PATH_ADMIN_AUTH, get(get_admin_auth).put(put_auth))
+            // NO `/auth` ROUTE. `get_auth` CROSSED in 1.6.0's admin Cut 1b: the composition root
+            // reads this generation's front door through its own neutral seam and renders the
+            // answer. The `AuthView` this crate builds is still built — the effective-config read
+            // embeds it — off the very same fold, which is why the two cannot disagree.
+            // NO `get` ON `/admin-auth`. `get_admin_auth` CROSSED to the loop in 1.6.0's admin
+            // Cut 1b: the composition root reads this generation's admin guard chain through its
+            // own neutral seam and renders the answer, `ETag` and all. The `PUT` stays here — it is
+            // a config-plane WRITE and has not crossed — which is exactly why the read had to keep
+            // answering off whichever generation is current: the write swaps a new one onto the
+            // handle the loop reads through, so a read-after-write is coherent ACROSS the two
+            // halves. The ownership pin in the root's test suite holds them to exactly one answer.
+            .route(PATH_ADMIN_AUTH, put(put_auth))
             .route("/usage", get(get_usage))
             .route("/config", get(get_config))
             .route("/audit", get(get_audit))
