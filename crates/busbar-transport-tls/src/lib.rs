@@ -363,6 +363,16 @@ impl TlsTransport {
             io::ErrorKind::AddrNotAvailable | io::ErrorKind::InvalidInput => {
                 TransportError::AddressRefused
             }
+            // A peer that went away with no `close_notify` behind it. The record layer reports it
+            // as this rather than as end of stream precisely because it is what a truncation looks
+            // like from the inside, and this crate's own send side goes to the trouble of never
+            // doing it to a peer — so folding it into the catch-all beside a broken pipe throws
+            // away the one signal the alert exists to carry. The stream was cut mid-stream, which
+            // is what `Reset` says. A CLEAN end never reaches this mapper at all: it is `Ok(0)`,
+            // and it ends the frame stream instead of erroring. `HandshakeFailed` is not the
+            // answer either, because every handshake in this crate is driven behind its own
+            // explicit mapping, so this mapper is only ever reached once one has completed.
+            io::ErrorKind::UnexpectedEof => TransportError::Reset,
             _ => TransportError::Closed,
         }
     }
