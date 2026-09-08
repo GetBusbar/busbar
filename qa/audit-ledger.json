@@ -563,13 +563,13 @@
    "tree_hash": "aa7e2340f54bc1de65b5277433622a0b78f5d1bb0d032dd0dc49f381d1a86979",
    "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
    "round": 9,
-   "result": "zero",
+   "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 0,
+    "MEDIUM": 1,
     "LOW": 0
    },
-   "report": "zero confirmed; every production file was read for reachable panics and none was found, but the closed-vocabulary and per-kind shape reading did not run, so this is a partial reading and not a clean one",
+   "report": "the closed set of plugin kinds carries eight members where the normative tree states nine, so a dialect crate has no kind of its own to declare and must present itself as the kind it is not; the transport trait that ships is a wider and better shape than the one the design table names, and the design is the stale side",
    "auditor": "opus-kernel-auditor-b",
    "fixed_at": null,
    "exclude": [
@@ -634,6 +634,19 @@
       "LOW": 0
      },
      "report": "zero confirmed; every production file was read for reachable panics and none was found, but the closed-vocabulary and per-kind shape reading did not run, so this is a partial reading and not a clean one"
+    },
+    {
+     "round": 9,
+     "result": "findings",
+     "auditor": "opus-kernel-auditor-b",
+     "audited_at": "9abf7f09bd3264647ea8bb8aebea6518e481baea",
+     "tree_hash": "aa7e2340f54bc1de65b5277433622a0b78f5d1bb0d032dd0dc49f381d1a86979",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0
+     },
+     "report": "the closed set of plugin kinds carries eight members where the normative tree states nine, so a dialect crate has no kind of its own to declare and must present itself as the kind it is not; the transport trait that ships is a wider and better shape than the one the design table names, and the design is the stale side"
     }
    ]
   },
