@@ -257,6 +257,14 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     } = input;
     let now = hop.clock.now_secs();
 
+    // The plane's codec state for THIS hop, opened from the unit that is about to go out. It is
+    // the only channel the response decode has to the unit: `decode_response` is handed frames, a
+    // destination and a context and nothing else, so a dialect whose complete answer and whose
+    // first streamed event carry the same bytes reads what the unit was opened as from here or
+    // does not read it at all. A plane with nothing to carry answers `None` and every call below
+    // is handed `None`, exactly as it was before.
+    let mut state = hop.plane.open_unit_state(unit, ctx);
+
     // Probe ownership for the whole attempt window, armed only when this dispatch won one. If this
     // future is dropped part-way the guard releases the probe owner-checked, so the cell never
     // wedges half-open; it stays armed across every failure exit — each records an outcome first,
@@ -286,7 +294,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     // 2-5. Assemble: the plane's egress encode, the egress-auth decoration, and the lane
     //      cross-check on the bytes that decoration produced. A failure at any of the three is an
     //      internal failure before any send.
-    let wire = match assemble(&hop, unit, ctx) {
+    let wire = match assemble(&hop, unit, state.as_mut(), ctx) {
         Ok(bytes) => bytes,
         Err(shed) => {
             journal.abandon();
@@ -354,7 +362,17 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         return classify_failure(&hop, status, permit, now);
     }
 
-    deliver(&hop, first, permit, &mut probe_guard, ctx, now, anchor_ms).await
+    deliver(
+        &hop,
+        first,
+        permit,
+        &mut probe_guard,
+        ctx,
+        now,
+        anchor_ms,
+        &mut state,
+    )
+    .await
 }
 
 // ── assemble ────────────────────────────────────────────────────────────────────────────────────
@@ -375,10 +393,15 @@ struct Wire<'a> {
 /// destination but never holds a credential; the egress-auth unit decorates and substitutes every
 /// secret itself; and the lane cross-check runs on the RESULT, so a decoration cannot quietly move
 /// the request onto a cheaper or a different lane.
-fn assemble<'a>(hop: &Hop<'_>, unit: &Unit<'a>, ctx: &Ctx<'a>) -> Result<Wire<'a>, Shed> {
+fn assemble<'a>(
+    hop: &Hop<'_>,
+    unit: &Unit<'a>,
+    st: Option<&mut busbar_contract::PlaneSessionState>,
+    ctx: &Ctx<'a>,
+) -> Result<Wire<'a>, Shed> {
     let encoded: EgressBody<'_> = hop
         .plane
-        .encode_egress(unit, hop.dest, None, ctx)
+        .encode_egress(unit, hop.dest, st, ctx)
         .map_err(|_| Shed::internal())?;
 
     let mut request = OutboundRequest {
@@ -649,6 +672,8 @@ fn remaining_ms(clock: &dyn Clock, anchor_ms: u128, budget_ms: u64) -> Option<u6
 /// destination's lifetime budget under a refund guard, and relay the frames.
 ///
 /// `anchor_ms` is the instant the send started, which is what the deadline is measured from.
+#[allow(clippy::too_many_arguments)] // one more than the threshold: the plane's per-hop codec
+                                     // state, which the response decode cannot be given any other way.
 async fn deliver(
     hop: &Hop<'_>,
     first: FirstFrame,
@@ -657,6 +682,7 @@ async fn deliver(
     ctx: &Ctx<'_>,
     now: u64,
     anchor_ms: u128,
+    state: &mut Option<busbar_contract::PlaneSessionState>,
 ) -> AttemptOutcome {
     hop.breaker
         .observe(hop.pool, hop.destination, Outcome::Success, now, hop.token);
@@ -712,7 +738,10 @@ async fn deliver(
         };
         let carried = [frame];
         let mut cursor = busbar_contract::FrameCursor::new(&carried);
-        match hop.plane.decode_response(&mut cursor, hop.dest, None, ctx) {
+        match hop
+            .plane
+            .decode_response(&mut cursor, hop.dest, state.as_mut(), ctx)
+        {
             Ok(busbar_contract::Progress::NeedMore) => {
                 relayed += 1;
             }
