@@ -71,6 +71,9 @@ pub struct Settlement {
 pub struct Ledger {
     book: Book,
     legacy: Option<Box<dyn LegacyRows>>,
+    /// Which checkpoint sealed each row, and how far the anchoring has got — the two facts the
+    /// retention boundary asks about. See [`crate::tick`].
+    sealing: crate::tick::Sealing,
 }
 
 impl std::fmt::Debug for Ledger {
@@ -94,6 +97,7 @@ impl Ledger {
         Ledger {
             book: Book::new(),
             legacy: None,
+            sealing: crate::tick::Sealing::default(),
         }
     }
 
@@ -102,7 +106,18 @@ impl Ledger {
         Ledger {
             book: Book::new(),
             legacy: Some(legacy),
+            sealing: crate::tick::Sealing::default(),
         }
+    }
+
+    /// What this ledger has sealed and anchored, for the retention boundary to read.
+    pub(crate) fn sealing(&self) -> &crate::tick::Sealing {
+        &self.sealing
+    }
+
+    /// The same, to be moved by a tick.
+    pub(crate) fn sealing_mut(&mut self) -> &mut crate::tick::Sealing {
+        &mut self.sealing
     }
 
     /// Whether this ledger also writes onto the previous release's rows.

@@ -1553,6 +1553,27 @@ async fn run(data_workers: usize) {
         ));
     }
 
+    // THE LEDGER'S OWN TICK: seal the book, put the seal on the chain, anchor it, and only then
+    // retire the rows that seal now covers. Spawned once, here, beside the flusher, and for the same
+    // two reasons — the work is periodic and belongs off the request path, and a second one against
+    // the same book would seal two checkpoints under one sequence.
+    //
+    // Until this existed the ledger's book grew a row per (bucket, dimension, scope, window) and
+    // nothing ever took one out; `Book::retain_from` was the only retirement there was and it could
+    // not be called correctly, because its single global cutoff deletes the all-time row. The seal
+    // and the anchor had no production caller at all, which is the same defect from the other end:
+    // the retention boundary IS the checkpoint, so a book nothing seals can never safely shrink.
+    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    {
+        // Handle intentionally dropped, exactly as the flusher's is: the tick runs for the process
+        // lifetime and takes its own final pass on the shutdown broadcast.
+        std::mem::drop(root::durability::spawn_ledger_tick(
+            std::sync::Arc::clone(&book.durability),
+            root::kernel::new_kernel().durability_token(),
+            shutdown_tx.subscribe(),
+        ));
+    }
+
     // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
     // re-verification job — through ONE boot entry point that folds over the plane registry and calls
     // each plane's declared `start` hook (MCP before A2A, the order they have always started in). Each
