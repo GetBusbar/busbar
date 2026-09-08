@@ -13,10 +13,12 @@ root registry, and is driven only by the kernel loop — so that two siblings of
 indistinguishable in shape, and two kinds never fuse in a crate name, a dependency edge, or a
 vocabulary.
 
-**The count, and its closure rule.** There are **nine plugin kinds** (§1). The tree has **ten rows**:
-the ninth-plus-one is `unit`, which is CORE — units are the rules, never loadable, never a plugin —
-and is listed here only because it obeys the same declare/register/driven shape and the gate must
-read its boundary too. A tenth *plugin* kind may exist only by walking §6. `loader` and `abi` are not
+**The count, and its closure rule.** There are **ten plugin kinds** (§1) — the ninth-plus-one is
+**control**, admitted by the owner ruling of 2026-09-08 and walked through §6 as the procedure's
+second proof. The tree has **eleven rows**: the last is `unit`, which is CORE — units are the rules,
+never loadable, never a plugin — and is listed here only because it obeys the same
+declare/register/driven shape and the gate must read its boundary too. An eleventh *plugin* kind may
+exist only by walking §6. `loader` and `abi` are not
 kinds; they are TCB crates and belong in a `tcb_crates` list, not `[gate.plugin_kinds]`. "Rate card"
 is not a kind; it is config with no trait and no crate, and its row leaves the `ARCHITECTURE.md` §1.4
 kind table.
@@ -79,7 +81,7 @@ refuses to admit one.
 
 ## 2. The ONE seam — how every plugin of every kind integrates
 
-Identical for all ten rows. There is no second path in, and the kernel loop is the only place a
+Identical for all eleven rows. There is no second path in, and the kernel loop is the only place a
 plugin acts.
 
 1. **DECLARE.** The crate exposes one type implementing exactly one kind trait plus the base
@@ -312,7 +314,7 @@ Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` const
 | §1.4 `loader`/`abi` are not kinds | Stated in the header: `tcb_crates`, not `[gate.plugin_kinds]`. |
 | §1.5 "plane" defined twice | `gate.plane_crates` (the legacy engines) is deleted with those crates in R3/R5; `[gate.plugin_kinds].plane` is the only definition. |
 | §1.6 "Rate card (config)" row | Removed from the kind table; it is config. |
-| §1.7 "~10" pinned nowhere | Header: nine plugin kinds, ten tree rows, closure rule = §6. |
+| §1.7 "~10" pinned nowhere | Header: ten plugin kinds (control admitted 2026-09-08), eleven tree rows, closure rule = §6. |
 | §1.8 ABI generation for two kinds only | §6 step 4 requires one per kind; §8 owes seven. |
 | §2 kind by glob, not declaration | §7 rename makes the globs correct by construction; `:name` (Appendix G) then reads the kind from segment two and cross-checks `Plugin::kind()`. `secret-ref` and the `hooks-ranking` accident both dissolve. |
 | §3 contract restated 5–6× | This document is the single statement; `ARCHITECTURE.md` §§1.4/3.2/3.4/6/7 point here as normative. |
@@ -366,6 +368,6 @@ gate can be turned on RED-free and closed row by row; every other row is `max_hi
    `busbar_substrate_values::breaker::`) get cut of those imports and move into the plane, or stay as
    a named residue crate of no kind? This is a precondition of the split, not a follow-up.
 3. **The `unit` row.** Units are core and never loadable (2026-09-06), yet they obey the same
-   declare/register/driven shape and the gate must read their boundary. Confirm the tree is ten rows,
-   nine of them plugin kinds — or rule units fully out of the tree, in which case §1's last row and
+   declare/register/driven shape and the gate must read their boundary. Confirm the tree is eleven
+   rows, ten of them plugin kinds — or rule units fully out of the tree, in which case §1's last row and
    §4's `unit` row are deleted and the gate reads unit boundaries from `lean-core` alone.
