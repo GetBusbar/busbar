@@ -1492,7 +1492,14 @@ async fn run(data_workers: usize) {
                 std::sync::Arc::clone(&book.durability),
                 std::sync::Arc::clone(&book.rows)
                     as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
-            );
+            )
+            // THE CROSSED TOPOLOGY READS' OWN SEAM, bound to the node's HANDLE rather than to the
+            // generation this line runs under. A config apply replaces the tables wholesale, and a
+            // seam that had captured this generation would answer an operator's read off the one
+            // their apply retired — indistinguishable, from the outside, from the apply not landing.
+            .with_admin_topology(std::sync::Arc::new(
+                root::units_admin::HandleTopology::new(std::sync::Arc::clone(&app_handle)),
+            ));
             // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
             // the assembly's open posture shipped: the step admitted every caller anonymously and
             // the only thing deciding was the surface mounted underneath — so a credential this node

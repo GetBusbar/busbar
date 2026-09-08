@@ -1028,21 +1028,18 @@ impl AdminService {
     /// `GET /api/v1/admin/providers` — distinct upstream providers + the count of model lanes routing
     /// through each. Read scope. Sorted by provider name.
     pub(crate) async fn list_providers(&self) -> Result<Page<ProviderView>, AdminError> {
-        let view = self.app.engine_tables_view();
-        let mut counts: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        for i in 0..view.lane_count() {
-            if let Some(l) = view.lane_view(i) {
-                *counts.entry(l.provider.to_string()).or_insert(0) += 1;
-            }
-        }
-        let providers = counts
-            .into_iter()
-            .map(|(provider, model_count)| ProviderView {
-                provider: provider.to_string(),
-                model_count,
-            })
-            .collect();
+        // THE PROJECTION IS THE SUBSTRATE'S, not this method's. `GET /providers` CROSSED to the loop
+        // in 1.6.0's admin Cut 1 and the composition root renders that answer from the same neutral
+        // fact — so the counting lives once, where both readings can reach it, and what is left here
+        // is the rendering into the view type the effective-config read embeds.
+        let providers =
+            busbar_substrate::plane_host::providers_by_lane_count(self.app.engine_tables_view())
+                .into_iter()
+                .map(|(provider, model_count)| ProviderView {
+                    provider,
+                    model_count,
+                })
+                .collect();
         Ok(Page::single(providers))
     }
 

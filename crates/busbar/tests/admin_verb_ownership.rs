@@ -18,8 +18,8 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | the operation is a ledger view or a recovery verb | 8 |
-//! | the surface answers, and the loop hands it back | everything else that is mounted | 66 |
+//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 9 |
+//! | the surface answers, and the loop hands it back | everything else that is mounted | 65 |
 //! | nobody answers | gated, then `404` — the shipped defect the sibling pin names | 14 |
 //!
 //! ## Why it is derived and then measured, rather than written down
@@ -79,6 +79,16 @@ const RECOVERY_VERBS: &[&str] = &["chain_break", "store_restore", "reseal_epoch_
 /// there is a known-absent path to compare the answer against.
 const A_PATH_THAT_DOES_NOT_EXIST: &str = "/api/v1/admin/nope";
 
+/// The operations of the sixty-six that have CROSSED: the loop reads the node's own tables through a
+/// seam it holds and renders the answer, and the route the surface underneath used to answer them on
+/// was deleted in the same commit.
+///
+/// Named here for the reason `RECOVERY_VERBS` is, and the reason is stronger for these: a recovery
+/// verb never had a route, so forgetting one costs a bucket. A crossed verb HAD one, so a set that
+/// silently lost a row would call a deleted route "nobody answers" — the exact shipped defect the
+/// sibling pin exists to name — rather than a crossing that half happened.
+const CROSSED_VERBS: &[&str] = &["get_providers"];
+
 /// The plane spells a row `get_audit`; the unit spells the same operation `GetAudit`. Comparing the
 /// two with separators and case removed joins them on the letters both crates copied out of the
 /// design, and on nothing either is free to restyle.
@@ -88,10 +98,13 @@ fn squashed(name: &str) -> String {
 
 /// Whether the loop produces this verb's answer itself.
 ///
-/// The two closed sets the composition root branches on, read from where each is defined: the
-/// executing unit's ledger views, and the three recovery verbs above.
+/// The three closed sets the composition root branches on: the executing unit's ledger views, read
+/// from where they are defined, and the recovery and crossed verbs named above.
 fn loop_answers(verb: &str) -> bool {
     if RECOVERY_VERBS.iter().any(|v| v.eq_ignore_ascii_case(verb)) {
+        return true;
+    }
+    if CROSSED_VERBS.iter().any(|v| v.eq_ignore_ascii_case(verb)) {
         return true;
     }
     busbar_unit_verbs::LEDGER_VERBS
@@ -297,12 +310,12 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
 
     assert_eq!(
         loop_owned.len(),
-        8,
+        9,
         "the loop answers a different number of operations than it did: {loop_owned:?}"
     );
     assert_eq!(
         surface_answers.len(),
-        66,
+        65,
         "the surface underneath answers a different number of operations than it did"
     );
     assert_eq!(
@@ -329,6 +342,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
             "get_ledger_openapi_json",
             "get_ledger_reconciliation",
             "get_ledger_totals",
+            "get_providers",
             "reseal_epoch_floor",
             "store_restore",
         ],

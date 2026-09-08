@@ -561,7 +561,13 @@ impl App {
     /// [`EMPTY_VIEW`](busbar_substrate::plane_host::EMPTY_VIEW) (zero pools/models), so a scrape or
     /// discovery probe on a plane-less binary reads empty tables rather than panicking. Cold path: one
     /// `plane_slots` lookup + one downcast, then the neutral (allocating) projections.
-    pub(crate) fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
+    ///
+    /// `pub` from 1.6.0's admin Cut 1, and the visibility is the point rather than a convenience: the
+    /// administrative topology reads are crossing to the loop, and the loop has to read the SAME
+    /// tables the retiring handlers read, at request time, off whichever generation is current. What
+    /// it reads them through is this NEUTRAL substrate trait — no core type crosses the seam, which
+    /// is what lets the composition root render a topology answer without naming a core view struct.
+    pub fn engine_tables_view(&self) -> &dyn busbar_substrate::plane_host::EngineTablesView {
         // THE PIVOT (1.6.0 money-path Phase 3-4 C): the runtime type now lives in `busbar-llm`, so core
         // no longer names it. Project the plane's opaque runtime slot into the neutral view through the
         // fallback plane decl's `viewer` fn-pointer (the plane downcasts its OWN runtime inside). An
