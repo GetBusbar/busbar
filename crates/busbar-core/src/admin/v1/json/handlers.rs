@@ -40,11 +40,6 @@ pub(crate) async fn get_pool(
     respond(StatusCode::OK, service(&handle).get_pool(&name).await)
 }
 
-/// `GET /api/v1/admin/models` — model lanes + providers.
-pub(crate) async fn list_models(State(handle): State<Arc<AppHandle>>) -> Response {
-    respond(StatusCode::OK, service(&handle).list_models().await)
-}
-
 /// `GET /api/v1/admin/hooks` — the hook registry read (+ config-plane `ETag` for `If-Match` chaining).
 pub(crate) async fn list_hooks(State(handle): State<Arc<AppHandle>>) -> Response {
     let version = handle.load().config_version;

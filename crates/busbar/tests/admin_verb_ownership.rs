@@ -18,8 +18,8 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 9 |
-//! | the surface answers, and the loop hands it back | everything else that is mounted | 65 |
+//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 10 |
+//! | the surface answers, and the loop hands it back | everything else that is mounted | 64 |
 //! | nobody answers | gated, then `404` — the shipped defect the sibling pin names | 14 |
 //!
 //! ## Why it is derived and then measured, rather than written down
@@ -87,7 +87,7 @@ const A_PATH_THAT_DOES_NOT_EXIST: &str = "/api/v1/admin/nope";
 /// verb never had a route, so forgetting one costs a bucket. A crossed verb HAD one, so a set that
 /// silently lost a row would call a deleted route "nobody answers" — the exact shipped defect the
 /// sibling pin exists to name — rather than a crossing that half happened.
-const CROSSED_VERBS: &[&str] = &["get_providers"];
+const CROSSED_VERBS: &[&str] = &["get_models", "get_providers"];
 
 /// The plane spells a row `get_audit`; the unit spells the same operation `GetAudit`. Comparing the
 /// two with separators and case removed joins them on the letters both crates copied out of the
@@ -310,12 +310,12 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
 
     assert_eq!(
         loop_owned.len(),
-        9,
+        10,
         "the loop answers a different number of operations than it did: {loop_owned:?}"
     );
     assert_eq!(
         surface_answers.len(),
-        65,
+        64,
         "the surface underneath answers a different number of operations than it did"
     );
     assert_eq!(
@@ -342,6 +342,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
             "get_ledger_openapi_json",
             "get_ledger_reconciliation",
             "get_ledger_totals",
+            "get_models",
             "get_providers",
             "reseal_epoch_floor",
             "store_restore",
