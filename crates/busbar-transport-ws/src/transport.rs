@@ -288,6 +288,120 @@ impl WsTransport {
         })
     }
 
+    /// TAKE ONE UPGRADE OFF THE LAYER BELOW AND RUN THE SESSION IT OPENS, TO ITS END.
+    ///
+    /// The serving twin of [`Transport::accept`], and the difference between them is the whole
+    /// content of this method. `accept` upgrades a stream and hands back a connection for somebody
+    /// else to pump frames off; this one is the somebody else. The reason it cannot be spelled as a
+    /// call after `accept` is the ORDER: everything that decides whether a session may exist has to
+    /// happen while the HTTP leg is still there to answer on, and `accept` has already answered the
+    /// 101 by the time it returns.
+    ///
+    /// So the addressing and the driver's own open both run INSIDE the upgrade callback, which is the
+    /// last moment this wire has a status line:
+    ///
+    /// * a target no binding of this transport declares is answered with the status the layer below
+    ///   already uses for one, and never upgraded;
+    /// * a driver that will not open a session answers in the eight words, and the same mapping the
+    ///   one-shot mount uses turns that into a status. The caller learns it was refused on the
+    ///   protocol it spoke, rather than being told yes and then cut.
+    ///
+    /// After the 101 there is no such answer left, which is why [`mount::pump`] is only reached on
+    /// the far side of a session that really opened.
+    ///
+    /// # Errors
+    ///
+    /// The layer below could not accept, the stream could not be adopted, the upgrade failed, or the
+    /// session was refused before it opened.
+    ///
+    /// The large-error lint is allowed rather than worked around: the `Err` type is the upgrade
+    /// library's own callback signature, and boxing it would mean not implementing that signature.
+    #[allow(clippy::result_large_err)]
+    #[cfg(feature = "serve-sessions")]
+    pub async fn serve_accept(
+        &self,
+        l: &Listener,
+        driver: &dyn busbar_contract_transport::session::SessionDriver,
+        surface: &busbar_contract_transport::surface::WireSurface,
+        budgets: crate::mount::SessionBudgets,
+    ) -> Result<busbar_contract_transport::session::SessionEnd, TransportError> {
+        use busbar_contract_transport::session::SessionHandle;
+        use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+
+        let lower = self.lower()?;
+        let conn = lower.accept(l).await?;
+        // Read before the detach, for the reason `adopt` reads before its own: after it, the layer
+        // below knows nothing about this connection and can never answer for it again.
+        let below = lower.arrival(&conn);
+        let mut chain = below.transport_chain;
+        let raw = lower.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
+        chain.push(<Self as TransportMeta>::KEY);
+        let peer = raw.peer().to_string();
+        let stream: Box<dyn LowerIo> = Box::new(
+            tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io()),
+        );
+
+        // WHAT THE CALLBACK LEARNS, carried out of it. A handle and nothing else: the callback runs
+        // inside the library's handshake and cannot return a value of its own, so the one thing the
+        // session needs afterwards travels in a cell rather than in a return.
+        let mut opened: Option<SessionHandle> = None;
+        let refuse = |status: u16| -> ErrorResponse {
+            let mut response = ErrorResponse::new(None);
+            *response.status_mut() = tokio_tungstenite::tungstenite::http::StatusCode::from_u16(
+                status,
+            )
+            .unwrap_or(tokio_tungstenite::tungstenite::http::StatusCode::INTERNAL_SERVER_ERROR);
+            response
+        };
+        let addressed =
+            |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+                let target = request
+                    .uri()
+                    .path_and_query()
+                    .map_or_else(|| request.uri().path(), |pq| pq.as_str());
+                // WHOLE AND UNSTRIPPED. The scheme word travels with the credential because deciding
+                // what a scheme means is the authentication chain's, and a transport that stripped the
+                // wrong prefix would turn one caller's secret into a different string. Absent is absent:
+                // a header that is not there is not an empty one.
+                let credential = request
+                    .headers()
+                    .get(tokio_tungstenite::tungstenite::http::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok());
+                let upgrade = crate::mount::Upgrade {
+                    target,
+                    peer: &peer,
+                    credential,
+                };
+                let mounted =
+                    crate::mount::address(surface, <Self as TransportMeta>::KEY, &chain, &upgrade)
+                        .map_err(|_| refuse(busbar_transport_http::mount::UNADDRESSED_STATUS))?;
+                let handle = crate::mount::open_session(driver, surface, &mounted, &upgrade)
+                    .map_err(|outcome| refuse(busbar_transport_http::mount::status_of(outcome)))?;
+                opened = Some(handle);
+                Ok(response)
+            };
+
+        let ws_cfg = self.ws_config();
+        let upgraded = tokio::time::timeout(
+            HANDSHAKE_BUDGET,
+            tokio_tungstenite::accept_hdr_async_with_config(stream, addressed, ws_cfg),
+        )
+        .await;
+        let sock: Sock = match upgraded {
+            Ok(Ok(sock)) => sock,
+            Ok(Err(_)) => return Err(TransportError::HandshakeFailed),
+            Err(_) => return Err(TransportError::Timeout),
+        };
+        // A handshake that completed without the callback having opened a session is not something
+        // this method can serve. It cannot happen through the arm above — the callback's only
+        // successful exit sets the cell — and refusing it is what keeps that an invariant rather
+        // than a comment.
+        let session = opened.ok_or(TransportError::HandshakeFailed)?;
+
+        let (source, sink) = crate::session_io::split(sock);
+        Ok(crate::mount::pump(driver, session, source, sink, budgets).await)
+    }
+
     /// The one place a WebSocket connection is made, whichever direction it came from.
     async fn handshake(
         &self,
@@ -780,7 +894,7 @@ impl Transport for WsTransport {
 /// framing failure is a peer whose bytes were wrong and redialling changes nothing. A close the
 /// peer already completed is neither — it is the session ending, and the only error shape for that
 /// is `Closed`.
-fn read_error(e: &tokio_tungstenite::tungstenite::Error) -> TransportError {
+pub(crate) fn read_error(e: &tokio_tungstenite::tungstenite::Error) -> TransportError {
     use tokio_tungstenite::tungstenite::Error as WsError;
     match e {
         // The bytes were not WebSocket: a reserved opcode, a message past the cap, a text frame
