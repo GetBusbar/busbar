@@ -442,7 +442,7 @@ fn narrowed_got(verdict: &Verdict, covers: &[&str]) -> Expect {
 /// Plant an overlay, run the gate THROUGH `execute`, and require RED naming every string in
 /// `naming`. The only way a gate's selftest touches its gate.
 ///
-/// THE RED IS READ OFF THE COVERED ROWS ONLY (F11). It used to be enough that the gate went red and
+/// THE RED IS READ OFF THE COVERED ROWS ONLY. It used to be enough that the gate went red and
 /// that something anywhere in its report said the word: over a gate with thirty-six rows, on a tree
 /// that carries real debt in some of them, that is satisfiable by a row the case is not about — so a
 /// case could "prove" rule X while rule Y was what went red, and X was then deletable with `cargo

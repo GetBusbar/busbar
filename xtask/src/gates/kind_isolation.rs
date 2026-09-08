@@ -108,7 +108,7 @@ const MIN_SOURCES: usize = 600;
 /// Which instance vocabulary a kind draws its names from.
 ///
 /// `Plane` covers the plane crates, their pure `-codec` halves and the retiring legacy crates,
-/// because a codec IS a plane's other half and is named after it by design (§3.1). `Transport`
+/// because a codec IS a plane's other half and is named after it by design. `Transport`
 /// covers the transports. `Neutral` is every kind with no instance vocabulary of its own — and a
 /// neutral crate may carry NEITHER vocabulary in its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,7 +342,7 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 
 /// THE SINK EVERY KIND MAY NAME, BY SPEC AND NOT BY MEASUREMENT (`PLUGIN-TREE.md` §4).
 ///
-/// Every row of the §4 table gives its kind `busbar-core-contract`: the contract IS the thing a
+/// Every row of the PLUGIN-TREE.md §4 table gives its kind `busbar-core-contract`: the contract IS the thing a
 /// plugin is written against, and a kind that may not name it cannot be a plugin. Keeping those
 /// edges in the measured snapshot below made them look like nine separate observations that
 /// happened to be true, so the day `busbar-store-memory` became the first implementor of the record
@@ -354,7 +354,7 @@ const SPEC_SINK: &str = "contract";
 
 /// THE KIND-TO-KIND EDGE CLASSES THIS TREE HAS TODAY, measured and then written down.
 ///
-/// This is deliberately a MEASUREMENT rather than the ideal graph §3.1 describes. The ideal is
+/// This is deliberately a MEASUREMENT rather than the narrower ideal graph the design calls for. The ideal is
 /// narrower — planes reach the contract and their own codec, transports reach the transport
 /// contract, units reach the contract and caps — and the tree is not all the way there. A gate that
 /// asserted the ideal today would be red for reasons nobody can fix this week, and a gate that is
@@ -363,7 +363,7 @@ const SPEC_SINK: &str = "contract";
 /// once the last edge in that class is gone — and the gate is red until the line goes, so the
 /// tightening cannot be forgotten.
 ///
-/// `root` is not a source: the composition root exists to depend on everything (§3.1), so an edge
+/// `root` is not a source: the composition root exists to depend on everything by design, so an edge
 /// out of it is not news. `legacy` is not a source either — see the module header's ratchet.
 ///
 /// The one sink it does NOT hold is `contract`: that edge is the spec's, not a measurement — see
@@ -395,7 +395,7 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     ("secret", "api"),
     ("secret", "plugin-tooling"),
     // A store plugin implements the contract's record sink: the spec edge every plugin kind
-    // carries (PLUGIN-TREE §4), first taken by store-memory when the kernel record store landed.
+    // carries, first taken by store-memory when the kernel record store landed.
     ("store", "contract"),
     ("store", "api"),
     ("store", "plugin-tooling"),
@@ -438,7 +438,7 @@ const EXEMPLARS: &[(&str, &str)] = &[
 /// rule that grows a row every time the exemplar grows a file is not measuring shape; it is
 /// measuring one crate's domain, and the only way to go green is to copy it.
 ///
-/// §3 names the intersection instead, and it is small on purpose: `src/lib.rs` (the single `pub`
+/// PLUGIN-TREE.md §3 names the intersection instead, and it is small on purpose: `src/lib.rs` (the single `pub`
 /// entry — checked as `no-lib`), `src/meta.rs` (the associated consts), `src/claims.rs` for the
 /// kinds that CLAIM, the kind's own entry file (`unit.rs` / `plane.rs` / `transport.rs`), and
 /// `src/tests/conformance.rs` (checked by the battery rule). Everything else is `src/<verb>.rs` —
@@ -2027,7 +2027,7 @@ impl Gate for KindIsolationGate {
         ));
 
         // THE CONTRACT SINK IS THE SPEC'S, NOT A MEASUREMENT. `hooks -> contract` is in no snapshot
-        // and never was; §4 grants it, as it grants every kind the contract. This case plants that
+        // and never was; PLUGIN-TREE.md §4 grants it, as it grants every kind the contract. This case plants that
         // dependency and requires the row to stay GREEN — it was RED before the sink was read off
         // the spec, which is what made `store -> contract` a "new kind-to-kind edge class" the day
         // busbar-store-memory implemented the record contract, and failed the green baseline on the
@@ -2201,7 +2201,7 @@ impl Gate for KindIsolationGate {
             &[
                 "busbar-unit-planted",
                 "is missing 1 of the `unit` skeleton",
-                "§3): unit",
+                "PLUGIN-TREE.md §3): unit",
             ],
         ));
 
