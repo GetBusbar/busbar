@@ -342,114 +342,6 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
     }
 }
 
-/// The two money-governance gates are the fleet's, and the route step reads them rather than
-/// writing them.
-///
-/// Three postures over the same step, and each one is a different failure if the seam is not
-/// consulted. Under a fleet that sealed dual control, one principal's export is REFUSED — a step
-/// that wrote `approved` for itself would let a single operator take the keyset out of a node
-/// whose whole reason for sealing the posture was that no single operator can. Under a fleet that
-/// HAS run the ceremony, a disaster-recovery verb is ADMITTED — a step that wrote `unset` for
-/// itself refused the very operators who ran the ceremony, permanently and with no way to lift
-/// it. And a posture the node cannot read at all is refused rather than guessed.
-#[test]
-#[cfg(feature = "root-admin")]
-fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
-    struct Sealed(Option<(PostureCtx, ApprovalState)>);
-    impl PostureView for Sealed {
-        fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
-            self.0
-        }
-    }
-
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
-    let admin = crate::root::kernel::new_kernel().admin_token();
-
-    let under = |path: &str, sealed: Sealed| -> Result<(), ReasonCode> {
-        let binding =
-            AdminBinding::new(Arc::new(AnsweringDispatch)).with_posture_view(Arc::new(sealed));
-        let key = UnitKey::new(1);
-        let mut request = a_request();
-        request.method = "POST".to_string();
-        request.path = path.to_string();
-        binding.units.open(key, request);
-        let ctx = UnitCtx {
-            key,
-            origin: busbar_caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            admin_listener: true,
-            kernel_verb_only: true,
-        };
-        let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
-        decode(&binding, &decode_token, &ctx)
-            .into_result(&seal)
-            .expect("the plane's table declares this operation");
-        binding.units.set_granted(key, VerbScope::Full);
-        let token: UnitToken<Route> = UnitToken::mint(&seal);
-        let outcome = route(
-            &binding,
-            Arc::new(crate::root::kernel::RefusingStore),
-            &admin,
-            &token,
-            &ctx,
-            &busbar_kernel::teller::AccrualMeter::new(),
-        )
-        .into_result(&seal);
-        binding.units.close(key);
-        outcome.map(|_| ()).map_err(|refusal| refusal.reason())
-    };
-
-    let required = Sealed(Some((
-        PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Unset,
-            dual_control: busbar_unit_verbs::DualControl::Required,
-        },
-        ApprovalState::NotYetApproved,
-    )));
-    assert!(
-        under("/api/v1/admin/export-keyset", required).is_err(),
-        "one principal exported the keyset out of a fleet that sealed dual control"
-    );
-
-    let ceremony_run = Sealed(Some((
-        PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Set,
-            dual_control: busbar_unit_verbs::DualControl::Single,
-        },
-        ApprovalState::NotYetApproved,
-    )));
-    // The gate is what this cell is about, so the assertion is that the unit got PAST it. It no
-    // longer ends `Ok`, and that is the point of the verb reaching the store: the fixture's
-    // store refuses everything, so a chain break admitted by the ceremony now ends on the
-    // store's own answer rather than on the gate's. What must not appear here is the gate's
-    // refusal — that would be a fleet that ran the ceremony being told it had not.
-    assert_eq!(
-        under("/api/v1/admin/chain-break", ceremony_run),
-        Err(ReasonCode::DurabilityUnavailable),
-        "a fleet that ran the ceremony was still refused for not having run it"
-    );
-
-    assert_eq!(
-        under("/api/v1/admin/adjust", Sealed(None)),
-        Err(ReasonCode::DecodeFailed),
-        "a verb whose posture the node cannot read was admitted under a guessed one"
-    );
-}
-
-/// The posture a node with no sealed journal is in is the one the design names for a fresh
-/// install, and it is that node's TRUE state rather than a permissive default: the ceremony has
-/// not run, so the irreducible verbs that need one are still refused.
-#[test]
-fn an_unsealed_node_reports_the_posture_a_fresh_install_is_actually_in() {
-    let (posture, approval) = UnsealedPosture
-        .resolve(KernelVerb::Adjust, "admin")
-        .expect("a node with no journal knows what it has not sealed");
-    assert_eq!(posture.operator, busbar_unit_verbs::OperatorState::Unset);
-    assert_eq!(posture.dual_control, busbar_unit_verbs::DualControl::Single);
-    assert_eq!(approval, ApprovalState::NotYetApproved);
-}
-
 /// Both tables were extracted from the same pinned tag. Every row the plane decodes to has to
 /// name a verb the executing unit knows, or the root would be binding an operation to nothing.
 #[test]
@@ -1245,15 +1137,15 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
         Box::new(busbar_unit_audit::NoSeam),
     );
 
-    // A mutation: an operator-key write, on the mutating side of the closed split.
+    // A mutation: an overdraft-ceiling write, on the mutating side of the closed split.
     let mut mutating = a_request();
     mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
+    mutating.path = "/api/v1/admin/set-overdraft-ceiling".to_string();
     let (binding, ctx, seal) = a_bound_unit(mutating);
     let resolved = binding
         .units
         .verb(ctx.key)
-        .expect("the operator-key write is a row the table names");
+        .expect("the overdraft-ceiling write is a row the table names");
     assert!(!resolved.read_only, "the fixture must be a mutation");
     // Verify is what keeps the resolved identity, and the fixture stands in for it: a unit that
     // reaches the audit door having been authenticated has one, and that is what the record is
@@ -1303,7 +1195,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
     let mut mutating = a_request();
     mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
+    mutating.path = "/api/v1/admin/set-overdraft-ceiling".to_string();
     let (binding, ctx, seal) = a_bound_unit(mutating);
     binding
         .units
@@ -1329,7 +1221,7 @@ fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
     // grow that operator's history one refused write at a time.
     let mut mutating = a_request();
     mutating.method = "POST".to_string();
-    mutating.path = "/api/v1/admin/operator-key".to_string();
+    mutating.path = "/api/v1/admin/set-overdraft-ceiling".to_string();
     let (binding, ctx, seal) = a_bound_unit(mutating);
     assert!(
         binding.units.principal(ctx.key).is_none(),
@@ -1437,28 +1329,6 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let admin = crate::root::kernel::new_kernel().admin_token();
 
-    // The posture a fleet that has run its ceremony has, so the gates admit and what is left is
-    // the destination. Anything less and the verb would be refused before the store.
-    let ceremony_run = || -> Arc<dyn PostureView> {
-        struct Ran;
-        impl PostureView for Ran {
-            fn resolve(
-                &self,
-                _verb: KernelVerb,
-                _actor: &str,
-            ) -> Option<(PostureCtx, ApprovalState)> {
-                Some((
-                    PostureCtx {
-                        operator: busbar_unit_verbs::OperatorState::Set,
-                        dual_control: busbar_unit_verbs::DualControl::Single,
-                    },
-                    ApprovalState::NotYetApproved,
-                ))
-            }
-        }
-        Arc::new(Ran)
-    };
-
     for (path, body, reached) in [
         ("/api/v1/admin/chain-break", "{}", "chain_break"),
         (
@@ -1473,8 +1343,7 @@ fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
         ),
     ] {
         let store = Arc::new(RecordingStore::default());
-        let binding =
-            AdminBinding::new(Arc::new(NeverDispatched)).with_posture_view(ceremony_run());
+        let binding = AdminBinding::new(Arc::new(NeverDispatched));
         let key = UnitKey::new(1);
         let mut request = a_request();
         request.method = "POST".to_string();
@@ -2661,13 +2530,12 @@ fn a_ledger_view_is_read_only_in_every_table_that_has_an_opinion() {
     }
 }
 
-/// A ledger verb never reaches the dispatch, and never reaches the posture check either.
+/// A ledger verb never reaches the dispatch.
 ///
-/// The governance seam is the boundary the two facts meet at, so it is where they are asserted:
-/// a recording seam that would notice a legacy or new-verb call, and a `PostureCtx` that refuses
-/// every mutation. A view answering under that posture is a view no ceremony gates.
+/// The governance seam is the boundary the fact meets at, so it is where it is asserted: a
+/// recording seam that would notice a legacy or new-verb call, and a count that stays zero.
 #[test]
-fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
+fn a_view_never_reaches_the_dispatch() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingDispatch(Arc<AtomicUsize>);
@@ -2708,14 +2576,6 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
                 "admin",
                 VerbScope::ReadOnly,
                 1_700_000_000,
-                // The posture a fleet is in before its operator ceremony has run, under which
-                // every one of the 17 money-governance verbs is refused. A view answers anyway,
-                // because there is nothing for an operator to have approved about a read.
-                Some(busbar_unit_verbs::PostureCtx {
-                    operator: busbar_unit_verbs::OperatorState::Unset,
-                    dual_control: busbar_unit_verbs::DualControl::Required,
-                }),
-                busbar_unit_verbs::ApprovalState::NotYetApproved,
                 b"",
             )
             .unwrap_or_else(|r| panic!("{verb:?} was refused: {r:?}"));
@@ -2728,8 +2588,10 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
         "a ledger view reached the dispatch, which has no handler for it"
     );
 
-    // The control: a money-governance verb under the same posture IS refused, so the green above
-    // is the views being exempt rather than the posture check being unbound.
+    // The control: a money-governance verb IS refused to the same read-only credential, so the
+    // green above is the views asking only for `read-only` rather than the scope check being
+    // unbound. Since the ruling this is the ONLY gate in front of a new verb, which makes the
+    // control the more important half of the test rather than the lesser one.
     let verbs = busbar_unit_verbs::Verbs::new(
         CoreGovernance::new(
             Arc::new(CountingDispatch(Arc::clone(&calls))),
@@ -2747,13 +2609,8 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             KernelVerb::Adjust,
             &admin,
             "admin",
-            VerbScope::Full,
+            VerbScope::ReadOnly,
             1_700_000_000,
-            Some(busbar_unit_verbs::PostureCtx {
-                operator: busbar_unit_verbs::OperatorState::Unset,
-                dual_control: busbar_unit_verbs::DualControl::Required,
-            }),
-            busbar_unit_verbs::ApprovalState::NotYetApproved,
             b"",
         )
         .is_err());
@@ -2902,7 +2759,7 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: eighty of the eighty-eight are still
-    // produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 80);
+    // The complement is not empty and is not the whole table: seventy-six of the eighty-four are
+    // still produced by the surface underneath, which is the fact the migration exists to change.
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 76);
 }

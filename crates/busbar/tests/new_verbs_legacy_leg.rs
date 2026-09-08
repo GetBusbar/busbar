@@ -1,29 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The seventeen 1.6.0 verbs exist on no legacy route, and this is what that costs today.
+//! The thirteen 1.6.0 verbs exist on no legacy route, and this is what that costs today.
 //!
 //! ## What is actually at stake
 //!
-//! The composition root's admin leg GATES all seventeen of the 1.6.0-additive verbs: a request to
+//! The composition root's admin leg GATES all thirteen of the 1.6.0-additive verbs: a request to
 //! one of their paths is resolved against `busbar_plane_admin::verbs::resolve`, walked through the
 //! real auth chain, scope-checked, rate-classed, and put past the operator-ceremony and dual-control
 //! gates. Three of them — `chain_break`, `store_restore`, `reseal_epoch_floor` — then land on the
-//! `Store` seam and are answered by the loop. The other fourteen are handed to
+//! `Store` seam and are answered by the loop. The other ten are handed to
 //! `Governance::execute_new_verb`, which re-serves them on the legacy administrative router.
 //!
-//! That router has never had a route for any of them. So the fourteen pass every gate the design
+//! That router has never had a route for any of them. So the ten pass every gate the design
 //! put in front of them and are then told the resource does not exist.
 //!
 //! This test pins that. It is not a complaint about the 404 — an absent route SHOULD 404, and the
 //! ledger views' own test beside this one asserts exactly that for the five paths the loop does
-//! serve. It is a pin on WHICH of the seventeen are in that state, so that the day one of them
+//! serve. It is a pin on WHICH of the thirteen are in that state, so that the day one of them
 //! grows a real answer, the row moves here first and deliberately rather than drifting.
 //!
-//! The `set_operator_key` row is the one with teeth. `busbar_unit_verbs::ADMITTED_UNDER_UNSET`
-//! names it as one of the two verbs a node with no sealed operator key may still run — it is the
-//! ceremony's own bootstrap, the thing the architecture document says must always be reachable so
-//! that a fleet can be brought under the key. It is admitted by every gate and then 404s.
+//! The teeth used to be in the `set_operator_key` row: a fleet could not be brought under its own
+//! operator key because the verb that seals one passed every gate and then 404'd. The owner's
+//! 2026-09-08 ruling removed that verb and the ceremony with it, so the sharpest case is gone —
+//! but the shape is not. Ten verbs still pass the only gate left, the caller's scope, and are then
+//! told the resource does not exist, and each is a money-governance operation an operator has been
+//! told 1.6.0 offers.
 //!
 //! ## Why this is an integration test and not a unit one
 //!
@@ -33,7 +35,7 @@
 
 use std::net::SocketAddr;
 
-/// The three of the seventeen the loop answers itself, from `Store`, without asking any router.
+/// The three of the thirteen the loop answers itself, from `Store`, without asking any router.
 ///
 /// Named rather than counted, because "the loop serves three" is the fact under test in the
 /// negative: every OTHER new verb's path must reach the legacy surface, and if one of these three
@@ -58,7 +60,7 @@ struct Answer {
 /// Ask the surface, with the method the plane's own table declares for the row.
 ///
 /// The method matters here in a way it does not for the ledger views. Those are all `GET`; the
-/// seventeen are a mix, and asking a `POST` row with a `GET` would collect a 405 from a route that
+/// thirteen are a mix, and asking a `POST` row with a `GET` would collect a 405 from a route that
 /// existed rather than the 404 of one that does not — which is a different claim, and the weaker of
 /// the two.
 async fn ask(addr: SocketAddr, method: &str, path: &str) -> Answer {
@@ -86,7 +88,7 @@ async fn ask(addr: SocketAddr, method: &str, path: &str) -> Answer {
 /// Every row of the closed table the executing unit calls a NEW verb, taken from the two crates
 /// rather than transcribed.
 ///
-/// The plane holds the method and the path; the unit holds which verbs are the seventeen. Joining
+/// The plane holds the method and the path; the unit holds which verbs are the thirteen. Joining
 /// them here rather than writing a literal list is what keeps this test honest when the plane's
 /// flagged judgment call about those bindings is revisited: the paths move, the test follows.
 fn new_verb_rows() -> Vec<busbar_plane_admin::verbs::ResolvedVerb> {
@@ -121,7 +123,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_new_verb_path() {
     busbar_core::metrics::init();
     // An OPEN admin posture, so that a path which DID exist would reach its handler rather than an
     // authentication refusal. Without this the test would pass on a surface that had grown all
-    // seventeen routes and simply refused the credential.
+    // thirteen routes and simply refused the credential.
     let app = busbar_core::test_support::TestApp::new()
         .admin_chain(vec![])
         .build();
@@ -155,7 +157,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_new_verb_path() {
         );
     }
 
-    // Which rows this is a statement about. Fourteen of the seventeen are handed back to this
+    // Which rows this is a statement about. Ten of the thirteen are handed back to this
     // surface by `execute_new_verb` and get the answer above; the three recovery verbs never reach
     // it at all, because the loop answers them from `Store`. Both halves are asserted, so a change
     // that moved a verb from one half to the other has to say so here.
@@ -174,7 +176,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_new_verb_path() {
     );
     assert_eq!(
         rows.len() - loop_served,
-        14,
+        10,
         "the number of new verbs answered by a 404 from the legacy surface has changed"
     );
 
@@ -192,7 +194,7 @@ async fn the_legacy_admin_surface_has_never_heard_of_a_new_verb_path() {
 
 /// The 1.5.5 document the surface serves has no new-verb path in it either.
 ///
-/// The other half of "additive": the seventeen are absent from the pinned document as well as from
+/// The other half of "additive": the thirteen are absent from the pinned document as well as from
 /// the router, so a 1.5.5 client that reads `openapi.json` to discover what a node can do gets the
 /// same list it always got. This is the byte-level half of the claim — the document's bytes are
 /// pinned by the shadow oracle's `admin.ops|GetOpenapiJson|ok` cell, and a route that appeared here

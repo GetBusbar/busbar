@@ -282,43 +282,34 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/signing-key/rotate`
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (17) ----
+    // ---- 1.6.0 new verbs (12 + amend_rate_history) ----
     /// Verify a claim/signature outside the normal request path.
     Verify,
     /// Read plane facts (a plane's own declared facts surface).
     PlaneFacts,
     /// Write a `PlaneRecord` entry.
     PlaneRecordWrite,
-    /// Set the operator public key (irreducible; admitted under `unset` with the admin credential).
-    SetOperatorKey,
-    /// Set the M-of-N key-loss escrow (irreducible).
-    SetEscrow,
-    /// Deliberately break the journal chain (disaster recovery; irreducible; off-node CLI also
-    /// exists on a stopped node).
+    /// Deliberately break the journal chain (disaster recovery; off-node CLI also exists on a
+    /// stopped node).
     ChainBreak,
-    /// Restore the store from backup (disaster recovery; irreducible; off-node CLI also exists).
+    /// Restore the store from backup (disaster recovery; off-node CLI also exists).
     StoreRestore,
-    /// Reseal the epoch floor after a chain break/restore (irreducible; off-node CLI also exists).
+    /// Reseal the epoch floor after a chain break/restore (off-node CLI also exists).
     ResealEpochFloor,
-    /// Flip dual-control posture between `single` and `required` (irreducible).
-    SetDualControl,
     /// Set a bucket's overdraft ceiling.
     SetOverdraftCeiling,
     /// Set `dispute_max_age`.
     SetDisputeMaxAge,
-    /// Commit the schema/version upgrade (irreducible).
+    /// Commit the schema/version upgrade.
     CommitUpgrade,
-    /// Resolve an open dispute (irreducible above `adjust_threshold`).
+    /// Resolve an open dispute.
     ResolveDispute,
     /// Resolve a slice-level dispute.
     ResolveSlice,
-    /// Manually adjust a ledger figure (irreducible above `adjust_threshold`).
+    /// Manually adjust a ledger figure.
     Adjust,
-    /// Export the deployment keyset, sealed to a recipient public key (irreducible; the one verb
-    /// admitted under `operator: unset` besides `SetOperatorKey`).
-    ExportKeyset,
-    /// The maker-checker approval verb (checked, not itself dual-controlled).
-    Approve,
+    /// Append a dated rate-card history entry and post the adjusting entries it implies.
+    AmendRateHistory,
 
     // ---- 1.6.0 ledger views (5) ----
     /// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and
@@ -668,46 +659,44 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 17 new 1.6.0 verbs, in the order the architecture document names them.
+/// The 13 new 1.6.0 verbs — the twelve the owner's 2026-09-08 ruling keeps, plus
+/// `amend_rate_history`, in the order `docs/design/admin-new-verbs-contract.md` §8 tables them.
+///
+/// The ruling ("the admin API is dumb; policy lives in the calling app") retired five ceremony
+/// verbs — `set_operator_key`, `set_escrow`, `set_dual_control`, `approve`, `export_keyset` — with
+/// the operator key, the dual-control posture and the irreducible set they existed to operate.
+/// What is left is a set of PLAIN scoped verbs: the credential's scope and its per-verb allow-list
+/// decide, and nothing else does.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
     KernelVerb::PlaneRecordWrite,
-    KernelVerb::SetOperatorKey,
-    KernelVerb::SetEscrow,
     KernelVerb::ChainBreak,
     KernelVerb::StoreRestore,
     KernelVerb::ResealEpochFloor,
-    KernelVerb::SetDualControl,
     KernelVerb::SetOverdraftCeiling,
     KernelVerb::SetDisputeMaxAge,
     KernelVerb::CommitUpgrade,
     KernelVerb::ResolveDispute,
     KernelVerb::ResolveSlice,
     KernelVerb::Adjust,
-    KernelVerb::ExportKeyset,
-    KernelVerb::Approve,
+    KernelVerb::AmendRateHistory,
 ];
 
 /// The two of the seventeen the architecture document binds as `GET` — "POST for every mutating
 /// verb, GET for the two read-only verbs (`verify`, `plane_facts`)".
 ///
-/// They stay members of [`NEW_VERBS`] because they ARE two of the seventeen, and the operator
-/// ceremony still reaches them through the same gate every other new verb runs (neither is in
-/// [`IRREDUCIBLE_VERBS`], so that gate admits them). What being named here changes is everything
-/// that follows from a verb being a read rather than a mutation: the scope it asks for, the mutation
-/// budget it does not draw, and the maker-checker step it has nothing to wait for. A read held
-/// behind an approval is not delayed, it is refused forever — nobody can approve a mutation that
-/// does not exist.
+/// They stay members of [`NEW_VERBS`] because they ARE two of the thirteen. What being named here
+/// changes is everything that follows from a verb being a read rather than a mutation: the scope it
+/// asks for and the mutation budget it does not draw.
 pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[KernelVerb::Verify, KernelVerb::PlaneFacts];
 
 /// The five 1.6.0 ledger views, in the order the admin surface lists them.
 ///
 /// Kept as their own list rather than folded into [`NEW_VERBS`] because membership of that list is
-/// what makes a verb posture-gated and `Full`-scoped, and neither is true of a read. A view answers
-/// with figures the ledger already holds: it mutates nothing, so there is no maker-checker step for
-/// dual control to interpose, and it needs no more authority than the legacy `GET /usage` that
-/// reads the same money from the other side.
+/// what makes a verb `Full`-scoped, and that is not true of a read. A view answers with figures the
+/// ledger already holds: it mutates nothing, and it needs no more authority than the legacy
+/// `GET /usage` that reads the same money from the other side.
 pub const LEDGER_VERBS: &[KernelVerb] = &[
     KernelVerb::GetLedgerTotals,
     KernelVerb::GetLedgerCheckpoints,
@@ -729,26 +718,10 @@ pub const NAMED_SURFACES: &[KernelVerb] = &[
     KernelVerb::GetMetricsHooks,
 ];
 
-/// The irreducible set, required in both dual-control postures (architecture doc: "Irreducible
-/// set, required in both postures"). `Adjust` and `ResolveDispute` are irreducible only ABOVE
-/// `adjust_threshold` — that quantity is not decidable from the verb alone, so callers that need
-/// the threshold-gated form check it themselves (see [`crate::posture`]); they are still listed
-/// here so the closed set names every verb the document calls irreducible, with the caveat carried
-/// in this doc comment rather than silently dropped.
-pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
-    KernelVerb::ChainBreak,
-    KernelVerb::StoreRestore,
-    KernelVerb::CommitUpgrade,
-    KernelVerb::SetDualControl,
-    KernelVerb::ResealEpochFloor,
-    KernelVerb::SetOperatorKey,
-    KernelVerb::SetEscrow,
-    KernelVerb::ExportKeyset,
-    KernelVerb::Adjust,
-    KernelVerb::ResolveDispute,
-];
-
-/// The two verbs admitted under `operator: unset` (every other irreducible verb is refused until
-/// the ceremony completes).
-pub const ADMITTED_UNDER_UNSET: &[KernelVerb] =
-    &[KernelVerb::SetOperatorKey, KernelVerb::ExportKeyset];
+// There is no `IRREDUCIBLE_VERBS` and no `ADMITTED_UNDER_UNSET`.
+//
+// Both sets existed to answer "which verbs does the operator-key ceremony hold, and which two must
+// stay reachable so a fleet can run it". The owner's 2026-09-08 ruling deleted the ceremony, so
+// neither question has a subject any more. A verb is admitted when the caller's scope allows it and
+// the caller's allow-list names it; there is no third set, and adding one back would put policy
+// inside busbar that the ruling put in the calling app.

@@ -1,21 +1,24 @@
-//! The closed 66+17+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
+//! The closed 66+13+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
-//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 17 are the
-//! 1.6.0-additive money-governance verbs the design names by name only (`verify`, `plane_facts`,
-//! `plane_record_write`, `set_operator_key`, `set_escrow`, `chain_break`, `store_restore`,
-//! `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`, `set_dispute_max_age`,
-//! `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`, `export_keyset`, `approve`) with
-//! no HTTP method or path of their own — they are new admin-API surface, not part of the 1.5.5 tag.
+//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 13 are the
+//! 1.6.0-additive money-governance verbs (`verify`, `plane_facts`, `plane_record_write`,
+//! `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_overdraft_ceiling`,
+//! `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`,
+//! `amend_rate_history`) — new admin-API surface, not part of the 1.5.5 tag.
 //!
-//! **Judgment call, flagged for review**: the design does not state an HTTP binding for the 17. This
-//! module assigns each one a `POST /api/v1/admin/<kebab-case-verb>` binding — the same shape every
-//! other mutating admin operation in the 1.5.5 table uses — purely so this plane has *something*
-//! coherent to decode against in the closed-loop tests below. `verify` and `plane_facts` are marked
-//! read-only (they are checks/introspection, not mutations); every other 1.6.0 verb is marked `full`,
-//! matching the design's statement that the irreducible/dual-controlled set is entirely mutating.
-//! If the real HTTP binding differs, only this table's literals need to change — the codec logic
-//! (`find_verb`, path-pattern matching) does not know these are synthetic.
+//! **The bindings are transcribed, not invented.** They are the one-table section of
+//! `docs/design/admin-new-verbs-contract.md`, row for row: `GET /api/v1/admin/<kebab-case-verb>`
+//! for the two reads, `POST` for the
+//! rest, and the path is the WHOLE verb name kebab-cased — `set-overdraft-ceiling`, not
+//! `overdraft-ceiling`. Five rows the earlier draft carried are gone with the owner's 2026-09-08
+//! ruling (`set_operator_key`, `set_escrow`, `set_dual_control`, `export_keyset`, `approve`), and
+//! `amend_rate_history` is the one row that does NOT follow the naming rule: it is a ledger write,
+//! and its path is the one the published 1.5.5 binary was recorded refusing.
+//!
+//! `verify` and `plane_facts` are marked read-only; every other row is marked `full`. Nothing else
+//! about a row is this table's to decide — the codec (`find_verb`, path-pattern matching) reads the
+//! literals and has no opinion about them.
 
 use crate::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
 use busbar_contract::ids::OpClassId;
@@ -32,7 +35,7 @@ pub(crate) struct VerbEntry {
 /// The 17 1.6.0-additive verbs, with their synthetic HTTP binding (see the module doc comment).
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     VerbEntry {
-        method: "POST",
+        method: "GET",
         path: "/api/v1/admin/verify",
         verb: "verify",
         read_only: true,
@@ -47,18 +50,6 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         method: "POST",
         path: "/api/v1/admin/plane-record-write",
         verb: "plane_record_write",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/operator-key",
-        verb: "set_operator_key",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/escrow",
-        verb: "set_escrow",
         read_only: false,
     },
     VerbEntry {
@@ -81,19 +72,13 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/dual-control",
-        verb: "set_dual_control",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/overdraft-ceiling",
+        path: "/api/v1/admin/set-overdraft-ceiling",
         verb: "set_overdraft_ceiling",
         read_only: false,
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/dispute-max-age",
+        path: "/api/v1/admin/set-dispute-max-age",
         verb: "set_dispute_max_age",
         read_only: false,
     },
@@ -105,13 +90,13 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/disputes/resolve",
+        path: "/api/v1/admin/resolve-dispute",
         verb: "resolve_dispute",
         read_only: false,
     },
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/slices/resolve",
+        path: "/api/v1/admin/resolve-slice",
         verb: "resolve_slice",
         read_only: false,
     },
@@ -121,16 +106,14 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         verb: "adjust",
         read_only: false,
     },
+    // The one row not under the `<kebab-case-verb>` rule. `amend_rate_history` is a ledger write,
+    // and this path is not a proposal: it is the path the published 1.5.5 binary was asked and
+    // refused, recorded in `ledger|amend|adjusting-entries`. Moving it would orphan that cell and
+    // the additivity claim it carries.
     VerbEntry {
         method: "POST",
-        path: "/api/v1/admin/export-keyset",
-        verb: "export_keyset",
-        read_only: false,
-    },
-    VerbEntry {
-        method: "POST",
-        path: "/api/v1/admin/approve",
-        verb: "approve",
+        path: "/api/v1/admin/ledger/amend-rate-history",
+        verb: "amend_rate_history",
         read_only: false,
     },
 ];
@@ -180,7 +163,7 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
 
 /// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 17 1.6.0
 /// money-governance verbs, and the 5 1.6.0 ledger views.
-pub(crate) const VERB_COUNT: usize = 66 + 17 + 5;
+pub(crate) const VERB_COUNT: usize = 66 + 13 + 5;
 
 /// The verb the `openapi.json` blob is served under, where `encode_response` applies the one
 /// documented exception (an `info.version` substitution over an otherwise verbatim body).
