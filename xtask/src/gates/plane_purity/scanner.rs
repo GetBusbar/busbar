@@ -28,6 +28,28 @@ use crate::ctx::SourceFile;
 /// because these are the awk alternations' contents and drift between the two would be silent.
 pub const PLANE_ALTERNATION: [&str; 4] = ["llm", "mcp", "a2a", "voice"];
 
+/// The 1.6.0 PLANE-CRATE identifiers — `busbar_plane_<p>` — as the SYMBOL row spells them.
+///
+/// SEPARATE FROM [`PLANE_ALTERNATION`] AND DELIBERATELY SO. That list drives the vocabulary rows
+/// (TYPE/KEY/DIALECT), which match a BARE TOKEN; this one drives the SYMBOL row, which matches a
+/// crate binding (`::`, `extern crate`, `use … as`). The two sets are not the same set and merging
+/// them would be wrong in both directions:
+///
+///   * `admin` is a plane in 1.6.0 (`crates/busbar-plane-admin`) but `admin` is ALSO 1.5.5 config
+///     and auth grammar — `auth.admin_auth:`, the `/admin` route prefix, `admin-tokens`. Putting it
+///     in [`PLANE_ALTERNATION`] would turn every one of those frozen operator-visible words into a
+///     KEY violation, which is not a boundary breach, it is the product's vocabulary.
+///   * conversely, a neutral crate binding `busbar_plane_admin::` IS a boundary breach and nothing
+///     else. A crate edge is unambiguous where a word is not.
+///
+/// WHY THIS MATTERS FOR THE CONFIG LAYER. The SYMBOL row previously spelled only `busbar_<p>` (the
+/// legacy plane crates). `busbar_plane_llm::X` contains no `busbar_llm`, so a neutral crate — the
+/// 1.5.5 config document root above all — could name a 1.6.0 plane crate and the gate stayed green.
+/// That is precisely the edge the config layer must never grow: a config parser must never name a
+/// plane. It is named here, and [`crate::gates::plane_purity::ROW_PLANE_CRATE_CENSUS`] refuses the
+/// day this literal and the `crates/busbar-plane-*` directories disagree.
+pub const PLANE_CRATE_ALTERNATION: [&str; 5] = ["llm", "mcp", "a2a", "voice", "admin"];
+
 /// The six category names, in the fixed report order the shell prints and
 /// `qa/plane-purity-strict.toml` keys its `[categories]` table by.
 pub const CATEGORIES: [&str; 6] = [
@@ -246,10 +268,24 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
         // (b) SYMBOL — a plane-crate symbol path, an `extern crate`, or a `use … as` that renames
         //     the crate out of this scanner's sight. Also never excusable: a frozen config FIELD or
         //     TYPE never requires naming a plane crate.
-        if PLANE_ALTERNATION.iter().any(|p| {
-            let krate = format!("busbar_{p}");
-            path_of(&code, &krate) || extern_crate_of(&code, &krate) || bound_as(&code, &krate)
-        }) {
+        // BOTH GENERATIONS OF PLANE CRATE. `busbar_<p>` is the legacy plane crate; `busbar_plane_<p>`
+        // is the 1.6.0 pure-kind one, and it is NOT a substring of the former, so the original
+        // spelling let a neutral crate bind a 1.6.0 plane with the gate green. Note this stays a
+        // CRATE-BINDING test (`::`, `extern crate`, `use … as`), so the `busbar_plane_*` METRIC
+        // FAMILY names core legitimately emits (`busbar_plane_requests_total`) are not hits: no
+        // metric family name is followed by `::`.
+        if PLANE_ALTERNATION
+            .iter()
+            .map(|p| format!("busbar_{p}"))
+            .chain(
+                PLANE_CRATE_ALTERNATION
+                    .iter()
+                    .map(|p| format!("busbar_plane_{p}")),
+            )
+            .any(|krate| {
+                path_of(&code, &krate) || extern_crate_of(&code, &krate) || bound_as(&code, &krate)
+            })
+        {
             emit("SYMBOL");
         }
 
