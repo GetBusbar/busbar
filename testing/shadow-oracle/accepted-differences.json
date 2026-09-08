@@ -69,7 +69,7 @@
     },
     {
       "id": "F-011 additive admin views",
-      "kind": "improvement",
+      "kind": "additive",
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
@@ -78,7 +78,7 @@
         "body",
         "headers"
       ],
-      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive \u2014 the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line."
+      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive \u2014 the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that key-list and view GROWTH is a new feature and not a break, and `additive` is the kind that makes that ruling checkable — the tool now PROVES the candidate a JSON superset of the golden at every path the golden names before it forgives `body`/`headers`, so this entry can no longer forgive a 1.5.5 field that changed value or went away."
     },
     {
       "id": "F-011r hook write readback: `at` gives way to `fires_at`",
@@ -299,7 +299,7 @@
     },
     {
       "id": "F-011b openapi.json additive endpoints",
-      "kind": "improvement",
+      "kind": "additive",
       "changelog": "`openapi.json` describes the MCP and A2A endpoints",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$|^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
@@ -308,7 +308,7 @@
         "body",
         "headers"
       ],
-      "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version). The document also gains a Vary header and reports the binary's true version in info.version (1.5.5 shipped a stale 1.5.4)."
+      "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version). The document also gains a Vary header and reports the binary's true version in info.version (1.5.5 shipped a stale 1.5.4). KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that endpoint- and key-list GROWTH is a new feature and not a break, and `additive` makes that ruling machine-checked — the tool proves the candidate document a JSON superset of the 1.5.5 one at every path the golden names, so a 1.5.5 path or schema that CHANGED (rather than one that was added beside it) is still red under this entry."
     },
     {
       "id": "S-7 responses-door streams stream",
