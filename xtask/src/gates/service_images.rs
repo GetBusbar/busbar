@@ -1276,7 +1276,27 @@ mod tests {
             tags.len() >= MIN_RELEASE_CHECK_TAGS,
             "the docker-run reader found {tags:?}"
         );
-        assert!(tags.iter().any(|t| t == "postgres:16"), "{tags:?}");
-        assert!(tags.iter().any(|t| t == "hashicorp/vault"), "{tags:?}");
+        // THE WHOLE REFERENCE, digest and all. The reader used to stop at the image name, which is
+        // the same reader bug the rule had: `is_image_name` splits at the first `:`, so a pinned
+        // `postgres:16@sha256:…` failed its tag test and was dropped — the correctly pinned lines
+        // were exactly the ones that fell out of the scan set.
+        assert!(
+            tags.iter()
+                .any(|t| t.starts_with("postgres:16@sha256:")
+                    && t.len() == "postgres:16@".len() + 71),
+            "{tags:?}"
+        );
+        assert!(
+            tags.iter()
+                .any(|t| t.starts_with("hashicorp/vault@sha256:")),
+            "{tags:?}"
+        );
+        // ...and every one of them carries a digest: the tags this rule was written for were all
+        // floating, and a reader that still returns a bare name has lost the thing being judged.
+        assert!(
+            tags.iter()
+                .all(|t| matches!(split_reference(t), Some((_, Some(_))))),
+            "{tags:?}"
+        );
     }
 }
