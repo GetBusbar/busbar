@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the generic scope-keyed [`crate::audit::journal::Journal`].
+//! Tests for the generic scope-keyed [`crate::journal::Journal`].
 //!
 //! Proven over a THROWAWAY record type (`Widget`) that exists nowhere else in the tree, so the
 //! journal's behaviour is exercised WITHOUT any plane's record — the whole point of the cleave is
@@ -16,10 +16,10 @@
 //!  3. **LRU + store-resume.** An evicted scope resumes from its persisted tail, never forking at 1.
 //!  4. **Tamper is reported, not deleted.** A corrupted stored row restores AND names the break.
 
-use super::{Journal, JournalRecord, NeutralRecord, Restored};
-use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
-use crate::plane::store::{decode, encode, PlaneStore};
+use crate::journal::{Journal, JournalRecord, NeutralRecord, Restored};
+use crate::legacy::chain::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_substrate::plane::store::{decode, encode, PlaneStore};
 use std::sync::{Arc, Mutex};
 
 // ── THE THROWAWAY RECORD ────────────────────────────────────────────────────────────────────────
@@ -397,7 +397,7 @@ impl NeutralRecord for NeutralRec {
 /// The plane-side reframe for the neutral test: decode the journal's own `NeutralBody` back into a
 /// `NeutralRec`, taking the scope from the store parent (never the body).
 fn neutral_reframe(scope: &str, body: &[u8]) -> StoreResult<NeutralRec> {
-    let nb: super::NeutralBody = decode(body)?;
+    let nb: crate::journal::NeutralBody = decode(body)?;
     Ok(NeutralRec {
         tenant: scope.to_string(),
         seq: nb.seq,

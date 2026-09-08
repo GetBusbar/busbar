@@ -293,7 +293,7 @@ struct LogState {
     /// Chain POSITIONS, keyed by principal — a tail hash and a next sequence. BOUNDED at
     /// [`MAX_TRACKED_PRINCIPALS`], the same cap and the same LRU discipline as `calllog`'s
     /// position cache (`calllog::MAX_TRACKED_PRINCIPALS`, enforced host-side by
-    /// `audit::journal::Journal::commit_position`): an [`IndexMap`] so insertion order doubles as
+    /// `busbar_unit_audit::journal::Journal::commit_position`): an [`IndexMap`] so insertion order doubles as
     /// recency order — a recorded principal moves to the back (most-recently-used), and once the
     /// map exceeds the cap the FRONT (least-recently-used) chain is dropped. Without the bound
     /// this grew one permanent entry per key id ever seen. See [`MAX_TRACKED_PRINCIPALS`] for the
@@ -345,7 +345,7 @@ impl RequestLog {
         // (`the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero`). The
         // hazard is closed once, in core, for every stream — which is the whole argument for
         // one mechanism. `calllog` reads identically.
-        // LRU + cap discipline mirrors `audit::journal::Journal::commit_position` (calllog's
+        // LRU + cap discipline mirrors `busbar_unit_audit::journal::Journal::commit_position` (calllog's
         // bound): touch-to-back on every record, evict from the front only while over the cap.
         let chains = &mut state.chains;
         let idx = match chains.get_index_of(principal) {

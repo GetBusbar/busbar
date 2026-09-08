@@ -77,7 +77,13 @@
 //! boot-verify path and requires the recompute to reproduce the hash a past build sealed. Both had
 //! to keep working across the move, and both did, unedited apart from where the names come from.
 
-pub mod journal;
+// The generic scope-keyed durable journal that used to sit here as `audit::journal` went with the
+// mechanism, to `busbar_unit_audit::journal`, by the owner's ruling of 2026-09-08: it is the durable
+// seq-authority built ON the chain above, and a chain in one crate with the state machine that
+// sequences it in another is how a third copy of that machinery gets written. Its four in-core
+// callers (`plane_host::journal`, `calllog`, `plane::auditlog`, and the plane_host battery) name the
+// unit directly — no shim here, because a spelling nobody needs is a spelling that outlives its move.
+
 pub mod vocab {
     pub use busbar_substrate::audit::vocab::*;
 }

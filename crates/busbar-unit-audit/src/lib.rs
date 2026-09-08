@@ -27,6 +27,19 @@
 //! the same whichever door the request came in through. An audit whose shape varies by protocol is
 //! an audit nobody can compare two rows of.
 //!
+//! ## And the way either of them survives a restart
+//!
+//! [`journal`] holds the generic scope-keyed durable journal: a per-scope chain POSITION cache that
+//! doubles as its own bounded LRU, a write-through sink, a boot rehydrate that resumes every scope
+//! from its persisted tail, and the write-ordering rule that a position advances only AFTER the
+//! durable append succeeded — so a failed write never burns a sequence number and never leaves a gap
+//! the verifier will report forever. It is generic over the record and names no plane: the scope is a
+//! `&str`, the store is the narrow `PlaneStore` seam, and a plane supplies only its record type.
+//!
+//! It sits beside the chain rather than a crate away from it on purpose. Two of busbar's evidence
+//! streams each grew their own copy of this machinery once already; a durable seq-authority built on
+//! a chain that lives somewhere else is how the third copy gets written.
+//!
 //! ## And the amendments
 //!
 //! [`amend`] holds the two classes of thing that happen after the fact: an ACCESS, written every
@@ -53,6 +66,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod amend;
+pub mod journal;
 pub mod legacy;
 pub mod record;
 
