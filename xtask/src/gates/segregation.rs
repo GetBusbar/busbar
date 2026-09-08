@@ -47,6 +47,35 @@ pub const ORACLE_DATA_ALLOW: &[&str] = &[
     "testing/shadow-oracle/rigs-baseline.json",
 ];
 
+/// Oracle CODE paths a gate may NAME but never open, because it writes them into a document it
+/// GENERATES. Scoped to the naming file as well as the path, so the licence is one renderer's and
+/// not xtask's.
+///
+/// The rule already draws this line once — "a bare directory mention is prose; a FILE path is a
+/// read" — and this is the same distinction one step finer. `design-bindings`'s markdown carries a
+/// "Running the checks (a slower tier)" section telling a reader which command executes an
+/// `oracle-cell` ref; that sentence names `record.sh`, and it named it just the same when
+/// `scripts/design-bindings.py` rendered it. The path is a citation in prose the gate EMITS, never
+/// a path the gate opens, and the difference is the whole point of rule 6.
+///
+/// Keeping it a `(file, path)` pair rather than adding the script to [`ORACLE_DATA_ALLOW`] is what
+/// keeps the ban intact: that list is read as "xtask may open this", and `record.sh` is exactly the
+/// thing rule 6 exists to stop xtask opening. Nothing here grants a read to anyone.
+/// The second entry is this file itself, and it is not a loophole: a `(file, path)` allowlist has
+/// to WRITE the path down to exempt it, so the declaration is an occurrence of the very string it
+/// governs. The alternative — exempting the rule's own source wholesale — would let any future
+/// mention hide here. This exempts one path in one file, which is the same bargain as the first row.
+pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
+    (
+        "xtask/src/gates/design_bindings/build.rs",
+        "testing/shadow-oracle/record.sh",
+    ),
+    (
+        "xtask/src/gates/segregation.rs",
+        "testing/shadow-oracle/record.sh",
+    ),
+];
+
 /// The `xtask/src/**` walk's denominator floor. An emptied or moved `src/` scans nothing, and zero
 /// is the passing answer to every ban here.
 const SRC_FLOOR: usize = 6;
@@ -470,14 +499,24 @@ fn rule_oracle_data(files: &[crate::ctx::SourceFile]) -> Row {
             let mut rest = code.as_str();
             while let Some(i) = rest.find(prefix) {
                 let tail = &rest[i..];
+                // A BACKTICK ENDS A PATH like a quote does. Without it a path written the way
+                // markdown writes one — `testing/shadow-oracle/record.sh` — is extracted with the
+                // closing backtick glued on, so it matches no allowlist entry and cannot be
+                // reasoned about at all. The offender's own name has to be the path.
                 let end = tail
-                    .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ')')
+                    .find(|c: char| {
+                        c.is_whitespace() || c == '"' || c == '\'' || c == ')' || c == '`'
+                    })
                     .unwrap_or(tail.len());
                 let path = &tail[..end];
                 // A bare directory mention is prose; a FILE path is a read.
+                let cited_in_prose = ORACLE_PROSE_CITATION_ALLOW
+                    .iter()
+                    .any(|(file, cited)| *file == f.rel_str() && *cited == path);
                 if path.len() > prefix.len()
                     && path.contains('.')
                     && !ORACLE_DATA_ALLOW.contains(&path)
+                    && !cited_in_prose
                 {
                     offenders.push(format!("{}:{lineno}: {path}", f.rel_str()));
                 }
