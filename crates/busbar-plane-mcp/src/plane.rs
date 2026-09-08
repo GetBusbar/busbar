@@ -441,7 +441,13 @@ impl Plane for McpPlane {
             })));
         }
 
-        let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
+        // THE VOCABULARY AND THE SURFACE, ASKED TOGETHER. A method this plane carries is not
+        // thereby a method this BINDING carries: the two console-era verbs are answered where a
+        // persistent connection exists and are `-32601` on the mounted request surface, which is
+        // what the codec's own dispatch table says and what the published suite asserts. Asking the
+        // surface is what keeps that true without a second table of exceptions.
+        let row = crate::surface::row_on(method, ctx.transport().key())
+            .ok_or(Decode::UnsupportedOperation)?;
         // A method an UPSTREAM sends is not one a caller may send. Reading it here would let a
         // caller open a unit that only a paired server is allowed to open.
         if row.sender == ops::Sender::Provider {
@@ -734,6 +740,15 @@ impl Plane for McpPlane {
                 schema: rec::SCHEMA_CATALOGUE,
                 op: rec::OP_SCAN,
             },
+            // The two console-era verbs are answered out of this build's own declarations and go
+            // straight back to whoever opened the unit. Named here for the reason the completion
+            // below is named here: a unit VERIFIED for a server it is never routed to has an
+            // upstream sealed, and the admission that seals one is spent whether or not anything is
+            // ever dialled.
+            ops::OP_INITIALIZE | ops::OP_PING => DestinationFacts::Client {
+                selector: "opener",
+                mode: busbar_contract::dest::ClientMode::Deliver,
+            },
             // A held stream delivers back to the caller that opened it.
             ops::OP_SUBSCRIPTIONS_LISTEN => DestinationFacts::Client {
                 selector: "opener",
@@ -838,6 +853,17 @@ impl Plane for McpPlane {
                 leg(self.upstream_leg());
                 leg(Self::record_leg(rec::SCHEMA_CALL, rec::OP_APPEND));
             }
+            // The two console-era verbs are answered out of this build's own declarations: no
+            // record, no registration, no caller. The plan is the one leg that says where the answer
+            // GOES — back to whoever opened the unit — because a plan with no legs at all is a
+            // refusal at the routing step, and "there is nothing to read" is not the same statement
+            // as "there is nowhere to go".
+            ops::OP_INITIALIZE | ops::OP_PING => leg(Leg {
+                destination: DestinationFacts::Client {
+                    selector: "opener",
+                    mode: busbar_contract::dest::ClientMode::Deliver,
+                },
+            }),
             ops::OP_DISCOVER
             | ops::OP_TOOLS_LIST
             | ops::OP_PROMPTS_LIST
