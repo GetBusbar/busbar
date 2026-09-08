@@ -268,3 +268,38 @@ fn a_short_write_after_a_reset_shows_nothing_of_the_last_frame() {
         "the tail of the span leaked the last frame"
     );
 }
+
+/// The slab that holds a connection's credentials prints none of them.
+///
+/// This is the rule the secret-hygiene note states as a table: a secret value held in memory
+/// renders as nothing at all, and a bare `Vec<u8>` on a `#[derive(Debug)]` struct is the top entry
+/// in its own risk register. Every sibling carrier in the loop — the hold, every token, the door's
+/// grant — hand-writes a `Debug` that shows nothing; the slab holds the plaintext of every
+/// credential masked out of an arriving client connection, so it has more to hide than any of them.
+/// The guarantee has to be the type's, because the leak is any future `{:?}`, `tracing` field or
+/// panic payload that reaches a struct embedding one.
+#[test]
+fn the_credential_slab_prints_no_credential() {
+    let mut cursor = b"authorization: Bearer swordfish".to_vec();
+    let mut slab = CredentialSlab::with_capacity(64);
+    let start = "authorization: Bearer ".len();
+    let span = Span::new(start, cursor.len());
+    let masked = slab.mask(&mut cursor, span).expect("the slab has room");
+    assert_eq!(slab.read(masked), b"swordfish");
+
+    let printed = format!("{slab:?}");
+    assert!(
+        !printed.contains("swordfish"),
+        "the slab printed the credential: {printed}"
+    );
+    // Byte-wise too: a derived `Debug` renders a `Vec<u8>` as its numbers, not as its text.
+    let as_numbers = b"swordfish"
+        .iter()
+        .map(|byte| byte.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(
+        !printed.contains(&as_numbers),
+        "the slab printed the credential's bytes: {printed}"
+    );
+}

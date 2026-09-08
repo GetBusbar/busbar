@@ -16,7 +16,10 @@
 //! fill. After that the cursor a plane sees has no credential in it, which is why "a plane never
 //! sees a credential" is a property of the bytes rather than a rule planes are asked to follow.
 
+use core::fmt;
+
 use busbar_caps::ReasonCode;
+use zeroize::Zeroize;
 
 use crate::grammar::{ArrivalLocation, MaskKind, Span};
 
@@ -193,10 +196,59 @@ impl MaskedSpan {
 /// One allocation, made when the connection is accepted, sized by the cursor cap. Nothing on the
 /// frame path grows it: an oversize credential is refused with `CredentialBudget`, which is a
 /// different answer from `CursorBudget` on purpose — the slab is full, not the cursor.
-#[derive(Debug)]
+///
+/// What it holds is plaintext: every credential masked out of an arriving connection, in the clear,
+/// for as long as the connection lives. So it carries the two obligations the secret-hygiene note
+/// puts on anything that does — it renders as nothing, and it is overwritten rather than forgotten
+/// — and it carries them itself, because a guarantee that depends on every future call site
+/// remembering is not one.
 pub struct CredentialSlab {
     buf: Vec<u8>,
     cap: usize,
+}
+
+/// Prints what the slab COSTS, never what it holds.
+///
+/// The derived `Debug` printed `buf` — the live bytes — which the hygiene note's own risk register
+/// names as its most dangerous class and every sibling carrier in the loop already refuses: the
+/// hold, every token and the door's grant all hand-write this. Any `{:?}`, `tracing` field or panic
+/// payload that reaches a struct embedding a slab renders through here, and here renders two
+/// numbers.
+impl fmt::Debug for CredentialSlab {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CredentialSlab")
+            .field("used", &self.buf.len())
+            .field("cap", &self.cap)
+            .finish()
+    }
+}
+
+/// Overwrite the slab's bytes, then drop the length.
+///
+/// `Vec::clear` sets the length to zero and overwrites nothing, so the plaintext stays in the
+/// allocation — which is exactly the outliving `clear`'s own doc says must not happen. `Zeroize`
+/// for `Vec<u8>` writes zeros over the whole allocation, volatile and fenced so the write cannot be
+/// elided as a store to memory nobody reads afterwards, and then sets the length to zero.
+///
+/// The dependency is deliberate, and it is the reason this is not a hand-rolled write loop: a write
+/// the compiler is free to delete is not a scrub, and the only way to stop it being deleted is a
+/// volatile store, which this crate cannot spell — `lib.rs` carries `#![forbid(unsafe_code)]` and
+/// that guard is worth more than the dependency. `zeroize` is what the secret-hygiene note
+/// prescribes for exactly this, it is already a workspace dependency, and it carries no
+/// dependencies of its own, so the kernel's manifest essay — about not OWNING anything but the loop
+/// — is untouched by it.
+fn scrub(buf: &mut Vec<u8>) {
+    buf.zeroize();
+}
+
+/// The slab's plaintext does not outlive the slab.
+///
+/// `clear` is called at an in-band upgrade; this is the other end, and it is the one no call site
+/// has to remember.
+impl Drop for CredentialSlab {
+    fn drop(&mut self) {
+        scrub(&mut self.buf);
+    }
 }
 
 impl CredentialSlab {
@@ -292,8 +344,11 @@ impl CredentialSlab {
 
     /// Forget everything. Called when a connection upgrades in band, because the facts and the
     /// principal are cleared there too, and a credential that survived would outlive its context.
+    ///
+    /// Forgetting means overwriting, not truncating: the slab is allocated once at its full cap and
+    /// never grows, so the bytes stay in one stable allocation until something writes over them.
     pub fn clear(&mut self) {
-        self.buf.clear();
+        scrub(&mut self.buf);
     }
 }
 

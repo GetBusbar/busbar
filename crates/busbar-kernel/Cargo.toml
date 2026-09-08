@@ -13,6 +13,13 @@
 # habit, and everything else the loop touches reaches it through a trait the integrator implements.
 # There is deliberately no async runtime here: the loop's ORDER, its two audit doors and its one
 # exit path are what this crate fixes, and none of those are made truer by an executor.
+#
+# The one exception is `zeroize`, and it is here for a reason the list above cannot cover: the
+# credential slab holds plaintext, "forget it" has to mean overwrite it, and a write the compiler is
+# free to delete is not an overwrite. Stopping it being deleted needs a volatile store, and this
+# crate carries `#![forbid(unsafe_code)]`. `zeroize` is what the secret-hygiene note prescribes for
+# exactly this, it has no dependencies of its own, and it owns nothing — which is the property this
+# list is really about.
 [package]
 name = "busbar-kernel"
 version = "1.6.0"
@@ -31,6 +38,9 @@ path = "src/lib.rs"
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-grammar = { path = "../busbar-grammar" }
+
+# The credential slab's scrub, and nothing else. See the note at the top of this file.
+zeroize = { workspace = true }
 
 # TEMPORARY (delete before hand-off, together with this comment): stand this crate up as its own
 # workspace root while sibling members are mid-landing. Several in-flight crates currently carry the
