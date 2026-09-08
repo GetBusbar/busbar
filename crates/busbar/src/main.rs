@@ -1312,7 +1312,7 @@ async fn run(data_workers: usize) {
     // `None` is the deployment with no `public_url:`, which fronts no inbound A2A surface and which
     // the legacy plugin likewise mounts no route for. Behind the serving switch, which the shipped
     // binary does NOT carry: with it off the line is not compiled and the binary is what it was.
-    #[cfg(feature = "root-a2a-serve")]
+    #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
     let a2a_configured = root::units_a2a_boot::read(&cfg).unwrap_or_else(|e| die(e));
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
@@ -1481,7 +1481,7 @@ async fn run(data_workers: usize) {
     // this line adds is the path a request takes to get there. A deployment with no `public_url:`
     // fronts no inbound A2A surface, and the wrap hands the router straight back. Off, this line
     // does not exist and the surface is the one it was.
-    #[cfg(feature = "root-a2a-serve")]
+    #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
     let data_router = root::units_a2a_boot::mount(
         data_router,
         a2a_configured,
