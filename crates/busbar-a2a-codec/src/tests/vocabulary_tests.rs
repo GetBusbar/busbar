@@ -4,8 +4,8 @@
 //! THE WIRE VOCABULARY, PINNED AGAINST THE SPECIFICATION RATHER THAN AGAINST ITSELF.
 //!
 //! `ERRORS`, `LOCAL_VERB_METHODS` and `mounted_route` are the three places this crate turns a
-//! specification sentence into bytes, and none of them had a cell here. Mutation testing said so
-//! plainly: deleting the MINUS SIGN from every row of `ERRORS` — turning `-32001` into `+32001`,
+//! specification sentence into bytes, and none of them had a cell here. What that cost was plain:
+//! deleting the MINUS SIGN from every row of `ERRORS` — turning `-32001` into `+32001`,
 //! nine times over — changed nothing any test could see, and so did replacing `mounted_route`'s
 //! whole body with the empty string. A sign that no test reads is a sign the wire can lose.
 //!

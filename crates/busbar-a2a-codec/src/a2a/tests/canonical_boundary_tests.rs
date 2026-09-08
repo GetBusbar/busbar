@@ -8,8 +8,8 @@
 //! comparison `(c as u32) < 0x20` that decides, for every character in every string in every Agent
 //! Card, whether it is escaped or emitted literally.
 //!
-//! Mutation testing found that comparison unguarded. Relaxing it to `<=` — one character's worth of
-//! difference, U+0020, the SPACE — left the whole suite green. That is not a cosmetic difference:
+//! Nothing here held that comparison to its exact boundary. Relaxing it to `<=` — one character's
+//! worth of difference, U+0020, the SPACE — left the whole suite green. That is not cosmetic:
 //! the canonical form is the JWS payload a signed Agent Card's signature is verified against, and
 //! the preimage of the pinned card fingerprint. A canonicalizer that writes `"\u0020"` where every
 //! other implementation writes `" "` verifies no signature any other implementation produced and
