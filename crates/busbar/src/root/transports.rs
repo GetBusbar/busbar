@@ -118,6 +118,32 @@ pub struct TlsMaterialRefs {
     pub client_ca: Option<String>,
 }
 
+/// THE JOIN between the transport-key unit and the TLS transport, and the only place it is made.
+///
+/// The unit resolves material and needs somewhere to put the built config; the transport offers a
+/// slot-keyed registry to put it in. Both halves have existed since the unit landed. What must NOT
+/// exist is either crate naming the other: a `busbar-unit-*` in a transport's shipping
+/// `[dependencies]` is a plugin of one kind compiled against a kernel-internal unit, which is the
+/// inverse of the handle-passing rule `ARCHITECTURE.md` section 3.4 states — the unit hands the
+/// transport an opaque [`TransportKeyHandle`], and nothing travels the other way.
+///
+/// So the adapter lives HERE. The composition root is the one thing in the tree entitled to know
+/// both ends, and a two-method newtype is the whole cost of keeping the two crates ignorant of each
+/// other. It forwards to the transport's own inherent registration methods and adds nothing:
+/// no ordering, no caching, no policy. A caller that hands `TlsSink(&tls)` to [`provision_servers`]
+/// or [`provision_dial`] gets exactly the behaviour the direct impl gave, byte for byte.
+pub struct TlsSink<'a>(pub &'a busbar_transport_tls::TlsTransport);
+
+impl TlsConfigSink for TlsSink<'_> {
+    fn register_server_config(&self, slot: u64, cfg: Arc<rustls::ServerConfig>) {
+        self.0.register_server_config(slot, cfg);
+    }
+
+    fn register_client_config(&self, slot: u64, cfg: Arc<rustls::ClientConfig>) {
+        self.0.register_client_config(slot, cfg);
+    }
+}
+
 /// A listener that has been provisioned: which role it serves, and the handle the transport
 /// presents at listen, accept and every adoption over it.
 #[derive(Debug)]
