@@ -408,6 +408,21 @@ def row_quickstart_boots(ctx) -> str:
     )
 
 
+# The reusable workflow that mints the ARCHIVE attestations, and therefore the identity a verify
+# has to pin. `--repo` alone asserts only that SOME workflow in the repository signed these bytes,
+# which every workflow that can be given `id-token: write` + `attestations: write` satisfies equally
+# -- including one added on a branch by a PR that attested an archive the release path never built.
+#
+# It is `build-artifact.yml` and not its callers, and that is how GitHub issues the certificate
+# rather than a preference: `gh attestation verify --help` says "if your attestation was generated
+# via a reusable workflow then that reusable workflow is the signer whose identity needs to be
+# validated", because the Fulcio SAN is the `job_workflow_ref` of the job that requested the OIDC
+# token, not the `workflow_ref` of whatever called it. `actions/attest-build-provenance` runs inside
+# build-artifact.yml for archives (docker.yml is the image half's signer). Naming a caller here
+# would fail every verify on a healthy release.
+ARCHIVE_SIGNER_WORKFLOW = "GetBusbar/busbar/.github/workflows/build-artifact.yml"
+
+
 def row_attestation(ctx) -> str:
     if not shutil.which("gh"):
         raise RowFailure(
@@ -415,14 +430,19 @@ def row_attestation(ctx) -> str:
             "verified here. A row that cannot run is RED: an unproven attestation looks like "
             "provenance and is not."
         )
-    proc = run(["gh", "attestation", "verify", ctx.archive, "--repo", ctx.repo])
+    signer = os.environ.get("BUSBAR_ARCHIVE_SIGNER_WORKFLOW") or ARCHIVE_SIGNER_WORKFLOW
+    proc = run(["gh", "attestation", "verify", ctx.archive,
+                "--repo", ctx.repo, "--signer-workflow", signer])
     if proc.returncode != 0:
         raise RowFailure(
-            "`gh attestation verify %s --repo %s` failed (exit %d). This is the exact command the "
-            "documentation tells users to run, against the exact bytes the release serves.\n%s%s"
-            % (os.path.basename(ctx.archive), ctx.repo, proc.returncode, proc.stdout, proc.stderr)
+            "`gh attestation verify %s --repo %s --signer-workflow %s` failed (exit %d). This is "
+            "the exact command the documentation tells users to run, against the exact bytes the "
+            "release serves -- with the SIGNER pinned, so that an attestation minted by anything "
+            "other than the release build path is refused instead of accepted as ours.\n%s%s"
+            % (os.path.basename(ctx.archive), ctx.repo, signer,
+               proc.returncode, proc.stdout, proc.stderr)
         )
-    return "gh attestation verify passes against the released bytes"
+    return "gh attestation verify passes against the released bytes, signed by %s" % signer.rsplit("/", 1)[-1]
 
 
 def _evidence(ctx, name: str) -> str:
