@@ -13,8 +13,8 @@ pub mod chain;
 pub mod entry;
 
 pub use chain::{
-    digest, seal, sha256_hex, verify_chain, verify_window, Chain, ChainBreak, ChainBreakKind,
-    ChainLabels, ChainedRecord, Digest, Framing,
+    digest, frame_prelude, seal, sha256_hex, verify_chain, verify_window, Chain, ChainBreak,
+    ChainBreakKind, ChainLabels, ChainedRecord, Digest, Framing,
 };
 pub use entry::{
     AuditEntry, AuditInput, AuditLog, Clock, DurableSeam, NoSeam, ADMIN_LOG, AUDIT_ACTIONS,
