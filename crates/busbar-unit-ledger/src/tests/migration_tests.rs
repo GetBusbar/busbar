@@ -84,7 +84,7 @@ fn window_figure(bucket: &str, window: u64, lane: &str, unit: &str, amount: i128
         window,
         lane: lane.to_string(),
         provider: String::new(),
-        dimension: CapDimension::Class(unit.to_string()),
+        dimension: CapDimension::Class(unit.into()),
         amount,
     }
 }
@@ -103,7 +103,7 @@ fn meter_figure(
         window: day,
         lane: lane.to_string(),
         provider: provider.to_string(),
-        dimension: CapDimension::Class(unit.to_string()),
+        dimension: CapDimension::Class(unit.into()),
         amount,
     }
 }

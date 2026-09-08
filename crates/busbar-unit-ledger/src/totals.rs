@@ -18,8 +18,23 @@
 //! an adjustment is a reversal and a reversal is negative; storing it as an unsigned figure with a
 //! separate direction flag is how a sign error becomes invisible. Nothing here is floating point,
 //! for the reason nothing in a ledger ever is.
+//!
+//! ## Why the key's three names are interned rather than owned outright
+//!
+//! `BTreeMap` takes its key BY VALUE, so every mutation and every read has to hand the map a whole
+//! key — and the key is three names. Held as `String`, that is three heap allocations to reach a row
+//! that is already there, bought and thrown away on `post`, on every `record_*`, on both arms of a
+//! cross-window transfer and on a pure read, once per settled unit on the production path. Held as
+//! [`std::sync::Arc<str>`], cloning a key is three refcount bumps and no allocation at all, which is
+//! what ARCHITECTURE.md §10 asks of a one-shot unit.
+//!
+//! Nothing else about the key moves, and that is the point of choosing interning over a reshaped
+//! map. `Arc<str>`'s ordering, equality and hash are `str`'s, so the derived `Ord` on [`TotalsKey`]
+//! is the same total order it always was — by construction rather than by argument — and a
+//! checkpoint body, which is digested in that order, is the same bytes it always was.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use busbar_caps::MeterClassId;
 use busbar_unit_cost::{CurrencyCode, HistorySeq, HistoryView};
@@ -28,11 +43,11 @@ use crate::recompute::{price_line, Divergence, Posting};
 
 /// Which pot of budget.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BucketId(String);
+pub struct BucketId(Arc<str>);
 
 impl BucketId {
     /// Name a bucket.
-    pub fn new(id: impl Into<String>) -> Self {
+    pub fn new(id: impl Into<Arc<str>>) -> Self {
         BucketId(id.into())
     }
 
@@ -62,18 +77,22 @@ pub enum CapDimension {
     Concurrent,
     /// Any declared meter class, by name.
     ///
-    /// The class is held as its NAME rather than as the capability crate's identifier, and the
-    /// reason is mechanical rather than aesthetic: a checkpoint's figures are digested in key order
-    /// and signed, so the key has to have a total order. The identifier does not have one, and it
-    /// is not this crate's to give it one. [`CapDimension::class`] does the conversion in one place
-    /// so no call site has to think about it.
-    Class(String),
+    /// The class is held as its NAME rather than as the capability crate's identifier. The
+    /// constraint that decides this is that a checkpoint's figures are digested in key order and
+    /// signed, so the key has to have a total order — that part is real and load-bearing. What is
+    /// NOT the reason, though it was written here as one, is that the identifier lacks such an
+    /// order: `declare_id!` derives `Ord` on every id it makes, `MeterClassId` included. The name is
+    /// what a checkpoint body frames and what an operator reads back, and holding the key in the
+    /// shape it is sealed in is what keeps the two from needing a conversion nobody can see.
+    /// [`CapDimension::class`] does that conversion in one place so no call site has to think
+    /// about it.
+    Class(Arc<str>),
 }
 
 impl CapDimension {
     /// The dimension for a declared meter class.
     pub fn class(id: &MeterClassId) -> Self {
-        CapDimension::Class(id.as_str().to_string())
+        CapDimension::Class(Arc::from(id.as_str()))
     }
 }
 
@@ -94,7 +113,7 @@ pub enum BucketScope {
     /// Everything the bucket covers.
     All,
     /// One named pool inside it.
-    Pool(String),
+    Pool(Arc<str>),
 }
 
 impl std::fmt::Display for BucketScope {
