@@ -16,6 +16,46 @@
 
 use super::*;
 
+/// `retry_after` is a SECONDS-TO-WAIT hint, not the raw epoch the window rolls at, and not a
+/// constant: it is the distance from `now` to the window's roll.
+///
+/// `now = 1_700_000_000` sits 20 seconds into its minute (the minute started at 1_699_999_980, and
+/// ends at 1_700_000_040), so a refusal at that instant must carry exactly 40 — no more, no less.
+/// A regression that drops the `now` subtraction would carry the raw epoch (1_700_000_040, nine
+/// digits, not the two-digit hint an integrator sleeps on); a regression to a constant would carry
+/// something other than 40 regardless of where in the minute the refusal landed.
+#[test]
+fn retry_after_is_the_seconds_remaining_in_the_window_not_the_epoch_it_ends_at() {
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 1, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_retry", Some("g"));
+    let now = 1_700_000_000;
+    assert_eq!(
+        now % 60,
+        20,
+        "now must sit exactly 20s into its minute for this pin to hold"
+    );
+    d.try_admit(&p, &c, "", now).expect("1st");
+    match d.try_admit(&p, &c, "", now).unwrap_err() {
+        Blocked::Limit { retry_after, .. } => {
+            assert_eq!(
+                retry_after,
+                Some(40),
+                "40 seconds remain until the minute containing `now` rolls"
+            );
+        }
+        other => panic!("expected a Limit refusal, got {other:?}"),
+    }
+}
+
 /// Requests per MINUTE: N admissions charge and pass; N+1 in the same window is refused naming
 /// (group, requests, minute) with a retry hint to the minute roll; the NEXT window admits again.
 #[test]
