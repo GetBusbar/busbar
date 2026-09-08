@@ -41,11 +41,14 @@
 #   Then `cargo check` the three neutral crates (with the removed plane's feature off, the others kept)
 #   and the bin (default features, now minus the plane). Both compiling = the strong form PASSES for P.
 #
-#   LLM BOOT+SERVE (tracker C13): compiling is not booting. llm is a plane on the same seam as
-#   mcp/a2a/voice, not core, so its strong-form removal additionally BUILDS (not just checks) the bin
-#   from the same scratch and BOOTS it twice — once with `mcp:` mounted (its own closed auth chain),
-#   once with `agents:`/`public_url` (A2A, open) — serving one MCP request and one A2A request while
-#   `/v1/chat/completions` answers a plain 404 on the open boot. See `llm_boot_serve*` below.
+#   BOOT+SERVE, EVERY PLANE, AGAINST A MEASURED CONTROL (tracker C13): compiling is not booting, so
+#   each plane's strong-form removal additionally BUILDS (not just checks) the bin from the same
+#   scratch and BOOTS it — twice, since an `mcp:` block forces a closed auth chain and every other
+#   plane is probed on an open one. The verdict is never a bare 404: the gate first builds and boots
+#   the UNMUTATED tree and MEASURES what each plane's probe answers with its crate present, and a
+#   plane's 404 counts only as a DIFFERENCE from that control, with every neighbour still serving.
+#   This leg used to exist for `llm` alone, and its one assertion was a 404 that the calibration
+#   proved was the answer either way. See `boot_serve` / `judge_codes` below.
 #
 # MODES (same posture as scripts/plane-purity-lint.sh — informational until the extraction lands):
 #   --selftest        Prove the harness itself works before its verdict is trusted (run FIRST in CI):
@@ -352,130 +355,294 @@ for _ in range(200):
 PYEOF
 }
 
-# ── LLM BOOT+SERVE LEG (tracker C13) ─────────────────────────────────────────────────────────────
-# The two `strong_form` legs above are cargo-CHECK only — they prove the neutral crates and the bin
-# still COMPILE with busbar-llm physically gone, but "compiles" is not "boots and serves" (R-D:
-# scripts/proto-deletion-gate.sh already makes that boot-level claim for the FEATURE-off axis, per
-# protocol/plane). llm is a plane on the same seam as mcp/a2a/voice, not core, so its STRONG-FORM
-# removal gets the same boot-level proof this function supplies: with busbar-llm's crate directory
-# actually gone from the scratch (the same tar-copy + `apply_removal` mutation `strong_form` already
-# performed on `$1`), BUILD the bin for real and boot it against a config naming ZERO llm pools.
+# ── BOOT+SERVE LEG, FOR EVERY PLANE, WITH A POSITIVE CONTROL (tracker C13) ───────────────────────
 #
-# TWO BOOTS, not one: an `mcp:` block REFUSES to boot with an open chain (config_validate:
-# "auth.chain is empty ... serves the MCP server endpoint to ANONYMOUS callers"), so mounting it
-# forces a closed `auth: { chain: [keys] }` that would then 401 an unauthenticated
-# `/v1/chat/completions` before routing ever sees it — masking "the route is gone" behind "the
-# request wasn't authenticated". `agents:`/`public_url` (A2A) carries no such requirement, so the
-# second boot mounts A2A on an OPEN config and takes its plain 404 there, where auth cannot be the
-# reason. Together the two boots serve one MCP request and one A2A request and pin the LLM route's
-# absence unambiguously.
-llm_boot_serve() {
-  local s="$1" log rc bin fail=0
-  log="$CACHE_TARGET/.plane-delete-llm-boot-build.log"; mkdir -p "$CACHE_TARGET"
-  CARGO_TARGET_DIR="$CACHE_TARGET" cargo build --manifest-path "$s/Cargo.toml" -p busbar >"$log" 2>&1; rc=$?
+# The `strong_form` legs above are cargo-CHECK only — they prove the neutral crates and the bin still
+# COMPILE with `crates/busbar-<P>` physically gone. "Compiles" is not "boots and serves", so this
+# leg BUILDS the bin for real from the mutated scratch, BOOTS it, and asks the running server
+# whether the removed plane's route is actually gone.
+#
+# TWO THINGS WERE WRONG WITH THE SHAPE THIS REPLACES, and they compounded.
+#
+#  1. THE LEG EXISTED FOR `llm` ALONE. `strong_form` ran it under `if [ "$p" = "llm" ]`, so mcp, a2a
+#     and voice were proven only to COMPILE without their crate. A plane whose crate is gone but
+#     whose route is still mounted from somewhere else (a re-exported router, a leftover fallback,
+#     a neutral-side registration that outlived the crate) is exactly the coupling this gate exists
+#     to catch, and for three of the four planes nothing was looking. Every plane gets the leg now;
+#     the probe table below is the only per-plane knowledge.
+#
+#  2. THE 404 ASSERTION HAD NO POSITIVE CONTROL. The whole claim rested on one line —
+#     `POST /v1/chat/completions` answers 404 — and NOTHING anywhere established that this request
+#     is non-404 when the plane IS present. A 404 is the answer an HTTP server gives to a great many
+#     mistakes: a renamed route, a typo'd path, a wrong method, a config that never mounted the
+#     plane in the first place, a body the router rejects before dispatch. Every one of those makes
+#     the assertion pass while proving nothing about the deletion. An unfalsifiable green.
+#
+# THE FIX IS A CALIBRATION, NOT A LIST OF EXPECTED CODES. The gate does not hard-code what a mounted
+# plane answers — it MEASURES it. Before any verdict, it builds and boots the UNMUTATED tree and
+# probes every plane's route with the byte-identical request it will later send to the mutated
+# binary. That run is the CONTROL: it is what "this plane is present" looks like through this exact
+# probe, on this exact config, on this exact server. A control code of 404 is itself a hard failure
+# — it means the probe cannot tell presence from absence, so no verdict taken with it is worth
+# anything, which is the state the gate was silently in.
+#
+# The verdict for plane P is then a DIFFERENCE against that control, which is the only form in which
+# a 404 carries information:
+#     control[P] != 404   the probe reaches a real route when P is compiled in  (the positive control)
+#     subject[P] == 404   and the same request 404s once P's crate is gone      (the deletion)
+#     subject[Q] != 404   while every neighbour Q that the control mounted still serves
+# The third line is the neighbour control: it separates "P's route left with P's crate" from "this
+# boot mounted nothing / the server is broken / the config was rejected", which produce 404 for
+# every plane at once and used to be indistinguishable from a pass.
+#
+# TWO BOOT CONFIGS, not one, and the reason is auth. An `mcp:` block REFUSES to boot on an open
+# chain (config_validate: "auth.chain is empty ... serves the MCP server endpoint to ANONYMOUS
+# callers"), so mounting MCP forces a closed `auth: { chain: [keys] }` — under which an
+# unauthenticated probe is 401'd before routing is ever consulted, masking "the route is gone"
+# behind "the request wasn't authenticated". So MCP is probed on its own closed boot via its one
+# unauthenticated route (the protected-resource metadata), and every other plane is probed on an
+# OPEN boot where auth cannot be the reason for anything. `plane_probe_boot` says which is which.
+
+# ── THE PER-PLANE PROBE TABLE ────────────────────────────────────────────────────────────────────
+# The ONLY per-plane knowledge in this leg: which boot mounts the plane, and the exact request that
+# reaches its route. Adding a plane is four lines here. Every code these probes produce is measured,
+# never assumed — see the calibration above.
+plane_probe_boot() {   # which boot config mounts this plane: `mcp` (closed chain) or `open`
+  case "$1" in mcp) echo mcp ;; *) echo open ;; esac
+}
+# THE LLM PROBE IS A `GET`, AND THAT IS THE WHOLE POINT — see the calibration note below.
+plane_probe_method() { case "$1" in mcp | llm) echo GET ;; *) echo POST ;; esac; }
+plane_probe_path() {
+  case "$1" in
+    llm)   echo "/v1/chat/completions" ;;
+    mcp)   echo "/.well-known/oauth-protected-resource/mcp" ;;
+    a2a)   echo "/a2a" ;;
+    voice) echo "/v1/realtime/client_secrets" ;;
+  esac
+}
+plane_probe_body() {
+  case "$1" in
+    a2a)   printf '{"jsonrpc":"2.0","method":"message/send","id":1}' ;;
+    voice) printf '{"model":"gpt-realtime"}' ;;
+    llm | mcp) printf '' ;;
+  esac
+}
+
+# ── WHAT THE CALIBRATION FOUND THE FIRST TIME IT RAN, and why the llm probe is the shape it is ────
+#
+# The probe this leg INHERITED was `POST /v1/chat/completions` with a chat body. Run against the
+# UNMUTATED tree — busbar-llm present, compiled in, its router mounted — it answers **404**. Not
+# because the plane is missing: because the request names a model, and this boot deliberately
+# configures ZERO models, so the money path answers "no such model" with a 404 envelope.
+#
+# So the single assertion the old llm leg rested on — "POST /v1/chat/completions is 404, therefore
+# the LLM plane's route left with the crate" — was true before the deletion, true after it, and true
+# of a binary that never had busbar-llm at all. It could not have failed. It was measured, not
+# reasoned: `--probe-control` printed 404 for llm on the first run of this calibration.
+#
+# `GET /v1/chat/completions` separates the two questions, because axum answers them differently:
+#   route mounted, method not allowed  ->  405   (the plane is compiled in)
+#   no such route at all               ->  404   (the plane left with its crate)
+# It interrogates the SAME money-path route the tracker row names, and its answer moves when — and
+# only when — the plane does. The other three planes' probes were measured at the same time and do
+# discriminate as written: mcp 200, a2a 503, voice 501, all non-404 with their crates present.
+#
+# Nothing here is trusted on the strength of that paragraph. Every one of these codes is re-measured
+# by `control_codes` on every run, and a probe that has drifted back to 404 fails the positive
+# control instead of quietly passing the gate.
+
+# write_boot_config <mode> <dir> <port> <admin_port> — the two configs, written into <dir>.
+#   mcp   closed chain (`auth.chain: [keys]`), `mcp:` mounted. Only the metadata route is open.
+#   open  no chain at all; `agents:`/`public_url` (A2A) and the realtime block (voice) mounted, so
+#         a 404 on this boot can never be an auth refusal in disguise.
+# Both name ZERO providers and ZERO models: a plane's ROUTE must mount from its crate being
+# compiled in, never from a pool happening to be configured.
+write_boot_config() {
+  local mode="$1" dir="$2" port="$3" admin_port="$4"
+  printf '{}\n' >"$dir/providers.yaml"
+  case "$mode" in
+    mcp)
+      printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\nmcp:\n  canonical_uri: https://busbar.example.com/mcp\n  authorization_servers:\n    - https://login.example.com\n' \
+        "$port" "$admin_port" >"$dir/config.yaml"
+      ;;
+    open)
+      printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nagents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' \
+        "$port" "$admin_port" >"$dir/config.yaml"
+      ;;
+  esac
+}
+
+# boot_and_probe <bin> <mode> <label> <outfile>
+#   Boot <bin> on the <mode> config, probe EVERY plane whose `plane_probe_boot` is <mode>, and append
+#   one `<plane>=<http-code>` line per plane to <outfile>. Returns non-zero only if the binary never
+#   came up — the codes themselves are data for the caller to judge, never a verdict taken here.
+boot_and_probe() {
+  local bin="$1" mode="$2" label="$3" out="$4"
+  local ports port admin_port fix pid up probe code p method path body
+
+  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  boot leg ($label/$mode): no free port pair"; return 1; }
+  port="$ports"; admin_port=$((port + 1))
+  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-boot.XXXXXX")" || { red "  boot leg ($label/$mode): mktemp failed"; return 1; }
+  write_boot_config "$mode" "$fix" "$port" "$admin_port"
+
+  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
+  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-boot \
+  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
+  exec "$bin" >"$fix/boot.log" 2>&1 &
+  pid=$!
+
+  # The up-signal is a route no plane owns, so waiting for it never presumes the answer to the
+  # question this leg is asking. `/stats` on the open boot; the MCP metadata route on the closed one
+  # (the only unauthenticated route that boot has).
+  case "$mode" in
+    mcp)  probe="http://127.0.0.1:$port/.well-known/oauth-protected-resource/mcp" ;;
+    open) probe="http://127.0.0.1:$port/stats" ;;
+  esac
+  up=""
+  for _ in $(seq 1 60); do
+    if curl -fsS "$probe" >/dev/null 2>&1; then up=1; break; fi
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  if [ -z "$up" ]; then
+    red "  boot leg ($label/$mode): the binary did not come up"
+    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+    return 1
+  fi
+
+  for p in $PLANES; do
+    [ "$(plane_probe_boot "$p")" = "$mode" ] || continue
+    method="$(plane_probe_method "$p")"; path="$(plane_probe_path "$p")"; body="$(plane_probe_body "$p")"
+    if [ "$method" = "GET" ]; then
+      code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$path")"
+    else
+      code="$(curl -s -o /dev/null -w '%{http_code}' -X "$method" "http://127.0.0.1:$port$path" \
+        -H 'content-type: application/json' -d "$body")"
+    fi
+    printf '%s=%s\n' "$p" "$code" >>"$out"
+  done
+
+  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+  return 0
+}
+
+# build_bin <manifest-dir> <tag> → echoes the path to a built bin COPIED ASIDE under <tag>.
+# The copy matters: every build in this script shares one CARGO_TARGET_DIR (so the ~130 external
+# deps compile once), which means `debug/busbar` is overwritten by the next build. A control binary
+# that has been overwritten by its own subject is not a control.
+build_bin() {
+  local dir="$1" tag="$2" log rc kept
+  log="$CACHE_TARGET/.plane-delete-$tag-build.log"; mkdir -p "$CACHE_TARGET"
+  CARGO_TARGET_DIR="$CACHE_TARGET" cargo build --manifest-path "$dir/Cargo.toml" -p busbar >"$log" 2>&1; rc=$?
   if [ "$rc" -ne 0 ]; then
-    red "  llm boot leg: bin FAILED to build (not just check) with busbar-llm physically gone"
+    red "  boot leg ($tag): bin FAILED to build (not just check)"
     grep -m4 -E "error(\[|:)|couldn't read" "$log" | sed 's/^/      /'
     return 1
   fi
-  bin="$CACHE_TARGET/debug/busbar"
-  [ -x "$bin" ] || { red "  llm boot leg: built binary not found at $bin"; return 1; }
+  [ -x "$CACHE_TARGET/debug/busbar" ] || { red "  boot leg ($tag): built binary not found"; return 1; }
+  kept="$CACHE_TARGET/busbar-$tag"
+  cp "$CACHE_TARGET/debug/busbar" "$kept" || return 1
+  printf '%s\n' "$kept"
+}
 
-  llm_boot_serve_mcp "$bin" || fail=1
-  llm_boot_serve_a2a "$bin" || fail=1
-  [ "$fail" -eq 0 ] && grn "  llm boot leg: binary BOOTS with busbar-llm physically gone, serves MCP + A2A, /v1/chat/completions 404s"
+# probe_codes <bin> <label> <outfile> — both boots, every plane, one file of `<plane>=<code>` lines.
+probe_codes() {
+  local bin="$1" label="$2" out="$3" fail=0
+  : >"$out"
+  boot_and_probe "$bin" mcp  "$label" "$out" || fail=1
+  boot_and_probe "$bin" open "$label" "$out" || fail=1
   return "$fail"
 }
 
-# boot A — `mcp:` mounted on the closed chain it requires; zero llm pools. Asserts the MCP metadata
-# route (its one unauthenticated route) mounts, i.e. serves — the same up-signal
-# proto-deletion-gate.sh's mcp-b-mounted control uses.
-llm_boot_serve_mcp() {
-  local bin="$1" ports port admin_port fix pid up code
-  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  llm boot leg (mcp): no free port pair"; return 1; }
-  port="$ports"; admin_port=$((port + 1))
-  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-llm-boot-mcp.XXXXXX")" || { red "  llm boot leg (mcp): mktemp failed"; return 1; }
-  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  signing_key: { env: BUSBAR_SIGNING_KEY }\n  chain: [keys]\n  admin_auth: [admin-tokens]\nmcp:\n  canonical_uri: https://busbar.example.com/mcp\n  authorization_servers:\n    - https://login.example.com\n' \
-    "$port" "$admin_port" >"$fix/config.yaml"
-  printf '{}\n' >"$fix/providers.yaml"
+code_for() { # code_for <file> <plane> → the recorded code, or the empty string
+  awk -F= -v p="$2" '$1 == p { print $2; exit }' "$1" 2>/dev/null
+}
 
-  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
-  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-llm-boot \
-  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
-  exec "$bin" >"$fix/boot.log" 2>&1 &
-  pid=$!
+# ── THE CONTROL: what a MOUNTED plane answers, measured on the unmutated tree ────────────────────
+# Built and probed at most ONCE per run and memoised in a file, because it is the same answer for
+# every plane and it costs a full bin build plus two boots.
+CONTROL_CODES=""
+control_codes() {
+  local bin
+  if [ -n "$CONTROL_CODES" ]; then printf '%s\n' "$CONTROL_CODES"; return 0; fi
+  mkdir -p "$CACHE_TARGET"
+  local out="$CACHE_TARGET/.plane-delete-control-codes.txt"
+  bin="$(build_bin "$REPO" control)" || return 1
+  probe_codes "$bin" control "$out" || return 1
+  CONTROL_CODES="$out"
+  printf '%s\n' "$out"
+}
 
-  up=""
-  for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$port/.well-known/oauth-protected-resource/mcp" >/dev/null 2>&1; then up=1; break; fi
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.5
-  done
-  if [ -z "$up" ]; then
-    red "  llm boot leg (mcp): the llm-deleted binary did not come up with mcp mounted"
-    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
-    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
+# ── THE VERDICT, AS A PURE FUNCTION OVER TWO CODE FILES ──────────────────────────────────────────
+# judge_codes <control-file> <subject-file> <plane> → 0 (PASS) / 1 (FAIL).
+#
+# Deliberately separated from the booting: the judgement is the part that was WRONG (a bare 404 read
+# as proof), and a judgement welded to a full bin build plus four boots is a judgement nobody can
+# RED-prove. As a pure function over two files of `<plane>=<code>` lines it is driven directly by
+# `--selftest` over planted codes — a vacuous probe, a surviving route, a boot that mounted nothing —
+# in milliseconds, with no cargo and no network.
+judge_codes() {
+  local ctl="$1" sub="$2" p="$3" fail=0 q cc sc
+
+  # THE POSITIVE CONTROL. If the probe for this plane is 404 on a tree where the plane's crate is
+  # PRESENT, the probe cannot tell presence from absence and its 404 below would mean nothing.
+  cc="$(code_for "$ctl" "$p")"
+  if [ -z "$cc" ]; then
+    red "  boot leg ($p): the control run recorded no code for this plane — the probe never ran"
     return 1
   fi
+  if [ "$cc" = "404" ]; then
+    red "  boot leg ($p): POSITIVE CONTROL FAILED — $(plane_probe_method "$p") $(plane_probe_path "$p") is 404"
+    note "    on the UNMUTATED tree, where crates/busbar-$p is present and compiled in. A probe that"
+    note "    404s whether or not the plane exists proves nothing about the deletion; the 404 assertion"
+    note "    below would be unfalsifiable. Fix the probe (path/method/body) or the boot config that"
+    note "    is supposed to mount this plane — do not read a 404 here as a pass."
+    return 1
+  fi
+  note "positive control ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answers $cc with the plane present (non-404)"
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/.well-known/oauth-protected-resource/mcp")"
-  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
-  if [ "$code" = "200" ]; then
-    note "llm boot leg: MCP metadata route serves (200) with busbar-llm physically gone"
+  # THE DELETION: the byte-identical request must now 404.
+  sc="$(code_for "$sub" "$p")"
+  if [ "$sc" = "404" ]; then
+    note "boot leg ($p): the same request now answers 404 — the plane's route left with the crate"
+  else
+    fail=1
+    red "  boot leg ($p): $(plane_probe_method "$p") $(plane_probe_path "$p") answered ${sc:-<no answer>}, not 404 — the route survived deletion"
+  fi
+
+  # THE NEIGHBOUR CONTROL: every OTHER plane the control mounted must still serve on this binary.
+  # Without it, a boot that mounted nothing at all 404s everything and reads as a clean deletion.
+  for q in $PLANES; do
+    [ "$q" = "$p" ] && continue
+    cc="$(code_for "$ctl" "$q")"
+    [ "$cc" = "404" ] || [ -z "$cc" ] && continue   # the control never mounted it; it controls nothing
+    sc="$(code_for "$sub" "$q")"
+    if [ "$sc" = "404" ] || [ -z "$sc" ]; then
+      fail=1
+      red "  boot leg ($p): neighbour $q answered ${sc:-<no answer>} (control: $cc) — this boot lost a plane it did not delete"
+      note "    Every plane 404ing at once is a boot that mounted nothing, not a clean deletion."
+    else
+      note "boot leg ($p): neighbour $q still serves ($sc, control $cc)"
+    fi
+  done
+
+  return "$fail"
+}
+
+# boot_serve <scratch> <plane> → 0/1. The whole leg for one plane: measure the control (once per
+# run), build and boot the mutated bin, then hand both code files to `judge_codes`.
+boot_serve() {
+  local s="$1" p="$2" bin ctl sub
+  ctl="$(control_codes)" || { red "  boot leg ($p): the CONTROL build/boot failed — no verdict is possible"; return 1; }
+  bin="$(build_bin "$s" "delete-$p")" || return 1
+  sub="$CACHE_TARGET/.plane-delete-$p-codes.txt"
+  probe_codes "$bin" "delete-$p" "$sub" || return 1
+  if judge_codes "$ctl" "$sub" "$p"; then
+    grn "  boot leg ($p): binary BOOTS with busbar-$p physically gone; its route 404s, every neighbour still serves"
     return 0
   fi
-  red "  llm boot leg (mcp): MCP metadata route did not mount — expected 200, got $code"
   return 1
-}
-
-# boot B — `agents:`+`public_url` (A2A) mounted on an OPEN chain (no `mcp:` block, so no closed-chain
-# requirement); zero llm pools. Asserts POST /a2a serves (non-404) and, on this SAME open boot,
-# POST /v1/chat/completions is a plain 404 — auth cannot be the reason, since this boot took none.
-llm_boot_serve_a2a() {
-  local bin="$1" ports port admin_port fix pid up code fail=0
-  ports="$(free_port_pair)"; [ -n "$ports" ] || { red "  llm boot leg (a2a): no free port pair"; return 1; }
-  port="$ports"; admin_port=$((port + 1))
-  fix="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-llm-boot-a2a.XXXXXX")" || { red "  llm boot leg (a2a): mktemp failed"; return 1; }
-  printf 'listen: "127.0.0.1:%s"\nadmin_listen: "127.0.0.1:%s"\npublic_url: https://busbar.example.com\nproviders: {}\nmodels: {}\nagents:\n  probe:\n    url: https://remote-agent.example.com/a2a\n    pin:\n      mechanism: unpinned\n' \
-    "$port" "$admin_port" >"$fix/config.yaml"
-  printf '{}\n' >"$fix/providers.yaml"
-
-  MOCK_KEY=test-key BUSBAR_SIGNING_KEY=0000000000000000000000000000000000000000000000000000000000000001 \
-  BUSBAR_ADMIN_TOKEN=admin-token-for-plane-delete-llm-boot \
-  BUSBAR_CONFIG="$fix/config.yaml" BUSBAR_PROVIDERS="$fix/providers.yaml" \
-  exec "$bin" >"$fix/boot.log" 2>&1 &
-  pid=$!
-
-  up=""
-  for _ in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$port/stats" >/dev/null 2>&1; then up=1; break; fi
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.5
-  done
-  if [ -z "$up" ]; then
-    red "  llm boot leg (a2a): the llm-deleted binary did not come up"
-    tail -20 "$fix/boot.log" 2>/dev/null | sed 's/^/      /'
-    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
-    return 1
-  fi
-
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port/a2a" \
-    -H 'content-type: application/json' -d '{"jsonrpc":"2.0","method":"message/send","id":1}')"
-  case "$code" in
-    404) fail=1; red "  llm boot leg (a2a): POST /a2a answered 404 — the A2A plane did not mount" ;;
-    *)   note "llm boot leg: POST /a2a serves ($code, non-404) with busbar-llm physically gone" ;;
-  esac
-
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$port/v1/chat/completions" \
-    -H 'content-type: application/json' -d '{"model":"test-model","messages":[{"role":"user","content":"hi"}]}')"
-  if [ "$code" = "404" ]; then
-    note "llm boot leg: POST /v1/chat/completions is a plain 404 (open boot, no auth involved) — the LLM plane's route left with the crate"
-  else
-    fail=1; red "  llm boot leg (a2a): POST /v1/chat/completions answered $code, not 404 — the LLM plane's route survived deletion"
-  fi
-
-  kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; rm -rf "$fix"
-  return "$fail"
 }
 
 # ── the check runner ──────────────────────────────────────────────────────────────────────────────
@@ -615,13 +782,15 @@ strong_form() {
     grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
   fi
 
-  # Leg 3 (llm only, tracker C13) — BOOT+SERVE, not just compile: build the bin for real from this
-  # same scratch (busbar-llm's directory already physically gone) and prove it boots serving MCP +
-  # A2A with a plain 404 on the LLM money-path route. mcp/a2a/voice already have the boot-level proof
-  # on the FEATURE-off axis (scripts/proto-deletion-gate.sh); this is llm's analogue on the
-  # STRONG-FORM (crate-physically-deleted) axis, which is what the tracker row asks for.
-  if [ "$p" = "llm" ] && [ "$rc" -eq 0 ]; then
-    llm_boot_serve "$s" || fail=1
+  # Leg 3 (EVERY plane, tracker C13) — BOOT+SERVE, not just compile: build the bin for real from
+  # this same scratch (crates/busbar-<P> already physically gone) and prove the running server has
+  # lost that plane's route and kept every other plane's, judged against the control measured on the
+  # unmutated tree. This used to run for `llm` alone, leaving mcp/a2a/voice proven only to compile.
+  # Skipped only when leg 2 already failed: a boot leg over a bin that does not compile has nothing
+  # to say, and `--skip-boot-leg` exists for the same reason the witness probe is opt-in — it is the
+  # expensive half (a full bin build plus boots, plus the one-off control build).
+  if [ "$rc" -eq 0 ] && [ "${SKIP_BOOT_LEG:-0}" != "1" ]; then
+    boot_serve "$s" "$p" || fail=1
   fi
 
   # Optional witness probe (informational): the test-support #[path] dual-compile.
@@ -802,6 +971,91 @@ run_selftest() {
   fi
   rm -rf "$s"
 
+  # (5) THE BOOT LEG'S JUDGEMENT — the part that used to be a bare, unfalsifiable 404.
+  #
+  #     `judge_codes` is a pure function over two files of `<plane>=<code>` lines (the control run on
+  #     the unmutated tree, and the subject run on the plane-deleted one), so every way it must go
+  #     RED is provable here in milliseconds — no cargo, no boot, no network. These are the cases
+  #     that had NO instrument at all before: the leg existed for `llm` only, and its single
+  #     assertion was "the route answered 404", which is also what a typo'd path, a wrong method, a
+  #     plane the config never mounted, and a server that mounted nothing all answer.
+  local jd ctl sub
+  jd="$(mktemp -d "${TMPDIR:-/tmp}/plane-delete-judge.XXXXXX")" || { red "mktemp failed"; return 1; }
+  ctl="$jd/control.txt"; sub="$jd/subject.txt"
+
+  # (5a) GREEN: the plane was mounted (200), is now gone (404), neighbours untouched.
+  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
+  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    note "PASS  boot-judge GREEN: mounted-then-404 with neighbours serving is a clean deletion"
+  else
+    fail=1; note "FAIL  boot-judge GREEN: refused a textbook clean deletion"
+  fi
+
+  # (5b) RED — THE VACUOUS PROBE. The control itself 404s, i.e. the request never reached a route
+  #      even with the plane compiled in. The old leg had no such check, so this state read as PASS.
+  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
+  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  boot-judge POSITIVE CONTROL: a probe that 404s on the UNMUTATED tree was accepted."
+    note "      A 404 that is the answer whether or not the plane exists proves nothing; this is the"
+    note "      exact unfalsifiable green the positive control exists to make impossible."
+  else
+    note "PASS  boot-judge POSITIVE CONTROL: a probe that 404s with the plane PRESENT is refused"
+  fi
+
+  # (5c) RED — the control never ran for this plane at all (no line recorded).
+  printf 'mcp=200\na2a=200\nvoice=200\n' >"$ctl"
+  printf 'llm=404\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge: accepted a verdict with no control measurement for the plane"
+  else
+    note "PASS  boot-judge: a plane the control never probed is refused, not assumed"
+  fi
+
+  # (5d) RED — THE ROUTE SURVIVED: the deleted plane still answers non-404.
+  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
+  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1; note "FAIL  boot-judge: a route that still serves after its crate was deleted was accepted"
+  else
+    note "PASS  boot-judge: a surviving route is refused"
+  fi
+
+  # (5e) RED — THE NEIGHBOUR CONTROL: a boot that mounted NOTHING 404s every plane at once, which
+  #      under the old single-assertion shape is indistinguishable from a clean deletion.
+  printf 'llm=200\nmcp=200\na2a=200\nvoice=200\n' >"$ctl"
+  printf 'llm=404\nmcp=404\na2a=404\nvoice=404\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  boot-judge NEIGHBOUR CONTROL: a boot where EVERY plane 404s was read as a clean deletion."
+    note "      That is a server that mounted nothing, not a plane whose route left with its crate."
+  else
+    note "PASS  boot-judge NEIGHBOUR CONTROL: every-plane-404 is refused, not read as a deletion"
+  fi
+
+  # (5f) a neighbour the CONTROL never mounted controls nothing, and must not manufacture a failure.
+  printf 'llm=200\nmcp=200\na2a=200\nvoice=404\n' >"$ctl"
+  printf 'llm=404\nmcp=200\na2a=200\nvoice=404\n' >"$sub"
+  if judge_codes "$ctl" "$sub" llm >/dev/null 2>&1; then
+    note "PASS  boot-judge: a neighbour the control never mounted is excluded from the neighbour control"
+  else
+    fail=1; note "FAIL  boot-judge: an unmounted neighbour was treated as a lost plane"
+  fi
+  rm -rf "$jd"
+
+  # (6) THE PROBE TABLE COVERS EVERY PLANE. The leg is only universal if the table is: a plane with
+  #     no path/method/body is a plane the boot leg silently never probes — the same class of
+  #     no-op as the llm-only `if` this replaced, one layer down.
+  for p in $PLANES; do
+    if [ -z "$(plane_probe_path "$p")" ] || [ -z "$(plane_probe_method "$p")" ] || [ -z "$(plane_probe_boot "$p")" ]; then
+      fail=1; note "FAIL  probe table: plane '$p' has no probe (path/method/boot) — the boot leg would skip it silently"
+    else
+      note "PASS  probe table($p): $(plane_probe_method "$p") $(plane_probe_path "$p") on the $(plane_probe_boot "$p") boot"
+    fi
+  done
+
   if [ "$fail" -eq 0 ]; then
     grn "plane-delete-test self-test: ALL GREEN (removal real; FAIL reported on coupling, PASS on a clean removal)"
     return 0
@@ -833,6 +1087,23 @@ run_baseline() {
 # ── modes ─────────────────────────────────────────────────────────────────────────────────────────
 case "${1:-}" in
   --selftest) run_selftest; exit $? ;;
+  # DIAGNOSTIC: build and boot the UNMUTATED tree and print what each plane's probe answers with its
+  # crate present. This is the calibration every boot-leg verdict is taken against, so being able to
+  # look at it directly is how a failing positive control gets diagnosed (bad path? bad method? a
+  # config that never mounted the plane?) without deleting anything.
+  --probe-control)
+    hdr "boot-leg CONTROL — every plane's probe against the UNMUTATED tree"
+    ctl="$(control_codes)" || { red "control build/boot failed"; exit 1; }
+    for p in $PLANES; do
+      code="$(code_for "$ctl" "$p")"
+      if [ "$code" = "404" ] || [ -z "$code" ]; then
+        red "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> ${code:-<no answer>} (VACUOUS: cannot tell presence from absence)"
+      else
+        grn "  $p: $(plane_probe_method "$p") $(plane_probe_path "$p") -> $code (non-404: the probe reaches a real route)"
+      fi
+    done
+    exit 0
+    ;;
   --baseline) run_baseline; exit 0 ;;
   --all)
     fail=0
@@ -845,8 +1116,12 @@ case "${1:-}" in
     red "plane-delete gate: FAIL — a plane's neutral crates still need its crate to compile"; exit 1
     ;;
   --with-witness) export WITH_WITNESS=1; shift; exec "$0" "${1:---baseline}" ;;
+  # The boot leg is the expensive half (a bin build per plane plus the one-off control build and two
+  # boots each). It is ON by default — it is the only leg that can tell a mounted route from a
+  # deleted one — and this flag turns it off for a compile-only pass on a machine that cannot boot.
+  --skip-boot-leg) export SKIP_BOOT_LEG=1; shift; exec "$0" "${1:---baseline}" ;;
   -h | --help) sed -n '2,60p' "$0" ;;
-  "" ) echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a|voice>] [--with-witness]" >&2; exit 2 ;;
+  "" ) echo "usage: $0 [--selftest | --baseline | --all | <llm|mcp|a2a|voice>] [--with-witness] [--skip-boot-leg]" >&2; exit 2 ;;
   *)
     if valid_plane "$1"; then
       hdr "STRONG-FORM deletion test — plane: $1"
