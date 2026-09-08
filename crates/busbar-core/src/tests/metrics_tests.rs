@@ -953,7 +953,8 @@ fn test_key_gauge_limit_truncation() {
     // Asserting that number is what makes a regression in either direction — a cap that stopped
     // capping (2001) or one that clamped far below its own value — a failure here.
     assert_eq!(
-        spend_series_count, LIMIT,
+        spend_series_count,
+        LIMIT,
         "refresh_scrape_gauges must emit EXACTLY key_gauge_limit ({LIMIT}) per-key series when \
          {} keys are present: the cap must bind, and must bind AT its own value",
         LIMIT + 1

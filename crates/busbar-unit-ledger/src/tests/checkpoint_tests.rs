@@ -169,7 +169,10 @@ fn the_alarm_threshold_is_reached_at_the_count_and_not_before() {
     for _ in 0..3 {
         state.consecutive_failures += 1;
     }
-    assert!(!state.should_alarm(4), "one short of the threshold is quiet");
+    assert!(
+        !state.should_alarm(4),
+        "one short of the threshold is quiet"
+    );
     assert!(state.should_alarm(3), "the threshold itself alarms");
     assert!(state.should_alarm(2), "and anything past it");
 

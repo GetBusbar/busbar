@@ -94,7 +94,11 @@ fn the_fixture_carries_one_selector_of_every_form() {
     let listed = named.len();
     named.sort_unstable();
     named.dedup();
-    assert_eq!(named.len(), listed, "two selectors of one form in the fixture");
+    assert_eq!(
+        named.len(),
+        listed,
+        "two selectors of one form in the fixture"
+    );
     assert_eq!(listed, 13, "one selector per form, and thirteen forms");
 }
 
