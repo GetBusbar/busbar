@@ -1535,7 +1535,12 @@ def selftest(busbar, out=sys.stdout):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--busbar", required=True, help="path to the compiled busbar binary")
+    ap.add_argument(
+        "--busbar",
+        default=None,
+        help="path to the compiled busbar binary (default: the tree's target/release/busbar, "
+             "then target/debug/busbar, whichever is executable; a tree with neither is refused)",
+    )
     ap.add_argument("--root", default=".", help="tree to scan (default: cwd)")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--quiet", action="store_true", help="only print failures")
@@ -1551,6 +1556,14 @@ def main():
     )
     a = ap.parse_args()
 
+    if a.busbar is None:
+        for cand in ("target/release/busbar", "target/debug/busbar"):
+            if os.access(os.path.join(a.root, cand), os.X_OK):
+                a.busbar = os.path.join(a.root, cand)
+                break
+        else:
+            sys.stderr.write("executable-config-lint: --busbar not given and no built binary under target/\n")
+            return 2
     busbar = os.path.abspath(a.busbar)
     if not os.access(busbar, os.X_OK):
         sys.stderr.write(f"executable-config-lint: not executable: {busbar}\n")
