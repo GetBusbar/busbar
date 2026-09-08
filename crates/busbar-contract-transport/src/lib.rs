@@ -12,7 +12,8 @@
 //! So the transport half is here: the listener and the connection, the detached stream an in-band
 //! upgrade hands over, the closed failure and close codes, the arrival record the bottom layer
 //! writes, the upstream address the dialling family spells, the fact keys the kernel reserves, the
-//! kind's ABI generation, and the boot check that a composed stack is the stack every layer
+//! kind's ABI generation, the two driver seams a transport hands work across — the one-shot one and
+//! the duplex-session one — and the boot check that a composed stack is the stack every layer
 //! declared. The frame a plane reads, the cursor it reads through and the envelope it decorates
 //! stayed in the contract, because those borrow the arena the contract owns.
 //!
@@ -27,6 +28,7 @@
 pub mod dest;
 pub mod driver;
 pub mod registry;
+pub mod session;
 pub mod surface;
 pub mod wire;
 
@@ -41,6 +43,10 @@ pub struct AbiVersion(pub u16);
 pub use dest::UpstreamAddress;
 pub use driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 pub use registry::{check_composition, facts, CompositionError, Registered, TRANSPORT_ABI};
+pub use session::{
+    Cut, DetachedSession, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
+    SessionReply,
+};
 pub use surface::{
     binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
     Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
