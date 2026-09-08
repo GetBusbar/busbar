@@ -1579,7 +1579,7 @@ count = "7"
 [[cell]]
 crate = "busbar-contract"
 kind = "kernel"
-count = "1"
+count = "3"
 
 [[cell]]
 crate = "busbar-contract"
