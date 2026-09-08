@@ -1116,3 +1116,45 @@ fn a_session_slot_displaced_by_a_second_open_is_closed() {
     );
     assert!(!second.is_closed(), "the live slot was closed instead");
 }
+
+/// One live unit per key. A second entry under a key already in the table is REFUSED.
+///
+/// It used to be admitted and the first one silently overwritten. Two things went with it. The
+/// count is what the cap is enforced against and what the crash-exposure figure is computed from,
+/// and both entries had claimed a slot while only one was in the table, so the table shrank by one
+/// for the life of the node. And the slot that was overwritten carried a live `HoldCell` holding an
+/// arrival hold that no end would ever take -- the unit is unreachable from `get` and from
+/// `snapshot`, so neither the exit path nor the sweep can settle it, and the canary counts an
+/// admitted unit that never settles.
+///
+/// Refusing prevents both instead of correcting one. The hold goes back out with the refusal,
+/// exactly as the cap-full path already hands it back, so nothing is stranded and nothing has to be
+/// settled from a table that holds no exit token.
+#[test]
+fn a_second_unit_under_one_key_is_refused_rather_than_displacing_the_first() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+
+    let first = table
+        .insert(enter(&kernel, 7, OriginKind::Client))
+        .expect("under the ceiling");
+    let refused = table
+        .insert(enter(&kernel, 7, OriginKind::Client))
+        .expect_err("one key, one live unit");
+    assert_eq!(refused.reason, ReasonCode::InFlight);
+    assert_eq!(refused.step, StepName::Arrival);
+
+    assert_eq!(table.len(), 1, "the refused entry kept a slot");
+    assert_eq!(
+        table.len(),
+        table.snapshot().len(),
+        "the table counts a unit it does not hold"
+    );
+    assert!(
+        table.get(first.key()).is_some(),
+        "the unit already in flight was displaced"
+    );
+    // And the refusal is not permanent: the key is free again once its unit leaves.
+    table.remove(first.key());
+    assert!(table.insert(enter(&kernel, 7, OriginKind::Client)).is_ok());
+}
