@@ -282,7 +282,8 @@ pub mod stub {
 
 /// An example of a NEVER-PANICS `free` fn for an [`OpaqueHandle`], reusing the boundary discipline:
 /// the body runs inside a `catch_unwind` so a panicking `Drop` can never unwind across the seam. A
-/// real plane's `free` frees its own state this way; this generic one drops a `Box<()>` placeholder.
+/// real plane's `free` frees its own state this way; this generic one frees nothing concrete — it
+/// only demonstrates the catch-guarded shape a real `Box::from_raw`/`drop` would sit inside.
 ///
 /// # Safety
 /// `ptr`, when non-null, must be exactly a pointer this plane's `build` produced and not yet freed.
