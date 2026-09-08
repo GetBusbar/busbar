@@ -118,7 +118,11 @@ fn missing_roots(cx: &Ctx, roots: &[String]) -> Vec<String> {
 
 fn measure(cx: &Ctx) -> Result<Measurement, String> {
     let neutral_roots = planes::neutral_src_roots();
-    let plane_roots = planes::plane_src_roots();
+    // THE PLANE POPULATION COMES FROM THE KIND TABLE, not from a list in `planes`: see
+    // `kind_isolation::plane_kind_src_roots`. `busbar-plane-*` was plane-kind and in no scan, and
+    // after the dialect split every `busbar-plane-<p>-<d>` crate would have had to be added by hand
+    // — a plane crate nobody added is a plane crate the backwards rule scans zero files of.
+    let plane_roots = crate::gates::kind_isolation::plane_kind_src_roots(cx)?;
     let present: Vec<String> = neutral_roots
         .iter()
         .filter(|r| cx.exists(r))
@@ -474,6 +478,23 @@ impl Gate for PlanePurityGate {
             &plane_at,
             "use busbar_core::internal::foo;\nextern crate busbar_core;\nuse busbar_core as c;\n",
             &[ROW_BACKWARDS, "planted_plane_purity.rs:3"],
+        ));
+
+        // THE POPULATION IS THE KIND TABLE'S, AND THIS IS THE CRATE THAT PROVES IT. `busbar-plane-*`
+        // is plane-kind by every rule the tree has and was in NO scan: the literal root list held
+        // the four `busbar-<key>` crates and the four codec halves, so a backwards reach planted
+        // here was scanned by nobody and the gate said "no plane crate reaches back". Delete the
+        // kind-derived population and this case goes green while every case above stays red — which
+        // is the whole of the difference, and the shape the dialect split multiplies by one crate
+        // per dialect.
+        report.push(create(
+            cx,
+            self,
+            "a backwards reach in a busbar-plane-* crate, which no literal root list scanned",
+            &[ROW_BACKWARDS],
+            "crates/busbar-plane-mcp/src/planted_plane_kind.rs",
+            "use busbar_core::internal::foo;\n",
+            &[ROW_BACKWARDS, "planted_plane_kind.rs:1"],
         ));
 
         // The two guards in front of every rule above, because each of them answers "clean" about
