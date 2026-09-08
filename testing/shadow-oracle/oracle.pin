@@ -13,5 +13,5 @@
 # instead; the shim's check does not care which URL the bytes came from.
 #
 # To move the pin: bump `tag`, download the archive, and put its sha256 here.
-tag=v0.3.1
-sha256=0930129d072ebdfda06db7bcbdfba7c48c531668bdde454403837029eb7e74d7
+tag=v0.3.0
+sha256=cd21388da8f7994e8f38bcae8b131205cece3eb1c5fc644cc7d4c17521b2cbe8
