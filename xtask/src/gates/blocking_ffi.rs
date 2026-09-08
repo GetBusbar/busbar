@@ -46,7 +46,8 @@
 //! literal can shift the depth. That is a false-POSITIVE risk — a spurious flag someone must look
 //! at — never a false negative, and the allowlist is how a real one gets recorded.
 
-use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
+use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::population::{self, Population};
 use crate::gates::{
     prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
 };
@@ -64,7 +65,7 @@ const CORE: &str = "crates/busbar-core/src";
 const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src", "crates/busbar-llm/src"];
 const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
-const SCAN_FLOOR: usize = 100;
+// THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
@@ -444,18 +445,27 @@ fn scan_roots(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn candidates(cx: &Ctx, roots: &[String]) -> Result<Vec<SourceFile>, String> {
-    let mut files = Vec::new();
+/// THE POPULATION IS DERIVED FROM THE TREE (see [`crate::gates::population`]), not from `roots`:
+/// the three fixed roots plus the two resolved plane homes opened 280 of the tree's 725 non-test
+/// `.rs` files, and `tokio::spawn(async move { … })` inside `busbar-substrate` was never read at
+/// all. `roots` is still resolved and still checked for existence, because a plane that cannot be
+/// located is its own refusal — it just no longer decides what gets opened.
+fn candidates(cx: &Ctx, roots: &[String]) -> Result<Population, String> {
+    let population = population::source_population(cx)?;
+    let mut unusable: Vec<String> = population
+        .drained
+        .iter()
+        .map(|c| format!("crates/{c}: has a src/ and contributed no file to the scan"))
+        .collect();
     for root in roots {
-        let spec = WalkSpec::new([root.clone()])
-            .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR])
-            .min_files(1);
-        files.extend(cx.walk(&spec).map_err(|e| format!("{root}: {e}"))?);
+        if !cx.exists(root) {
+            unusable.push(format!("{root}: not on disk"));
+        }
     }
-    files.sort_by_key(SourceFile::rel_str);
-    files.dedup_by_key(|f| f.rel_str());
-    Ok(files)
+    if !unusable.is_empty() {
+        return Err(unusable.join(" | "));
+    }
+    Ok(population)
 }
 
 impl Gate for BlockingFfiGate {
@@ -496,7 +506,7 @@ impl Gate for BlockingFfiGate {
                 ]);
             }
         };
-        let files = match candidates(cx, &roots) {
+        let population = match candidates(cx, &roots) {
             Ok(f) => f,
             Err(why) => {
                 return Verdict::of(vec![
@@ -516,20 +526,29 @@ impl Gate for BlockingFfiGate {
             }
         };
 
-        if files.len() < SCAN_FLOOR {
+        let files = population.files.clone();
+        if population.below_floor() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
                 Row::fail(
                     ROW_SCAN_FLOOR,
                     "the scan set is below its floor",
                     format!(
-                        "found {} non-test .rs file(s), expected >= {SCAN_FLOOR}. This gate scanned \
-                         (almost) nothing, so its verdict is meaningless — it is NOT a pass.",
-                        files.len()
+                        "{}. This gate scanned (almost) nothing, so its verdict is meaningless — \
+                         it is NOT a pass.",
+                        population.census()
                     ),
                 ),
-                Row::fail(ROW_SCAN_STATUS, "the scan did not run", DID_NOT_RUN.to_string()),
-                Row::fail(ROW_NO_INLINE, "the scan did not run", DID_NOT_RUN.to_string()),
+                Row::fail(
+                    ROW_SCAN_STATUS,
+                    "the scan did not run",
+                    DID_NOT_RUN.to_string(),
+                ),
+                Row::fail(
+                    ROW_NO_INLINE,
+                    "the scan did not run",
+                    DID_NOT_RUN.to_string(),
+                ),
             ]);
         }
 
@@ -568,7 +587,11 @@ impl Gate for BlockingFfiGate {
 
         Verdict::of(vec![
             Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
-            Row::pass(ROW_SCAN_FLOOR, "the scan set cleared its floor", CLEAN),
+            Row::pass(
+                ROW_SCAN_FLOOR,
+                "the scan set cleared its floor",
+                population.census(),
+            ),
             status,
             row_no_inline(&hits),
         ])
