@@ -135,6 +135,17 @@ pub enum LegError {
         /// The operation it asked for.
         op: &'static str,
     },
+    /// The body the leg carried is longer than one record may be.
+    ///
+    /// Its own variant and not a store failure, because nothing failed and nothing was attempted:
+    /// the ceiling is the architecture's, the kernel enforces it before the sink is touched, and a
+    /// caller told "the store is unavailable" would retry a write that can never succeed.
+    Oversize {
+        /// How many bytes the leg offered.
+        bytes: usize,
+        /// How many a record may hold.
+        cap: usize,
+    },
     /// The store refused or failed.
     Store(String),
     /// A capability leg asked whether a token was still live and the answer was NO.
@@ -226,24 +237,17 @@ impl RecordLegs {
         RecordLegs { store }
     }
 
-    /// Whether a schema declares an operation at all.
-    ///
-    /// Asked before every leg runs. The plane's own declaration is the answer, so a schema that
-    /// gains or loses an operation changes this without anything here being edited.
-    fn declares(schema: RecordSchemaId, op: &'static str) -> bool {
-        records::operations_for(schema).contains(&op)
-    }
-
     /// Run one leg.
     ///
-    /// Every arm is a single call onto the store. The dispatch is on the operation the plane's
-    /// route plan named, which is why an undeclared operation is a refusal here rather than a panic
-    /// or a silent no-op: the plan said something the schema does not offer, and the honest answer
-    /// is to say so.
+    /// The three checks — the schema is declared, the operation is within that schema's declared
+    /// operations, the body is within the record ceiling — are NOT made here. They are the kernel's,
+    /// in [`busbar_kernel::pump::run_record_leg`], and this method is the call onto it. There used to
+    /// be a second copy of the first check in this file, which is one copy too many for a rule the
+    /// architecture states once: a leg is validated in the one place a leg is run.
     ///
     /// # Errors
     ///
-    /// The schema does not declare the operation, or the store refused.
+    /// The schema does not declare the operation, the body is oversize, or the store refused.
     pub fn run(
         &self,
         schema: RecordSchemaId,
@@ -251,12 +255,25 @@ impl RecordLegs {
         key: &LegKey<'_>,
         body: &[u8],
     ) -> Result<LegResult, LegError> {
-        if !Self::declares(schema, op) {
-            return Err(LegError::UndeclaredOp {
-                schema: schema.as_str(),
-                op,
-            });
-        }
+        busbar_kernel::pump::run_record_leg(self, &Schemas, schema, op, &key.as_kernel(), body)
+            .map(LegResult::from)
+            .map_err(LegError::from)
+    }
+
+    /// One already-validated operation, mapped onto the published store protocol's eight
+    /// kind-tagged verbs.
+    ///
+    /// Every arm is a single call onto the store, and the mapping is BYTE-FOR-BYTE the one this file
+    /// has always made: the same verb, with the same arguments, in the same order. What moved out of
+    /// it is the validation, not the dispatch, because the dispatch is the vocabulary of this plane
+    /// and the published protocol underneath it — which is exactly the half a composition root owns.
+    fn perform_op(
+        &self,
+        schema: RecordSchemaId,
+        op: &'static str,
+        key: &LegKey<'_>,
+        body: &[u8],
+    ) -> Result<LegResult, LegError> {
         let kind = schema.as_str();
         let fail = |e: busbar_api::StoreError| LegError::Store(e.0);
         match op {
@@ -368,22 +385,113 @@ impl RecordLegs {
         key: &LegKey<'_>,
         body: &[u8],
     ) -> Result<Vec<LegResult>, LegError> {
-        let mut results = Vec::new();
-        for leg in legs {
-            if let DestinationFacts::PlaneRecord { schema, op } = leg.destination {
-                let result = self.run(schema, op, key, body)?;
-                // A DEAD TOKEN STOPS THE PLAN HERE, before any leg that would record something.
-                // The reading has to be ACTED ON and not merely recorded: a check whose answer is
-                // filed beside the write it was supposed to prevent is not a check, and that is what
-                // this leg's answer was until now — the plan asked, the store replied, and every
-                // later leg ran regardless.
-                if op == records::OP_VERIFY_LIVE && !result.live {
-                    return Err(LegError::TokenNotLive);
-                }
-                results.push(result);
-            }
+        busbar_kernel::pump::run_record_plan(self, &Schemas, legs, &key.as_kernel(), body)
+            .map(|answers| answers.into_iter().map(LegResult::from).collect())
+            .map_err(LegError::from)
+    }
+}
+
+/// This plane's record schemas and their operation tables, as the kernel reads them.
+///
+/// The declaration is the plane crate's and is not restated: a schema that gains or loses an
+/// operation changes what the kernel refuses without anything here being edited.
+struct Schemas;
+
+impl busbar_kernel::pump::RecordSchemas for Schemas {
+    fn schemas(&self) -> &'static [RecordSchemaId] {
+        records::RECORD_SCHEMAS
+    }
+
+    fn operations_for(&self, schema: RecordSchemaId) -> &'static [&'static str] {
+        records::operations_for(schema)
+    }
+}
+
+/// The published store protocol, presented to the kernel as the sink a record leg lands in.
+///
+/// This is the whole of what the composition root still owns on this path: the kernel validated the
+/// leg, and this turns the operation the plane spelled into the store verb that performs it.
+impl busbar_kernel::pump::RecordStore for RecordLegs {
+    fn perform(
+        &self,
+        schema: RecordSchemaId,
+        op: &'static str,
+        key: &busbar_kernel::pump::RecordKey<'_>,
+        body: &[u8],
+    ) -> Result<busbar_kernel::pump::RecordAnswer, String> {
+        let key = LegKey {
+            id: key.id,
+            parent: key.parent,
+            seq: key.seq,
+            ts: key.ts,
+            expires_at: key.expires_at,
+            terminal: key.terminal,
+        };
+        match self.perform_op(schema, op, &key, body) {
+            Ok(result) => Ok(busbar_kernel::pump::RecordAnswer {
+                body: result.body,
+                bodies: result.bodies,
+                // ONLY the liveness question answers the liveness question. Every other operation
+                // says nothing about a capability, and saying `Some(false)` for them would stop
+                // every plan on its first write.
+                live: (op == records::OP_VERIFY_LIVE).then_some(result.live),
+            }),
+            Err(LegError::Store(why)) => Err(why),
+            // Unreachable in practice: `perform_op` is only ever reached through the kernel's own
+            // validation, so the operation it is handed is one this schema declared. Carried as a
+            // sink failure rather than unwrapped, because a panic on the request path is never the
+            // right answer to a case that says the check above it stopped working.
+            Err(other) => Err(format!("{other:?}")),
         }
-        Ok(results)
+    }
+}
+
+impl LegKey<'_> {
+    /// The same key, in the kernel's spelling.
+    ///
+    /// Two structs and one conversion rather than one struct, because the kernel's is the one every
+    /// plane's record legs are carried on and this one is this file's own published shape, which the
+    /// plane's tests and its callers already name.
+    fn as_kernel(&self) -> busbar_kernel::pump::RecordKey<'_> {
+        busbar_kernel::pump::RecordKey {
+            id: self.id,
+            parent: self.parent,
+            seq: self.seq,
+            ts: self.ts,
+            expires_at: self.expires_at,
+            terminal: self.terminal,
+        }
+    }
+}
+
+impl From<busbar_kernel::pump::RecordAnswer> for LegResult {
+    fn from(answer: busbar_kernel::pump::RecordAnswer) -> Self {
+        LegResult {
+            body: answer.body,
+            bodies: answer.bodies,
+            // A leg that asked no liveness question is not a leg whose capability is dead: the
+            // absent answer reads as `false` here exactly as it always did, and the only reader of
+            // this field is the plan's own capability leg.
+            live: answer.live.unwrap_or(false),
+        }
+    }
+}
+
+impl From<busbar_kernel::pump::RecordRefusal> for LegError {
+    fn from(refusal: busbar_kernel::pump::RecordRefusal) -> Self {
+        use busbar_kernel::pump::RecordRefusal as R;
+        match refusal {
+            // A schema no plane declared and an operation no schema declares are the same answer to
+            // the caller — the plan named something that does not exist — and they were one variant
+            // here before the kernel told the two apart. Kept as one so the refusal this plane
+            // renders is unchanged.
+            R::UndeclaredSchema { schema, op } | R::UndeclaredOp { schema, op } => {
+                LegError::UndeclaredOp { schema, op }
+            }
+            R::Oversize { bytes, cap } => LegError::Oversize { bytes, cap },
+            R::Sink(why) => LegError::Store(why),
+            R::NotLive => LegError::TokenNotLive,
+        }
     }
 }
 
@@ -1178,7 +1286,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             ),
         };
         match self.bindings.records.run_plan(&self.draft.legs, &key, &[]) {
-            Err(LegError::UndeclaredOp { .. }) => {
+            // Both are the plan naming something it may not run — an operation the schema does not
+            // declare, or a body over the record ceiling — and both are refused before anything is
+            // written, which is why they share the reason the plane already rendered for the first.
+            Err(LegError::UndeclaredOp { .. } | LegError::Oversize { .. }) => {
                 return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
             }
             Err(LegError::Store(_)) => {
