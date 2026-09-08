@@ -28,6 +28,9 @@ rustls-pki-types = { workspace = true }
 ring = { workspace = true }
 
 [dev-dependencies]
+# The kind's shared conformance battery. A test edge, not a kind edge: the kind-isolation gate
+# scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit" }
 busbar-caps = { path = "../busbar-caps" }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
 rcgen = { workspace = true }

@@ -22,3 +22,8 @@ tracing = { workspace = true }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# The kind's shared conformance battery. A test edge, not a kind edge: the kind-isolation gate
+# scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit" }

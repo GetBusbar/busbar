@@ -468,6 +468,7 @@ name = "busbar-auth-admin-tokens"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-plugin-testkit",
 ]
 
 [[package]]
@@ -476,6 +477,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
+ "busbar-plugin-testkit",
  "serde",
  "serde_json",
 ]
@@ -588,6 +590,7 @@ name = "busbar-export-example-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-plugin-sdk",
+ "busbar-plugin-testkit",
  "serde_json",
 ]
 
@@ -603,6 +606,7 @@ name = "busbar-hook-test-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-plugin-sdk",
+ "busbar-plugin-testkit",
  "serde",
  "serde_json",
  "tracing",
@@ -614,6 +618,7 @@ version = "1.5.0"
 dependencies = [
  "async-trait",
  "busbar-api",
+ "busbar-plugin-testkit",
  "tokio",
 ]
 
@@ -873,6 +878,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
+ "busbar-plugin-testkit",
  "serde",
  "serde_json",
 ]
@@ -881,6 +887,7 @@ dependencies = [
 name = "busbar-secret-ref"
 version = "1.5.0"
 dependencies = [
+ "busbar-plugin-testkit",
  "jsonschema",
  "serde",
  "serde_json",
@@ -996,6 +1003,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "busbar-transport-http",
  "busbar-transport-tcp",
  "bytes",
@@ -1016,6 +1024,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "busbar-transport-tcp",
  "busbar-transport-tls",
  "bytes",
@@ -1041,6 +1050,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "busbar-transport-http",
  "futures",
  "memchr",
@@ -1053,6 +1063,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "futures",
  "tokio",
 ]
@@ -1063,6 +1074,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "futures",
  "tokio",
  "tokio-util",
@@ -1075,6 +1087,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "busbar-transport-tcp",
  "busbar-unit-transport-key",
  "futures",
@@ -1093,6 +1106,7 @@ version = "1.6.0"
 dependencies = [
  "busbar-contract",
  "busbar-contract-transport",
+ "busbar-plugin-testkit",
  "busbar-transport-http",
  "busbar-transport-tcp",
  "futures",
