@@ -2865,14 +2865,14 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
 
-/// `answered_by` is the same nine the integration pin measures against a running surface.
+/// `answered_by` is the same ten the integration pin measures against a running surface.
 ///
 /// The two halves of one claim, deliberately kept apart. `crates/busbar/tests/admin_verb_ownership.rs`
 /// serves the administrative surface and asks it which of the eighty-eight it has a route for; it
 /// cannot reach this function, because this crate mounts no library. This one can reach the function
-/// and cannot serve a router. So the integration pin measures the WORLD and names the nine it found,
+/// and cannot serve a router. So the integration pin measures the WORLD and names the ten it found,
 /// and this one checks that the production predicate — the one each crossing edits — names the same
-/// nine.
+/// ten.
 ///
 /// Written as the set rather than as a count for the reason the pin beside it gives: a count lets one
 /// verb leave the loop as another arrives.
@@ -2898,6 +2898,7 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
             "get_ledger_openapi_json",
             "get_ledger_reconciliation",
             "get_ledger_totals",
+            "get_models",
             "get_providers",
             "reseal_epoch_floor",
             "store_restore",
@@ -2905,9 +2906,9 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: seventy-nine of the eighty-eight are
+    // The complement is not empty and is not the whole table: seventy-eight of the eighty-eight are
     // still produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 79);
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 78);
 }
 
 // ── the crossed operations, asked of the composition ────────────────────────────────────────────
@@ -3002,20 +3003,30 @@ async fn get_through_the_composition(
     )
 }
 
-/// The crossed `GET /providers` is answered by the loop, in the bytes the retired handler produced.
+/// Each crossed topology read is answered by the loop, in the bytes the retired handler produced.
 ///
 /// This is the half the integration pin cannot make. The pin proves the SURFACE has no route left;
-/// only a composition can prove that something still answers, and answers the same thing. The body
-/// is compared as BYTES rather than as parsed JSON because that is what a client pinned: the field
+/// only a composition can prove that something still answers, and answers the same thing. The bodies
+/// are compared as BYTES rather than as parsed JSON because that is what a client pinned: the field
 /// order, the null and the absence of whitespace are all part of an answer the oracle compares cell
 /// for cell.
 #[cfg(feature = "root-admin")]
 #[tokio::test]
-async fn the_crossed_providers_read_is_answered_by_the_loop_in_the_retired_handlers_bytes() {
+async fn the_crossed_topology_reads_are_answered_by_the_loop_in_the_retired_handlers_bytes() {
     let router = a_composition_over_two_providers();
+
+    let (status, content_type, body) =
+        get_through_the_composition(&router, "/api/v1/admin/models").await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        body,
+        "{\"items\":[{\"model\":\"model-a\",\"provider\":\"prov-x\"},\
+         {\"model\":\"model-b\",\"provider\":\"prov-y\"}],\"next_cursor\":null}"
+    );
+
     let (status, content_type, body) =
         get_through_the_composition(&router, "/api/v1/admin/providers").await;
-
     assert_eq!(status, 200);
     assert_eq!(content_type.as_deref(), Some("application/json"));
     assert_eq!(

@@ -104,11 +104,11 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
     handle.abort();
 }
 
-/// The topology read surface THIS ROUTER STILL ANSWERS (`/api/v1/admin/pools`, `/models`) flows
-/// through the service and projects the pool/model views. Built on a two-lane, two-provider fixture
-/// so the pool membership and the per-lane provider are observable.
+/// The topology read surface THIS ROUTER STILL ANSWERS (`/api/v1/admin/pools`) flows through the
+/// service and projects the pool view. Built on a two-lane, two-provider fixture so the pool
+/// membership and each member's weight are observable.
 #[tokio::test]
-async fn test_admin_v1_topology_reads_pools_and_models() {
+async fn test_admin_v1_topology_read_pools() {
     use crate::test_support::LaneSpec;
     crate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -167,19 +167,10 @@ async fn test_admin_v1_topology_reads_pools_and_models() {
     let weight_a = members.iter().find(|m| m["model"] == "model-a").unwrap()["weight"].as_u64();
     assert_eq!(weight_a, Some(3), "model-a weight projected");
 
-    let models = get("/api/v1/admin/models".into()).await;
-    let m_items = models["items"].as_array().unwrap();
-    assert!(m_items
-        .iter()
-        .any(|m| m["model"] == "model-a" && m["provider"] == "prov-x"));
-    assert!(m_items
-        .iter()
-        .any(|m| m["model"] == "model-b" && m["provider"] == "prov-y"));
-
-    // THE `/providers` THIRD OF THIS TEST MOVED. `GET /providers` crossed to the composition root's
-    // loop in 1.6.0's admin Cut 1, so this router has no route for it and the projection it renders
-    // is asked of the composition instead — see the root's `units_admin` tests. The lane-count
-    // projection both readings share lives once, in the substrate.
+    // THE `/models` AND `/providers` THIRDS OF THIS TEST MOVED. Both crossed to the composition
+    // root's loop in 1.6.0's admin Cut 1, so this router has no route for either and the answers
+    // they render are asked of the composition instead — see the root's `units_admin` tests. The
+    // lane projections both readings share live once, in the substrate.
 
     handle.abort();
 }
@@ -1083,14 +1074,18 @@ pools:
         .await
         .unwrap();
     assert_eq!(resp.status().as_u16(), 200, "{:?}", resp.text().await);
-    let models: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/models")))
+    // READ THROUGH THE EFFECTIVE-CONFIG SNAPSHOT, not through `GET /models`: that operation crossed
+    // to the composition root's loop in 1.6.0's admin Cut 1 and this router no longer mounts it. The
+    // claim is unchanged — the `models` member here is the SAME lane projection, off the same
+    // substrate fact — and it is now read where this crate still produces it.
+    let config: serde_json::Value = admin(client.get(format!("http://{addr}/api/v1/admin/config")))
         .send()
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
-    let names: Vec<&str> = models["items"]
+    let names: Vec<&str> = config["models"]
         .as_array()
         .unwrap()
         .iter()
