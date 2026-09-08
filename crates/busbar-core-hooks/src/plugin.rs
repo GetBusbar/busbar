@@ -20,7 +20,7 @@ use std::sync::Arc;
 /// closure is a pure projection/parse over the request or the reply.
 ///
 /// [`DlopenPolicy`]: busbar_plugin_loader::DlopenPolicy
-pub(crate) fn projectors() -> Arc<HookProjectors> {
+pub fn projectors() -> Arc<HookProjectors> {
     Arc::new(HookProjectors {
         // decide: the full request projection (candidates + context). Byte-identical to what the
         // socket/webhook transports sent — `wire::build` serialized to an owned Value.

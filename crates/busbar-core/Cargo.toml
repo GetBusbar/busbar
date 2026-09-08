@@ -31,6 +31,11 @@ busbar-api = { path = "../api" }
 # and the capped upstream-body read) DOWN into this crate; core re-exports each unchanged so the
 # in-core call sites keep naming `crate::…`. Substrate never depends back on core.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE HOOK POLICY ENGINE, extracted (owner ruling 2026-09-08). Core is now a CALLER of it: `state`,
+# `appbuild`, `admin::v1::service` and the test fixture reach it through `crate::hooks`, which is a
+# re-export. The edge points core -> hooks and never back, which is what makes it checkable that the
+# engine names no plane, no dialect and no transport.
+busbar-core-hooks = { path = "../busbar-core-hooks", default-features = false }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.
@@ -129,7 +134,7 @@ rustls-pki-types = { workspace = true }
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-hooks-ranking = ["dep:busbar-hooks-ranking"]
+hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-core-hooks/hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -227,6 +232,14 @@ test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
 timing = ["busbar-timing/timing"]
 
 [dev-dependencies]
+# The plugin TARBALL fixture (`loader_fixtures`): a scratch plugins dir, a manifest at the loader's
+# own supported abi, and an unsigned-but-valid archive. Shared with the hook engine's battery, which
+# dlopens a real plugin from its own crate — one fixture, so the two batteries can never disagree
+# about what the loader accepts.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["loader-fixtures"] }
+# The hook engine's transport-publish READINESS signal, which this crate's admin battery waits on
+# rather than betting a wall clock on the dynamic linker. Dev-only: production never links it.
+busbar-core-hooks = { path = "../busbar-core-hooks", features = ["test-support"] }
 # THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
 # (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
 # former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /

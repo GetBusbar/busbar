@@ -140,7 +140,7 @@ use super::*;
 // `RoutingRequest`/`RoutingContext` are the api projection types the request-side `build` takes; with
 // that builder now homed in `busbar_substrate::hooks::wire` they are no longer imported into the
 // reply-side `wire` module `super::*` re-exports, so name them at their (core-re-exported) home.
-use crate::hooks::{CallerIdentity, PromptProjection, RoutingContext, RoutingRequest};
+use crate::{CallerIdentity, PromptProjection, RoutingContext, RoutingRequest};
 
 fn cand(idx: usize, tags: &'static [String]) -> Candidate<'static> {
     Candidate {
