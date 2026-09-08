@@ -2865,14 +2865,14 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
 
-/// `answered_by` is the same thirteen the integration pin measures against a running surface.
+/// `answered_by` is the same fifteen the integration pin measures against a running surface.
 ///
 /// The two halves of one claim, deliberately kept apart. `crates/busbar/tests/admin_verb_ownership.rs`
 /// serves the administrative surface and asks it which of the eighty-eight it has a route for; it
 /// cannot reach this function, because this crate mounts no library. This one can reach the function
-/// and cannot serve a router. So the integration pin measures the WORLD and names the thirteen it
+/// and cannot serve a router. So the integration pin measures the WORLD and names the fifteen it
 /// found, and this one checks that the production predicate — the one each crossing edits — names
-/// the same thirteen.
+/// the same fifteen.
 ///
 /// Written as the set rather than as a count for the reason the pin beside it gives: a count lets one
 /// verb leave the loop as another arrives.
@@ -2902,6 +2902,8 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
             "get_ledger_reconciliation",
             "get_ledger_totals",
             "get_models",
+            "get_plugins",
+            "get_pools",
             "get_providers",
             "reseal_epoch_floor",
             "store_restore",
@@ -2909,9 +2911,9 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: seventy-five of the eighty-eight are
+    // The complement is not empty and is not the whole table: seventy-three of the eighty-eight are
     // still produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 75);
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 73);
 }
 
 // ── the crossed operations, asked of the composition ────────────────────────────────────────────
@@ -3226,6 +3228,202 @@ async fn the_crossed_info_read_is_answered_by_the_loop_in_the_retired_handlers_b
     assert_eq!(body, expected);
 }
 
+/// One node, its administrative surface, the loop in front of it, and ONE POOL over two lanes.
+///
+/// The pool is the whole point: the topology read that crossed in Cut 2 answers pools and their
+/// members, and a fixture with no pool would compare the empty page against itself. The weights
+/// differ so a renderer that wrote the same one twice, or read the members in the wrong order, is
+/// visible rather than plausible.
+#[cfg(feature = "root-admin")]
+fn a_composition_over_a_pool() -> axum::Router {
+    use busbar_core::test_support::{LaneSpec, TestApp};
+
+    busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
+    let node = TestApp::new()
+        .admin_chain(vec![])
+        .lane(LaneSpec::new("model-a", "anthropic", "http://127.0.0.1:1/").provider("prov-x"))
+        .lane(LaneSpec::new("model-b", "anthropic", "http://127.0.0.1:1/").provider("prov-y"))
+        .pool("mypool", &[(0, 3), (1, 1)])
+        .build();
+    let (_data, admin, handle) =
+        busbar_core::build_split_routers_with_limits(node, 1 << 20, 0, false);
+    mount(
+        admin,
+        busbar_kernel::teller::Kernel::new(),
+        1 << 20,
+        move |dispatch| {
+            crate::root::kernel::ProductionUnits::admin_only(dispatch)
+                .with_admin_facts(Arc::new(HandleFacts::new(Arc::clone(&handle))))
+        },
+    )
+}
+
+/// The crossed `GET /pools` is answered by the loop, in the retired handler's bytes.
+///
+/// THE SUMMARY HALF. The members are in the operator's own order and the pools are in name order,
+/// which is the split the projection makes and the one a hand-written renderer is most likely to
+/// get backwards — so the fixture's two members are declared heaviest-first, and a listing that
+/// sorted them would show up here.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_crossed_pool_topology_read_is_answered_by_the_loop_in_the_retired_handlers_bytes() {
+    let router = a_composition_over_a_pool();
+    let (status, content_type, body) =
+        get_through_the_composition(&router, "/api/v1/admin/pools").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        body,
+        "{\"items\":[{\"name\":\"mypool\",\"members\":[\
+         {\"model\":\"model-a\",\"weight\":3},\
+         {\"model\":\"model-b\",\"weight\":1}]}],\"next_cursor\":null}"
+    );
+
+    // `detail=false` IS THE SUMMARY, not a refusal. The flag is strict about values it does not
+    // know and permissive about the one that means "no" — and the two are easy to collapse.
+    let (status, _, explicit) =
+        get_through_the_composition(&router, "/api/v1/admin/pools?detail=false").await;
+    assert_eq!(status, 200);
+    assert_eq!(explicit, body, "detail=false is the plain listing");
+}
+
+/// The crossed `GET /pools?detail=true` is answered by the loop, in the retired handler's bytes.
+///
+/// THE DETAIL HALF, and the only crossed answer that carries a number that is not an integer. The
+/// fixture's lanes have taken no dispatch, so every reading is its own honest zero and the latency
+/// is `null` — which is the byte that matters here, because `null` and `0.0` are different
+/// statements and a renderer that folded them would be telling an operator a lane answered
+/// instantly rather than that it has never answered.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_crossed_pool_topology_read_carries_the_live_health_when_detail_is_asked() {
+    let router = a_composition_over_a_pool();
+    let (status, content_type, body) =
+        get_through_the_composition(&router, "/api/v1/admin/pools?detail=true").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        body,
+        "{\"items\":[{\"name\":\"mypool\",\"members\":[\
+         {\"model\":\"model-a\",\"weight\":3,\"usable\":true,\"cooldown_remaining_seconds\":0,\
+         \"available_concurrency\":10,\"inflight\":0,\"latency_ms\":null,\"ok\":0,\"err\":0,\
+         \"dead\":false,\"trip_count\":0,\"last_trip_at\":null},\
+         {\"model\":\"model-b\",\"weight\":1,\"usable\":true,\"cooldown_remaining_seconds\":0,\
+         \"available_concurrency\":10,\"inflight\":0,\"latency_ms\":null,\"ok\":0,\"err\":0,\
+         \"dead\":false,\"trip_count\":0,\"last_trip_at\":null}]}],\"next_cursor\":null}"
+    );
+}
+
+/// An unrecognized `?detail` value is REFUSED by the loop, in the retired handler's envelope.
+///
+/// The strictness crossed with the operation and it is not decoration: a flag that was silently
+/// ignored would answer a dashboard asking for health with a summary it cannot tell apart from one,
+/// which is worse than a refusal. `?detail` with no value at all is the same refusal, because a
+/// present key with an empty value is what the retired extractor made of it — and a query reader
+/// that treated a bare key as an absent one would quietly turn a typo into a different answer.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn an_unrecognised_detail_flag_is_refused_by_the_loop_the_way_it_always_was() {
+    let router = a_composition_over_a_pool();
+
+    for target in [
+        "/api/v1/admin/pools?detail=maybe",
+        "/api/v1/admin/pools?detail",
+        "/api/v1/admin/pools?detail=",
+        // LAST WINS, because the retired extractor collected the pairs into a map. A reader that
+        // stopped at the first occurrence would serve the summary for this request.
+        "/api/v1/admin/pools?detail=true&detail=maybe",
+    ] {
+        let (status, content_type, body) = get_through_the_composition(&router, target).await;
+        assert_eq!(status, 400, "{target}");
+        assert_eq!(
+            content_type.as_deref(),
+            Some("application/json"),
+            "{target}"
+        );
+        assert_eq!(
+            body,
+            "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid `detail`: expected true|false\"}}",
+            "{target}"
+        );
+    }
+}
+
+/// The crossed `GET /plugins` is answered by the loop, in the retired handler's bytes.
+///
+/// THE COMPILED-IN KINDS, which is what a fixture can carry without a plugins directory: the
+/// always-present weighted floor, whatever hook plugins this binary was built with, and the auth
+/// modules the build proof names. What that pins is the row shape where every optional field is
+/// ABSENT — the nine that are omitted and the two that are written as `null` — which is the half of
+/// the shape a populated row cannot show. The other half is pinned against the retired view's own
+/// declaration, in this file's sibling renderer proof.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_crossed_plugin_catalog_is_answered_by_the_loop_in_the_retired_handlers_bytes() {
+    let router = a_composition_over_two_providers();
+    let (status, content_type, body) =
+        get_through_the_composition(&router, "/api/v1/admin/plugins?type=hooks").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+
+    // The compiled-in hook set is a property of the BUILD, so the expected page is composed from
+    // the same proof the node reports rather than from a literal list this file would have to keep
+    // in step with a feature flag.
+    let node = a_node_over(&[]);
+    let (_, hook_plugins, _) = node.compiled_in_proof();
+    let row = |name: &str| {
+        format!(
+            "{{\"name\":\"{name}\",\"type\":\"hooks\",\"loader\":\"compiled-in\",\
+             \"active\":null,\"target\":null,\"has_schema\":false}}"
+        )
+    };
+    let mut rows = vec![row("weighted")];
+    rows.extend(hook_plugins.iter().map(|name| row(name)));
+    assert_eq!(
+        body,
+        format!("{{\"items\":[{}],\"next_cursor\":null}}", rows.join(","))
+    );
+}
+
+/// A plugin kind this node keeps no catalog for is REFUSED by the loop, in the retired handler's
+/// envelope — and an ABSENT kind is the same refusal.
+///
+/// The two are one claim: the retired handler defaulted a missing parameter to the empty string and
+/// let the catalog refuse it by name, so a caller who asked for nothing and a caller who asked for
+/// nonsense have always read the same sentence. A query reader that treated an absent parameter as a
+/// special case would have to invent a second one.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_plugin_kind_this_node_keeps_no_catalog_for_is_refused_by_the_loop() {
+    let router = a_composition_over_two_providers();
+
+    for (target, named) in [
+        ("/api/v1/admin/plugins?type=nope", "nope"),
+        ("/api/v1/admin/plugins", ""),
+        ("/api/v1/admin/plugins?type=", ""),
+    ] {
+        let (status, content_type, body) = get_through_the_composition(&router, target).await;
+        assert_eq!(status, 400, "{target}");
+        assert_eq!(
+            content_type.as_deref(),
+            Some("application/json"),
+            "{target}"
+        );
+        assert_eq!(
+            body,
+            format!(
+                "{{\"error\":{{\"code\":\"invalid_request\",\"message\":\"unknown plugin type \
+                 `{named}`: expected `auth`, `hooks`, `secret`, or `store`\"}}}}"
+            ),
+            "{target}"
+        );
+    }
+}
+
 /// PUT-THEN-GET ACROSS THE TWO HALVES: the write the surface underneath still owns is visible to the
 /// read the loop now owns, on the very next request.
 ///
@@ -3346,7 +3544,9 @@ async fn a_crossed_read_answers_off_the_generation_the_last_apply_left_current()
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys() {
-    let router = a_composition_over_two_providers();
+    // OVER A POOL, because one of the crossed reads is the pool topology and a fixture with no pool
+    // would serve an empty page — which the item rule below correctly refuses to call a proof.
+    let router = a_composition_over_a_pool();
     let (status, _, document) =
         get_through_the_composition(&router, "/api/v1/admin/openapi.json").await;
     assert_eq!(status, 200, "the composition serves its own document");
@@ -3376,6 +3576,28 @@ async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys()
         names.sort();
         names
     };
+    // The property names one schema declares as REQUIRED, sorted.
+    //
+    // A SECOND LIST, because equality between the served keys and the declared properties is the
+    // wrong rule for a shape with optional members and was only ever the right one by accident: every
+    // read that crossed before Cut 2 happened to declare all of its fields required. The plugin
+    // catalog does not — nine of its fifteen fields are omitted when absent, and always have been —
+    // so the rule is stated as what schema conformance actually is: no key that is not declared, and
+    // no required property missing. Where a schema declares everything required, that is the same
+    // equality as before.
+    let required = |schema: &serde_json::Value| -> Vec<String> {
+        let mut names: Vec<String> = schema["required"]
+            .as_array()
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|name| name.as_str().map(ToString::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
     // The key names one JSON object carries, sorted.
     let keys = |value: &serde_json::Value| -> Vec<String> {
         let mut names: Vec<String> = value
@@ -3387,6 +3609,23 @@ async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys()
         names.sort();
         names
     };
+    // Assert one served object against the schema declared for it.
+    let conforms = |what: &str, value: &serde_json::Value, schema: &serde_json::Value| {
+        let served = keys(value);
+        let declared = properties(schema);
+        for name in &served {
+            assert!(
+                declared.contains(name),
+                "{what}: the loop serves `{name}`, which the document does not declare"
+            );
+        }
+        for name in required(schema) {
+            assert!(
+                served.contains(&name),
+                "{what}: the document declares `{name}` required and the loop does not serve it"
+            );
+        }
+    };
 
     assert!(
         !CROSSED_VERBS.is_empty(),
@@ -3397,8 +3636,16 @@ async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys()
             .into_iter()
             .find(|row| kernel_verb(row) == Some(*verb))
             .expect("a crossed verb is a row of the plane's table");
-        let (status, _, body) = get_through_the_composition(&router, row.template).await;
-        assert_eq!(status, 200, "{} answers the composition", row.template);
+        // THE QUERY AN OPERATION NEEDS TO BE ASKED AT ALL. One of the crossed reads takes its
+        // subject in the query string — a catalog is per KIND by contract, and asking for no kind is
+        // a refusal rather than a listing — so the target is the row's template plus whatever that
+        // operation requires to have a 200 to compare. Everything else is asked exactly as declared.
+        let target = match verb {
+            KernelVerb::GetPlugins => format!("{}?type=hooks", row.template),
+            _ => row.template.to_string(),
+        };
+        let (status, _, body) = get_through_the_composition(&router, &target).await;
+        assert_eq!(status, 200, "{target} answers the composition");
         let body: serde_json::Value =
             serde_json::from_str(&body).expect("the crossed body is JSON");
 
@@ -3406,12 +3653,7 @@ async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys()
             &document["paths"][row.template]["get"]["responses"]["200"]["content"]
                 ["application/json"]["schema"],
         );
-        assert_eq!(
-            keys(&body),
-            properties(&declared),
-            "{}: the body the loop serves and the schema the document declares carry different keys",
-            row.template
-        );
+        conforms(row.template, &body, &declared);
 
         // WHEN THE ENVELOPE IS A PAGE, the shape claim is only half made until the ITEM is compared
         // too — an envelope whose items were the wrong shape would pass the line above. Not every
@@ -3429,13 +3671,7 @@ async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys()
             row.template
         );
         for item in items {
-            assert_eq!(
-                keys(item),
-                properties(&item_schema),
-                "{}: an item the loop serves and the item schema the document declares carry \
-                 different keys",
-                row.template
-            );
+            conforms(row.template, item, &item_schema);
         }
     }
 }

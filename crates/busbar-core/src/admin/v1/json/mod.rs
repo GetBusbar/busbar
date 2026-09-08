@@ -75,7 +75,13 @@ impl AdminTransport for JsonV1 {
             // through neutral accessors and renders the bytes; nothing admin-shaped travels to do
             // it. What is left on the path is a refusal — see `crossed()`.
             .route("/info", crossed())
-            .route("/pools", get(list_pools))
+            // `/pools` CROSSED to the loop in 1.6.0's admin Cut 2, both halves of it: the summary
+            // topology and the `?detail=true` topology-with-health are one operation, and one
+            // crossing takes all of it. The `pools` member of the effective-config read is still
+            // built here, off the very same substrate projection, which is why the two cannot
+            // disagree. `/pools/{name}` did NOT cross — it is its own operation — and it reads the
+            // node's health through the same seam the loop does.
+            .route("/pools", crossed())
             .route("/pools/{name}", get(get_pool))
             // `/models` AND `/providers` CROSSED to the loop in 1.6.0's admin Cut 1: the
             // composition root reads the node's routing tables through its own neutral seam and
@@ -124,7 +130,11 @@ impl AdminTransport for JsonV1 {
                 "/overlay/{section}",
                 axum::routing::delete(reset_overlay_section),
             )
-            .route("/plugins", get(list_plugins).post(install_plugin))
+            // The `GET` on `/plugins` CROSSED to the loop in 1.6.0's admin Cut 2; the `POST` beside
+            // it — the INSTALL — did not, and stays here. The same shape `/admin-auth` has carried
+            // since its own read crossed: one path, one method answered by each half, and an `Allow`
+            // that truthfully names both.
+            .route("/plugins", crossed().post(install_plugin))
             .route(PATH_PLUGINS_INSPECT, post(inspect_plugin))
             .route("/plugins/reload", post(reload_plugins))
             .route("/plugins/rollback", post(rollback_plugin))

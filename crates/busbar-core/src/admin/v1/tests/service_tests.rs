@@ -647,21 +647,29 @@ fn catalog_repeat_gets_reuse_the_cached_scan() {
     );
 }
 
-/// `list_plugins("store")`'s catalog read — the fingerprint I/O AND, on a cold cache, the full
-/// tarball scan — must not park the single worker of a `worker_threads = 1` multi-thread
-/// runtime. Mirrors `admin::audit`'s `valve_write_through_does_not_park_the_reactor` proof
-/// shape, with one deliberate difference: that precedent proves its point with a DETERMINISTIC
-/// delay (`SlowAuditStore` sleeps a fixed 500ms), not real I/O volume — this test originally
-/// relied on 2000 real signed tarballs being "genuinely slow… on ordinary hardware", but
-/// inline-vs-offloaded changes only WHETHER the scan blocks other work, never how long the scan
-/// itself takes, so on fast-enough CI hardware the real scan could finish under the 300ms
-/// threshold even with the bug present (`spawn_blocking` removed), silently defeating the
-/// proof. `catalog_scan_test_hooks::set_delay` injects a fixed, hardware-independent minimum
-/// scan duration well above the threshold, so the distinction is observable regardless of how
-/// fast the machine is; the 2000 real tarballs stay (smaller count would do for timing alone)
-/// purely to keep the `page.items.len() > 2000` correctness assertion meaningful.
+/// The catalog read — the fingerprint I/O AND, on a cold cache, the full tarball scan — must not
+/// park the single worker of a `worker_threads = 1` multi-thread runtime.
+///
+/// THE OFFLOAD MOVED, AND THE CLAIM DID NOT. It used to live inside this crate, as a
+/// `spawn_blocking` an `async fn` performed for its caller; the catalog LISTING crossed to the
+/// composition root's loop in 1.6.0's admin Cut 2 and every remaining caller now reaches the scan
+/// from a blocking thread it is already on. So the offload is the CALLER's, and what this test
+/// proves is the property that survives either arrangement: a scan running on a blocking thread
+/// leaves the reactor free. The call is made the way its callers make it — off the reactor — and the
+/// 50ms sleep is what would have been starved if it were not.
+///
+/// Mirrors `admin::audit`'s `valve_write_through_does_not_park_the_reactor` proof shape, with one
+/// deliberate difference: that precedent proves its point with a DETERMINISTIC delay (`SlowAuditStore`
+/// sleeps a fixed 500ms), not real I/O volume — this test originally relied on 2000 real signed
+/// tarballs being "genuinely slow… on ordinary hardware", but inline-vs-offloaded changes only
+/// WHETHER the scan blocks other work, never how long the scan itself takes, so on fast-enough CI
+/// hardware the real scan could finish under the 300ms threshold even with the bug present, silently
+/// defeating the proof. `catalog_scan_test_hooks::set_delay` injects a fixed, hardware-independent
+/// minimum scan duration well above the threshold, so the distinction is observable regardless of how
+/// fast the machine is; the 2000 real tarballs stay (a smaller count would do for timing alone)
+/// purely to keep the row-count correctness assertion meaningful.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn list_plugins_store_scan_does_not_park_the_reactor() {
+async fn the_catalog_scan_does_not_park_the_reactor() {
     let dir = tmp_plugins_dir("no-park");
     let key = SigningKey::from_bytes(&[2u8; 32]);
     for i in 0..2000 {
@@ -690,33 +698,39 @@ async fn list_plugins_store_scan_does_not_park_the_reactor() {
         catalog_scan_test_hooks::set_delay(dir, std::time::Duration::from_millis(400));
 
     let scanner =
-        tokio::spawn(async move { svc.list_plugins("store").await.expect("catalog read ok") });
+        tokio::task::spawn_blocking(move || svc.plugin_catalog("store").expect("catalog read ok"));
     let start = std::time::Instant::now();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let elapsed = start.elapsed();
-    let page = scanner.await.unwrap();
+    let rows = scanner.await.unwrap();
     assert!(
         elapsed < std::time::Duration::from_millis(300),
         "a 50ms sleep took {elapsed:?} — the catalog scan parked the reactor"
     );
     assert!(
-        page.items.len() > 2000,
+        rows.len() > 2000,
         "the scan actually ran and produced rows: got {}",
-        page.items.len()
+        rows.len()
     );
 }
 
-/// `store_plugin_catalog_async`'s `match` on
-/// `spawn_blocking`'s result has an `Err(join_err)` arm for when the CLOSURE ITSELF PANICS (not
-/// just returns an error) — it logs and falls back to the compiled-in `memory`-only row rather
-/// than propagating the panic to the caller. That arm was untested: nothing in the suite ever
-/// made the blocking closure actually panic. `catalog_scan_test_hooks::set_panic` injects a
-/// real, deliberate panic into the scan (a genuine unwind on the `spawn_blocking` thread,
-/// exactly the scenario the fallback exists for) rather than exploiting some unrelated
-/// malformed-input defect, so this proves the fallback ARM, not an accidental bug elsewhere.
-#[tokio::test]
-async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
-    let dir = tmp_plugins_dir("panic-fallback");
+/// A scan that PANICS unwinds its caller, and no answer is invented for it.
+///
+/// THE FALLBACK WENT WITH THE HOP THAT NEEDED IT. There used to be a `spawn_blocking` between the
+/// caller and the scan, and a join error was the one way a panic could reach the caller as a VALUE
+/// rather than as an unwind — so the arm that caught it fell soft to the compiled-in row. The hop is
+/// gone: every caller of the catalog is already on a blocking thread and calls the scan directly, so
+/// a panicking scan unwinds that caller exactly as every other blocking step on the same path does,
+/// and there is no join to inspect and nothing to fall back FROM.
+///
+/// The claim is therefore the opposite of the one it replaces, and it is worth pinning for the same
+/// reason: a soft fallback that came BACK — a scan panic quietly answered with a one-row catalog —
+/// would be this crate inventing an answer for a defect, on a read whose whole job is to say what is
+/// installed.
+#[test]
+#[should_panic(expected = "catalog_scan_test_hooks")]
+fn a_panicking_catalog_scan_unwinds_rather_than_inventing_an_answer() {
+    let dir = tmp_plugins_dir("panic-unwinds");
     let app = TestApp::new()
         .plugins_dir(dir.clone())
         .plugins_cfg(unsigned_ok_posture())
@@ -727,58 +741,60 @@ async fn store_plugin_catalog_async_survives_a_spawn_blocking_panic() {
     // scan of a different directory is affected by this panic.
     let _panic_guard = catalog_scan_test_hooks::set_panic(dir);
 
-    let page = svc
-        .list_plugins("store")
-        .await
-        .expect("a panicking scan must fall back gracefully, never propagate as an error");
-    assert_eq!(
-        page.items.len(),
-        1,
-        "the panic fallback must be exactly the one compiled-in `memory` row: {:?}",
-        page.items
-    );
-    assert_eq!(page.items[0].name, "memory");
-    assert_eq!(page.items[0].loader, "compiled-in");
+    let _ = svc.plugin_catalog("store");
 }
 
-/// A caller that cannot even ACQUIRE
-/// `CATALOG_SCAN_GATE` within `CATALOG_SCAN_GATE_WAIT` (a scan holding the gate that never
-/// returns, e.g. a stale/hung `plugins_dir`
-/// mount) must be answered with a clear, retryable error rather than hang forever. Runs on
-/// PAUSED virtual time (`start_paused = true` + `tokio::time::advance`) so the test proves the
-/// bound without a real multi-second sleep.
-#[tokio::test(start_paused = true)]
-async fn store_plugin_catalog_async_times_out_when_gate_is_held() {
+/// A caller that cannot even ACQUIRE `CATALOG_SCAN_GATE` within `CATALOG_SCAN_GATE_WAIT` (a scan
+/// holding the gate that never returns, e.g. a stale/hung `plugins_dir` mount) must be answered with
+/// a clear, retryable condition rather than hang forever.
+///
+/// THE BOUND SURVIVED THE `async fn` THAT USED TO CARRY IT. The catalog read crossed to the
+/// composition root's loop, and the entry into the scan became synchronous with it — so the gate is
+/// a `Condvar` now rather than a `tokio` mutex, and the wait is taken on whatever thread the caller
+/// is already on. What is proved is unchanged: a caller that cannot even start the scan is refused.
+///
+/// The gate is PER DIRECTORY, so this test's held gate starves nothing else in this file, and the
+/// wait it holds it against is shortened for that same directory — five real seconds of hanging is
+/// the one part of the claim nothing is learned from waiting out.
+#[test]
+fn the_catalog_scan_times_out_when_the_gate_is_held() {
     let dir = tmp_plugins_dir("gate-timeout");
     let app = TestApp::new()
-        .plugins_dir(dir)
+        .plugins_dir(dir.clone())
         .plugins_cfg(unsigned_ok_posture())
         .build();
     let svc = AdminService::new(app);
 
+    let _short =
+        catalog_scan_test_hooks::set_gate_wait(dir.clone(), std::time::Duration::from_millis(50));
     // Hold the gate ourselves for the life of this test — standing in for a scan that started
     // and never came back (the wedged-mount scenario), which is exactly what a caller queued
-    // behind `CATALOG_SCAN_GATE.lock().await` with no timeout would see forever.
-    let _held = CATALOG_SCAN_GATE.lock().await;
+    // behind the gate with no timeout would see forever.
+    let _held = catalog_scan_gate(&dir)
+        .acquire(std::time::Duration::from_secs(5))
+        .expect("a fresh directory's gate is free");
 
-    let call = tokio::spawn(async move { svc.list_plugins("store").await });
-    tokio::time::advance(CATALOG_SCAN_GATE_WAIT + std::time::Duration::from_millis(1)).await;
-    let result = call.await.expect("caller task must not panic");
+    let result = svc.plugin_catalog("store");
     assert!(
-        matches!(result, Err(AdminError::Unavailable(_))),
+        matches!(
+            result,
+            Err(busbar_substrate::facts::CatalogRefusal::Unavailable(_))
+        ),
         "a caller that cannot acquire the gate within the wait bound must get a clear, \
-             retryable error instead of hanging: {result:?}"
+             retryable refusal instead of hanging: {result:?}"
     );
 }
 
-/// The single-flight bound: N concurrent
-/// `list_plugins("store")` callers that ALL miss the cache at the same instant (the very first
-/// reads against a freshly-built `App`, before any entry exists — e.g. right after boot or a
-/// config reload) must cost exactly ONE real `inventory_tarballs` scan, not one per caller. Every
-/// caller still gets a correct, complete catalog — single-flighting must never mean 9 of the 10
+/// The single-flight bound: N concurrent catalog callers that ALL miss the cache at the same instant
+/// (the very first reads against a freshly-built `App`, before any entry exists — e.g. right after
+/// boot or a config reload) must cost exactly ONE real `inventory_tarballs` scan, not one per caller.
+/// Every caller still gets a correct, complete catalog — single-flighting must never mean 9 of the 10
 /// see a truncated or stale result.
-#[tokio::test]
-async fn list_plugins_store_single_flights_concurrent_misses() {
+///
+/// The callers run on the blocking pool because that is where their real counterparts run: the
+/// crossed read is answered on the thread the administrative mount hands a unit to.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_catalog_single_flights_concurrent_misses() {
     let dir = tmp_plugins_dir("single-flight");
     let lib = b"junk lib bytes";
     let mut m = test_manifest("acme-store-sf", "sfstore", "acme", "1.0.0");
@@ -794,17 +810,16 @@ async fn list_plugins_store_single_flights_concurrent_misses() {
     let mut tasks = Vec::new();
     for _ in 0..10 {
         let app = app.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.push(tokio::task::spawn_blocking(move || {
             AdminService::new(app)
-                .list_plugins("store")
-                .await
+                .plugin_catalog("store")
                 .expect("catalog read ok")
         }));
     }
     for t in tasks {
-        let page = t.await.unwrap();
+        let rows = t.await.unwrap();
         assert!(
-            page.items.iter().any(|p| p.name == "acme-store-sf"),
+            rows.iter().any(|p| p.name == "acme-store-sf"),
             "every one of the 10 concurrent callers must see the real (not truncated) catalog"
         );
     }

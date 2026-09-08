@@ -27,9 +27,10 @@
 
 use std::sync::Arc;
 
+use busbar_substrate_values::facts::{CatalogRefusal, LaneHealth, PluginFacts};
 use busbar_unit_verbs::KernelVerb;
 
-use super::{json_string, AdminAnswer};
+use super::{json_string, AdminAnswer, AdminRequest};
 
 // ── the node's own facts, read at request time ──────────────────────────────────────────────────
 
@@ -102,6 +103,39 @@ pub trait NodeFacts: Send + Sync {
     /// this trait: this answer names the config version AND the counts that version produced, and a
     /// reader that sampled them separately could publish a version that never had those tables.
     fn node_info(&self) -> NodeInfo;
+
+    /// Every configured pool with its member models and their weights, pools in name order and
+    /// members in the operator's own order.
+    ///
+    /// The SUMMARY half of the pool topology read. Its detail half is a method of its own rather
+    /// than a flag on this one, because they are two different reads of the node: this one touches
+    /// only the routing tables, and the other walks the node's live health cells. A caller asking
+    /// for the summary must not pay for the health, and a seam that answered both at once would
+    /// make it.
+    fn pools(&self) -> Vec<(String, Vec<(String, u32)>)>;
+
+    /// Every configured pool with each member's LIVE health, pools in name order.
+    ///
+    /// The DETAIL half. See [`busbar_substrate_values::facts::LaneHealth`] for what one row carries
+    /// and which of its readings are per-pool rather than per-lane; the seam carries the rows as the
+    /// node produced them and decides nothing about either.
+    fn pool_health(&self) -> Vec<(String, Vec<LaneHealth>)>;
+
+    /// This node's plugin catalog for one KIND, or the refusal it has for a kind it keeps no catalog
+    /// for and for a scan it could not start.
+    ///
+    /// THE ONLY METHOD ON THIS TRAIT THAT TAKES AN ARGUMENT, and the only one that can refuse. Both
+    /// follow from the operation: the catalog read is per-kind by contract — there is no unified
+    /// cross-kind listing — so the kind is the question, and a question has a wrong answer. The
+    /// refusal is the node's own condition and its own sentence; which stable code and which status
+    /// it goes out under is decided where the bytes are written, beside every other refusal this
+    /// composition renders.
+    ///
+    /// BLOCKING. The scan behind it reads a directory and unpacks what it finds, behind a cache and
+    /// a single-flight gate that are both the node's. This seam is reached from the blocking thread
+    /// the administrative mount already hands a unit to, which is the context that scan's own
+    /// contract names as the safe one.
+    fn plugins(&self, kind: &str) -> Result<Vec<PluginFacts>, CatalogRefusal>;
 }
 
 /// What a node reports about itself, as the crossed `GET /info` renders it.
@@ -188,6 +222,22 @@ impl NodeFacts for UnboundFacts {
             config_persistence: false,
             config_version: 0,
         }
+    }
+
+    fn pools(&self) -> Vec<(String, Vec<(String, u32)>)> {
+        Vec::new()
+    }
+
+    fn pool_health(&self) -> Vec<(String, Vec<LaneHealth>)> {
+        Vec::new()
+    }
+
+    fn plugins(&self, _kind: &str) -> Result<Vec<PluginFacts>, CatalogRefusal> {
+        // AN EMPTY CATALOG AND NOT A REFUSAL, for every kind including one no node keeps. A binding
+        // with nothing behind it cannot say whether a kind is one this deployment knows — that
+        // answer belongs to the node, and there is no node — so it declines to invent either the
+        // rows or the complaint. The same honesty every other method here answers with.
+        Ok(Vec::new())
     }
 }
 
@@ -277,6 +327,30 @@ impl NodeFacts for HandleFacts {
             config_version: generation.config_version,
         }
     }
+
+    fn pools(&self) -> Vec<(String, Vec<(String, u32)>)> {
+        // ONE load for the whole topology, and THE PROJECTION IS THE SUBSTRATE'S — the same fact the
+        // effective-config read embeds its `pools` member from. See its own note for why the fold
+        // lives there rather than at either reader.
+        self.handle.load().engine_tables_view().pools_by_member()
+    }
+
+    fn pool_health(&self) -> Vec<(String, Vec<LaneHealth>)> {
+        // THE WALK IS THE NODE'S. It is the same one `GET /pools/{name}` takes — that read did not
+        // cross and is still answered by the surface underneath — so one node cannot report two
+        // healths for one member. It is also the one place entitled to decide that a live-health
+        // read is side-effect-free, which is a property nothing about this file could enforce.
+        self.handle.load().pool_health()
+    }
+
+    fn plugins(&self, kind: &str) -> Result<Vec<PluginFacts>, CatalogRefusal> {
+        // THE CATALOG IS THE NODE'S, cache, single-flight gate and all. Nothing about which plugins
+        // a binary was compiled with, which auth modules are in the live chain, or what is in the
+        // plugins directory is a fact this composition holds — every one of them is read off the
+        // generation the handle currently carries, at request time, exactly as every other crossed
+        // read reads its facts.
+        self.handle.load().plugin_catalog(kind)
+    }
 }
 
 /// The operations of the sixty-six whose answer the LOOP now produces, from the node's own facts.
@@ -291,6 +365,8 @@ pub(crate) const CROSSED_VERBS: &[KernelVerb] = &[
     KernelVerb::GetAuth,
     KernelVerb::GetInfo,
     KernelVerb::GetModels,
+    KernelVerb::GetPlugins,
+    KernelVerb::GetPools,
     KernelVerb::GetProviders,
 ];
 
@@ -320,6 +396,104 @@ fn with_config_etag(mut answer: AdminAnswer, version: u64) -> AdminAnswer {
     answer
 }
 
+/// The answer a crossed read produces when the request is one it cannot serve: the frozen envelope
+/// around a code and a sentence, under the status that code goes out with.
+///
+/// THE ENVELOPE IS THE PLANE'S, not this file's, for the reason the mount's own error answer states:
+/// the two keys, their order and their quoting are one frozen wire shape written down in exactly one
+/// place, and a second `format!` of it here would be a second chance for a surface a client pinned to
+/// change on one side and not the other. What IS this file's is the pairing above — which condition
+/// answers under which code and status — because that is the question of whoever answers a request,
+/// and the node that raised the condition deliberately does not settle it.
+fn crossed_error(status: u16, code: &str, message: &str) -> AdminAnswer {
+    AdminAnswer {
+        status,
+        headers: vec![("content-type".to_string(), "application/json".to_string())],
+        body: busbar_plane_admin::refusal::envelope_of(code, message).into_bytes(),
+    }
+}
+
+/// The value of one query parameter, read out of the request target the way the retired handlers'
+/// extractor read it.
+///
+/// FORM-URLENCODED, WHICH IS NOT THE SAME AS PERCENT-ENCODED, and the differences are all
+/// wire-visible: `+` is a SPACE and not a plus; a pair with no `=` is a present key with an empty
+/// value, which is why `?detail` refuses rather than being ignored; an empty segment between two
+/// separators is skipped rather than being a nameless parameter; a repeated key takes its LAST value,
+/// because the extractor collected the pairs into a map; and a percent-escape that does not decode to
+/// UTF-8 becomes the replacement character rather than failing the read, because the decoder
+/// underneath the extractor is lossy and a request with a stray byte in it has always been served.
+///
+/// One parameter at a time rather than the whole map, because the whole map is not what either
+/// caller wants: each of the two operations that take a query takes exactly one parameter, and
+/// building a map to read one key out of it would be this file carrying a shape neither reader has.
+fn query_value(target: &str, name: &str) -> Option<String> {
+    let query = target.split_once('?').map(|(_, q)| q)?;
+    let mut found = None;
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (raw_key, raw_value) = match pair.split_once('=') {
+            Some((key, value)) => (key, value),
+            None => (pair, ""),
+        };
+        if form_decode(raw_key) == name {
+            // LAST WINS, so the walk continues rather than returning here: the extractor built a map
+            // and a repeated key overwrote its earlier value, and a reader that stopped at the first
+            // occurrence would answer a different request from the one the handler answered.
+            found = Some(form_decode(raw_value));
+        }
+    }
+    found
+}
+
+/// One form-urlencoded token, decoded: `+` becomes a space, `%XX` becomes its byte, and anything the
+/// bytes then fail to be is the replacement character.
+///
+/// LOSSY ON PURPOSE — see [`query_value`]. A trailing `%` or a `%` followed by anything that is not
+/// two hex digits is not an escape at all and stays the literal byte it is, which is what the decoder
+/// underneath the retired extractor does with it.
+fn form_decode(token: &str) -> String {
+    let bytes = token.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => match hex_pair(bytes[i + 1], bytes[i + 2]) {
+                Some(byte) => {
+                    out.push(byte);
+                    i += 3;
+                }
+                None => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The byte two hex digits name, or `None` when either of them is not one.
+fn hex_pair(high: u8, low: u8) -> Option<u8> {
+    let digit = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    Some(digit(high)? * 16 + digit(low)?)
+}
+
 /// The whole answer one crossed read produces, or `None` for a verb that has not crossed.
 ///
 /// `None` is the uncrossed answer and it is load-bearing: it is what sends every other one of the
@@ -328,11 +502,56 @@ fn with_config_etag(mut answer: AdminAnswer, version: u64) -> AdminAnswer {
 /// The ANSWER and not just its body, because a crossed read's headers are as pinned as its bytes:
 /// `GET /admin-auth` has always carried the config-plane `ETag` its `PUT` chains `If-Match` off, and
 /// a renderer that returned only bytes would leave that fact to be re-decided somewhere else.
-pub(crate) fn render_crossed_view(verb: KernelVerb, facts: &dyn NodeFacts) -> Option<AdminAnswer> {
+/// The REQUEST as well as the verb, from admin Cut 2 on, and only two of the crossed reads look at
+/// it — which is why it arrives as the whole request rather than as a pre-chewed argument list.
+///
+/// A verb is a method and a path, and two of the operations that have crossed take a QUERY on top of
+/// theirs: the pool topology's `?detail`, which chooses between two shapes of the same answer, and
+/// the plugin catalog's `?type`, which is the whole question. Neither is a second operation — the
+/// closed table has one row for each — so neither can be a second verb, and the argument has to
+/// reach the renderer some other way. It reaches it as the bytes the caller sent, and this file's
+/// own reader is what turns those into the pairs the retired handlers' extractor turned them into.
+pub(crate) fn render_crossed_view(
+    verb: KernelVerb,
+    facts: &dyn NodeFacts,
+    request: &AdminRequest,
+) -> Option<AdminAnswer> {
     if !CROSSED_VERBS.contains(&verb) {
         return None;
     }
     Some(match verb {
+        KernelVerb::GetPools => match query_value(&request.path, "detail").as_deref() {
+            // The DETAIL half: the whole topology with each member's live health, in one call.
+            Some("true") => crossed_answer(render_pools_detail(&facts.pool_health()).into_bytes()),
+            // STRICT, exactly as the retired handler was: an unrecognized value is a loud refusal
+            // and never a silently-ignored flag. `false` is the summary, and so is an absent flag.
+            Some(other) if other != "false" => crossed_error(
+                400,
+                "invalid_request",
+                "invalid `detail`: expected true|false",
+            ),
+            _ => crossed_answer(render_pools(&facts.pools()).into_bytes()),
+        },
+        KernelVerb::GetPlugins => {
+            // AN ABSENT `type` IS THE EMPTY ONE, which is the retired handler's own reading: it
+            // defaulted the missing parameter to `""` and let the catalog refuse it by name. The
+            // refusal a caller sees for `?type=` and for no query at all is therefore the same
+            // sentence, which is what it has always been.
+            let kind = query_value(&request.path, "type").unwrap_or_default();
+            match facts.plugins(&kind) {
+                Ok(rows) => crossed_answer(render_plugins(&rows).into_bytes()),
+                // THE PAIRING IS THIS FILE'S. The node brought the condition and its own sentence;
+                // which stable code and which status each condition renders under is the question
+                // whoever answers the request has to settle, and settling it here is what keeps one
+                // table of it for every refusal this composition writes.
+                Err(CatalogRefusal::UnknownKind(message)) => {
+                    crossed_error(400, "invalid_request", &message)
+                }
+                Err(CatalogRefusal::Unavailable(message)) => {
+                    crossed_error(503, "unavailable", &message)
+                }
+            }
+        }
         KernelVerb::GetModels => crossed_answer(render_models(&facts.models()).into_bytes()),
         KernelVerb::GetProviders => {
             crossed_answer(render_providers(&facts.providers()).into_bytes())
@@ -469,6 +688,45 @@ fn json_optional_number(value: Option<u64>, out: &mut String) {
     }
 }
 
+/// THE ONE NUMBER ON THE CROSSED READS THAT IS NOT AN INTEGER: a `f64`, or `null` for a reading that
+/// was never taken.
+///
+/// ## Why this is not `to_string`
+///
+/// Every other number this file writes has exactly one decimal spelling, so writing it is not a
+/// decision. A `f64` has many, and which one goes out is a wire fact a client has pinned. "Shortest
+/// round-trip" — the property that the printed digits read back as the same bits — does not pin a
+/// byte on its own: `1e100` and its hundred and one digits both round-trip, `1.0` and `1` both
+/// round-trip, and the standard library's own `Display` chooses differently from the printer the
+/// retired serializer used for both of those. A renderer that reached for the obvious spelling would
+/// have moved a byte on the one field of this answer that could carry a fraction.
+///
+/// ## Why it is not hand-written either
+///
+/// The correct bytes are not a format this file could restate; they are whatever ONE published
+/// algorithm produces, and the honest way to produce them is to run that algorithm rather than a
+/// second one that agrees with it on the values somebody thought to check. So this calls the very
+/// crate the retired serializer calls, on the same value, and the identity is structural: there are
+/// not two implementations to drift apart. The property test beside this file is the check that the
+/// two really are the same function, over a corpus that includes the latency-shaped readings this
+/// field actually carries, subnormals, whole numbers held as floats, and the values that are not
+/// numbers at all.
+///
+/// ## What happens to a value that is not a number
+///
+/// `null`, which is the retired serializer's policy and not a choice made here: JSON has no
+/// infinity and no NaN, and the serializer this rendering replaced wrote `null` for both rather than
+/// emitting a token no parser accepts. The seam above already writes `null` for a reading that was
+/// never taken, so the two collapse to the same byte on the wire — which they always did.
+fn json_optional_float(value: Option<f64>, out: &mut String) {
+    match value {
+        Some(number) if number.is_finite() => {
+            out.push_str(zmij::Buffer::new().format_finite(number));
+        }
+        _ => out.push_str("null"),
+    }
+}
+
 /// `GET /api/v1/admin/providers` — the distinct upstream providers and how many lanes reach each.
 ///
 /// The shape is the retiring handler's, field for field and in its order: a page envelope whose
@@ -490,6 +748,180 @@ fn render_providers(providers: &[(String, usize)]) -> String {
     }
     out.push_str("],\"next_cursor\":null}");
     out
+}
+
+/// `GET /api/v1/admin/pools` — every configured pool and the models its members target.
+///
+/// The retiring handler's shape, field for field and in its order, inside the same page envelope
+/// every list read answers in. See [`render_providers`] for why it is written by hand.
+fn render_pools(pools: &[(String, Vec<(String, u32)>)]) -> String {
+    let mut out = String::from("{\"items\":[");
+    for (i, (name, members)) in pools.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        json_string(name, &mut out);
+        out.push_str(",\"members\":[");
+        for (j, (model, weight)) in members.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"model\":");
+            json_string(model, &mut out);
+            out.push_str(",\"weight\":");
+            out.push_str(&weight.to_string());
+            out.push('}');
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"next_cursor\":null}");
+    out
+}
+
+/// `GET /api/v1/admin/pools?detail=true` — the whole topology with each member's LIVE health.
+///
+/// The retiring handler's shape, field for field and in its order — the SAME member row
+/// `GET /pools/{name}` answers with, because the two shapes were one projection on the surface
+/// underneath and are one carrier across the seam now. See [`render_providers`] for why it is
+/// written by hand.
+///
+/// The two `Option` fields render as `null` when absent, which is what the retired handler's
+/// serializer did with them and is a different statement from a zero: a lane nothing has been
+/// dispatched to has no latency, and a lane that has never tripped has no last trip.
+fn render_pools_detail(pools: &[(String, Vec<LaneHealth>)]) -> String {
+    let mut out = String::from("{\"items\":[");
+    for (i, (name, members)) in pools.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        json_string(name, &mut out);
+        out.push_str(",\"members\":[");
+        for (j, member) in members.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"model\":");
+            json_string(&member.model, &mut out);
+            out.push_str(",\"weight\":");
+            out.push_str(&member.weight.to_string());
+            out.push_str(",\"usable\":");
+            out.push_str(json_bool(member.usable));
+            out.push_str(",\"cooldown_remaining_seconds\":");
+            out.push_str(&member.cooldown_remaining_seconds.to_string());
+            out.push_str(",\"available_concurrency\":");
+            out.push_str(&member.available_concurrency.to_string());
+            out.push_str(",\"inflight\":");
+            out.push_str(&member.inflight.to_string());
+            out.push_str(",\"latency_ms\":");
+            json_optional_float(member.latency_ms, &mut out);
+            out.push_str(",\"ok\":");
+            out.push_str(&member.ok.to_string());
+            out.push_str(",\"err\":");
+            out.push_str(&member.err.to_string());
+            out.push_str(",\"dead\":");
+            out.push_str(json_bool(member.dead));
+            out.push_str(",\"trip_count\":");
+            out.push_str(&member.trip_count.to_string());
+            out.push_str(",\"last_trip_at\":");
+            json_optional_number(member.last_trip_at, &mut out);
+            out.push('}');
+        }
+        out.push_str("]}");
+    }
+    out.push_str("],\"next_cursor\":null}");
+    out
+}
+
+/// `GET /api/v1/admin/plugins?type=…` — this node's plugin catalog for one kind.
+///
+/// The retiring handler's shape, field for field and in its order, inside the same page envelope
+/// every list read answers in. See [`render_providers`] for why it is written by hand.
+///
+/// NINE OF THE FIFTEEN FIELDS ARE OMITTED WHEN ABSENT and two are written as `null`, and the split is
+/// not this renderer's to reconsider: it is exactly which of them the retired view marked as skipped,
+/// and a row that grew a `"version":null` where a client had been reading no key at all is a wire
+/// change on an endpoint that never announced one. `active` and `target` are the two that have always
+/// been written, and they are written here.
+fn render_plugins(rows: &[PluginFacts]) -> String {
+    let mut out = String::from("{\"items\":[");
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"name\":");
+        json_string(&row.name, &mut out);
+        out.push_str(",\"type\":");
+        json_string(row.kind, &mut out);
+        out.push_str(",\"loader\":");
+        json_string(row.loader, &mut out);
+        out.push_str(",\"active\":");
+        json_optional_bool(row.active, &mut out);
+        out.push_str(",\"target\":");
+        json_optional_string(row.target.as_deref(), &mut out);
+        json_present_string(",\"file\":", row.file.as_deref(), &mut out);
+        out.push_str(",\"has_schema\":");
+        out.push_str(json_bool(row.has_schema));
+        json_present_string(",\"version\":", row.version.as_deref(), &mut out);
+        json_present_string(",\"publisher\":", row.publisher.as_deref(), &mut out);
+        if let Some(interface_version) = row.interface_version {
+            out.push_str(",\"interface_version\":");
+            out.push_str(&interface_version.to_string());
+        }
+        json_present_string(",\"trust\":", row.trust, &mut out);
+        if let Some(valid) = row.valid {
+            out.push_str(",\"valid\":");
+            out.push_str(json_bool(valid));
+        }
+        json_present_string(",\"error\":", row.error.as_deref(), &mut out);
+        json_present_string(",\"schema_url\":", row.schema_url.as_deref(), &mut out);
+        json_present_string(",\"schema_error\":", row.schema_error.as_deref(), &mut out);
+        out.push('}');
+    }
+    out.push_str("],\"next_cursor\":null}");
+    out
+}
+
+// THE TWO RENDERERS THAT CANNOT BE PROVED BY A FIXTURE get their own proofs, beside the
+// composition-level cells rather than instead of them: a `f64`'s spelling and the plugin row's nine
+// omitted-when-absent fields are claims about every value the field can take, not about the value
+// one node happens to report. See the module's own header for what each of them is measured against.
+#[cfg(test)]
+#[path = "tests/crossed.rs"]
+mod tests;
+
+/// One JSON member whose KEY is written only when the value is there — the `skip_serializing_if`
+/// half of the plugin row.
+///
+/// The key travels with the value rather than being pushed by the caller, because that is the whole
+/// content of "skipped": a caller that wrote the key first and then asked whether to write a value
+/// would have to unwind the key, and the one time it forgot would be a trailing comma nothing parses.
+fn json_present_string(key: &str, value: Option<&str>, out: &mut String) {
+    if let Some(value) = value {
+        out.push_str(key);
+        json_string(value, out);
+    }
+}
+
+/// One JSON string, or `null` for a field the row genuinely has no value for and that is written
+/// anyway.
+fn json_optional_string(value: Option<&str>, out: &mut String) {
+    match value {
+        Some(value) => json_string(value, out),
+        None => out.push_str("null"),
+    }
+}
+
+/// One JSON boolean, or `null` — the shape of a flag whose absence is a real answer.
+///
+/// `null` and not `false`: a plugin whose activation this level does not summarize is not a plugin
+/// that is inactive, and the two have always been different bytes.
+fn json_optional_bool(value: Option<bool>, out: &mut String) {
+    match value {
+        Some(value) => out.push_str(json_bool(value)),
+        None => out.push_str("null"),
+    }
 }
 
 /// `GET /api/v1/admin/models` — every configured model lane and the provider it reaches.

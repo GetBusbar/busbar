@@ -18,8 +18,8 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 13 |
-//! | the surface answers, and the loop hands it back | everything else that is mounted | 61 |
+//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 15 |
+//! | the surface answers, and the loop hands it back | everything else that is mounted | 59 |
 //! | nobody answers | gated, then `404` — the shipped defect the sibling pin names | 14 |
 //!
 //! ## Why it is derived and then measured, rather than written down
@@ -92,6 +92,8 @@ const CROSSED_VERBS: &[&str] = &[
     "get_auth",
     "get_info",
     "get_models",
+    "get_plugins",
+    "get_pools",
     "get_providers",
 ];
 
@@ -342,12 +344,12 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
 
     assert_eq!(
         loop_owned.len(),
-        13,
+        15,
         "the loop answers a different number of operations than it did: {loop_owned:?}"
     );
     assert_eq!(
         surface_answers.len(),
-        61,
+        59,
         "the surface underneath answers a different number of operations than it did"
     );
     assert_eq!(
@@ -362,7 +364,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
         "the three buckets do not account for the whole table"
     );
 
-    // The eight, named. A count would let one verb leave the loop as another arrived.
+    // The fifteen, named. A count would let one verb leave the loop as another arrived.
     let mut owned: Vec<&str> = loop_owned.clone();
     owned.sort_unstable();
     assert_eq!(
@@ -378,6 +380,8 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
             "get_ledger_reconciliation",
             "get_ledger_totals",
             "get_models",
+            "get_plugins",
+            "get_pools",
             "get_providers",
             "reseal_epoch_floor",
             "store_restore",

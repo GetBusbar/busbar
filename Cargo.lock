@@ -385,6 +385,7 @@ dependencies = [
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "socket2",
@@ -393,6 +394,7 @@ dependencies = [
  "tokio",
  "tower",
  "tracing",
+ "zmij",
 ]
 
 [[package]]
