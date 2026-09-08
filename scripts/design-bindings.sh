@@ -206,11 +206,18 @@ ids = [c["id"] for c in json.load(open("testing/shadow-oracle/cells.json"))["cel
 if want == "recorded":
     print(sorted(i for i in ids if led.get(i) == "PASS")[0])
 else:
-    print(sorted(i for i in ids if i.startswith("mcp|") and led.get(i) == "SKIP")[0])
+    skipped = sorted(i for i in ids if i.startswith("mcp|") and led.get(i) == "SKIP")
+    # `skipped-mcp-other` is a SECOND, DIFFERENT unrecorded cell. The gap-register arms need two:
+    # one the planted entry names, and one it does not, so "a gap forgives only what it names" is
+    # measured against a cell of the same kind rather than against a cell that would have passed
+    # anyway (which would make the arm green for the wrong reason).
+    print(skipped[1 if want == "skipped-mcp-other" else 0])
 PYEOF
   }
   real_cell="$(pick_cell recorded)"
   skipped_cell="$(pick_cell skipped-mcp)"
+  local skipped_cell2
+  skipped_cell2="$(pick_cell skipped-mcp-other)"
 
   # (a) one bogus ref among good ones -> exactly one FAIL, red
   cat >"$tmp/bogus.json" <<EOF
@@ -571,17 +578,34 @@ PYEOF
   # ── THE DECLARED-GAP REGISTER ────────────────────────────────────────────────────────────────
   # A gap register is a way of NOT weakening the gate only if each of its rules is enforced. One
   # arm per rule, each driven on a planted register over a two-binding fixture whose second binding
-  # cites a cell the pinned golden never recorded (the mysql store cell, which is exactly that in
-  # this tree), so the fixture fails for the real reason before any gap is declared.
+  # cites a cell THE PINNED GOLDEN NEVER RECORDED, so the fixture fails for the real reason before
+  # any gap is declared.
+  #
+  # THAT CELL IS DERIVED FROM THE TREE, NOT SPELLED HERE. It used to be the mysql store cell, named
+  # as a literal; then the golden was re-recorded with the four `plugins.store-persist|*` cells live
+  # (they are PASS rows now), the literal quietly became a RECORDED cell, and every arm below lost
+  # its premise: the fixture went green, so "was not red" arms reported FAIL and the gate's own
+  # self-test was red for a reason that had nothing to do with the rule it names. `skipped_cell` is
+  # picked from the golden by STATUS, so it cannot go stale the same way -- and the premise is
+  # asserted below rather than assumed, so if it ever fails to hold the self-test says so in one
+  # line instead of mis-reporting four rules.
   cat >"$tmp/gapfix.json" <<EOF
 {"bindings": [
  {"id":"PB-1","surface":"good","binding":"x","inventory":"x","status":"mapped",
   "checks":[{"kind":"test","ref":"${real_fn}","status":"mapped"}]},
  {"id":"PB-2","surface":"needs a backend","binding":"x","inventory":"x","status":"mapped",
   "checks":[{"kind":"test","ref":"${real_fn}","status":"mapped"},
-            {"kind":"oracle-cell","ref":"plugins.store-persist|store-mysql","status":"mapped"}]}
+            {"kind":"oracle-cell","ref":"${skipped_cell}","status":"mapped"}]}
 ]}
 EOF
+  # (j) THE PREMISE, MEASURED. Every arm from here down is a delta from "PB-2 is unproven because
+  # the golden never recorded the cell it cites". If that stops being true the deltas are all
+  # meaningless, so it is an arm of its own and it is named.
+  if [ -n "$skipped_cell" ] && [ -n "$skipped_cell2" ] && [ "$skipped_cell" != "$skipped_cell2" ]; then
+    say PASS "gap register: the fixture cites two distinct cells the golden never recorded (the premise)"
+  else
+    say FAIL "gap register: no two distinct unrecorded cells to build the fixture from (got '$skipped_cell' / '$skipped_cell2')"
+  fi
   gapreg() {  # gapreg <out> <expected> <binding> <cells-json>
     cat >"$1" <<EOF
 {"expected": $2, "gaps": [
@@ -599,7 +623,7 @@ EOF
     || { say FAIL "gap register: undeclared unrecordable cell was not red (rc=$rc)"; cat "$tmp/k.log"; }
 
   # (l) declared: the binding is GAP, NEVER PASS, and the run is green -- the whole point.
-  gapreg "$tmp/gap-ok.json" 1 PB-2 '["plugins.store-persist|store-mysql"]'
+  gapreg "$tmp/gap-ok.json" 1 PB-2 "[\"${skipped_cell}\"]"
   run_check "$tmp/gapfix.json" "$tmp/l.tsv" 0 --gaps "$tmp/gap-ok.json" >"$tmp/l.log" 2>&1; rc=$?
   if [ "$rc" = 0 ] && grep -q $'^PB-2\tGAP' "$tmp/l.tsv" && ! grep -q $'^PB-2\tPASS' "$tmp/l.tsv"; then
     say PASS "gap register: a declared gap is reported GAP, never PASS, and does not turn the run red"
@@ -613,7 +637,7 @@ EOF
     || { say FAIL "gap register: --strict reddened a declared gap (rc=$rc)"; cat "$tmp/l2.log"; }
 
   # (m) A GAP FORGIVES ONLY WHAT IT NAMES: an entry naming some other cell excuses nothing here.
-  gapreg "$tmp/gap-wrong.json" 1 PB-2 '["plugins.store-persist|store-valkey"]'
+  gapreg "$tmp/gap-wrong.json" 1 PB-2 "[\"${skipped_cell2}\"]"
   run_check "$tmp/gapfix.json" "$tmp/m.tsv" 0 --gaps "$tmp/gap-wrong.json" >"$tmp/m.log" 2>&1; rc=$?
   [ "$rc" != 0 ] && grep -q $'^PB-2\tFAIL' "$tmp/m.tsv" \
     && say PASS "gap register: an entry forgives ONLY the cells it names; another cell stays FAIL" \
@@ -622,8 +646,8 @@ EOF
   # (n) THE CEILING IS ASSERTED: two declared gaps against a ceiling of one is RED.
   cat >"$tmp/gap-over.json" <<EOF
 {"expected": 1, "gaps": [
- {"id":"DBG-a","binding":"PB-1","owner":"selftest","cells":["plugins.store-persist|store-mysql"],"reason":"r"},
- {"id":"DBG-b","binding":"PB-2","owner":"selftest","cells":["plugins.store-persist|store-mysql"],"reason":"r"}
+ {"id":"DBG-a","binding":"PB-1","owner":"selftest","cells":["${skipped_cell}"],"reason":"r"},
+ {"id":"DBG-b","binding":"PB-2","owner":"selftest","cells":["${skipped_cell}"],"reason":"r"}
 ]}
 EOF
   if "$PY" "$DERIVE" --verify-gaps --bindings "$tmp/gapfix.json" --gaps "$tmp/gap-over.json" \
@@ -637,7 +661,7 @@ EOF
 
   # (o) AN UNUSED ENTRY IS A LIE: an entry on a binding that proves fine today is RED, and the
   #     message says to delete it rather than leave a waiver standing over nothing.
-  gapreg "$tmp/gap-idle.json" 1 PB-1 '["plugins.store-persist|store-mysql"]'
+  gapreg "$tmp/gap-idle.json" 1 PB-1 "[\"${skipped_cell}\"]"
   if "$PY" "$DERIVE" --verify-gaps --bindings "$tmp/gapfix.json" --gaps "$tmp/gap-idle.json" \
        >"$tmp/o.log" 2>&1; then
     say FAIL "gap register: an entry that forgives NOTHING was accepted"; cat "$tmp/o.log"
@@ -650,7 +674,7 @@ EOF
   # (p) A gap is DECLARED, with an owner and a reason, or it is not declared.
   cat >"$tmp/gap-bare.json" <<EOF
 {"expected": 1, "gaps": [
- {"id":"DBG-bare","binding":"PB-2","cells":["plugins.store-persist|store-mysql"]}
+ {"id":"DBG-bare","binding":"PB-2","cells":["${skipped_cell}"]}
 ]}
 EOF
   if "$PY" "$DERIVE" --verify-gaps --bindings "$tmp/gapfix.json" --gaps "$tmp/gap-bare.json" \
