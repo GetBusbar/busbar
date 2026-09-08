@@ -178,9 +178,15 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
         // shape rustfmt produces when it relocates a comment that trailed an opening `{`.
         prev_frozen = curpragma && code.trim().is_empty();
 
-        // `#[cfg(test)] mod { … }` tracking, so unit-test code is excluded from (b)/(c).
-        let is_cfgtest = code.contains("#[cfg(") && word_ci(&lc, "test");
-        let has_mod = has_bare_word_mod(&code);
+        // `#[cfg(test)] mod { … }` tracking, so unit-test code is excluded from (b)/(c). READ OFF
+        // THE BLANKED LINE, for the reason the depth above is: `code` keeps literal contents so the
+        // vocabulary rules can search them, and a line whose STRING holds `#[cfg(test)] mod x {`
+        // then opens a test window over production source — every hit after it silently reclassified
+        // out of the `--check` pass and into the ratcheted one. The attribute and the `mod` keyword
+        // hold no literal of their own, so blanking cannot hide a real gate.
+        let counted_lc = format!(" {} ", counted.to_lowercase());
+        let is_cfgtest = counted.contains("#[cfg(") && word_ci(&counted_lc, "test");
+        let has_mod = has_bare_word_mod(&counted);
         let mut entered = false;
         // The attribute and its `mod` on ONE line, or the `mod` a prior `#[cfg(test)]` guarded —
         // the same entry either way, which is why the two arms are one condition. They are the two
@@ -189,7 +195,7 @@ fn scan_file(name: &str, text: &str, mode: Mode, scope: Scope, out: &mut Vec<Hit
             test_depth = (nopen - nclose).max(0);
             entered = test_depth > 0;
             pend = false;
-        } else if pend && code.contains(|c: char| !c.is_whitespace()) && !is_cfgtest {
+        } else if pend && counted.contains(|c: char| !c.is_whitespace()) && !is_cfgtest {
             // the attribute guarded a NON-mod item; do not block-skip the rest of the file
             pend = false;
         } else if test_depth > 0 {
