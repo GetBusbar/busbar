@@ -182,15 +182,49 @@ Outbound edges from `config/` + `config_validate/`, production lines, measured:
 | target module | base | now | disposition |
 |---|---|---|---|
 | `crate::plane` | 21 | 21 | already neutral in substance; §7 below |
-| `crate::export` | 8 | 8 | owned by another agent |
+| `crate::export` | 8 | 8 | another agent owns `export/` |
 | `crate::failover` | 7 | **0** | **landed** — `CandidatePoolCfg` → `busbar_substrate::config::pools` |
-| `crate::oauth_as` | 6 | 6 | owned by another agent |
-| `crate::admin` | 6 | 6 | `Scope::parse_ceiling`, `parse_duration_secs` → a leaf |
-| `crate::auth` | 5 | 5 | owned by another agent (`ADMIN_PATH`) |
-| `crate::diagnostics` | 5 | 5 | owned by another agent |
-| `crate::egress_auth` | 3 | 3 | `MetadataSsrfPolicy` → a leaf |
-| `crate::proto` / `store` / `net_guard` / `durable` | 8 | 8 | `registry`, `DEFAULT_MAX_TOKENS`, `MAX_POOL_MEMBERS` → leaves |
-| `crate::breaker` | 1 | 1 | leaf |
+| `crate::oauth_as` | 6 | 6 | another agent owns `oauth_as/` |
+| `crate::admin` | 6 | **4** | 2 landed (`parse_duration_secs`); the 4 left are `Scope`, see below |
+| `crate::auth` | 5 | 5 | another agent owns `auth/` (`ADMIN_PATH`) |
+| `crate::diagnostics` | 5 | 5 | another agent owns `diagnostics/` |
+| `crate::egress_auth` | 3 | **0** | **landed** |
+| `crate::store` | 2 | **0** | **landed** — `MAX_POOL_MEMBERS` → `config::pools` |
+| `crate::net_guard` | 2 | **0** | **landed** |
+| `crate::durable` | 2 | **0** | **landed** — `busbar_api::durable` |
+| `crate::breaker` | 1 | **0** | **landed** |
+| `crate::proto` | 2 | **1** | `DEFAULT_MAX_TOKENS` landed; `proto::registry::registry()` is core-live |
+
+Net: 65 non-plane edges measured in the R5 note, **21 removed here**, leaving 24 of which 24 are
+either another agent's module (`auth` 5, `export` 8, `oauth_as` 6, `diagnostics` 5) or the two
+below.
+
+### The two that are not spellings, and why
+
+**`admin::v1::contract::Scope` (4 sites) is a CYCLE, not a reach.** `Scope::parse_ceiling`'s refusal
+message formats `crate::config::DEFAULT_MAX_ADMIN_SCOPE` — so config names `Scope` and `Scope` names
+config. The reference cannot be inverted by moving one end; the type and its message move together,
+and the message's constant has to move with them. `Scope` also carries `Grants`/`dominates`/`meet`
+used across the whole admin surface, so this is the admin plane's move, not the config layer's.
+
+**`proto::registry::registry()` (1 site)** is core-live (`busbar-core/src/proto/registry.rs`), not a
+substrate shim. It retires on the protocol-registry axis.
+
+### Unblock 7 (`busbar_plugin_sign`/`busbar_plugin_loader` in `config/mod.rs`) has a prerequisite
+
+The brief asks that the ~190-line block (`fetch_spec_from`, `PluginsCfg::{fetch_specs, to_policy,
+to_policy_with_floor}`) move into the plugin loader's policy home with the config struct staying as
+pure data. It cannot go directly: those resolvers are methods on `PluginsCfg`, a busbar-core config
+type, so `busbar-plugin-loader` would have to name `busbar-core` — the wrong direction, and
+`plugin-loader`'s manifest names neither `busbar-core` nor `busbar-substrate` today, so it is also a
+new workspace edge (a shared seam needing its own commit).
+
+The order is therefore: **(a)** `PluginsCfg`/`PluginFetch`/`PluginTrustCfg`/`PluginPublisher` move
+to `busbar_substrate::config::plugins` as pure data (they are config grammar, and
+`busbar-substrate/src/config` is already in the `config-schema` tracked set, so the snapshot follows
+the move); **(b)** `plugin-loader` gains a `busbar-substrate` edge in its own commit; **(c)** the
+resolvers follow. Not attempted here — a half-move leaves the grammar in two crates, which is worse
+than leaving it in one.
 
 ## 7. The `crate::plane` 21, specifically
 
