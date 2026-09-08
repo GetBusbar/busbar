@@ -184,29 +184,41 @@ fn test_constant_time_eq_one_char_diff() {
 
 #[test]
 fn test_extract_bearer_token_valid() {
-    let token = AuthMiddleware::extract_bearer_token("Bearer mytoken123");
+    let token = busbar_unit_auth::carrier::extract_bearer_token("Bearer mytoken123");
     assert_eq!(token, Some("mytoken123".to_string()));
 }
 
 #[test]
 fn test_extract_bearer_token_case_insensitive() {
-    let token = AuthMiddleware::extract_bearer_token("BEARER mytoken123");
+    let token = busbar_unit_auth::carrier::extract_bearer_token("BEARER mytoken123");
     assert_eq!(token, Some("mytoken123".to_string()));
 }
 
 #[test]
 fn test_extract_bearer_token_no_bearer() {
-    let token = AuthMiddleware::extract_bearer_token("mytoken123");
+    let token = busbar_unit_auth::carrier::extract_bearer_token("mytoken123");
     assert_eq!(token, None);
 }
 
 #[test]
 fn test_extract_bearer_token_malformed_no_panic() {
     // A multibyte char in the scheme position must not panic (was a `h[..7]` UTF-8 boundary bug).
-    assert_eq!(AuthMiddleware::extract_bearer_token("Béarer x"), None);
-    assert_eq!(AuthMiddleware::extract_bearer_token("🔑🔑🔑"), None);
-    assert_eq!(AuthMiddleware::extract_bearer_token("Bearer "), None); // empty token
-    assert_eq!(AuthMiddleware::extract_bearer_token("Basic abc"), None);
+    assert_eq!(
+        busbar_unit_auth::carrier::extract_bearer_token("Béarer x"),
+        None
+    );
+    assert_eq!(
+        busbar_unit_auth::carrier::extract_bearer_token("🔑🔑🔑"),
+        None
+    );
+    assert_eq!(
+        busbar_unit_auth::carrier::extract_bearer_token("Bearer "),
+        None
+    ); // empty token
+    assert_eq!(
+        busbar_unit_auth::carrier::extract_bearer_token("Basic abc"),
+        None
+    );
 }
 
 /// A configured chain module that recognizes the credential IDENTIFIES: the verdict carries BOTH
@@ -495,10 +507,7 @@ fn req_with(name: &str, value: &str) -> Request<Body> {
 #[test]
 fn test_extract_client_token_authorization_bearer() {
     let req = req_with("authorization", "Bearer tok-abc");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-abc".to_string())
-    );
+    assert_eq!(crate::auth::client_token(&req), Some("tok-abc".to_string()));
 }
 
 #[test]
@@ -506,7 +515,7 @@ fn test_extract_client_token_x_api_key() {
     // Anthropic SDK carrier: raw token, no scheme prefix.
     let req = req_with("x-api-key", "tok-anthropic");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        crate::auth::client_token(&req),
         Some("tok-anthropic".to_string())
     );
 }
@@ -516,7 +525,7 @@ fn test_extract_client_token_x_goog_api_key() {
     // Gemini SDK carrier: raw token, no scheme prefix.
     let req = req_with("x-goog-api-key", "tok-gemini");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        crate::auth::client_token(&req),
         Some("tok-gemini".to_string())
     );
 }
@@ -532,7 +541,7 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .body(Body::empty())
         .unwrap();
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        crate::auth::client_token(&req),
         Some("from-auth".to_string())
     );
 
@@ -544,7 +553,7 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .body(Body::empty())
         .unwrap();
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        crate::auth::client_token(&req),
         Some("from-x-api-key".to_string())
     );
 }
@@ -559,7 +568,7 @@ fn test_extract_client_token_empty_carrier_falls_through() {
         .body(Body::empty())
         .unwrap();
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        crate::auth::client_token(&req),
         Some("tok-gemini".to_string())
     );
 }
@@ -570,7 +579,7 @@ fn test_extract_client_token_none_when_no_carrier() {
         .uri("/v1/messages")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(AuthMiddleware::extract_client_token(&req), None);
+    assert_eq!(crate::auth::client_token(&req), None);
 }
 
 #[test]
@@ -594,7 +603,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key
             .body(Body::empty())
             .expect("test request must build");
         assert_eq!(
-            AuthMiddleware::extract_client_token(&req),
+            crate::auth::client_token(&req),
             Some("tok".to_string()),
             "a non-bearer Authorization ('{non_bearer}') must fall through to x-api-key"
         );
@@ -617,7 +626,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
         .body(Body::empty())
         .expect("test request must build");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        crate::auth::client_token(&req),
         Some("goog-tok".to_string()),
         "a non-bearer Authorization must fall through to x-goog-api-key"
     );

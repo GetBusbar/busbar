@@ -2160,7 +2160,7 @@ pub(crate) async fn put_auth(
         let bearer = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(crate::auth::AuthMiddleware::extract_bearer_token);
+            .and_then(busbar_unit_auth::carrier::extract_bearer_token);
         let header_tok = headers
             .get(crate::auth::X_ADMIN_TOKEN)
             .and_then(|v| v.to_str().ok())
