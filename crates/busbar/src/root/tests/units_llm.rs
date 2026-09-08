@@ -1626,10 +1626,12 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
             }
         }
     }
-    assert!(
-        verbs_exercised > 0,
-        "no dialect declined a single verb of the family, so the handler half of step 1 was \
-         never driven at all"
+    assert_eq!(
+        verbs_exercised,
+        body_dialects().len(),
+        "every dialect in the family must decline at least one verb, driving the handler half \
+         of step 1 for each of them - a floor of merely > 0 would still pass if all but one \
+         dialect stopped declining any verb"
     );
     assert!(
         failures.is_empty(),
