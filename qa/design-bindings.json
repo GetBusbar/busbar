@@ -15,13 +15,13 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 102,
-  "unproven": 1,
+  "mapped": 103,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
    "gate": 13,
-   "lint": 4,
+   "lint": 5,
    "oracle-cell": 58,
    "oracle-family": 5,
    "test": 453
@@ -3489,17 +3489,17 @@
    "surface": "inventory precedence for bindings",
    "binding": "where a binding paraphrases an inventory row, the row (and the code at the tag behind it) wins; a binding found to misread its row is corrected, never the row — the round-3 corrections to PB-1, PB-4, PB-22, PB-26, PB-35, PB-38, PB-39, PB-52, PB-57 are the precedent",
    "inventory": "1.5.5-BEHAVIOUR precedence",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "lint",
-     "ref": "scripts/inventory-ref-lint.py",
+     "ref": "xtask/src/gates/inventory_ref.rs",
      "status": "mapped",
      "source": "hand"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN: nothing this binding cites compares anything today -- lint:scripts/inventory-ref-lint.py"
+   "verdict": "PASS",
+   "verdict_detail": "lint:xtask/src/gates/inventory_ref.rs"
   },
   {
    "id": "PB-73",
