@@ -30,12 +30,6 @@ const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
 /// guaranteed to panic (on this target width) are newly rejected as a clean `400`/boot `die()`
 /// instead.
 const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
-/// The ceiling on a `file:` secret this module will read into memory (see
-/// [`resolve_validate_time_secret`]). A megabyte is orders of magnitude above any credential a
-/// provider block names — an API key, a `client_id:client_secret` pair, a service-account JSON — so
-/// no config that resolves today stops resolving. It exists to bound the pathological case, not to
-/// have an opinion about credential size.
-const VALIDATE_SECRET_MAX_BYTES: u64 = 1024 * 1024;
 
 /// THE 1.x-DOCUMENT REFUSAL, as one function both validating callers reach.
 ///
@@ -62,40 +56,6 @@ pub fn refuse_legacy_document(doc: &serde_yaml::Value) -> Result<(), String> {
     Err(crate::config::migrate::legacy_config_error(&markers))
 }
 
-/// Resolve a provider credential FOR VALIDATION ONLY, with the `file:` read BOUNDED.
-///
-/// Validation dry-runs the credential FORMAT checks that otherwise only run at boot, which means it
-/// resolves the reference — and `POST /api/v1/admin/config/validate` runs this same `validate` over a
-/// config the CALLER supplied. An unbounded `std::fs::read` there is an unbounded allocation driven
-/// by a read-scope admin: a path naming an endless character device or a very large file is read
-/// until the process dies, and the endpoint's own contract (a stateless dry-run) never promised a
-/// caller that much of the machine.
-///
-/// So a `file:` reference is stat'ed first: it must be a REGULAR file (a character device, a fifo,
-/// a directory or a socket is not a delivered secret) and no larger than
-/// [`VALIDATE_SECRET_MAX_BYTES`]. Anything else resolves to `Err`, which every caller here already
-/// treats the way it treats an unset env var — the dry-run check that needed the value is skipped,
-/// and boot remains the place an unresolvable credential is a hard failure. `env:` and every
-/// plugin-provided module are untouched: the read is what is bounded, not the resolution.
-fn resolve_validate_time_secret(secret: &crate::config::SecretRef) -> Result<String, String> {
-    if let Some(path) = secret.file_path() {
-        let meta = std::fs::metadata(path)
-            .map_err(|e| format!("secret file:{path} cannot resolve: {e}"))?;
-        if !meta.is_file() {
-            return Err(format!(
-                "secret file:{path} is not a regular file; validation reads only a regular file"
-            ));
-        }
-        if meta.len() > VALIDATE_SECRET_MAX_BYTES {
-            return Err(format!(
-                "secret file:{path} is {} bytes, over the {VALIDATE_SECRET_MAX_BYTES}-byte \
-                 validation read cap; not read",
-                meta.len()
-            ));
-        }
-    }
-    crate::config::secret::resolve_builtin_string(secret)
-}
 // SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
 // re-exported here so every in-core caller keeps naming `config_validate::{…}` unchanged and the
 // two SSRF guards still single-source their byte-identical atoms.
