@@ -1709,9 +1709,37 @@ about a kind boundary, this register and that spec win.)*
   service/method descriptor, refusal→wire-code mapping) are specified kind-agnostically in
   `PLUGIN-TREE.md` §5; none of them names a transport or a plane.
 
-**Proposal awaiting the owner (not a decision):** the admin "plane" is a codec for the admin wire
-whose only destination is core (`busbar-unit-verbs` executes; scope always checked; admin listener
-only) — renaming it "admin surface" would make that plain.
+### Decisions 2026-09-08 (owner) — THE CONTROL KIND, AND THE TWO KINDS THE CONTRACT COULD NOT NAME
+
+*(Answers the proposal left open above, and closes the conformance finding that the contract's
+closed kind set had eight members while both design documents said nine.)*
+
+- **CONTROL is a full plugin KIND.** The admin "plane" is not a plane: it is an UNMETERED SERVED
+  SURFACE, and the metering is the whole of the split. A control surface answers on the control path
+  only — verified by the auth kind, admitted, audited, answered — declares its ROUTES AS DATA the way
+  a plane declares claims, owns its own request and response bodies, reads node state through
+  contract traits, changes node state only through the verbs unit, mints credentials only through the
+  auth unit's signer, and carries its own UI data. It NEVER names money, fee, rate or posting
+  vocabulary (the `plane-no-money` list, verbatim), reaches an upstream, appears in a plane's step
+  list or is called by one (no plane→control and no control→plane edge), depends on a transport,
+  plane, dialect, unit or another control crate, owns key material or process-global state, or serves
+  a route absent from its claim table. First members: `busbar-control-admin` (`busbar-plane-admin`
+  until R7 renames it) and `busbar-control-oauth2`. The AUTH kind is unchanged — a verifier answers a
+  question about a credential, a control surface serves a route.
+- **`Kind::Control` and `Kind::Dialect` are members of the contract's closed kind set,** with their
+  sealed markers, `CONTROL_ABI` and `DIALECT_ABI`, and `dialect::Dialect` + `DialectMeta` as the
+  dialect kind's ONE trait. Before this the set had eight members and both documents said the tree had
+  nine kinds, so the only kind a dialect or a control crate could DECLARE was `Plane` — the one kind
+  each is explicitly not — and the isolation gate would then have checked it against the plane
+  skeleton. The gate now reads the contract's variants and cross-checks each crate's declaration
+  against the kind its NAME resolves to (per push) and against the kind it is REGISTERED as (ship).
+- **The dialect trait carries no associated IR type.** The kernel holds every plugin behind a
+  pointer, so the trait must be object-safe; the seam is the span IR both halves already share, and
+  the semantic IR stays owned by the plane.
+- **`loc-ceilings:caps-contract` is raised once, 3500 → 3650,** to pay for the dialect trait, after a
+  measurement of every `pub` item in `busbar-contract` and `busbar-caps` found one unclaimed item
+  (`ids::TransportId`, deleted) and found every other zero-implementor item claimed by a queued branch
+  or by a dated migration row. The next kind's trait is paid for out of surface or by a second ruling.
 
 ## Appendix B — Parity bindings (override any conflicting sentence in §1–§9 for every 1.5.5-reachable surface)
 

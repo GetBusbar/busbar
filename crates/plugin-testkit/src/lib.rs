@@ -135,3 +135,10 @@ pub mod transport_conformance;
 /// The shared suites for the four kinds whose `busbar-contract` trait has zero implementors — see
 /// the module doc. Feature-free for the same reason as `transport_conformance`.
 pub mod contract_kind_conformance;
+/// The per-kind batteries. NOT behind a feature, unlike [`store_conformance`], and the difference
+/// is the crate each pulls in: `busbar-api` is the retiring waist that only store plugins touch,
+/// while `busbar-core-contract` is the crate EVERY kind's row in the dependency table already
+/// names — a plugin that could not name it could not be a plugin. So it is never an extra edge in
+/// a plugin's dev tree, and a battery behind a feature flag is a battery a sibling forgets to
+/// enable.
+pub mod kinds;
