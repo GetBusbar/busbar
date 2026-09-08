@@ -42,6 +42,7 @@
 //! a plane's job — and it could not, because it does not know which plane it is.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use busbar_contract::transport::surface::{binding_at, check_surface, resolve_target, WireSurface};
 use busbar_kernel::teller::{Kernel, Run, UnitCtx};
@@ -90,12 +91,8 @@ impl std::fmt::Display for SurfaceRefused {
 pub struct PlaneChain {
     /// What the plane declared: its addresses, its mounts, its media types.
     surface: &'static WireSurface,
-    /// The node's concurrency gauge. ONE per node, held here and lent to every walk.
-    gauge: busbar_kernel::slice::ConcurrencyGauge,
-    /// The node's canary. ONE per node, for the same reason.
-    canary: busbar_caps::Canary,
-    /// The next unit key. Monotonic across every walk on this chain, so two arrivals are two units.
-    next_key: AtomicU64,
+    /// The node's own parts, which are the NODE's and not this chain's. See [`NodeParts`].
+    parts: Arc<NodeParts>,
 }
 
 impl std::fmt::Debug for PlaneChain {
@@ -114,10 +111,33 @@ impl PlaneChain {
         check_surface(surface).map_err(|because| SurfaceRefused { because })?;
         Ok(PlaneChain {
             surface,
-            gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_caps::Canary::new(),
-            next_key: AtomicU64::new(1),
+            parts: Arc::new(NodeParts::new()),
         })
+    }
+
+    /// Compose one plane's chain over a surface and THE NODE'S PARTS THAT ALREADY EXIST.
+    ///
+    /// A composition that mounts more than one plane holds one set of parts for the process and
+    /// hands the same set to every chain it builds. [`PlaneChain::over`] makes its own because a
+    /// caller with only one chain has no second one to share with; a boot that mounts two planes
+    /// has, and the difference between the two constructors is the difference between one node and
+    /// two.
+    ///
+    /// # Errors
+    ///
+    /// The surface does not pass the contract's own [`check_surface`]. See [`SurfaceRefused`].
+    pub fn over_parts(
+        surface: &'static WireSurface,
+        parts: Arc<NodeParts>,
+    ) -> Result<Self, SurfaceRefused> {
+        check_surface(surface).map_err(|because| SurfaceRefused { because })?;
+        Ok(PlaneChain { surface, parts })
+    }
+
+    /// The node's parts this chain walks on, for a composition that shares one set across planes.
+    #[must_use]
+    pub fn parts(&self) -> &Arc<NodeParts> {
+        &self.parts
     }
 
     /// The surface this chain serves, for a caller that has to ask it something else.
@@ -190,37 +210,131 @@ impl PlaneChain {
     /// function cannot hand back a value that borrows from the frame it returned from. That is the
     /// same reason the arrival is composed in a closure one axis away.
     pub fn run<T>(&self, kernel: &Kernel, f: impl FnOnce(&UnitCtx, Run<'_>) -> T) -> T {
-        let key = busbar_caps::UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
-        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
-            &kernel.admit_token(),
-            busbar_caps::PrincipalId::new(""),
-            0,
-        ));
-        let leases = busbar_kernel::slice::LeaseCell::new();
-        let meter = busbar_kernel::teller::AccrualMeter::new();
-        let ctx = UnitCtx {
-            key,
-            origin: busbar_caps::OriginKind::Client,
-            session: None,
-            generation: busbar_kernel::registry::Generation::FIRST,
-            // A DATA listener, and a unit of an ordinary plane. Both are answered with what is true
-            // of this composition rather than derived: a node that answered otherwise would be
-            // running ordinary traffic as kernel verbs, through the operator's own door, and
-            // arriving there silently.
-            admin_listener: false,
-            kernel_verb_only: false,
-        };
-        f(
-            &ctx,
-            Run {
-                cell: &cell,
-                parent: None,
-                leases: &leases,
-                gauge: &self.gauge,
-                canary: &self.canary,
-                meter: &meter,
+        self.parts.run(kernel, f)
+    }
+}
+
+/// **THE NODE'S OWN PARTS: one gauge, one canary, one key counter, for the whole process.**
+///
+/// Not one per mount and not one per plane. A gauge is a statement about how much THIS NODE is
+/// doing and a canary balances THIS NODE's books; a second set beside the first bounds half the
+/// traffic and balances half the books, and both look healthy because neither can see the other. So
+/// the parts are composed ONCE and lent to every chain and every mount on the process, however many
+/// planes get mounted on it.
+///
+/// The per-unit cells — the hold, the leases, the meter — are made per walk, because they are facts
+/// about one unit rather than about the node.
+pub struct NodeParts {
+    /// The node's concurrency gauge. ONE per node, held here and lent to every walk.
+    gauge: busbar_kernel::slice::ConcurrencyGauge,
+    /// The node's canary. ONE per node, for the same reason.
+    canary: busbar_caps::Canary,
+    /// The next unit key. Monotonic across every walk on this node, so two arrivals are two units.
+    next_key: AtomicU64,
+}
+
+impl std::fmt::Debug for NodeParts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NodeParts")
+    }
+}
+
+impl Default for NodeParts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NodeParts {
+    /// The node's parts, composed. Once per process is the whole rule.
+    #[must_use]
+    pub fn new() -> Self {
+        NodeParts {
+            gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
+            canary: busbar_caps::Canary::new(),
+            next_key: AtomicU64::new(1),
+        }
+    }
+
+    /// **Compose the per-unit cells for ONE walk, and hand them over with the node's own.**
+    ///
+    /// The caller supplies the leg; this supplies everything a leg may not make for itself. The
+    /// hold cell, the lease cell and the meter are per-unit and are made here; the gauge and the
+    /// canary are the node's and are lent from here. A leg that made its own would be balancing its
+    /// own books beside the node's.
+    ///
+    /// A closure rather than a returned value because [`Run`] BORROWS the four cells it names, and a
+    /// function cannot hand back a value that borrows from the frame it returned from. That is the
+    /// same reason the arrival is composed in a closure one axis away.
+    pub fn run<T>(&self, kernel: &Kernel, f: impl FnOnce(&UnitCtx, Run<'_>) -> T) -> T {
+        let cells = self.open(kernel);
+        f(&cells.ctx, self.lend(&cells))
+    }
+
+    /// **THE PER-UNIT CELLS FOR ONE WALK**, held by the caller for as long as that walk runs.
+    ///
+    /// The half of [`NodeParts::run`] a caller needs on its own when the walk is a FUTURE: a
+    /// closure cannot hand back a value that borrows from the frame it returned from, so a leg that
+    /// awaits keeps the cells on ITS frame and lends them to [`NodeParts::lend`] from there. Same
+    /// composition, one place, whether the plane's walk suspends or not.
+    #[must_use]
+    pub fn open(&self, kernel: &Kernel) -> UnitCells {
+        UnitCells {
+            ctx: UnitCtx {
+                key: busbar_caps::UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed)),
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                // A DATA listener, and a unit of an ordinary plane. Both are answered with what is
+                // true of this composition rather than derived: a node that answered otherwise
+                // would be running ordinary traffic as kernel verbs, through the operator's own
+                // door, and arriving there silently.
+                admin_listener: false,
+                kernel_verb_only: false,
             },
-        )
+            cell: busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+                &kernel.admit_token(),
+                busbar_caps::PrincipalId::new(""),
+                0,
+            )),
+            leases: busbar_kernel::slice::LeaseCell::new(),
+            meter: busbar_kernel::teller::AccrualMeter::new(),
+        }
+    }
+
+    /// The walk one unit runs on: its own cells, and THE NODE'S two counters.
+    ///
+    /// The gauge and the canary come from here and from nowhere else, which is the whole reason
+    /// this type exists: a leg that made its own would be bounding its own traffic and balancing
+    /// its own books, beside a node that could not see either.
+    #[must_use]
+    pub fn lend<'r>(&'r self, cells: &'r UnitCells) -> Run<'r> {
+        Run {
+            cell: &cells.cell,
+            parent: None,
+            leases: &cells.leases,
+            gauge: &self.gauge,
+            canary: &self.canary,
+            meter: &cells.meter,
+        }
+    }
+}
+
+/// The cells ONE unit's walk owns, composed by [`NodeParts::open`].
+///
+/// Per-unit and never shared: a hold cell two units wrote to is two units holding one admission,
+/// and a meter two units accrued on is one bill for both.
+pub struct UnitCells {
+    /// What this unit is, for the steps that ask.
+    pub ctx: UnitCtx,
+    cell: busbar_caps::HoldCell,
+    leases: busbar_kernel::slice::LeaseCell,
+    meter: busbar_kernel::teller::AccrualMeter,
+}
+
+impl std::fmt::Debug for UnitCells {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("UnitCells")
     }
 }
 

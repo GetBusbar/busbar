@@ -112,9 +112,10 @@ pub fn mount(
     inner: axum::Router,
     leg: Arc<McpLeg>,
     kernel: busbar_kernel::teller::Kernel,
+    parts: Arc<crate::root::data_plane::NodeParts>,
     request_body_max_bytes: usize,
 ) -> axum::Router {
-    plane_mount::mount(inner, leg, kernel, request_body_max_bytes)
+    plane_mount::mount(inner, leg, kernel, parts, request_body_max_bytes)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════

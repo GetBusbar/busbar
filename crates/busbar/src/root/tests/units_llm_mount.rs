@@ -203,6 +203,7 @@ async fn mounted(streamed: bool) -> Mounted {
             a_surface_underneath(),
             Arc::new(leg),
             busbar_kernel::teller::Kernel::new(),
+            std::sync::Arc::new(crate::root::data_plane::NodeParts::new()),
             1024 * 1024,
         ),
         book: d.book,
@@ -590,6 +591,7 @@ async fn one_request_each_way() -> Option<(
         a_surface_underneath(),
         Arc::new(leg),
         busbar_kernel::teller::Kernel::new(),
+        Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
     let response = through(router, chat_body(false)).await;

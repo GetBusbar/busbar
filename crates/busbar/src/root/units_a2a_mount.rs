@@ -60,6 +60,14 @@ impl MountedLeg for A2aLeg {
         busbar_plane_a2a::claims::CLAIMS
     }
 
+    fn surface(&self) -> Option<&'static busbar_contract::transport::surface::WireSurface> {
+        // THIS PROTOCOL'S OTHER DECLARATION. The claim table above is what the kernel routes on;
+        // this is what a transport serves with. Both are asked, because an address either of them
+        // names is an address this protocol owns — and the day the two disagree is the day a route
+        // would otherwise answer around the loop while the plane still said it owned it.
+        Some(&busbar_plane_a2a::surface::SURFACE)
+    }
+
     fn recognises(&self, arrival: &busbar_contract::transport::Arrival<'_>) -> bool {
         A2aLeg::recognises(self, arrival)
     }
@@ -111,9 +119,10 @@ pub fn mount(
     inner: axum::Router,
     leg: Arc<A2aLeg>,
     kernel: busbar_kernel::teller::Kernel,
+    parts: Arc<crate::root::data_plane::NodeParts>,
     request_body_max_bytes: usize,
 ) -> axum::Router {
-    plane_mount::mount(inner, leg, kernel, request_body_max_bytes)
+    plane_mount::mount(inner, leg, kernel, parts, request_body_max_bytes)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
