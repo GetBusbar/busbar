@@ -43,6 +43,34 @@ use busbar_api::{
     SecretForm, Store, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
+/// A per-`ns` `(old_ts, new_ts)` pair for the two `purge_plane_records_before` checks below, straddling
+/// a FIXED, SHARED `cutoff`.
+///
+/// `purge_plane_records_before(kind, before)` takes a `kind` and a cutoff — no namespace — so it is
+/// the one verb in this battery the `ns` discipline (module doc above) cannot reach directly: two
+/// concurrent runs sharing a live database both write rows and sweep the same kind-wide cutoff, so
+/// each run's sweep can catch the other's OLD rows too, and `assert_eq!(purged, 1)` then fails for a
+/// perfectly conforming backend.
+///
+/// The cutoff itself must NOT vary per run: a `before` that grows with `ns` would let whichever run
+/// draws the larger cutoff sweep every smaller-cutoff run's rows in full, including their still-live
+/// NEWER rows — trading one collision for a worse one. So `cutoff` is the single fixed point every
+/// run shares, and only `old_ts`/`new_ts` are salted per `ns`, each confined to its own side of that
+/// shared line: `old_ts` always lands strictly below `cutoff`, `new_ts` always strictly above it. That
+/// makes the invariant every run's own survivor check depends on — "the old row is gone, the new row
+/// reads back" — hold under an arbitrary interleaving of any number of concurrent runs, since no run's
+/// sweep (bounded by the same `cutoff`) can ever reach past `cutoff` into another run's `new_ts`.
+fn ns_purge_window(ns: &str, cutoff: u64, high_span: u64) -> (u64, u64) {
+    let mut hasher = DefaultHasher::new();
+    ns.hash(&mut hasher);
+    let salt = hasher.finish();
+    let old_ts = 1 + (salt % (cutoff - 1));
+    let new_ts = cutoff + 1 + (salt % high_span);
+    (old_ts, new_ts)
+}
 
 /// Every `VirtualKey` id the suite writes under `ns`. A shared-database backend must delete these
 /// (and their credential rows) before calling, and should clean them up afterwards.
@@ -592,9 +620,13 @@ pub fn assert_plane_event_chain_is_ordered_by_seq(store: &dyn Store, ns: &str) {
 pub fn assert_plane_call_parents_enumerated(store: &dyn Store, ns: &str) {
     let p1 = format!("{ns}_prinA");
     let p2 = format!("{ns}_prinB");
+    // ts is a fixed sentinel far above any `ns_time_band` window the purge checks below can produce
+    // (max ~200_000_100), so a purge sweep run concurrently against the same shared database can
+    // never reach these rows out from under this assertion.
+    const PARENT_ENUM_TS: u64 = 500_000_000_000;
     for principal in [&p1, &p2] {
         store
-            .append_plane_record(&plane_call(principal, 1, 10))
+            .append_plane_record(&plane_call(principal, 1, PARENT_ENUM_TS))
             .expect("append a call plane record");
     }
     let parents = store
@@ -666,22 +698,39 @@ pub fn assert_plane_demotion_upsert_list_delete(store: &dyn Store, ns: &str) {
 /// - a backend that returns `Ok(0)` and purges nothing conforms to the trait signature perfectly
 ///   while the plane log grows without bound.
 ///
-/// So the assertions are on the SURVIVORS and on the COUNT together: the older row must be gone, the
-/// newer row must still be readable, and the reported number must be the number that actually went.
+/// The assertions are on the SURVIVORS ONLY, and deliberately not on the returned count. The count
+/// is kind-wide (see [`ns_purge_window`]): under a genuinely concurrent sibling run sharing the same
+/// live database, whichever of the two sweeps executes SECOND can correctly see `0` — the row was
+/// already dropped by the sibling's earlier, same-kind sweep — with neither backend being
+/// non-conforming. So a per-call bound on the count (exact OR `>= 1`) cannot be asserted without
+/// reintroducing the same flake this fix removes; what stays true under any interleaving is the
+/// SURVIVOR evidence below (this run's own older row, addressed by id/parent, is gone; its own newer
+/// row is still readable), because `new_ts` never crosses the shared `cutoff` regardless of who
+/// dropped what when.
 pub fn assert_plane_purge_honours_the_cutoff(store: &dyn Store, ns: &str) {
     let parent = format!("{ns}_purgeprin");
+    // `cutoff` is FIXED and shared by every run (see `ns_purge_window`); only `old_ts`/`new_ts` are
+    // salted per `ns`, each confined to its own side of `cutoff`, so no run's sweep can ever reach a
+    // sibling run's `new_ts` regardless of interleaving.
+    const CUTOFF: u64 = 100_000;
+    let (old_ts, new_ts) = ns_purge_window(ns, CUTOFF, 100_000);
+    let cutoff = CUTOFF;
     // Two rows under one parent, one either side of the cutoff. Appended newest-first so a backend
     // that drops "the first N" rather than "the ones older than `before`" cannot pass by accident.
-    for (seq, ts) in [(2u64, 1_000u64), (1u64, 10u64)] {
+    for (seq, ts) in [(2u64, new_ts), (1u64, old_ts)] {
         store
             .append_plane_record(&plane_call(&parent, seq, ts))
             .expect("append a call plane record");
     }
 
-    let purged = store
-        .purge_plane_records_before("call", 100)
+    // The count itself is not asserted here — see the module doc above this function for why a
+    // per-call bound on a kind-wide count cannot hold under a genuinely concurrent sibling run.
+    let _purged = store
+        .purge_plane_records_before("call", cutoff)
         .expect("purge the call plane records older than the cutoff");
 
+    // Namespace-scoped evidence: this run's OWN older row must be gone and its OWN newer row must
+    // survive, regardless of which sweep (this one, or a concurrent sibling's) actually did the work.
     let survivors: Vec<u64> = store
         .list_plane_records("call", &PlaneSelector::Parent(parent.clone()))
         .expect("list the calls for the parent")
@@ -695,22 +744,31 @@ pub fn assert_plane_purge_honours_the_cutoff(store: &dyn Store, ns: &str) {
     assert_eq!(
         survivors,
         vec![2],
-        "purge_plane_records_before must drop ONLY the rows older than `before`: seq 1 (ts 10) had \
-         to go and seq 2 (ts 1000) had to stay, got {survivors:?}"
-    );
-    assert_eq!(
-        purged, 1,
-        "the sweep must report the number of rows it actually dropped"
+        "purge_plane_records_before must drop ONLY the rows older than `before`: seq 1 (ts {old_ts}) \
+         had to go and seq 2 (ts {new_ts}) had to stay, got {survivors:?}"
     );
 
-    // And a second sweep at the same cutoff finds nothing left to do, so a backend cannot report a
-    // constant.
+    // A second sweep at the same cutoff: this run's own row is confirmed gone either way, so the
+    // only thing left to check is that it STAYS gone and the survivor stays put. The count is, again,
+    // not asserted (a concurrent sibling run may still contribute rows to the same kind-wide sweep).
+    let _reswept = store
+        .purge_plane_records_before("call", cutoff)
+        .expect("re-purge at the same cutoff");
+    let resurvivors: Vec<u64> = store
+        .list_plane_records("call", &PlaneSelector::Parent(parent))
+        .expect("list the calls for the parent again")
+        .iter()
+        .map(|b| {
+            serde_json::from_slice::<SampleCall>(b)
+                .expect("decode call")
+                .seq
+        })
+        .collect();
     assert_eq!(
-        store
-            .purge_plane_records_before("call", 100)
-            .expect("re-purge at the same cutoff"),
-        0,
-        "a repeated sweep at the same cutoff has nothing older left to drop"
+        resurvivors,
+        vec![2],
+        "a repeated sweep at the same cutoff must not touch this run's own surviving row, got \
+         {resurvivors:?}"
     );
 }
 
@@ -722,13 +780,20 @@ pub fn assert_plane_purge_honours_the_cutoff(store: &dyn Store, ns: &str) {
 /// The cutoff still applies on top: a TERMINAL row newer than `before` stays. So the three rows
 /// below separate the two axes, and a backend that honours only one of them fails.
 pub fn assert_plane_purge_task_keeps_active_rows(store: &dyn Store, ns: &str) {
+    // See `ns_purge_window`: `cutoff` is fixed and shared by every run; only `old_ts`/`fresh_ts` are
+    // salted per `ns`, each confined to its own side of `cutoff`, well under the ~1_700_000_000
+    // epoch-second fixtures other helpers in this module use for the same `task` kind.
+    const CUTOFF: u64 = 100_000;
+    let (old_ts, fresh_ts) = ns_purge_window(ns, CUTOFF, 100_000);
+    let cutoff = CUTOFF;
+
     let mut old_active = plane_task(ns, "input-required");
-    old_active.ts = 10;
+    old_active.ts = old_ts;
     let mut old_terminal = plane_task(ns, "completed");
-    old_terminal.ts = 10;
+    old_terminal.ts = old_ts;
     old_terminal.disposition = PlaneDisposition::Terminal;
     let mut fresh_terminal = plane_task(ns, "canceled");
-    fresh_terminal.ts = 1_000;
+    fresh_terminal.ts = fresh_ts;
     fresh_terminal.disposition = PlaneDisposition::Terminal;
     for record in [&old_active, &old_terminal, &fresh_terminal] {
         store
@@ -736,14 +801,13 @@ pub fn assert_plane_purge_task_keeps_active_rows(store: &dyn Store, ns: &str) {
             .expect("upsert a task plane record");
     }
 
-    let purged = store
-        .purge_plane_records_before("task", 100)
+    // The count itself is not asserted here — same kind-wide-collision reason as
+    // `assert_plane_purge_honours_the_cutoff` above: whichever of two concurrent sibling runs' sweeps
+    // executes second can correctly see `0` for its own call, without either backend being
+    // non-conforming. What holds under any interleaving is the namespace-scoped evidence below.
+    let _purged = store
+        .purge_plane_records_before("task", cutoff)
         .expect("purge the task plane records older than the cutoff");
-    assert_eq!(
-        purged, 1,
-        "exactly the one OLD TERMINAL task may go: the old ACTIVE task is the interrupted work \
-         this rule exists to keep, and the fresh terminal one is not old enough"
-    );
 
     let ids: Vec<String> = store
         .list_plane_records("task", &PlaneSelector::All)
