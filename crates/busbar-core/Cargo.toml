@@ -233,6 +233,11 @@ test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
 timing = ["busbar-timing/timing"]
 
 [dev-dependencies]
+# The plugin TARBALL fixture (`loader_fixtures`): a scratch plugins dir, a manifest at the loader's
+# own supported abi, and an unsigned-but-valid archive. Shared with the hook engine's battery, which
+# dlopens a real plugin from its own crate — one fixture, so the two batteries can never disagree
+# about what the loader accepts.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["loader-fixtures"] }
 # THE PLANE CRATES, pulled in `test-support` so busbar-core's OWN cross-plane integration tests
 # (`src/tests/tests.rs`) can build and downcast the REAL, externally-linked planes instead of the
 # former `#[path]` dual-compile of their sources. This is a DEV-dependency back-edge: busbar-mcp /
