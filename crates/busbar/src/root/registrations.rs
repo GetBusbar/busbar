@@ -205,6 +205,35 @@ pub struct NetSeam<'r> {
     pub denylist: &'r Denylist,
 }
 
+/// The system resolver, presented to the trust unit's identically-shaped seam.
+///
+/// TWO TRAITS, ONE RESOLUTION. `busbar_substrate::net_guard::Resolver` and
+/// `busbar_unit_trust::net::Resolver` declare the same method over the same types and neither crate
+/// may name the other — the substrate holds the fetch guard, the unit holds the verify step, and a
+/// unit that depended on the substrate would be a unit that could reach a socket. So the composition
+/// root, which is the one thing entitled to name both, carries the join. It is a delegation and not
+/// a second implementation: there is exactly one `lookup_host` in the tree and this forwards to it.
+///
+/// **IT IS NOT ONE PLANE'S, which is why it is here.** It landed in the A2A leg because that leg
+/// needed it first, and every word above is about the two TRAITS rather than about any protocol:
+/// the argument is a host name and the answer is a list of addresses. The MCP leg needs the same
+/// join, and a second copy of it beside that leg would have been an mcp-shaped twin of a root
+/// generic — so the type moved HERE, beside [`NetSeam`], which is the value it is handed to. The
+/// A2A leg re-exports it under the name it already had, so nothing that named it there changed.
+///
+/// ONE SYMBOL, deliberately. The forward goes through the host resolver's INHERENT `lookup` rather
+/// than through its trait method, because the ratchet that measures how much of the retiring
+/// substrate's surface this root still names counts distinct symbols — and naming the trait as well
+/// as the type would cost two where one does the same work.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemResolver;
+
+impl Resolver for SystemResolver {
+    fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+        busbar_substrate::net_guard::SystemResolver.lookup(host)
+    }
+}
+
 /// THE PER-PLANE ANSWERS, AS DATA.
 ///
 /// Six readings a plane makes about its own declarations, carried as values rather than as a
