@@ -637,6 +637,70 @@ fn twilio_media_with_a_forged_stream_sid_is_discarded() {
     ));
 }
 
+/// An EMPTY `streamSid` binds nothing, so it cannot be matched by a frame that names none.
+///
+/// The one anti-forgery check this dialect has compares a `media` frame's `streamSid` against the
+/// one `start` bound. A JSON empty string satisfied the reader, so `"streamSid": ""` bound `Some("")`
+/// — and a later `media` frame that simply OMITS the field decodes to `""` through
+/// `unwrap_or_default()` and compares EQUAL. Every sid-less frame on such a session passed the guard.
+#[test]
+fn a_twilio_start_naming_an_empty_stream_sid_binds_nothing() {
+    static UPSTREAMS: &[Upstream] = &[Upstream {
+        lane: LaneId::new("realtime"),
+        host: "api.openai.com",
+        dialect: Dialect::OpenaiRealtime,
+    }];
+    let plane = VoicePlane::new(UPSTREAMS);
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/twilio/call-123");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+
+    let start = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .unwrap();
+    let frames1 = [frame(&start)];
+    let mut cursor1 = FrameCursor::new(&frames1);
+    assert!(
+        plane
+            .decode_ingress(&mut cursor1, Some(&mut state), &c)
+            .is_err(),
+        "a start that names no stream is not a start this session can be bound by"
+    );
+
+    // A media frame that names NO stream at all must not be admitted on the strength of an empty
+    // binding.
+    let media = serde_json::to_vec(&json!({
+        "event": "media",
+        "media": { "payload": base64_of(&[0xFFu8; 4]) },
+    }))
+    .unwrap();
+    let frames2 = [frame(&media)];
+    let mut cursor2 = FrameCursor::new(&frames2);
+    let ingress2 = plane
+        .decode_ingress(&mut cursor2, Some(&mut state), &c)
+        .expect("media decodes");
+    assert!(
+        matches!(
+            ingress2,
+            Ingress::Discard {
+                reason: busbar_contract::wire::DiscardCode::ForgedSource
+            }
+        ),
+        "a sid-less media frame on an unbound session is forged, got {ingress2:?}"
+    );
+}
+
 #[test]
 fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
@@ -1407,17 +1471,65 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
         "unavailable",
         "internal",
     ];
+    // EVERY variant the contract declares, not a curated sample of nine. This is the battery the
+    // plane kind's every-refusal-answered rule names, and a sample cannot answer "every". The list
+    // is spelled out rather than derived because the enum carries no iterator: `refusal_render` has
+    // no catch-all, so a variant added to the contract stops that function compiling, and a variant
+    // missing from this list is caught by the count assertion below.
     let reasons = [
+        RefusalReason::InFlightCap,
+        RefusalReason::CursorBudget,
+        RefusalReason::CredentialBudget,
+        RefusalReason::SessionBudget,
+        RefusalReason::BodyTooLarge,
+        RefusalReason::OpenSlotBusy,
+        RefusalReason::SchemeNotDeclared,
+        RefusalReason::CredentialRejected,
+        RefusalReason::SessionUnbound,
+        RefusalReason::Revoked,
+        RefusalReason::ScopeMissing,
+        RefusalReason::Vetoed,
+        RefusalReason::NoDestination,
+        RefusalReason::OverBudget,
+        RefusalReason::GroupFrozen,
+        RefusalReason::Unpriced,
         RefusalReason::OverdraftCeiling,
         RefusalReason::StaleSlice,
         RefusalReason::DurabilityUnavailable,
-        RefusalReason::ScopeMissing,
-        RefusalReason::CredentialRejected,
-        RefusalReason::NoDestination,
+        RefusalReason::TierMismatch,
+        RefusalReason::SpillBudget,
+        RefusalReason::ArenaBudget,
         RefusalReason::RateLimited,
-        RefusalReason::BodyTooLarge,
+        RefusalReason::DecodeFailed,
+        RefusalReason::ChallengeExhausted,
+        RefusalReason::PoolNotPermitted,
+        RefusalReason::NoRate,
+        RefusalReason::Replayed,
+        RefusalReason::InFlight,
+        RefusalReason::DestinationBudgetExhausted,
+        RefusalReason::BreakerOpen,
+        RefusalReason::DestinationUnreachable,
+        RefusalReason::MeterDisputed,
+        RefusalReason::HandoffMismatch,
         RefusalReason::PlanePanic,
+        RefusalReason::TaskLost,
+        RefusalReason::Stalled,
+        RefusalReason::SecretPlaceholder,
+        RefusalReason::Drain,
+        RefusalReason::Superseded,
+        RefusalReason::ClientGone,
+        RefusalReason::DeadlineExceeded,
     ];
+    // The one thing that would let a variant be quietly omitted above: two entries for the same
+    // reason padding the count. Deduplicated, so the count means what it says.
+    let mut distinct: Vec<String> = reasons.iter().map(|r| format!("{r:?}")).collect();
+    distinct.sort();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        reasons.len(),
+        "the battery names a reason twice, which would let another go unnamed"
+    );
     for reason in reasons {
         let refusal = Refusal {
             step: Step::Decode,

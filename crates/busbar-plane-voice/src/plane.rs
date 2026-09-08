@@ -591,8 +591,37 @@ fn refusal_render(reason: busbar_contract::unit::RefusalReason) -> (&'static str
             "no provider is reachable for this session right now",
         ),
         // Everything else is this node saying no for a reason that is this node's own — the money,
-        // the buckets, the journal. A caller is told it failed here and nothing more.
-        _ => ("internal", "the session could not be opened at this time"),
+        // the buckets, the journal, the scheduler. A caller is told it failed here and nothing more.
+        //
+        // ENUMERATED, not caught. There is no `_` arm on purpose: the sibling
+        // `busbar-plane-llm::codec::refusal_shape` names every variant for the same reason, and a
+        // catch-all here meant a new contract variant was answered "internal" by default in one
+        // plane and given a considered code in the other, with nothing going red to force the
+        // ruling. A variant added to the contract now fails to compile until this table decides
+        // what a caller is told about it.
+        R::CursorBudget
+        | R::OverBudget
+        | R::GroupFrozen
+        | R::Unpriced
+        | R::OverdraftCeiling
+        | R::StaleSlice
+        | R::DurabilityUnavailable
+        | R::TierMismatch
+        | R::SpillBudget
+        | R::ArenaBudget
+        | R::ChallengeExhausted
+        | R::NoRate
+        | R::Replayed
+        | R::InFlight
+        | R::DestinationBudgetExhausted
+        | R::MeterDisputed
+        | R::HandoffMismatch
+        | R::PlanePanic
+        | R::TaskLost
+        | R::Stalled
+        | R::Superseded
+        | R::ClientGone
+        | R::DeadlineExceeded => ("internal", "the session could not be opened at this time"),
     }
 }
 
