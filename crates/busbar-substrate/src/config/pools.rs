@@ -10,7 +10,7 @@
 use serde::Deserialize;
 
 use super::hooks::ON_ERROR_WEIGHTED;
-use crate::failover::{DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS};
+use crate::failover::{Repeatable, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS};
 
 #[derive(Debug, Clone, Default)]
 pub struct PoolCfg {
@@ -614,4 +614,86 @@ pub struct AffinityCfg {
     /// Request header carrying the session id (defaults to `x-session-id` when unset).
     #[serde(default)]
     pub header_name: Option<String>,
+}
+
+// ── `tool_pools:` / `agent_pools:` ────────────────────────────────────────────────────────────────
+// Relocated VERBATIM from `busbar-core/src/failover/mod.rs` (1.6.0 R-config unblock 1): it is the
+// value grammar of two top-level config sections, so it belongs beside the other pool shapes rather
+// than in the disposition module that happens to read it. ONE visibility change, stated: `repeatable`
+// was `pub(crate)` when its only writer (`config/mod.rs`'s non-LLM pool derivation) shared a crate
+// with it; that writer is now crate-external, so the field is `pub`. Visibility is not wire — the
+// serde attrs, field order, defaults and `deny_unknown_fields` are byte-identical, and the
+// `config-schema` gate reads the same surface here that it read there.
+
+/// ONE POOL OF INTERCHANGEABLE UPSTREAMS, as the operator writes it — the ENTIRE config vocabulary
+/// this feature adds, and it is CORE's rather than a plane's.
+///
+/// ```yaml
+/// tool_pools:                       # MCP: one server image, deployed twice
+///   search:
+///     members: [search-eu, search-us]
+///     repeatable: [search_code]     # operations safe to perform TWICE. Default: none.
+///
+/// agent_pools:                      # A2A: one agent, registered twice
+///   planner:
+///     members: [planner-eu, planner-us]
+/// ```
+///
+/// ## Why it mirrors `pools:` and why it is ONE type for both planes
+///
+/// The model plane's `pools:` already means *"these members are interchangeable for this request; use
+/// whichever is healthy"*. That is the same sentence on all three planes, so an operator learns the
+/// concept ONCE — a member list keyed by a pool name, referenced by bare name, never crossing a
+/// plane boundary. Two plane-local copies of this struct would be two grammars for one idea and would
+/// diverge the first time either grew a key; there is one, in core, and each plane's section merely
+/// says which registry the bare names are resolved against.
+///
+/// ## It is OPT-IN and the default is UNCHANGED
+///
+/// Owner's steer: *"maybe in a config we dont allow it or maybe we dont suggest it be done."* An
+/// absent section is no pools, which is exactly the behaviour of every deployment that exists today:
+/// one registration, one destination, no failover, nothing to reason about. Nothing here turns on by
+/// itself.
+///
+/// ## `repeatable:` is a LIST OF OPERATIONS and there is no key that disables the safety rule
+///
+/// The dangerous half of this feature is repeating a call that already went out, so the declaration
+/// is per OPERATION and enumerated by hand. There is deliberately NO `repeatable: all` and no
+/// `retry: always`: an operator who wants `send_email` repeated has to write `send_email` down next
+/// to the tools they thought about, which is a different act from flipping a switch. See [`Stage`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-declare a safety rule.
+pub struct CandidatePoolCfg {
+    /// The interchangeable registrations, by bare name, resolved against the section's own plane
+    /// registry (`tools:` for `tool_pools:`, `agents:` for `agent_pools:`). ORDERED: the first is the
+    /// PRIMARY, and its approved fingerprint is the one every other member must match.
+    ///
+    /// Naming a member is NOT what makes two upstreams interchangeable — busbar checks the pins it
+    /// already computed and refuses the pool at dispatch if they disagree. The operator is asserting
+    /// *"these names are the same deployment"*, a claim busbar can and does verify.
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// The operations that may be performed TWICE — reads, searches, queries. An operation not named
+    /// here is never repeated after a dispatch has gone out.
+    ///
+    /// EMPTY BY DEFAULT, which is the fail-safe posture: an operator who says nothing gets
+    /// reroute-before-first-byte (which duplicates nothing) and no retries at all.
+    #[serde(default)]
+    pub repeatable: Vec<String>,
+}
+
+impl CandidatePoolCfg {
+    /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
+    /// never be got wrong by a second caller spelling the lookup differently.
+    // Read only by the per-call dispatch path a protocol plane drives; a plane whose relay never
+    // repeats a dispatch has no caller here. Unconditional allow — the neutral seam names no plane
+    // feature.
+    #[allow(dead_code)]
+    pub fn repeatability(&self, operation: &str) -> Repeatable {
+        if self.repeatable.iter().any(|o| o == operation) {
+            Repeatable::Yes
+        } else {
+            Repeatable::No
+        }
+    }
 }
