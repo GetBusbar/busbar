@@ -323,6 +323,12 @@ impl HttpTransport {
             io::ErrorKind::AddrNotAvailable | io::ErrorKind::InvalidInput => {
                 TransportError::AddressRefused
             }
+            // A TLS peer that went away with no `close_notify` behind it, which this crate reaches
+            // because its egress client runs over the same record layer the `tls` sibling does.
+            // `map_egress_err` answers with THIS mapper for the first io error in the chain, ahead
+            // of the hyper arm written to call a body cut short a reset — so without this arm the
+            // truncated answer arrives named after the catch-all instead of after what happened.
+            io::ErrorKind::UnexpectedEof => TransportError::Reset,
             _ => TransportError::Closed,
         }
     }

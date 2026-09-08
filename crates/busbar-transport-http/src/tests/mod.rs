@@ -1208,6 +1208,11 @@ async fn every_transport_error_is_mapped_on_dial() {
             TransportError::AddressRefused,
         ),
         (io::ErrorKind::InvalidInput, TransportError::AddressRefused),
+        // This crate's egress runs over rustls, and `map_egress_err` returns this mapper's answer
+        // for the FIRST io error in the chain — ahead of the hyper arm below it that exists to
+        // call a body cut short a reset. A stream that ended without the close alert did not end;
+        // sharing a name with a broken pipe is a name for a bucket, not for what happened.
+        (io::ErrorKind::UnexpectedEof, TransportError::Reset),
         (io::ErrorKind::BrokenPipe, TransportError::Closed),
         (io::ErrorKind::NotFound, TransportError::Closed),
     ] {
