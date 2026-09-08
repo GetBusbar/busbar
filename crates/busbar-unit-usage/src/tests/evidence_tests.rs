@@ -16,8 +16,8 @@ use busbar_caps::step::MeterClassId;
 
 use super::{counts, kernel_count, located, plane_count, token, usage, INPUT, OUTPUT};
 use crate::{
-    cross_check_lane, meter, settle, DisputeReason, Evidence, KernelCounts, LaneLegs, LegDeclaration,
-    MeterPolicy, RetainedLocatorValues, SettleFlag, Settlement, UnitEndKind,
+    cross_check_lane, meter, settle, DisputeReason, Evidence, KernelCounts, LaneLegs,
+    LegDeclaration, MeterPolicy, RetainedLocatorValues, SettleFlag, Settlement, UnitEndKind,
 };
 use busbar_contract::ClassDirection as Direction;
 
@@ -289,6 +289,9 @@ fn the_completed_row_bills_the_located_figure_and_says_so() {
     let settlement = settle(UnitEndKind::Completed, &evidence);
 
     assert!(!settlement.is_zero());
-    assert_eq!(super::pairs(&settlement.lines), vec![(INPUT, 12), (OUTPUT, 4)]);
+    assert_eq!(
+        super::pairs(&settlement.lines),
+        vec![(INPUT, 12), (OUTPUT, 4)]
+    );
     assert!(!settlement.flags.contains(&SettleFlag::Estimated));
 }
