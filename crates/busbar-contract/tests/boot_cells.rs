@@ -216,14 +216,15 @@ fn a_registration_interns_a_configured_key_exactly_once() {
 
 /// Registration refuses a transport that publishes a reserved fact key it did not declare.
 ///
-/// The six reserved keys are the structural values the arrival grammar resolves against, and a
-/// plane cannot see a connection, so the request target reaches it as one of them. A transport that
-/// writes one without declaring it is a value a plane reads and no boot check knows about.
+/// The nine reserved keys are the structural values the arrival grammar resolves against, and a
+/// plane cannot see a connection, so what the request named and what it presented reach a plane as
+/// one of them. A transport that writes one without declaring it is a value a plane reads and no
+/// boot check knows about.
 #[test]
 fn a_transport_must_declare_every_reserved_key_it_publishes() {
     use busbar_contract::transport::facts;
 
-    assert_eq!(facts::RESERVED.len(), 6);
+    assert_eq!(facts::RESERVED.len(), 9);
     for key in facts::RESERVED {
         assert!(facts::is_reserved(key));
     }

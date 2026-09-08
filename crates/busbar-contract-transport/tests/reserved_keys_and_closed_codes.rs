@@ -24,18 +24,21 @@ use busbar_contract_transport::{
 
 // ── the reserved fact keys ───────────────────────────────────────────────────────────────────────
 
-/// The six spellings, written out here rather than read off the constants.
+/// The nine spellings, written out here rather than read off the constants.
 ///
 /// A test that compared `facts::PATH` against `facts::PATH` would agree with itself for free: the
 /// point of the list is that three planes each guessed `"path"`, so the guess is what has to be
 /// pinned. These literals are that guess, recorded once.
-const SPELLINGS: [(&str, &str); 6] = [
+const SPELLINGS: [(&str, &str); 9] = [
     ("PATH", "path"),
     ("METHOD", "method"),
     ("AUTHORITY", "authority"),
     ("ALPN", "alpn"),
     ("SNI", "sni"),
     ("PEER", "peer"),
+    ("CREDENTIAL", "credential"),
+    ("ACCEPTS", "accepts"),
+    ("MEDIA", "media"),
 ];
 
 #[test]
@@ -48,13 +51,16 @@ fn every_reserved_key_is_spelled_the_way_the_planes_guessed_it() {
             facts::ALPN,
             facts::SNI,
             facts::PEER,
+            facts::CREDENTIAL,
+            facts::ACCEPTS,
+            facts::MEDIA,
         ],
         SPELLINGS.map(|(_, wire)| wire),
     );
 }
 
 #[test]
-fn the_reserved_list_is_exactly_the_six_keys_and_names_none_of_them_twice() {
+fn the_reserved_list_is_exactly_the_nine_keys_and_names_none_of_them_twice() {
     assert_eq!(facts::RESERVED, &SPELLINGS.map(|(_, wire)| wire)[..]);
     let mut seen = facts::RESERVED.to_vec();
     seen.sort_unstable();
