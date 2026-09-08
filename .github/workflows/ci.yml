@@ -1903,6 +1903,43 @@ jobs:
             exit 1
           fi
 
+      # THE SAME INVARIANT, THE OTHER HALF OF ITS SCOPE. ARCHITECTURE.md's measured-invariants row
+      # scopes "heap allocations per one-shot unit outside the arena" to "the process allocator on
+      # the Teller path" — and the step above measures busbar-llm's forward path, which is not the
+      # Teller. Nothing measured the kernel's own `exit()`, the one function every unit that ends
+      # runs, so an allocation added there was invisible to the ratchet the number rests on: the
+      # stated scope was wider than the instrument enforcing it.
+      #
+      # Its own step rather than a line in `cargo test --workspace`, and floored for the same reason
+      # the one above is: the workspace run has no floor, so a gate that stopped being collected
+      # would go quiet rather than red — which is exactly the silence the comment above exists about.
+      - name: Allocation-count perf gate (kernel Teller path)
+        env:
+          # `one_one_shot_unit_stays_within_the_ratchet` + `the_exit_path_stays_within_the_ratchet`.
+          # RAISE this when a case is added; a filter matching fewer has stopped selecting the gate.
+          KERNEL_ALLOC_GATE_MIN_TESTS: "2"
+        run: |
+          set -uo pipefail
+          cargo test -p busbar-kernel --test alloc_gate -- --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/kernel-alloc-gate.log"
+          rc=${PIPESTATUS[0]}
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/kernel-alloc-gate.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          failed=$(grep -oE '[0-9]+ failed' "$RUNNER_TEMP/kernel-alloc-gate.log" \
+                  | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
+          echo "kernel alloc gate: ${total} test(s) passed, ${failed} failed (floor: ${KERNEL_ALLOC_GATE_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the kernel allocation-count perf gate FAILED (exit ${rc}, ${failed} failing test(s))."
+            exit "${rc:-1}"
+          fi
+          if [ "$total" -lt "$KERNEL_ALLOC_GATE_MIN_TESTS" ]; then
+            echo "::error::the kernel alloc-gate collected ${total} test(s), below its floor of ${KERNEL_ALLOC_GATE_MIN_TESTS}."
+            echo "::error::A libtest filter that matches NOTHING prints 'test result: ok' and exits 0."
+            echo "::error::Repoint this step at the moved gate; do not lower the floor."
+            exit 1
+          fi
+
   # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
   # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
   # (dev/qa/main). The stage mirroring is preserved in the FILE NAME, not in the branch the file is
