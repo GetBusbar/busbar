@@ -941,9 +941,18 @@ impl Records {
     /// Bind this plane's record legs to the loaded store.
     #[must_use]
     pub fn new(adapter: &StoreAdapter) -> Self {
-        Records {
-            store: adapter.store(),
-        }
+        Records::over(adapter.store())
+    }
+
+    /// Bind them to the store handle itself.
+    ///
+    /// The adapter's whole contribution above is `adapter.store()`, and a leg assembled at boot
+    /// holds the handle rather than the adapter that opened it — the same shape the sibling plane's
+    /// `RecordLegs::new` has. Written as the one constructor the other calls, so there is one place
+    /// this binding is made rather than two that could bind different stores.
+    #[must_use]
+    pub fn over(store: Arc<dyn AbiStore>) -> Self {
+        Records { store }
     }
 
     /// Run one leg.
