@@ -310,8 +310,8 @@ impl Plane for VoicePlane {
     fn encode_refusal<'u>(
         &self,
         refusal: &Refusal,
-        _draft: Option<&UnitDraft<'u>>,
-        _st: Option<&PlaneSessionState>,
+        draft: Option<&UnitDraft<'u>>,
+        st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
         let (code, message) = refusal_render(refusal.reason);
@@ -319,18 +319,27 @@ impl Plane for VoicePlane {
             code: code.to_string(),
             message: message.to_string(),
         };
-        // A refusal is rendered in the OpenAI Realtime shape unconditionally: `st` is deliberately
-        // `&PlaneSessionState` (immutable — a refusal never advances codec state, per the trait's own
-        // doc comment), so this plane cannot read back which dialect a not-yet-open session even
-        // claimed. `error` is one of the few wire shapes both duplex dialects converge on closely
-        // enough that a client library for either can surface it; a fully dialect-correct refusal
-        // would need the immutable half of the state to still carry the negotiated dialect, which it
-        // does today (`VoiceSessionState::dialect`) but this method has no path to it before Unit 0
-        // completes. Flagged rather than guessed past.
+        // A refusal is written in the dialect of the session it refuses. It used to be written in
+        // the OpenAI Realtime shape unconditionally, defended by a comment saying `st` is
+        // deliberately immutable and so "this method has no path" to the session's dialect.
+        // `PlaneSessionState::get` takes `&self`: the path was always there, and a Gemini Live
+        // session — a live, claimed dialect — was handed an error frame in a shape its client
+        // library has no case for. The draft answers for a unit whose session half has not been
+        // opened yet; OpenAI Realtime remains the floor when neither can say.
+        let dialect = st
+            .and_then(PlaneSessionState::get::<VoiceSessionState>)
+            .and_then(|s| s.dialect)
+            .or_else(|| match draft.map(|d| d.facts.get(meta::FACT_DIALECT)) {
+                Some(Some(FactValue::Str(name))) => dialect_from_name(name),
+                _ => None,
+            })
+            .unwrap_or(Dialect::OpenaiRealtime);
         // The write seam threads the session's decode state (it holds what framing cannot answer
         // per-event); a refusal reaches none of the session's state here, and needs none — it is one
         // self-contained frame with nothing accumulated behind it, so it is framed against a fresh one.
-        let bytes = OpenAiRealtimeCodec
+        // That is also what keeps the immutable borrow honest: reading the dialect back advances
+        // nothing, so a client that never saw a numbered message cannot desynchronise against one.
+        let bytes = writer_for(dialect)
             .write_down(event, &mut DecodeState::default())
             .ok_or(Encode::Unrepresentable)?
             .0;

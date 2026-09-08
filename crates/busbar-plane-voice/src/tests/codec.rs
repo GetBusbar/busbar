@@ -1446,6 +1446,52 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
     }
 }
 
+/// A refusal is written in the dialect of the session it refuses.
+///
+/// Every refusal used to be rendered in the OpenAI Realtime shape unconditionally, defended by a
+/// comment saying this method "has no path" to the session's dialect because the state is borrowed
+/// immutably. `PlaneSessionState::get` takes `&self`; the path was always there. A Gemini Live
+/// session — a live, claimed dialect — was handed an OpenAI-shaped error frame its client library
+/// has no case for.
+#[test]
+fn a_refusal_is_written_in_the_dialect_of_the_session_it_refuses() {
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime/gemini");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let gemini = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::GeminiLive,
+    ));
+
+    let refusal = Refusal {
+        step: Step::Decode,
+        reason: RefusalReason::RateLimited,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let bytes = plane
+        .encode_refusal(&refusal, None, Some(&gemini), &c)
+        .expect("a refusal renders");
+    let parsed: serde_json::Value =
+        serde_json::from_slice(bytes.as_slice()).expect("the refusal is JSON");
+    // Gemini has no first-class error frame; its own writer surfaces one inside `serverContent`.
+    let error = &parsed["serverContent"]["error"];
+    assert_eq!(
+        error["code"], "rate_limited",
+        "the refusal must reach a Gemini client in the shape a Gemini client reads: {parsed}"
+    );
+    assert!(error["message"].is_string(), "the error carries a message");
+    assert!(
+        parsed.get("type").is_none(),
+        "an OpenAI Realtime `error` event is not what a Gemini session speaks: {parsed}"
+    );
+}
+
 /// A barge-in on an OPEN turn opens the turn that takes over.
 ///
 /// The scheduler reads the interrupt fact off an open and nowhere else — that is the one dispatch
