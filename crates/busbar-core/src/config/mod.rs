@@ -505,10 +505,12 @@ pub struct RootCfg {
     /// The `tool_pools:` MCP failover pools, carried through `resolve` VERBATIM — operator intent,
     /// like `tool_defs` beside it, projected onto `state::App::tool_pools` at build. Empty ⇒ no
     /// MCP failover.
-    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub tool_pools:
+        std::collections::BTreeMap<String, busbar_substrate::config::pools::CandidatePoolCfg>,
     /// The `agent_pools:` A2A failover pools, carried through `resolve` VERBATIM onto
     /// `state::App::agent_pools`. Empty ⇒ no A2A failover.
-    pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub agent_pools:
+        std::collections::BTreeMap<String, busbar_substrate::config::pools::CandidatePoolCfg>,
 }
 
 impl RootCfg {
@@ -907,7 +909,7 @@ fn check_failover_pool(
     errors: &mut Vec<String>,
     section: &str,
     pool: &str,
-    def: &crate::failover::CandidatePoolCfg,
+    def: &busbar_substrate::config::pools::CandidatePoolCfg,
     on_this_plane: impl Fn(&str) -> bool,
     on_other_plane: impl Fn(&str) -> bool,
     this_registry: &str,
@@ -2165,11 +2167,11 @@ pub fn resolve(
     // pool's plane is decided.
     let mut tool_pools_derived: std::collections::BTreeMap<
         String,
-        crate::failover::CandidatePoolCfg,
+        busbar_substrate::config::pools::CandidatePoolCfg,
     > = std::collections::BTreeMap::new();
     let mut agent_pools_derived: std::collections::BTreeMap<
         String,
-        crate::failover::CandidatePoolCfg,
+        busbar_substrate::config::pools::CandidatePoolCfg,
     > = std::collections::BTreeMap::new();
     {
         // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
@@ -2255,7 +2257,7 @@ pub fn resolve(
                 Some(k) if k == tools_section => {
                     tool_pools_derived.insert(
                         pool_name.clone(),
-                        crate::failover::CandidatePoolCfg {
+                        busbar_substrate::config::pools::CandidatePoolCfg {
                             members: pool.members.iter().map(|m| m.model.clone()).collect(),
                             repeatable: pool.repeatable.clone(),
                         },
@@ -2265,7 +2267,7 @@ pub fn resolve(
                 Some(k) if k == agents_section => {
                     agent_pools_derived.insert(
                         pool_name.clone(),
-                        crate::failover::CandidatePoolCfg {
+                        busbar_substrate::config::pools::CandidatePoolCfg {
                             members: pool.members.iter().map(|m| m.model.clone()).collect(),
                             repeatable: pool.repeatable.clone(),
                         },
