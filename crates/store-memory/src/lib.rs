@@ -32,6 +32,18 @@ const MAX_RETENTION_SECS: u64 = 31 * 86_400;
 /// `DEFAULT_RATE_SWEEP_INTERVAL` (`crates/busbar-core/src/config/mod.rs`).
 const SWEEP_INTERVAL: u64 = 256;
 
+/// One kernel-held durable record: the opaque body a plane wrote, plus the epoch-second it was last
+/// written at. The write time is carried here because it is the ONLY age the sweep can read — see
+/// [`MemoryStore::records`] for why a record has no timestamp column of its own.
+struct RecordRow {
+    written_at: u64,
+    value: RecordBytes,
+}
+
+/// The `records` map: `(schema, key) -> RecordRow`, in KEY ORDER because `record_scan` promises a
+/// prefix walk answers in it.
+type RecordMap = std::collections::BTreeMap<(String, Vec<u8>), RecordRow>;
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -75,17 +87,37 @@ pub struct MemoryStore {
     /// A `BTreeMap` because `record_scan` walks a PREFIX and answers in key order: a hash map would
     /// have to sort on every scan, and "the order a scan answers in" is a promise a caller reads a
     /// chain by.
-    records: RwLock<std::collections::BTreeMap<(String, Vec<u8>), RecordBytes>>,
+    ///
+    /// BOUNDED, like every other map here, and the bound has to be carried in the VALUE. The
+    /// sibling maps age off a timestamp that is already part of the row — `window_start`, `bucket`,
+    /// `deleted_at`, `revoked_at`, a token's own `expires_at`. A record has none: its key is opaque
+    /// bytes and its value is an opaque body this backend never decodes, so there is no column to
+    /// read an age from. The row therefore carries its own WRITE TIME alongside the body, and
+    /// `record_put` sweeps against the same `MAX_RETENTION_SECS` ceiling on the same
+    /// `SWEEP_INTERVAL` ticker. Write time is the right axis: `record_put` REPLACES, so a row a
+    /// plane is still updating is refreshed by every update, and only a row nothing has touched for
+    /// 31 days ages out.
+    ///
+    /// This is a BOUND, not a delete verb. `busbar_contract::kinds::Store` declares
+    /// `record_put`/`record_get`/`record_scan` and nothing that removes a row (`purge_before` is
+    /// stream-keyed and this crate does not implement it), so a backend cannot invent one here — the
+    /// verb would exist on this store and on no other, and a caller written against it would break
+    /// on the next backend. Adding one is the contract owner's call; keeping the map unbounded until
+    /// then was not an option, because `MemoryStore` is the DEFAULT `db` backend of a long-lived
+    /// proxy process.
+    records: RwLock<RecordMap>,
     /// The durable admin AUDIT log, by `seq`. EPHEMERAL like every other map here — this backend is
     /// RAM — but append-only and fork-detecting within the process's life, which is what the
     /// engine's write-through actually asks of a store. Ordered reads come from the `BTreeMap`.
     audit: RwLock<std::collections::BTreeMap<u64, AuditRecord>>,
-    /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked `creds` (see
-    /// `MAX_RETENTION_SECS`). Separate per map since the maps see independent write rates.
+    /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked
+    /// `creds`/`records` (see `MAX_RETENTION_SECS`). Separate per map since the maps see independent
+    /// write rates.
     usage_sweep_ticker: AtomicU64,
     metering_sweep_ticker: AtomicU64,
     keys_sweep_ticker: AtomicU64,
     creds_sweep_ticker: AtomicU64,
+    records_sweep_ticker: AtomicU64,
     /// The store-global monotonic revision counter (see `VirtualKey::revision`). Bumped on every
     /// mutation to `keys`/`creds`/the denylist.
     revision: AtomicU64,
@@ -127,10 +159,29 @@ impl MemoryStore {
         key: &[u8],
         value: &RecordBytes,
     ) -> Result<(), ContractStoreError> {
-        self.records
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((schema.as_str().to_string(), key.to_vec()), value.clone());
+        let written_at = self.now();
+        let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
+        records.insert(
+            (schema.as_str().to_string(), key.to_vec()),
+            RecordRow {
+                written_at,
+                value: value.clone(),
+            },
+        );
+
+        // Amortized bounded eviction, mirroring `add_usage`/`add_metering`/`put_key`/
+        // `put_credential` above — same ceiling, same cadence, same `>` boundary. This is the map's
+        // ONLY shrink path: the contract declares no delete verb (see the field's doc), so without
+        // it nothing internal or external could ever prune a row.
+        let sweep_needed = self
+            .records_sweep_ticker
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1)
+            .is_multiple_of(SWEEP_INTERVAL);
+        if sweep_needed {
+            let n = self.now();
+            records.retain(|_, row| row.written_at.saturating_add(MAX_RETENTION_SECS) > n);
+        }
         Ok(())
     }
 
@@ -150,7 +201,7 @@ impl MemoryStore {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(schema.as_str().to_string(), key.to_vec()))
-            .cloned())
+            .map(|row| row.value.clone()))
     }
 
     /// Walk a plane's records under a prefix, in key order, at most `limit` of them.
@@ -176,7 +227,7 @@ impl MemoryStore {
             .iter()
             .filter(|((s, k), _)| s == schema && k.starts_with(prefix))
             .take(limit as usize)
-            .map(|((_, k), v)| (k.clone(), v.clone()))
+            .map(|((_, k), row)| (k.clone(), row.value.clone()))
             .collect())
     }
     fn keys(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, VirtualKey>> {
