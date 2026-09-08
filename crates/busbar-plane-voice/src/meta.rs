@@ -203,6 +203,15 @@ const OP_CLASSES: &[OpClassId] = &[
 
 /// The fact key under which the decode step reports which dialect a session or one-shot unit is.
 pub const FACT_DIALECT: &str = "dialect";
+/// The fact key under which a duplex turn carries its own identity.
+///
+/// The SAME key the turn's correlation is minted under, spelled once
+/// ([`crate::session::VoiceSessionState::TURN_FACT_KEY`]) and read here: the correlation is the
+/// kernel's copy and this fact is the plane's, and two spellings of one key is a turn whose two
+/// halves cannot recognise each other. It is on the draft because the destination half of a session
+/// — which accumulates what a turn is billed on — never mints a correlation and has no other way to
+/// learn which turn the frames it relays belong to.
+pub const FACT_TURN_ID: &str = crate::session::VoiceSessionState::TURN_FACT_KEY;
 /// The fact key under which a tool-call unit reports the tool name.
 pub const FACT_TOOL_NAME: &str = "tool_name";
 /// The fact key under which a tool-call unit reports the upstream's own call id.

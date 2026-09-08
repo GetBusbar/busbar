@@ -45,10 +45,9 @@
 //!
 //! Nothing of its own. The plane value itself ([`VoicePlane`]) is immutable and carries only its
 //! configured upstream list. What a session needs across frames — the codec's per-connection state,
-//! the negotiated dialect, the counters this crate derives itself (`audio_seconds_in`, `tool_calls`),
-//! and the one pending IR event a two-step ingress/egress or decode/encode pair needs to hand across
-//! — lives in the kernel-held [`busbar_contract::plane::PlaneSessionState`], via
-//! [`session::VoiceSessionState`].
+//! the negotiated dialect, the counters this crate derives itself (`audio_seconds_in`, `tool_calls`)
+//! and which turn they belong to — lives in the kernel-held
+//! [`busbar_contract::plane::PlaneSessionState`], via [`session::VoiceSessionState`].
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
