@@ -32,3 +32,7 @@ mod hook_view_wire_order;
 #[cfg(test)]
 #[path = "tests/named_def_view_split.rs"]
 mod named_def_view_split;
+
+#[cfg(test)]
+#[path = "tests/openapi_1_5_5_superset.rs"]
+mod openapi_1_5_5_superset;

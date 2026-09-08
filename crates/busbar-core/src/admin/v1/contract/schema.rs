@@ -169,9 +169,17 @@ pub(crate) struct ConfigRollbackView {
 /// an idempotent no-op).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct OverlayResetView {
-    /// The section that was reset. This endpoint's `section` path parameter enumerates the valid
-    /// set; it is deliberately not restated here, because the hand-written copy that used to sit on
-    /// this line went stale the moment a section was added.
+    /// The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).
+    //
+    // 1.5.5 text, VERBATIM and frozen: schemars generates this property's `description` from the
+    // doc comment, and PB-75 binds the served document to 1.5.5 byte-for-byte outside additive
+    // endpoints. 1.6.0 replaced the enumeration with a pointer to the path parameter — a genuine
+    // improvement, because this hand-written copy DOES go stale the moment a section is added, and
+    // it has: the live set is `OverlaySection::valid_names()`, which now also carries
+    // `identity-providers`, `export`, `tools` and `agents`. Both facts are true at once — the list
+    // above is incomplete, and it is the published 1.5.5 contract — so the correction is the
+    // owner's to make deliberately rather than as a side effect. The `section` PATH PARAMETER is
+    // the authoritative enumeration and is derived, not restated.
     pub(crate) reset: String,
     pub(crate) config_version: u64,
     /// `true` when the reset discarded overlay mutations; `false` for an already-empty section.

@@ -519,16 +519,19 @@ pub(crate) struct ProviderView {
 /// no `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the
 /// top-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and
 /// ATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it
-/// global, or at one pool's own `hooks:` list. On THIS API the same hook is written with
+/// global, or at one pool's own `hooks:` list. `groups:` and `phase:` are the config-file selection
+/// axes (which callers, which pipeline stages). On THIS API the same hook is written with
 /// `global: true`; the wire and the config file are deliberately different surfaces. Live connection
 /// status (`health`) is a separate endpoint. Additive-only.
-///
-/// `groups:` and `phase:` are the config-file SELECTION axes (which callers, which pipeline stages),
-/// and this view used to omit both. That was not a decision to keep them file-only: both are
-/// WRITABLE over this API (`POST`/`PUT /hooks` deserialize `config::HookCfg` verbatim, which is the
-/// documented "paste a `hooks:` entry" contract), so omitting them made a field an operator can set
-/// through the API one they could not read back through it. `groups` and the stage pair
-/// (`phase` + `fires_at`) close that.
+//
+// The paragraph above is the 1.5.5 type description VERBATIM and is bound that way by PB-75, which
+// holds the served `openapi.json` to 1.5.5 byte-for-byte outside additive endpoints. A schemars
+// `description` is generated from the doc comment, so EDITING THIS PROSE EDITS THE PUBLISHED
+// CONTRACT — 1.6.0 rewrote it in place (moving the `groups:`/`phase:` sentence into a new trailing
+// paragraph) and that alone put the document out of byte-parity. The 1.6.0 rationale that used to
+// live here now sits on the three fields it actually describes, at the bottom of the struct, where
+// it is additive: a NEW property's description is new bytes under a new key, which the superset
+// rule permits. Explain a new field on the new field.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub(crate) struct HookView {
@@ -542,14 +545,14 @@ pub(crate) struct HookView {
     pub(crate) user: &'static str,
     /// Rewrite/reject ordering key (transform-chain order + reject tie-break).
     pub(crate) priority: u16,
-    /// The LEGACY single-valued tap stage (`"request"`/`"candidate"`/`"routing"`/`"response"`), or
-    /// `null`. Kept for back-compat and NOT the field to read: `null` here does NOT mean "a gate"
-    /// and does not mean "unscoped". Every hook written in the current top-level `hooks:` grammar
-    /// has `at: null` by construction (`config::hook_cfg_from_def` never sets it, and
-    /// `--migrate-config` rewrites a legacy `at:` into `phase:`), so this field is `null` for
-    /// essentially every hook a running deployment has. Read `fires_at`.
-    /// 1.6.0 owner rule: a 1.5.5 client reading this view must see this field byte-for-byte, so it
-    /// is RESTORED alongside `phase`/`fires_at`.
+    /// TAP observation stage (`"request"`/`"candidate"`/`"routing"`/`"response"`), or `None` for a gate.
+    //
+    // 1.5.5 text, VERBATIM and frozen (see the note on the type). What it does not say — that this
+    // is the LEGACY spelling, that `null` here means neither "a gate" nor "unscoped", and that
+    // every hook written in the current `hooks:` grammar has `at: null` by construction
+    // (`config::hook_cfg_from_def` never sets it; `--migrate-config` rewrites a legacy `at:` into
+    // `phase:`) — is said on `fires_at` below, which is the field that actually answers the
+    // question and is a 1.6.0 addition free to say so.
     pub(crate) at: Option<&'static str>,
     /// Gate fallback on timeout/error, a CLOSED, unambiguous string union: one of the
     /// reserved terminals (`"weighted"` | `"reject"` | `"first"` | `"nothing"`) or the NAME of the
@@ -583,21 +586,35 @@ pub(crate) struct HookView {
     // Appending keeps the 1.5.5 view a byte-exact PREFIX of the 1.6.0 view on both. Any future
     // addition goes at the BOTTOM of this block, never above `global`.
     // ---------------------------------------------------------------------------------------
-    /// The `phase:` STAGE LIST exactly as configured, empty when unset. The literal config echo,
-    /// for an operator diffing what they wrote against what busbar parsed. It is NOT the effective
-    /// answer on its own: empty means "fall back", and what it falls back TO is `at:` if set and the
-    /// four core stages otherwise. For the effective answer read `fires_at`.
+    /// NEW IN 1.6.0. The `phase:` STAGE LIST exactly as configured, empty when unset. The literal
+    /// config echo, for an operator diffing what they wrote against what busbar parsed. It is NOT
+    /// the effective answer on its own: empty means "fall back", and what it falls back TO is `at:`
+    /// if set and the four core stages otherwise. For the effective answer read `fires_at`.
+    ///
+    /// Why this field exists: `phase:` is one of the two config-file SELECTION axes (which pipeline
+    /// stages; `groups` is the other, which callers), and this view used to omit both. That was
+    /// never a decision to keep them file-only — both are WRITABLE over this API (`POST`/`PUT
+    /// /hooks` deserialize `config::HookCfg` verbatim, the documented "paste a `hooks:` entry"
+    /// contract), so omitting them made a field an operator can SET through the API one they could
+    /// not READ BACK through it.
     pub(crate) phase: Vec<&'static str>,
-    /// The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline order, never
-    /// empty. This is the field that answers "when does this hook run", and it is computed by
-    /// `config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate the firing
-    /// path uses, so it cannot disagree with runtime behavior. It reflects the frozen precedence
-    /// (a non-empty `phase:` wins, else the legacy single `at:`, else the four core stages) without
-    /// asking the reader to re-derive it from the two spellings above.
+    /// NEW IN 1.6.0. The RESOLVED stage set: the stages this hook ACTUALLY fires at, in pipeline
+    /// order, never empty. This is the field that answers "when does this hook run", and it is
+    /// computed by `config::HookCfg::resolved_stages` through the same `fires_at_stage` predicate
+    /// the firing path uses, so it cannot disagree with runtime behavior. It reflects the frozen
+    /// precedence (a non-empty `phase:` wins, else the legacy single `at:`, else the four core
+    /// stages) without asking the reader to re-derive it from the two spellings above.
+    ///
+    /// READ THIS ONE, not `at`. `at` is the LEGACY single-valued spelling and is a trap: `null`
+    /// there does NOT mean "a gate" and does not mean "unscoped". Every hook written in the current
+    /// top-level `hooks:` grammar has `at: null` by construction — `config::hook_cfg_from_def`
+    /// never sets it, and `--migrate-config` rewrites a legacy `at:` into `phase:` — so `at` is
+    /// `null` for essentially every hook a running deployment has, while this field still says
+    /// exactly when the hook runs.
     pub(crate) fires_at: Vec<&'static str>,
-    /// The `groups:` CALLER SCOPE exactly as configured: the caller groups this hook fires for,
-    /// empty meaning ALL callers (unscoped). The other half of "when does this hook run", and the
-    /// same writable-but-unreadable gap `phase` had.
+    /// NEW IN 1.6.0. The `groups:` CALLER SCOPE exactly as configured: the caller groups this hook
+    /// fires for, empty meaning ALL callers (unscoped). The other half of "when does this hook
+    /// run", and it closed the same writable-but-unreadable gap `phase` did.
     pub(crate) groups: Vec<String>,
 }
 
