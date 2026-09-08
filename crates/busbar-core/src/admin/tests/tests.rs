@@ -475,39 +475,17 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/admin-auth` reports the admin-plane guard: with governance + an admin token it
-/// is `configured: true` with the `admin-token` module. Never a secret.
-#[tokio::test]
-async fn test_admin_v1_admin_auth_read() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    let body: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["configured"], true);
-    // modules reports the live admin_auth chain verbatim (the SAME resource PUT admin-auth writes)
-    assert!(body["modules"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|m| m == "admin-tokens"));
-
-    handle.abort();
-}
+// THE `GET /api/v1/admin/admin-auth` READ IS NOT TESTED HERE ANY MORE, because this router does not
+// answer it. It CROSSED to the composition root's loop in 1.6.0's admin Cut 1b: the loop reads this
+// generation's `admin_auth` chain through a neutral seam and renders the answer itself, and this
+// crate mounts `/admin-auth` for the `PUT` alone. Asking it here with a `GET` now collects a `405`,
+// which is a true statement about this router and says nothing about the operation.
+//
+// The claim moved with the operation, to `crates/busbar/src/root/units_admin/tests/units_admin.rs`,
+// where a composition can be stood up and the answer compared BYTE for byte instead of field by
+// field. The read-after-write half of it — that a `PUT` here is visible to the very next read there
+// — is a cell of its own, and it is the only place in the tree that can make that claim, because it
+// is the only place both halves exist at once.
 
 /// `GET /api/v1/admin/keys/{id}` returns one key's metadata (never the secret/hash); 404 for an
 /// unknown id. Fills the single-key read gap on the legacy key surface.
@@ -1664,24 +1642,14 @@ async fn test_admin_v1_put_auth_dry_run_guard() {
         .unwrap();
     assert_eq!(r.status().as_u16(), 200);
 
-    // READ-AFTER-WRITE: GET /api/v1/admin/admin-auth reflects exactly what the PUT installed —
-    // the write and read now name the SAME resource (previously PUT lived on /auth and GET
-    // admin-auth reported a hard-coded module, so they could never agree).
-    let body: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/admin-auth"))
-        .header("x-admin-token", "grp:admins")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(body["configured"], true);
-    assert_eq!(
-        body["modules"],
-        serde_json::json!(["test-scope-module"]),
-        "GET admin-auth mirrors the PUT'd chain verbatim"
-    );
+    // THE READ-AFTER-WRITE HALF IS NOT ASSERTED HERE ANY MORE. It was: this test used to `GET
+    // /admin-auth` and check the chain the `PUT` above installed came back verbatim. The two are
+    // no longer in one crate — the read CROSSED to the composition root's loop in 1.6.0's admin
+    // Cut 1b and this router mounts `/admin-auth` for the `PUT` alone — so the claim can only be
+    // made where both halves exist, and it is made there, as a cell of its own in the root's
+    // `units_admin` tests. What is still asserted here is everything the WRITE owns: the dry-run
+    // lockout guard, the unknown-module and stale-`If-Match` refusals, and that the old credential
+    // stops working on the very next request while the surviving one carries on.
 
     handle.abort();
 }
@@ -4000,37 +3968,11 @@ async fn test_admin_v1_plugins_catalog_by_type() {
     handle.abort();
 }
 
-/// `GET /api/v1/admin/auth` reports the ingress chain + upstream-credential mode, never a secret. A
-/// governance-only fixture (no explicit auth chain) is the open front door.
-#[tokio::test]
-async fn test_admin_v1_auth_read() {
-    crate::metrics::init();
-    let store = Arc::new(MemoryStore::new());
-    let gov = gov_with_signer(store, Some("admintok".to_string()));
-    let app = TestApp::new().governance(gov).build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let client = reqwest::Client::new();
-
-    let body: serde_json::Value = client
-        .get(format!("http://{addr}/api/v1/admin/auth"))
-        .header("x-admin-token", "admintok")
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert!(body["chain"].is_array());
-    assert_eq!(body["open"], true, "no explicit chain → open front door");
-    assert_eq!(body["upstream_credentials"], "own");
-    // Sanity: no secret-looking field leaked.
-    assert!(body.get("client_tokens").is_none());
-
-    handle.abort();
-}
+// THE `GET /api/v1/admin/auth` READ IS NOT TESTED HERE ANY MORE, for the reason `GET /admin-auth`
+// is not: it CROSSED to the composition root's loop in 1.6.0's admin Cut 1b, and this router has no
+// route for it. What this crate still renders off the very same fold — and still tests, in
+// `test_admin_v1_config_effective_snapshot_no_secrets` — is the `auth` MEMBER of the effective-config
+// read, which is the second of the two readings the fold exists to keep identical.
 
 /// `POST /api/v1/admin/config/validate` dry-runs a proposed config: a malformed body is a 400
 /// `invalid_request`; a well-formed body describing an INVALID config (here a provider reference

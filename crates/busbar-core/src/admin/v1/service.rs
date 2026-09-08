@@ -23,10 +23,10 @@ use busbar_substrate::diagnostics::{
 use busbar_substrate::{diag_debug, diag_error, diag_warn};
 
 use super::contract::{
-    AdminAuthView, AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView,
-    GroupView, HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView,
-    ModelView, NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView,
-    PoolMemberView, PoolView, ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
+    AdminError, AuthView, BuildInfo, ConfigValidateView, EffectiveConfigView, GroupView,
+    HookHealthView, HookTransportView, HookView, InfoView, KeyUsageView, ModelUsageView, ModelView,
+    NamedDefView, Page, PluginView, PoolDetailView, PoolMemberStatusView, PoolMemberView, PoolView,
+    ProviderView, TopologyInfo, UsageBreakdown, UsageView, UsageWindow,
 };
 use crate::config::named_map::NamedMapSection;
 use crate::config::{
@@ -2100,18 +2100,13 @@ impl AdminService {
         })
     }
 
-    /// `GET /api/v1/admin/admin-auth` — the ADMIN-plane auth config (distinct from the ingress chain).
-    /// Read scope. Reports the live `admin_auth` chain — the SAME resource `PUT /api/v1/admin/admin-auth`
-    /// writes, so a read-after-write is coherent (previously this hard-coded `["admin-token"]` and
-    /// never reflected a PUT). Never a secret.
-    pub(crate) async fn get_admin_auth(&self) -> Result<AdminAuthView, AdminError> {
-        let modules = self.app.admin_chain.clone();
-        Ok(AdminAuthView {
-            // An empty chain is the open (anonymous, full-authority) dev posture — NOT configured.
-            configured: !modules.is_empty(),
-            modules,
-        })
-    }
+    // NO `get_admin_auth` READ HERE. It CROSSED to the composition root's loop in 1.6.0's admin
+    // Cut 1b: the root reads this generation's `admin_auth` chain through the neutral node-facts
+    // seam (`App::admin_guard_chain`) and renders the answer itself. `PUT /admin-auth` — the
+    // config-plane WRITE that builds the next generation — is still this crate's, three methods
+    // below, and that split is the point: the write swaps a generation onto the handle the loop
+    // reads through, so the read-after-write coherence a client depends on now holds ACROSS the two
+    // halves rather than within one method.
 
     /// `GET /api/v1/admin/usage` — the fleet METERING read (FinOps surface): the current UTC-day
     /// bucket's raw consumption, aggregated per (model, provider) and per key, each row carrying the
@@ -2299,14 +2294,17 @@ impl AdminService {
     /// secret: only module names and the mode. This is READ-ONLY at runtime — the ingress chain is
     /// mutated through the config-plane write path (`PUT/POST /api/v1/admin/config`), not a dedicated PUT.
     /// (The ADMIN-plane chain, by contrast, has `PUT /api/v1/admin/admin-auth`.)
+    ///
+    /// THE FOLD IS THE STATE'S, not this method's. `GET /auth` CROSSED to the loop in 1.6.0's admin
+    /// Cut 1b and the composition root renders that answer from the same three neutral facts, so the
+    /// reading — including the credential-mode enum's mapping onto its wire word — lives once, and
+    /// what is left here is the rendering into the view type the effective-config read embeds.
     pub(crate) async fn get_auth(&self) -> Result<AuthView, AdminError> {
+        let (chain, upstream_credentials, open) = self.app.ingress_door_facts();
         Ok(AuthView {
-            chain: self.app.auth.chain_names(),
-            upstream_credentials: match self.app.upstream_creds() {
-                crate::auth::UpstreamCreds::Own => "own",
-                crate::auth::UpstreamCreds::Passthrough => "passthrough",
-            },
-            open: self.app.auth.is_open(),
+            chain,
+            upstream_credentials,
+            open,
         })
     }
 

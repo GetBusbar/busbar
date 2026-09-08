@@ -2865,14 +2865,14 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     assert_eq!(parsed["rows"][0]["provider"], hostile);
 }
 
-/// `answered_by` is the same ten the integration pin measures against a running surface.
+/// `answered_by` is the same twelve the integration pin measures against a running surface.
 ///
 /// The two halves of one claim, deliberately kept apart. `crates/busbar/tests/admin_verb_ownership.rs`
 /// serves the administrative surface and asks it which of the eighty-eight it has a route for; it
 /// cannot reach this function, because this crate mounts no library. This one can reach the function
-/// and cannot serve a router. So the integration pin measures the WORLD and names the ten it found,
-/// and this one checks that the production predicate — the one each crossing edits — names the same
-/// ten.
+/// and cannot serve a router. So the integration pin measures the WORLD and names the twelve it
+/// found, and this one checks that the production predicate — the one each crossing edits — names
+/// the same twelve.
 ///
 /// Written as the set rather than as a count for the reason the pin beside it gives: a count lets one
 /// verb leave the loop as another arrives.
@@ -2893,6 +2893,8 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         owned,
         vec![
             "chain_break",
+            "get_admin_auth",
+            "get_auth",
             "get_ledger_checkpoints",
             "get_ledger_migration",
             "get_ledger_openapi_json",
@@ -2906,9 +2908,9 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: seventy-eight of the eighty-eight are
+    // The complement is not empty and is not the whole table: seventy-six of the eighty-eight are
     // still produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 78);
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 76);
 }
 
 // ── the crossed operations, asked of the composition ────────────────────────────────────────────
@@ -2969,18 +2971,74 @@ fn a_node_over(lanes: &[(&str, &str)]) -> Arc<busbar_core::state::App> {
     app.build()
 }
 
-/// One GET through the composition, as the status, the content type and the body bytes.
+/// A composition whose node can IDENTIFY an operator, over a writable config overlay.
+///
+/// The two things a config-plane WRITE needs and the read-only fixtures above deliberately do not
+/// have. The write's lock-out guard evaluates THIS caller against the chain being installed and
+/// refuses a change the caller would not survive, so a fixture with no registry cannot perform one
+/// at all; and a config with no writable overlay is LOCKED by the 1.5.3 invariant and refuses every
+/// config mutation. `TestApp` provides the overlay by default (a temp backend, exactly as a mutable
+/// production boot does) — the registry is what has to be said.
+///
+/// The chain STARTS open, so the change the write makes is visible in the read on both sides: an
+/// open node reports `configured: false` and an empty list, and there is no way to read the
+/// post-state as the pre-state.
 #[cfg(feature = "root-admin")]
-async fn get_through_the_composition(
+fn a_composition_that_can_identify_an_operator(
+    admin_token: &str,
+) -> (axum::Router, Arc<busbar_core::state::AppHandle>) {
+    use busbar_core::test_support::TestApp;
+
+    busbar_core::metrics::init();
+    busbar_llm::testkit::install_test_seams();
+    let governance = Arc::new(
+        busbar_core::governance::GovState::new_with_signer(
+            Arc::new(busbar_store_memory::MemoryStore::new()),
+            Some(admin_token.to_string()),
+            None,
+        )
+        .expect("a governance registry over an in-memory store"),
+    );
+    let node = TestApp::new()
+        .admin_chain(vec![])
+        .governance(governance)
+        .build();
+    let (_data, admin, handle) =
+        busbar_core::build_split_routers_with_limits(node, 1 << 20, 0, false);
+    let held = Arc::clone(&handle);
+    let router = mount(
+        admin,
+        busbar_kernel::teller::Kernel::new(),
+        1 << 20,
+        move |dispatch| {
+            crate::root::kernel::ProductionUnits::admin_only(dispatch)
+                .with_admin_facts(Arc::new(HandleFacts::new(held)))
+        },
+    );
+    (router, handle)
+}
+
+/// One request through the composition, as the status, the response headers and the body bytes.
+///
+/// The WHOLE header list, because a crossed read's headers are as pinned as its bytes — the
+/// config-plane `ETag` is the fact a mutating caller chains `If-Match` off — and because a helper
+/// that projected out one header would have to be extended per header a test cares about.
+#[cfg(feature = "root-admin")]
+async fn through_the_composition(
     router: &axum::Router,
+    method: &str,
     path: &str,
-) -> (u16, Option<String>, String) {
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (u16, Vec<(String, String)>, String) {
     use tower::ServiceExt;
 
-    let request = axum::http::Request::builder()
-        .method("GET")
-        .uri(path)
-        .body(axum::body::Body::empty())
+    let mut builder = axum::http::Request::builder().method(method).uri(path);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let request = builder
+        .body(axum::body::Body::from(body.to_string()))
         .expect("the request builds");
     let response = router
         .clone()
@@ -2988,19 +3046,43 @@ async fn get_through_the_composition(
         .await
         .expect("the composition answers");
     let status = response.status().as_u16();
-    let content_type = response
+    let headers = response
         .headers()
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(ToString::to_string);
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                value.to_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("a body");
     (
         status,
-        content_type,
+        headers,
         String::from_utf8(bytes.to_vec()).expect("the body is text"),
     )
+}
+
+/// The value of one response header, or `None` when the answer did not carry it.
+#[cfg(feature = "root-admin")]
+fn header(headers: &[(String, String)], name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| v.clone())
+}
+
+/// One GET through the composition, as the status, the content type and the body bytes.
+#[cfg(feature = "root-admin")]
+async fn get_through_the_composition(
+    router: &axum::Router,
+    path: &str,
+) -> (u16, Option<String>, String) {
+    let (status, headers, body) = through_the_composition(router, "GET", path, &[], "").await;
+    (status, header(&headers, "content-type"), body)
 }
 
 /// Each crossed topology read is answered by the loop, in the bytes the retired handler produced.
@@ -3033,6 +3115,122 @@ async fn the_crossed_topology_reads_are_answered_by_the_loop_in_the_retired_hand
         body,
         "{\"items\":[{\"provider\":\"prov-x\",\"model_count\":1},\
          {\"provider\":\"prov-y\",\"model_count\":1}],\"next_cursor\":null}"
+    );
+}
+
+/// The crossed `GET /admin-auth` is answered by the loop, in the retired handler's bytes AND its
+/// `ETag`.
+///
+/// The header is asserted beside the body because for this operation it is not decoration: `PUT
+/// /admin-auth` chains `If-Match` off exactly this value, so an answer that dropped it would leave
+/// every optimistic-concurrency client unable to write, and an answer that carried a different
+/// generation's would let one write over a state it never read. The fixture's node has applied no
+/// config, so the generation is the boot one.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_crossed_admin_auth_read_is_answered_by_the_loop_with_its_config_etag() {
+    let router = a_composition_over_two_providers();
+    let (status, headers, body) =
+        through_the_composition(&router, "GET", "/api/v1/admin/admin-auth", &[], "").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(
+        header(&headers, "content-type").as_deref(),
+        Some("application/json")
+    );
+    // The OPEN posture, which is what this fixture's node runs: an empty chain, and `configured`
+    // derived from it rather than asserted independently of it.
+    assert_eq!(body, "{\"configured\":false,\"modules\":[]}");
+    assert_eq!(
+        header(&headers, "etag").as_deref(),
+        Some("\"0\""),
+        "the crossed read must carry the config-plane ETag its PUT chains If-Match off"
+    );
+}
+
+/// The crossed `GET /auth` is answered by the loop, in the retired handler's bytes.
+///
+/// The fixture's node has no ingress chain, so the answer is the OPEN front door signing with its
+/// own credentials — the posture a deployment gets by configuring nothing, and the one whose three
+/// facts a reader is most likely to render two different ways.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_crossed_auth_read_is_answered_by_the_loop_in_the_retired_handlers_bytes() {
+    let router = a_composition_over_two_providers();
+    let (status, content_type, body) =
+        get_through_the_composition(&router, "/api/v1/admin/auth").await;
+
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        body,
+        "{\"chain\":[],\"upstream_credentials\":\"own\",\"open\":true}"
+    );
+}
+
+/// PUT-THEN-GET ACROSS THE TWO HALVES: the write the surface underneath still owns is visible to the
+/// read the loop now owns, on the very next request.
+///
+/// THE ONE CLAIM ONLY A COMPOSITION CAN MAKE, and the one this particular crossing had to be shaped
+/// around. `GET /admin-auth` and `PUT /admin-auth` are the same resource read and written, and until
+/// Cut 1b they were the same crate's two methods over the same `App`. They are now two crates: the
+/// write builds the next generation and swaps it onto the node's handle, and the read is rendered by
+/// the loop off whatever that handle currently holds. A seam that had captured a generation would
+/// pass every byte-for-byte assertion above and fail here — the operator would install a guard chain
+/// and read back the posture they had before, which from outside is indistinguishable from the write
+/// having been ignored, and silent.
+///
+/// It is a LITERAL PUT rather than a hand-placed generation, unlike the sibling cell for the table
+/// reads: this resource has a real write on the surface underneath, so the honest fixture is that
+/// write, through the same composition, with its lock-out guard and its `If-Match` intact.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn a_put_on_the_surface_is_visible_to_the_next_read_through_the_loop() {
+    const ADMIN_TOKEN: &str = "admintok";
+    let (router, _handle) = a_composition_that_can_identify_an_operator(ADMIN_TOKEN);
+
+    // THE PRE-STATE, read through the loop. The chain is open, so the write below is a change and
+    // not a re-statement of what was already there.
+    let (status, before_headers, before) =
+        through_the_composition(&router, "GET", "/api/v1/admin/admin-auth", &[], "").await;
+    assert_eq!(status, 200);
+    assert_eq!(before, "{\"configured\":false,\"modules\":[]}");
+    let etag = header(&before_headers, "etag").expect("the read carries a config-plane ETag");
+
+    // THE WRITE, through the same composition, chaining `If-Match` off the read above — which is the
+    // whole point of the read carrying the tag, and is only expressible when one composition serves
+    // both halves.
+    let (status, _, put_body) = through_the_composition(
+        &router,
+        "PUT",
+        "/api/v1/admin/admin-auth",
+        &[
+            ("x-admin-token", ADMIN_TOKEN),
+            ("content-type", "application/json"),
+            ("if-match", &etag),
+        ],
+        "{\"admin_auth\":[\"admin-tokens\"]}",
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the config-plane write the surface underneath still owns was refused: {put_body}"
+    );
+
+    // THE POST-STATE, read through the loop again. Same router, same handle, nothing rebuilt —
+    // because in production nothing is.
+    let (status, after_headers, after) =
+        through_the_composition(&router, "GET", "/api/v1/admin/admin-auth", &[], "").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        after, "{\"configured\":true,\"modules\":[\"admin-tokens\"]}",
+        "the crossed read is answering off the generation the write retired"
+    );
+    assert_ne!(
+        header(&after_headers, "etag"),
+        Some(etag),
+        "the ETag must name the generation the write left current, or a second write would chain \
+         off a state that no longer exists"
     );
 }
 
@@ -3157,9 +3355,15 @@ async fn every_crossed_view_has_a_mirror_whose_schema_is_the_served_bodys_keys()
             row.template
         );
 
-        // The envelope is a page, so the shape claim is only half made until the ITEM is compared
-        // too — an envelope whose items were the wrong shape would pass the line above.
-        let item_schema = resolve(&declared["properties"]["items"]["items"]);
+        // WHEN THE ENVELOPE IS A PAGE, the shape claim is only half made until the ITEM is compared
+        // too — an envelope whose items were the wrong shape would pass the line above. Not every
+        // crossed read is a page (`GET /admin-auth` is one flat object), and the condition is read
+        // off the DOCUMENT rather than off the body so a page that served an empty list is still
+        // recognised as a page and still required to carry an item.
+        let Some(items_schema) = declared["properties"]["items"].as_object() else {
+            continue;
+        };
+        let item_schema = resolve(&items_schema["items"]);
         let items = body["items"].as_array().expect("the page carries items");
         assert!(
             !items.is_empty(),

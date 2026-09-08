@@ -18,8 +18,8 @@
 //!
 //! | side | how it is decided | today |
 //! |---|---|---|
-//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 10 |
-//! | the surface answers, and the loop hands it back | everything else that is mounted | 64 |
+//! | the loop answers, and the surface has no route | a ledger view, a recovery verb, or one that has CROSSED | 12 |
+//! | the surface answers, and the loop hands it back | everything else that is mounted | 62 |
 //! | nobody answers | gated, then `404` — the shipped defect the sibling pin names | 14 |
 //!
 //! ## Why it is derived and then measured, rather than written down
@@ -87,7 +87,20 @@ const A_PATH_THAT_DOES_NOT_EXIST: &str = "/api/v1/admin/nope";
 /// verb never had a route, so forgetting one costs a bucket. A crossed verb HAD one, so a set that
 /// silently lost a row would call a deleted route "nobody answers" — the exact shipped defect the
 /// sibling pin exists to name — rather than a crossing that half happened.
-const CROSSED_VERBS: &[&str] = &["get_models", "get_providers"];
+const CROSSED_VERBS: &[&str] = &["get_admin_auth", "get_auth", "get_models", "get_providers"];
+
+/// What a surface that does NOT answer an operation answers with.
+///
+/// Two shapes, not one, and the second arrived with the first operation to cross off a path the
+/// surface still mounts for another METHOD. `GET /admin-auth` crossed; `PUT /admin-auth` did not,
+/// because it is a config-plane write. The route is still there for the `PUT`, so asking it with a
+/// `GET` collects a `405` — the router saying "this path, not this method", which is precisely the
+/// claim being measured: this surface does not answer this OPERATION.
+///
+/// Reading that `405` as "mounted" would call the crossing half-done and reading it as the control's
+/// `404` would erase the difference between a path that is gone and a method that is. It is neither,
+/// so it is named.
+const METHOD_NOT_ALLOWED: u16 = 405;
 
 /// The plane spells a row `get_audit`; the unit spells the same operation `GetAudit`. Comparing the
 /// two with separators and case removed joins them on the letters both crates copied out of the
@@ -168,6 +181,19 @@ async fn answer_of(addr: SocketAddr, method: &str, path: &str) -> (u16, String) 
     let status = response.status().as_u16();
     let body = response.text().await.expect("a body");
     (status, body)
+}
+
+/// Whether the surface underneath answers ONE operation — the row's path asked with the row's own
+/// method.
+///
+/// The comparison is against the control rather than against a literal, because a `404` from a
+/// mounted handler that looked for a name no deployment uses and a `404` from the router's
+/// unmatched-path fallback are the same STATUS and different answers; only the body tells them
+/// apart, and the control is the fallback's body. The `405` arm is the other way an unanswered
+/// operation looks — see [`METHOD_NOT_ALLOWED`].
+async fn answered_by_the_surface(method: &str, path: &str, absent: &(u16, String)) -> bool {
+    let answer = ask_a_fresh_surface(method, path).await;
+    answer.0 != METHOD_NOT_ALLOWED && &answer != absent
 }
 
 /// A concrete path for a row whose template names parameters.
@@ -295,7 +321,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
     let mut surface_answers = Vec::new();
     let mut nobody_answers = Vec::new();
     for row in &table {
-        let mounted = ask_a_fresh_surface(row.method, &concrete(row.template)).await != absent;
+        let mounted = answered_by_the_surface(row.method, &concrete(row.template), &absent).await;
         match (loop_answers(row.verb), mounted) {
             (true, false) => loop_owned.push(row.verb),
             (false, true) => surface_answers.push(row.verb),
@@ -310,12 +336,12 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
 
     assert_eq!(
         loop_owned.len(),
-        10,
+        12,
         "the loop answers a different number of operations than it did: {loop_owned:?}"
     );
     assert_eq!(
         surface_answers.len(),
-        64,
+        62,
         "the surface underneath answers a different number of operations than it did"
     );
     assert_eq!(
@@ -337,6 +363,8 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
         owned,
         vec![
             "chain_break",
+            "get_admin_auth",
+            "get_auth",
             "get_ledger_checkpoints",
             "get_ledger_migration",
             "get_ledger_openapi_json",
@@ -366,7 +394,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
             continue;
         };
         let by_the_loop = loop_answers(row.verb);
-        let mounted = ask_a_fresh_surface("GET", &path).await != absent;
+        let mounted = answered_by_the_surface("GET", &path, &absent).await;
         assert!(
             by_the_loop || mounted,
             "the composition documents GET {template} and neither the loop nor the surface \

@@ -309,6 +309,12 @@ bytes = { workspace = true }
 serde_json = { workspace = true }
 # tests/method_coverage.rs et al. keep their rationale from the pre-split manifest (git history).
 busbar-store-example-plugin = { path = "../store-example-plugin" }
+# The admin leg's PUT-then-GET coherence cell drives a REAL config-plane write through the
+# composition, and that write's lock-out guard only clears for a caller a governance registry can
+# identify — so the fixture needs a registry, and a registry needs a store. The in-memory one, for
+# the reason `busbar-mcp` and `busbar-a2a` already take it as a dev-dep: it is the store a fixture
+# uses when the claim is about something other than durability.
+busbar-store-memory = { path = "../store-memory" }
 # tests/cli_validate.rs builds signed plugin tarball fixtures.
 busbar-plugin-sign = { path = "../plugin-sign" }
 hex = { workspace = true }
