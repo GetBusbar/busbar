@@ -33,6 +33,24 @@ pub fn plane_keys_protocol() -> Vec<&'static str> {
     PLANE_KEYS.iter().copied().filter(|k| *k != "llm").collect()
 }
 
+/// THE PLANE KEYS THE DIRECTORY-RESOLVED GREP GATES SCAN, IN ONE PLACE.
+///
+/// `blocking-ffi`, `response-header` and `settings-leak` each add the plane homes to a fixed root
+/// list before scanning. This list used to be written out three times — plus a fourth copy as
+/// `structure_lint::roots::PLANES` — so adding a plane meant editing four independent lists, and
+/// missing three of them left those gates reporting CLEAN over a scan set that never contained the
+/// new plane. Zero files is the passing answer to every ban, so the drift is silent and it is a
+/// false green.
+///
+/// WHY THIS IS NOT [`plane_keys_protocol`]. A key only belongs here if [`PlaneRoots::resolve`] can
+/// find its home, and that search wants a DIRECTORY NAMED FOR THE KEY holding a `.rs` that declares
+/// the grammar. `mcp` and `a2a` have one (`busbar-mcp/src/mcp`, `busbar-a2a/src/a2a`); `llm` and
+/// `voice` declare `PLANE_DECL` in their crate's `src/lib.rs`, whose directory is `src`, so they
+/// resolve to `Missing`. Adding either here without giving it such a directory turns all three
+/// gates red — which is why the case in `xtask/tests/infra.rs` puts every entry to the tree rather
+/// than trusting the list.
+pub const PLANE_SCAN_KEYS: &[&str] = &["mcp", "a2a"];
+
 /// The PROTOCOL keys except `self`, canonical order.
 pub fn plane_keys_other(self_key: &str) -> Vec<&'static str> {
     plane_keys_protocol()
@@ -214,6 +232,41 @@ impl PlaneRoots {
         }
         (ok, errs)
     }
+}
+
+/// THE SCAN ROOTS FOR A DIRECTORY-RESOLVED GREP GATE: the caller's fixed roots plus the resolved
+/// plane homes, relative to the workspace root.
+///
+/// This body was written out three times, byte for byte, in `blocking_ffi`, `response_header` and
+/// `settings_leak`. Three copies of a resolver is three chances for one of them to be updated and
+/// the others not, and the failure that produces is a gate that keeps reporting clean over a scan
+/// set that quietly stopped including a plane.
+///
+/// IT TAKES PATHS, NOT A `Ctx`. This module has no `use crate::` line and is the one every gate
+/// imports; making it depend on a gate-facing type would invert that. The two things the body
+/// wanted from the context were `cx.abs("crates")` and `cx.root()`, so it takes those.
+pub fn resolved_scan_roots(
+    crates_dir: &Path,
+    workspace_root: &Path,
+    fixed: &[&str],
+    keys: &[&str],
+) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = fixed.iter().map(|r| (*r).to_string()).collect();
+    let (ok, errs) = PlaneRoots::at(crates_dir).resolve_all(keys);
+    if !errs.is_empty() {
+        return Err(errs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" | "));
+    }
+    for (_, dir) in ok {
+        let rel = dir
+            .strip_prefix(workspace_root)
+            .map_err(|_| format!("{} is not under the workspace root", dir.display()))?;
+        out.push(rel.to_string_lossy().replace('\\', "/"));
+    }
+    Ok(out)
 }
 
 /// The failure both searches below report: the path that could not be read, and why.
