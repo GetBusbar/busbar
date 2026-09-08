@@ -1096,7 +1096,7 @@ async fn a_call_answered_before_the_handler_runs_leaves_no_entry_behind() {
 /// the call over, and the map entry must go with it.
 #[tokio::test]
 async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], 0);
     let (tx, rx) = crate::conn::outbound_channel();
     let serial = state.register(3, crate::conn::opened(tx));
     let out = crate::server::OutStream::new(rx, state.clone(), StreamId(3), serial);
@@ -1117,7 +1117,7 @@ async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
 /// complete.
 #[tokio::test]
 async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], 0);
     let one = || {
         Ok((
             StreamId(1),
@@ -1195,7 +1195,7 @@ async fn an_arrival_names_the_port_it_arrived_on() {
 /// per abandoned call, held for the life of the process.
 #[tokio::test]
 async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_does() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], 0);
     let one = || {
         Ok((
             StreamId(1),
@@ -1710,7 +1710,7 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
     // Held so the far end is a live peer rather than a closed one.
     let _far = far;
     let (_cuttable, cut) = crate::conn::Cuttable::new(Box::new(near));
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], 0);
     state.arm_cut(cut.clone());
     assert!(
         tokio::runtime::Handle::try_current().is_err(),
@@ -1738,7 +1738,7 @@ fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
 /// call's sender, ending a second unit's answer for the first one's death.
 #[test]
 fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
-    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let state = crate::conn::ConnState::new(None, vec!["grpc"], 0);
     let (first_tx, _first_rx) = crate::conn::outbound_channel();
     let first = state.register(7, crate::conn::opened(first_tx));
     assert!(
@@ -1819,4 +1819,102 @@ async fn closing_a_dialled_connection_releases_its_socket() {
         ended.is_ok(),
         "a closed dialled connection kept its socket open: the peer never saw end-of-stream"
     );
+}
+
+/// The message ceiling this transport decodes against is the deployment's, not the framing
+/// library's.
+///
+/// A gRPC message is length-prefixed, so the framing layer refuses on a peer-declared length
+/// before it reserves for it — but against a number of its OWN unless one is handed down. A node
+/// that refuses a body of a given size at its HTTP door has no basis for buffering a larger one on
+/// the wire beside it, and an operator who moves that number has to see it move here too: raised,
+/// and a message the deployment accepts everywhere else is still refused here; lowered, and this
+/// wire gives back nothing.
+///
+/// Both directions are asserted, because a ceiling only one side of a round trip honours is one an
+/// operator cannot reason about: the accepted side refuses an over-ceiling REQUEST body, and the
+/// dialled side refuses an over-ceiling ANSWER. The under-ceiling message on the same connections
+/// still arrives byte-exact, so the cell is about the ceiling and not about the transport having
+/// stopped working.
+#[tokio::test]
+async fn the_configured_message_ceiling_is_the_one_both_directions_decode_against() {
+    const CEILING: usize = 512;
+
+    let server_t = std::sync::Arc::new(GrpcTransport::over_with_max_message_bytes(
+        std::sync::Arc::new(busbar_transport_http::HttpTransport::new(
+            busbar_transport_http::ClientSettings::default(),
+        )),
+        CEILING,
+    ));
+    let client_t = GrpcTransport::over_with_max_message_bytes(
+        std::sync::Arc::new(busbar_transport_tcp::TcpTransport::new()),
+        CEILING,
+    );
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // Under the ceiling: the round trip is untouched.
+    let small = vec![b's'; CEILING / 2];
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(&small))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (small_stream, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("a message under the ceiling arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        frame.bytes.len(),
+        small.len(),
+        "byte-exact under the ceiling"
+    );
+
+    // Over the ceiling, in the ANSWER direction: the dialled side refuses to decode it.
+    let big = vec![b'b'; CEILING * 4];
+    server_t
+        .write(&server_conn, small_stream, ArenaBytes::new(&big))
+        .await
+        .unwrap();
+    let mut client_frames = client_t.frames(client_conn.clone());
+    let answer = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+        .await
+        .expect("the dialled side answers rather than buffering past the ceiling")
+        .expect("the stream yields an item");
+    if let Ok((_s, frame)) = answer {
+        assert_ne!(
+            frame.bytes.len(),
+            big.len(),
+            "an answer past the configured ceiling was decoded whole"
+        );
+    }
+
+    // Over the ceiling, in the REQUEST direction: the accepting side refuses it too, on a call of
+    // its own so the refusal is about this message rather than about the one before it.
+    client_t
+        .write(&client_conn, StreamId(3), ArenaBytes::new(&big))
+        .await
+        .unwrap();
+    let served = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the accepting side answers rather than buffering past the ceiling")
+        .expect("the stream yields an item");
+    if let Ok((_s, frame)) = served {
+        assert_ne!(
+            frame.bytes.len(),
+            big.len(),
+            "a request body past the configured ceiling was decoded whole"
+        );
+    }
 }
