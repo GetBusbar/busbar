@@ -269,17 +269,75 @@ pub(crate) struct ConfigSettingsView {
     pub(crate) note: Option<String>,
 }
 
+// SCHEMA-ONLY from 1.6.0's admin Cut 1b: `GET /info` crossed to the composition root's loop, which
+// writes these bytes by hand off neutral node facts, so nothing in this crate serializes the three
+// views below. They stay because the frozen document must keep declaring a typed `$ref` for an
+// operation the composition still answers; the relation to the real bytes is the root's ownership
+// pin, not a type.
+//
+// A `//` COMMENT AND NOT A DOC COMMENT, here and on `AdminAuthView` below, because schemars emits a
+// doc comment as the schema's `description` and the served document is pinned BYTE for byte. A note
+// about where an operation is answered is a note to a reader of this file; putting it in a doc
+// comment would publish it to every client that fetches `openapi.json`, and move bytes doing it.
+
+/// The compiled-in plugin catalog + topology + uptime returned by `GET /api/v1/admin/info`. Powers
+/// version negotiation for tooling AND the compliance-by-compilation proof: `auth_modules`/`hook_plugins` reflect
+/// the ACTUAL binary (feature-gated at compile time), not config, so `--no-default-features` shows a
+/// provably smaller surface. No LLM content, ever.
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct InfoView {
+    /// busbar semantic version (`CARGO_PKG_VERSION`).
+    pub(crate) version: &'static str,
+    pub(crate) build: BuildInfo,
+    /// Seconds since process start, or `None` if the start instant was never stamped.
+    pub(crate) uptime_seconds: Option<u64>,
+    /// Epoch seconds of process start, the BOOT EPOCH marker: `config_version` (and any
+    /// process-local counter) resets on restart, so a consumer that sees `started_at` change knows
+    /// to read a counter reset as "new epoch", never as "reverted".
+    pub(crate) started_at: Option<u64>,
+    pub(crate) topology: TopologyInfo,
+    /// Whether config-overlay persistence is enabled, i.e. the config is MUTABLE with a writable
+    /// `config.overlay` backend: `true` = API-applied config changes are durable across restarts;
+    /// `false` = the config is LOCKED (`config.locked: true`) and admin-API config mutations are
+    /// refused. Lets tooling tell an operator whether runtime changes are accepted and durable.
+    pub(crate) config_persistence: bool,
+    /// Monotonic config version: `0` at boot, +1 per API config apply. Drift-detection: re-read and
+    /// compare to tell whether the running config changed. Process-local (resets on restart).
+    pub(crate) config_version: u64,
+}
+
+/// The compiled-in feature proof (`InfoView.build`).
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct BuildInfo {
+    /// Auth modules baked into this binary (e.g. `["tokens"]`; empty under `--no-default-features`).
+    pub(crate) auth_modules: Vec<&'static str>,
+    /// Hook plugins baked into this binary (e.g. `["ranking"]`).
+    pub(crate) hook_plugins: Vec<&'static str>,
+    /// The inline SWRR floor: ALWAYS `true` (compiled in unconditionally, non-removable).
+    pub(crate) weighted_floor: bool,
+}
+
+/// Pool/model/provider counts (`InfoView.topology`).
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct TopologyInfo {
+    pub(crate) pools: usize,
+    pub(crate) models: usize,
+    pub(crate) providers: usize,
+}
+
+// SCHEMA-ONLY from 1.6.0's admin Cut 1b, which is why `AdminAuthView` is in this module rather than
+// beside the serialized contract types. The read CROSSED: the composition root's loop answers it
+// now, writing the bytes by hand off a neutral seam, so nothing in this crate serializes this struct
+// and it exists purely so the frozen document keeps declaring a typed `$ref` for an operation the
+// composition still answers. The relation to the real bytes is a test, not a type — the root's
+// ownership pin compares the served body's keys against the properties declared here. The doc
+// comment below is VERBATIM the one this struct carried in `contract`, because it is the schema's
+// published `description` and the document is pinned byte for byte.
+
 /// The admin-plane auth read (`GET /api/v1/admin/admin-auth`): which modules guard the ADMIN surface
-/// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain — the SAME
-/// resource `PUT /api/v1/admin/admin-auth` writes, so a read-after-write is coherent. An empty chain
-/// is the open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.
-///
-/// SCHEMA-ONLY from 1.6.0's admin Cut 1b, which is why it is in this module rather than beside the
-/// serialized contract types. The read CROSSED: the composition root's loop answers it now, writing
-/// the bytes by hand off a neutral seam, so nothing in this crate serializes this struct and it
-/// exists purely so the frozen document keeps declaring a typed `$ref` for an operation the
-/// composition still answers. The relation to the real bytes is a test, not a type — the root's
-/// ownership pin compares the served body's keys against the properties declared here.
+/// (distinct from the ingress `auth` chain). `modules` is the live `admin_auth` chain (the SAME
+/// resource `PUT /api/v1/admin/admin-auth` writes), so a read-after-write is coherent. An empty chain is
+/// the open (anonymous, full-authority) dev posture, `configured: false`. Never a secret.
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct AdminAuthView {
     /// Whether an admin credential chain is configured. `false` = the empty chain = open dev posture.

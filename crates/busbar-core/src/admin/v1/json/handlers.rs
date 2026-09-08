@@ -5,11 +5,6 @@ use busbar_substrate::diagnostics::{
 };
 use busbar_substrate::{diag_error, diag_warn};
 
-/// `GET /api/v1/admin/info` — version, compiled-in plugin proof, uptime, topology.
-pub(crate) async fn info(State(handle): State<Arc<AppHandle>>) -> Response {
-    respond(StatusCode::OK, service(&handle).info().await)
-}
-
 /// `GET /api/v1/admin/pools` — pool topology read. `?detail=true` inlines each member's LIVE status
 /// (same row shape as `GET /pools/{name}`) so a dashboard reads the whole topology-with-health in
 /// ONE call instead of an M+1 fan-out.
@@ -4680,12 +4675,12 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
 
     use crate::admin::v1::contract::{
         AuthView, ConfigValidateView, EffectiveConfigView, GroupView, HookHealthView, HookView,
-        InfoView, ModelView, NamedDefView, Page, PluginInstallView, PluginReloadView, PluginView,
+        ModelView, NamedDefView, Page, PluginInstallView, PluginReloadView, PluginView,
         PoolDetailView, PoolView, ProviderView, UsageView,
     };
 
     // Info & topology.
-    typed!("/info", "get", "200", InfoView);
+    typed!("/info", "get", "200", sview::InfoView);
     typed!("/pools", "get", "200", Page<PoolView>);
     typed!("/pools/{name}", "get", "200", PoolDetailView);
     typed!("/models", "get", "200", Page<ModelView>);
