@@ -69,6 +69,17 @@ pub struct Request<'r> {
     pub authority: Option<&'r str>,
     /// The peer's source address as the bottom layer saw it.
     pub peer: &'r str,
+    /// The credential the caller presented, exactly as it arrived.
+    ///
+    /// Whole and unstripped: the scheme word travels with it, because deciding what a scheme means is
+    /// the authentication chain's and a transport that stripped one would be interpreting a
+    /// credential it may not read. `None` is a request that presented none, which is a posture a
+    /// declaration can legitimately admit — see [`Bar::Open`].
+    pub credential: Option<&'r str>,
+    /// What the caller said it will accept back, where it said anything.
+    pub accepts: Option<&'r str>,
+    /// The media type the caller said its body is, where it said anything.
+    pub media: Option<&'r str>,
     /// The request body.
     pub body: &'r [u8],
 }
@@ -190,6 +201,9 @@ pub const MOUNT_FACTS: &[&str] = &[
     tfacts::METHOD,
     tfacts::AUTHORITY,
     tfacts::PEER,
+    tfacts::CREDENTIAL,
+    tfacts::ACCEPTS,
+    tfacts::MEDIA,
 ];
 
 /// Build the fact list one arrival carries, reserved keys first.
@@ -214,6 +228,24 @@ pub fn published_facts<'a>(
         facts.push((tfacts::AUTHORITY, authority));
     }
     facts.push((tfacts::PEER, request.peer));
+    // THE THREE A REQUEST CARRIES ABOUT ITSELF rather than about where it was sent. They are pushed
+    // only where the request actually carried them, because an ABSENT fact and an EMPTY one are
+    // different statements: a plane reading an empty credential would be reading a credential that
+    // was presented and is blank, and a caller that presented none did not present a blank one.
+    //
+    // They are reserved keys and therefore ordered before the captures, for the same reason the four
+    // above are: a declaration is free to name a capture `credential`, and a unit authenticated
+    // against a template capture instead of against what the caller sent would be a door opened by
+    // whoever wrote the route.
+    if let Some(credential) = request.credential {
+        facts.push((tfacts::CREDENTIAL, credential));
+    }
+    if let Some(accepts) = request.accepts {
+        facts.push((tfacts::ACCEPTS, accepts));
+    }
+    if let Some(media) = request.media {
+        facts.push((tfacts::MEDIA, media));
+    }
     for c in captures {
         facts.push((c.name, c.value));
     }

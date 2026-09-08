@@ -20,7 +20,7 @@ pub const TRANSPORT_ABI: crate::AbiVersion = crate::AbiVersion(1);
 
 /// The transport fact keys the kernel reserves, spelled once.
 ///
-/// Transport facts are open vocabulary, which is right for a transport's own facts. These six are
+/// Transport facts are open vocabulary, which is right for a transport's own facts. These nine are
 /// not a transport's own: they are the structural values the arrival grammar already resolves
 /// against, and a plane cannot see a connection, so the request target reaches it as one of these
 /// or not at all. With nothing pinning the spelling, three planes each guessed `"path"` and said so
@@ -42,9 +42,31 @@ pub mod facts {
     pub const SNI: &str = "sni";
     /// The peer's source address as the bottom layer saw it.
     pub const PEER: &str = "peer";
+    /// The credential the caller presented, exactly as it arrived and with nothing stripped.
+    ///
+    /// The value is the whole of what the caller sent, scheme word included where its wire has one.
+    /// Deciding what a scheme means, and whether the credential is any good, is the authentication
+    /// chain's — a transport that stripped a prefix would be reading a credential it is not allowed
+    /// to interpret, and one that stripped the wrong prefix would turn one caller's secret into a
+    /// different string.
+    ///
+    /// Transport-neutral by name, because every wire this tree carries has one: HTTP spells it in a
+    /// header, the framed binding in metadata of the same name, and a session transport on the frame
+    /// that opened it. A plane reads the fact and never the header.
+    pub const CREDENTIAL: &str = "credential";
+    /// What the caller said it will accept back.
+    ///
+    /// The one fact that decides between two shapes of the SAME operation on some protocols — one
+    /// document or a run of them — which is a question about the answer's framing rather than about
+    /// what the request means, and therefore a transport fact rather than a plane's reading.
+    pub const ACCEPTS: &str = "accepts";
+    /// The media type the caller said its body is.
+    pub const MEDIA: &str = "media";
 
     /// Every reserved key, for the registration check and the boot cell that walks them.
-    pub const RESERVED: &[&str] = &[PATH, METHOD, AUTHORITY, ALPN, SNI, PEER];
+    pub const RESERVED: &[&str] = &[
+        PATH, METHOD, AUTHORITY, ALPN, SNI, PEER, CREDENTIAL, ACCEPTS, MEDIA,
+    ];
 
     /// Whether a key is one the kernel reserves.
     #[must_use]

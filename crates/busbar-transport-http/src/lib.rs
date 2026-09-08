@@ -522,6 +522,9 @@ impl TransportMeta for HttpTransport {
         tfacts::METHOD,
         tfacts::AUTHORITY,
         tfacts::PEER,
+        tfacts::CREDENTIAL,
+        tfacts::ACCEPTS,
+        tfacts::MEDIA,
     ];
     const DECODES_PAYLOAD: bool = false;
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
