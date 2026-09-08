@@ -960,6 +960,29 @@ jobs:
       - name: Public-hygiene gate
         run: python3 scripts/public-hygiene-lint.py --root .
 
+      # SECRET-VALUE-TYPE HYGIENE (scripts/secret-hygiene-gate.sh, docs/design/1.6.0-secret-hygiene.md):
+      # a known-secret field declared as a bare String/&str/Vec<u8> instead of busbar_api::Redacted<T>
+      # (leakable through a derived Debug/Serialize), and an `.expose_secret()` on the same statement
+      # as a log/audit/metric sink.
+      #
+      # IT HAD NO CALLER IN THIS FILE. The only invocation anywhere was the `secret-hygiene` segment
+      # in qa/segments.toml, which runs on the qa fleet — i.e. on promotion, not on a push and not on
+      # a pull request. So the scanner and its self-test existed, were correct, and observed nothing
+      # on the branch where the offending line is actually written. A gate whose red nobody sees
+      # until promotion is a gate that reports on history.
+      #
+      # It rides here rather than in a job of its own because it is the same shape as the lint above:
+      # one shell process over tracked files, no toolchain, no build. Self-test FIRST — a scanner
+      # that stopped matching would otherwise report zero debt as zero problems.
+      - name: Secret-hygiene self-test (a planted bare secret and a sink leak both proven RED)
+        run: scripts/secret-hygiene-gate.sh --selftest
+      # REPORT-ONLY, exactly as the qa segment runs it: the baseline debt is the Phase-2 egress
+      # credential holders, which Phase 2 converts post-pivot. Arming it is the documented one-flag
+      # flip (SECRET_GATE_REPORT_ONLY=0) with no code edit. Report-only here still means the DEBT
+      # COUNT and its file:line list are printed on every run, which is the thing that was missing.
+      - name: Secret-hygiene debt meter (report-only)
+        run: SECRET_GATE_REPORT_ONLY=1 scripts/secret-hygiene-gate.sh --report
+
   # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/store-qa-cycle.md) rests on the
   # four backend services being the SAME BYTES everywhere they are stood up. They were not: the
   # service containers were provisioned in five places — this file's `check` and `coverage` jobs,
@@ -1483,7 +1506,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
-          components: clippy
+          # llvm-tools supplies llvm-profdata, which pgo-drift-check.sh's self-test needs to build
+          # its constructed profiles. Without it that script REFUSES to run (exit 2) rather than
+          # skipping, which is the vacuous pass it exists to make impossible — so the component is
+          # part of wiring it, not an optimisation.
+          components: clippy, llvm-tools
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
@@ -1492,6 +1519,27 @@ jobs:
         run: scripts/profile-lock.sh --selftest
       - name: build-provenance gate self-test
         run: scripts/build-provenance-gate.sh --selftest
+
+      # PGO DRIFT (scripts/pgo-drift-check.sh): does the PGO trainer still heat the code production
+      # actually burns cycles in? Two gates that point in opposite directions — overlap ("is the
+      # trainer's heat recognizable to production") and the missing-table share ("is production's
+      # heat reachable by the trainer") — because either can read perfect while the other reads zero.
+      #
+      # IT HAD NO CALLER ANYWHERE. Not in this file, not in a workflow, not in qa/segments.toml, not
+      # in a script. It was written, calibrated against real artifacts, given a nine-case self-test,
+      # and then invoked by nothing — so both gates have been sitting at exit 0 by never running.
+      #
+      # WHAT IS WIRED HERE IS THE SELF-TEST, AND ONLY THAT, and the reason is written in the script's
+      # own header: the full run needs a `--folded` capture of PRODUCTION stacks, and there is no
+      # post-egress-cutover capture in this tree to give it. The header is explicit that
+      # --max-miss-share must be re-measured against such a capture "before wiring this script into
+      # CI". Running the full gate here would mean judging drift against a default nobody has
+      # calibrated — a number pretending to be a measurement. The self-test needs no capture at all:
+      # it constructs both profiles and proves both gates fire, plus five fail-closed arms. That is
+      # the half that can be honestly proven on every run, and it is the half that stops the script
+      # from rotting until a capture exists.
+      - name: PGO drift-check self-test (both gates proven to fire on constructed profiles)
+        run: scripts/pgo-drift-check.sh --selftest
 
       # STRUCTURAL: the release profile must be the locked optimized posture (source-level; lto and the
       # profile debug-assertions bit are not exposed to a build script, so they are locked here).
@@ -2011,11 +2059,16 @@ jobs:
   #      itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
-  # is a per-run fact instead. (`cargo xtask teller-steps --root-legs-gating` is a real fourth arm —
-  # the shipped root legs owe every GATING step a cell over the loop — and is not wired here yet
-  # because it is a strictly narrower bar than --root-legs, which already runs. The runner REFUSES
-  # an unknown flag with exit 2; the Python it replaced fell through into its default path, so a
-  # mistyped arm ran a check nobody asked for and reported green for it.)
+  #   4. --root-legs-gating  the shipped-leg bar: a `root-*` feature in the manifest's own `default`
+  #      line is the SHIPPED path for its plane, so a GATING step that no cell drives over that leg
+  #      is a half-answer, not a queue entry. It is a different question from --root-legs (which
+  #      asks whether the cells the matrix names still execute) and it was WIRED NOWHERE: the arm
+  #      was implemented, tested, documented as "a real fourth arm", and called by no job, no
+  #      segment and no script. An arm nobody runs is an arm whose red nobody sees, which is the
+  #      same as not having written it. It is wired here, where its two inputs — the matrix and the
+  #      manifest's `default` line — are both already checked out and neither costs a build.
+  # (The runner REFUSES an unknown flag with exit 2; the Python it replaced fell through into its
+  # default path, so a mistyped arm ran a check nobody asked for and reported green for it.)
   teller-steps:
     name: teller steps (one cell per Teller step per plane, and the cells RUN)
     runs-on: ubuntu-latest
@@ -2036,6 +2089,12 @@ jobs:
         run: cargo xtask gate teller-steps --selftest
       - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)
         run: cargo xtask gate teller-steps
+      # Ordered before the expensive arm on purpose: it reads two files and costs nothing, so a
+      # shipped leg with an undriven gating step reddens in seconds rather than after a full
+      # five-feature build of the binary crate.
+      - name: The shipped root legs owe every gating step a cell over the loop
+        run: cargo xtask teller-steps --root-legs-gating
+
       - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
         run: cargo xtask teller-steps --root-legs
 

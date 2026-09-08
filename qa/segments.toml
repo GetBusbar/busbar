@@ -492,12 +492,17 @@ tier   = "fast"
 # would have been invisible until release. `--root-legs` builds the binary crate with
 # root-admin,root-mcp,root-a2a,root-voice,root-llm, which is why it is the slowest row in this
 # manifest; it is worth it, because it is the only one that proves the cells execute.
-# NOTE: `--root-legs-gating` IS a real arm (the shipped root legs owe every gating step a cell over
-# the loop) and the runner refuses an unknown flag with exit 2 — the Python fell through into its
-# default path, so a mistyped arm ran a check nobody asked for. The --selftest (a matrix with
-# borrowed root evidence, a labelled root verdict, an unanswered plane, and a leg proving zero steps
-# each REFUSED) runs FIRST.
-run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs"
+# `--root-legs-gating` is the fourth arm and it now RUNS here: a `root-*` feature on the manifest's
+# own `default` line is the shipped path for its plane, so a gating step no cell drives over that leg
+# is a half-answer, not a queue entry. It was implemented, tested, called "a real arm" in this very
+# note — and wired into no job, no segment and no script. An arm nobody runs is an arm whose red
+# nobody sees. It reads two files, so it goes first, before the arm that builds the binary crate.
+# The runner refuses an unknown flag with exit 2 — the Python fell through into its default path, so
+# a mistyped arm ran a check nobody asked for. The --selftest (a matrix with borrowed root evidence,
+# a labelled root verdict, a note padded to length three different ways, a rig cell id that is only a
+# prefix of a scenario that still exists, an unanswered plane, and a leg proving zero steps each
+# REFUSED) runs FIRST.
+run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs-gating && cargo xtask teller-steps --root-legs"
 
 # ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate
 # that cannot pass is a red that teaches people to ignore the manifest. Each names exactly what has
