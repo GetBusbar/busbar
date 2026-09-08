@@ -121,10 +121,10 @@ pub(super) fn migrate_export_named_map(root: &mut Mapping, changes: &mut Vec<Str
 /// writing the `streams:` its `module:` already implies.
 ///
 /// Nothing about the deployment changes: an instance with no `streams:` still means "the streams
-/// this module carries" (see `crate::export::projection::resolve_projection`), so this is a
+/// this module carries" (see `busbar_substrate::config::projection::resolve_projection`), so this is a
 /// TEACHING rewrite, not a semantic one — the migrated document shows the operator the key they will
 /// narrow with `fields:`, and the ledger says so. The streams are read from
-/// `crate::export::projection::module_streams`, the SAME table the validator uses, so the migrator
+/// `busbar_substrate::config::projection::module_streams`, the SAME table the validator uses, so the migrator
 /// cannot write a projection the validator would then reject.
 ///
 /// IDEMPOTENT (an instance that already declares `streams:` is left alone) and NON-DESTRUCTIVE:
@@ -196,7 +196,7 @@ fn migrate_one_export_projection(
         ));
         return;
     };
-    let Some(streams) = crate::export::projection::module_streams(&module) else {
+    let Some(streams) = busbar_substrate::config::projection::module_streams(&module) else {
         todos.push(format!(
             "{ctx}: `module: {module}` is not a built-in export module in this build, so its              `streams:` projection could not be inferred and was NOT guessed. Add `streams:` by              hand naming what this sink subscribes to."
         ));
