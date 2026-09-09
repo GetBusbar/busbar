@@ -7442,6 +7442,66 @@ impl Gate for KindIsolationGate {
             &["no-implementor", "busbar-store-subjectless", "Store"],
         ));
 
+        // ── THE SHIP TWIN'S OWN FLOORS: ZERO IS A REFUSAL, NOT A CLEAN TREE ──────────────────────
+        //
+        // Four rules on this twin have the size of their own input as their subject, and a mutation
+        // campaign found not one of them proven: `if false && checked == 0`, `if false &&
+        // controls.is_empty()` and `.min_files(0)` each left the battery green. Every one of them
+        // reads, when starved, EXACTLY like the tree the criterion is asking for — no crate deviates
+        // from a skeleton nobody compared, no crate skips a battery nobody looked for, no surface
+        // strays off a path nobody walked — which is why a floor nothing proves is a floor somebody
+        // deletes as dead code and a criterion that then passes on an empty tree.
+
+        // NO CRATE OF ANY EXEMPLAR KIND REACHED `:shape`. The census is intact and readable; what it
+        // no longer holds is a single crate of the three kinds that HAVE an exemplar, so the rule
+        // compared every crate of a kind against its skeleton and found nothing to compare.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no crate of any exemplar kind reached the shape rule is refused, not read as clean",
+            &[ROW_SHAPE],
+            kinds_gone(cx, &["plane", "transport", "unit"]),
+            &["0 crate(s) reached the shape rule"],
+        ));
+
+        // NO CRATE OF ANY BATTERY KIND REACHED `:testkit` — the same starvation over the nine kinds
+        // that owe a shared conformance battery. Zero crates skip every battery.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no crate of any battery kind reached the battery rule is refused, not read as clean",
+            &[ROW_TESTKIT],
+            kinds_gone(cx, BATTERY_KINDS),
+            &["0 crate(s) reached the battery rule"],
+        ));
+
+        // NO CONTROL SURFACE REACHED `:control-path`. The tree carries exactly one control crate —
+        // `busbar-plane-admin`, which is `control` by its `[[registered]]` row and not by its name —
+        // so the honest fixture for "this rule looked at no surface at all" is that row's crate out
+        // of the census. Zero surfaces run zero data-path steps and name zero upstreams, which reads
+        // exactly like a control kind that keeps to its own path.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no control surface reached the control-path rule is refused, not read as clean",
+            &[ROW_CONTROL],
+            kinds_gone(cx, &["control"]),
+            &["0 control crate(s)"],
+        ));
+
+        // THE SOURCE INDEX IS THESE TWO ROWS' OWN INPUT, and it has a floor of its own. An index
+        // built over four files knows of no lib.rs, no entry implementation and no battery anywhere
+        // — which is the same silence as a tree in which every crate of every kind is correct. Both
+        // ship rows owe the refusal, and they owe it together, because they read ONE index.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the source index below its floor is refused on both ship rows, not read as no findings",
+            &[ROW_SHAPE, ROW_TESTKIT],
+            all_but(cx, "rs", 4),
+            &["the source index did not run", &MIN_SOURCES.to_string()],
+        ));
+
         report
     }
 }
@@ -7467,6 +7527,28 @@ fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     };
     for f in files.iter().skip(keep) {
         ov.remove(f.rel_str());
+    }
+    ov
+}
+
+/// THE TREE WITH EVERY CRATE OF THE NAMED KINDS OUT OF THE CENSUS — the floors' own fixture.
+///
+/// A rule whose subject is "no crate of any of these kinds reached me" cannot be proven by a plant
+/// that adds one, and it cannot be proven by a path prefix either: a crate's KIND is what the
+/// census resolves its PACKAGE NAME to (and what a `[[registered]]` row may override), not what its
+/// directory is spelled. `crates/store-memory` is `busbar-store-memory`, `crates/busbar-plane-admin`
+/// is registered `control` — a marker over paths would miss the first and mis-file the second. So
+/// this reads the same census the rule reads and removes the manifest of every crate it resolves to
+/// one of `kinds`, which is what makes a crate leave a census.
+fn kinds_gone(cx: &Ctx, kinds: &[&str]) -> Overlay {
+    let mut ov = Overlay::new();
+    let Ok(crates) = census(cx) else {
+        return ov;
+    };
+    for c in &crates {
+        if c.kind.is_some_and(|k| kinds.contains(&k)) {
+            ov.remove(&c.manifest);
+        }
     }
     ov
 }
