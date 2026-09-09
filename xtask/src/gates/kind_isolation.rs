@@ -2309,6 +2309,28 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 if base.has_edge(&e.from, &e.to, half.word()) {
                     continue;
                 }
+                // THE DRAIN IS THE ONE EDGE THAT IS SUPPOSED TO BE NEW.
+                //
+                // A `[[transitional]]` row is not a `[[dep]]` row wearing a different hat, and the
+                // difference is the whole reason the two tables exist. `[[dep]]` describes what the
+                // graph HAS; `[[transitional]]` describes a RETIREMENT IN PROGRESS, and a
+                // retirement lands edge by edge, branch after branch — `busbar-core` reaching one
+                // more unit is the 1.5.x crates draining into the kinds that replace them, which is
+                // the movement this gate was built to permit while refusing the fusion beside it.
+                //
+                // It is safe to exempt because the transitional table is the most refused table in
+                // the file: `from` must be a LEGACY crate or the row does not load at all
+                // (`not-legacy`), `to` must be one kind's prefix (`bad-glob`), the edge is scored
+                // against a count like every other, and the ship twin reds every transitional row
+                // whose crate still exists (`transitional-live`). The exemption cannot outlive the
+                // drain, because the tag refuses it.
+                if reg
+                    .transitional
+                    .iter()
+                    .any(|t| t.covers(&e.from, e.to.as_str()))
+                {
+                    continue;
+                }
                 offenders.push(format!(
                     "new-forbidden-edge\t{} -> {}\t{} -> {} is `{implied}` and it is NOT in the \
                      merge-base {}'s manifests: this branch INTRODUCED it. A `[[dep]]` row may \

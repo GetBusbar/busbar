@@ -292,8 +292,8 @@ const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
     ),
     (
         "kind-isolation",
-        240000.0,
-        "79 594 units measured, up from 19 500 when the dependency side of the gate landed: eleven rows rather than eight (the instance-level dependency ledger and its test twin, the build-input rule, the entry-face rule) and eighty-eight cases rather than fifty-eight. The growth is the residue the previous entry already named, arriving in bulk -- a plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, and thirty of the new cases do exactly that, because a census that walks the whole repository is proven by planting crates in it.",
+        260000.0,
+        "86 069 units measured over 107 cases, up from 79 594 over 88 when the VAULT DOOR round-two rules landed: the merge-base provenance of the ledger (a `[[dep]]` row may RECORD a not-allowed edge and never INTRODUCE one; a minted `[[cell]]` is a 0 -> N raise), the census refusals that fail closed, and the manifest reader's own unreadable-line report. Nineteen cases for about eight per cent more work, which is the shape a battery grows in when the new rules read history rather than the tree: the merge-base is read ONCE per process and memoised, so the cost is the plants, not the git. Before that: up from 19 500 when the dependency side landed -- eleven rows rather than eight, and a plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, which thirty of those cases do, because a census that walks the whole repository is proven by planting crates in it.",
     ),
     (
         "kind-isolation-ship",
