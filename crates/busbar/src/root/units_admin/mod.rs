@@ -867,6 +867,14 @@ fn render_checkpoints(checkpoints: &[busbar_unit_ledger::checkpoint::Checkpoint]
 }
 
 /// One sealed balance, as the checkpoint holds it.
+///
+/// Six figures the earlier rendering carried are GONE, and their absence is the money model rather
+/// than a narrowing of the view: `open_slice_remainders`, `adjustments`, `overdraft_carried_in`,
+/// `overdraft_carried_out`, `disputed`, `open_dispute_count` and `oldest_dispute_age_secs` were
+/// the columns a correction moved. A sealed line is written once at the end of a unit and never
+/// edited, so nothing in this node can put a figure in any of them, and a column that can only
+/// ever read zero is a promise the surface cannot keep. The book still holds the fields; this view
+/// stops publishing a correction surface that has no corrections behind it.
 fn render_totals_cell(
     key: &busbar_unit_ledger::totals::TotalsKey,
     window: busbar_unit_ledger::totals::WindowStart,
@@ -887,32 +895,18 @@ fn render_totals_cell(
         ("released", totals.released),
         ("settled", totals.settled),
         ("open_holds", totals.open_holds),
-        ("open_slice_remainders", totals.open_slice_remainders),
-        ("adjustments", totals.adjustments),
         ("unreconciled", totals.unreconciled),
-        ("overdraft_carried_in", totals.overdraft_carried_in),
-        ("overdraft_carried_out", totals.overdraft_carried_out),
         ("cross_window_transfers", totals.cross_window_transfers),
-        ("disputed", totals.disputed),
     ] {
         out.push_str(",\"");
         out.push_str(name);
         out.push_str("\":");
         json_amount(amount, out);
     }
-    for (name, count) in [
-        (
-            "oldest_open_hold_age_secs",
-            totals.oldest_open_hold_age_secs,
-        ),
-        ("open_dispute_count", totals.open_dispute_count),
-        ("oldest_dispute_age_secs", totals.oldest_dispute_age_secs),
-    ] {
-        out.push_str(",\"");
-        out.push_str(name);
-        out.push_str("\":");
-        out.push_str(&count.to_string());
-    }
+    // The one count left on the cell. A count and not an amount: an age in seconds is not money,
+    // and the string-vs-number rule this document states turns on exactly that.
+    out.push_str(",\"oldest_open_hold_age_secs\":");
+    out.push_str(&totals.oldest_open_hold_age_secs.to_string());
     out.push('}');
 }
 
@@ -1306,12 +1300,7 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::StoreRestore => "store_restore",
         KernelVerb::ResealEpochFloor => "reseal_epoch_floor",
         KernelVerb::SetDualControl => "set_dual_control",
-        KernelVerb::SetOverdraftCeiling => "set_overdraft_ceiling",
-        KernelVerb::SetDisputeMaxAge => "set_dispute_max_age",
         KernelVerb::CommitUpgrade => "commit_upgrade",
-        KernelVerb::ResolveDispute => "resolve_dispute",
-        KernelVerb::ResolveSlice => "resolve_slice",
-        KernelVerb::Adjust => "adjust",
         KernelVerb::ExportKeyset => "export_keyset",
         KernelVerb::Approve => "approve",
         KernelVerb::GetLedgerTotals => "get_ledger_totals",

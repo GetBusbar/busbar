@@ -3,7 +3,7 @@
   "info": {
     "title": "Busbar administrative API — 1.6.0 additive operations",
     "version": "1.6.0",
-    "description": "The operations 1.6.0 adds to the administrative surface, described in a document of their own.\n\nThis is not a replacement for `GET /api/v1/admin/openapi.json`, and it does not repeat a single path from it. That document describes the 66 operations the 1.5.5 tag pinned and its bytes are fixed: a client that fetched it before the upgrade and after it receives the same bytes, so nothing which reads it can be surprised by a path it does not know. The new operations are reached by asking for this document, at `GET /api/v1/admin/ledger/openapi.json`, by name.\n\nScope: the five read-only ledger views. The 1.6.0 money-governance verbs (`adjust`, `approve`, `resolve_dispute` and the rest of that set) are deliberately absent — their HTTP bindings are not yet fixed, and describing a binding this document is not entitled to fix would make the document wrong rather than incomplete.\n\nHow figures are typed. Every money figure is a JSON string holding a decimal integer, and every count is a JSON number. The ledger keeps money in 128-bit integers; JSON's number is a double, exact only to 2^53, and a nano-unit total passes that on a busy day. A figure that silently lost its last digits would still look like money, so money is carried as text and the reader does the arithmetic.\n\nAuthorization. Every operation here is a read and requires the `read-only` scope — the same scope, presented the same way, as the legacy `GET /api/v1/admin/usage` that reads the same money from the other side.",
+    "description": "The operations 1.6.0 adds to the administrative surface, described in a document of their own.\n\nThis is not a replacement for `GET /api/v1/admin/openapi.json`, and it does not repeat a single path from it. That document describes the 66 operations the 1.5.5 tag pinned and its bytes are fixed: a client that fetched it before the upgrade and after it receives the same bytes, so nothing which reads it can be surprised by a path it does not know. The new operations are reached by asking for this document, at `GET /api/v1/admin/ledger/openapi.json`, by name.\n\nScope: the five read-only ledger views. The 1.6.0 operator verbs (`approve`, `commit_upgrade`, `chain_break` and the rest of that set) are deliberately absent — their HTTP bindings are not yet fixed, and describing a binding this document is not entitled to fix would make the document wrong rather than incomplete. There are no correction verbs to describe at all: busbar is a meter and an audit trail, a sealed line is written once at the end of a unit and never edited, so `adjust`, `resolve_slice`, `resolve_dispute`, `set_dispute_max_age` and `set_overdraft_ceiling` do not exist. A correction is the calling app's, made against the exported sealed lines.\n\nHow figures are typed. Every money figure is a JSON string holding a decimal integer, and every count is a JSON number. The ledger keeps money in 128-bit integers; JSON's number is a double, exact only to 2^53, and a nano-unit total passes that on a busy day. A figure that silently lost its last digits would still look like money, so money is carried as text and the reader does the arithmetic.\n\nAuthorization. Every operation here is a read and requires the `read-only` scope — the same scope, presented the same way, as the legacy `GET /api/v1/admin/usage` that reads the same money from the other side.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -255,7 +255,7 @@
       },
       "TotalsCell": {
         "type": "object",
-        "required": ["bucket", "dimension", "scope", "window", "budget", "drawn", "released", "settled", "open_holds", "open_slice_remainders", "adjustments", "unreconciled", "overdraft_carried_in", "overdraft_carried_out", "cross_window_transfers", "disputed", "oldest_open_hold_age_secs", "open_dispute_count", "oldest_dispute_age_secs"],
+        "required": ["bucket", "dimension", "scope", "window", "budget", "drawn", "released", "settled", "open_holds", "unreconciled", "cross_window_transfers", "oldest_open_hold_age_secs"],
         "properties": {
           "bucket": { "type": "string" },
           "dimension": { "type": "string" },
@@ -266,16 +266,9 @@
           "released": { "$ref": "#/components/schemas/Amount" },
           "settled": { "$ref": "#/components/schemas/Amount" },
           "open_holds": { "$ref": "#/components/schemas/Amount" },
-          "open_slice_remainders": { "$ref": "#/components/schemas/Amount" },
-          "adjustments": { "$ref": "#/components/schemas/Amount" },
           "unreconciled": { "$ref": "#/components/schemas/Amount" },
-          "overdraft_carried_in": { "$ref": "#/components/schemas/Amount" },
-          "overdraft_carried_out": { "$ref": "#/components/schemas/Amount" },
           "cross_window_transfers": { "$ref": "#/components/schemas/Amount" },
-          "disputed": { "$ref": "#/components/schemas/Amount" },
-          "oldest_open_hold_age_secs": { "type": "integer", "format": "int64" },
-          "open_dispute_count": { "type": "integer", "format": "int64" },
-          "oldest_dispute_age_secs": { "type": "integer", "format": "int64" }
+          "oldest_open_hold_age_secs": { "type": "integer", "format": "int64" }
         }
       },
       "LedgerReconciliation": {

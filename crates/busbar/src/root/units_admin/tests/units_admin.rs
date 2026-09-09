@@ -342,7 +342,7 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
     }
 }
 
-/// The two money-governance gates are the fleet's, and the route step reads them rather than
+/// The two operator gates are the fleet's, and the route step reads them rather than
 /// writing them.
 ///
 /// Three postures over the same step, and each one is a different failure if the seam is not
@@ -354,7 +354,7 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
 /// it. And a posture the node cannot read at all is refused rather than guessed.
 #[test]
 #[cfg(feature = "root-admin")]
-fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
+fn an_operator_verb_is_checked_against_the_posture_the_fleet_sealed() {
     struct Sealed(Option<(PostureCtx, ApprovalState)>);
     impl PostureView for Sealed {
         fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
@@ -431,7 +431,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
     );
 
     assert_eq!(
-        under("/api/v1/admin/adjust", Sealed(None)),
+        under("/api/v1/admin/commit-upgrade", Sealed(None)),
         Err(ReasonCode::DecodeFailed),
         "a verb whose posture the node cannot read was admitted under a guessed one"
     );
@@ -443,7 +443,7 @@ fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
 #[test]
 fn an_unsealed_node_reports_the_posture_a_fresh_install_is_actually_in() {
     let (posture, approval) = UnsealedPosture
-        .resolve(KernelVerb::Adjust, "admin")
+        .resolve(KernelVerb::CommitUpgrade, "admin")
         .expect("a node with no journal knows what it has not sealed");
     assert_eq!(posture.operator, busbar_unit_verbs::OperatorState::Unset);
     assert_eq!(posture.dual_control, busbar_unit_verbs::DualControl::Single);
@@ -2736,8 +2736,8 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
             Arc::new(CountingDispatch(Arc::clone(&calls))),
             Arc::new(SeededLedger),
             Arc::new(UnboundFacts),
-            KernelVerb::Adjust,
-            a_ledger_request("/api/v1/admin/adjust"),
+            KernelVerb::CommitUpgrade,
+            a_ledger_request("/api/v1/admin/commit-upgrade"),
         ),
         crate::root::kernel::RefusingStore,
         ArrivalNonce(1),
@@ -2746,7 +2746,7 @@ fn a_view_reaches_neither_the_dispatch_nor_the_posture_check() {
     );
     assert!(verbs
         .execute(
-            KernelVerb::Adjust,
+            KernelVerb::CommitUpgrade,
             &admin,
             "admin",
             VerbScope::Full,
@@ -2911,9 +2911,9 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: seventy-three of the eighty-eight are
+    // The complement is not empty and is not the whole table: sixty-eight of the eighty-three are
     // still produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 73);
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 68);
 }
 
 // ── the crossed operations, asked of the composition ────────────────────────────────────────────

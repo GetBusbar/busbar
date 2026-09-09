@@ -12,7 +12,7 @@ use crate::AdminPlane;
 
 /// The two operation classes a unit of this plane can be: a read that reaches nothing but the
 /// journal, and a mutation. See [`crate::verbs::OP_READ`]/[`crate::verbs::OP_WRITE`] for why the
-/// closed 66+17 table collapses to two classes rather than one per verb: pricing is uniform across
+/// closed 66+12 table collapses to two classes rather than one per verb: pricing is uniform across
 /// the whole admin surface (a flat, kernel-reserved `count` class — see `METER_CLASSES` below), so
 /// the only thing an operation class needs to preserve here is the design's own `ReadOnly`/`Full`
 /// split, for the audit step's dispute check to mean something.
@@ -45,12 +45,12 @@ const CONTENT_FACTS: &[&str] = &[FACT_VERB];
 /// This plane's own read-only introspection verbs: none.
 ///
 /// The constant used to be called `ADMIN_VERBS`, which collided in name with this crate's own
-/// 66+17-row `KernelVerb` table -- the admin SURFACE itself, not a plane's self-description of it.
+/// 66+12-row `KernelVerb` table -- the admin SURFACE itself, not a plane's self-description of it.
 /// Two different things wearing one name had already confused an implementer, so the small
 /// per-plane set every plane may answer through `plane_facts` (the `llm` plane's `dialects` and
 /// `ladder`, this protocol's per-name projections) is called what it is.
 ///
-/// Declaring this plane's OWN introspection verb as, say, `verb_table` (a verb that dumps the 66+17
+/// Declaring this plane's OWN introspection verb as, say, `verb_table` (a verb that dumps the 66+12
 /// rows) was considered and rejected: the closed table is already fully public in this crate's
 /// `generated` module and in the pinned openapi fixture, so a further meta-verb would be a second
 /// copy of the same 83 rows rather than new information. Empty is the honest answer for a plane

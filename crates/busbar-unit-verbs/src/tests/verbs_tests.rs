@@ -715,7 +715,7 @@ fn a_new_verb_admitted_by_posture_reaches_governance() {
     };
     let out = verbs
         .execute(
-            KernelVerb::SetOverdraftCeiling,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             VerbScope::Full,
@@ -741,7 +741,7 @@ fn a_new_verb_with_no_resolved_posture_is_refused_rather_than_panicking() {
     let admin = admin();
     let err = verbs
         .execute(
-            KernelVerb::SetOverdraftCeiling,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             // The scope is granted, so `admit` passes and the posture branch is genuinely reached.
@@ -1046,7 +1046,7 @@ fn a_governance_store_failure_refuses_with_store_error_on_every_call() {
     let verbs = make_verbs(FakeGovernance::new().failing_with(GovernanceError::Store));
     let err = verbs
         .execute(
-            KernelVerb::SetOverdraftCeiling,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             VerbScope::Full,
@@ -1271,7 +1271,7 @@ fn a_ledger_view_reaches_the_read_seam_under_a_posture_that_refuses_every_mutati
 
     let refused = verbs
         .execute(
-            KernelVerb::Adjust,
+            KernelVerb::CommitUpgrade,
             &admin,
             "alice",
             VerbScope::Full,
@@ -1322,7 +1322,7 @@ fn a_ledger_view_never_spends_a_mutation_slot() {
     // The control: a verb that IS a mutation still classifies as one, so the green above is the
     // views being excluded rather than the classifier answering `Forbidden` to everything.
     assert_ne!(
-        crate::rate::MutationClass::for_verb(KernelVerb::Adjust, CONFIG_CLASS_RULES),
+        crate::rate::MutationClass::for_verb(KernelVerb::CommitUpgrade, CONFIG_CLASS_RULES),
         crate::rate::MutationClass::Forbidden
     );
 }
@@ -1508,7 +1508,7 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential_under_required_post
     // The control: a mutating new verb still needs `full`, and still waits for its approval.
     let err = verbs
         .execute(
-            KernelVerb::Adjust,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             VerbScope::ReadOnly,
@@ -1521,7 +1521,7 @@ fn the_two_read_only_new_verbs_answer_a_read_only_credential_under_required_post
     assert_eq!(err.reason, crate::refusal::ReasonCode::Unauthorized);
     let err = verbs
         .execute(
-            KernelVerb::Adjust,
+            KernelVerb::PlaneRecordWrite,
             &admin,
             "alice",
             VerbScope::Full,

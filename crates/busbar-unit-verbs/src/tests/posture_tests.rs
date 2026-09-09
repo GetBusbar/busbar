@@ -23,9 +23,6 @@ fn every_new_verb_except_set_operator_key_and_export_keyset_is_refused_under_uns
             }
             KernelVerb::PlaneFacts
             | KernelVerb::PlaneRecordWrite
-            | KernelVerb::SetOverdraftCeiling
-            | KernelVerb::SetDisputeMaxAge
-            | KernelVerb::ResolveSlice
             | KernelVerb::Approve
             | KernelVerb::Verify => {
                 // Not in the irreducible set: the operator gate never applies to these.
