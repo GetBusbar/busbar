@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "9df9fe98f707b6d3a1037016185c786c8640ad659a4ad630df2826b4cdc9ceb8",
+  "harness_rev": "022771692a46f37dd61e9e93531caddf63363485e8576b4b10bc8f31ba62e2e4",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -79,6 +79,11 @@
         "from": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
         "to": "9df9fe98f707b6d3a1037016185c786c8640ad659a4ad630df2826b4cdc9ceb8",
         "why": "2026-09-08 documentation-only: ONE stamp for the whole openapi/overlay/cli landing line. Two harness_rev files moved. accepted-differences.json: F-011b's rationale now states the superset rule that actually holds; F-011c registers the max_admin_scope ceiling correction by JSON pointer and proves the overlay-delete 409's grown pipe list by text_list_growth (its pointer was withdrawn - no pointer spelling can reach a leaf under an OpenAPI path key, whose own name contains '/'); F-013 registers the overlay-section not-found list growth and names `headers` because content-length restates the proven body; F-003 is narrowed to documented|readme|env-launch and the four cli cells move to the new breaking F-003b; F-016 is widened to BOOT-152b. oracle.pin: busbar-oracle v0.3.7 -> v0.3.8 (text_list_growth reads pipe-separated runs and proves growth as a set). No cell re-recorded and no cell's bytes changed: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. With this stamp a candidate recorded from this tree replays without --allow-harness-skew."
+      },
+      {
+        "from": "9df9fe98f707b6d3a1037016185c786c8640ad659a4ad630df2826b4cdc9ceb8",
+        "to": "022771692a46f37dd61e9e93531caddf63363485e8576b4b10bc8f31ba62e2e4",
+        "why": "2026-09-08 documentation-only: the stamp that CLOSES the openapi/overlay/cli landing line. Three harness_rev files moved after the previous stamp in this same line, and they are folded into this one rather than stamped one by one. oracle.pin: busbar-oracle v0.3.8 -> v0.3.10, which proves text_list_growth over N grown leaves (the overlay-delete operation legitimately grows four description leaves), applies transforms BEFORE the additive proof (so a line that both grew a list and gained a BUSBAR-NNNN diagnostic prefix can be proven instead of being invisible to both rules), reads 1.5.5's backtick-pipe list spelling as its own run kind (so a RESPELLING stays red), and resolves RFC 6901 ~1-escaped pointers under OpenAPI path keys. accepted-differences.json: F-013 validation wording gains D-1's two candidate transform rules verbatim, which is what makes BOOT-P20/P29/P30 provable; F-011c regains the overlay-delete 409 pointer in its escaped form, registered as a factual correction because its items are clauses rather than a token list that any growth rule could pair. The 1.5.5 fixture is unchanged. NO CELL WAS RE-RECORDED AND NO CELL'S BYTES CHANGED: every cells/*.json, the ledger, `recorded`, `binary_sha256`, `at`, `version` and `host_triple` are exactly as the EC2 re-record left them. With this stamp a candidate recorded from this tree replays against the 1.5.5 golden WITHOUT --allow-harness-skew."
       }
     ]
   },
