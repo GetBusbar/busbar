@@ -5430,3 +5430,306 @@ count = "2"
 cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from; assembling a store is not implementing one."
 why = "the root implements the store face twice in its own assembly rather than composing a store plugin that does. Two implementations, in shipped source."
 drain = "move both implementations into a store-kind crate and have the root REGISTER it. The root names every kind by design and implements none of them."
+
+# ── THE DIALECT COLUMN ───────────────────────────────────────────────────────────────────────────
+#
+# The `dialect` kind is the one kind whose vocabulary is NOT derived from the census, because the
+# census has no dialect crate in it: the kind lands as `busbar-plane-<plane>-<dialect>` when the
+# codec split finishes. Until then its vocabulary is the VENDOR NAMES -- the six words the DIALECT
+# rule of `plane-purity` bans as whole words -- and they are read from that list rather than written
+# out a second time here.
+#
+# The column exists because a red team put `const VD = "anthropic";` and `fn openai_shim()` into
+# `busbar-store-memory` and every gate in the tree stayed green: there was no `dialect` column for
+# the hit to land in. The numbers below are TODAY'S MEASUREMENT, pinned exactly. They are large --
+# `busbar-llm-codec` is the `llm` plane's other half and is very nearly all vendor vocabulary -- and
+# large is the point: the ratchet is exact in BOTH directions, so a vendor word ADDED to a crate is
+# red and a vendor word DELETED without re-pinning is red too. `cargo xtask gate kind-isolation
+# --write` re-pins downward and refuses every rise.
+
+[[cell]]
+crate = "busbar"
+kind = "dialect"
+count = "175"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "dialect"
+count = "8"
+
+[[cell]]
+crate = "busbar-api"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-caps"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "dialect"
+count = "14"
+
+[[cell]]
+crate = "busbar-core"
+kind = "dialect"
+count = "1196"
+
+[[cell]]
+crate = "busbar-hooks-ranking"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "dialect"
+count = "3208"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "dialect"
+count = "11200"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "dialect"
+count = "119"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "dialect"
+count = "7"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "dialect"
+count = "9"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "dialect"
+count = "90"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "dialect"
+count = "252"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "dialect"
+count = "94"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-unit-egress-auth"
+kind = "dialect"
+count = "63"
+
+[[cell]]
+crate = "busbar-unit-ledger"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "dialect"
+count = "5"
+
+[[cell]]
+crate = "busbar-unit-usage"
+kind = "dialect"
+count = "7"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "dialect"
+count = "335"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "dialect"
+count = "257"
+
+[[edge]]
+from = "api"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind api has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind api naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the api crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "caps"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind caps has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind caps naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the caps crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "codec"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind codec has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind codec naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the codec crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind contract has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind contract naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the contract crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "hooks"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind hooks has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind hooks naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the hooks crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "legacy"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind legacy has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind legacy naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the legacy crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-abi"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind plugin-abi naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the plugin-abi crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind plugin-tooling has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind plugin-tooling naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the plugin-tooling crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "root"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind root has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind root naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the root crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "secret"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind secret has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind secret naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the secret crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind substrate naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the substrate crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "transport"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind transport has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind transport naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the transport crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "unit"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind unit has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind unit naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the unit crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[disagreement]]
+crate = "busbar"
+kind = "dialect"
+note = "segment scanner 166, window scanner 175. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-api"
+kind = "dialect"
+note = "segment scanner 2, window scanner 3. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-core"
+kind = "dialect"
+note = "segment scanner 1127, window scanner 1195. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-llm"
+kind = "dialect"
+note = "segment scanner 2901, window scanner 3208. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-llm-codec"
+kind = "dialect"
+note = "segment scanner 9963, window scanner 11200. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-mcp"
+kind = "dialect"
+note = "segment scanner 118, window scanner 119. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-mcp-codec"
+kind = "dialect"
+note = "segment scanner 4, window scanner 7. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-substrate"
+kind = "dialect"
+note = "segment scanner 75, window scanner 89. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-substrate-values"
+kind = "dialect"
+note = "segment scanner 192, window scanner 252. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-transport-sse"
+kind = "dialect"
+note = "segment scanner 2, window scanner 3. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-unit-auth"
+kind = "dialect"
+note = "segment scanner 89, window scanner 94. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-unit-egress-auth"
+kind = "dialect"
+note = "segment scanner 59, window scanner 63. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-voice"
+kind = "dialect"
+note = "segment scanner 251, window scanner 335. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-voice-codec"
+kind = "dialect"
+note = "segment scanner 175, window scanner 257. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
