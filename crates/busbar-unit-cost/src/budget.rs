@@ -16,12 +16,26 @@
 //! `budget_remaining_cents` from unit-cost; no arithmetic outside unit-cost". This is that
 //! function, and it is the only place it is written down as a policy rather than performed.
 //!
+//! ## A READ-TIME view, because price is never stored
+//!
+//! The owner's final money model: **price is never stored; the ledger holds FACTS** — quantities by
+//! class. A budget is an amount per window, on a class or on money, and what has been SPENT is not a
+//! number anybody wrote down. It is derived, at read time, from the ledger's lines times the rate
+//! table in force.
+//!
+//! That is why nothing on this type is a stored figure. The cap is policy, read from the epoch the
+//! request was pinned to. The spend is either handed in as an already-derived total or, better,
+//! derived here from the lines and the card by [`KeyBudgetView::remaining_cents_from_usage`] — which
+//! keeps the multiplication inside the crate that owns the arithmetic instead of leaving the caller
+//! to perform it. A stored price field anywhere on this path would be a second answer to "what did
+//! this cost", frozen at the moment somebody wrote it and unable to follow a corrected rate.
+//!
 //! ## What this view is NOT
 //!
 //! It is not a door. Nothing here refuses anything; it answers two questions and the caller decides.
 //! It holds no clock, so it cannot know which window it is in — the caller resolves the window,
-//! reads the cell, and hands over a figure. And it holds no cells, so it cannot accumulate: every
-//! answer is a pure function of the arguments, which is what lets an auditor re-derive one by hand.
+//! reads the lines, and asks. And it holds no cells, so it cannot accumulate: every answer is a pure
+//! function of the arguments, which is what lets an auditor re-derive one by hand.
 //!
 //! ## The parity that matters
 //!
@@ -31,7 +45,10 @@
 //! figure and billed at another — so the crate's existing dev-dependency on the admission unit,
 //! which exists for exactly this reason on the rate side, pins them equal on this side too.
 
-use crate::project::cents_of;
+use busbar_caps::UsageLine;
+
+use crate::project::{cents_of, derive_spend_cents};
+use crate::rate::RateCard;
 
 /// The budget standing of one row, as of one reading of it.
 ///
@@ -43,8 +60,9 @@ pub struct KeyBudgetView {
     /// The ledger row this standing is about — the id the ledger unit named. Carried so an answer
     /// can be attributed to the row it came from; never parsed, and never used to derive a figure.
     bucket: String,
-    /// The spend ceiling on that row, in cents. `None` is uncapped, which is the ordinary posture
-    /// for a deployment with no budget limit and NOT a missing value.
+    /// The spend ceiling on that row, in cents — POLICY, read from the epoch the request was pinned
+    /// to, never a recorded price. `None` is uncapped, which is the ordinary posture for a
+    /// deployment with no budget limit and NOT a missing value.
     cap_cents: Option<i64>,
 }
 
@@ -81,7 +99,7 @@ impl KeyBudgetView {
         self.cap_cents
     }
 
-    /// What has been spent on this row, in whole cents.
+    /// What has been spent on this row, in whole cents, from an already-summed nano-unit total.
     ///
     /// ONE truncation, at the very end, and it is the projection the rest of the crate already
     /// uses. Nano-units accumulate across every lane FIRST and divide to cents ONCE, because two
@@ -89,6 +107,49 @@ impl KeyBudgetView {
     #[must_use]
     pub fn spent_cents(&self, spent_nanos: u128) -> i64 {
         cents_of(spent_nanos)
+    }
+
+    /// What has been spent on this row, DERIVED at read time from the ledger's lines and the card.
+    ///
+    /// This is the entry point the final money model asks for: the ledger holds facts — quantities
+    /// by class — and the amount is computed here, now, against the rate table in force. Nothing on
+    /// this path reads a stored price, because there is no stored price to read. Correcting a rate
+    /// is a config edit, and past figures become right on the next read rather than needing a
+    /// migration.
+    ///
+    /// It exists so the multiplication happens INSIDE the crate that owns the arithmetic. The
+    /// alternative — hand the caller a card and let it produce a total to pass to
+    /// [`KeyBudgetView::spent_cents`] — is the same sum performed somewhere the rule says it may not
+    /// be, and it is one refactor away from being performed differently.
+    ///
+    /// A lane the present card does not name derives at nothing. That is the designed behaviour and
+    /// not a gap: an operator's card is what says a lane costs anything at all.
+    #[must_use]
+    pub fn spent_cents_from_usage<'a>(
+        &self,
+        card: &RateCard,
+        lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
+        fee_requests: u64,
+        include_request_fee: bool,
+    ) -> i64 {
+        derive_spend_cents(card, lanes, fee_requests, include_request_fee)
+    }
+
+    /// What is left on this row, derived at read time from the ledger's lines and the card.
+    ///
+    /// The read-time twin of [`KeyBudgetView::remaining_cents`], and the one a caller should reach
+    /// for: it takes the FACTS the ledger holds and never a figure somebody else already turned
+    /// into money.
+    #[must_use]
+    pub fn remaining_cents_from_usage<'a>(
+        &self,
+        card: &RateCard,
+        lanes: impl Iterator<Item = (&'a str, &'a [UsageLine])>,
+        fee_requests: u64,
+        include_request_fee: bool,
+    ) -> Option<i64> {
+        let spent = self.spent_cents_from_usage(card, lanes, fee_requests, include_request_fee);
+        self.cap_cents.map(|cap| cap.saturating_sub(spent).max(0))
     }
 
     /// What is left on this row, in cents. `None` is uncapped — no figure, rather than a very large
