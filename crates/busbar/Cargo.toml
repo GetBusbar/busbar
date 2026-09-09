@@ -90,6 +90,12 @@ busbar-unit-wal = { path = "../busbar-unit-wal" }
 # `PlaneMeta` associated constants, which a `dyn Plugin` cannot read) and its registry key, so the
 # root is what pairs them into the claim slice the boot check reads.
 busbar-plane-llm = { path = "../busbar-plane-llm" }
+# The DIALECTS. A dialect crate is the vendor vocabulary its plane may not name, and the root is the
+# only thing that may name both: the plane by type and the dialect by its published `const`. The
+# edge runs dialect -> plane in Cargo (a dialect depends on its plane; a plane never depends back),
+# and this line is the root spending it. `src/root/dialects.rs` is the only file that names the
+# crate; every other line of the boot iterates what the table there declares.
+busbar-plane-llm-openai = { path = "../busbar-plane-llm-openai" }
 busbar-plane-mcp = { path = "../busbar-plane-mcp" }
 busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 busbar-plane-voice = { path = "../busbar-plane-voice" }
