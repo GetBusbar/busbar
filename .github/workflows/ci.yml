@@ -228,6 +228,15 @@ jobs:
       # gate's owed rows and requires the run to name it, so "the lint still works" is a claim about
       # twenty rules rather than about the five fixtures the shell happened to carry.
       - name: Structure lint self-test
+        # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
+        # `gates::DEFAULT_GATE_CEILING` is 300s, which is the right number for a gate RUN and the
+        # wrong one for a self-test that plants its own trees and runs the whole gate over each:
+        # 99s measured on a warm laptop, and a cold CI runner is slower. The ceiling is raised
+        # for THIS GATE ONLY, so a hang anywhere else still costs five minutes and a red row. The
+        # cost itself is measured and ratcheted by that gate's own work-unit budget
+        # (`gates::SELFTEST_BUDGETS`), which is the instrument that notices it growing.
+        env:
+          XTASK_GATE_CEILING_SECS_STRUCTURE_LINT: "900"
         run: cargo xtask gate structure-lint --selftest
       - name: Structure lint
         run: cargo xtask gate structure-lint
@@ -533,6 +542,15 @@ jobs:
       # owner refused. The SHIP-criterion twin (`kind-isolation-ship`, one surface and one shared
       # conformance battery per kind) is red on HEAD by design and runs at release time.
       - name: Kind-isolation self-test (the refused busbar-transport-a2a, planted and proven RED)
+        # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
+        # `gates::DEFAULT_GATE_CEILING` is 300s, which is the right number for a gate RUN and the
+        # wrong one for a self-test that plants fifty-eight trees and runs the whole gate over each:
+        # 273s measured on a warm laptop, and a cold CI runner is slower. The ceiling is raised
+        # for THIS GATE ONLY, so a hang anywhere else still costs five minutes and a red row. The
+        # cost itself is measured and ratcheted by that gate's own work-unit budget
+        # (`gates::SELFTEST_BUDGETS`), which is the instrument that notices it growing.
+        env:
+          XTASK_GATE_CEILING_SECS_KIND_ISOLATION: "1800"
         run: cargo xtask gate kind-isolation --selftest
       - name: Kind-isolation gate (BLOCKING — no name, edge, word or root wiring fuses two kinds)
         run: cargo xtask gate kind-isolation
@@ -2412,6 +2430,15 @@ jobs:
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Construction gate self-test (every rule proves it sees its planted violation)
+        # THE HANG CEILING IS A CEILING, NOT A BUDGET, AND THIS SELF-TEST IS LEGITIMATELY LONG.
+        # `gates::DEFAULT_GATE_CEILING` is 300s, which is the right number for a gate RUN and the
+        # wrong one for a self-test that plants thirty-two trees and runs the whole gate over each:
+        # 394s measured on a warm laptop, and a cold CI runner is slower. The ceiling is raised
+        # for THIS GATE ONLY, so a hang anywhere else still costs five minutes and a red row. The
+        # cost itself is measured and ratcheted by that gate's own work-unit budget
+        # (`gates::SELFTEST_BUDGETS`), which is the instrument that notices it growing.
+        env:
+          XTASK_GATE_CEILING_SECS_CONSTRUCTION: "1800"
         run: cargo xtask gate construction --selftest
       - name: Construction gate (RED by design today; see the job comment for the flip)
         id: check

@@ -515,7 +515,8 @@ EOF
         local ndata; ndata="$(printf '%s\n' "$gate_data" | grep -c . || true)"
         (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
           || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
-        (cd "$here" && cargo xtask gate construction --selftest >"$here/target/land-cselftest-$stamp.log" 2>&1) \
+        # Same reason as the kind-isolation leg above: 394s measured over thirty-two planted trees.
+        (cd "$here" && XTASK_GATE_CEILING_SECS_CONSTRUCTION=1800 cargo xtask gate construction --selftest >"$here/target/land-cselftest-$stamp.log" 2>&1) \
           || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
                echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
         local clog="$here/target/land-ceilings-$stamp.log"
@@ -568,7 +569,13 @@ EOF
       # registry rather than being grepped out of the construction gate's log. Self-test FIRST.
       (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
         || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
-      (cd "$here" && cargo xtask gate kind-isolation --selftest >/dev/null) \
+      # THE HANG CEILING IS A CEILING, NOT A BUDGET. `gates::DEFAULT_GATE_CEILING` is 300s, which
+      # is right for a gate RUN and wrong for a self-test that plants fifty-eight trees and runs
+      # the whole gate over each (273s measured on a warm laptop; a loaded landing box is slower).
+      # Raised for THIS GATE ONLY, so a hang anywhere else still costs five minutes and a red row —
+      # and the cost itself is ratcheted by the gate's own work-unit budget, which is the
+      # instrument that notices it growing.
+      (cd "$here" && XTASK_GATE_CEILING_SECS_KIND_ISOLATION=1800 cargo xtask gate kind-isolation --selftest >/dev/null) \
         || { echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself)" >&2; return 1; }
       (cd "$here" && cargo xtask gate kind-isolation) \
         || { echo "land.sh: RED — kind-isolation (a plugin kind was fused; rows above)" >&2; return 1; }
