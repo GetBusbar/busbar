@@ -76,27 +76,138 @@ pub struct Registration {
     pub summary: &'static str,
 }
 
-/// THE GATES WHOSE VERDICT IS PRINTED BUT NOT COUNTED BY `--all`, and why that is data here rather
-/// than a posture flag somebody remembers.
+/// THE GATES WHOSE VERDICT `--all` PRINTS AND DOES NOT COUNT, each with a written reason AND the
+/// fact that reason turns on.
 ///
-/// Exactly one gate is on this list today and it is not a loophole: the construction gate is RED BY
-/// DESIGN on HEAD — rows sit over ceilings the construction work in flight is driving down — and
-/// `ci.yml` has run it `continue-on-error` with the verdict printed by the umbrella since it was
-/// written, while `qa/full-gate.toml` names it in its skip list for the same reason. That posture
-/// existed in prose, in two files, with nothing in the runner that knew about it; a converted gate
-/// that simply joined `--all` would have turned the whole local gate red on a fact CI does not
-/// score. So it says out loud, next to the registry, what those two comments say: this one is
-/// reported, not counted, until it is flipped.
+/// THIS LIST WAS ONE NAME AND A COMMENT, AND THAT COST THE ONE SIGNAL IT PROTECTS.
+/// `cargo xtask gate --all` exited 1 on a clean tree — `RED in design-bindings,
+/// kind-isolation-ship` — because both are red on HEAD for reasons nothing here knew about.
+/// `.github/workflows/keep-proof.yml` runs exactly that command with no `continue-on-error`, and
+/// `ci.yml` does not run on `keep-**` at all, so keep-proof is the ONLY judge of an agent
+/// hand-back and its gate job was permanently red: a real regression on a keep branch was
+/// indistinguishable from the standing red. Two excuse vocabularies existed — this one, and
+/// `full_gate`'s [`crate::full_gate::REGISTRY_NOT_IN_CI`], which knew about `kind-isolation-ship`
+/// and checks its claim against the tree — and `--all` read the wrong one.
 ///
-/// A report-only gate is still fully reconciled, still self-tested and still exits non-zero when
-/// run BY NAME (`cargo xtask gate construction`), which is what the CI job captures. This governs
-/// one thing only: whether `--all` adds it to the red list.
-const REPORT_ONLY: &[&str] = &["construction"];
+/// So there is one vocabulary now, and every entry carries an [`Excused`] that is CHECKED on the
+/// run. An entry whose fact no longer holds excuses nothing: the gate is scored, exactly as if the
+/// entry had never been written. `--all` prints the excuse it applied on every run, so a red that
+/// was not counted is never a red that was not mentioned.
+///
+/// An excused gate is still fully reconciled, still self-tested, and still exits non-zero when run
+/// BY NAME (`cargo xtask gate construction`), which is what the CI job captures. This governs one
+/// thing: whether `--all` adds it to the red list.
+pub const REPORT_ONLY: &[Posture] = &[
+    Posture {
+        name: "construction",
+        why: "RED BY DESIGN on HEAD while the construction work it measures is in flight. ci.yml \
+              runs it `continue-on-error` with the verdict printed by the umbrella, and \
+              qa/full-gate.toml names the scored form in its skip list for the same reason; \
+              scoring it here would red the whole run on a fact CI does not score.",
+        excuse: Excused::Whole,
+    },
+    Posture {
+        name: "kind-isolation-ship",
+        why: "the SHIP-criterion twin of kind-isolation. Its enforceable rows run on every push \
+              under `kind-isolation`; the ones it adds are a claim about the SHIP SHA and are RED \
+              on HEAD by design. It is a release-time gate, and full_gate's own excuse table is \
+              where that claim is written down and checked.",
+        excuse: Excused::ReleaseTime,
+    },
+    Posture {
+        name: "design-bindings",
+        why: "PB-0 cites `scripts/inventory-coverage.sh`, and that file is not in this tree — the \
+              shell retired without the gate being converted, so the binding names a check that \
+              settles nothing. That is a real finding and it is why the gate is red BY NAME. It is \
+              not a finding `--all` can act on, and it is the only one: this excuse holds ONLY \
+              while every non-PASS row of the gate names that absent path, so a design binding \
+              that breaks for any other reason is scored here like any other red.",
+        excuse: Excused::OnlyAbout("scripts/inventory-coverage.sh"),
+    },
+];
+
+/// One entry of [`REPORT_ONLY`].
+pub struct Posture {
+    pub name: &'static str,
+    pub why: &'static str,
+    pub excuse: Excused,
+}
+
+/// The fact a posture rests on, checked on the run that relies on it.
+pub enum Excused {
+    /// The whole gate is reported, not scored, and the reason is about the gate rather than about
+    /// any one of its rows.
+    Whole,
+    /// It is a RELEASE-TIME claim, and [`crate::full_gate::REGISTRY_NOT_IN_CI`] is where that is
+    /// written down. The entry must still be there AND its own `Excuse` must still hold — a gate
+    /// whose release script stopped invoking it is a gate nothing runs, and excusing it here would
+    /// be the second vocabulary drifting from the first all over again.
+    ReleaseTime,
+    /// The gate is red about ONE known thing and nothing else. Every non-PASS row, and every
+    /// reconciliation problem, must name this needle; one that does not is a red this excuse was
+    /// not written for, and the gate is scored.
+    OnlyAbout(&'static str),
+}
+
+/// Why `--all` did not count this gate's red, or `None` if it must count it.
+///
+/// Called only when the verdict IS red, and it never softens a green.
+pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<String> {
+    let p = REPORT_ONLY.iter().find(|p| p.name == name)?;
+    match &p.excuse {
+        Excused::Whole => Some(p.why.to_string()),
+        Excused::ReleaseTime => {
+            let (_, reason, excuse) = crate::full_gate::REGISTRY_NOT_IN_CI
+                .iter()
+                .find(|(n, _, _)| *n == name)?;
+            excuse.holds(cx).ok()?;
+            Some(format!(
+                "{} — full_gate's excuse still holds: {reason}",
+                p.why
+            ))
+        }
+        Excused::OnlyAbout(needle) => {
+            // THE ROWS FIRST, THEN THE RECONCILIATION'S OWN LINES. A reconciler problem is
+            // `"<id>: <what>"` and carries none of the row's detail, so matching the needle
+            // against its text would score every excused row a second time. A problem is explained
+            // exactly when the row it names is — and a problem about a row that emitted nothing at
+            // all (`DID NOT RUN`) names no explained id and is therefore never excused, which is
+            // the right answer: a rule that stopped running is not a rule that is red for a known
+            // reason.
+            let explained: BTreeSet<&str> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass && r.detail.contains(needle))
+                .map(|r| r.id.as_str())
+                .collect();
+            let mut unexplained: Vec<String> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .filter(|r| !explained.contains(r.id.as_str()))
+                .map(|r| format!("{} {}", r.id, r.detail))
+                .collect();
+            unexplained.extend(
+                verdict
+                    .problems
+                    .iter()
+                    .filter(|t| !explained.iter().any(|id| t.starts_with(&format!("{id}: "))))
+                    .cloned(),
+            );
+            if unexplained.is_empty() {
+                Some(format!("{} — every red row names `{needle}`", p.why))
+            } else {
+                None
+            }
+        }
+    }
+}
 
 impl Registration {
-    /// Does this gate's verdict COUNT under `--all`, or is it printed and not scored?
-    pub fn blocking(&self) -> bool {
-        !REPORT_ONLY.contains(&self.name)
+    /// Does this gate's verdict COUNT under `--all` WHATEVER it says? A gate with a posture entry
+    /// still counts unless the entry's fact holds on this run — see [`excused_from_all`].
+    pub fn has_posture(&self) -> bool {
+        REPORT_ONLY.iter().any(|p| p.name == self.name)
     }
 }
 
@@ -1189,5 +1300,89 @@ pub fn print_verdict(name: &str, verdict: &Verdict) {
 pub fn print_rows_tsv(rows: &[Row]) {
     for row in rows {
         println!("{}", row.tsv());
+    }
+}
+
+#[cfg(test)]
+mod posture_tests {
+    use super::*;
+    use crate::ledger::Row;
+
+    fn verdict(rows: Vec<Row>) -> Verdict {
+        Verdict::of(rows)
+    }
+
+    /// The whole point of the narrow excuse: the standing red is excused, and one more red row
+    /// about anything else is scored. Without this, `--all` would have gone on being a switch that
+    /// is off for every future design-bindings break as well as for the known one.
+    #[test]
+    fn a_design_binding_that_breaks_for_a_new_reason_is_scored() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let known = Row::fail(
+            "PB-0",
+            "PB-0 master rule",
+            "partly proven; a referenced check settles nothing: \
+             gate:scripts/inventory-coverage.sh",
+        );
+        assert!(
+            excused_from_all("design-bindings", &cx, &verdict(vec![known.clone()])).is_some(),
+            "the standing red PB-0 names the absent check and is what the entry was written for"
+        );
+        let fresh = Row::fail(
+            "PB-7",
+            "PB-7 something else",
+            "a binding cites nothing at all",
+        );
+        assert!(
+            excused_from_all("design-bindings", &cx, &verdict(vec![known, fresh])).is_none(),
+            "a second red about anything else is a regression, and an excuse that covered it would \
+             be a switch nobody could see was off"
+        );
+    }
+
+    /// The release-time posture is not a name on a list here: it is a lookup into the table that
+    /// already knew, and that table's own claim is checked against the tree.
+    #[test]
+    fn the_release_time_posture_is_read_from_full_gate_and_expires_with_it() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let red = verdict(vec![Row::fail("kind-isolation:shape", "t", "d")]);
+        assert!(
+            excused_from_all("kind-isolation-ship", &cx, &red).is_some(),
+            "verify-1.6.0-done.sh invokes it, which is what full_gate's excuse asserts"
+        );
+        let mut ov = Overlay::new();
+        ov.set(
+            "scripts/verify-1.6.0-done.sh",
+            "#!/usr/bin/env bash\n# the release script no longer runs it\n",
+        );
+        assert!(
+            excused_from_all("kind-isolation-ship", &cx.with_overlay(ov), &red).is_none(),
+            "an excuse whose fact stopped holding excuses nothing"
+        );
+    }
+
+    #[test]
+    fn a_gate_with_no_posture_entry_is_always_scored() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let red = verdict(vec![Row::fail("x", "t", "d")]);
+        assert!(excused_from_all("plane-purity", &cx, &red).is_none());
+    }
+
+    /// Every posture names a registered gate. An entry for a gate that no longer exists is a
+    /// waiver that outlived what it excused.
+    #[test]
+    fn every_posture_names_a_registered_gate() {
+        for p in REPORT_ONLY {
+            assert!(
+                find(p.name).is_some(),
+                "`{}` is excused from --all and is not a registered gate",
+                p.name
+            );
+            assert!(
+                p.why.len() > 60,
+                "`{}`'s reason is too short to be one",
+                p.name
+            );
+        }
     }
 }

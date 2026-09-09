@@ -129,11 +129,14 @@ fn gate(args: &[String]) -> i32 {
             } else {
                 gates::print_verdict(reg.name, &verdict);
             }
-            // A REPORT-ONLY gate is printed and not scored. It is still reconciled, still
-            // self-tested, and still exits non-zero when run by name; what it does not do is turn
-            // `--all` red on a fact CI deliberately does not count.
-            if verdict.red && reg.blocking() {
-                red.push(reg.name);
+            // A REPORT-ONLY gate is printed and not scored — but only while the fact its posture
+            // rests on still holds, and NEVER silently: the excuse that was applied is printed on
+            // the same run, so a red that was not counted is not a red that went unmentioned.
+            if verdict.red {
+                match gates::excused_from_all(reg.name, &cx, &verdict) {
+                    Some(why) => println!("EXCUSED  {:<46} {why}", reg.name),
+                    None => red.push(reg.name),
+                }
             }
         }
         if red.is_empty() {
