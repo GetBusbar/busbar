@@ -60,12 +60,21 @@ impl DesignBindingsGate {
             .read(OUT_JSON_REL)
             .map_err(|e| format!("{e} -- run `cargo xtask gate design-bindings --write` first"))?;
         let ledger = json::parse(&ledger_text)?;
-        let ctx = verify::Ctx::build(
+        let mut ctx = verify::Ctx::build(
             &cells,
             &cx.abs("crates"),
             cx.root(),
             &cx.abs(GOLDEN_LEDGER_REL),
         )?;
+        if let Some(planted) = cx.overlay_command(NOTE_TABLE_KEY) {
+            let table: Vec<(String, String)> = planted
+                .split('\n')
+                .filter_map(|l| l.split_once('\t'))
+                .map(|(id, reason)| (id.to_string(), reason.to_string()))
+                .collect();
+            ctx.notes.clone_from(&table);
+            ctx.unproven_by_note = table;
+        }
         Ok(Inputs { ledger, cells, ctx })
     }
 
@@ -129,6 +138,16 @@ fn write_file(path: &Path, text: &str) -> Result<(), String> {
     }
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
+
+/// The overlay key a self-test plants a NOTE TABLE under: `<binding id>\t<reason>` per line.
+///
+/// [`tables::UNPROVEN_BY_NOTE`] is EMPTY on HEAD -- the owner emptied it as each of the four
+/// bindings it held gained a check that compares something -- and the rule that reads it is still
+/// live. A rule whose table is empty is a rule no plant can reach, so "the ledger's own note calls
+/// this binding UNPROVEN" was a refusal nothing proved: it could be switched off and every case
+/// here stayed green. This is how the self-test restores one entry for the length of one run,
+/// without an entry in the shipped table that would then be a fiction somebody has to maintain.
+pub const NOTE_TABLE_KEY: &str = "design-bindings:unproven-by-note";
 
 /// The row the REGEN-CLEAN guard writes. It is owed only under `--strict`, because plain `--check`
 /// is the gap REPORT and a report on a slightly stale ledger is still a useful report; `--strict`

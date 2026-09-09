@@ -6,16 +6,23 @@
 //! `qa/design-bindings.json` in an overlay — one bogus ref, one vanished cell, one cell the golden
 //! never recorded, one gate nobody invokes — and the gate must name each by its ref.
 //!
-//! Two cases plant something else, because two of this gate's refusals are not about a citation:
-//! the VACUOUS one (an empty binding table leaves every owed binding unrecorded, which the derived
-//! owed set refuses before any citation is read) and REGEN-CLEAN (a ledger with a binding removed
-//! is refused, because `--strict` judges the rows in the cache and a stale cache hides a binding
-//! added to Appendix B).
+//! Some cases plant something else, because not every refusal here is about a citation: the VACUOUS
+//! one (an empty binding table leaves every owed binding unrecorded, which the derived owed set
+//! refuses before any citation is read), REGEN-CLEAN both ways (a ledger with a binding removed is
+//! refused, because `--strict` judges the rows in the cache and a stale cache hides a binding added
+//! to Appendix B; and a derivation that could not be MADE is not a clean regen), and the ledger
+//! itself being unreadable.
+//!
+//! TWO PLANTS ARE NOT LEDGER REWRITES AND SAY SO AT THE CALL SITE. [`super::NOTE_TABLE_KEY`] stands
+//! in for the shipped note table, which is empty on HEAD and therefore unreachable by any ledger a
+//! case could write; and `a_real_test_in_the_wrong_file` builds its ref out of two entries of the
+//! real test index, so the fixture is a citation that is wrong in exactly one way rather than a
+//! name nothing anywhere declares.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::design_bindings::json::{self, J};
-use crate::gates::design_bindings::{build, DesignBindingsGate, ROW_REGEN};
-use crate::gates::{prove_red, prove_rows_green, Case, Expect, Gate, Report};
+use crate::gates::design_bindings::{build, DesignBindingsGate, NOTE_TABLE_KEY, ROW_REGEN};
+use crate::gates::{prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report};
 use crate::jobj;
 
 /// The binding id every fixture that needs a PASSING row beside a failing one reuses. It is a REAL
@@ -45,10 +52,16 @@ fn binding(id: &str, surface: &str, status: &str, checks: Vec<J>) -> J {
 }
 
 fn check(kind: &str, r: &str) -> J {
+    check_with_status(kind, r, "mapped")
+}
+
+/// The same, under a status of the caller's choosing. A check that is not `mapped` is not a
+/// citation this gate reads, which is what makes a binding carrying only those a NAMED GAP.
+fn check_with_status(kind: &str, r: &str, status: &str) -> J {
     jobj! {
         "kind" => json::s(kind),
         "ref" => json::s(r),
-        "status" => json::s("mapped"),
+        "status" => json::s(status),
     }
 }
 
@@ -62,6 +75,41 @@ fn a_real_test(cx: &Ctx) -> Option<String> {
         .iter()
         .find(|(_, files)| files.len() == 1)
         .map(|(name, _)| name.clone())
+}
+
+/// A REAL, UNAMBIGUOUS TEST FN NAME PAIRED WITH A FILE THAT DOES NOT DECLARE IT.
+///
+/// Both halves are read out of the index, so the fixture is a `path.rs::name` ref whose name really
+/// is a test somewhere and whose file really is a file full of tests -- just not that one. A ref
+/// naming a fn that exists nowhere would be caught by the bare-name arm as well, and would prove
+/// nothing about the arm that resolves the PATH.
+fn a_real_test_in_the_wrong_file(cx: &Ctx) -> Option<String> {
+    let inputs = DesignBindingsGate::inputs(cx).ok()?;
+    let singles: Vec<(&String, &String)> = inputs
+        .ctx
+        .idx
+        .iter()
+        .filter(|(_, f)| f.len() == 1)
+        .filter_map(|(n, f)| f.iter().next().map(|file| (n, file)))
+        .collect();
+    let (name, home) = singles.first()?;
+    let elsewhere = singles.iter().find(|(_, f)| f != home)?.1;
+    Some(format!("{elsewhere}::{name}"))
+}
+
+/// AN ORACLE FAMILY THE CELL TABLE CARRIES AND THE PINNED GOLDEN NEVER RECORDED A CELL OF.
+///
+/// This is the family-level twin of the "in cells.json, but the golden never recorded it" cell, and
+/// it is the arm an existence-only reading of a citation would have called proof: the family is
+/// right there in the corpus, and not one of its cells was ever compared.
+fn a_family_the_golden_never_recorded(cx: &Ctx) -> Option<String> {
+    let inputs = DesignBindingsGate::inputs(cx).ok()?;
+    inputs
+        .ctx
+        .fam_cells
+        .iter()
+        .find(|(_, ids)| !ids.is_empty() && !ids.iter().any(|i| inputs.ctx.recorded.contains(i)))
+        .map(|(fam, _)| fam.clone())
 }
 
 /// A cell id the golden RECORDED, and one it did not — the second is what makes the
@@ -354,6 +402,241 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
         &[ROW_REGEN],
         ov,
         &["is NOT what Appendix B derives"],
+    ));
+
+    r.append(broken_citation_cases(gate, cx, &all, &real_fn));
+    r.append(binding_verdict_cases(gate, cx, &all, &real_fn));
+    r.append(instrument_cases(gate, cx));
+    r
+}
+
+/// THE WAYS ONE CITATION SETTLES NOTHING that had no plant. Each is a single check on a single
+/// binding, so the row that reds is the row the case is about and the reason it prints is the arm
+/// under test.
+fn broken_citation_cases(gate: &dyn Gate, cx: &Ctx, all: &[&str], real_fn: &str) -> Report {
+    let mut r = Report::new();
+
+    // A CITATION THAT CLAIMS `mapped` AND NAMES NOTHING. Until this case the empty ref was dropped
+    // before it was judged, which read the blank as an absent citation -- a named gap, SKIP,
+    // allowed -- rather than as the broken one it is.
+    let mut ov = Overlay::new();
+    ov.set(
+        build::OUT_JSON_REL,
+        ledger(vec![binding(
+            "PB-2",
+            "a citation with no ref",
+            "mapped",
+            vec![check("test", "")],
+        )]),
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a check that claims to be mapped and names nothing settles nothing",
+        all,
+        ov,
+        &["no ref -- a check with nothing to compare against"],
+    ));
+
+    // A `path.rs::name` REF WHOSE FILE DOES NOT DECLARE THAT FN. The qualified form exists because
+    // a bare name is ambiguous; if the path half were unjudged, qualifying a ref would WEAKEN it.
+    match a_real_test_in_the_wrong_file(cx) {
+        Some(wrong) => {
+            let mut ov = Overlay::new();
+            ov.set(
+                build::OUT_JSON_REL,
+                ledger(vec![binding(
+                    "PB-3",
+                    "a qualified ref pointing at the wrong file",
+                    "mapped",
+                    vec![check("test", &wrong)],
+                )]),
+            );
+            r.push(prove_red(
+                cx,
+                gate,
+                "a path.rs::name ref whose file declares no test fn by that name",
+                all,
+                ov,
+                &["no test fn by that name is declared in that file"],
+            ));
+        }
+        None => r.note_infra_failure(
+            "no two files each declaring one unambiguous test fn were found, so the arm that \
+             resolves the PATH half of a `path.rs::name` ref is unproven",
+        ),
+    }
+
+    // A CHECK OF A KIND THIS GATE DOES NOT KNOW. The kinds are a closed set and the fall-through is
+    // the only thing standing between "we cite a `vibes` check" and a green row.
+    let mut ov = Overlay::new();
+    ov.set(
+        build::OUT_JSON_REL,
+        ledger(vec![binding(
+            "PB-4",
+            "a check of a kind nothing knows how to read",
+            "mapped",
+            vec![check("vibes", "the general feeling in the room")],
+        )]),
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a check of an unknown kind settles nothing, whatever it names",
+        all,
+        ov,
+        &["unknown check kind"],
+    ));
+
+    // AN ORACLE FAMILY WHOSE CELLS EXIST AND WHOSE GOLDEN RECORDED NONE OF THEM. The absent-family
+    // arm beside it was already planted; this one -- the one an existence check calls proof -- was
+    // not, and it is the looser citation's version of the failure the whole file exists for.
+    match a_family_the_golden_never_recorded(cx) {
+        Some(fam) => {
+            let mut ov = Overlay::new();
+            ov.set(
+                build::OUT_JSON_REL,
+                ledger(vec![binding(
+                    "PB-5",
+                    "a family the golden never recorded",
+                    "mapped",
+                    vec![check("oracle-family", &fam)],
+                )]),
+            );
+            r.push(prove_red(
+                cx,
+                gate,
+                "an oracle-family whose cells exist but whose golden recorded none of them",
+                all,
+                ov,
+                &["cells exist, but the golden recorded none of them"],
+            ));
+        }
+        None => r.note_infra_failure(
+            "every family in the cell corpus has at least one recorded cell, so the arm that \
+             refuses a family the golden never compared is unproven here",
+        ),
+    }
+
+    let _ = real_fn;
+    r
+}
+
+/// THE THREE VERDICTS A BINDING CAN EARN that no plant reached: every citation broken, the ledger's
+/// own note, and the named gap.
+fn binding_verdict_cases(gate: &dyn Gate, cx: &Ctx, all: &[&str], real_fn: &str) -> Report {
+    let mut r = Report::new();
+
+    // EVERY CITATION BROKEN IS `unproven`, NOT `partly proven`. The two arms print different words
+    // and only the partly-proven one was planted; with this arm switched off a binding all of whose
+    // citations had rotted fell through to the partly-proven arm with an EMPTY broken list -- which
+    // is to say, to a row that says a referenced check settles nothing and names none.
+    let mut ov = Overlay::new();
+    ov.set(
+        build::OUT_JSON_REL,
+        ledger(vec![binding(
+            "PB-6",
+            "two citations, both rotted",
+            "mapped",
+            vec![
+                check("test", "no_such_test_fn_a_selftest"),
+                check("test", "no_such_test_fn_b_selftest"),
+            ],
+        )]),
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a binding whose every cited check settles nothing is UNPROVEN, not partly proven",
+        all,
+        ov,
+        &["nothing this binding cites compares anything today"],
+    ));
+
+    // THE LEDGER'S OWN NOTE. The shipped table is empty, so the table is planted rather than the
+    // ledger: the binding's citation RESOLVES and its row would otherwise be a PASS, which is the
+    // whole point -- the note is what refuses it.
+    let mut ov = Overlay::new();
+    ov.set(
+        build::OUT_JSON_REL,
+        ledger(vec![binding(
+            "PB-7",
+            "a binding the note calls unproven",
+            "mapped",
+            vec![check("test", real_fn)],
+        )]),
+    );
+    ov.set_command(
+        NOTE_TABLE_KEY,
+        "PB-7\tthe surface this binding names does not exist in crates/ yet; the test fn the ref \
+         resolves to belongs to another subsystem and happens to match by name",
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "a binding the ledger's own note calls UNPROVEN is refused, resolving citation and all",
+        all,
+        ov,
+        &["UNPROVEN, by the ledger's own note"],
+    ));
+
+    // A NAMED GAP IS A NAMED GAP, and it is `unmapped` -- SKIP, with the suggested check in the
+    // detail column -- rather than one more `unproven`. `CONTROL` is a binding the committed ledger
+    // records as MAPPED, so it is not in this gate's skip allowlist and its SKIP is refused: the
+    // case reads that refusal, which carries the row's own `unmapped:` detail.
+    let mut ov = Overlay::new();
+    ov.set(
+        build::OUT_JSON_REL,
+        ledger(vec![binding(
+            CONTROL,
+            "a gap nobody has closed",
+            "unmapped",
+            vec![check_with_status("test", real_fn, "suggested")],
+        )]),
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a binding with no mapped check is a NAMED gap, and a gap the ledger does not record is \
+         refused",
+        &[CONTROL],
+        ov,
+        &["unmapped: "],
+    ));
+
+    r
+}
+
+/// THE TWO REFUSALS THAT ARE NOT ABOUT A CITATION: the instrument could not read its ledger, and
+/// the derivation it compares that ledger against could not be made.
+fn instrument_cases(gate: &dyn Gate, cx: &Ctx) -> Report {
+    let mut r = Report::new();
+
+    // A LEDGER THAT CANNOT BE READ IS NOT A LEDGER WITH NO BINDINGS IN IT. Every owed row goes
+    // unrecorded, and the one row the gate does emit says why.
+    let mut ov = Overlay::new();
+    ov.remove(build::OUT_JSON_REL);
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the bindings ledger being unreadable is refused, not read as no bindings",
+        &["design-bindings:ledger-unreadable"],
+        ov,
+        &["the design bindings ledger could not be read"],
+    ));
+
+    // AND THE DERIVATION ITSELF FAILING IS NOT A CLEAN REGEN. Appendix B is the source the committed
+    // ledger is compared against; with it unreadable there is no comparison to pass, and the arm
+    // that says so was the one arm of REGEN-CLEAN with no plant.
+    let mut ov = Overlay::new();
+    ov.remove(build::ARCH_REL);
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the derivation from Appendix B failing is refused, never read as a clean regen",
+        &[ROW_REGEN],
+        ov,
+        &["the derivation from Appendix B FAILED"],
     ));
 
     r
