@@ -1,0 +1,83 @@
+# WHAT THIS HAND-BACK CAN MOVE, DECLARED BY THE HAND-BACK.
+#
+# `.github/workflows/keep-proof.yml` reads exactly two keys out of this file:
+#
+#   families  the oracle id-filter this branch is recorded and replayed against. It NARROWS the
+#             shadow oracle and nothing else. It cannot narrow the test shards or the gates.
+#   tests     the packages this branch names, for a reader.
+#
+# THIS BRANCH: keep-core-hooks-recut — ONE line of 9 commits, not two.
+#
+# WHY ONE LINE. keep-core-hooks (ddaee00e5, 6 commits) sat on keep-r5-hooks (7bf51e63d), and
+# `git merge-base --is-ancestor 7bf51e63d 36fa6f753` says NO: the R5-hooks cut never landed on the
+# tree. Re-cutting the 6 alone would have rebased them onto a tree missing the chain-cleave
+# primitives and the busbar-core → busbar-unit-audit Cargo edge they are written against, so the
+# R5-hooks 3 come first and the two queue entries land as one 9-commit line:
+#   9097c1409  the chain-cleave primitives land in busbar-unit-audit
+#   4067a612c  busbar-core takes the Cargo edge to busbar-unit-audit
+#   7bf51e63d  core's audit chain body is deleted, the callers name the unit
+#   311441f61  plane-body encode/decode  -> busbar_substrate::plane::store
+#   514a77cdd  the scoped chained-record journal -> busbar-unit-audit::journal
+#   218ea25e9  the neutral per-session substrate -> busbar_substrate::session
+#   9d84b4a19  config::secret -> busbar_substrate::config::secret
+#   acc16e7f3  the plugin tarball fixture -> busbar-plugin-testkit::loader_fixtures
+#   ddaee00e5  the hook POLICY ENGINE -> crates/busbar-core-hooks
+#
+# THE FOUR CONFLICTS AND HOW THEY WERE READ. Nothing was dropped.
+#   514a77cdd  `busbar-unit-audit/src/tests/mod.rs` — UNION OF SEAMS. HEAD declared
+#              `digest_framing_tests` (a tree gain) and `legacy_cleave_tests` (from the R5 picks
+#              above); the incoming declared `journal_tests`. All three files exist, so all three
+#              are declared. (`break_reporting_tests` is not missing: `record_tests.rs` declares it
+#              through a `#[path]`.)
+#   ddaee00e5  `busbar-core/src/limits/mod.rs` — the import list. `DEFAULT_POLICY_TIMEOUT_MS` is
+#              DROPPED because the incoming commit's own body (the comment at its new lines 147-150)
+#              moves `default_policy_timeout_ms` out with its only reader, the hook engine;
+#              `DEFAULT_REQUEST_BODY_MAX_BYTES` stays `#[cfg(test)]`-only, which is the tree's later
+#              truth — the body-cap default has no non-test reader left on that page. Verified by
+#              grep, not by preference: neither symbol has a production use in the file.
+#   ddaee00e5  `busbar-core-hooks/src/scrape.rs` — INCOMING. The signature change is the point of
+#              the move (`&Arc<App>` -> the three fields it ever touched, because the engine may not
+#              name the engine's state type) and the already-merged body below the marker calls
+#              `hook_registry`, so HEAD's old signature could not have compiled.
+#   ddaee00e5  `qa/audit-ledger.json` — HEAD, plus a de-duplication. The incoming reordered the
+#              scope list and carried `crates/busbar-transport-http/tests` as `unaudited`; the tree
+#              has since AUDITED it (round 1, findings, round B at the tip). Taking the incoming
+#              there would have deleted a recorded audit, so HEAD stands. The same reorder left
+#              `crates/busbar-transport-grpc/tests` present TWICE after the merge — the tree's
+#              audited row and the incoming's stale `unaudited` copy; the stale copy is removed.
+#              157 scopes, no duplicate ids, and the two new `busbar-core-hooks` scopes are present
+#              as `unaudited`, which is what the commit message says they should be.
+#
+# TWO ADAPTATION COMMITS FOLLOW THE NINE.
+#   * ORIGIN DEFECT, not a rebase artefact: the relocated limits assertion reads
+#     `busbar_substrate::config::limits::LIMITS_TEST_LOCK`, which the substrate gates behind
+#     `cfg(any(test, feature = "test-support"))` — identically at ddaee00e5 and at the tree tip —
+#     but busbar-core-hooks' dev-dependencies never declared that edge. `cargo test -p
+#     busbar-core-hooks` did not COMPILE; it had only ever passed inside a workspace-wide run that
+#     unified the feature in from another crate. Declared explicitly.
+#   * Automerge took the tree's direct `busbar_substrate::store::…` paths into gate.rs/scrape.rs,
+#     which left the crate's `crate::store` vocabulary shim half-unused (an unused-import warning)
+#     and contradicted the body-for-body rule the crate's own lib.rs documents. Restored to
+#     `crate::store::…`; identical functions, spelling only. Plus one rustfmt pack of the merged
+#     limits import list.
+#
+# WHY THESE FAMILIES. `hooks` is the engine that moved and `route` is what it produces — a policy's
+# ordered preference feeding the failover walk — so those two are the direct subject. `plugins` is
+# named because the dlopen path and the tarball fixture both moved (the battery still packages a
+# REAL cdylib and loads it over the real ABI). `admin` because the admin service and JSON handlers
+# read hook-derived fields through the re-export. `config` because `config::secret` and the session
+# substrate moved to neutral homes. `boot` because the R5 commits delete core's audit chain body and
+# the callers name the unit instead, while `boot_verify_golden` deliberately STAYS in core.
+# The whole line is a MOVE: every body is byte-for-byte where it was, so every declared family is
+# expected identical, and declaring them is what makes that an assertion rather than a hope.
+#
+# SCOPE TESTS RUN LOCALLY (scoped `cargo test -p` only; no workspace build, no local oracle):
+#   busbar-unit-audit    104 passed, 0 failed (+1 doc-test) — proves the mod.rs union compiles
+#   busbar-core-hooks    102 passed, 0 failed — exactly the 102 the commit message claims
+#   busbar-core --lib   1769 passed, 0 failed — exactly the 1,870 -> 1,769 the commit claims
+#   clippy --all-targets clean on busbar-core-hooks and busbar-unit-audit; fmt clean
+# The core battery needs two cdylib fixtures built first (`busbar-store-example-plugin`,
+# `busbar-hook-test-plugin`); without them 10 tests REFUSE TO SKIP rather than passing vacuously.
+# That is the fixtures' design, not a red.
+families = '^(hooks|route|plugins|admin|config|boot)([|.]|$)'
+tests = ["busbar-core-hooks", "busbar-unit-audit", "busbar-core", "busbar-substrate", "busbar-plugin-testkit"]
