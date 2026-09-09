@@ -123,9 +123,9 @@ fn a_cached_prefix_is_counted_once() {
     assert_eq!(
         lines,
         vec![
-            ("tokens_in".to_string(), Some(20)),
-            ("tokens_out".to_string(), Some(10)),
-            ("cache_read".to_string(), Some(80)),
+            ("tokens_input".to_string(), Some(20)),
+            ("tokens_output".to_string(), Some(10)),
+            ("tokens_cache_read".to_string(), Some(80)),
         ],
         "the cached prefix was not subtracted from the wire input total"
     );
@@ -142,8 +142,8 @@ fn an_unreported_class_is_absent_rather_than_zero() {
     assert_eq!(
         lines,
         vec![
-            ("tokens_in".to_string(), Some(12)),
-            ("tokens_out".to_string(), Some(4)),
+            ("tokens_input".to_string(), Some(12)),
+            ("tokens_output".to_string(), Some(4)),
         ]
     );
 }
@@ -217,9 +217,9 @@ fn a_streamed_usage_frame_meters_the_tokens_it_reports() {
     assert_eq!(
         lines,
         vec![
-            ("tokens_in".to_string(), Some(20)),
-            ("tokens_out".to_string(), Some(10)),
-            ("cache_read".to_string(), Some(80)),
+            ("tokens_input".to_string(), Some(20)),
+            ("tokens_output".to_string(), Some(10)),
+            ("tokens_cache_read".to_string(), Some(80)),
         ],
         "a streamed answer metered nothing"
     );

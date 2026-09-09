@@ -178,6 +178,23 @@ pub const CLASS_AUDIO_SECONDS_IN: MeterClassId = MeterClassId::new("audio_second
 /// drift from the declaration above.
 pub const CLASS_TOOL_CALLS: MeterClassId = MeterClassId::new("tool_calls");
 
+/// EVERY CLASS THIS PLANE REPORTS, AS DATA.
+///
+/// The declaration above carries a family, a direction and a divisor beside each key, all of which
+/// are this plane's own business. This is the same list reduced to the one thing a reader OUTSIDE
+/// the plane needs: the class strings, so boot validation can ask "does every class this plane
+/// reports have a rate row on its lanes?" without naming this plane's type or the contract shapes
+/// its declaration is written in.
+pub const METER_CLASS_NAMES: &[&str] = &[
+    CLASS_AUDIO_TOKENS_IN.as_str(),
+    CLASS_AUDIO_TOKENS_OUT.as_str(),
+    CLASS_TEXT_TOKENS_IN.as_str(),
+    CLASS_TEXT_TOKENS_OUT.as_str(),
+    CLASS_CACHED_TOKENS.as_str(),
+    CLASS_AUDIO_SECONDS_IN.as_str(),
+    CLASS_TOOL_CALLS.as_str(),
+];
+
 /// The name a session's opening unit is audited and priced under.
 ///
 /// The audit record's shape is fixed for every plane and a plane contributes exactly two ids to it:
