@@ -297,8 +297,8 @@ const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
     ),
     (
         "kind-isolation-ship",
-        240000.0,
-        "79 940 units measured over eighty cases: the same eleven rows, plus the ship ones -- the source index, the shape check, the control-path scan and the conformance battery walk -- which are not on the per-push twin. It sat at 79 940 against a budget of 80 000, which is a budget that flaps rather than one that catches anything.",
+        245000.0,
+        "80 289 units measured over 86 cases, up from 79 940 over 80: the same eleven rows, plus the ship ones -- the source index, the shape check, the control-path scan and the conformance battery walk -- which are not on the per-push twin. The round-two census cases are in the shared arm, so the twin owes six of them; the ledger-provenance cases are not, because the twin does not read the ledger. Half a per cent for six cases, which is what a case that plants ONE manifest costs when the memos hold. It sat at 79 940 against a budget of 80 000 once, which is a budget that flaps rather than one that catches anything.",
     ),
 ];
 
