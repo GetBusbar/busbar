@@ -1891,6 +1891,59 @@ pub fn selftest(
         &["busbar-store-memory", "dialect"],
     ));
 
+    // ── THE THREE DEAD-ROW RULES, ONE PLANT EACH ─────────────────────────────────────────────────
+    //
+    // THE RATCHET ONLY HALF RAN. Every case above is about a number going UP; these three are the
+    // half that TIGHTENS, and a mutation campaign found all three unproven — `dead-cell`,
+    // `dead-disagreement` and `dead-edge` each had their `offenders.push` replaced with a `drop`
+    // and the battery stayed green. An allowance that outlives what it allowed is the most durable
+    // kind of hole there is: nothing goes red when the coupling is drained, so the row stays,
+    // and the next crate to grow that coupling back finds the ceiling already written for it.
+    //
+    // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
+    // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
+
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-auth-admin-tokens` carries two cells; both
+    // of them measure nothing the moment the crate stops being one.
+    let mut ov = crate::ctx::Overlay::new();
+    ov.remove("crates/auth-admin-tokens/Cargo.toml");
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
+        &[ROW_MATRIX],
+        ov,
+        &["dead-cell", "busbar-auth-admin-tokens \u{d7} api"],
+    ));
+
+    // A `[[disagreement]]` ROW WHOSE TWO SCANNERS HAVE NOTHING LEFT TO DISAGREE ABOUT. The note is
+    // a hand-written sentence about a spelling; when the cell it excuses is gone the sentence is a
+    // standing licence for the next disagreement nobody reads.
+    let mut ov = crate::ctx::Overlay::new();
+    ov.remove("crates/busbar-a2a-codec/Cargo.toml");
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[disagreement]]` row whose cell is gone is a standing licence, and is struck",
+        &[ROW_MATRIX],
+        ov,
+        &["dead-disagreement", "busbar-a2a-codec \u{d7} transport"],
+    ));
+
+    // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. `busbar-api` is the only crate of kind `api`, so
+    // its manifest is the whole of that kind: every `api -> *` class in the ledger covers nothing
+    // the moment it leaves, and each one is an edge class the next `api` crate would inherit.
+    let mut ov = crate::ctx::Overlay::new();
+    ov.remove("crates/api/Cargo.toml");
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an `[[edge]]` row whose class no crate has any more is struck, not left standing",
+        &[ROW_MATRIX],
+        ov,
+        &["dead-edge", "api -> auth"],
+    ));
+
     // THE LEDGER ITSELF GONE. A row that cannot read its allowance is not a row that found nothing.
     let mut gone = crate::ctx::Overlay::new();
     gone.remove(LEDGER);
