@@ -1244,8 +1244,10 @@ same breath, because the row was still red-able through its neighbours. Each of 
 fixture that only it rejects, and the two floors fail apart: four manifests is under the census floor
 and nowhere near the source floor, and four sources are the mirror.
 
-One performance note, because it is what made the battery runnable: `:transport-registration` lexed
-every source file once PER WIRE — 85% of the gate's runtime, seven times the work for an answer that
-does not depend on which wire is being looked for. Hoisted, the gate is 22s and the battery is five
-minutes rather than twenty. `--selftest` re-runs the whole gate once per planted case, so it needs
-`XTASK_GATE_CEILING_SECS` raised above the 300s per-gate default.
+One cost note, because it is what makes the battery runnable at all. `--selftest` re-runs the WHOLE
+gate once per planted case, and this branch adds thirty of them, so the per-case cost is the whole
+budget. A profile of one run put 85% of it inside `:transport-registration`, which lexed every source
+file once PER WIRE for an answer that does not depend on which wire is being looked for; the wire
+scan's memo (`the xtask shard: the wire scan is memoised`) is what removed it. The battery needs
+`XTASK_GATE_CEILING_SECS` raised above the 300s per-gate default — `land.sh` and CI give the two long
+self-tests their own hang ceiling for exactly this.
