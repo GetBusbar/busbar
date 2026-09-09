@@ -360,3 +360,60 @@ fn create_dir_all_fsyncs_the_parent_of_every_directory_it_creates() {
     create_dir_all(&deeper).unwrap();
     assert_eq!(fault_parents_fsynced(), vec![leaf.clone()]);
 }
+
+/// `create_dir_all`'s per-directory `create_dir` MUST propagate a genuine (non-`AlreadyExists`)
+/// error rather than silently swallow it — the fail-closed half of the `Err(e) if e.kind() ==
+/// AlreadyExists => {} , Err(e) => return Err(e)` match. Forces a real `NotADirectory`-shaped
+/// error (not achievable via the fault-injection seam, which only covers `write_with`'s steps) by
+/// naming a path THROUGH an existing plain file: the file itself is found already-existing (so the
+/// walk stops there without pushing it), but `create_dir` on the child underneath it fails for a
+/// reason that is emphatically not "already exists".
+#[test]
+fn create_dir_all_propagates_a_genuine_non_already_exists_error() {
+    let sc = Scratch::new("mkdir-through-file");
+    let blocker = sc.path("blocker-file");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+
+    let child = blocker.join("child");
+    let err = create_dir_all(&child).expect_err(
+        "creating a directory UNDER an existing plain file must fail, not silently succeed",
+    );
+    assert_ne!(
+        err.kind(),
+        std::io::ErrorKind::AlreadyExists,
+        "the real failure reason must survive, not be reported as AlreadyExists: {err:?}"
+    );
+    assert!(
+        !child.exists(),
+        "no directory may have been created on the failed path"
+    );
+}
+
+/// The "concurrent creator won the race" branch, exercised for REAL: many threads calling
+/// `create_dir_all` on the exact same not-yet-existing nested path at once. Every thread must
+/// still return `Ok(())` (the loser(s) hit a genuine `AlreadyExists` from the winner and must
+/// swallow exactly that, and only that) and the directory must end up present exactly once.
+#[test]
+fn create_dir_all_concurrent_racers_all_succeed_on_the_same_new_path() {
+    let sc = Scratch::new("mkdir-race");
+    let target = std::sync::Arc::new(sc.dir.join("race-a").join("race-b").join("race-c"));
+
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let handles: Vec<_> = (0..8)
+        .map(|_| {
+            let target = target.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                create_dir_all(&target)
+            })
+        })
+        .collect();
+
+    for h in handles {
+        h.join()
+            .unwrap()
+            .expect("every racing caller must observe success, including the race losers");
+    }
+    assert!(target.is_dir());
+}

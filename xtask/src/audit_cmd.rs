@@ -37,6 +37,26 @@ struct Args {
     sub: Option<String>,
 }
 
+/// The options this command takes a value for. AN UNKNOWN OPTION IS AN ERROR, never a value
+/// quietly filed under a name nothing reads: `--att 4d5a05af` would otherwise stamp HEAD while the
+/// auditor believed they had named the commit they read, and the record would claim a tree nobody
+/// looked at. An unexpected positional has always been an error; a misspelt flag is the same
+/// mistake.
+const OPTIONS: [&str; 10] = [
+    "ledger",
+    "report-md",
+    "scope",
+    "round",
+    "result",
+    "report",
+    "auditor",
+    "counts",
+    "at",
+    "commit",
+];
+
+const SWITCHES: [&str; 3] = ["check", "selftest", "write"];
+
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut out = Args {
         map: BTreeMap::new(),
@@ -47,15 +67,20 @@ fn parse(args: &[String]) -> Result<Args, String> {
     while i < args.len() {
         let a = &args[i];
         if let Some(name) = a.strip_prefix("--") {
-            match name {
-                "check" | "selftest" | "write" => out.flags.push(name.to_string()),
-                _ => {
-                    let Some(v) = args.get(i + 1) else {
-                        return Err(format!("`--{name}` needs a value"));
-                    };
-                    out.map.insert(name.to_string(), v.clone());
-                    i += 1;
-                }
+            if SWITCHES.contains(&name) {
+                out.flags.push(name.to_string());
+            } else if OPTIONS.contains(&name) {
+                let Some(v) = args.get(i + 1) else {
+                    return Err(format!("`--{name}` needs a value"));
+                };
+                out.map.insert(name.to_string(), v.clone());
+                i += 1;
+            } else {
+                return Err(format!(
+                    "unknown option `--{name}` (options: {}; switches: {})",
+                    OPTIONS.join(", "),
+                    SWITCHES.join(", ")
+                ));
             }
         } else if out.sub.is_none() {
             out.sub = Some(a.clone());
@@ -388,6 +413,350 @@ fn find_scope<'a>(scopes: &'a mut [Json], sid: &str) -> Option<&'a mut Json> {
         .find(|s| s.get("id").as_str() == Some(sid))
 }
 
+// ---------------------------------------------------------------------------------------------
+// public-hygiene refusal — `record --report` must not reintroduce the class of leak this branch
+// just cleaned out of qa/audit-ledger.json (an audit-round label, a bare commit-hash citation, a
+// pointer to a document the reader has never seen). `scripts/public-hygiene-lint.py` is the full
+// 11-rule instrument and stays the source of truth for what SHIPS; xtask has no `regex` dependency
+// (see xtask/Cargo.toml's own comment on why), so this is a dependency-free, hand-rolled mirror of
+// the THREE rules that actually fired against this file — `internal-issue-id`,
+// `commit-hash-citation` and `private-doc-reference` — narrow enough to be exact where it matters
+// and conservative (never over-fires on legitimate technical prose) rather than byte-for-byte with
+// the Python. It runs on `--report` alone: `--auditor` is a free-text identity field the register
+// already spells many ways (`opus-pass1`, `round-4 finder fleet`), not a place this refusal reaches.
+// ---------------------------------------------------------------------------------------------
+
+fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Case-insensitive whole-word search: hyphen-permissive, exactly as in the Python's `\b` (a
+/// hyphenated identifier that embeds the flagged word still matches; an underscore-joined one,
+/// which reads as a name rather than prose, does not).
+fn contains_word_ci(text: &str, word: &str) -> bool {
+    let hay: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    let pat: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+    if pat.is_empty() || hay.len() < pat.len() {
+        return false;
+    }
+    for i in 0..=(hay.len() - pat.len()) {
+        if hay[i..i + pat.len()] == pat[..] {
+            let before_ok = i == 0 || !is_ident_char(hay[i - 1]);
+            let after = i + pat.len();
+            let after_ok = after >= hay.len() || !is_ident_char(hay[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mirrors `\b(?:round|wave|audit)\s*#?\s*\d+\b` (`hash_required = false`) and
+/// `\b(?:task|item|finding|issue|defect|gap|guard|ticket)s?\s*#\s*\d+` (`hash_required = true`):
+/// one of `words`, word-bounded, an optional trailing `s`, optional spaces, a `#` (required only
+/// when `hash_required`), optional spaces, then at least one digit. Returns the matched slice.
+fn word_then_number(text: &str, words: &[&str], hash_required: bool) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    for word in words {
+        let pat: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+        if pat.len() > lower.len() {
+            continue;
+        }
+        for i in 0..=(lower.len() - pat.len()) {
+            if lower[i..i + pat.len()] != pat[..] {
+                continue;
+            }
+            let before_ok = i == 0 || !is_ident_char(lower[i - 1]);
+            if !before_ok {
+                continue;
+            }
+            let mut k = i + pat.len();
+            if k < lower.len() && lower[k] == 's' {
+                k += 1;
+            }
+            while k < lower.len() && lower[k] == ' ' {
+                k += 1;
+            }
+            let saw_hash = k < lower.len() && lower[k] == '#';
+            if saw_hash {
+                k += 1;
+            }
+            if hash_required && !saw_hash {
+                continue;
+            }
+            while k < lower.len() && lower[k] == ' ' {
+                k += 1;
+            }
+            let digits_start = k;
+            while k < lower.len() && lower[k].is_ascii_digit() {
+                k += 1;
+            }
+            if k > digits_start {
+                return Some(chars[i..k].iter().collect());
+            }
+        }
+    }
+    None
+}
+
+/// Rule 1 — `internal-issue-id`: an audit-round or tracker citation the reader cannot open.
+fn rule_internal_issue_id(text: &str) -> Option<String> {
+    // The literal word this whole rule exists to catch, not a citation of it.
+    // public-hygiene-lint: allow — the pattern this rule is written to detect, not a leaked reference
+    if contains_word_ci(text, "codeaudit") {
+        return Some("cites the audit-tool name this rule exists to catch".to_string());
+    }
+    if let Some(hit) = word_then_number(text, &["round", "wave", "audit"], false) {
+        return Some(format!("cites `{hit}`, an audit-round label"));
+    }
+    if let Some(hit) = word_then_number(
+        text,
+        &[
+            "task", "item", "finding", "issue", "defect", "gap", "guard", "ticket",
+        ],
+        true,
+    ) {
+        return Some(format!("cites `{hit}`, a tracker/finding id"));
+    }
+    None
+}
+
+/// The crypto/algorithm vocabulary that keeps a hex-shaped word from reading as a commit citation
+/// (`sha256`, `secp256k1`, `(ed25519)`, `blake3`, `hash & (N-1)`'s neighbours). `sha`/`secp`/`aes`/
+/// `poly` only count when immediately followed by a digit, matching the Python's `sha-?\d` etc.;
+/// the rest are plain substrings.
+fn crypto_context(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if [
+        "digest", "checksum", "blake", "hmac", "argon", "scrypt", "bcrypt", "base64", "25519",
+        "chacha",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
+    {
+        return true;
+    }
+    let chars: Vec<char> = lower.chars().collect();
+    for prefix in ["sha", "secp", "aes", "poly"] {
+        let mut start = 0;
+        while let Some(pos) = lower[start..].find(prefix) {
+            let idx = start + pos;
+            let mut after = idx + prefix.len();
+            if chars.get(after) == Some(&'-') {
+                after += 1;
+            }
+            if chars.get(after).is_some_and(char::is_ascii_digit) {
+                return true;
+            }
+            start = idx + 1;
+        }
+    }
+    false
+}
+
+fn looks_like_hash(hit: &[char]) -> bool {
+    (7..=40).contains(&hit.len())
+        && hit.iter().any(char::is_ascii_digit)
+        && hit.iter().any(|c| c.is_ascii_alphabetic())
+}
+
+/// Rule 2 — `commit-hash-citation`: a keyword-led or bare-parenthesized hex run. A hash resolves
+/// only against history the reader does not have.
+fn rule_commit_hash(text: &str) -> Option<String> {
+    if crypto_context(text) {
+        return None;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+
+    for kw in [
+        "fixed in",
+        "landed in",
+        "introduced in",
+        "reverted in",
+        "commit",
+        "sha",
+        "rev",
+        "revision",
+    ] {
+        let pat: Vec<char> = kw.chars().collect();
+        if pat.len() > lower.len() {
+            continue;
+        }
+        for i in 0..=(lower.len() - pat.len()) {
+            if lower[i..i + pat.len()] != pat[..] {
+                continue;
+            }
+            let before_ok = i == 0 || !is_ident_char(lower[i - 1]);
+            if !before_ok {
+                continue;
+            }
+            let mut k = i + pat.len();
+            while k < lower.len() && lower[k] == ' ' {
+                k += 1;
+            }
+            for quote in ['`', '"', '\''] {
+                if k < lower.len() && lower[k] == quote {
+                    k += 1;
+                }
+            }
+            let start = k;
+            while k < lower.len() && lower[k].is_ascii_hexdigit() {
+                k += 1;
+            }
+            if looks_like_hash(&chars[start..k]) {
+                let hit: String = chars[start..k].iter().collect();
+                return Some(format!("cites commit `{hit}`"));
+            }
+        }
+    }
+
+    // The bare parenthetical form: a hex run inside unlabeled parentheses.
+    for i in 0..chars.len() {
+        if chars[i] != '(' {
+            continue;
+        }
+        let mut k = i + 1;
+        while k < chars.len() && chars[k] == ' ' {
+            k += 1;
+        }
+        let start = k;
+        while k < chars.len() && chars[k].is_ascii_hexdigit() {
+            k += 1;
+        }
+        let mut close = k;
+        while close < chars.len() && chars[close] == ' ' {
+            close += 1;
+        }
+        if close < chars.len() && chars[close] == ')' && (7..=12).contains(&(k - start)) {
+            let hit: &[char] = &chars[start..k];
+            if looks_like_hash(hit) {
+                let hit: String = hit.iter().collect();
+                return Some(format!("cites commit `({hit})`"));
+            }
+        }
+    }
+    None
+}
+
+/// Rule 3 — `private-doc-reference`: a pointer to a document the reader cannot open. This mirrors
+/// the LITERAL-NAME half of the Python rule (the half responsible for the 3 real hits this branch
+/// found and fixed) rather than the `§`-with-forbid-list half, whose false-positive controls (a
+/// doc citing its own section, RFC/OIDC/JSON-RPC citations) are load-bearing enough that a partial
+/// port would either miss real leaks or nag on legitimate standards prose.
+fn rule_private_doc(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    // Two of the Python rule's literal-phrase needles, quoted here only because this function's
+    // whole job is to detect them, not to cite them.
+    // public-hygiene-lint: allow — needles this rule is written to detect, not leaked references
+    if lower.contains("companion design") {
+        return Some("cites an internal companion write-up the reader cannot open".into());
+    }
+    // public-hygiene-lint: allow — needle this rule is written to detect, not a leaked reference
+    if lower.contains("design doc") || lower.contains("design document") {
+        return Some("cites an internal planning document the reader cannot open".into());
+    }
+    // Named internal documents. Each is a needle this rule exists to catch, not a citation of one.
+    for needle in [
+        "engine-bugs.md",            // public-hygiene-lint: allow — needle, not a citation
+        "mcp-design.md",             // public-hygiene-lint: allow — needle, not a citation
+        "a2a-design.md",             // public-hygiene-lint: allow — needle, not a citation
+        "smart-router-design.md",    // public-hygiene-lint: allow — needle, not a citation
+        "config-redesign-design.md", // public-hygiene-lint: allow — needle, not a citation
+        "busbarai-private",          // public-hygiene-lint: allow — needle, not a citation
+        "_handoffs",                 // public-hygiene-lint: allow — needle, not a citation
+    ] {
+        if lower.contains(needle) {
+            return Some("cites an internal document the reader cannot open".to_string());
+        }
+    }
+    if let Some(pos) = lower.find("-spec.md") {
+        let start = lower[..pos]
+            .rfind(|c: char| !is_ident_char(c) && c != '-')
+            .map_or(0, |p| p + 1);
+        let hit = &text[start..pos + "-spec.md".len()];
+        return Some(format!(
+            "cites `{hit}`, an internal spec document the reader cannot open"
+        ));
+    }
+    if let Some(pos) = lower.find("audit-decisions") {
+        if let Some(end) = lower[pos..].find(".md") {
+            let hit = &text[pos..pos + end + 3];
+            return Some(format!(
+                "cites `{hit}`, an internal document the reader cannot open"
+            ));
+        }
+    }
+    None
+}
+
+/// The three rules together, for `record --report`. `None` means the text is clean.
+pub fn hygiene_refusal(report: &str) -> Option<String> {
+    rule_internal_issue_id(report)
+        .or_else(|| rule_commit_hash(report))
+        .or_else(|| rule_private_doc(report))
+}
+
+#[cfg(test)]
+mod hygiene_tests {
+    use super::hygiene_refusal;
+
+    // Every fixture below quotes a REAL example of the class each rule refuses -- that is the
+    // point of a RED test -- so each is exactly the kind of text `hygiene_refusal` exists to
+    // catch, not a reference leaked into shipped prose. Each line carries its own escape hatch
+    // (the marker is per-line, not per-file) rather than one blanket exemption for the module.
+    #[test]
+    fn red_internal_issue_id() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("gate/audits/codeaudit-examples-r1.md").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("filed against round 4 of the audit").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("would have caught task #141 earlier").is_some());
+    }
+
+    #[test]
+    fn red_commit_hash() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("fixed in 4bb03d7 after the parser regressed").is_some());
+        // Pure-digit parentheticals are not hex CITATIONS (no [a-f] letter to distinguish them
+        // from any other number in prose) -- matches the lint's own `(?=[0-9a-f]*[a-f])` guard.
+        assert!(hygiene_refusal("the prior behaviour (2789501) allowed it").is_none());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("the prior behaviour (53d5774bd70d) allowed it").is_some());
+    }
+
+    #[test]
+    fn red_private_doc() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("see the companion design for the projection rules").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("recorded in audit-decisions-1.5.3.md as resolved").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("filed in plugin-settings-schema-SPEC.md").is_some());
+    }
+
+    #[test]
+    fn green_ordinary_behaviour_prose() {
+        assert!(hygiene_refusal("zero; read fully").is_none());
+        assert!(hygiene_refusal(
+            "foreign wire field bricks a VirtualKey row (fixed); redeem_plane_token defaulted \
+             to first-redemption (fixed); all 10 production files read"
+        )
+        .is_none());
+        // Crypto vocabulary that merely LOOKS hex-shaped must stay silent.
+        assert!(hygiene_refusal("the digest is sha256(prev_hash | seq | ts)").is_none());
+        assert!(hygiene_refusal("a signed token: (ed25519), two base64url segments").is_none());
+        // Ordinary prose using "round" as an English word with no attached number stays silent.
+        assert!(
+            hygiene_refusal("every fix proven by a failing case first, 15/15 plants caught")
+                .is_none()
+        );
+    }
+}
+
 fn cmd_record(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
     let doc = match audit::load(register) {
         Ok(d) => d,
@@ -414,6 +783,28 @@ fn cmd_record(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
             "--result {} is not one of {}",
             json_lite::py_repr(result),
             audit::RESULTS.join(", ")
+        ));
+    }
+    // A RECORD IS A CLAIM SOMEBODY MAKES, and both halves of "who says so" have to be there. An
+    // empty `--report` or `--auditor` writes a row the report renders as evidence and the confirming
+    // rule reads as a voice, out of a flag that was passed and left blank.
+    for (flag, value) in [("report", report), ("auditor", auditor)] {
+        if value.trim().is_empty() {
+            return die(format!(
+                "--{flag} {} is blank -- a record names who read the scope and what they wrote",
+                json_lite::py_repr(value)
+            ));
+        }
+    }
+    // THE REGISTER IS A PUBLIC FILE. `public-hygiene-lint.py` gates every file a customer can
+    // read, qa/audit-ledger.json included, and a `--report` that cites an audit round, a bare
+    // commit hash or a document the reader cannot open is the exact class of leak this refuses
+    // before it is ever written, rather than caught the next time the lint happens to run.
+    if let Some(why) = hygiene_refusal(report) {
+        return die(format!(
+            "--report {} {why} -- describe the BEHAVIOUR the round found, not the artifact that \
+             recorded it (see scripts/public-hygiene-lint.py)",
+            json_lite::py_repr(report)
         ));
     }
 
@@ -567,15 +958,25 @@ fn cmd_fixed(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
     // THE ROUND MUST HAVE READ THE TREE IT CLAIMS. If the stored hash is not the hash of the scope
     // at the commit the round names, the round was stamped against a tree it did not read, and a
     // fix stamped on top of that inherits the lie.
-    let audited = audit::audited_tree_hash(sc, git);
-    if let Some(audited) = &audited {
-        if Some(audited.as_str()) != sc.get("tree_hash").as_str() {
-            let at = sc.get("audited_at").as_str().unwrap_or("?").to_string();
+    //
+    // AND A COMMIT GIT CANNOT PRODUCE IS NOT A COMMIT THAT AGREED. Refusing to resolve the audited
+    // commit is exactly the shape this rule exists to catch, so it is a refusal here, not a skip.
+    let at = sc.get("audited_at").as_str().unwrap_or("?").to_string();
+    let at = at[..8.min(at.len())].to_string();
+    match audit::audited_tree_hash(sc, git) {
+        Ok(actual) if actual.as_deref() == sc.get("tree_hash").as_str() => {}
+        Ok(_) => {
             return die(format!(
-                "{sid}: the recorded hash is not the tree at the audited commit {} -- the round \
-                 was stamped against a tree it did not read. Re-record it before stamping a fix.",
-                &at[..8.min(at.len())]
-            ));
+                "{sid}: the recorded hash is not the tree at the audited commit {at} -- the round \
+                 was stamped against a tree it did not read. Re-record it before stamping a fix."
+            ))
+        }
+        Err(e) => {
+            return die(format!(
+                "{sid}: the audited commit {at} cannot be resolved in this repository ({e}) -- the \
+                 tree the round claims to have read cannot be produced, so the stamp cannot be \
+                 checked. Re-record it before stamping a fix."
+            ))
         }
     }
 
@@ -637,6 +1038,30 @@ impl CheckFindings {
     }
 }
 
+/// Every commit a record names, resolved at most once. `Err` is cached too: a commit that cannot be
+/// produced cannot be produced on the second ask either, and asking again would be one process per
+/// round for the answer that is already known.
+type TreeCache = BTreeMap<String, Result<BTreeMap<String, String>, String>>;
+
+/// The hash `rec`'s scope's files ACTUALLY had at the commit `rec` names, through the cache.
+fn stamped_hash(
+    git: &Git,
+    trees: &mut TreeCache,
+    sc: &Json,
+    rec: &Json,
+) -> Result<Option<String>, String> {
+    let Some(at) = audit::record_at(rec) else {
+        return Err("the record names no audited_at commit".to_string());
+    };
+    let files = trees
+        .entry(at.to_string())
+        .or_insert_with(|| git.files_at(at));
+    match files {
+        Ok(files) => Ok(audit::tree_hash(sc, files)),
+        Err(e) => Err(e.clone()),
+    }
+}
+
 /// The whole `--check` computation, once, for both the printer and the gate.
 pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, String> {
     let doc = audit::load(register)?;
@@ -660,6 +1085,11 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
 
     f.problems = audit::register_problems(&doc);
 
+    // ONE `ls-tree` PER COMMIT, not one per record. 150 scopes carrying 236 rounds name a couple of
+    // dozen distinct commits between them, and re-resolving each one per round is the difference
+    // between a check and a coffee break.
+    let mut trees: TreeCache = BTreeMap::new();
+
     for r in &rows {
         let sc = &r.scope;
         if r.status == "invalid" {
@@ -672,11 +1102,16 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
 
         // OPEN AT HIGH/MEDIUM, and a scope with findings but NO recorded severities counts too —
         // "we found things but did not say what" is not a lower severity than HIGH.
-        if matches!(r.status, "open" | "stale")
-            && sc.get("result").as_str() == Some("findings")
-            && !sc.get("fixed_at").truthy()
-        {
-            let counts = sc.get("counts");
+        //
+        // The severities come from the RECORD THAT FOUND THEM, which is not always the scope's
+        // top-level record: a later `record --result in_progress` overwrites `counts` with `{}`, and
+        // reading the counts from there would report "severities unrecorded" about a round that
+        // recorded them, or drop the scope entirely.
+        if let (true, Some(found)) = (
+            matches!(r.status, "open" | "stale"),
+            audit::open_findings(sc, r.current_hash.as_deref()),
+        ) {
+            let counts = found.get("counts");
             let empty = !counts.truthy();
             let high = counts.get("HIGH").as_i64().unwrap_or(0);
             let medium = counts.get("MEDIUM").as_i64().unwrap_or(0);
@@ -699,36 +1134,72 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
                 f.opens.push(format!(
                     "{}  round {}  {sev}{stale}",
                     r.id,
-                    dash(sc.get("round").as_i64())
+                    dash(found.get("round").as_i64())
                 ));
             }
         }
 
         // A RECORD WHOSE HASH IS NOT THE TREE AT THE COMMIT IT NAMES was stamped against a tree it
-        // did not read, and every later reading of it is a reading of nothing.
-        if let Some(at) = sc.get("audited_at").as_str() {
-            if !sc.get("fixed_at").truthy() {
-                if let Some(actual) = audit::audited_tree_hash(sc, git) {
-                    if Some(actual.as_str()) != sc.get("tree_hash").as_str() {
-                        f.stamped
-                            .push(format!("{}  audited_at {}", r.id, &at[..8.min(at.len())]));
-                    }
-                }
+        // did not read, and every later reading of it is a reading of nothing. EVERY ROUND is a
+        // record: `clean` is computed from the rounds list, so a round nobody re-hashes is a round
+        // anybody can append. The top-level record is exempt once a fix is stamped, because `fixed`
+        // deliberately re-hashes it to the fix commit.
+        let mut records: Vec<(String, &Json)> = Vec::new();
+        if !sc.get("fixed_at").truthy() {
+            records.push((r.id.clone(), sc));
+        }
+        for (i, round) in sc
+            .get("rounds")
+            .as_array()
+            .unwrap_or(&[])
+            .iter()
+            .enumerate()
+        {
+            records.push((format!("{} round[{i}]", r.id), round));
+        }
+        for (label, rec) in records {
+            let Some(at) = audit::record_at(rec) else {
+                continue;
+            };
+            let short = &at[..8.min(at.len())];
+            match stamped_hash(git, &mut trees, sc, rec) {
+                Ok(actual) if actual.as_deref() == rec.get("tree_hash").as_str() => {}
+                Ok(_) => f.stamped.push(format!("{label}  audited_at {short}")),
+                // FAILING TO RESOLVE THE COMMIT IS THE FINDING, not the absence of one. A rule whose
+                // whole purpose is catching a stamp against an unread tree cannot go quiet exactly
+                // when the named tree is the one git cannot produce.
+                Err(e) => f.stamped.push(format!(
+                    "{label}  audited_at {short} cannot be resolved in this repository, so the tree \
+                     it claims to have read cannot be produced ({e})"
+                )),
             }
         }
 
-        // `fixed` IS NOT SELF-CERTIFYING. A scope whose HIGH count is non-zero stays red until
-        // somebody records a confirming zero round against the RE-HASHED tree.
-        if r.status == "fixed"
-            && sc.get("counts").get("HIGH").as_i64().unwrap_or(0) != 0
-            && audit::confirming_auditors(sc, r.current_hash.as_deref()).is_empty()
-        {
-            f.owed.push(format!(
-                "{}  round {}  HIGH={}",
-                r.id,
-                dash(sc.get("round").as_i64()),
-                json_lite::py_repr_json(sc.get("counts").get("HIGH"))
-            ));
+        // `fixed` IS NOT SELF-CERTIFYING. A scope whose HIGH or MEDIUM count is non-zero stays red
+        // until SOMEBODY ELSE records a confirming zero round against the RE-HASHED tree. The bar is
+        // the HIGH/MEDIUM bar an open scope is held to — a MEDIUM that closes itself is the same
+        // hole as a HIGH that does, one severity down — and the fixer's own name, however it is
+        // spelled this time, is not somebody else.
+        let counts = sc.get("counts");
+        let owing: Vec<String> = ["HIGH", "MEDIUM"]
+            .iter()
+            .filter(|k| counts.get(k).as_i64().unwrap_or(0) != 0)
+            .map(|k| format!("{k}={}", json_lite::py_repr_json(counts.get(k))))
+            .collect();
+        if r.status == "fixed" && !owing.is_empty() {
+            let fixer = audit::auditor_identity(sc.get("auditor"));
+            let others: Vec<String> = audit::confirming_auditors(sc, r.current_hash.as_deref())
+                .into_iter()
+                .filter(|a| Some(a) != fixer.as_ref())
+                .collect();
+            if others.is_empty() {
+                f.owed.push(format!(
+                    "{}  round {}  {}",
+                    r.id,
+                    dash(sc.get("round").as_i64()),
+                    owing.join(", ")
+                ));
+            }
         }
     }
 
@@ -783,7 +1254,7 @@ fn cmd_check(git: &Git, register: &std::path::Path) -> i32 {
     );
     block(
         &f.owed,
-        "scope(s) whose HIGH findings are stamped fixed with no confirming round:",
+        "scope(s) whose HIGH/MEDIUM findings are stamped fixed with no confirming round:",
         "  ",
     );
 

@@ -467,7 +467,7 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec, destination: &str) -> C
         },
         _ => String::new(),
     };
-    let now = crate::store::now_ms() / 1_000;
+    let now = busbar_substrate::store::now_ms() / 1_000;
     let Some(secret) = super::creds::resolve(d.credential_ref, now, destination) else {
         // unknown / expired / DESTINATION-MISMATCH ref → refuse the hop (fail-closed by denial).
         return CredInjection::Refused;

@@ -422,7 +422,13 @@ pub(crate) enum RelayRefusal {
     /// legs refused and for which operation — "the relay could not frame the request" names
     /// neither.
     Unframable {
-        binding: &'static str,
+        /// THE BINDING WORD, and a `String` rather than a `&'static str` because the one that
+        /// matters most is the one this build does NOT know: a card declaring
+        /// `SOAP-1.2-OVER-CARRIER-PIGEON` is exactly the case an operator has to act on, and a
+        /// static set can only spell the words busbar already speaks. It reaches the caller through
+        /// [`RelayRefusal::client_text`], which bounds it — see the note there on why one
+        /// card-supplied word is carried and the free-text `reason` is not.
+        binding: String,
         method: String,
         reason: String,
     },
@@ -1644,7 +1650,7 @@ fn prepare<'a>(
             streaming,
         )
         .map_err(|reason| RelayRefusal::Unframable {
-            binding: call.framing.word(),
+            binding: call.framing.word().to_string(),
             method: method.clone(),
             reason,
         })?;
@@ -1782,7 +1788,7 @@ fn relay_once(
         .framing
         .read_answer(&method, &resp.body, call.rpc_id)
         .map_err(|reason| RelayRefusal::Unframable {
-            binding: call.framing.word(),
+            binding: call.framing.word().to_string(),
             method,
             reason,
         })?;
@@ -2284,7 +2290,7 @@ fn relay_stream_once(
         .framing
         .read_answer(&method, &head.body, call.rpc_id)
         .map_err(|reason| RelayRefusal::Unframable {
-            binding: call.framing.word(),
+            binding: call.framing.word().to_string(),
             method: method.clone(),
             reason,
         })?;
@@ -2301,6 +2307,20 @@ mod relay_harness;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/relay_tests.rs"]
 mod relay_tests;
+
+// THE NEGATIVE SCAN over `RelayRefusal`'s two renderings: the caller's names no backend, the
+// operator's still does. It hangs here rather than under `receive` because the split it defends is
+// this module's — `Display` vs `client_text` — and `receive` is one of its consumers.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/refusal_leak_tests.rs"]
+mod refusal_leak_tests;
+
+// THE LEDGER SCAN over the verbs busbar answers ITSELF. It hangs here rather than under `receive`
+// for the same reason the scan above does — it drives the shared harness, and a second harness is a
+// second thing that can stop matching the production router.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/metered_verbs_tests.rs"]
+mod metered_verbs_tests;
 
 // KILL-THE-UPSTREAM — the breaker's trip + fast-fail on this plane, all three bindings, through
 // the same harness/router as the batteries above. It hangs here because the mount is `prepare`.

@@ -240,7 +240,11 @@ fn an_overlay_delete_makes_a_file_absent_to_read_and_exists_and_walk() {
     let files = planted
         .walk(&WalkSpec::new(["xtask/src"]).ext("rs").min_files(0))
         .unwrap();
-    assert!(files.iter().all(|f| !f.rel.ends_with("scan.rs")));
+    // THE EXACT PATH, not the file NAME. `Path::ends_with` matches whole trailing components, so
+    // `ends_with("scan.rs")` also matches `xtask/src/gates/config_schema/scan.rs` — a second,
+    // unrelated `scan.rs` that this case never deleted. The claim is "the file the plant deleted is
+    // gone from the walk", and a basename is not that claim.
+    assert!(files.iter().all(|f| f.rel_str() != "xtask/src/scan.rs"));
 }
 
 #[test]
@@ -306,6 +310,128 @@ fn after() {}
     assert!(!joined.contains("block"));
     assert!(!joined.contains("std::env"));
     assert!(joined.contains("fn after"));
+}
+
+// ── LITERALS ARE NOT STRUCTURE ───────────────────────────────────────────────────────────────────
+//
+// Every delimiter count in this crate reads `scan::blank_code` output. These are the shapes that
+// were really in the tree, or really reachable, when it did not: each one drove a counter off a
+// brace that the compiler reads as text, and each failure direction is a SILENT PASS — a region
+// latched open hides the production code after it from every ban built on the scanner.
+
+#[test]
+fn a_char_literal_holding_a_brace_is_text_and_does_not_open_a_region() {
+    // The live instance: crates/busbar-core/src/admin/v1/contract/taxonomy.rs:610, inside a
+    // `#[cfg(any(test, …))]` item. The line has no `"`, so the whole of it was counted, both `{`
+    // included — depth went up by two where the compiler goes up by one, and the region opened at
+    // the attribute never closed, reporting the rest of the file gated to EOF.
+    let src = "#[cfg(any(test, feature = \"openapi-schema\"))]\n\
+               fn declared_errors(rel: &str) -> u8 {\n\
+               \x20   if rel.contains('{') {\n\
+               \x20       1\n\
+               \x20   } else {\n\
+               \x20       0\n\
+               \x20   }\n\
+               }\n\
+               pub fn production() {\n\
+               \x20   std::fs::rename(a, b);\n\
+               }\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn a_brace_in_a_test_assertion_message_does_not_hold_the_test_module_open() {
+    let src = "#[cfg(test)]\n\
+               mod tests {\n\
+               \x20   #[test]\n\
+               \x20   fn t() {\n\
+               \x20       assert_eq!(x, \"a{b\");\n\
+               \x20   }\n\
+               }\n\
+               pub fn production() {\n\
+               \x20   std::fs::rename(a, b);\n\
+               }\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4, 5, 6, 7]);
+    // The same file read the other way: the production tail must survive the filter.
+    let joined: String = scan::production_lines(src)
+        .iter()
+        .map(|(_, l)| l.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined.contains("fn production"),
+        "the test module's brace-bearing message swallowed the file: {joined:?}"
+    );
+    assert!(!joined.contains("assert_eq"));
+}
+
+#[test]
+fn a_raw_string_full_of_braces_is_text_in_both_scanners() {
+    // An UNBALANCED run of braces: a raw string is the one place a `{` can appear without a `}`
+    // anywhere near it, so this is the cheapest way to latch the module open for the rest of a file.
+    let src = "#[cfg(test)]\n\
+               mod tests {\n\
+               \x20   const OPENERS: &str = r#\"{{{\"#;\n\
+               }\n\
+               pub fn production() {\n\
+               \x20   std::fs::rename(a, b);\n\
+               }\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4]);
+
+    // There is NO escape processing inside `r#"…"#`, so the `\` before the closing quote is a
+    // backslash and the literal ends where the compiler says it does. Reading `\"` as an escape
+    // ran the string state past the end of the literal and blanked the real code after it.
+    let blanked = scan::blank_literals("let j = r#\"a\\\"#; if x {");
+    assert_eq!(
+        scan::delta(&blanked, '{', '}'),
+        1,
+        "the literal ate the code after it: {blanked:?}"
+    );
+}
+
+#[test]
+fn the_blanker_reads_byte_strings_escaped_char_quotes_and_nested_block_comments() {
+    // A char literal whose ESCAPE carries a brace, a byte char, a byte string, and the escaped
+    // quote that used to make `blank_literals` treat the rest of the line as string body.
+    for line in [
+        r"let c = '\u{7f}'; if x {",
+        r"let b = b'{'; if x {",
+        r#"let s = b"{{{"; if x {"#,
+        r#"let q = '"'; if x {"#,
+    ] {
+        let blanked = scan::blank_literals(line);
+        assert_eq!(
+            scan::delta(&blanked, '{', '}'),
+            1,
+            "literal contents leaked into the count: {line:?} -> {blanked:?}"
+        );
+        assert_eq!(blanked.chars().count(), line.chars().count());
+    }
+    // A `'"'` no longer blanks what follows it, which is what a needle search reads.
+    assert!(scan::blank_literals(r#"let q = '"'; use banned::thing;"#).contains("use banned"));
+
+    // Rust block comments NEST; a flag reopens code as comment at the first `*/`.
+    let mut st = scan::LexState::default();
+    let first = scan::blank_code("/* outer /* inner */ still comment {", &mut st);
+    assert_eq!(scan::delta(&first, '{', '}'), 0, "{first:?}");
+    let second = scan::blank_code("*/ fn f() {", &mut st);
+    assert_eq!(scan::delta(&second, '{', '}'), 1, "{second:?}");
+
+    // A `"…"` left open at end of line carries; its body is not code.
+    let mut st = scan::LexState::default();
+    let a = scan::blank_code("let s = \"opened", &mut st);
+    let b = scan::blank_code("still string {{{\" ; fn g() {", &mut st);
+    assert_eq!(scan::delta(&a, '{', '}') + scan::delta(&b, '{', '}'), 1);
+}
+
+#[test]
+fn a_lifetime_is_not_a_char_literal() {
+    // `'a` has no closing quote on the line; a blanker that guessed it did would eat the braces
+    // after it and under-count every generic function in the tree.
+    let line = "fn f<'a>(x: &'a str) -> &'a str { x }";
+    let blanked = scan::blank_literals(line);
+    assert_eq!(blanked, line, "a lifetime must survive blanking untouched");
+    assert_eq!(scan::delta(&blanked, '{', '}'), 0);
 }
 
 #[test]
@@ -656,6 +782,107 @@ fn a_report_that_leaves_an_owed_row_id_uncovered_is_refused() {
     });
     let errs = gates::verify_report(&RowNobodyOwes, &report).expect_err("owed:one is uncovered");
     assert!(errs.iter().any(|e| e.contains("owed:one")));
+}
+
+/// `RowNobodyOwes` with its one owed row declared PASS-by-construction, plus a second declaration
+/// that names nothing — the two halves of the informational contract in one gate.
+struct DeclaresInformational {
+    declare: &'static [&'static str],
+}
+impl Gate for DeclaresInformational {
+    fn name(&self) -> &'static str {
+        "declares-informational"
+    }
+    fn owed(&self) -> Vec<String> {
+        vec!["owed:one".to_string()]
+    }
+    fn informational(&self) -> Vec<String> {
+        self.declare.iter().map(|s| (*s).to_string()).collect()
+    }
+    fn run(&self, _cx: &Ctx) -> Verdict {
+        Verdict::of(vec![Row::new(Status::Pass, "owed:one", "t", "d")])
+    }
+    fn selftest(&self, _cx: &Ctx) -> Report {
+        Report::new()
+    }
+}
+
+/// A report with one RED case (so the gate has a red proof at all) and one GREEN case naming
+/// `owed:one`, which is exactly what a PASS-by-construction row can offer.
+fn report_covering_owed_one_green_only() -> Report {
+    let mut report = Report::new();
+    report.push(Case {
+        name: "some other rule goes red".to_string(),
+        covers: vec!["some:other".to_string()],
+        expected: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+        got: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+    });
+    report.push(Case {
+        name: "the informational row is measured".to_string(),
+        covers: vec!["owed:one".to_string()],
+        expected: Expect::Green,
+        got: Expect::Green,
+    });
+    report
+}
+
+#[test]
+fn an_owed_row_declared_informational_is_discharged_by_a_green_case_and_nothing_else_is() {
+    let undeclared = DeclaresInformational { declare: &[] };
+    let errs = gates::verify_report(&undeclared, &report_covering_owed_one_green_only())
+        .expect_err("a green case does not discharge a row that is not declared informational");
+    assert!(
+        errs.iter().any(|e| e.contains("owed:one")),
+        "the undeclared row must still be refused: {errs:?}"
+    );
+
+    let declared = DeclaresInformational {
+        declare: &["owed:one"],
+    };
+    gates::verify_report(&declared, &report_covering_owed_one_green_only())
+        .expect("a declared informational row is held to being exercised, and it was");
+}
+
+#[test]
+fn a_declared_informational_row_that_no_case_exercises_at_all_is_still_refused() {
+    let declared = DeclaresInformational {
+        declare: &["owed:one"],
+    };
+    let mut report = Report::new();
+    report.push(Case {
+        name: "some other rule goes red".to_string(),
+        covers: vec!["some:other".to_string()],
+        expected: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+        got: Expect::Red {
+            naming: vec!["x".to_string()],
+        },
+    });
+    let errs = gates::verify_report(&declared, &report)
+        .expect_err("a row that cannot go RED must at least be measured by one case");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("owed:one") && e.contains("exercised by no case")),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn an_informational_declaration_that_names_no_owed_row_is_refused_as_a_stale_exemption() {
+    let stale = DeclaresInformational {
+        declare: &["owed:one", "owed:gone"],
+    };
+    let errs = gates::verify_report(&stale, &report_covering_owed_one_green_only())
+        .expect_err("an exemption that names nothing is a line nobody re-reads");
+    assert!(
+        errs.iter().any(|e| e.contains("owed:gone")),
+        "the stale declaration must be named: {errs:?}"
+    );
 }
 
 #[test]
@@ -1077,13 +1304,25 @@ fn cfg_all_test_arms_and_an_unresolvable_attribute_fails_closed() {
     );
 }
 
+/// A literal-bearing line keeps its literal AND loses its trailer — the two halves of one rule.
+///
+/// This case used to assert the second half backwards. `code_of` gave up and handed back the WHOLE
+/// line whenever the line held a `"` anywhere, and the test pinned that as the contract ("a line
+/// holding a literal keeps its raw text"). It is the behaviour `scan: the trailing comment is
+/// stripped at the position the blanker found it` removed: a `// }` in a trailer closed a scope
+/// that was never opened, and a `#[cfg(test)]` written in one armed the test-scope machine. The
+/// literal was never the problem — not knowing where it ENDED was — so both halves hold at once,
+/// and a test that can only see one of them cannot tell the fix from the defect.
 #[test]
-fn the_code_of_a_line_keeps_a_slash_slash_that_lives_inside_a_string_literal() {
+fn the_code_of_a_line_keeps_a_literals_slash_slash_and_still_drops_the_real_trailer() {
     let lines = scan::test_scope("let u = \"https://x\"; // trailer\nlet v = 1; // trailer\n");
-    assert!(lines[0].code.contains("https://x"));
     assert!(
-        lines[0].code.contains("trailer"),
-        "a line holding a literal keeps its raw text"
+        lines[0].code.contains("https://x"),
+        "the `//` inside the literal is not a comment marker, so the literal survives"
+    );
+    assert!(
+        !lines[0].code.contains("trailer"),
+        "the line's REAL trailer goes, literal or not"
     );
     assert!(
         !lines[1].code.contains("trailer"),

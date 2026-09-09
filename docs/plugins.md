@@ -119,11 +119,12 @@ you can name the tarball anything.
 > `<`, and `>` in a URL field to keep the case covered.
 
 `name` is the canonical identity (`[a-z0-9-]+`, e.g. `busbar-store-valkey-plugin`); `alias` is the short
-config name (`valkey`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, or `hook`.
-`version` is strict semver. `abi_version` declares which per-kind payload-schema generation the
-cdylib was built against. It is set **per kind**: `auth` is at `2`, `secret` and `hook` at `1`
-(auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives), and `store` accepts the
-range `2..=4`. The loader enforces a supported-version RANGE per kind, so a plugin built against an
+config name (`valkey`). `store.module:` accepts either. `kind` is `store`, `secret`, `auth`, `hook`, or
+`export`. `version` is strict semver. `abi_version` declares which per-kind payload-schema generation
+the cdylib was built against. It is set **per kind**: `auth` is at `2`, `secret` and `hook` at `1`
+(auth was bumped 1→2 in 1.5.2 for the additive browser-login primitives), `export` is at `2` (1.5.3
+expanded the stream vocabulary and dropped `audit`, so a v1 sink is not accepted), and `store` accepts
+the range `2..=4`. The loader enforces a supported-version RANGE per kind, so a plugin built against an
 outdated (or too-new) ABI is refused at load rather than mis-called. See `busbar-plugin-abi` for the
 authoritative versions.
 
@@ -505,7 +506,8 @@ Whether a settings change needs a process restart to take effect is a property o
 binding lifecycle for that plugin `kind`, not something a plugin author has visibility into:
 `store`/`secret` plugins bind once at process start (every field is restart-scoped by construction);
 `hook`/`auth` plugin registries rebuild hot. The default is therefore DERIVED from `kind`, not
-plugin-declared:
+plugin-declared (`export`, like any kind that is not `hook`/`auth`, falls through to the fail-safe
+`restart-required` default — see `kind_restart_default` in `plugin-sign`):
 
 | kind     | default            |
 |----------|--------------------|
@@ -513,6 +515,7 @@ plugin-declared:
 | `secret` | restart-required   |
 | `hook`   | hot-appliable      |
 | `auth`   | hot-appliable      |
+| `export` | restart-required   |
 
 A per-field `x-busbar-restart-required` overrides the kind default, but only in ONE direction
 without qualification: `true` (more restart-cautious than the kind default) is always honored. The

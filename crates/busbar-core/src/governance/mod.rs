@@ -23,7 +23,10 @@ use crate::diagnostics::{
 /// spell a day boundary with. `crate::governance::SECS_PER_DAY` resolves to the same value.
 /// Production modules that need it where layering prohibits the import (e.g. `sigv4.rs`) keep a
 /// private copy, as before.
-pub use busbar_substrate::governance::SECS_PER_DAY;
+///
+/// The re-export is `pub(crate)`: the canonical public spelling is the substrate's own, and a
+/// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
+pub(crate) use busbar_substrate::governance::SECS_PER_DAY;
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
@@ -45,7 +48,9 @@ const VK_ID_PREFIX: &str = "vk_";
 /// Number of hex characters from the SHA-256 hash used as the suffix of a virtual-key id.
 #[cfg_attr(not(test), allow(dead_code))]
 const VK_ID_HASH_PREFIX_LEN: usize = 16;
-/// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`.
+/// The `"sk-bb-"` prefix for bearer secrets returned by `generate_secret`. Gated with it: no
+/// production path mints a hashed bearer secret any more.
+#[cfg(any(test, feature = "test-support"))]
 const SK_SECRET_PREFIX: &str = "sk-bb-";
 /// The `generation_hash` prefix of a 1.5.0 signed-token binding row. A signed-token key has NO
 /// hashed bearer secret: the token is the credential, and the `generation_hash` column holds
@@ -340,7 +345,10 @@ impl std::fmt::Debug for AdmitGrant {
 /// figure is three integers with no engine dependency, so it belongs to the neutral governance
 /// vocabulary a plane reads it back through. `crate::governance::DerivedUsage` resolves to the very
 /// same type it always did.
-pub use busbar_substrate::governance::DerivedUsage;
+///
+/// The re-export is `pub(crate)`: the canonical public spelling is the substrate's own, and a
+/// caller outside this crate names it there. Nothing outside busbar-core reaches this path.
+pub(crate) use busbar_substrate::governance::DerivedUsage;
 
 /// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
 /// store's revocation set, not the truth: every auth path re-reads the store denylist when its copy
@@ -413,7 +421,7 @@ impl<V> Sharded<V> {
     /// which is irrelevant to correctness (the maps are ephemeral) but keeps behaviour deterministic.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &MapShard<V> {
-        let h = crate::store::fnv1a_u64(key_id) as usize;
+        let h = busbar_substrate::store::fnv1a_u64(key_id) as usize;
         &self.shards[h & (GOV_SHARDS - 1)]
     }
 
@@ -422,7 +430,7 @@ impl<V> Sharded<V> {
     /// section deadlock-free).
     #[inline]
     fn shard_index(&self, key_id: &str) -> usize {
-        (crate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
+        (busbar_substrate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)
     }
 
     /// The shard at a known index (see [`Sharded::shard_index`]).
@@ -633,11 +641,17 @@ pub(crate) struct RotatedCredential {
 
 // The mint-parameter struct (`NewKeySpec`) — pure auth data, no `App`/`Store` — moved to the neutral
 // substrate so a plane crate names it without reaching into busbar-core; re-exported here so every
-// `crate::governance::NewKeySpec` construction site is unchanged.
-pub use busbar_substrate::governance::NewKeySpec;
+// `crate::governance::NewKeySpec` construction site is unchanged. `pub(crate)`: the canonical
+// public spelling is the substrate's own, and nothing outside busbar-core reaches this path.
+pub(crate) use busbar_substrate::governance::NewKeySpec;
 
 pub(crate) mod revocation;
-pub mod signing;
+// The busbar-SIGNED token crypto (signer, stateless verifier, claims, prefix/kid constants) lives
+// in the neutral substrate. This crate held a one-line `signing.rs` that re-exported it `pub`; the
+// module itself is re-exported here instead, `pub(crate)`, so every in-core
+// `crate::governance::signing::…` path resolves to exactly the same items and nothing outside
+// busbar-core reaches them through this crate.
+pub(crate) use busbar_substrate::governance::signing;
 mod state;
 
 /// Which self-serve mint operation [`mint_self_offloaded`] should run on the blocking pool.
@@ -786,12 +800,15 @@ pub(crate) fn synthesize_principal_key(
 /// a core-private governance type. Relocated to `busbar-api` in Phase-B B0-a (beside [`VirtualKey`])
 /// so an extracted plane crate names it without a path back to core; re-exported here so every
 /// in-core call site (`governance::PlaneRequestCtx`, and the [`GovCtx`] alias) is unchanged.
-pub use busbar_api::PlaneRequestCtx;
+///
+/// The re-export is `pub(crate)`: the canonical public spelling is `busbar_api::PlaneRequestCtx`,
+/// and a caller outside this crate names it there. Nothing outside busbar-core reaches this path.
+pub(crate) use busbar_api::PlaneRequestCtx;
 
 /// The name core uses internally for the resolved governance context. Core owns the governance
-/// concept and keeps its own spelling; a plane names [`PlaneRequestCtx`] instead so an extracted
-/// plane carries no core-private governance type.
-pub type GovCtx = PlaneRequestCtx;
+/// concept and keeps its own spelling; a plane names [`busbar_api::PlaneRequestCtx`] instead so an
+/// extracted plane carries no core-private governance type.
+pub type GovCtx = busbar_api::PlaneRequestCtx;
 
 /// Generate a virtual-key secret from 32 bytes of the OS CSPRNG (portable across Unix/Windows via
 /// getrandom). 256 bits — parity with the AWS secret access key beside it, raised from the old 128-bit
@@ -800,6 +817,12 @@ pub type GovCtx = PlaneRequestCtx;
 /// back to a guessable (time-derived) secret. getrandom failure is near-impossible on supported
 /// platforms; on failure we return the error so the caller (`create_key`) surfaces a 500 instead of
 /// panicking the process — the server stays up.
+///
+/// Gated with its two callers. Once `create_key`/`create_key_with_aws` are test-only, the HASHED
+/// BEARER SECRET has no production minting path left at all — which is the shape 1.5.0 retired
+/// (every live key is a signed-token binding; see `docs/migration-1.5.md`). The compiler said so
+/// the moment the doors closed, and the answer is to close this too rather than to silence it.
+#[cfg(any(test, feature = "test-support"))]
 fn generate_secret() -> Result<String, getrandom::Error> {
     // Portable OS CSPRNG via getrandom: /dev/urandom on Unix, BCryptGenRandom on Windows, etc.
     let mut buf = [0u8; 32];
@@ -938,17 +961,13 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-// `Store` is re-exported `pub` (the extracted A2A plane's own tests name `busbar_core::governance::Store`
-// for their in-test store doubles); the rest stay crate-internal. All are already public in `busbar_api`,
-// so this widens no NEW type — it only makes the existing path nameable from a test-support dependent.
-pub use busbar_api::Store;
-// `VirtualKey` is re-exported `pub` (the relocated LLM engine names `busbar_core::governance::
-// VirtualKey` in its pool-credential lowering); already `pub` in `busbar_api`, so this widens no
-// NEW type — it only makes the existing path nameable from the plane crate.
-pub use busbar_api::VirtualKey;
+// `Store` and `VirtualKey` were re-exported `pub` for the extracted A2A plane's in-test store
+// doubles and the relocated LLM engine's pool-credential lowering. Neither reaches this path any
+// more — every caller outside busbar-core names `busbar_api::{Store, VirtualKey}` directly — so the
+// two join the crate-internal list below rather than standing as a second public name for one type.
 pub(crate) use busbar_api::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, StoreError,
-    StoreResult, UsageDelta,
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
+    StoreResult, UsageDelta, VirtualKey,
 };
 // The full-ledger record is consumed only by TEST assertions (production reads go through the
 // derived views); scoping the re-export keeps the release build warning-free.
@@ -964,7 +983,9 @@ pub(crate) use busbar_api::ScopeRef;
 // The metering-bucket time base (`METERING_BUCKET_SECS` + the `metering_bucket` floor fn below) is
 // pure arithmetic — moved to the neutral substrate so a plane crate names it without reaching into
 // busbar-core; both re-exported here so every `crate::governance::…` caller is unchanged.
-pub use busbar_substrate::governance::{metering_bucket, METERING_BUCKET_SECS};
+// `pub(crate)`: the canonical public spelling is the substrate's own, and nothing outside
+// busbar-core reaches this path.
+pub(crate) use busbar_substrate::governance::{metering_bucket, METERING_BUCKET_SECS};
 
 /// One `pending_metering` entry: the same five counters `MeteringDelta` carries, accumulated
 /// in-memory across every `record_metering` call that lands on this key before the next flush.
@@ -1110,7 +1131,7 @@ impl PendingMetering {
     /// process-stable hash the budget map uses.
     #[inline]
     fn shard_for(&self, key_id: &str) -> &std::sync::Mutex<HashMap<MeterKey, MeterCounts>> {
-        &self.shards[(crate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)]
+        &self.shards[(busbar_substrate::store::fnv1a_u64(key_id) as usize) & (GOV_SHARDS - 1)]
     }
 
     /// Accrue on the hot path: lock ONLY the shard owning `key.0`, bounded to that shard's slice of

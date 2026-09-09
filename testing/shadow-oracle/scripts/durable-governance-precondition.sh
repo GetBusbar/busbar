@@ -193,3 +193,7 @@ i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); 
 python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture-exec.py" "$rc" "$RAW/stdout" "$RAW/stderr" \
   --strip-path "$W" --strip-path "$RAW" --strip-path "$repo" --strip-path "$BIN" >"$RAW/captured.json" 2>"$RAW/capture.err" \
   || fail "capture-exec.py failed: $(tail -c 300 "$RAW/capture.err")"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

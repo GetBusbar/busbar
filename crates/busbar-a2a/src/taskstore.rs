@@ -888,6 +888,25 @@ impl TaskRegistry {
         self.engine.evict_if_terminal(task_id)
     }
 
+    /// **RUN THE RETENTION SWEEP AT `now` WITHOUT A SUBMISSION.** The same sweep [`submit`] runs,
+    /// under the same [`SWEEP_BOUNDS`] and the same once-a-second claim, reached from a caller that
+    /// merely knows time has passed.
+    ///
+    /// A task idle past [`ACTIVE_TASK_ABANDON_SECS`] is moved to `canceled`, and `canceled` is
+    /// terminal — which is what retires the per-task push token that names it
+    /// (`super::a2a::pushback::token_live`). Until this existed, that whole deadline was reachable
+    /// ONLY through a new submission, so on a deployment that had stopped submitting, a silent
+    /// task's capability stayed live indefinitely: the abandon bound was documented as a bound on
+    /// the token and was not one. Calling it on PRESENT — the moment a token is offered — is what
+    /// closes that, and it closes it exactly where it matters, because the sweep and the check that
+    /// reads its result are then the same instant.
+    ///
+    /// Returns whether THIS call swept; a caller that lost the claim did no scan.
+    pub fn sweep_now(&self, now: u64) -> bool {
+        self.engine
+            .sweep_now(now, SWEEP_BOUNDS, plan_abandon, report_abandon_fail)
+    }
+
     /// RETENTION: ask the store to drop terminal task rows older than `before`, and drop any matching
     /// working-set entries. Returns how many durable rows went.
     pub fn compact(&self, before: u64) -> StoreResult<u64> {

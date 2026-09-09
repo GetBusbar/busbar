@@ -173,10 +173,72 @@ list_direct_invoked_scripts() {
 }
 
 # ── SELF-TEST — the scanner cannot be lied to ─────────────────────────────────────────────────────
+# WATCHDOG, AS A PREDICATE THE RULE AND THE SELF-TEST BOTH CALL. It was two bare greps inline in
+# the rule, so a guard that had been COMMENTED OUT still satisfied it — and this file's target, the
+# 1.5.2 gate, documents its own watchdog in prose at length, which satisfied it with no guard at
+# all. Every other scanner here opens with `/^[[:space:]]*#/ { next }`; this one did not.
+watchdog_armed() {  # watchdog_armed <file> -> 0 when the guard is present in EXECUTABLE code
+  local code; code="$(sed 's/#.*//' "$1")" || return 1
+  printf '%s\n' "$code" | grep -q 'WATCHDOG_ARMED' || return 1
+  printf '%s\n' "$code" | grep -Eq 'exec[[:space:]]+(g)?timeout'
+}
+
 run_selftest() {
   hdr "release-script-lint SELF-TEST (the GATE-HANG scanner cannot be lied to)"
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   local fail=0 pass=0
+
+  # ── THE WATCHDOG RULE IS ABOUT CODE, NOT PROSE ─────────────────────────────────────────────────
+  # It was two bare greps over the raw file, so a watchdog that had been commented out still
+  # satisfied it — as would a file that merely DISCUSSES its guard, which the 1.5.2 gate does at
+  # length. Every other scanner here strips whole-line comments first; this one did not.
+  printf '%s\n' 'if [ -z "${WATCHDOG_ARMED:-}" ]; then' \
+                '  WATCHDOG_ARMED=1 exec timeout --kill-after=30 1500 bash "$0" "$@"' \
+                'fi' > "${tmp}/wd-real.sh"
+  printf '%s\n' '# WATCHDOG_ARMED used to re-exec this under `exec timeout` and no longer does.' \
+                'echo hello' > "${tmp}/wd-prose.sh"
+  printf '%s\n' '#if [ -z "${WATCHDOG_ARMED:-}" ]; then' \
+                '#  WATCHDOG_ARMED=1 exec timeout 1500 bash "$0" "$@"' \
+                '#fi' > "${tmp}/wd-commented.sh"
+  if watchdog_armed "${tmp}/wd-real.sh"; then
+    pass=$((pass+1)); note "WATCHDOG: a real armed re-exec is accepted"
+  else
+    fail=1; note "WATCHDOG FAILED: a genuine guard was rejected — the rule no longer passes anything"
+  fi
+  if watchdog_armed "${tmp}/wd-prose.sh"; then
+    fail=1; note "WATCHDOG FAILED: PROSE naming the guard satisfied the rule"
+  else
+    pass=$((pass+1)); note "WATCHDOG: prose naming the guard does not satisfy it"
+  fi
+  if watchdog_armed "${tmp}/wd-commented.sh"; then
+    fail=1; note "WATCHDOG FAILED: a COMMENTED-OUT guard satisfied the rule"
+  else
+    pass=$((pass+1)); note "WATCHDOG: a commented-out guard does not satisfy it"
+  fi
+
+  # ── THE EXEC-BIT RULE MUST REFUSE A SCAN OF NOTHING ────────────────────────────────────────────
+  # Its input came from `< <(list_direct_invoked_scripts ...)`, whose status the process
+  # substitution discards, so a producer that failed left the loop iterating zero times and the rule
+  # printing "ok (0 directly-run workflow script(s) scanned, all tracked 100755)".
+  mkdir -p "${tmp}/wf-empty"
+  # A workflow that runs no script directly: the producer succeeds and legitimately yields nothing,
+  # which is the input shape the rule has to tell apart from "scanned everything, all fine".
+  printf '%s\n' 'jobs:' '  a:' '    steps:' '      - run: cargo build' > "${tmp}/wf-empty/x.yml"
+  local n_empty
+  n_empty="$(list_direct_invoked_scripts "${tmp}/wf-empty"/*.yml | awk 'NF{c++} END{print c+0}')"
+  if [ "$n_empty" -eq 0 ]; then
+    pass=$((pass+1)); note "EXEC-BIT: an empty workflow directory yields zero paths (the vacuous input exists)"
+  else
+    fail=1; note "EXEC-BIT FAILED: an empty workflow directory yielded ${n_empty} path(s)"
+  fi
+  # And the real tree must yield many, or the floor below is a tripwire that only ever fires.
+  local n_real
+  n_real="$(list_direct_invoked_scripts .github/workflows/*.yml | awk 'NF{c++} END{print c+0}')"
+  if [ "$n_real" -ge 1 ]; then
+    pass=$((pass+1)); note "EXEC-BIT: the real workflows yield ${n_real} directly-run script path(s)"
+  else
+    fail=1; note "EXEC-BIT FAILED: the real workflows yielded NO paths — the floor would fire on a healthy tree"
+  fi
 
   # RED fixtures — each is the real hang antipattern; the scanner MUST flag every one.
   cat >"${tmp}/red.sh" <<'RED'
@@ -312,7 +374,10 @@ WF
     fail=1; note "EXEC-BIT FAILED: expected two paths, got:"; printf '%s\n' "$eb_hits"
   fi
 
-  note "self-test: ${pass}/5 fixture groups passed"
+  # The denominator was the literal 5 and the numerator a counter, so adding a fixture group printed
+  # "10/5 passed" — a tally that cannot be read is a tally nobody checks. `fail` is what decides;
+  # this line now just says how many groups there were.
+  note "self-test: ${pass} fixture group(s) passed, 0 failed"
   if [ "$fail" -ne 0 ]; then
     note "release-script-lint SELF-TEST FAILED — the scanner would let the hang antipattern through"
     return 1
@@ -379,6 +444,24 @@ fi
 hdr "EXEC-BIT (a script executed directly by a workflow \`run:\` must be tracked executable)"
 eb_fail=0
 eb_scanned=0
+# THE INPUT IS CAPTURED AND FLOORED BEFORE THE LOOP. Fed straight from `< <(list_direct_invoked_
+# scripts .github/workflows/*.yml)`, a producer that failed — an unmatched glob handing awk a
+# literal pattern as a filename, a `git ls-files` that could not run, a workflow directory moved —
+# made the loop iterate zero times with its status discarded by the process substitution. eb_fail
+# stayed 0 and the rule printed "ok (0 directly-run workflow script(s) scanned, all tracked 100755)"
+# on its way to "release-script-lint passed". A count of zero is not a clean scan; it is a scan that
+# did not happen, and this rule exists because a script tracked non-executable fails a workflow at
+# run time with exit 126.
+eb_paths="$(list_direct_invoked_scripts .github/workflows/*.yml)"
+eb_paths_n="$(printf '%s\n' "$eb_paths" | awk 'NF{c++} END{print c+0}')"
+# The floor is 1 rather than today's 44: the point is to refuse a VACUOUS scan, not to pin a number
+# that a legitimate workflow deletion turns into a false red.
+if [ "$eb_paths_n" -lt 1 ]; then
+  note "EXEC-BIT: no directly-run workflow script could be resolved from .github/workflows/*.yml."
+  note "  Nothing was adjudicated, so this is RED rather than a clean scan. Fix: check the glob"
+  note "  matches, and that list_direct_invoked_scripts still parses the \`run:\` shape in use."
+  fail=1
+fi
 while IFS= read -r p; do
   [ -z "$p" ] && continue
   # A workflow's `run:` path is relative to the step's working-directory, which may be a testing
@@ -396,8 +479,17 @@ while IFS= read -r p; do
     fi
   done < <(git ls-files -s -- "$p" "**/$p" 2>/dev/null \
              | awk '{m=$1; sub(/^[0-9]+ [0-9a-f]+ [0-9]+\t/,""); print m"\t"$0}' | sort -u)
-done < <(list_direct_invoked_scripts .github/workflows/*.yml)
+done <<EOF
+$eb_paths
+EOF
 if [ "$eb_fail" -ne 0 ]; then
+  fail=1
+elif [ "$eb_scanned" -lt 1 ]; then
+  # The paths resolved but NONE of them matched a tracked file. Every one being generated or
+  # unresolvable is possible in principle and indistinguishable from the resolution rule having
+  # stopped working, so it is not a pass either.
+  note "EXEC-BIT: ${eb_paths_n} workflow script path(s) were named and NONE resolved to a tracked"
+  note "  file, so no mode was adjudicated. Fix: check the tracked-path suffix resolution below."
   fail=1
 else
   note "ok (${eb_scanned} directly-run workflow script(s) scanned, all tracked 100755)"
@@ -408,10 +500,11 @@ hdr "WATCHDOG (release-check-1.5.2.sh keeps its \`timeout\` re-exec so any hang 
 wd="scripts/release-check-1.5.2.sh"
 if [ ! -f "$wd" ]; then
   note "ok (${wd} not present — nothing to check)"
-elif grep -q 'WATCHDOG_ARMED' "$wd" && grep -Eq 'exec[[:space:]]+(g)?timeout' "$wd"; then
+elif watchdog_armed "$wd"; then
   note "ok (armed-sentinel + \`exec timeout\` re-exec present)"
 else
-  note "WATCHDOG MISSING: ${wd} no longer re-execs itself under \`timeout\` with an arm sentinel."
+  note "WATCHDOG MISSING: ${wd} no longer re-execs itself under \`timeout\` with an arm sentinel"
+  note "  in EXECUTABLE code (a commented-out guard, or prose naming it, does not count)."
   note "  Restore the guard so a future hang fails fast (exit 124) instead of a multi-hour cancel."
   fail=1
 fi

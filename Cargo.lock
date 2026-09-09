@@ -588,6 +588,7 @@ name = "busbar-export-example-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-plugin-sdk",
+ "serde_json",
 ]
 
 [[package]]
@@ -892,7 +893,6 @@ dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
  "busbar-plugin-testkit",
- "busbar-store-memory",
  "libc",
  "serde",
  "serde_json",
@@ -903,6 +903,7 @@ name = "busbar-store-memory"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin-testkit",
 ]
 
@@ -1175,6 +1176,7 @@ name = "busbar-unit-ledger"
 version = "1.6.0"
 dependencies = [
  "busbar-caps",
+ "busbar-unit-cost",
  "sha2 0.11.0",
 ]
 
@@ -3095,18 +3097,6 @@ name = "pkg-config"
 version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
-
-[[package]]
-name = "plane-abi-spike"
-version = "0.0.0"
-dependencies = [
- "criterion",
- "libloading",
-]
-
-[[package]]
-name = "plane-abi-spike-plugin"
-version = "0.0.0"
 
 [[package]]
 name = "portable-atomic"

@@ -71,7 +71,7 @@
 #   scanner re-proves itself on known inputs.
 #
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — same bare-runner posture as the sibling
-# gates (plane-purity-lint.sh, config-stability-gate.sh).
+# gates (plane-purity-lint.sh, `cargo xtask gate config-schema`).
 set -uo pipefail
 # Resolved BEFORE the cd, so the self-test can re-invoke this exact file as a child process (the root
 # guard below exits the process, which a `$(…)` subshell would swallow).

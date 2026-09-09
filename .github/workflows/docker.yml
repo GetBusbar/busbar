@@ -471,9 +471,13 @@ jobs:
         run: |
           set -euo pipefail
           bin="target/pgo/${{ matrix.target }}/release/busbar"
+          # The gate RUNS the binary itself. This step's own probe only decides whether the binary
+          # is host-executable at all (a cross-arch target on this runner is not); it never feeds
+          # the gate a stamp. A stamp handed in on a command line is not evidence about any bytes,
+          # which is why the gate's --line mode was removed.
           if "$bin" --build-info >/tmp/build-info.txt 2>/dev/null; then
             echo "--- build-provenance stamp ---"; cat /tmp/build-info.txt
-            scripts/build-provenance-gate.sh --line "$(cat /tmp/build-info.txt)" release true
+            scripts/build-provenance-gate.sh "$bin" release true
           else
             echo "::notice::busbar --build-info not host-executable for ${{ matrix.target }} on this runner;"
             echo "::notice::the PGO marker gate above is the authoritative PGO proof for this cross target."

@@ -36,8 +36,28 @@ pub type FrameStream =
 /// author does not; they are named here so that `busbar_contract::transport` still means what it
 /// meant to the composition root that wires the registry.
 pub use busbar_contract_transport::registry::{
-    check_composition, facts, CompositionError, Registered, TRANSPORT_ABI,
+    check_composition, facts, status_ns, CompositionError, Registered, TRANSPORT_ABI,
 };
+
+/// A plane's SERVED SURFACE as data — the operations, how each is addressed on each binding, how it
+/// answers, and the media types on either side.
+///
+/// Re-exported here for the one reader who is not a transport author: a PLANE declares this, and a
+/// plane's manifest may name `busbar-contract` and nothing else in the workspace. The declaration
+/// itself is plane-agnostic and lives with the rest of the transport-facing vocabulary, because it
+/// is read by every mount and by no plugin author who is not writing one.
+pub use busbar_contract_transport::surface;
+pub use busbar_contract_transport::surface::{
+    binding_at, check_surface, match_target, resolve_document, resolve_service, resolve_target,
+    Answering, Bar, BindingDecl, Capture, Dispatch, Operation, SurfaceError, WireSurface,
+};
+
+/// The seam a transport hands an arrival across, and the closed vocabulary it gets back.
+///
+/// Re-exported for the one reader who is neither a transport author nor a plugin author: the
+/// composition root IMPLEMENTS this, and it reaches the transport contract through this crate.
+pub use busbar_contract_transport::driver;
+pub use busbar_contract_transport::driver::{Answer, Arrival, Detached, Outcome, UnitDriver};
 
 /// Everything a transport declares about itself.
 pub trait TransportMeta {
@@ -75,6 +95,15 @@ pub trait TransportMeta {
     /// A transport with none contributes no status leg to the fee decision, and the plane's own
     /// finish class becomes the sole source. A composed transport inherits the lower layer's leg.
     const STATUS_CLASS: Option<StatusAt>;
+    /// The numbering this transport spells its statuses in, where it puts a number on an answer.
+    ///
+    /// The other half of [`TransportMeta::STATUS_CLASS`]: that says WHICH FRAME carries the status,
+    /// this says WHICH VOCABULARY wrote it. A number without its numbering is unreadable — `14` is
+    /// `UNAVAILABLE` in gRPC's and is not a status at all in HTTP's — and every
+    /// [`crate::wire::WireStatus`] a transport reports takes its namespace from here, so the
+    /// declaration and the frames cannot disagree. `None` for a transport that reports no number,
+    /// which is every transport whose `STATUS_CLASS` is `None`.
+    const STATUS_NAMESPACE: Option<&'static str>;
 }
 
 /// The transport's own configuration block, as a read-only view.

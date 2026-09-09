@@ -621,6 +621,10 @@ pub enum RecordRefusal {
     UndeclaredSchema {
         /// The schema the leg named.
         schema: &'static str,
+        /// The operation it asked for. Carried even though the schema is the refusal, because a
+        /// caller mapping this onto its own refusal has one leg to describe and not two halves of
+        /// one, and an operator reading the record wants to know what was being attempted.
+        op: &'static str,
     },
     /// The leg named an operation the schema does not declare.
     UndeclaredOp {
@@ -690,6 +694,7 @@ pub fn run_record_leg(
     if !schemas.schemas().contains(&schema) {
         return Err(RecordRefusal::UndeclaredSchema {
             schema: schema.as_str(),
+            op,
         });
     }
     if !schemas.operations_for(schema).contains(&op) {

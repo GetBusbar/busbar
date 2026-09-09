@@ -575,6 +575,10 @@ mod imp {
     #[cfg(test)]
     #[path = "tests/imp_tests.rs"]
     mod tests;
+
+    #[cfg(test)]
+    #[path = "tests/mutation_hardening_tests.rs"]
+    mod mutation_hardening_tests;
 }
 
 /// Feature-ON test/embedding hook to force the runtime gate. Absent (and unreferenced) when the

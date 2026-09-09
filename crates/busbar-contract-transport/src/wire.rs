@@ -80,34 +80,58 @@ pub enum Framing {
 ///
 /// So the namespace travels WITH the number, in one field rather than two: an answer has exactly
 /// one status, and a second field would let a caller construct a frame claiming two.
+///
+/// The namespace is a KEY, not an arm. This was two arms — one per transport family the tree
+/// happened to ship — and the tree reads it by matching both by name, deliberately, so that a third
+/// numbering could not be answered for by silence. That made the family list part of the type: a
+/// fourth family was an edit at every reader, in fifty places, none of which had anything to say
+/// about it beyond "not mine". The key says the same thing once. A reader asks its own namespace's
+/// question and gets `None` from every other numbering BECAUSE THE NAMESPACES DIFFER, which is the
+/// reading it wanted, and a family this tree has never heard of costs it nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
-pub enum WireStatus {
-    /// An HTTP status code, as the HTTP (and SSE-over-HTTP) transports read it off the response.
-    Http(u16),
-    /// A `grpc-status` code, as the gRPC transport reads it off the answer's trailer — the leg the
-    /// upstream actually said what happened on. `u8` because every code gRPC defines is small and
-    /// non-negative.
-    Grpc(u8),
+pub struct WireStatus {
+    /// The numbering that spelled this status, as the reporting transport declares it in
+    /// `TransportMeta::STATUS_NAMESPACE`.
+    ///
+    /// The kernel reserves the two the arrival grammar already reads against — see
+    /// `registry::status_ns` — and a transport with a numbering of its own names it whatever it
+    /// likes.
+    pub namespace: &'static str,
+    /// The number the upstream put on the answer, in that numbering and unmangled.
+    ///
+    /// Wide enough for every numbering rather than each family's own width: narrowing to what a
+    /// particular reader's table takes is that reader's business, and doing it here would need an
+    /// arm per family again.
+    pub code: u32,
 }
 
 impl WireStatus {
-    /// The HTTP status, when this IS one. `None` for any other numbering — never a coerced number,
-    /// because there is no HTTP status a gRPC code "is".
+    /// A status in the numbering that spelled it.
     #[must_use]
-    pub fn http(self) -> Option<u16> {
-        match self {
-            WireStatus::Http(code) => Some(code),
-            WireStatus::Grpc(_) => None,
-        }
+    pub const fn new(namespace: &'static str, code: u32) -> Self {
+        Self { namespace, code }
+    }
+
+    /// The number, when this status is in the numbering asked for. `None` otherwise — never a
+    /// coerced number, because there is no HTTP status a gRPC code "is".
+    ///
+    /// The one accessor every namespace-specific question below is asked through: adding a family
+    /// adds no arm here and no arm anywhere else.
+    #[must_use]
+    pub fn in_namespace(self, namespace: &str) -> Option<u32> {
+        (self.namespace == namespace).then_some(self.code)
+    }
+
+    /// The HTTP status, when this IS one.
+    #[must_use]
+    pub fn http(self) -> Option<u32> {
+        self.in_namespace(crate::registry::status_ns::HTTP)
     }
 
     /// The `grpc-status` code, when this IS one.
     #[must_use]
-    pub fn grpc(self) -> Option<u8> {
-        match self {
-            WireStatus::Grpc(code) => Some(code),
-            WireStatus::Http(_) => None,
-        }
+    pub fn grpc(self) -> Option<u32> {
+        self.in_namespace(crate::registry::status_ns::GRPC)
     }
 }
 

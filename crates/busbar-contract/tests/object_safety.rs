@@ -341,6 +341,7 @@ impl TransportMeta for FixtureTransport {
     const TRANSPORT_FACTS: &'static [&'static str] = &[];
     const DECODES_PAYLOAD: bool = false;
     const STATUS_CLASS: Option<StatusAt> = Some(StatusAt::FirstFrame);
+    const STATUS_NAMESPACE: Option<&'static str> = Some("fixture");
 }
 
 impl Transport for FixtureTransport {

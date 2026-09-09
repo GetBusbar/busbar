@@ -42,15 +42,24 @@
 //!   pass over real code and is reported rather than banked as "no findings".
 //! * `blocking-ffi:no-inline-ffi` — the finding.
 //!
+//! ONE CARVE-OUT, and it is a shape no plugin call can wear: a method call whose first argument is
+//! a freshly minted capability token is the KERNEL's sealed step seam, not a plugin handle. See
+//! [`opens_with_capability_token`] for why `busbar_kernel::teller::Units::authenticate` and
+//! `busbar_api::AuthModule::authenticate` share a spelling and nothing else.
+//!
 //! Imprecise about strings and comments in the same way the shell was: a brace inside a string
 //! literal can shift the depth. That is a false-POSITIVE risk — a spurious flag someone must look
 //! at — never a false negative, and the allowlist is how a real one gets recorded.
 
-use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::gates::population::{self, Population};
+use crate::gates::{
+    prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
+};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
 use crate::planes::PlaneRoots;
+use crate::scan;
 
 pub const ROW_PLANE_ROOTS: &str = "blocking-ffi:plane-roots";
 pub const ROW_SCAN_FLOOR: &str = "blocking-ffi:scan-floor";
@@ -61,7 +70,7 @@ const CORE: &str = "crates/busbar-core/src";
 const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src", "crates/busbar-llm/src"];
 const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
-const SCAN_FLOOR: usize = 100;
+// THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a clean tree";
@@ -210,7 +219,35 @@ fn bare_call(line: &str, name: &str) -> bool {
     false
 }
 
-/// `.name` followed by optional whitespace and `(`. The shell's `\.(a|b)[[:space:]]*\(`.
+/// The kernel's sealed step-trait receipt: a call whose FIRST argument is a freshly minted
+/// capability token.
+///
+/// WHY THIS IS NOT A HOLE. Every seam in [`seams`] is a call into a DLOPENED PLUGIN, and every one
+/// of those is reached through a plugin handle whose method takes plugin arguments —
+/// `busbar_api::AuthModule::authenticate` takes `Option<&str>`, the presented credential, and
+/// nothing else. `busbar_kernel::teller::Units` is a DIFFERENT trait that happens to spell one of
+/// its steps `authenticate`, and the kernel calls it as `units.authenticate(&UnitToken::<
+/// Authenticate>::mint(seal), ctx)`. A `UnitToken` is a capability the kernel mints against its own
+/// `seal` for the length of one call; it is not a type a plugin's ABI can name, and `busbar-kernel`
+/// depends on `busbar-caps`, `busbar-contract` and `busbar-grammar` — it links no plugin loader and
+/// no async runtime at all, so there is no Tokio worker there to park. So the mint spelling is not
+/// "a call we have decided to trust": it is the one textual form a plugin call CANNOT take.
+///
+/// It is recognised on the CALL LINE only, and requires the mint to open the argument list. Split
+/// the call across lines and the exemption stops applying — a false positive somebody must look at,
+/// which is the direction this gate is allowed to be wrong in.
+///
+/// ONE spelling, not a family. `TrustToken` is minted the same way and is never a step's FIRST
+/// argument, so it is deliberately absent: an arm no red proof drives is coverage this gate would
+/// be asserting about itself.
+fn opens_with_capability_token(rest: &str) -> bool {
+    let arg = rest.trim_start();
+    let arg = arg.strip_prefix('&').unwrap_or(arg).trim_start();
+    arg.starts_with("UnitToken::<")
+}
+
+/// `.name` followed by optional whitespace and `(`. The shell's `\.(a|b)[[:space:]]*\(`, plus the
+/// kernel step-seam carve-out in [`opens_with_capability_token`].
 fn method_call(line: &str, name: &str) -> bool {
     let dotted = format!(".{name}");
     let chars: Vec<char> = line.chars().collect();
@@ -231,6 +268,10 @@ fn method_call(line: &str, name: &str) -> bool {
             j += 1;
         }
         if j < chars.len() && chars[j] == '(' {
+            let inside: String = chars[j + 1..].iter().collect();
+            if opens_with_capability_token(&inside) {
+                continue;
+            }
             return true;
         }
     }
@@ -308,18 +349,6 @@ fn carries_allow_marker(line: &str) -> bool {
     false
 }
 
-fn delta(line: &str, open: char, close: char) -> i64 {
-    let mut n = 0i64;
-    for c in line.chars() {
-        if c == open {
-            n += 1;
-        } else if c == close {
-            n -= 1;
-        }
-    }
-    n
-}
-
 /// What one file's scan produced, and whether it finished in a state the reader can trust.
 struct FileScan {
     hits: Vec<String>,
@@ -341,6 +370,7 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
     let mut test_at: i64 = -1;
     let mut t_entered = false;
     let mut prev_allow = false;
+    let mut lex = scan::LexState::default();
 
     for (idx, line) in text.lines().enumerate() {
         let comment = is_comment(line);
@@ -348,8 +378,12 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
         let allow = marker || prev_allow;
         prev_allow = marker || (comment && prev_allow);
 
-        let db = delta(line, '{', '}');
-        let dp = delta(line, '(', ')');
+        // The seam patterns below read the RAW line; the two depth counters read the blanked copy.
+        // A `}` inside a string literal used to drive `depth` below `async_at` and close the async
+        // window early, disarming every seam check for the rest of the function.
+        let counted = scan::blank_code(line, &mut lex);
+        let db = i64::from(scan::delta(&counted, '{', '}'));
+        let dp = i64::from(scan::delta(&counted, '(', ')'));
 
         if !comment {
             if off_b < 0 && OFFLOAD_OPENERS.iter().any(|o| bare_call(line, o)) {
@@ -405,11 +439,12 @@ fn scan_file(rel: &str, text: &str) -> FileScan {
 
     // THE SCANNER LOST TRACK is an OFFLOAD WINDOW THAT NEVER SHUT, and deliberately nothing else.
     //
-    // The obvious wider test — "the brace depth returned to zero" — is not available, and the
-    // reason is the same imprecision the shell documents in its own header: a `{` inside a string
-    // literal shifts the counter. Thirteen files in this tree end at a non-zero brace depth for
-    // exactly that reason and not one of them is malformed, so a scanner refusing them would be a
-    // false-POSITIVE generator, which is how a gate gets switched off.
+    // The obvious wider test — "the brace depth returned to zero" — is still not adopted here. The
+    // reason it was ruled out is GONE: the counter used to read a `{` inside a string literal as
+    // structure, which is why thirteen files in this tree ended at a non-zero depth without one of
+    // them being malformed, and the depths now come off `scan::blank_code`, which cannot see a
+    // literal. Adopting the wider test is a separate change with its own measurement — this row is
+    // NOT quietly widened on the strength of the counter having got better.
     //
     // An unclosed OFFLOAD window is different in kind: it does not merely mean the counters drifted,
     // it means every remaining line of the file was EXEMPTED by a window that should have shut. That
@@ -447,18 +482,27 @@ fn scan_roots(cx: &Ctx) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn candidates(cx: &Ctx, roots: &[String]) -> Result<Vec<SourceFile>, String> {
-    let mut files = Vec::new();
+/// THE POPULATION IS DERIVED FROM THE TREE (see [`crate::gates::population`]), not from `roots`:
+/// the three fixed roots plus the two resolved plane homes opened 280 of the tree's 725 non-test
+/// `.rs` files, and `tokio::spawn(async move { … })` inside `busbar-substrate` was never read at
+/// all. `roots` is still resolved and still checked for existence, because a plane that cannot be
+/// located is its own refusal — it just no longer decides what gets opened.
+fn candidates(cx: &Ctx, roots: &[String]) -> Result<Population, String> {
+    let population = population::source_population(cx)?;
+    let mut unusable: Vec<String> = population
+        .drained
+        .iter()
+        .map(|c| format!("crates/{c}: has a src/ and contributed no file to the scan"))
+        .collect();
     for root in roots {
-        let spec = WalkSpec::new([root.clone()])
-            .ext("rs")
-            .exclude([EXCLUDE_TESTS_DIR])
-            .min_files(1);
-        files.extend(cx.walk(&spec).map_err(|e| format!("{root}: {e}"))?);
+        if !cx.exists(root) {
+            unusable.push(format!("{root}: not on disk"));
+        }
     }
-    files.sort_by_key(SourceFile::rel_str);
-    files.dedup_by_key(|f| f.rel_str());
-    Ok(files)
+    if !unusable.is_empty() {
+        return Err(unusable.join(" | "));
+    }
+    Ok(population)
 }
 
 impl Gate for BlockingFfiGate {
@@ -499,7 +543,7 @@ impl Gate for BlockingFfiGate {
                 ]);
             }
         };
-        let files = match candidates(cx, &roots) {
+        let population = match candidates(cx, &roots) {
             Ok(f) => f,
             Err(why) => {
                 return Verdict::of(vec![
@@ -519,20 +563,29 @@ impl Gate for BlockingFfiGate {
             }
         };
 
-        if files.len() < SCAN_FLOOR {
+        let files = population.files.clone();
+        if population.below_floor() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
                 Row::fail(
                     ROW_SCAN_FLOOR,
                     "the scan set is below its floor",
                     format!(
-                        "found {} non-test .rs file(s), expected >= {SCAN_FLOOR}. This gate scanned \
-                         (almost) nothing, so its verdict is meaningless — it is NOT a pass.",
-                        files.len()
+                        "{}. This gate scanned (almost) nothing, so its verdict is meaningless — \
+                         it is NOT a pass.",
+                        population.census()
                     ),
                 ),
-                Row::fail(ROW_SCAN_STATUS, "the scan did not run", DID_NOT_RUN.to_string()),
-                Row::fail(ROW_NO_INLINE, "the scan did not run", DID_NOT_RUN.to_string()),
+                Row::fail(
+                    ROW_SCAN_STATUS,
+                    "the scan did not run",
+                    DID_NOT_RUN.to_string(),
+                ),
+                Row::fail(
+                    ROW_NO_INLINE,
+                    "the scan did not run",
+                    DID_NOT_RUN.to_string(),
+                ),
             ]);
         }
 
@@ -571,7 +624,11 @@ impl Gate for BlockingFfiGate {
 
         Verdict::of(vec![
             Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
-            Row::pass(ROW_SCAN_FLOOR, "the scan set cleared its floor", CLEAN),
+            Row::pass(
+                ROW_SCAN_FLOOR,
+                "the scan set cleared its floor",
+                population.census(),
+            ),
             status,
             row_no_inline(&hits),
         ])
@@ -625,6 +682,33 @@ impl Gate for BlockingFfiGate {
                 "secret-plugin FFI",
                 "plugin OPEN",
                 "an App/hook-chain build",
+            ],
+        ));
+
+        // THE KERNEL'S STEP SEAM IS NOT A PLUGIN HANDLE, AND THE CARVE-OUT IS NOT A MUTE FOR THE
+        // LINE BELOW IT. `Units::authenticate` and `AuthModule::authenticate` are two different
+        // traits with one spelling; only the second is a dlopen hop. The pair is planted TOGETHER
+        // in one async fn, because a carve-out proved on a file that holds nothing else proves
+        // nothing: the plugin call one line down must still be named.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_kernel_step.rs"),
+            "pub async fn run_unit_async<U: Units>(units: &U, ctx: &UnitCtx) -> Ended {\n\
+             \x20   let opened = units.authenticate(&UnitToken::<Authenticate>::mint(seal), ctx);\n\
+             \x20   let outcome = module.authenticate(bearer);\n\
+             \x20   opened\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a kernel step reached through a minted capability token is not a plugin call, and the \
+             plugin call beside it still is",
+            &[ROW_NO_INLINE],
+            ov,
+            &[
+                "1 finding(s)",
+                "planted_kernel_step.rs:3",
+                "auth-plugin FFI",
             ],
         ));
 
@@ -753,28 +837,17 @@ impl Gate for BlockingFfiGate {
             Err(e) => report.note_infra_failure(format!("blocking-ffi selftest: {e}")),
         }
 
-        // THE PLANE ROOTS: a plane that SPLIT away is invisible to every floor.
-        let planes = PlaneRoots::at(cx.abs("crates")).grammar("a grammar no source declares");
-        let errs = planes.resolve_all(PLANE_KEYS).1;
-        if errs.is_empty() {
-            report.note_infra_failure(
-                "blocking-ffi selftest: an impossible grammar still resolved a plane, so the \
-                 unresolved-plane arm proves nothing"
-                    .to_string(),
-            );
-        } else {
-            report.push(crate::gates::Case {
-                name: "a plane that cannot be located is refused, not scanned as a smaller tree"
-                    .to_string(),
-                covers: vec![ROW_PLANE_ROOTS.to_string()],
-                expected: crate::gates::Expect::Red {
-                    naming: vec!["PLANE-ROOT-MISSING".to_string()],
-                },
-                got: crate::gates::Expect::Red {
-                    naming: errs.iter().map(ToString::to_string).collect(),
-                },
-            });
-        }
+        // THE PLANE ROOTS: a plane that SPLIT away is invisible to every floor. Driven THROUGH
+        // `Gate::run` over a fixture tree in which no plane declares its grammar, because the
+        // plane resolver reads `std::fs` and no overlay can reach it.
+        report.push(prove_rows_red_at(
+            cx,
+            self,
+            "a plane that cannot be located is refused, not scanned as a smaller tree",
+            &[ROW_PLANE_ROOTS],
+            PLANE_ROOT_MISSING_FIXTURE,
+            &["PLANE-ROOT-MISSING"],
+        ));
 
         report
     }

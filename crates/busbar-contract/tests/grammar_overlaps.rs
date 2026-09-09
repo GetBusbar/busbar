@@ -475,9 +475,9 @@ fn every_form_has_one_family() {
             | SelectorForm::PathPattern
             | SelectorForm::PathSuffix
             | SelectorForm::PathContains => SelectorFamily::Path,
-            SelectorForm::HeaderExact | SelectorForm::HeaderPresent | SelectorForm::HeaderPrefix => {
-                SelectorFamily::Header
-            }
+            SelectorForm::HeaderExact
+            | SelectorForm::HeaderPresent
+            | SelectorForm::HeaderPrefix => SelectorFamily::Header,
             SelectorForm::Sni | SelectorForm::ClientCertSubject | SelectorForm::Alpn => {
                 SelectorFamily::Handshake
             }

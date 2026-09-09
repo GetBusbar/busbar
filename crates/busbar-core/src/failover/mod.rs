@@ -17,7 +17,7 @@
 //! > busbar simply cannot be told they are interchangeable yet.*
 //!
 //! That is a missing CONFIG VOCABULARY and a missing SELECTION KEY, not a missing mechanism. The
-//! mechanism — [`crate::store::LaneRuntime::try_admit_breaker`], the ONE circuit breaker, keyed by
+//! mechanism — [`busbar_substrate::store::LaneRuntime::try_admit_breaker`], the ONE circuit breaker, keyed by
 //! `(pool, lane)` — is good and is not rewritten here. This module is the seam that lets a plane
 //! reach it.
 //!
@@ -127,12 +127,12 @@
 // remain the LLM-shaped halves, exercised by `tests/failover_tests.rs`, and keep a narrow
 // dead-code allow saying so.
 
-use crate::store::LaneRuntime;
+use busbar_substrate::store::LaneRuntime;
 
 // Phase-B B1: the candidate/stage/refusal/admitted/attempt/order/walk_with FAMILY relocated to
 // `busbar-substrate`; this glob keeps `crate::failover::X` resolving for every in-core caller. The
 // serde config type (`CandidatePoolCfg`) and the LLM-shaped disposition halves (`walk`,
-// `record_outcome`, `record_success`) stay here, over `crate::store::LaneRuntime` and
+// `record_outcome`, `record_success`) stay here, over `busbar_substrate::store::LaneRuntime` and
 // `crate::breaker`. Glob, so the re-export is never an unused import when a plane consumer is out.
 pub use busbar_substrate::failover::*;
 
@@ -253,7 +253,7 @@ pub fn walk<'a, C: Candidate>(
 /// Returns the [`crate::breaker::Disposition`] taken, so a plane can shape its own answer without
 /// re-deciding it.
 // `pub` (was `pub(crate)`): the disposition writer the relocated LLM engine records through —
-// surfaced via `crate::engine_facade` (Phase-0). Its `cfg: &crate::store::BreakerCfg` arg names a
+// surfaced via `crate::engine_facade` (Phase-0). Its `cfg: &busbar_substrate::store::BreakerCfg` arg names a
 // still-crate-private carrier the engine passes back verbatim, so a narrow `#[allow(private_interfaces)]`
 // keeps `BreakerCfg` `pub(crate)` (reversible in Phase 6).
 #[allow(private_interfaces)]
@@ -264,7 +264,7 @@ pub fn record_outcome<C: Candidate>(
     pool: &str,
     candidate: &C,
     signal: &crate::breaker::CanonicalSignal,
-    cfg: &crate::store::BreakerCfg,
+    cfg: &busbar_substrate::store::BreakerCfg,
 ) -> crate::breaker::Disposition {
     let disposition = crate::breaker::classify(signal);
     let lane = candidate.lane();
@@ -278,7 +278,7 @@ pub fn record_outcome<C: Candidate>(
                 store.record_rate_limit_in(
                     pool,
                     lane,
-                    crate::store::now(),
+                    busbar_substrate::store::now(),
                     cfg,
                     signal.retry_after,
                 );

@@ -23,7 +23,7 @@
 //! trivially true.
 
 use busbar_unit_admission::RateNanos;
-use busbar_unit_cost::nano_rate;
+use busbar_unit_cost::{minor_of, nano_rate, CurrencyCode, LaneClass, RateCard};
 
 /// The admission unit's conversion, asked for one rate.
 ///
@@ -130,4 +130,57 @@ fn the_two_conversions_agree_at_every_boundary_value() {
             "{micro} prices at nothing in the admission unit too"
         );
     }
+}
+
+/// **THE CURRENCY AXIS.** The decimal-to-integer conversion does not depend on the currency, and a
+/// card proves it: the same configured decimal, set as a rate in a two-decimal currency and in a
+/// zero-decimal one, holds the SAME integer in every cell.
+///
+/// This is the assertion that stands where a cross-rate would have gone. A conversion that knew
+/// about currencies would have to scale one against another somewhere, and the moment it did, a
+/// rate in yen would be a rate in dollars times a number nobody configured. The currency enters
+/// ONCE, at the projection, through `nanos_per_minor` — never at the rate.
+#[test]
+fn the_conversion_is_the_same_integer_in_every_currency() {
+    let jpy = CurrencyCode::new("JPY").expect("a three-letter code");
+    let bhd = CurrencyCode::new("BHD").expect("a three-letter code");
+    let mut seq = Seq(0x1234_5678_9ABC_DEF0);
+    for case in 0..10_000u32 {
+        let micro = seq.below(10_000_000_000) as f64 / 1_000_000.0;
+        let expected = nano_rate(micro);
+
+        let mut card = RateCard::from_micro_rates([(LaneClass::new("lane", "input"), micro)], 0);
+        card.set_rate(LaneClass::new("lane", "input"), jpy, micro);
+        card.set_rate(LaneClass::new("lane", "input"), bhd, micro);
+
+        for currency in [CurrencyCode::USD, jpy, bhd] {
+            let rates = card
+                .lane_rates("lane", currency)
+                .expect("the lane is priced");
+            assert_eq!(
+                rates.nanos_per_unit("input"),
+                expected,
+                "case {case}: the rate moved with the currency at {micro} micro-units per unit"
+            );
+        }
+        // And the admission unit's projection, which knows nothing of currencies at all, still
+        // gives that same integer.
+        assert_eq!(admission_nano_rate(micro), expected, "case {case}");
+    }
+}
+
+/// The currency changes the PROJECTION and only the projection. One nano-unit total, three
+/// currencies: the answers differ by exactly the ratio of the divisors and by nothing else.
+#[test]
+fn the_currency_enters_at_the_projection_and_nowhere_else() {
+    let jpy = CurrencyCode::new("JPY").expect("a three-letter code");
+    let bhd = CurrencyCode::new("BHD").expect("a three-letter code");
+    assert_eq!(CurrencyCode::USD.nanos_per_minor(), 10_000_000);
+    assert_eq!(jpy.nanos_per_minor(), 1_000_000_000);
+    assert_eq!(bhd.nanos_per_minor(), 1_000_000);
+
+    let nanos = 3_500_000_000u128;
+    assert_eq!(minor_of(nanos, CurrencyCode::USD), 350);
+    assert_eq!(minor_of(nanos, jpy), 3);
+    assert_eq!(minor_of(nanos, bhd), 3_500);
 }

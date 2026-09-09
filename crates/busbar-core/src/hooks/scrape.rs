@@ -156,7 +156,7 @@ async fn refresh(
         // not re-hammered every scrape until the TTL elapses (fail-open).
         None => Vec::new(),
     };
-    store(&name, metrics, crate::store::now());
+    store(&name, metrics, busbar_substrate::store::now());
 }
 
 /// `GET /metrics/hooks` — render every hook's cached metrics as Prometheus text.
@@ -164,7 +164,7 @@ async fn refresh(
 /// Stale-while-revalidate: for each configured hook whose cache is stale, spawn an async refresh
 /// (the NEXT scrape sees it) and render the current cache now. The handler never awaits a hook.
 pub(crate) fn render(app: &Arc<crate::state::App>) -> String {
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     // Evict cache entries for hooks removed/renamed in a config reload so stale series stop
     // rendering and the process-global cache can't grow unbounded across reloads.
     prune_absent(app.hook_registry.keys().map(String::as_str));

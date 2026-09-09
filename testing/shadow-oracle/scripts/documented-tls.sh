@@ -114,3 +114,7 @@ kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
 jq -n --argjson eff "$eff" --arg body "$(jq -c 'del(.stderr)' <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

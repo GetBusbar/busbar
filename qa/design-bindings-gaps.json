@@ -17,8 +17,8 @@
     "  * THE CEILING IS ASSERTED, NOT OBSERVED. `expected` is the number of gaps the owner has agreed",
     "    to carry. Exceeding it is RED with no further argument: a register that silently grows is a",
     "    way of turning a gate off one row at a time.",
-    "Checked by scripts/design-bindings.py (--verify-gaps, and the GAP verdict it hands the shell",
-    "gate); the arms above each have a case in scripts/design-bindings.sh --selftest."
+    "Checked by the design-bindings gate (the GAP verdict it hands each binding); the arms above",
+    "each have a case in `cargo xtask gate design-bindings --selftest`."
   ],
   "expected": 0,
   "gaps": []

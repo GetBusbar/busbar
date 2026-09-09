@@ -243,6 +243,7 @@ impl TransportMeta for StdioTransport {
     // The transports table names no status leg for stdio; the plane's own `finish` class is the fee's sole
     // source here.
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> = None;
+    const STATUS_NAMESPACE: Option<&'static str> = None;
 }
 
 impl Transport for StdioTransport {

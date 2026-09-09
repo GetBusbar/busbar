@@ -188,9 +188,11 @@ fn a_poisoned_lock_does_not_stop_the_audit_chain() {
 #[test]
 fn the_audit_action_is_the_word_the_rig_reads() {
     let rig = include_str!("../../../../../scripts/a2a-subject/h2-audit-record.sh");
+    // Quoted, so a mention in a comment or in this file's own header (both bare, unquoted words)
+    // cannot satisfy this: only the executable argument the rig actually asserts on can.
     assert!(
-        rig.contains(AUDIT_ACTION),
-        "the rig no longer asserts on {AUDIT_ACTION}"
+        rig.contains(&format!("\"{AUDIT_ACTION}\"")),
+        "the rig's executable assertion no longer names \"{AUDIT_ACTION}\""
     );
     assert_eq!(AUDIT_ACTION, "agent.call");
 }
@@ -199,7 +201,9 @@ fn the_audit_action_is_the_word_the_rig_reads() {
 #[test]
 fn the_resource_is_the_agent() {
     let rig = include_str!("../../../../../scripts/a2a-subject/h2-audit-record.sh");
-    assert!(rig.contains(&format!("{SCOPE_KIND_AGENT}:probe")));
+    // Quoted, for the same reason as the action pin above: a bare mention in prose must not
+    // satisfy this.
+    assert!(rig.contains(&format!("\"{SCOPE_KIND_AGENT}:probe\"")));
 }
 
 /// Every operation class the plane declares gets a scope entry.

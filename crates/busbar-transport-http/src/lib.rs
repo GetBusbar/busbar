@@ -100,6 +100,8 @@ use tokio_util::compat::TokioAsyncReadCompatExt;
 
 mod raw;
 
+pub mod mount;
+
 pub use raw::{RawMessage, RawStartLine};
 
 /// Bytes read per syscall on the ingress side, and the cap this crate scans a header prefix
@@ -395,8 +397,13 @@ fn retry_after_secs(headers: &http::HeaderMap, now_secs: u64) -> Option<u64> {
 ///
 /// The arithmetic is the one the breaker's own classifier does, and it is duplicated here rather
 /// than shared: this crate sits on the transport axis and may not name a unit crate, and the unit
-/// crate's dependency policy names `busbar-caps` as the only workspace crate it may see. The forms
+/// crate's own dependency policy names the capability crate as the only workspace crate it may see.
+/// Neither can reach the other, so there is no shared home for four lines of date parsing. The forms
 /// accepted and the flooring rule are pinned by the tests below against the same values.
+///
+/// (The capability crate is deliberately not spelled here. `tests/no_plane_names.rs` refuses that
+/// name anywhere in this crate's source, and a rule with an exception for prose is a rule with an
+/// exception — the sentence says the same thing without one.)
 fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
     let s = value.trim();
     if let Ok(n) = s.parse::<u64>() {
@@ -519,6 +526,8 @@ impl TransportMeta for HttpTransport {
     const DECODES_PAYLOAD: bool = false;
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
         Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
+    const STATUS_NAMESPACE: Option<&'static str> =
+        Some(busbar_contract_transport::registry::status_ns::HTTP);
 }
 
 impl Transport for HttpTransport {
@@ -822,7 +831,11 @@ impl Transport for HttpTransport {
                             // Named as HTTP's number, because that is the numbering this transport
                             // reads: a reader downstream matches it against HTTP's bands only
                             // because the frame says so, never because it assumed.
-                            status_code: Some(WireStatus::Http(status)),
+                            // The namespace is the one this transport DECLARES, not one
+                            // this line spells: a frame cannot report in a numbering the
+                            // transport did not say it reports in.
+                            status_code: <Self as TransportMeta>::STATUS_NAMESPACE
+                                .map(|ns| WireStatus::new(ns, u32::from(status))),
                             retry_after_secs: retry_after,
                         },
                     };

@@ -95,7 +95,7 @@ fn grant_for_blocked(state: &HostState, facts: &Facts) -> Result<AdmitGrant, Lim
     // When the tail is absent (an older sender, or a caller with no resolved identity) fall back to
     // the ungrouped key synthesized from the tenant id — the pre-enrichment behaviour.
     let key = resolved_key(facts).unwrap_or_else(|| synth_key(facts.tenant_id));
-    let now = crate::store::now_ms() / 1_000;
+    let now = busbar_substrate::store::now_ms() / 1_000;
     gov.try_admit(state.app.cost.as_ref(), &key, &pool, now)
 }
 
@@ -244,7 +244,7 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
             ),
         };
         let token_usage = token_usage_for(component, usage.amount);
-        let now = crate::store::now_ms() / 1_000;
+        let now = busbar_substrate::store::now_ms() / 1_000;
         gov.record_metering(key_id, model, provider, token_usage.as_ref(), now);
     }
     MeterOutcome::Charged
@@ -324,7 +324,7 @@ pub(super) fn resolve_auth(_state: &HostState, query: &AuthQuery) -> Option<Auth
         crate::auth::AuthPrincipal(Some(crate::auth::Principal::from_id(audience.clone())))
     };
     let _actor_id = principal.actor_id();
-    let now = crate::store::now_ms() / 1_000;
+    let now = busbar_substrate::store::now_ms() / 1_000;
     let expires_unix = now.saturating_add(DEFAULT_AUTH_TTL_SECS);
     // MINT a fresh, short-lived, host-owned credential reference (the CLUSTER-3 (d) decision: a NEW
     // per-hop `resolved_ref`, DISTINCT from the input `credential_ref`; the host owns its expiry). The

@@ -885,7 +885,7 @@ pub(crate) async fn create_key(
     // Idempotency-Key value must never replay this principal's response (which carries a secret).
     let idem_ckey: Option<(String, String)> = idem_key.as_ref().map(|k| (actor.clone(), k.clone()));
     if let Some(ref ck) = idem_ckey {
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let mut cache = app
             .idempotency_cache
             .lock()
@@ -979,7 +979,7 @@ pub(crate) async fn create_key(
     // `expires_in` and `expires_at` are mutually exclusive; resolve the token expiry (Unix secs).
     // `explicit` records whether the operator NAMED a lifetime (so the policy ceiling refuses an
     // over-ask but only clamps the default — see `apply_mint_ttl_ceiling`).
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let (exp, explicit) = match (req.expires_in.as_deref(), req.expires_at) {
         (Some(_), Some(_)) => {
             return key_err(
@@ -1304,7 +1304,7 @@ pub(crate) async fn create_key(
         app.idempotency_cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(ck.clone(), (crate::store::now(), body.clone()));
+            .insert(ck.clone(), (busbar_substrate::store::now(), body.clone()));
     }
     if let Some(g) = idem_reservation.as_mut() {
         g.state = IdemState::Committed;
@@ -1742,7 +1742,7 @@ pub(crate) async fn rotate_key(
         .filter(|v| !v.is_empty())
         .map(|k| (actor.clone(), format!("rotate:{id}:{k}")));
     if let Some(ref ck) = idem_ckey {
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let mut cache = app
             .idempotency_cache
             .lock()
@@ -1783,7 +1783,7 @@ pub(crate) async fn rotate_key(
     // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
     // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
     // `expires_at` would receive (rotate takes no body today).
-    let exp = crate::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);
+    let exp = busbar_substrate::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);
     // The rotate is about to be handed to `spawn_blocking`'s uncancellable task — from here on, a
     // dropped handler future (client disconnect) must NOT clear the sentinel. See `IdemState::InFlight`.
     if let Some(r) = idem_reservation.as_mut() {
@@ -1815,7 +1815,7 @@ pub(crate) async fn rotate_key(
                     .idempotency_cache
                     .lock()
                     .unwrap_or_else(|e| e.into_inner());
-                cache.insert(ck.clone(), (crate::store::now(), body.clone()));
+                cache.insert(ck.clone(), (busbar_substrate::store::now(), body.clone()));
                 if let Some(r) = idem_reservation.as_mut() {
                     r.state = IdemState::Committed;
                 }
@@ -2023,7 +2023,7 @@ pub(crate) async fn key_usage(
     if let Some(resp) = reject_overlong_id(KeyAudit::Read, &id) {
         return resp;
     }
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let gov2 = gov.clone();
     let id2 = id.clone();
     // One blocking hop fetches BOTH the usage counters and the key record (the record feeds the

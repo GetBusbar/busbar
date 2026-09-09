@@ -1,4 +1,4 @@
-# qa/construction.toml — thresholds for THE CONSTRUCTION GATE (scripts/construction-gate.sh).
+# qa/construction.toml — thresholds for THE CONSTRUCTION GATE (cargo xtask gate construction).
 #
 # The shadow oracle proves the tree is user-correct. This file is the owner's dial for how well the
 # tree is BUILT, measured against docs/design/ARCHITECTURE.md. Every rule below is a named invariant
@@ -15,6 +15,12 @@
 scan_roots = ["crates/*/src"]
 # The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
 # below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
+#
+# NOTE (PLUGIN-TREE.md): "plane" is defined TWICE in this file, disjointly. This list is the four
+# LEGACY ENGINE crates; `gate.plugin_kinds.plane` below is the five `busbar-plane-*` crates, and the
+# two lists share zero members. manifest-allowlist reads THIS one to decide what "a plane names
+# another plane" means. The two collapse into one definition when the legacy engines are deleted;
+# until then a reader must not take either as "the plane kind".
 plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
@@ -25,6 +31,21 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 # Shared by manifest-allowlist, source-denylist and forbid-unsafe so the kind boundaries are drawn
 # once. A glob matching no directory today is fine (the kind has no crate yet) — every rule below
 # treats an empty match list as nothing-to-check, not a failure.
+#
+# OWED, per docs/design/PLUGIN-TREE.md (normative for every kind boundary; owner rulings 2026-09-07,
+# ARCHITECTURE.md Appendix A). These are notes for the gate agent, not changes:
+#   * `dialect` is a KIND and has no row here. It lands as `crates/busbar-plane-*-*` once the codec
+#     crates split; its manifest rule is the tightest in the tree — a `busbar-plane-<p>-<d>` crate's
+#     only workspace dependencies are `busbar-contract` and `busbar-plane-<p>`.
+#   * `loader` and `abi` are NOT kinds. They are TCB crates and belong in a separate `tcb_crates`
+#     list; they are here only so they inherit the forbid-unsafe deny row, and counting them is how
+#     this table reaches "10" with a set that is not the owner's ten.
+#   * Kind membership is decided here by DIRECTORY GLOB, and `Plugin::kind()` — the declaration that
+#     should be authoritative — is read by nothing. That is how `crates/secret-ref` (a SecretRef TYPE
+#     crate, no Secret impl) is classified `secret`, and how `crates/hooks-ranking` is classified
+#     `hook` by the directory name while implementing a busbar-api trait. Renaming the fifteen crate
+#     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
+#     correct by construction and is the cheap first half of kind-by-declaration.
 [gate.plugin_kinds]
 plane = ["crates/busbar-plane-*"]
 hook = ["crates/hook*"]
@@ -47,6 +68,14 @@ abi = ["crates/busbar-contract"]
 # This is deliberately NOT `plane_crates`. That list also decides which dependency is a
 # plane-names-another-plane RED in manifest-allowlist, and a plane naming its own pure codec half is
 # the intended shape, already on that rule's reviewed list.
+#
+# OWED (PLUGIN-TREE.md, owner 2026-09-07): these four crates ARE the dialect kind, unnamed. They are
+# the only shipping crate group with no `Kind` variant, no section 1.4 row, no stated contract and no
+# ceiling. The 2026-09-06 decision to FOLD each codec into its plane is superseded: each codec SPLITS
+# into `busbar-plane-<plane>-<dialect>` crates. Sequence, and the order matters — the llm DECLS order
+# (anthropic, openai, gemini, bedrock, responses, cohere) is operator-visible and every metric-family
+# index is a position in it, so pin it with an oracle boot cell BEFORE the split, then name the
+# shared residue's destination, then split.
 [gate.plane_codec_crates]
 busbar-llm = ["busbar-llm-codec"]
 busbar-mcp = ["busbar-mcp-codec"]
@@ -54,8 +83,8 @@ busbar-a2a = ["busbar-a2a-codec"]
 busbar-voice = ["busbar-voice-codec"]
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
-# owner decisions, not ratchets that drift upward with the tree — construction-gate.sh reads them
-# from here (rather than a literal in the script) purely so --calibrate/--selftest can also produce
+# owner decisions, not ratchets that drift upward with the tree — the gate reads them
+# from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
@@ -365,13 +394,19 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 # busbar-llm-codec: the pure codec half of the split llm crate (no I/O in its closure); the plane adapts it.
 # Per-crate additions beyond the global list above, each a one-line review.
 [rules.manifest-allowlist.reviewed_extra]
-# store-example-plugin demonstrates wrapping the in-tree memory store; it is not itself the store.
-store-example-plugin = ["busbar-store-memory"]
+# RETIRED 2026-09-08: store-example-plugin named busbar-store-memory, a sibling instance of its own
+# kind, which PLUGIN-TREE.md §4 forbids without exception. The waiver is gone because the dependency
+# is: the example now carries its own in-process backend (crates/store-example-plugin/src/ram.rs).
 # Ratchet, NOT a review: each busbar-plane-* adapter names its own dialect's legacy engine crate
 # (busbar-llm/-mcp/-a2a/-voice) for codecs only, read-only, no engine state crossing back — but
 # those engine crates are ALSO named in gate.plane_crates, so this is structurally the exact "a
 # plane names another plane" coupling section 1.2 forbids. Tracked here, not waved through, until
 # docs/design/1.6.0-protocols-as-plugins.md's codec split lands and the dependency disappears.
+# STALE — verified 2026-09-07: NONE of the four edges below exists at this commit. Every plane crate
+# is exactly `busbar-contract` + its own codec and nothing else; the planes are the cleanest seam in
+# the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
+# is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
+# change is not this commit's business.
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 busbar-plane-a2a = ["busbar-a2a"]
@@ -543,11 +578,9 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
-  "secret-example-plugin", "secret-ref", "busbar-plane-a2a", "busbar-plane-mcp",
+  "secret-example-plugin", "secret-ref",
 ]
-known_missing_deny = [
-  "busbar-transport-grpc", "busbar-transport-http", "busbar-transport-sse",
-  "busbar-transport-tls", "busbar-transport-ws", "plugin-loader",
+known_missing_deny = [ "plugin-loader",
   "store-memory", "store-example-plugin", "export-example-plugin",
 ]
 
@@ -843,8 +876,14 @@ entry_verbs = ["cost_price_usage"]
 # The cost unit's own pricing entry points, named as paths.
 entry_path_patterns = ['busbar_unit_cost::[A-Za-z0-9_:]*price', 'busbar_unit_cost::apply_tier']
 max_extra_sites = 0
-# The fee fields, and the two crates that may read them.
-fee_fields = ["per_request_fee_cents", "fee_cents"]
+# The fee fields, and the two crates that may read them. `per_request_fee` is the card's OWN
+# spelling since the cost unit re-labelled `per_request_fee_cents` to it (the fee is carried in the
+# currency's minor units, so `_cents` was a lie on any non-USD deployment). Without it on this list
+# the rule went blind to exactly the thing it was written for: it would still have counted two
+# offenders, but both name `fee_cents`, the config/substrate spelling, and NOT ONE read of the
+# card's own fee anywhere in the workspace. The old spelling stays so a re-introduction of it is
+# still caught.
+fee_fields = ["per_request_fee", "per_request_fee_cents", "fee_cents"]
 fee_reader_crates = ["busbar-unit-cost", "busbar-core"]
 max_fee_readers = 0
 

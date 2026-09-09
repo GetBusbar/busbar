@@ -39,7 +39,7 @@ use busbar_substrate::plane_host::{
 // are now operator-tunable (`limits.upstream_request_timeout_secs` / `pool_max_idle_per_host` /
 // `request_body_max_bytes`), each defaulting to its historical value at the config layer. They are
 // threaded from `cfg.limits` into the client builder and router below; the egress translate-body cap
-// is COUPLED to `request_body_max_bytes` via `crate::limits::translate_body_max_bytes`.
+// is COUPLED to `request_body_max_bytes` via `busbar_substrate::proxy::max_translate_body_bytes`.
 
 /// Environment variable name for the config.yaml path — the one irreducible bootstrap env var.
 pub const ENV_CONFIG: &str = "BUSBAR_CONFIG";
@@ -905,7 +905,7 @@ pub fn build_app_from_config(
     // (both default to their historical const at the config layer).
     // Carry-over: an APPLY/RELOAD (prior = Some) restores every surviving lane's learned
     // health state BY STABLE IDENTITY from the prior store; boot (None) starts fresh.
-    let store: Arc<dyn crate::store::LaneRuntime> = match prior {
+    let store: Arc<dyn busbar_substrate::store::LaneRuntime> = match prior {
         Some(p) => Arc::new(HealthState::new_with_limits_restored(
             lanes_data.clone(),
             cfg.limits.hard_down_cooldown_secs,
@@ -1149,7 +1149,7 @@ pub fn build_app_from_config(
                 // the persisted ledger. A no-op for the empty RAM store.
                 // Fail-open: a store error here is FATAL - resuming with empty (reset) budget
                 // cells would let a maxed-out key spend its whole cap again. Fail boot loudly.
-                if let Err(e) = gs.hydrate_budgets(&cost, crate::store::now()) {
+                if let Err(e) = gs.hydrate_budgets(&cost, busbar_substrate::store::now()) {
                     return Err(format!(
                         "governance boot: budget hydration failed ({e}); refusing to start with an \
                          unenforced (reset) ledger. Fix the durable store and restart."

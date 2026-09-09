@@ -3550,8 +3550,8 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 /// cut and the client disconnect, NOT on the post-first-byte transport cut", with no content-type
 /// qualifier — which reads as though the non-SSE cut kept the unit. It does not, and never has.
 /// The row PB-27 cites (`docs/design/inventory/1.5.5-proxy-hooks.md:435`) is explicitly the
-/// **SSE** post-first-byte row, and §4 carries no row for the non-SSE case at all. The document
-/// that does name it says the opposite of the summary:
+/// **SSE** post-first-byte row, and `docs/design/inventory/1.5.5-proxy-hooks.md` §4 carries no row
+/// for the non-SSE case at all. The rows that do name it say the opposite of the summary:
 ///
 /// - `docs/design/inventory/1.5.5-proxy-hooks.md:407` — "Transport failure **before** first byte
 ///   (or non-SSE mid-body) … budget refunded".

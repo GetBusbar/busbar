@@ -1179,7 +1179,7 @@ fn test_sharded_metering_accrual_is_exactly_once_under_concurrency() {
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     // A CURRENT bucket: the memory store amortized-evicts buckets older than its retention window, and
     // thousands of writes here would trip that sweep on a stale (2023) bucket.
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let threads = 16u64;
     let per_thread = 5_000u64;
     let key_space = 64u64; // spread across shards; cross-thread collisions on shared cells
@@ -1244,7 +1244,7 @@ fn test_sharded_metering_no_loss_with_a_concurrent_flusher() {
     let gov = Arc::new(GovState::new(store.clone(), None).unwrap());
     // A CURRENT bucket (see the sibling concurrency test): stale buckets get amortized-evicted by the
     // memory store under the many writes a concurrent flusher makes.
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let threads = 8u64;
     let per_thread = 10_000u64;
 
@@ -3154,7 +3154,7 @@ mod signed_token {
     #[test]
     fn local_revoke_rejects_the_very_next_auth_attempt() {
         let g = gov();
-        let base = crate::store::now();
+        let base = busbar_substrate::store::now();
         let (binding, token) = g
             .mint_signed(spec("bob", None, None), base + 10_000, base)
             .expect("mint");
@@ -3187,7 +3187,7 @@ mod signed_token {
         let g = Arc::new(
             GovState::new_with_signer(store.clone(), Some("t".into()), Some(signer)).unwrap(),
         );
-        let base = crate::store::now();
+        let base = busbar_substrate::store::now();
         let (binding, token) = g
             .mint_signed(spec("bob", None, None), base + 10_000, base)
             .expect("mint");

@@ -4,6 +4,7 @@
 
 use super::*;
 use busbar_caps::KernelSeal;
+use busbar_contract::WireStatus;
 
 /// A fresh `UnitToken<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
 /// minted through the kernel seal exactly as CG-29 says a real deployment would
@@ -62,7 +63,10 @@ fn an_unrecognized_error_map_class_reaches_the_bound_sink() {
     let classified = breaker.classify(
         dest,
         UpstreamStatus {
-            code: Some(WireStatus::Http(503)),
+            code: Some(WireStatus::new(
+                busbar_contract::transport::status_ns::HTTP,
+                503,
+            )),
             class: None,
             retry_after: None,
         },
@@ -97,7 +101,10 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
         dest,
         UpstreamStatus {
             class: Some(StatusClass::ServerError),
-            code: Some(WireStatus::Grpc(14)),
+            code: Some(WireStatus::new(
+                busbar_contract::transport::status_ns::GRPC,
+                14,
+            )),
             retry_after: None,
         },
     );
@@ -129,12 +136,18 @@ fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
     use busbar_unit_breaker::port::UpstreamCode;
     let grpc = UpstreamStatus {
         class: Some(StatusClass::ServerError),
-        code: Some(WireStatus::Grpc(14)),
+        code: Some(WireStatus::new(
+            busbar_contract::transport::status_ns::GRPC,
+            14,
+        )),
         retry_after: None,
     };
     let http = UpstreamStatus {
         class: Some(StatusClass::ServerError),
-        code: Some(WireStatus::Http(14)),
+        code: Some(WireStatus::new(
+            busbar_contract::transport::status_ns::HTTP,
+            14,
+        )),
         retry_after: None,
     };
     let classless = UpstreamStatus {
@@ -303,7 +316,10 @@ fn classification_carries_the_declared_error_map_through() {
         dest,
         UpstreamStatus {
             class: None,
-            code: Some(WireStatus::Http(1113)),
+            code: Some(WireStatus::new(
+                busbar_contract::transport::status_ns::HTTP,
+                1113,
+            )),
             retry_after: None,
         },
     );

@@ -276,6 +276,77 @@ pub unsafe fn write_out<T>(out: *mut MaybeUninit<T>, value: T) {
     unsafe { (*out).write(value) };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Test-only instrument: a per-thread counting allocator, THE ALLOC-GATE PROOF.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// A `System` wrapper that counts every allocation THIS THREAD makes, for THIS CRATE'S OWN TESTS
+/// only. Ported from the deleted `plane-abi-spike` (`git show 527bdbf96^:crates/plane-abi-spike/src/lib.rs`)
+/// verbatim in idiom (see also `busbar-llm`'s `CountingJemalloc` /
+/// `engine/tests/alloc_gate_tests.rs`, the same "counting allocator, exact count asserted" pattern
+/// applied to jemalloc instead of `System`): a `#[global_allocator]` in a LIBRARY is inherited by
+/// every binary that links it, so this is declared `#[cfg(test)]` ONLY — a dependent never gets it
+/// handed to it uninvited.
+///
+/// PER-THREAD, not process-global: `cargo test` runs this crate's tests concurrently, so a single
+/// shared atomic would let another test thread's allocations inflate the measured thread's count and
+/// flap an exact-equality gate under load. A `const`-initialized thread-local isolates each thread's
+/// count — no lazy init, no destructor, no heap — so `.with()` is a plain TLS read/write, safe to call
+/// from inside `GlobalAlloc` (`System.*` never re-enters this allocator).
+#[cfg(test)]
+pub(crate) struct CountingAlloc;
+
+#[cfg(test)]
+thread_local! {
+    static ALLOC_COUNT: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl CountingAlloc {
+    /// Allocations observed on THIS thread since process start (or last [`reset`](Self::reset)).
+    pub(crate) fn count() -> u64 {
+        ALLOC_COUNT.with(|c| c.get())
+    }
+    /// Reset this thread's counter to zero and return the previous value.
+    pub(crate) fn reset() -> u64 {
+        ALLOC_COUNT.with(|c| c.replace(0))
+    }
+}
+
+#[cfg(test)]
+// SAFETY: every method forwards straight to `System`, only adding a per-thread counter increment
+// before the call — it changes no allocation behaviour, only observes it.
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    #[inline]
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
+        // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: forwarded verbatim; the caller's obligations on `ptr`/`layout` are unchanged.
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+    #[inline]
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
+        // SAFETY: forwarded verbatim; the caller's obligations on `layout` are unchanged.
+        unsafe { std::alloc::System.alloc_zeroed(layout) }
+    }
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        ALLOC_COUNT.with(|c| c.set(c.get() + 1));
+        // SAFETY: forwarded verbatim; the caller's obligations on `ptr`/`layout`/`new_size` are
+        // unchanged.
+        unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[cfg(test)]
+#[global_allocator]
+static ALLOC: CountingAlloc = CountingAlloc;
+
 #[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;

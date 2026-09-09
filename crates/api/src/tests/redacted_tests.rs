@@ -78,6 +78,34 @@ fn eq_is_constant_time_and_correct() {
     assert_eq!(Redacted::new(String::new()), Redacted::new(String::new()));
 }
 
+/// `Drop` for `Redacted<T>` MUST actually call `T::zeroize` — the whole point of the wrapper is
+/// that the backing memory is overwritten when it goes out of scope, not left as freed-but-intact
+/// plaintext. A test type that records whether `zeroize` ran (rather than asserting on process
+/// memory, which isn't reliably observable from safe Rust) pins this directly: mutating the `Drop`
+/// body to a no-op `()` must fail this test.
+#[test]
+fn drop_actually_calls_zeroize() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct FlagOnZeroize(Arc<AtomicBool>);
+    impl zeroize::Zeroize for FlagOnZeroize {
+        fn zeroize(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let flag = Arc::new(AtomicBool::new(false));
+    {
+        let _r = Redacted::new(FlagOnZeroize(flag.clone()));
+        assert!(!flag.load(Ordering::SeqCst), "must not zeroize before drop");
+    }
+    assert!(
+        flag.load(Ordering::SeqCst),
+        "Redacted's Drop must call the backing value's zeroize"
+    );
+}
+
 /// `Redacted` must NOT implement `serde::Serialize`, so a secret held in engine memory has no
 /// implicit path into JSON (the credential-transport boundary uses a plain wire `String`, on
 /// purpose). This uses AUTOREF SPECIALIZATION to actually detect the impl at test time: the

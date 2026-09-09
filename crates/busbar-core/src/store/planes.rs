@@ -49,7 +49,9 @@
 // used by only ONE plane and so reads dead in the other's single-plane build too.
 #![allow(dead_code)]
 
-use super::in_memory::{BreakerCfg, HealthState, LaneData};
+use busbar_substrate::store::BreakerCfg;
+
+use super::in_memory::{HealthState, LaneData};
 use super::{LaneRuntime, Unavailable};
 use crate::diagnostics::{diag_warn, PLANE_BREAKER_HARD_DOWN, PLANE_BREAKER_TRIPPED};
 use std::sync::Arc;
@@ -166,24 +168,11 @@ impl PlaneBreakers {
         }
     }
 
-    /// The MCP plane's key for one registered tool server. The `tool:` prefix is the audit's
-    /// keyspace rule; the id is the operator's registration id, which is what every refusal names.
-    // MCP-only: keyed by the MCP plane alone, so with `plane-mcp` off (and A2A on) it has no caller.
-    #[allow(dead_code)]
-    pub fn tool_key(server: &str) -> String {
-        // The prefix spelling MOVED DOWN to the neutral substrate so the MCP plane builds this key
-        // without reaching into core; delegate so the one `tool:` spelling stays single-sourced.
-        busbar_substrate::store::tool_key(server)
-    }
-
-    /// The A2A plane's key for one registered agent.
-    // A2A-only: keyed by the A2A plane alone, so with `plane-a2a` off (and MCP on) it has no caller.
-    #[allow(dead_code)]
-    pub fn agent_key(agent: &str) -> String {
-        // The prefix spelling MOVED DOWN to the neutral substrate so the A2A plane builds this key
-        // without reaching into core; delegate so the one `agent:` spelling stays single-sourced.
-        busbar_substrate::store::agent_key(agent)
-    }
+    // R5-store: `PlaneBreakers::{tool_key, agent_key}` DELETED. Both were one-line delegations to
+    // `busbar_substrate::store::{tool_key, agent_key}` — the prefix spellings had already moved down
+    // to the neutral substrate — and both had ZERO production callers in the whole workspace (they
+    // carried `#[allow(dead_code)]` for exactly that reason). The keyspace rule is unchanged and
+    // single-sourced where it now lives; every caller left names the substrate directly.
 
     /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
     /// admission the model plane's queue dispatch makes. `lane` is the member's position in its

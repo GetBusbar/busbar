@@ -16,9 +16,9 @@
 //!   `cp … || true`: over an empty file each body ran zero times, no ceiling was compared, and the
 //!   verdict printed was "every category and every plane crate's test-reach is within its ceiling".
 //!   The measurement here is a returned value rather than a file, so the loops cannot run zero
-//!   times by accident — but the design doc is explicit that "Rust cannot have that bug" is not the
-//!   same claim as "the check is still there", so the row set is reconciled against the required
-//!   names and a missing one is a FAIL with its own selftest case.
+//!   times by accident — but "Rust cannot have that bug" is not the same claim as "the check is
+//!   still there", so the row set is reconciled against the required names and a missing one is a
+//!   FAIL with its own selftest case.
 
 use std::collections::BTreeMap;
 

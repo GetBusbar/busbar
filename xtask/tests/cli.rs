@@ -56,6 +56,42 @@ fn selftest_runs_every_registered_gates_red_proof() {
     assert_eq!(run(&["gate", "segregation", "--selftest"]), 0);
 }
 
+/// THE REGISTRY-VS-WORKFLOW SET EQUALITY, ON THE PER-PUSH PATH.
+///
+/// `full_gate::gate_set_diff` is what notices a gate deleted from `ci.yml` — and it was reachable
+/// only from `cargo xtask full-gate --selftest`, which no workflow step, no `CARGO_LOCAL` entry and
+/// no test invoked. A check nothing calls answers no question: every registered gate could have
+/// been dropped out of CI with the whole tree green. This case is its caller. `cargo test
+/// --workspace --locked` runs on every push, so the equality — and the excuse list's claims, which
+/// the same selftest now puts to the tree — is judged on every push with it.
+///
+/// It asserts 0 and not "reached a verdict": unlike `gate --all`, nothing here is a claim about
+/// debt in the tree. Discovery, the floors, the skip reasons and the two set differences are all
+/// facts about the repository's own wiring, and every one of them is supposed to hold at all times.
+#[test]
+fn the_registry_and_the_workflow_still_name_the_same_gates() {
+    assert_eq!(run(&["full-gate", "--selftest"]), 0);
+}
+
+/// THE AUDIT REGISTER, ON THE PER-PUSH PATH.
+///
+/// `audit-ledger` is the instrument that judges the audits — is a scope covered, is a HIGH finding
+/// still open, does a record's hash belong to the commit it claims to have read. Its own excuse
+/// entry said out loud that per push it was unguarded: its only caller was
+/// `scripts/verify-1.6.0-done.sh`, which runs at release time. A register can be edited, a scope
+/// dropped and a `fixed` stamped with nobody confirming it, and nothing on the push path would say
+/// so until the release the register exists to gate.
+///
+/// This case and the `ci.yml` step beside it are that caller. Both arms are asserted, and both are
+/// asserted at 0: the selftest, because a gate that cannot go red proves nothing; and the RUN,
+/// because unlike `gate --all` this is not a claim about debt in the tree — the register either is
+/// sound or the audits it records cannot be trusted.
+#[test]
+fn the_audit_register_is_judged_on_every_push() {
+    assert_eq!(run(&["gate", "audit-ledger", "--selftest"]), 0);
+    assert_eq!(run(&["gate", "audit-ledger"]), 0);
+}
+
 #[test]
 fn the_pre_registry_denylist_spelling_still_works_unchanged() {
     assert_eq!(run(&["denylist"]), 0);

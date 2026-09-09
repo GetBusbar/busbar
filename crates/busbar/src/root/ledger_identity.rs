@@ -47,7 +47,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use busbar_unit_cost::{micros_of, Posting};
+use busbar_unit_cost::{micros_of, Priced};
 use busbar_unit_ledger::identity::{residual, Residual};
 use busbar_unit_ledger::totals::Totals;
 
@@ -132,12 +132,16 @@ pub type LegacySnapshot = BTreeMap<RowKey, LegacyRow>;
 
 /// Add one posting to a ledger snapshot.
 ///
-/// The one place a `Posting` becomes a row figure, so there is one answer to "which two numbers off
-/// a posting does the identity read" rather than one per caller.
-pub fn accumulate(snapshot: &mut LedgerSnapshot, row: RowKey, posting: &Posting) {
+/// The one place a lookup's answer becomes a row figure, so there is one answer to "which two
+/// numbers does the identity read" rather than one per caller.
+///
+/// It takes what the LOOKUP said rather than a stored posting, because under the dated history a
+/// posting stores quantities and no money at all: the figure being accumulated is derived, at a
+/// named snapshot, and taking it from anywhere else would be reading a cache.
+pub fn accumulate(snapshot: &mut LedgerSnapshot, row: RowKey, priced: &Priced) {
     let entry = snapshot.entry(row).or_default();
-    entry.priced_nanos = entry.priced_nanos.saturating_add(posting.priced_amount());
-    entry.fee_count = entry.fee_count.saturating_add(posting.fee_count());
+    entry.priced_nanos = entry.priced_nanos.saturating_add(priced.priced_nanos);
+    entry.fee_count = entry.fee_count.saturating_add(priced.fee_count);
 }
 
 /// The two snapshots of one row, in the terms the unit's identity function reads.

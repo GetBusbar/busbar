@@ -5,7 +5,7 @@
 
 mod common;
 
-use busbar_caps::{Canary, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
+use busbar_caps::{Canary, HoldCellState, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
@@ -95,7 +95,11 @@ fn every_kill_point_has_an_answer_and_none_of_them_guesses_upward() {
             KillPoint::MidWrite => (Owed::TruncateThenDecide, false),
         };
         assert_eq!(owed_after(point), owed, "what {point:?} owes");
-        assert_eq!(voids_claim(point), voids, "whether {point:?} voids the claim");
+        assert_eq!(
+            voids_claim(point),
+            voids,
+            "whether {point:?} voids the claim"
+        );
     }
 }
 
@@ -638,6 +642,10 @@ fn a_slow_unit_is_not_a_lost_one() {
         &gauge
     )
     .is_none());
+    // "Takes no hold and ends no unit": the cell's hold is still there, untaken, and no
+    // settlement was written for it.
+    assert_eq!(slot.cell().state(), HoldCellState::Arrival);
+    assert_eq!(canary.counts().settlements, 0);
 }
 
 /// A stalled unit ends where it stopped: the floor is posted, the lease goes back, and it is one

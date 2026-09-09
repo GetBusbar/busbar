@@ -275,7 +275,7 @@ pub fn build_router(app: std::sync::Arc<state::App>) -> Router {
     // through `build_router_with_limits` with the operator-configured values.
     build_router_with_limits(
         app,
-        limits::translate_body_max_bytes(),
+        busbar_substrate::proxy::max_translate_body_bytes(),
         crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
         crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
     )
@@ -682,7 +682,7 @@ pub(crate) fn apply_common_layers(
         ))
         // Cap request body size (buffered before the handler) to bound per-request memory. Driven by
         // `limits.request_body_max_bytes` (default 32 MiB); COUPLED with the egress translate-body cap
-        // (`limits::translate_body_max_bytes`) — both read the SAME knob so an accepted request is
+        // (`busbar_substrate::proxy::max_translate_body_bytes`) — both read the SAME knob so an accepted request is
         // always buffer-translatable on the cross-protocol path.
         .layer(axum::extract::DefaultBodyLimit::max(request_body_max_bytes))
         // Outermost: reshape the body-limit layer's bare-text 413 into a protocol-native JSON

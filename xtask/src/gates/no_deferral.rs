@@ -219,14 +219,24 @@ fn markers_in(rel: &str, text: &str) -> Vec<String> {
     let mut in_block = false;
     let mut testdepth: i32 = 0;
     let mut pend = false;
+    let mut lex = scan::LexState::default();
 
     for (i, raw) in text.lines().enumerate() {
         let code = scan::strip_comment_line(raw, &mut in_block);
-        let nopen = code.matches('{').count() as i32;
-        let nclose = code.matches('}').count() as i32;
+        // `code` keeps literal contents so `class_a` can still see a marker spelled in one; the
+        // brace arithmetic reads the blanked copy, or a `'{'` in a test module leaves `testdepth`
+        // permanently open and every marker after it goes unreported.
+        let counted = scan::blank_code(raw, &mut lex);
+        let nopen = counted.matches('{').count() as i32;
+        let nclose = counted.matches('}').count() as i32;
 
-        let is_cfgtest = bare_test_pred(&code) && !negated_test_pred(&code);
-        let modded = has_mod(&code);
+        // THE TEST-SCOPE MACHINE READS THE BLANKED LINE, NOT `code`. `code` keeps literal contents
+        // on purpose, so `let s = "#[cfg(test)] mod x {";` used to arm the attribute, open a test
+        // block and swallow every marker after it — the same class of bug as counting a brace
+        // inside a literal, one layer up: not the delimiter but the KEYWORD read out of a string.
+        // The attribute and the `mod` keyword hold no literal, so blanking cannot hide a real one.
+        let is_cfgtest = bare_test_pred(&counted) && !negated_test_pred(&counted);
+        let modded = has_mod(&counted);
         let mut entered = false;
 
         // The attribute and the `mod` it governs may be on one line or two, so the block opens on
@@ -236,7 +246,7 @@ fn markers_in(rel: &str, text: &str) -> Vec<String> {
             testdepth = (nopen - nclose).max(0);
             entered = testdepth > 0;
             pend = false;
-        } else if pend && !code.trim().is_empty() && !is_cfgtest {
+        } else if pend && !counted.trim().is_empty() && !is_cfgtest {
             pend = false;
         } else if testdepth > 0 {
             testdepth = (testdepth + nopen - nclose).max(0);

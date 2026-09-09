@@ -5,7 +5,13 @@
 //! cell reverts HalfOpen→Open and is re-probeable); DISARMING it (the live-permit dispatch paths)
 //! must LEAVE the probe held for the owning request.
 use super::ProbeGuard;
-use busbar_core::store::{BreakerState, HealthState, LaneData, LaneRuntime};
+// R5-store: the breaker taxonomy and the lane-runtime seam are named from
+// `busbar_substrate::store`, where they are defined, rather than through the re-export the legacy
+// crate used to publish. `HealthState`/`LaneData` — the in-memory breaker engine itself — are still
+// the legacy crate's, and still named from it: they have no home elsewhere yet.
+use busbar_substrate::store::{BreakerState, LaneRuntime};
+
+use busbar_core::store::{HealthState, LaneData};
 use std::sync::Arc;
 
 fn lane(max: usize) -> LaneData {

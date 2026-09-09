@@ -14,7 +14,7 @@ use crate::selftest;
 
 const USAGE: &str = "\
 usage:
-  cargo xtask gate <name> [--selftest] [--report] [--write] [--format=tsv]
+  cargo xtask gate <name> [--selftest] [--report] [--strict] [--write] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
@@ -26,6 +26,16 @@ usage:
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
+
+/// The subcommands below that NAME NO GATE.
+///
+/// `cargo xtask <name>` is a gate invocation for `denylist` and `teller-steps` — both are registry
+/// names kept in their pre-registry spelling — so a reader of `ci.yml` cannot tell a gate from a
+/// subcommand by shape alone, and [`crate::yaml_lite::xtask_gate_invocations`] reads the token
+/// after `cargo xtask` as a gate name. These two are the exceptions: the runner that DRIVES the
+/// gates and the register that RECORDS the audit, neither of which has an owed row set. Listed
+/// here, beside the dispatch arms that prove it, so the reader and the dispatcher cannot drift.
+pub const NON_GATE_SUBCOMMANDS: &[&str] = &["full-gate", "ledger"];
 
 pub fn main(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -114,7 +124,10 @@ fn gate(args: &[String]) -> i32 {
             } else {
                 gates::print_verdict(reg.name, &verdict);
             }
-            if verdict.red {
+            // A REPORT-ONLY gate is printed and not scored. It is still reconciled, still
+            // self-tested, and still exits non-zero when run by name; what it does not do is turn
+            // `--all` red on a fact CI deliberately does not count.
+            if verdict.red && reg.blocking() {
                 red.push(reg.name);
             }
         }
@@ -181,6 +194,26 @@ fn gate(args: &[String]) -> i32 {
         return run_selftest(gate.as_ref(), &cx);
     }
 
+    // `--write` is the one arm that CHANGES the tree, so it is the one arm that does no judging:
+    // a check that repairs what it is checking has not checked anything, and a caller that wanted
+    // both would be asking a gate to make itself pass.
+    if cx.env().write {
+        if reg.name != "design-bindings" {
+            eprintln!("xtask gate {name}: this gate has nothing to write");
+            return 2;
+        }
+        return match crate::gates::design_bindings::DesignBindingsGate::write(&cx) {
+            Ok(msg) => {
+                println!("{msg}");
+                0
+            }
+            Err(e) => {
+                eprintln!("xtask gate {name} --write: {e}");
+                3
+            }
+        };
+    }
+
     // THE PARITY ARM, used by every conversion before its Python or bash is deleted: run the
     // legacy script and this gate over the same tree and require identical rows.
     if args.iter().any(|a| a == "--parity") {
@@ -233,11 +266,25 @@ fn gate(args: &[String]) -> i32 {
         };
     }
 
-    let verdict = gates::execute(gate.as_ref(), &cx);
+    // `--strict` REFUSES THE GATE'S OWN SKIP ALLOWLIST. A named gap is a reported gap in the plain
+    // form and a red one here, which is what makes "DONE means no gap" a claim rather than a hope.
+    let verdict = if args.iter().any(|a| a == "--strict") {
+        gates::execute_strict(gate.as_ref(), &cx)
+    } else {
+        gates::execute(gate.as_ref(), &cx)
+    };
     if tsv {
         gates::print_rows_tsv(&verdict.rows);
     } else {
         gates::print_verdict(reg.name, &verdict);
+    }
+    // `--report` PRINTS THE VERDICT AND DOES NOT IMPOSE IT. This is the arm a runner uses when it
+    // wants the rows in the log without the run's exit status turning on them — the posture the
+    // construction gate has had since it was written, and which its shell spelled `--summary`.
+    // Every row is still measured and still reconciled; only the exit code is withheld, which is
+    // the difference between reporting a fact and scoring it.
+    if cx.env().report_only {
+        return 0;
     }
     i32::from(verdict.red)
 }
@@ -317,7 +364,7 @@ fn denylist_cmd(args: &[String]) -> i32 {
         Ok(cx) => cx,
         Err(code) => return code,
     };
-    let report = denylist::run(cx.root());
+    let report = denylist::run(&cx);
     let ok = if args.iter().any(|a| a == "--format=tsv") {
         denylist::print_report_tsv(&report)
     } else {

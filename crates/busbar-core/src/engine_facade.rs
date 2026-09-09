@@ -28,7 +28,10 @@
 // `LaneRuntime` carries the whole admission surface — `try_admit`, `try_admit_breaker`, `classify`,
 // the outcome-recording write path — as trait methods, so re-exporting the trait exposes them all;
 // `Admit` is the held-resources token `try_admit` returns.
-pub use crate::store::{Admit, LaneRuntime};
+// R5-store: named from `busbar_substrate::store`, where both already live, rather than through
+// core's `crate::store::…` shim — the facade's whole point is to state ONE path per item, and for
+// these two that path is now the substrate's.
+pub use busbar_substrate::store::{Admit, LaneRuntime};
 
 // ── the failover disposition halves the engine records through (failover) ────────────────────────
 // The LLM-shaped halves that stay over `crate::store::LaneRuntime` + `crate::breaker`: the
@@ -68,6 +71,8 @@ pub use crate::egress_auth::{prebuild_auth, resolve, CredentialProvider, Metadat
 // `ProbeSchedule` (the active-probe schedule) RELOCATED with the engine + `health.rs` into
 // `busbar-llm` (1.6.0 money-path Phase 3-4 C): the plane names its OWN schedule, so core no longer
 // surfaces it on the DOWN facade.
-pub use crate::state::UpstreamClients;
+// R5-store: named from `busbar_substrate::topology`, its defining module since the WEDGE 3-PREP
+// relocation, rather than through core's `crate::state::…` shim.
+pub use busbar_substrate::topology::UpstreamClients;
 // ── the neutral lane-protocol-name resolver the lowering keys egress targets on (proto) ──────────
 pub use crate::proto::lane_protocol_name;

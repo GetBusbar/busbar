@@ -27,3 +27,9 @@ path = "src/lib.rs"
 [dependencies]
 serde = { workspace = true }
 futures = { workspace = true }
+
+# The detached stream is defined over `futures`' async I/O pair, so a proof that a handoff carries
+# the layer that made it has to build one — which means naming the same crate the seam is written
+# on. Test-only: nothing here reaches the library.
+[dev-dependencies]
+futures = { workspace = true }

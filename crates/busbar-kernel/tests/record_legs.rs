@@ -178,7 +178,8 @@ fn an_undeclared_schema_is_refused_before_the_sink() {
     assert_eq!(
         refusal,
         RecordRefusal::UndeclaredSchema {
-            schema: STRANGER.as_str()
+            schema: STRANGER.as_str(),
+            op: OP_GET,
         }
     );
     assert!(

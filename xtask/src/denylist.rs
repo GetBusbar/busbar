@@ -39,7 +39,12 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::ctx::{Ctx, WalkSpec};
 use crate::toml_lite;
+use crate::toml_lite::Document;
+
+/// The construction config, workspace-relative — read through the `Ctx` so a plant can change it.
+const CONFIG_REL: &str = "qa/construction.toml";
 
 pub struct Hit {
     pub crate_name: String,
@@ -86,7 +91,12 @@ pub struct BannedLists {
 }
 
 pub(crate) fn load_banned_lists(root: &Path) -> BannedLists {
-    let doc = toml_lite::parse(&root.join("qa/construction.toml"));
+    banned_lists_of(&toml_lite::parse(&root.join("qa/construction.toml")))
+}
+
+/// The same lists off a document SOMEBODY ELSE READ — the form [`run`] uses, so the config it bans
+/// from is the one the `Ctx` (and therefore an overlay) shows it.
+fn banned_lists_of(doc: &Document) -> BannedLists {
     let rule = doc.table("rules.source-denylist");
     let patterns = rule.get_list("patterns");
     let mut crate_names = BTreeSet::new();
@@ -145,46 +155,50 @@ pub struct PureCrate {
 /// would otherwise print as a pass. The construction.toml comment that an empty match list is
 /// nothing-to-check is about a KIND GLOB matching no directory (a kind with no crate yet, which is
 /// genuinely nothing to check), not about the rule's own configuration disappearing.
-pub fn pure_crates(root: &Path) -> Result<Vec<PureCrate>, String> {
-    let config = root.join("qa/construction.toml");
-    let doc = toml_lite::parse(&config);
+pub fn pure_crates(cx: &Ctx, doc: &Document) -> Result<Vec<PureCrate>, String> {
+    let config = CONFIG_REL;
     let rule = doc.table("rules.source-denylist");
     let kinds = rule.get_list("kinds");
     if kinds.is_empty() {
         return Err(format!(
-            "{}: [rules.source-denylist].kinds is missing or empty — the denylist has no kinds to \
-             scope itself to, so it can prove nothing",
-            config.display()
+            "{config}: [rules.source-denylist].kinds is missing or empty — the denylist has no \
+             kinds to scope itself to, so it can prove nothing"
         ));
     }
     if rule.get_list("patterns").is_empty() {
         return Err(format!(
-            "{}: [rules.source-denylist].patterns is missing or empty — the denylist has nothing \
-             to ban, so it can prove nothing",
-            config.display()
+            "{config}: [rules.source-denylist].patterns is missing or empty — the denylist has \
+             nothing to ban, so it can prove nothing"
         ));
     }
     let plugin_kinds = doc.table("gate.plugin_kinds");
     let mut out = Vec::new();
-    let crates_dir = root.join("crates");
-    let listing = std::fs::read_dir(&crates_dir)
-        .map_err(|e| format!("cannot list {}: {e}", crates_dir.display()))?;
-    let mut entries: Vec<PathBuf> = listing.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    // THE CRATE LIST COMES OFF THE `Ctx`, NOT `std::fs`. Every manifest one directory under
+    // `crates/` is one crate; a `crates/` that will not list is the WalkError, which is the same
+    // refusal the `read_dir` here used to raise and can now be planted with an overlay.
+    let manifests = cx
+        .walk(&WalkSpec::new(["crates"]).ext("toml"))
+        .map_err(|e| format!("cannot list crates/: {e}"))?;
+    let mut entries: Vec<(String, String)> = manifests
+        .into_iter()
+        .filter_map(|f| {
+            let rel = f.rel_str();
+            let parts: Vec<&str> = rel.split('/').collect();
+            (parts.len() == 3 && parts[0] == "crates" && parts[2] == "Cargo.toml")
+                .then(|| (parts[1].to_string(), f.text))
+        })
+        .collect();
     entries.sort();
     for kind in &kinds {
         let globs = plugin_kinds.get_list(kind);
-        for dir in &entries {
-            if !dir.is_dir() {
-                continue;
-            }
-            let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        for (name, manifest) in &entries {
             let candidate = format!("crates/{name}");
-            if globs.iter().any(|g| glob_match(g, &candidate)) && dir.join("Cargo.toml").exists() {
+            if globs.iter().any(|g| glob_match(g, &candidate)) {
                 out.push(PureCrate {
-                    name: crate_manifest_name(dir),
-                    dir: dir.clone(),
+                    name: crate_manifest_name(manifest, name),
+                    dir: cx.abs(&candidate),
                     kind: kind.clone(),
-                    report_name: name,
+                    report_name: name.clone(),
                 });
             }
         }
@@ -195,8 +209,7 @@ pub fn pure_crates(root: &Path) -> Result<Vec<PureCrate>, String> {
 /// The `[package] name = "..."` a crate's Cargo.toml actually declares — this can differ from its
 /// directory name (`crates/auth-static-plugin` ships as `busbar-auth-static-plugin`), and
 /// `cargo metadata` only knows the manifest name.
-fn crate_manifest_name(dir: &Path) -> String {
-    let raw = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap_or_default();
+fn crate_manifest_name(raw: &str, dir_name: &str) -> String {
     let mut in_package = false;
     for line in raw.lines() {
         let t = line.trim();
@@ -214,7 +227,7 @@ fn crate_manifest_name(dir: &Path) -> String {
             }
         }
     }
-    dir.file_name().unwrap().to_string_lossy().to_string()
+    dir_name.to_string()
 }
 
 /// `(dep name, dep package id, is-a-normal-edge)` for one dependency edge.
@@ -559,24 +572,40 @@ fn own_src_hits(
     fragments: &[String],
 ) -> Vec<Hit> {
     let root = scan_root;
+    let mut paths = Vec::new();
+    walk_rs_files(&pc.dir.join("src"), &mut paths);
+    paths.sort();
     let mut files = Vec::new();
-    walk_rs_files(&pc.dir.join("src"), &mut files);
-    files.sort();
-    let mut hits = Vec::new();
-    for f in files {
+    for f in paths {
         let rel = f
             .strip_prefix(root)
             .unwrap_or(&f)
             .to_string_lossy()
             .replace('\\', "/");
+        let Ok(src) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        files.push((rel, src));
+    }
+    own_src_hits_over(&files, pc, banned, fragments)
+}
+
+/// The own-src scan over files SOMEBODY ELSE LISTED AND READ, as `(rel, text)` pairs — the form
+/// [`run`] hands it after walking the `Ctx`, so a planted source file is scanned and a `src/` an
+/// overlay emptied is scanned as empty rather than read around through `std::fs`.
+fn own_src_hits_over(
+    files: &[(String, String)],
+    pc: &PureCrate,
+    banned: &BannedLists,
+    fragments: &[String],
+) -> Vec<Hit> {
+    let mut hits = Vec::new();
+    for (rel, src) in files {
         let rel_with_slashes = format!("/{rel}");
         if is_test_path(&rel_with_slashes, fragments) {
             continue;
         }
-        let Ok(src) = std::fs::read_to_string(&f) else {
-            continue;
-        };
-        for (lineno, code) in production_lines(&src) {
+        for (lineno, code) in production_lines(src) {
             for pat in &banned.std_paths {
                 if code.contains(pat.as_str()) {
                     hits.push(Hit {
@@ -810,10 +839,33 @@ pub(crate) fn stale_waivers(allowed: &[AllowEntry], hits: &[Hit]) -> Vec<String>
         .collect()
 }
 
-pub fn run(root: &Path) -> Report {
-    let banned = load_banned_lists(root);
+/// THE RUN READS THE TREE THROUGH THE `Ctx` (audit F50).
+///
+/// It used to take a `&Path` and reach for `std::fs` under it: the config, the crate listing and
+/// every source file. Nothing an overlay planted was visible, so the only way to prove the gate
+/// could go red was to check a whole second tree into `xtask/fixtures/` and re-root the run onto
+/// it — which is a proof about a fixture, and drifts from the tree the gate actually judges. The
+/// one input still read outside the `Ctx` is `cargo metadata`, which needs a real manifest on a
+/// real disk; that is why the resolve-graph half keeps its fixture workspaces.
+pub fn run(cx: &Ctx) -> Report {
+    let root = cx.root();
+    let config = match cx.read(CONFIG_REL) {
+        Ok(text) => toml_lite::parse_text(&text),
+        Err(e) => {
+            return Report {
+                hits: Vec::new(),
+                crates_scanned: 0,
+                defects: vec![format!(
+                    "{CONFIG_REL} could not be read ({e}), so the denylist has no kinds, no \
+                     patterns and nothing to prove"
+                )],
+                stale_waivers: Vec::new(),
+            }
+        }
+    };
+    let banned = banned_lists_of(&config);
     let allowed = load_allowlist(root);
-    let crates = match pure_crates(root) {
+    let crates = match pure_crates(cx, &config) {
         Ok(crates) if crates.is_empty() => {
             // Every pure kind's glob matched nothing. On a tree that has planes, hooks and auth
             // crates this can only mean the scan was pointed somewhere it was not meant to be, and
@@ -842,7 +894,7 @@ pub fn run(root: &Path) -> Report {
 
     let meta_json = run_cargo_metadata(&root.join("Cargo.toml"));
     let meta = parse_metadata(&meta_json);
-    let fragments = load_test_fragments(root);
+    let fragments = config.table("gate").get_list("test_path_fragments");
 
     let mut hits = Vec::new();
     for pc in &crates {
@@ -854,7 +906,26 @@ pub fn run(root: &Path) -> Report {
                 pc.name, pc.kind
             );
         }
-        hits.extend(own_src_hits(root, pc, &banned, &fragments));
+        let src_root = format!("crates/{}/src", pc.report_name);
+        let files: Vec<(String, String)> = if cx.exists(&src_root) {
+            match cx.walk(&WalkSpec::new([src_root.clone()]).ext("rs")) {
+                Ok(fs) => fs.into_iter().map(|f| (f.rel_str(), f.text)).collect(),
+                Err(e) => {
+                    return Report {
+                        hits: Vec::new(),
+                        crates_scanned: 0,
+                        defects: vec![format!(
+                            "{src_root} would not list ({e}) — a crate whose source cannot be read \
+                             is scanned as zero files, and zero files carry no banned path"
+                        )],
+                        stale_waivers: Vec::new(),
+                    }
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        hits.extend(own_src_hits_over(&files, pc, &banned, &fragments));
     }
 
     // Both directions, off the SAME unfiltered hit list: which waivers are doing work, and which

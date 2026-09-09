@@ -124,6 +124,8 @@ impl TransportMeta for SseTransport {
     const DECODES_PAYLOAD: bool = false;
     const STATUS_CLASS: Option<busbar_contract_transport::wire::StatusAt> =
         Some(busbar_contract_transport::wire::StatusAt::FirstFrame);
+    const STATUS_NAMESPACE: Option<&'static str> =
+        Some(busbar_contract_transport::registry::status_ns::HTTP);
 }
 
 impl Transport for SseTransport {

@@ -1,0 +1,112 @@
+# qa/kind-isolation.toml — THE TWO TABLES `kind-isolation` READS OFF DISK RATHER THAN OUT OF CODE.
+#
+# The kind table itself stays in `xtask/src/gates/kind_isolation.rs`, because it is the RULE. What
+# lives here is the two things that are TRUE OF THIS WEEK and false of the ship sha: the edges the
+# legacy drain is allowed to carry while it drains, and the crates that are landing right now.
+# Neither is a rule, both must be re-read by a human, and both must be EMPTY before the tag.
+#
+# Owner ruling, 2026-09-08: "while busbar-core drains, it MAY depend on unit crates … the row must
+# be a NAMED TRANSITIONAL EXEMPTION that is empty on the ship sha."
+#
+# ------------------------------------------------------------------------------------------------
+# [[transitional]] — THE LEGACY DRAIN, EDGE BY EDGE
+# ------------------------------------------------------------------------------------------------
+#
+# A legacy crate (`busbar-core`, `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice`) is
+# draining INTO the new plugin kinds. That drain is what makes a `legacy -> unit` or
+# `legacy -> plane` edge appear, and for the duration of the drain those edges are expected rather
+# than catastrophic. They are NOT, however, unremarkable: an unlisted one is indistinguishable from
+# the fusion this gate exists to refuse, so `kind-isolation:deps` accepts a legacy edge into a
+# unit/plane/dialect/transport ONLY if a row below names it.
+#
+#   from    — must be a LEGACY crate. A row naming any other source crate is REFUSED AT LOAD: this
+#             table is the drain's exemption and nothing else, and a non-legacy source reaching a
+#             unit or a plane through it would be the ruling being edited rather than applied.
+#   to      — an exact crate name, or a `prefix*` glob for a family the drain lands one member at a
+#             time (`busbar-unit-*`: audit and scope exist on branches, auth and cost are coming).
+#   reason  — why the edge is transitional rather than permanent.
+#
+# EXPIRY. The row's expiry is not "the edge went away" — the drain lands edge by edge, on branch
+# after branch, and a row scored dead the week its edge is between branches would teach everyone to
+# delete the ratchet. The expiry is the SHIP SHA: `kind-isolation-ship` (the DONE oracle) is RED for
+# any row here whose `from` crate STILL EXISTS. A legacy crate that survives to the tag is the
+# retirement having failed, and this row is where that is reported, by name.
+
+[[transitional]]
+from = "busbar-core"
+to = "busbar-unit-*"
+reason = "legacy drain"
+
+[[transitional]]
+from = "busbar-core"
+to = "busbar-plane-admin"
+reason = "legacy drain"
+
+# The same phenomenon one crate over, and it is in the tree TODAY rather than on a branch:
+# `busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-voice` is the plane it is
+# draining into. The rule is written about the drain, not about `busbar-core`, so this edge is named
+# on exactly the same terms — leaving it out would have meant a rule that only sees the drain the
+# ruling happened to mention.
+[[transitional]]
+from = "busbar-voice"
+to = "busbar-plane-voice"
+reason = "legacy drain"
+
+# ------------------------------------------------------------------------------------------------
+# [[announced]] — CRATES THAT ARE LANDING
+# ------------------------------------------------------------------------------------------------
+#
+# A crate that appears under `crates/` and resolves to no kind is RED, which is the point of the
+# registry row. That rule bites the WRONG WAY on the day a crate lands: the agent adding
+# `crates/busbar-core-config` would red a gate it never touched, and the fix would be to weaken the
+# registry. So the kind is taught FIRST — the kind table already carries `core` — and this table is
+# what keeps the teaching from being scored as dead weight in the window before the crates exist.
+#
+# An announced row says: this crate is being created right now, it is kind `<kind>`, and until it
+# lands the kind's row (and any accepted-name entry for it) is not a dead row.
+#
+#   crate   — the crate name as its `[package] name` will read.
+#   kind    — a kind in the gate's own table.
+#   reason  — who is landing it and what it is.
+#
+# EXPIRY. Landing the crate must NOT red the per-push gate — that is the whole purpose. The ratchet
+# is the ship twin: `kind-isolation-ship` is RED for an announced row whose crate HAS LANDED, so the
+# announcement cannot survive a release. Once it lands, the ordinary dead-kind and dead-waiver
+# ratchets watch it like every other crate.
+
+# ------------------------------------------------------------------------------------------------
+# [[registered]] — A CRATE WHOSE KIND ITS NAME DOES NOT YET SAY
+# ------------------------------------------------------------------------------------------------
+#
+# Every other crate reaches its kind through its NAME, and that is the design: `busbar-<kind>-<name>`
+# means a reader and the gate agree about what a crate is without consulting a list. A registered row
+# is the one exception, and it exists for exactly one situation — a kind has been created and the
+# crate that is its first member has not been renamed yet.
+#
+#   crate   — the crate's `[package] name`.
+#   kind    — the kind it IS, overriding what its name says.
+#   reason  — why the name disagrees, and what pays the debt.
+#
+# EXPIRY, AND IT IS AUTOMATIC. The moment the crate's name resolves to the kind the row registers,
+# the row is REDUNDANT and the gate is RED for it. So the rename lands and the row goes in the same
+# commit; there is no window in which the tree carries both.
+
+[[registered]]
+crate = "busbar-plane-admin"
+kind = "control"
+reason = "the admin CONTROL surface — an unmetered served surface on the control path. R7 renames it to busbar-control-admin, at which point its name says `control` and this row must be struck"
+
+[[announced]]
+crate = "busbar-control-oauth2"
+kind = "control"
+reason = "the OAuth issuer being extracted from busbar-core/src/oauth_as; a control surface, not an auth VERIFIER (the verifier plugins stay the auth kind)"
+
+[[announced]]
+crate = "busbar-core-config"
+kind = "core"
+reason = "the configuration surface being carved out of busbar-core; core kind, neutral spine only"
+
+[[announced]]
+crate = "busbar-core-hooks"
+kind = "core"
+reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"

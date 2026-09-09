@@ -455,10 +455,15 @@ fn a_detached_node_refuses_the_session_at_the_door() {
     let Ended::Settled { end, .. } = run(&kernel, &unit) else {
         panic!("a refused unit settles through the same exit");
     };
-    assert!(
-        matches!(end.outcome(), Outcome::Refused(_, _)),
-        "got {:?}",
-        end.outcome()
+    assert_eq!(
+        end.outcome(),
+        Outcome::Refused(
+            busbar_caps::StepName::Admit,
+            ReasonCode::DurabilityUnavailable
+        ),
+        "a node with no I/O half must be refused at admit, under the node's own unavailability \
+         reason - not reported as an over-budget principal, and not any other refusal in the \
+         vocabulary"
     );
     assert_eq!(
         unit.dial_outcome(),
@@ -599,7 +604,12 @@ fn an_undeclared_operation_class_is_refused_before_the_door() {
     let Ended::Settled { end, requests, .. } = run(&kernel, &unit) else {
         panic!("the exit settles it");
     };
-    assert!(matches!(end.outcome(), Outcome::Refused(_, _)));
+    assert_eq!(
+        end.outcome(),
+        Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied),
+        "an operation class the policy was never told about must be refused at approve, under \
+         the scope-denied reason, not any other refusal in the vocabulary"
+    );
     assert_eq!(requests, 0, "a unit refused before the door draws nothing");
 }
 
@@ -684,7 +694,20 @@ fn the_opening_unit_seals_under_the_declared_operation_class() {
         .record
         .sealed();
     assert_eq!(after, before + 1, "exactly one record for one unit");
-    assert_eq!(UnitShape::SessionOpen.op_class(), meta::OP_SESSION_OPEN);
+
+    // Read back what the record itself would carry, not a separate mapping the audit step never
+    // touches: `UnitShape::op_class()` and `meta::OP_SESSION_OPEN` are the same expression on both
+    // sides of that comparison, so it cannot see a class written wrong onto the record's own field.
+    let inputs = unit.audit_inputs(
+        &ctx(1),
+        busbar_caps::Outcome::Completed,
+        busbar_contract::FinishClass::Complete,
+    );
+    assert_eq!(
+        inputs.what.op_class,
+        busbar_unit_audit::record::OpClassId::new("voice.session.open"),
+        "the record's own op_class field must carry the plane's literal class name"
+    );
 }
 
 /// A lease that answers "nothing left" closes the session it answered for.
@@ -1458,25 +1481,74 @@ fn a_text_only_turn_settles_the_text_it_metered() {
 /// recorded at the first step the loop hands it over on, and read back here.
 #[test]
 fn a_paid_turns_record_names_its_principal() {
+    use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
     use busbar_unit_audit::record::Subject;
 
-    let node = priced_node(serviceable());
+    // A door the fixture must actually pass, with a directory that resolves the credential to a
+    // KNOWN id — "key-voice-1" — rather than running behind the open door, where every non-empty
+    // string (including the anonymous admit) would satisfy a merely-non-empty check. Storing the
+    // caller's credential string, the group name or a constant instead of `self.principal` is
+    // only caught if the record is checked against the exact id the door issued.
+    struct OneKey;
+    impl VirtualKeyDirectory for OneKey {
+        fn verify(
+            &self,
+            credential: &str,
+            _now: u64,
+            expected_aud: Option<&str>,
+        ) -> Option<KeyFacts> {
+            (credential == "tok"
+                && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
+            .then(|| KeyFacts {
+                id: "key-voice-1".to_string(),
+                name: "an approved key".to_string(),
+            })
+        }
+
+        fn revoked(&self, _credential: &str) -> bool {
+            false
+        }
+    }
+
+    let mut node = node_behind(
+        serviceable(),
+        busbar_unit_admission::GroupTable::default(),
+        Auth::new(AuthChain::new(Vec::new(), true)),
+        AuthBindings::new(std::sync::Arc::new(OneKey) as _),
+    );
+    let mut rates = std::collections::BTreeMap::new();
+    rates.insert(
+        Dialect::OpenaiRealtime.name().to_string(),
+        busbar_unit_admission::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
+    );
+    node.pricer = Pricer::with_card(0, rates);
+
     let kernel = Kernel::new();
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
         .charging_through(ungoverned())
+        .with_credential("tok")
         .reporting(TurnUsage {
             audio_tokens_out: 12,
             ..TurnUsage::default()
         });
-    let _ = run(&kernel, &unit);
+    let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+        panic!("the accepted credential runs the turn to its end");
+    };
+    assert!(
+        matches!(end.outcome(), Outcome::Completed),
+        "the control credential must be accepted, got {:?}",
+        end.outcome()
+    );
     let inputs = unit.audit_inputs(
         &ctx(1),
         Outcome::Completed,
         busbar_contract::FinishClass::TurnComplete,
     );
-    assert!(
-        matches!(inputs.subject, Subject::PrincipalId(ref who) if !who.is_empty()),
-        "a turn that was authenticated names who it was for"
+    assert_eq!(
+        inputs.subject,
+        Subject::PrincipalId("key-voice-1".to_string()),
+        "the record must name the credential's own resolved principal, not merely some non-empty \
+         string"
     );
 
     // And the unit that never reached verify — a refusal before any principal existed — is an

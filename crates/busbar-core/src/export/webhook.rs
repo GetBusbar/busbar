@@ -147,7 +147,7 @@ pub(crate) fn deliver_logs(cache: &mut PayloadCache<'_>) {
         // THIS sink's payload, built to THIS sink's projection (shared with any sibling holding the
         // identical projection). The build happens here, per sink — never once and broadcast.
         let payload = cache.get(target.projection);
-        crate::state::spawn_detached(async move {
+        busbar_substrate::detached::spawn_detached(async move {
             let _permit = permit; // slot releases on task end via the owned permit's Drop.
             let Ok(uri) = url.as_str().parse::<http::Uri>() else {
                 // Structurally unreachable: the target survived `validate_webhook_url` at boot.

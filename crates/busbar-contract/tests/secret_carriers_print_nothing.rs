@@ -20,6 +20,7 @@ fn a_program_upstream_does_not_print_or_serialise_its_environment_values() {
         path: "/usr/bin/mcp-server",
         args: &["--stdio"],
         env: &[("GITHUB_TOKEN", "ghp_live-SECRET")],
+        extras: &[],
     };
 
     let printed = format!("{a:?}");
@@ -47,6 +48,7 @@ fn the_socket_arms_still_print_what_they_carry() {
     let socket = UpstreamAddress::Socket {
         authority: "10.0.0.7:443",
         sni: Some("api.example.com"),
+        extras: &[],
     };
     let printed = format!("{socket:?}");
     assert!(
@@ -54,10 +56,16 @@ fn the_socket_arms_still_print_what_they_carry() {
         "{printed}"
     );
 
-    let grpc = UpstreamAddress::Grpc {
+    // The call-per-path family is a socket that DECLARES its method rather than an arm of its
+    // own, and a declared fact is a wire fact and not a credential: it prints whole, which is what
+    // a transport author's log line is read to check.
+    let grpc = UpstreamAddress::Socket {
         authority: "10.0.0.7:443",
         sni: None,
-        method: "/pkg.Service/Method",
+        extras: &[(
+            busbar_contract::transport::facts::METHOD,
+            "/pkg.Service/Method",
+        )],
     };
     let printed = format!("{grpc:?}");
     assert!(

@@ -70,6 +70,28 @@ pub trait NonceSource {
 /// release accepted would have been refused, which is a served answer changing.
 pub const MAX_GROUP_NAME_LEN: usize = 256;
 
+/// THE REPLAY KEY FOR A ROTATE, FRAMED SO THAT NO TWO `(id, header)` PAIRS JOIN TO ONE KEY.
+///
+/// A rotate is scoped to the key it rotates as well as to the idempotency header, so a create and a
+/// rotate sharing a header value do not replay each other. Both halves are caller-supplied free
+/// text, which is exactly the condition under which a separator join stops being a function: joined
+/// on a bar or a colon, `("a:b", "c")` and `("a", "b:c")` are one string, so the second rotate is
+/// served the FIRST one's cached response and the key it actually named is never rotated — while
+/// the caller is told it was.
+///
+/// So each half is length-prefixed: the decimal byte length, a colon, then exactly that many bytes.
+/// A reader takes the digits up to the colon as a count and then consumes precisely that count, so
+/// every boundary is fixed by a number the caller does not write. A length can contain no colon,
+/// being decimal digits, so there is nothing left for a caller's bytes to move: `("a:b", "c")` is
+/// `rotate:3:a:b:1:c` and `("a", "b:c")` is `rotate:1:a:3:b:c`. This is the same framing, and the
+/// same reason for it, as the length-prefixed audit digest.
+///
+/// The lengths are BYTE lengths, not character counts: the key is compared as bytes, and a count of
+/// characters would put the boundary somewhere other than where the reader would find it.
+fn rotate_replay_key(id: &str, header: &str) -> String {
+    format!("rotate:{}:{}:{}:{}", id.len(), id, header.len(), header)
+}
+
 /// The outcome of a verb call that minted or rotated a credential: the once-shown secret is a
 /// [`SecretOnce`] placeholder, never a plain string, so nothing downstream of this crate can hold
 /// or log the real material without going through the one capability built to carry it.
@@ -343,9 +365,9 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     }
 
     /// `POST /api/v1/admin/keys/{id}/rotate` — ported in full: same idempotency mechanics as
-    /// [`Verbs::create_key`], SCOPED to `(actor, "rotate:{id}:{k}")` rather than `(actor, k)` — the
-    /// architecture document's note that a create and a rotate sharing a header value must never
-    /// replay each other.
+    /// [`Verbs::create_key`], SCOPED to the key id as well as the header rather than to the header
+    /// alone — the architecture document's note that a create and a rotate sharing a header value
+    /// must never replay each other. See [`rotate_replay_key`] for how the two are joined.
     #[allow(clippy::too_many_arguments)]
     pub fn rotate_key(
         &self,
@@ -358,7 +380,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         id: &str,
     ) -> Result<MintOutcome, Refusal> {
         self.admit(KernelVerb::PostKeysIdRotate, actor, granted, now)?;
-        let ck = idempotency_key.map(|k| (actor.to_string(), format!("rotate:{id}:{k}")));
+        let ck = idempotency_key.map(|k| (actor.to_string(), rotate_replay_key(id, k)));
         let reservation = match ck {
             None => None,
             Some(key) => match self.rotate_key_cache.probe(key, now) {

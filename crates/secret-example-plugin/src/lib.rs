@@ -66,3 +66,7 @@ fn open(cfg: &str) -> Result<Box<dyn SecretModule>, String> {
 }
 
 busbar_plugin_sdk::export_secret_plugin!(open);
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+
 use axum::body::Bytes;
 use axum::http::HeaderMap;
 use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
@@ -673,6 +674,235 @@ const CASES: [Fixture; 6] = [
 /// The unit-arrival epoch this proof pins, so the window a posting lands in is a fixed one.
 const EPOCH: u64 = 1_700_000_000;
 
+// -----------------------------------------------------------------------------------------
+// The lookup at the door
+// -----------------------------------------------------------------------------------------
+
+/// A history of one entry per `(effective_from_ms, output rate)`, built OUTSIDE the process
+/// holder so these proofs name their own instants instead of racing the wall clock.
+///
+/// The first entry is effective from zero for the same reason the holder's is: an instant before
+/// the first entry is a hole and a hole is a refusal.
+fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
+    let mut history = busbar_unit_cost::History::new();
+    for (n, (from, output)) in entries.iter().enumerate() {
+        let card = crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate::billing::RawTierRates {
+                    input: 0.0,
+                    output: *output,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            0,
+            true,
+            crate::root::kernel::node_currency(),
+        );
+        history.append(busbar_unit_cost::CardEntryDraft {
+            effective_from: if n == 0 { 0 } else { *from },
+            effective_until: None,
+            card,
+            appended_at: *from,
+            author: busbar_unit_cost::Author::Config {
+                policy_epoch: n as u64,
+            },
+        });
+    }
+    crate::root::kernel::PinnedHistory::for_test(
+        std::sync::Arc::new(history),
+        busbar_unit_cost::HistorySeq((entries.len() - 1) as u64),
+    )
+}
+
+/// A report of `output` tokens on the lane the histories above price.
+fn report_of(output: u64) -> LateReport {
+    LateReport {
+        usage: busbar_substrate::billing::Usage {
+            usage_units: std::collections::BTreeMap::from([(
+                busbar_api::UNIT_OUTPUT.to_string(),
+                output,
+            )]),
+        },
+        fee_count: 0,
+        lane: "lane".to_string(),
+        provider: "provider".to_string(),
+    }
+}
+
+/// **THE UNIT PRICES AT THE INSTANT IT ARRIVED**, not at the instant the question is asked.
+///
+/// Two units, one snapshot, one call each: the one that arrived before the second entry took
+/// effect prices at the first entry's rate and the one that arrived after prices at the
+/// second's. Both readings are taken from the SAME history at the SAME moment, so the only thing
+/// that can be producing two answers is the arrival instant — which is the whole of rule 3.
+///
+/// A node that priced against "the current card" answers the later figure for both, which is
+/// exactly the recorded 1.5.5 behaviour and exactly what this replaces.
+#[test]
+fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = history_of(&[(0, 1.0), (5_000, 100.0)]);
+
+    let early = priced_amount(&history, Arrived::at(4_999, 1), &token, &report_of(1_000));
+    let late = priced_amount(&history, Arrived::at(5_000, 2), &token, &report_of(1_000));
+
+    assert_eq!(
+        early, 1_000_000,
+        "a unit that arrived before the appended entry was re-priced at it"
+    );
+    assert_eq!(
+        late, 100_000_000,
+        "a unit that arrived after the appended entry was priced at the entry it superseded"
+    );
+}
+
+/// **THE PIN HOLDS.** A snapshot taken at admission cannot see an entry appended after it, so an
+/// apply landing mid-body does not reprice a request halfway through.
+///
+/// The pinned reader and the head are both asked about the SAME instant, and they answer
+/// differently — which is only possible because the pin stops the snapshot's slice short of the
+/// later entry. A holder that handed out the whole history and a live head would answer the new
+/// figure to a request that was admitted under the old one.
+#[test]
+fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let holder = crate::root::kernel::RootHistory::default();
+    holder.apply(
+        crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate::billing::RawTierRates {
+                    input: 0.0,
+                    output: 1.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            0,
+            true,
+            crate::root::kernel::node_currency(),
+        ),
+        1_000,
+    );
+    let admitted = holder
+        .pin()
+        .expect("the boot resolution put an entry in place");
+
+    // The apply that lands while the body is still draining.
+    holder.apply(
+        crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate::billing::RawTierRates {
+                    input: 0.0,
+                    output: 100.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            0,
+            true,
+            crate::root::kernel::node_currency(),
+        ),
+        2_000,
+    );
+    let next = holder.pin().expect("the apply put a second entry in place");
+
+    let at = Arrived::at(9_000, 1);
+    assert_eq!(
+        priced_amount(&admitted, at, &token, &report_of(1_000)),
+        1_000_000,
+        "the pinned snapshot saw an entry appended after the unit was admitted"
+    );
+    assert_eq!(
+        priced_amount(&next, at, &token, &report_of(1_000)),
+        100_000_000,
+        "the next admission did not see the appended entry"
+    );
+}
+
+/// **THE PIN IS A SEQ, NOT ONLY AN `Arc`.** A reader holding the same history at a lower
+/// snapshot reads it as it stood at that snapshot.
+///
+/// The `Arc` alone is not the pin: an amendment, and a copy-on-write apply that a second reader
+/// already took, both leave one history holding entries a reader was never admitted under. The
+/// seq is what stops the slice short of them, and this asks the SAME history at two snapshots to
+/// prove the stopping is real rather than an accident of when the `Arc` was cloned.
+#[test]
+fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
+    let earlier =
+        crate::root::kernel::PinnedHistory::for_test_at(&head, busbar_unit_cost::HistorySeq(0));
+
+    let at = Arrived::at(9_000, 1);
+    assert_eq!(
+        priced_amount(&earlier, at, &token, &report_of(1_000)),
+        1_000_000,
+        "a snapshot at seq 0 resolved an entry that was appended after it"
+    );
+    assert_eq!(
+        priced_amount(&head, at, &token, &report_of(1_000)),
+        100_000_000,
+        "the head snapshot did not resolve the entry appended onto it"
+    );
+}
+
+/// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
+///
+/// The posting the pricing builds carries a cache — the head it settled at, the entry it
+/// resolved to, the currency and both figures — so a reader has something to compare a
+/// re-derivation against. Corrupt every one of those figures and ask again: the answer is
+/// unchanged, because the lookup does not read them. A node that fell back to the cache would
+/// answer the corrupted number and call it money.
+#[test]
+fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = history_of(&[(0, 1.0)]);
+    let at = Arrived::at(4_000, 7);
+
+    let (mut posting, priced) = priced_posting(&history, at, &token, &report_of(1_000));
+    let priced = priced.expect("a card in force at the instant prices the report");
+    let cached = posting
+        .cached
+        .expect("the pricing left its cache on the posting");
+    assert_eq!(cached.priced_nanos, priced.priced_nanos);
+    assert_eq!(cached.card_seq, priced.card_seq);
+    assert_eq!(cached.history_seq, history.seq());
+    assert_eq!(cached.currency, crate::root::kernel::node_currency());
+    assert_eq!(
+        posting.arrived_ms, 4_000,
+        "the posting kept its own instant"
+    );
+    assert_eq!(posting.arrived_mono, 7);
+
+    // The tamper. Every figure a reader could be tempted to trust, made a lie.
+    posting.cached = Some(busbar_unit_cost::CachedPrice {
+        history_seq: busbar_unit_cost::HistorySeq(u64::MAX),
+        card_seq: busbar_unit_cost::HistorySeq(u64::MAX),
+        currency: crate::root::kernel::node_currency(),
+        pre_tier_nanos: 1,
+        priced_nanos: 1,
+    });
+    assert_eq!(
+        posting
+            .priced_nanos(&history.view(), crate::root::kernel::node_currency())
+            .expect("the lookup still answers"),
+        priced.priced_nanos,
+        "the money moved when the cache was corrupted, so the cache was on the money path"
+    );
+    assert!(
+        posting.cache_diverges(&priced),
+        "a corrupted cache went unnoticed"
+    );
+}
+
 /// **THE EXIT ARM, END TO END.** The reservation the door opened reaches the journal.
 ///
 /// The loop's exit path is where a hold stops existing, and what it hands back is a POSTING that
@@ -825,7 +1055,8 @@ async fn drive_keeping_the_unit<'n>(
         model_hint: None,
         started: Instant::now(),
         charged_at: EPOCH,
-        card: crate::root::kernel::ROOT_CARD.pin(),
+        history: crate::root::kernel::ROOT_CARD.pin(),
+        arrived: Arrived::at(EPOCH * 1_000, 0),
         deferred: Mutex::new(None),
         model: Mutex::new(String::new()),
         walk: Walk::open(arrival),
@@ -1626,10 +1857,12 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
             }
         }
     }
-    assert!(
-        verbs_exercised > 0,
-        "no dialect declined a single verb of the family, so the handler half of step 1 was \
-         never driven at all"
+    assert_eq!(
+        verbs_exercised,
+        body_dialects().len(),
+        "every dialect in the family must decline at least one verb, driving the handler half \
+         of step 1 for each of them - a floor of merely > 0 would still pass if all but one \
+         dialect stopped declining any verb"
     );
     assert!(
         failures.is_empty(),
@@ -2036,6 +2269,142 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     assert!(
         failures.is_empty(),
         "{} finding(s) at the approve seat:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE ROUTE SEAM'S OWN INSTRUMENT
+// ---------------------------------------------------------------------------------------------
+
+/// One request through the real loop, with the node's dispatch count read beside its answer.
+///
+/// A NODE PER REQUEST, exactly as [`drive`] builds one, so the figure is this unit's and not a
+/// running total the order of the tests could change.
+async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) {
+    let node = LlmNode::new();
+    let arrival = WalkArrival {
+        host: rig.host(),
+        gov: rig.gov(),
+        proto: PROTO,
+        operation: busbar_api::operation::Operation::CHAT,
+        caller_token: None,
+        headers: json_headers(),
+        body: fixture.body(),
+        path: None,
+    };
+    let response = node.answer(arrival, None).await;
+    (response, node.driven())
+}
+
+/// **THE COUNT IS THE INSTRUMENT, AND A STATUS CANNOT BE.**
+///
+/// The question this closes is the one the rig's own upstream handle was kept for and could only
+/// half answer: *"the unit stopped before the route step" is not a fact any counter on this side
+/// of the loop reports* (see [`Rig::upstream`]). The scripted upstream answers it only where a
+/// deployment HAS one and only for a unit that would have dialled it; the seam answers it for
+/// every unit, on this side, without a socket.
+///
+/// It cannot be answered by the answer. A unit refused at Verify and a unit an upstream itself
+/// refused are both a 4xx in this dialect's envelope, and a reader comparing the two legs on
+/// status, headers and body — which is what every other cell in this file does — reads them as
+/// the same event. Only "did anything run" tells them apart, and only the seam can say it.
+///
+/// THREE ENDS, THREE COUNTS. The two refusals bracket the door: `PoolAcl` is the pre-admission
+/// guard, refused at Verify with nothing charged; `OverBudget` is the door itself, refused at
+/// Admit. Neither may reach the engine, and *neither may reach it for a different reason* — a
+/// refusal that dialled an upstream and then discarded its answer has spent a caller's quota
+/// upstream and billed nobody for it. `BufferedOk` is the whole loop, and it drives EXACTLY once:
+/// a second drive of one unit is a request the client sent once and the upstream saw twice.
+///
+/// RED FIRST, and it was run red. With `route_leg` handing the walk's leg straight back to the
+/// loop — the line this seam replaced — the served fixture reports:
+///
+/// ```text
+/// BufferedOk (served: the whole loop, through the engine, exactly once):
+///     the engine was driven 0 time(s), expected 1
+/// ```
+///
+/// The two refusals read 0 on both sides of the change, which is the point of them: they are not
+/// what the seam moved, they are what the seam must not have moved. So the red is one finding and
+/// not three, and the two that stayed silent are the ones holding the money still.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_one() {
+    let mut failures: Vec<String> = Vec::new();
+
+    // Each end gets its OWN deployment, so one fixture's seeded budget cannot decide another's.
+    for (fixture, expected, why) in [
+        (
+            Fixture::PoolAcl,
+            0u64,
+            "refused at Verify, before the door: the pre-admission guard",
+        ),
+        (
+            Fixture::OverBudget,
+            0,
+            "refused at Admit, at the door: the group's budget is spent",
+        ),
+        (
+            Fixture::BufferedOk,
+            1,
+            "served: the whole loop, through the engine, exactly once",
+        ),
+    ] {
+        let rig = rig(fixture).await;
+        let (response, driven) = drive_counting(&rig, fixture).await;
+        // The body is drained before the count is judged, because the seam is polled by the loop
+        // and a response whose body is still owed is a unit whose leg may not have finished. It
+        // also keeps this cell on the same footing as every other one in this file, which reads
+        // its figures out of a drained answer.
+        let observed = observe(&rig, response).await;
+
+        match driven {
+            None => failures.push(format!(
+                "{fixture:?} ({why}): the node reports no dispatch count at all — \
+                 the Route step is not reaching a seam that counts"
+            )),
+            Some(got) if got != expected => failures.push(format!(
+                "{fixture:?} ({why}): the engine was driven {got} time(s), expected {expected}"
+            )),
+            Some(_) => {}
+        }
+
+        // THE SECOND WITNESS, where the deployment has one. A refusal that never reached the
+        // seam must also never have reached a socket, and these two facts are independent: the
+        // count is taken on this side of the loop and the path is recorded on the other. A cell
+        // that asserted only the count would pass on a seam that stopped counting a drive it
+        // still performed.
+        let dialled = rig.upstream.get_last_request_path().is_some();
+        if expected == 0 && dialled {
+            failures.push(format!(
+                "{fixture:?} ({why}): the count says the engine did not run and the upstream \
+                 says it was dialled"
+            ));
+        }
+        if expected > 0 && !dialled {
+            failures.push(format!(
+                "{fixture:?} ({why}): the count says the engine ran and the upstream was never \
+                 dialled"
+            ));
+        }
+
+        // AND THE ANSWER IS UNCHANGED. The seam awaits the leg it was handed and returns that
+        // leg's value, so what a client reads is what a client read. Asserted here rather than
+        // taken on trust: an instrument that moved a byte would be an instrument that changed
+        // the thing it measures.
+        if field(&observed, "status").is_empty() {
+            failures.push(format!(
+                "{fixture:?} ({why}): the unit produced no status at all"
+            ));
+        }
+
+        rig.server.shutdown().await;
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} finding(s) at the route seam:\n{}",
         failures.len(),
         failures.join("\n")
     );

@@ -418,7 +418,7 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
         .pool("fast", &[(0, 1)])
         .pool("cheap", &[(0, 1)])
         .build();
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     Arc::get_mut(&mut app)
         .expect("sole owner")
         .store
@@ -536,7 +536,7 @@ async fn test_admin_v1_get_single_key() {
                 labels: Default::default(),
                 ..Default::default()
             },
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap();
     let app = TestApp::new().governance(gov).build();
@@ -607,7 +607,7 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         1,
         &std::collections::BTreeMap::new(),
     );
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let (minted, minted_secret) = gov
         .create_key(
             NewKeySpec {
@@ -2399,7 +2399,7 @@ async fn test_admin_v1_key_rotate_and_pagination() {
         "rotation must not arm a legacy bearer secret on a signed-token key"
     );
     assert!(
-        gov.verify_token(&new_token, crate::store::now(), None)
+        gov.verify_token(&new_token, busbar_substrate::store::now(), None)
             .is_some(),
         "the re-minted token authenticates"
     );
@@ -3117,7 +3117,7 @@ async fn test_admin_v1_list_keys_filters() {
                 labels: Default::default(),
                 ..Default::default()
             },
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap();
     let app = TestApp::new().governance(gov).build();
@@ -3183,7 +3183,7 @@ async fn test_admin_v1_list_keys_group_filter() {
                 labels: Default::default(),
                 ..Default::default()
             },
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .unwrap()
         .0
@@ -3266,7 +3266,7 @@ async fn test_admin_v1_config_plane_golden_path() {
     let overlay = std::env::temp_dir().join(format!(
         "busbar-golden-{}-{}.json",
         std::process::id(),
-        crate::store::now()
+        busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
     let app = TestApp::new()
@@ -3380,7 +3380,7 @@ async fn test_admin_v1_hook_register_persists_to_overlay() {
     let overlay = std::env::temp_dir().join(format!(
         "busbar-persist-test-{}-{}.json",
         std::process::id(),
-        crate::store::now()
+        busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
     let app = TestApp::new()
@@ -3443,7 +3443,7 @@ async fn test_admin_v1_config_apply_preserves_the_persisted_overlay() {
     let overlay = std::env::temp_dir().join(format!(
         "busbar-apply-overlay-{}-{}.json",
         std::process::id(),
-        crate::store::now()
+        busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
     let app = TestApp::new()
@@ -5403,7 +5403,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
 
     // OVER-ASK: an explicit 48h beyond the 24h ceiling is REFUSED — the operator asked, in writing,
     // for longer than policy allows.
-    let t0 = crate::store::now();
+    let t0 = busbar_substrate::store::now();
     let (refused, gov_refused, _) =
         mint(serde_json::json!({ "name": "svc", "expires_in": "48h" })).await;
     assert_eq!(
@@ -5421,7 +5421,7 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
     assert_eq!(ok, 201, "a mint with no expiry succeeds");
     let exp = exp.expect("the 201 response carries expires_at");
     assert!(
-        (t0 + CEIL..=crate::store::now() + CEIL).contains(&exp),
+        (t0 + CEIL..=busbar_substrate::store::now() + CEIL).contains(&exp),
         "the default lifetime is CLAMPED to the 24h ceiling (exp≈now+24h): exp={exp}, ceiling={CEIL}"
     );
     // Strictly below the 90-day default: the clamp produced this exp, not the default TTL path.
@@ -8091,7 +8091,7 @@ async fn test_admin_v1_patch_no_op_on_an_already_counted_key_is_not_an_admission
                 labels: Default::default(),
                 ..Default::default()
             },
-            crate::store::now(),
+            busbar_substrate::store::now(),
         )
         .expect("mint")
         .0
@@ -8496,7 +8496,7 @@ async fn test_signed_mint_expiry_parsing_matrix() {
     };
 
     // `expires_in: "7d"` -> expires_at ~= now + 7*86400 (allow a few seconds of clock slop).
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let seven_d: serde_json::Value = post(serde_json::json!({"name": "k", "expires_in": "7d"}))
         .await
         .unwrap()
@@ -8577,7 +8577,7 @@ async fn test_signed_mint_verify_then_delete_denies() {
     let token = created["token"].as_str().unwrap().to_string();
 
     // The token resolves its binding right after mint.
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     let resolved = gov
         .verify_token(&token, now, None)
         .expect("a fresh token verifies");
@@ -8628,7 +8628,7 @@ async fn test_signed_revoke_denylists_without_deleting() {
         .unwrap();
     let id = created["id"].as_str().unwrap().to_string();
     let token = created["token"].as_str().unwrap().to_string();
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     assert!(
         gov.verify_token(&token, now, None).is_some(),
         "verifies before revoke"
@@ -9007,7 +9007,7 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
         "busbar-reset-{}-{}-{}",
         tag,
         std::process::id(),
-        crate::store::now()
+        busbar_substrate::store::now()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
@@ -9403,7 +9403,7 @@ async fn test_admin_v1_overlay_reset_empty_section_is_idempotent_noop() {
     let overlay = std::env::temp_dir().join(format!(
         "busbar-reset-empty-{}-{}.json",
         std::process::id(),
-        crate::store::now()
+        busbar_substrate::store::now()
     ));
     let _ = std::fs::remove_file(&overlay);
     let app = TestApp::new()
@@ -10394,7 +10394,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
     let dir = std::env::temp_dir().join(format!(
         "busbar-settings-gov-rotate-persist-fail-{}-{}",
         std::process::id(),
-        crate::store::now()
+        busbar_substrate::store::now()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
@@ -10920,8 +10920,8 @@ async fn serve_keys_fixture(
                     labels: Default::default(),
                     ..Default::default()
                 },
-                crate::store::now() + 3600,
-                crate::store::now(),
+                busbar_substrate::store::now() + 3600,
+                busbar_substrate::store::now(),
             )
             .unwrap();
         key.id

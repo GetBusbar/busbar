@@ -86,3 +86,33 @@ fn plane_purge_task_keeps_active_rows() {
 fn plane_token_is_single_use() {
     conf::assert_plane_token_is_single_use(&MemoryStore::new(), "conf");
 }
+
+// Regression for the store-conformance battery's kind-wide purge collision: `purge_plane_records_
+// before(kind, before)` has no namespace of its own, so two conformance runs sharing one live
+// database (modeled here as one shared `MemoryStore` driven from two threads) can each sweep rows
+// the other run just wrote. Before the fix, both `assert_plane_purge_*` checks asserted an EXACT
+// purged count, so a genuinely conforming backend could be marked non-conforming purely from the
+// interleaving. These two tests share one store across two concurrently-running `ns`s and require
+// both runs to complete without panicking.
+
+#[test]
+fn plane_purge_honours_the_cutoff_survives_two_interleaved_runs() {
+    let store = MemoryStore::new();
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| conf::assert_plane_purge_honours_the_cutoff(&store, "confA"));
+        let b = scope.spawn(|| conf::assert_plane_purge_honours_the_cutoff(&store, "confB"));
+        a.join().expect("run confA must not panic");
+        b.join().expect("run confB must not panic");
+    });
+}
+
+#[test]
+fn plane_purge_task_keeps_active_rows_survives_two_interleaved_runs() {
+    let store = MemoryStore::new();
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| conf::assert_plane_purge_task_keeps_active_rows(&store, "confA"));
+        let b = scope.spawn(|| conf::assert_plane_purge_task_keeps_active_rows(&store, "confB"));
+        a.join().expect("run confA must not panic");
+        b.join().expect("run confB must not panic");
+    });
+}

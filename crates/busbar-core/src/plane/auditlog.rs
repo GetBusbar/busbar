@@ -651,7 +651,7 @@ pub(crate) fn emit_admin_hostless(
     }
 }
 
-/// THE NEUTRAL, HOSTLESS ADMIN-AUDIT EMIT for plane call sites. Reads `crate::store::now()` ONCE for
+/// THE NEUTRAL, HOSTLESS ADMIN-AUDIT EMIT for plane call sites. Reads `busbar_substrate::store::now()` ONCE for
 /// this event and delegates to [`emit_admin_hostless`] with that single timestamp — the same one clock
 /// read per event `record_by` performs, so the seam and any legacy read never diverge by a clock tick.
 /// This neutral `(action, resource, outcome, principal)` shape IS the future ABI-slot signature: the
@@ -660,7 +660,7 @@ pub(crate) fn emit_admin_hostless(
 /// mutation it records.
 #[allow(dead_code)] // called from the plane-gated audit sites; no caller with every plane compiled out
 pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, principal: &str) {
-    let ts = crate::store::now();
+    let ts = busbar_substrate::store::now();
     emit_admin_hostless(ts, action, resource, outcome, principal);
 }
 

@@ -69,7 +69,7 @@
     },
     {
       "id": "F-011 additive admin views",
-      "kind": "improvement",
+      "kind": "additive",
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
@@ -78,7 +78,7 @@
         "body",
         "headers"
       ],
-      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive \u2014 the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line."
+      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive \u2014 the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that key-list and view GROWTH is a new feature and not a break, and `additive` is the kind that makes that ruling checkable — the tool now PROVES the candidate a JSON superset of the golden at every path the golden names before it forgives `body`/`headers`, so this entry can no longer forgive a 1.5.5 field that changed value or went away."
     },
     {
       "id": "F-011r hook write readback: `at` gives way to `fires_at`",
@@ -94,27 +94,16 @@
     },
     {
       "id": "F-013 validation wording",
-      "kind": "improvement",
+      "kind": "additive",
+      "text_list_growth": true,
       "changelog": "Validation messages know the new keys.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09)\\|validate$",
-      "expected_cells": 5,
+      "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30)\\|validate$",
+      "expected_cells": 3,
       "classes": [
         "effects.stderr"
       ],
-      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped \u2014 the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better \u2014 it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, \u2026` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence \u2014 its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement. COUNT FOLLOWS THE NARROWING: `expected_cells` is 5, one per BOOT-P id this entry still names (the five limit-shape and secret-shape validate cells its `cells` regex names) \u2014 not the 7 it forgave before BOOT-020 and BOOT-043b were removed above. The declared width is derived from the regex it accompanies, so a later widening of one without the other is caught by the differ rather than silently forgiven."
-    },
-    {
-      "id": "F-013b the unknown pool member is refused by the resolver, not the validator",
-      "kind": "breaking",
-      "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 committed-golden triage",
-      "cells": "^boot\\.refusal\\|BOOT-043b\\|validate$",
-      "expected_cells": 1,
-      "classes": [
-        "effects.stderr"
-      ],
-      "rationale": "A pool that names a member nothing defines is refused by BOTH releases, with exit code 1, the same empty stdout and the same preceding BUSBAR_PROVIDERS deprecation warning \u2014 but the refusal now comes out of a DIFFERENT STAGE and says so. 1.5.5 collected it in semantic validation and framed it `[error] config validation failed:` with the sentence `pool 'oracle-unused' references unknown model 'nope'`. 1.6.0 resolves pool members against three top-level maps (`models:`, `tools:`, `agents:`) rather than one, so the check belongs to `config::resolve` \u2014 which frames its errors `[error] config errors:` \u2014 and the sentence names the config path and the three maps: `pools.oracle-unused: member `nope` is not defined in any of the top-level `models:`, `tools:`, or `agents:` maps. Define it there, or remove it from the pool.` The new sentence is strictly more useful, but the FRAME LINE is not additive: an operator or CI job that greps `config validation failed:` to catch a bad config stops matching on this class of refusal, so this is registered as a break with a migration note rather than as an improvement. SPLIT OUT of F-013 (which forgave it as a rephrasing) 2026-09-06. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Scoped to the ONE recorded cell that drives an undefined pool member; a further fixture gets its own row rather than a widened regex.",
-      "changelog": "1.6.0 Changed: a pool member that nothing defines is refused by the resolver, under the `config errors:` frame, naming `models:`, `tools:` and `agents:`."
+      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped \u2014 the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better \u2014 it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, \u2026` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence \u2014 its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement. NARROWED AGAIN 2026-09-07, and this time by FIXING rather than re-scoping. Three of the five cells this entry named were forgiven for wording that was never worth changing, so the wording was changed back and the cells left this register: BOOT-043b's refusal is returned to the VALIDATE stage (`config::resolve`'s pool-kind inference no longer refuses a member it cannot resolve \u2014 it decides a plane, and a name that resolves nowhere decides nothing \u2014 so `config_validate` refuses it in 1.5.5's words under the `config validation failed:` frame; the member still cannot escape, because a pool that takes no plane stays on the LLM lane where that validator runs, and one that takes a plane from its other members is refused by `check_failover_pool` against that plane's registry). F-013b, which registered that stage move as a break, IS DELETED along with its CHANGELOG line, because there is no longer a difference to accept. BOOT-P07 and BOOT-P09 were pure rephrasings of the reserved-name and credential-mode sentences by the three-plane `split_section` template; both are restored to 1.5.5 byte-for-byte with the section/noun substituted in, pinned by `assert_eq!` tests, and dropped from the `cells` regex. WHAT REMAINS IS THE ONE REAL DIFFERENCE: BOOT-P20/P29/P30 name the four new token-limit metric keys (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`) in a limit's expected-one-of lists. Those keys EXIST in 1.6.0's limit grammar, so hiding them from the list an operator is told to choose from would be a message that lies about what the binary accepts \u2014 a worse defect than the divergence. The owner is deciding whether that is an improvement to keep or a break to register on its own terms; `kind` is left at improvement in the meantime, unchanged, so nothing is silently reclassified while the decision is open. COUNT FOLLOWS THE NARROWING: `expected_cells` is 3, one per BOOT-P id this entry still names \u2014 not the 5 it forgave before BOOT-043b, BOOT-P07 and BOOT-P09 were fixed, and not the 7 before BOOT-020. The declared width is derived from the regex it accompanies, so a later widening of one without the other is caught by the differ rather than silently forgiven. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.6): each BOOT-P20/P29/P30 stderr line grew the SAME backtick-quoted expected-one-of list by the four new token-limit metric names, with the surrounding sentence untouched \u2014 `text_list_growth` is the kind that proves that byte-for-byte, so this cell is no longer forgiven on the owner's say-so alone but on the tool's own splice check."
     },
     {
       "id": "F-015 an inline secret is refused without echoing it",
@@ -311,7 +300,7 @@
     },
     {
       "id": "F-011b openapi.json additive endpoints",
-      "kind": "improvement",
+      "kind": "additive",
       "changelog": "`openapi.json` describes the MCP and A2A endpoints",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$|^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
@@ -320,7 +309,7 @@
         "body",
         "headers"
       ],
-      "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version). The document also gains a Vary header and reports the binary's true version in info.version (1.5.5 shipped a stale 1.5.4)."
+      "rationale": "openapi.json adds the mcp/a2a endpoints; every 1.5.5 path and schema is unchanged (a dedicated cell pins info.version). The document also gains a Vary header and reports the binary's true version in info.version (1.5.5 shipped a stale 1.5.4). KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that endpoint- and key-list GROWTH is a new feature and not a break, and `additive` makes that ruling machine-checked — the tool proves the candidate document a JSON superset of the 1.5.5 one at every path the golden names, so a 1.5.5 path or schema that CHANGED (rather than one that was added beside it) is still red under this entry."
     },
     {
       "id": "S-7 responses-door streams stream",

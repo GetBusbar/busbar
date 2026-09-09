@@ -86,8 +86,8 @@ impl VerifyRefusal {
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
-            VerifyRefusal::NotAuthorized => crate::engine::KIND_PERMISSION,
-            VerifyRefusal::NoRate { .. } => crate::engine::KIND_INVALID_REQUEST,
+            VerifyRefusal::NotAuthorized => busbar_substrate::proxy::KIND_PERMISSION,
+            VerifyRefusal::NoRate { .. } => busbar_substrate::proxy::KIND_INVALID_REQUEST,
         }
     }
 

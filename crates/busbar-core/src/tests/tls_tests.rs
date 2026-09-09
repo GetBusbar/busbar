@@ -687,7 +687,7 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
     // to every test in the binary that reads limits afterward (`install` replaces the whole
     // struct with no restore), and `limits/tests/limits_tests.rs`'s
     // `uninstalled_accessors_return_historical_defaults` asserts
-    // `translate_body_max_bytes() == DEFAULT_REQUEST_BODY_MAX_BYTES` — so whether the suite
+    // `busbar_substrate::proxy::max_translate_body_bytes() == DEFAULT_REQUEST_BODY_MAX_BYTES` — so whether the suite
     // passed depended on that test happening to run BEFORE this one. Never committed, so it
     // always rolls back at the end of this test.
     let _limits_guard = crate::limits::InstallGuard::install(&limits);

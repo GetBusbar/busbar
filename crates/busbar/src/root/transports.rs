@@ -293,6 +293,264 @@ pub fn provision_dial(
     provision_client(sink, token, slot, cfg)
 }
 
+// ── the driver a listener is handed ─────────────────────────────────────────────────────────────
+
+/// WHAT RUNS A UNIT, on the root's side of the transport seam.
+///
+/// A transport that serves a plane's declared surface has to get what arrived to something that
+/// will run it, and the tree's rule decides which direction that goes: core drives plugins, and a
+/// plugin never names core. So the transport hands the arrival OVER, through
+/// `busbar_contract::transport::UnitDriver`, and this is the root's implementation of it — handed to
+/// a transport at listen, in the same breath and for the same reason as the transport key handle.
+///
+/// Everything the transport is not allowed to hold is held here: the kernel seal, the units the ten
+/// steps run against, the in-flight table, the gauge and the canary. The transport learns none of
+/// them. What it gets back is the plane's bytes, the media type the declaration named, and one word
+/// from a closed list of eight.
+///
+/// ## What this driver does NOT do yet, said plainly
+///
+/// It runs the loop and maps the ending. It does NOT yet call the plane, so the answers it returns
+/// carry no body. Two things upstream of it are missing, and neither is this file's to fix:
+///
+/// 1. **There is no per-unit arena that ships.** `busbar_contract::Arena` is `Send + Sync` and its
+///    allocators take `&self` and hand back a slice borrowed from it; those two together have no
+///    safe implementation, and every implementor in this tree is a test double that leaks. A plane
+///    call needs one, so there is nothing to build a `Ctx` around.
+/// 2. **`ProductionUnits` answers every non-admin step with a refusal.** That is deliberate — the
+///    bodies arrive one plane at a time and admin is the one that has landed — so a unit driven
+///    here today ends at Arrival whatever the bytes were.
+///
+/// Wiring it half-built and calling it served would be the failure this whole seam exists to
+/// prevent, so it answers honestly instead: the loop really runs, the ending really is the loop's,
+/// and the body is empty because no plane was asked.
+#[cfg(feature = "root-admin")]
+pub struct LoopDriver<'n> {
+    kernel: &'n busbar_kernel::teller::Kernel,
+    units: &'n crate::root::kernel::ProductionUnits,
+    gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
+    canary: &'n busbar_caps::Canary,
+    next_key: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "root-admin")]
+impl std::fmt::Debug for LoopDriver<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoopDriver")
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl<'n> LoopDriver<'n> {
+    /// Bind the driver to the node's own kernel, units, gauge and canary.
+    ///
+    /// By reference and not by value: one driver serves every connection every listener accepts, and
+    /// the counts the canary balances are node-wide. A driver that owned a copy of them would be
+    /// balancing its own books beside the node's.
+    #[must_use]
+    pub fn new(
+        kernel: &'n busbar_kernel::teller::Kernel,
+        units: &'n crate::root::kernel::ProductionUnits,
+        gauge: &'n busbar_kernel::slice::ConcurrencyGauge,
+        canary: &'n busbar_caps::Canary,
+    ) -> Self {
+        Self {
+            kernel,
+            units,
+            gauge,
+            canary,
+            next_key: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    /// The key of the next unit this driver will walk.
+    fn next_unit(&self) -> busbar_caps::UnitKey {
+        busbar_caps::UnitKey::new(
+            self.next_key
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        )
+    }
+}
+
+/// How the loop's ending reads in the eight words a transport can render.
+///
+/// THE ONE MAPPING, here and nowhere else. The loop's ending carries a step, a reason code and a
+/// posting; no wire has a field for any of the three, so the narrowing has to happen somewhere and
+/// it happens on this side of the seam — where the ending's full detail is still available to the
+/// audit record that keeps it.
+///
+/// The two credential doors stay apart, and that is the substance of this function rather than a
+/// detail of it: a caller refused at Authenticate is told its credential was not accepted, and one
+/// refused at Approve or Verify is told the credential was accepted and does not cover this.
+/// Collapsing them sends a caller with a bad token away to fix its permissions.
+#[cfg(feature = "root-admin")]
+#[must_use]
+pub fn outcome_of(ended: &busbar_kernel::teller::Ended) -> busbar_contract::transport::Outcome {
+    use busbar_caps::{Outcome as Ends, ReasonCode as R, StepName as S};
+    use busbar_contract::transport::Outcome as Out;
+    match ended {
+        busbar_kernel::teller::Ended::Settled { end, .. } => match end.outcome() {
+            Ends::Completed => Out::Completed,
+            Ends::Refused(S::Authenticate, _) => Out::Unauthenticated,
+            Ends::Refused(S::Approve | S::Verify, _) => Out::Forbidden,
+            // The money and rate refusals, which a caller can act on by slowing down or by paying,
+            // and which every wire below spells with a code of its own.
+            Ends::Refused(
+                _,
+                R::RateLimited | R::OverBudget | R::OverdraftCeiling | R::GroupFrozen,
+            ) => Out::Throttled,
+            Ends::Refused(_, R::NoDestination) => Out::NotFound,
+            Ends::Refused(..) => Out::Unavailable,
+            // A step BROKE, which is the node's fault and never the caller's, whatever step it was.
+            Ends::Failed(..) => Out::Unavailable,
+            Ends::Aborted(_) => Out::Cancelled,
+            Ends::TimedOut(_) => Out::TimedOut,
+        },
+        // The node's own sweep took the hold first, so this unit will not produce an answer at all.
+        busbar_kernel::teller::Ended::AlreadySettled => Out::Unavailable,
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl busbar_contract::transport::UnitDriver for LoopDriver<'_> {
+    fn drive(
+        &self,
+        _arrival: busbar_contract::transport::Arrival<'_>,
+        _surface: &busbar_contract::transport::WireSurface,
+    ) -> busbar_contract::transport::Answer {
+        let key = self.next_unit();
+        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+            &self.kernel.admit_token(),
+            busbar_caps::PrincipalId::new(""),
+            0,
+        ));
+        let leases = busbar_kernel::slice::LeaseCell::new();
+        let meter = busbar_kernel::teller::AccrualMeter::new();
+        let ctx = busbar_kernel::teller::UnitCtx {
+            key,
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        // THE LOOP ITSELF, not an approximation of it. Whatever this driver cannot yet do above the
+        // loop, the ten steps below it are the node's own.
+        let ended = busbar_kernel::teller::run_unit(
+            self.kernel,
+            self.units,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: self.gauge,
+                canary: self.canary,
+                meter: &meter,
+            },
+        );
+        busbar_contract::transport::Answer::empty(outcome_of(&ended))
+    }
+}
+
+// ── the loop's dispatch seam ─────────────────────────────────────────────────────────────────────
+
+/// THE ONE SEAM A UNIT'S ROUTE STEP REACHES THE SURFACE THAT ALREADY ANSWERS IT THROUGH.
+///
+/// Named here, beside the driver and the outcome mapping, because nothing in it is about any one
+/// plane. The argument is an [`OpClassId`](busbar_contract::ids::OpClassId), which every plane
+/// declares; the answer is the loop's own [`RouteLeg`](busbar_kernel::teller::RouteLeg), which every
+/// plane's Route step already hands back. A seam named after a plane would have been a second one
+/// beside it the moment a second plane wanted the same thing, and the first thing to differ between
+/// the two would have been a difference nobody meant.
+///
+/// **THE DRIVE IS THE PLANE'S AND IS HANDED IN.** This seam does not know how to execute an
+/// operation and must not learn: what a request does is the plane's, and the surface that already
+/// answers it is the surface that already answers it. What the seam owns is the fact that the drive
+/// happened *here*, once, and nowhere else.
+///
+/// **THAT IS WHY THE ANSWER IS THE WORK AND NOT THE BYTES.** A status, headers and a byte vector
+/// would be the honest answer for a plane whose operations are documents. It is the WRONG answer for
+/// a plane whose operations are streams: taking the bytes here means draining the body here, and on
+/// the billing planes the instant a body finishes draining is the instant the money is read. A seam
+/// that buffered would be deciding when a stream ended, which is a decision that moves money. So the
+/// leg is passed through and the bytes never come near this file.
+///
+/// **THE COUNT IS THE INSTRUMENT, NOT THE STATUS.** What this seam is for is answering "did the
+/// engine run for this unit", and a status cannot answer it — a refusal rendered by the loop and an
+/// upstream's own 403 read the same on the wire. A unit refused at Authenticate, Verify, Approve or
+/// Admit never reaches Route, so it never reaches here, and the count says so.
+pub trait PlaneDispatch: Send + Sync {
+    /// Drive ONE operation of one unit, and count that it was driven.
+    ///
+    /// `drive` is the plane's own leg, already built and not yet polled. An implementation returns a
+    /// leg that produces the same [`Decision`](busbar_caps::Decision) the one it was handed would
+    /// have: this seam chooses WHERE the work happens, never WHAT it answers.
+    fn execute<'a>(
+        &'a self,
+        op: busbar_contract::ids::OpClassId,
+        drive: busbar_kernel::teller::RouteLeg<'a>,
+    ) -> busbar_kernel::teller::RouteLeg<'a>;
+
+    /// How many units have driven this seam, where the seam keeps count.
+    ///
+    /// On the trait rather than reached for by downcast, because counting is what this seam is FOR:
+    /// a composition that cannot be asked "did anything run" has not got the instrument, and the
+    /// honest way to say so is `None` rather than a zero indistinguishable from a node that took no
+    /// traffic.
+    fn driven(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// The seam's production half: the surface the plane already routes through, counted.
+///
+/// Deliberately the thinnest thing in the file. It awaits the leg it was handed and returns that
+/// leg's own value — no decision is computed here, no byte is touched, and nothing is added to or
+/// taken from the answer. **That is what makes byte identity a property of the construction rather
+/// than of a measurement**: the future this returns awaits the future it was given.
+///
+/// The count is taken when the leg is FIRST POLLED and not when it is built, because those are two
+/// different facts. A leg built and dropped — a unit whose client hung up between Admit and the
+/// first poll — did not drive the engine, and a count taken at construction would say it did.
+#[derive(Debug, Default)]
+pub struct DrivenOnce {
+    /// How many of this node's units have driven the seam, since the node was built.
+    driven: std::sync::atomic::AtomicU64,
+}
+
+impl DrivenOnce {
+    /// A seam that has driven nothing yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many units have driven the surface through this seam.
+    #[must_use]
+    pub fn driven(&self) -> u64 {
+        self.driven.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl PlaneDispatch for DrivenOnce {
+    fn execute<'a>(
+        &'a self,
+        _op: busbar_contract::ids::OpClassId,
+        drive: busbar_kernel::teller::RouteLeg<'a>,
+    ) -> busbar_kernel::teller::RouteLeg<'a> {
+        Box::pin(async move {
+            self.driven
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            drive.await
+        })
+    }
+
+    fn driven(&self) -> Option<u64> {
+        Some(DrivenOnce::driven(self))
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/transports.rs"]
 mod tests;

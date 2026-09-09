@@ -7,7 +7,7 @@ For every LLM cell in a recording (testing/shadow-oracle/record.sh layout) this 
 against the ingress dialect's specification, and writes ONE ledger row per cell x direction:
 
   <cell-id>#request    the client request the oracle sent busbar (raw/<cell>/request.body, or the
-                       same bytes rebuilt by testing/shadow-oracle/build-request.py) against the
+                       same bytes rebuilt by the pinned oracle tool's build-request.py) against the
                        dialect's REQUEST schema. This proves the harness speaks the spec, so a busbar
                        refusal in the response row is busbar's, not the harness's.
   <cell-id>#response   what busbar answered: a JSON body against the RESPONSE schema (2xx) or the
@@ -94,6 +94,23 @@ DIALECTS = {
 }
 STREAM_CT = {"sse": "text/event-stream", "eventstream": "application/vnd.amazon.eventstream"}
 
+# WHICH SIDE OF 2xx EACH OUTCOME MUST LAND ON. A cell's outcome is the thing it exists to prove, and
+# the schema cannot see it: an `unauthenticated` cell answered HTTP 200 with the happy path's own
+# body is a perfectly valid response body, and a check that only asks "does this parse against the
+# schema for the status that was sent" calls it conformant. So does the mirror — an `ok` cell
+# answered with a well-formed refusal envelope. Both were green. The status CLASS the outcome
+# implies is asserted here; the body is then still judged against the schema for the status that was
+# actually sent, so a run says both what was wrong and what the bytes were.
+#
+# The line is 2xx / not-2xx and nothing finer, because it has to hold across six dialects that
+# disagree about the code (Gemini answers an absent key with 400 where OpenAI answers 401). Which
+# code within the class is the shadow oracle's diff against the golden, not this gate's.
+OUTCOME_REFUSES = {"malformed", "unauthenticated", "out_of_scope", "over_budget", "over_budget_total",
+                   "upstream_down"}
+# `stream_upstream_error` is exempt in both directions: the upstream fails PART WAY THROUGH, so the
+# response legitimately opens 2xx and carries the failure as an in-band event.
+OUTCOME_STATUS_EXEMPT = {"stream_upstream_error"}
+
 
 # ── ledger (same TSV contract as testing/fleet-fixtures/lib.sh `record`) ─────────────────────────
 class Ledger:
@@ -141,30 +158,42 @@ def sha256_file(p):
 
 
 def load_spec_doc(spec, pin, cache_root):
-    """Locate the pinned document in the cache, re-verify its digest, parse it (cached as JSON)."""
+    """Locate the pinned document in the cache, RE-MEASURE IT AGAINST THE PIN, and parse it.
+
+    THE DOCUMENT IS RE-MEASURED ON EVERY RUN, AND ONLY THE MEASURED BYTES ARE EVER PARSED. There
+    used to be a `spec.parsed.json` beside the spec — the same document pre-parsed, written on the
+    first run so later runs would not need PyYAML — and it was returned BEFORE any digest was
+    computed. Nothing in the rig ever measured it: vendor.sh calls the directory "cached" by
+    comparing its `.digest` sidecar with itself, and this function handed the pre-parsed copy
+    straight to the checker. So a `spec.parsed.json` that no longer said what the pinned digest
+    names was the document every verdict was decided by, and a response missing a member the
+    published spec REQUIRES came back PASS with the whole run GREEN — the gate reporting
+    conformance to a spec nobody published. A pinned digest that is not re-computed pins nothing.
+
+    Re-measuring costs about half a second across all five documents (2 ms to sha256 the largest,
+    280 ms to parse it with PyYAML's C loader), which is why the pre-parsed copy is simply gone
+    rather than made verifiable: it never bought enough to be worth an unmeasured schema.
+    """
     d = os.path.join(cache_root, spec, pin["digest"])
     cands = [os.path.join(d, "spec.json"), os.path.join(d, "spec.yaml")]
     path = next((c for c in cands if os.path.isfile(c)), None)
     if not path:
         raise SystemExit(f"spec '{spec}' is not in the cache ({d}); run testing/llm-conformance/vendor.sh")
-    parsed = os.path.join(d, "spec.parsed.json")
-    if os.path.isfile(parsed):
-        with open(parsed) as f:
-            return json.load(f)
     if pin["fmt"] == "raw":
         got = sha256_file(path)
         if got != pin["digest"]:
-            raise SystemExit(f"spec '{spec}' digest mismatch in cache: {got} != pinned {pin['digest']}")
+            raise SystemExit(f"spec '{spec}' digest mismatch in cache: {got} != pinned {pin['digest']} "
+                             f"({path} is not the document that digest names; re-run vendor.sh, or "
+                             f"--repin it on purpose)")
     with open(path, "rb") as f:
         raw = f.read()
     try:
         doc = json.loads(raw)
     except ValueError:
         try:
-            import yaml  # PyYAML >= 6.0; only needed the first time a YAML spec is parsed
+            import yaml  # PyYAML >= 6.0, on every run: a YAML spec is parsed from its measured bytes
         except ImportError:
-            raise SystemExit(f"spec '{spec}' is YAML and PyYAML is not installed (pip install 'pyyaml>=6.0'); "
-                             "a parsed JSON cache would let later runs skip this")
+            raise SystemExit(f"spec '{spec}' is YAML and PyYAML is not installed (pip install 'pyyaml>=6.0')")
         loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
         doc = yaml.load(raw, Loader=loader)
     if pin["fmt"] == "json-canonical":
@@ -173,12 +202,7 @@ def load_spec_doc(spec, pin, cache_root):
             raise SystemExit(f"spec '{spec}' canonical digest mismatch: {got} != pinned {pin['digest']}")
     # YAML can carry dates/timestamps inside `example:` blocks; they are documentation, not schema,
     # so stringifying them loses nothing the checker reads.
-    text = json.dumps(doc, separators=(",", ":"), default=str)
-    tmp = parsed + f".{os.getpid()}.tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, parsed)  # atomic: a crash mid-write must not leave a half cache for the next run
-    return json.loads(text)
+    return json.loads(json.dumps(doc, separators=(",", ":"), default=str))
 
 
 # ── botocore service model -> schema document ───────────────────────────────────────────────────
@@ -784,12 +808,35 @@ def owed_ids(cells):
     return out
 
 
+# REBUILDING A REQUEST IS THE FALLBACK, AND IT BELONGS TO THE TOOL, NOT TO THIS TREE.
+# build-request.py is part of the pinned shadow-oracle TOOL (it is what the recorder used to make
+# the bytes in the first place); only this repository's oracle DATA lives under testing/shadow-oracle.
+# So it is resolved the way every cell driver here resolves a tool file -- through the tool directory
+# bin/oracle exports, falling back to the data directory for the old in-tree layout.
+#
+# LOADED ON DEMAND, NEVER AT STARTUP. A recording that carries raw/<cell>/request.body for every
+# cell -- which is what the recorder writes and what CI hands this gate -- needs no rebuild at all,
+# and eagerly importing the tool made a missing tool kill the validator before it recorded its FIRST
+# row. That is the worst possible failure shape for this gate: the run reports VACUOUS ("zero probes
+# reported a result") and the real reason sits in a log nobody reads. A rebuild that cannot happen is
+# a fact about ONE row, so it is reported as one -- see the request direction below.
+def build_request_dir():
+    return os.environ.get("BUSBAR_ORACLE_TOOL_DIR") or ORACLE
+
+
 def load_build_request():
-    p = os.path.join(ORACLE, "build-request.py")
-    spec = importlib.util.spec_from_file_location("oracle_build_request", p)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """Import the tool's build-request module, or return (None, why) if it is not installed."""
+    p = os.path.join(build_request_dir(), "build-request.py")
+    if not os.path.exists(p):
+        return None, (f"the pinned shadow-oracle tool is not installed ({p} does not exist); "
+                      "run bin/oracle to install it, or record with raw/<cell>/request.body present")
+    try:
+        spec = importlib.util.spec_from_file_location("oracle_build_request", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except Exception as e:  # a tool that will not import is a fact about the rebuild, not a crash
+        return None, f"the pinned shadow-oracle tool at {p} failed to import: {e}"
+    return mod, ""
 
 
 # ── the per-dialect judgement ───────────────────────────────────────────────────────────────────
@@ -854,6 +901,7 @@ class Judge:
         ck = self.checker(dialect)
         ct = (headers.get("content-type") or "").split(";")[0].strip().lower()
         out = []
+        self.judge_outcome_status(outcome, status, out)
         if 200 <= status < 300:
             want_stream = outcome == "ok_stream"
             want_stream_array = outcome == "ok_stream_array"
@@ -904,6 +952,27 @@ class Judge:
             return out, f"{status} {ct}", f"no error schema for {dialect} {status}"
         eck.check(inst, sch, "", out)
         return out, f"{status} {ct}: {note}", None
+
+    @staticmethod
+    def judge_outcome_status(outcome, status, out):
+        """The cell's outcome names which side of 2xx the answer had to land on (see OUTCOME_REFUSES).
+
+        An outcome this rig has never been taught is a violation of its own, not a pass: the whole
+        point of the check is that a cell cannot be answered with something other than what it was
+        asked for, and an unclassified outcome is a cell nothing is asserted about. Adding a cell
+        kind therefore has to say, once, which side it belongs on.
+        """
+        if outcome in OUTCOME_STATUS_EXEMPT:
+            return
+        ok = 200 <= status < 300
+        if outcome.startswith("ok"):
+            if not ok:
+                out.append(Violation("/", "outcome.status", f"a '{outcome}' cell — an authenticated, in-scope, in-budget request against a healthy upstream — was answered {status}"))
+        elif outcome in OUTCOME_REFUSES:
+            if ok:
+                out.append(Violation("/", "outcome.status", f"a '{outcome}' cell — the request this cell exists to see REFUSED — was answered {status}"))
+        else:
+            out.append(Violation("/", "outcome.status", f"outcome '{outcome}' is not classified as a success or a refusal, so nothing is asserted about the status it was answered with; classify it in OUTCOME_REFUSES / OUTCOME_STATUS_EXEMPT"))
 
     @staticmethod
     def parse_json(b):
@@ -1054,7 +1123,7 @@ def main():
         return 1
 
     judge = Judge(read_digests(args.digests), args.spec_cache, os.path.join(HERE, "schemas"))
-    build = load_build_request()
+    build, build_why = load_build_request()
 
     violations = []  # (id, direction, dialect, Violation)
     per_dialect = {}
@@ -1079,22 +1148,31 @@ def main():
         if outcome != "malformed":
             body = rec.raw(safe, "request.body")
             src = "raw/request.body"
-            if body is None:
-                body = build.request_for(c)["body"].encode("utf-8")
-                src = "build-request.py"
-            viols, schema_name = judge.judge_request(dialect, outcome, body)
             rid = f"{cid}#request"
-            viols, covered = gaps.partition(rid, viols)
-            if not viols and covered:
-                ledger.record(rid, "SKIP", f"{dialect} request vs {schema_name} ({src})", gap_detail(covered))
-                pd["request"]["SKIP"] += 1
-            elif viols:
-                ledger.record(rid, "FAIL", f"{dialect} request vs {schema_name} ({src})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
+            if body is None and build is None:
+                # The recording did not keep the request bytes AND the tool that could rebuild them
+                # is absent, so this ROW cannot be judged. It is a FAIL, not a skip and not a crash:
+                # a request the gate never saw is not a request it approved, and the row names which
+                # of the two halves is missing.
+                ledger.record(rid, "FAIL", f"{dialect} request: not recorded and not rebuildable", build_why)
                 pd["request"]["FAIL"] += 1
-                violations += [(cid, "request", dialect, v) for v in viols]
+                violations.append((cid, "request", dialect, build_why))
             else:
-                ledger.record(rid, "PASS", f"{dialect} request vs {schema_name} ({src})", "")
-                pd["request"]["PASS"] += 1
+                if body is None:
+                    body = build.request_for(c)["body"].encode("utf-8")
+                    src = "build-request.py"
+                viols, schema_name = judge.judge_request(dialect, outcome, body)
+                viols, covered = gaps.partition(rid, viols)
+                if not viols and covered:
+                    ledger.record(rid, "SKIP", f"{dialect} request vs {schema_name} ({src})", gap_detail(covered))
+                    pd["request"]["SKIP"] += 1
+                elif viols:
+                    ledger.record(rid, "FAIL", f"{dialect} request vs {schema_name} ({src})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
+                    pd["request"]["FAIL"] += 1
+                    violations += [(cid, "request", dialect, v) for v in viols]
+                else:
+                    ledger.record(rid, "PASS", f"{dialect} request vs {schema_name} ({src})", "")
+                    pd["request"]["PASS"] += 1
 
         # response direction
         status = int(cell.get("status") or 0)

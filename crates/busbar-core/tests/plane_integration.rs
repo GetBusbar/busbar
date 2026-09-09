@@ -586,9 +586,9 @@ mod metrics_scrape {
 /// `RouteAuth::None` answers everyone, so adding one must be a deliberate act that shows up here.
 #[tokio::test]
 async fn test_mcp_token_is_confined_to_the_mcp_plane() {
-    use busbar_core::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use busbar_core::governance::{GovState, MemoryStore};
     use busbar_core::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
+    use busbar_substrate::governance::signing::{TokenSigner, TokenVerifier, DEFAULT_KID};
     use std::sync::Arc;
 
     busbar_core::metrics::init();
@@ -625,7 +625,7 @@ async fn test_mcp_token_is_confined_to_the_mcp_plane() {
     // that can turn the audience-bound sibling away is the plane boundary itself, never a scope.
     let (key, plain_token) = gov
         .mint_signed(
-            busbar_core::governance::NewKeySpec {
+            busbar_substrate::governance::NewKeySpec {
                 name: "mcp-agent".to_string(),
                 allowed_pools: None,
                 group: None,

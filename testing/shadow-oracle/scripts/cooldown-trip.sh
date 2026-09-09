@@ -115,3 +115,7 @@ kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 
 python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture.py" "$RAW/headers" "$status" "$RAW/body" "$before_dir" "$after_dir" >"$RAW/captured.json" 2>"$RAW/capture.err" \
   || fail "capture.py failed: $(tail -c 300 "$RAW/capture.err")"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

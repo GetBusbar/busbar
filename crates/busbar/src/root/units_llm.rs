@@ -265,8 +265,8 @@ pub struct LlmNode {
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
     durability_token: busbar_caps::DurabilityToken,
-    // THE CARD THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
-    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is swappable rather than
+    // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
+    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than
     // bound once, because a rate is a statement about a deployment and a deployment's rates change
     // while it is running. A cell on the node would have frozen the boot reading: the engine's own
     // spend projection would reprice on a config apply and this ledger would not, and the identity
@@ -277,8 +277,9 @@ pub struct LlmNode {
     // derives from — including the FLAT PER-REQUEST FEE, which the card holds beside the per-token
     // rates so a node that prices through the card cannot post the tokens and forget the fee.
     //
-    // Each unit PINS the card it was admitted under (see `answer_with`) and prices its whole life
-    // against that one, so an apply landing mid-body cannot reprice a request halfway through.
+    // Each unit PINS THE SNAPSHOT it was admitted under (see `answer_with`) and resolves its whole
+    // life against that one, AT ITS OWN ARRIVAL INSTANT — so an apply landing mid-body cannot
+    // reprice a request halfway through, and an entry appended a day later cannot reprice it at all.
     /// The usage record's token, minted from this node's own kernel at construction and lent to the
     /// exit arm for the length of one pricing.
     ///
@@ -286,6 +287,17 @@ pub struct LlmNode {
     /// late accrual prices arrives after the exit sealed the end, so there is no step of the unit
     /// whose token could stand in.
     usage_token: busbar_caps::UsageToken,
+    /// THE ONE SEAM THIS PLANE'S ROUTE STEP REACHES THE ENGINE THROUGH.
+    ///
+    /// On the node rather than on the unit because what it instruments is a statement about a SET of
+    /// units: "how many of the units this node took actually drove the engine" is the question, and a
+    /// per-unit counter could only ever answer it about one.
+    ///
+    /// It is the loop's seam and not this plane's — see [`PlaneDispatch`] — and the plane's own leg
+    /// is what gets handed across it. Route drives; nothing here reports.
+    ///
+    /// [`PlaneDispatch`]: crate::root::transports::PlaneDispatch
+    dispatch: Arc<dyn crate::root::transports::PlaneDispatch>,
 }
 
 impl std::fmt::Debug for LlmNode {
@@ -331,7 +343,22 @@ impl LlmNode {
             }),
             next_key: AtomicU64::new(1),
             mono: AtomicU64::new(0),
+            // THE PRODUCTION HALF, which awaits the leg it is handed and returns that leg's own
+            // value. Composed here because composing is what this file does: the plane names the
+            // work, the root names what the work is driven through, and neither names the other's.
+            dispatch: Arc::new(crate::root::transports::DrivenOnce::new()),
         }
+    }
+
+    /// How many of this node's units have driven the engine through the Route seam.
+    ///
+    /// The instrument the switch-over is measured with, and it measures what a status cannot: a
+    /// refusal the loop rendered and an upstream's own refusal are the same bytes on the wire, and
+    /// only the count says whether anything ran. Reading it needs the seam this node was composed
+    /// with to be one that counts, which the production composition above is.
+    #[must_use]
+    pub fn driven(&self) -> Option<u64> {
+        self.dispatch.driven()
     }
 
     /// WHEN A UNIT ARRIVED, taken once: this node's two clocks, read together.
@@ -456,15 +483,23 @@ impl LlmNode {
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
         // kernel reads it at the exit. See `LlmUnit::meter`.
         let meter = Arc::new(AccrualMeter::new());
-        // THE CARD THIS UNIT IS ADMITTED UNDER, pinned here for the same reason `charged_at` below
-        // is: a live apply may replace the root's card at any instant, and a request that opened
-        // before one is priced on the rates it agreed to. Pinning at admission rather than reading
-        // at drain time is what makes that true even for the accrual that lands after the body has
-        // finished — the figure arrives late, but the price it is charged at was fixed at the door.
-        let card = crate::root::kernel::ROOT_CARD.pin();
+        // THE HISTORY SNAPSHOT THIS UNIT IS ADMITTED UNDER, pinned here for the same reason
+        // `charged_at` below is: a live apply may APPEND to the root's history at any instant, and a
+        // request that opened before one is priced against the history it agreed to. Pinning at
+        // admission rather than reading at drain time is what makes that true even for the accrual
+        // that lands after the body has finished — the figure arrives late, but the snapshot it is
+        // resolved against was fixed at the door.
+        //
+        // A SNAPSHOT, NOT A CARD, and the difference is the whole of this wave. A card is one price;
+        // a snapshot is every price this node has ever charged, up to the door. The unit prices at
+        // the entry in force AT ITS ARRIVAL, which under a single-entry history is the same card the
+        // previous release would have used and under a longer one is the card the request was
+        // actually earned under.
+        let history = crate::root::kernel::ROOT_CARD.pin();
         let unit = LlmUnit {
             node: self,
-            card: card.clone(),
+            history: history.clone(),
+            arrived,
             seats,
             meter: Arc::clone(&meter),
             op_class,
@@ -553,7 +588,7 @@ impl LlmNode {
                 // plane that is the record a unit ran and ended and nothing else: the money is in a
                 // cell the response's own body fills when it DRAINS, which has not happened yet. So
                 // the body goes out wrapped, and the figure lands when it arrives.
-                self.attach_late_accrual(response, walk, &principal, arrived, card)
+                self.attach_late_accrual(response, walk, &principal, arrived, history)
             }
         }
     }
@@ -574,15 +609,15 @@ impl LlmNode {
         walk: Walk,
         principal: &PrincipalId,
         arrived: Arrived,
-        card: Option<Arc<busbar_unit_cost::RateCard>>,
+        history: Option<crate::root::kernel::PinnedHistory>,
     ) -> Response {
         let Some(book) = self.book.get() else {
             return response;
         };
-        // No card pinned at admission is the third: a report nothing can price is a report nothing
-        // can post, and wrapping the body to discover that when it drains would be a wrapper that
-        // only ever drops empty.
-        let Some(card) = card else {
+        // No history pinned at admission is the third: a report nothing can price is a report
+        // nothing can post, and wrapping the body to discover that when it drains would be a wrapper
+        // that only ever drops empty.
+        let Some(history) = history else {
             return response;
         };
         let Some(tap) = Walk::tap_of(&response) else {
@@ -590,7 +625,7 @@ impl LlmNode {
         };
         let arm = LateAccrual {
             book: Arc::clone(book),
-            card,
+            history,
             // MINTED FOR THIS ONE POSTING and dropped with it. A token is neither `Clone` nor `Copy`
             // and the node's own is lent by reference for the length of a call, which is exactly what
             // this is not: the posting outlives every call on this path. So the pair is minted where
@@ -686,19 +721,57 @@ fn usage_record(
 /// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
 /// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
 /// unit the node has ever run.
-fn priced_amount(
-    card: &busbar_unit_cost::RateCard,
+fn priced_posting(
+    history: &crate::root::kernel::PinnedHistory,
+    arrived: Arrived,
     token: &busbar_caps::UsageToken,
     report: &LateReport,
-) -> u64 {
-    let posting = busbar_unit_cost::price(
-        &card.pin(),
+) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
+    // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
+    // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
+    // readings. The instant is not a clock read — this runs after the body drained, which may be a
+    // different day from the one the request was admitted in, and a fresh reading would price the
+    // request against a card it never agreed to.
+    let mut posting = busbar_unit_cost::Posting::from_usage(
         &report.lane,
         &usage_record(token, &report.usage),
         u64::from(report.fee_count),
         busbar_unit_cost::STANDARD_TIER_BP,
+        arrived.ms(),
+        arrived.mono(),
     );
-    u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX)
+    // THE LOOKUP, at the snapshot pinned at the door and the instant the unit arrived at. The
+    // history resolves which entry was in force then; a later apply is not in this view at all, so
+    // there is no arm here that could read one.
+    let currency = crate::root::kernel::node_currency();
+    let priced = busbar_unit_cost::price(&history.view(), &posting, currency).ok();
+    // THE CACHE IS WRITTEN AND IS NEVER READ BACK. It rides the posting so a reader has a figure to
+    // compare a re-derivation against and so a totals read need not re-price a day of postings on
+    // every request — but the figure this function RETURNS is the lookup's, taken off `priced`
+    // directly. There is no arm below that consults `posting.cached`, which is the invariant stated
+    // as code rather than as a comment: corrupt the cache and this expression answers exactly what
+    // the quantities and the history say.
+    posting.cached = priced.as_ref().map(|p| p.as_cache(history.seq()));
+    (posting, priced)
+}
+
+/// The narrowed figure the books take, spelled out of [`priced_posting`]'s lookup.
+///
+/// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
+/// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
+/// unit the node has ever run. A report nothing can price — a hole in the history, or a currency the
+/// card in force does not name — is nothing rather than a zero the caller cannot tell from a free
+/// request, and the caller posts no row for it.
+fn priced_amount(
+    history: &crate::root::kernel::PinnedHistory,
+    arrived: Arrived,
+    token: &busbar_caps::UsageToken,
+    report: &LateReport,
+) -> u64 {
+    let (_posting, priced) = priced_posting(history, arrived, token, report);
+    priced
+        .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
@@ -716,9 +789,15 @@ fn priced_amount(
 /// it, which is the honest description of a spend the node learned about after it had let go.
 struct LateAccrual {
     book: Arc<Mutex<crate::root::durability::Durability>>,
-    /// The card the report is priced against — the deployment's configured rates and its flat
-    /// per-request fee, in the cost unit's own terms.
-    card: Arc<busbar_unit_cost::RateCard>,
+    /// THE HISTORY SNAPSHOT the report is resolved against — the deployment's dated card history as
+    /// it stood when this unit was admitted, pinned there.
+    ///
+    /// A snapshot rather than a card, so that the entry the late figure prices at is the entry in
+    /// force at the unit's ARRIVAL and not the entry in force when its body finally drained. Those
+    /// are the same entry on every ordinary request and they are different ones on exactly the
+    /// request an operator edited a price underneath — which is the request the distinction exists
+    /// for.
+    history: crate::root::kernel::PinnedHistory,
     durability_token: busbar_caps::DurabilityToken,
     ledger_token: busbar_caps::LedgerToken,
     usage_token: busbar_caps::UsageToken,
@@ -737,7 +816,7 @@ impl LateAccrual {
     fn post(self) {
         let LateAccrual {
             book,
-            card,
+            history,
             durability_token,
             ledger_token,
             usage_token,
@@ -770,7 +849,7 @@ impl LateAccrual {
         // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
         // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
         // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = priced_amount(&card, &usage_token, &report);
+        let amount = priced_amount(&history, arrived, &usage_token, &report);
         if amount == 0 {
             return;
         }
@@ -942,10 +1021,18 @@ pub struct LlmUnit<'n> {
     started: Instant,
     /// The pinned header-arrival epoch every charge and every refund lands in.
     charged_at: u64,
-    /// THE CARD THIS UNIT WAS ADMITTED UNDER, pinned at the door with `charged_at`: the metering
-    /// step prices what the unit consumed against it, and the late accrual prices against the same
-    /// one, so a live apply mid-flight cannot price one unit two ways.
-    card: Option<Arc<busbar_unit_cost::RateCard>>,
+    /// THE HISTORY SNAPSHOT THIS UNIT WAS ADMITTED UNDER, pinned at the door with `charged_at`: the
+    /// metering step resolves what the unit consumed through it, and the late accrual resolves
+    /// through the same one, so a live apply mid-flight cannot price one unit two ways.
+    history: Option<crate::root::kernel::PinnedHistory>,
+    /// THE UNIT'S ARRIVAL, both readings, kept because the pricing needs the INSTANT and not only
+    /// the window.
+    ///
+    /// `charged_at` above is this reading truncated to the second the balance is keyed by; a
+    /// millisecond is what the history resolves at, and truncating to a window first and multiplying
+    /// back would place a unit that arrived in the last millisecond of a second at the start of it —
+    /// on the wrong side of an entry appended in between.
+    arrived: Arrived,
     /// The handler-lookup refusal the arrival arm performed and the decode arm raises. See this
     /// module's header for why the two are apart.
     deferred: Mutex<Option<decode::DecodeRefusal>>,
@@ -1290,16 +1377,22 @@ impl Units for LlmUnit<'_> {
         // figure read here would be zero on every delivered unit and a meter accruing it would be
         // accruing a zero it could not tell from a free request.
         //
-        // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the card is here. The step
-        // assembles what the unit consumed and asks; this closure answers, against the card the node
-        // was bound at boot — the same card the late reading is priced against, through the same one
-        // expression — and the step spends the answer against the hold it was handed. A build with
-        // no card bound answers nothing, which is the honest figure for a node that can price
-        // nothing rather than a rate it invented for itself.
+        // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the history is here. The step
+        // assembles what the unit consumed and asks; this closure answers, against the SNAPSHOT this
+        // unit was admitted under and at the instant it arrived — the same snapshot and the same
+        // instant the late reading is resolved at, through the same one expression — and the step
+        // spends the answer against the hold it was handed. A build with no history pinned answers
+        // nothing, which is the honest figure for a node that can price nothing rather than a rate
+        // it invented for itself.
+        //
+        // THE SNAPSHOT TRAVELS, NOT A CARD. Handing this closure one card would have thrown away the
+        // instant: it would price whatever the report said at whatever card the door happened to
+        // hold, and a unit whose price changed underneath it would settle at the wrong entry with
+        // nothing on the record saying so.
         self.walk.meter(token, usage, &|report| {
-            self.card
-                .as_deref()
-                .map(|card| priced_amount(card, usage, report))
+            self.history
+                .as_ref()
+                .map(|history| priced_amount(history, self.arrived, usage, report))
                 .unwrap_or(0)
         })
     }
@@ -1435,7 +1528,21 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         //
         // The unit still holds the loop's own meter — the same one this argument names — so that
         // the figure has somewhere to land when the settlement moves to where the tap is.
-        Box::pin(async move { self.walk.route(token, &destination).await })
+        //
+        // THROUGH THE ONE SEAM. The leg below is the walk's own and is what this line always was;
+        // what changed is that it is HANDED to the loop's dispatch instead of being returned
+        // straight to the loop. The seam awaits it and gives back its value, so the bytes, the
+        // status, the headers, the stream's frames and the tap on its body are the plane's exactly
+        // as they were — byte identity is a property of that construction, not of a measurement.
+        //
+        // What the seam adds is the one fact no status can carry: that the engine ran for this unit.
+        // A unit refused at Authenticate, Verify, Approve or Admit never reaches Route, so it never
+        // reaches this line, and the count says so rather than a rendered refusal having to be told
+        // apart from an upstream's own.
+        self.node.dispatch.execute(
+            self.op_class,
+            Box::pin(async move { self.walk.route(token, &destination).await }),
+        )
     }
 }
 

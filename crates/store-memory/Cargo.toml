@@ -9,6 +9,12 @@ license = "Apache-2.0"
 
 [dependencies]
 busbar-api = { path = "../api" }
+# The record half of the store protocol. `busbar_contract::kinds::Store` declares `record_put`,
+# `record_get` and `record_scan` for a plane's kernel-held durable records, and this backend answers
+# them at the contract's own spelling. A plugin-kind crate may name the contract freely (the
+# manifest allow-list's own rule), which is exactly why the record verbs are shaped against it and
+# not against the kernel's sink trait — naming `busbar-kernel` here would be an automatic RED.
+busbar-contract = { path = "../busbar-contract" }
 
 [dev-dependencies]
 # The shared `Store` contract conformance suite. Core's own reference backend runs it too: if the

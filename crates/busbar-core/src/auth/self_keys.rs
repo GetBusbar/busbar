@@ -120,7 +120,7 @@ impl DeterministicEd25519Keys {
 #[async_trait]
 impl SelfServeKeys for DeterministicEd25519Keys {
     async fn issue(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let exp = now.saturating_add(ttl.as_secs());
         // FIX: provision the personal budget bucket under the resolved team BEFORE minting, so the
         // issued key resolves a real group at admission instead of 429 MissingGroup. Idempotent.
@@ -149,7 +149,7 @@ impl SelfServeKeys for DeterministicEd25519Keys {
     }
 
     async fn refresh(&self, principal: &Principal, ttl: Duration) -> Result<IssuedKey, String> {
-        let now = crate::store::now();
+        let now = busbar_substrate::store::now();
         let exp = now.saturating_add(ttl.as_secs());
         // Same provision-before-mint as `issue` (idempotent; the leaf already exists on a refresh).
         self.provisioner

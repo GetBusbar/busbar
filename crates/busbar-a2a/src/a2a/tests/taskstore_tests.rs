@@ -1156,3 +1156,59 @@ fn an_abandoned_active_task_is_cancelled_with_a_chained_event_and_then_ages_out(
         "the durable chain survives the eviction intact"
     );
 }
+
+/// **THE ABANDONMENT CEILING IS A DEADLINE, NOT A SIDE EFFECT OF TRAFFIC.**
+///
+/// The sweep above is real, and until now the ONLY way to reach it was a new `submit`. On a busy
+/// node that is invisible. On a node that has stopped taking submissions it means the ceiling is
+/// not enforced at all: the idle task never ages out, because the one thing that would have noticed
+/// is the thing that is not happening.
+///
+/// That is not an academic gap. `super::pushback::token_live` retires a per-task push token when
+/// its task becomes terminal, and `docs/a2a.md` cites this ceiling as the bound on a token whose
+/// task simply goes quiet. Composed through a submit-only trigger that bound did not exist on a
+/// quiet deployment — the capability outlived its documented lifetime for as long as the process
+/// ran.
+///
+/// So: the SAME fixture, the SAME clock, and NOT ONE SUBMISSION. `sweep_now` must reach the verdict
+/// `submit` reached, and the task sitting exactly AT the ceiling must still be untouched — a sweep
+/// that aged everything out would pass the first assertion and be worse than the bug.
+#[test]
+fn the_abandonment_ceiling_is_enforced_without_any_new_submission() {
+    let abandon = TaskRegistry::abandon_ceiling_secs();
+    let store = durable();
+    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let h = process_one(handle.clone());
+    let reg = &h.reg;
+
+    // t-work last moved at NOW+1, so NOW+4+abandon is strictly PAST the ceiling for it and exactly
+    // AT it for t-paused (last moved NOW+4) — the same pair of bounds the submit-driven twin pins.
+    let at1 = NOW + 4 + abandon;
+    assert!(
+        reg.sweep_now(at1),
+        "the first caller of a second claims the sweep; this one must have swept"
+    );
+
+    assert_eq!(
+        reg.get_unscoped("t-work")
+            .expect("abandonment TRANSITIONS; it never drops")
+            .state,
+        "canceled",
+        "an active task idle past the ceiling must be settled as canceled with NO submission \
+         anywhere in this test — the deadline is a deadline, not a side effect of new work arriving"
+    );
+    assert_eq!(
+        reg.get_unscoped("t-paused").expect("still present").state,
+        "auth-required",
+        "idle for EXACTLY the ceiling is not abandoned — the bound is strict, and a submit-free \
+         sweep must not be a more aggressive sweep"
+    );
+
+    // AND IT IS CLAIMED ONCE PER SECOND, which is what makes it safe to call on a hot path: a
+    // second call at the same clock does no scan at all.
+    assert!(
+        !reg.sweep_now(at1),
+        "a second sweep within the same second must decline the claim rather than rescan"
+    );
+    assert!(reg.sweep_now(at1 + 1), "a later second is a new claim");
+}

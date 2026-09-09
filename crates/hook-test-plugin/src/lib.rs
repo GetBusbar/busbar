@@ -282,3 +282,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
 }
 
 busbar_plugin_sdk::export_hook_plugin!(open);
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

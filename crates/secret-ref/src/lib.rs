@@ -74,6 +74,13 @@ pub struct SecretRef {
     /// plugin's name/alias).
     pub module: String,
     /// The module's own settings (opaque to busbar; the built-ins read `key` / `path`).
+    // settings-leak-lint: allow — DECLARATION, not a projection. This bag is the REFERENCE itself
+    // — which environment variable, which path, which plugin-module key names the secret — and
+    // holding it is the entire reason this type exists: a config that carried the credential
+    // inline would not need a `SecretRef` at all. The resolved bytes never land here. The one
+    // admin read that serializes a tree containing one, `GET /config/settings`, runs
+    // `admin::v1::service::redact_settings_bags` structurally over the whole body, which rewrites
+    // every `settings` member at any depth — this one included — into `settings_keys`.
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 

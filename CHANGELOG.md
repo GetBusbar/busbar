@@ -39,6 +39,27 @@ named next.
 
 ### Security
 
+- **Two admin key rotations could share one idempotency key, and the second was told the first's
+  answer.** A rotate's replay key joined the key id and the `Idempotency-Key` header on a colon,
+  and both halves are caller-supplied free text: rotating `a:b` under header `c` and rotating `a`
+  under header `b:c` produced the same key, so the second call was served the first's cached
+  response. The key it named was never rotated, and the caller was told it was. Each half is now
+  length-prefixed, so no two `(id, header)` pairs can join to one key.
+
+  **On upgrade:** rotate replay keys are framed differently, so a rotate that was issued before the
+  upgrade and retried after it is treated as a first sighting and runs again. The window for this is
+  the ten-minute replay TTL. Nothing already rotated is affected, and mint (`create_key`) replay keys
+  are unchanged.
+
+- **An in-flight idempotency sentinel was swept after ten minutes, admitting a second mint.** The
+  cache sweep did not distinguish a completed call's cached response from the sentinel that says a
+  mutation is still running, so a mutation held past the replay window — a store gone slow, a mint
+  blocked on an unreachable signer — had its sentinel dropped, and the next retry was admitted as a
+  first sighting. Two credentials were minted where the sentinel existed so that one would, and the
+  longer a mutation was stuck the more retries arrived to be admitted. The sweep now applies to
+  committed values only; a sentinel is released by its own reservation completing, being cleared, or
+  being dropped. The replay TTL for a completed call's response is unchanged at 600 s.
+
 - **The A2A push-notification callback token was replayable; it is not any more.** Busbar registers
   its own callback with a backend agent under a per-task bearer token, and the composition root's
   check of that token passed a single timestamp as both the deadline and the clock — asking whether
@@ -73,6 +94,32 @@ named next.
   fleet data directory the marks persist beneath it; without one busbar writes no file and the floor
   is held in memory for the process lifetime.
 
+- **The same token lifetime now holds on the A2A plane that serves the binary, and its deadline no
+  longer depends on traffic.** The fix above landed over the composition root; the shipped plane
+  checked only that the token's MAC verified and that the task row existed. A token captured
+  anywhere it travels — it rides `Authorization: Bearer` on an outbound hop, so a backend's logs, a
+  proxy and an error page all hold one — replayed for as long as the process lived, against a task
+  that had finished. The replay did not have to lie: re-reporting a state Busbar already held was
+  treated as a retry rather than a transition, so the transition table's terminal-refuses-everything
+  rule never ran, and each replay re-notified the caller's webhook and appended another link to that
+  task's durable provenance chain. Both planes now ask one predicate of one fact — is this token's
+  task still non-terminal — at mint time and at present time.
+
+  The task TTL behind it is now enforced on **presentation**, not only on submission. The retention
+  sweep that ends a task idle past the 24h abandonment ceiling ran only as a side effect of a new
+  task being submitted, so on a deployment that had stopped submitting the ceiling was not a
+  deadline at all and a silent task's token stayed live indefinitely. The callback endpoint runs the
+  sweep itself, after the MAC verifies and before it reads the task; the sweep is claimed once per
+  second, so a busy backend pays an atomic load rather than a scan.
+
+- **An A2A hop refusal no longer names the backend to the caller.** Nine refusal arms rendered
+  operator-facing detail into the JSON-RPC error body a client reads: the backend's URL, the address
+  its name resolved to, and in two cases the backend's own prose. A caller could map a deployment's
+  private agent estate by submitting work and reading the failures. Refusals now carry a stable
+  `a2a.hop.*` code and a fixed sentence with nothing a backend, its DNS answer or its response body
+  can influence; the full detail still goes to the operator's journal, where it was always meant to
+  be. Refusal status codes are unchanged.
+
 ### Improvements
 
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
@@ -82,6 +129,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **Two A2A verbs that were answered for free are now metered.** `GetExtendedAgentCard` on
+  `POST /a2a` and `ListTasks` reached a handler, did the work and left no ledger row: the card verb
+  reads the caller's whole catalogue and builds a document, and `ListTasks` scans every task the
+  caller owns, which is the most expensive read on the plane. Neither could be seen, capped or
+  billed. `ListTasks` writes the ordinary `agent:<agent_id>` row every admitted call writes; the
+  card verb names no agent — that is what it is for — so it is admitted and billed against the
+  **plane pool**, spelled `agents` (this plane's config section), which cannot collide with an
+  `agent:`-prefixed member line. Both rows carry `requests: 1` and zero tokens, because a verb
+  answered out of Busbar's own state selects no upstream and relays no frame. Additive: no existing
+  row changed shape, and no other verb's attribution moved.
 - **The jemalloc background-purge line is `[info]` on macOS**, with an explanation, instead of a
   `[warn]`. The behaviour it describes — Busbar's own idle-purge fallback — is unchanged.
 - **Admin views gained fields; none changed.** Hook objects on `GET /api/v1/admin/hooks[/{name}]`
@@ -334,16 +391,6 @@ identically, and every 1.5.5 key and minted secret carries over.
   for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
   `at` field off a hook view must read `fires_at` instead. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
-- 1.6.0 Changed: a pool member that nothing defines is refused by the resolver, under the
-  `config errors:` frame, naming `models:`, `tools:` and `agents:`. A pool may now hold tools and
-  agents as well as models, so member resolution belongs to the resolver rather than to semantic
-  validation, and the sentence names the config path and all three maps it looked in
-  (`pools.<pool>: member `x` is not defined in any of the top-level `models:`, `tools:`, or
-  `agents:` maps.`) instead of 1.5.5's `pool '<pool>' references unknown model 'x'`. The refusal
-  itself is unchanged: same exit code 1, same empty stdout, same surrounding lines. **Migration:**
-  a CI job or log alert that matches the `config validation failed:` frame line to catch a bad
-  config must also match `config errors:`, which is the frame every resolver refusal already used;
-  no config change is needed.
 - 1.6.0 Improvements: rotate refuses an overlong key id like its siblings. `POST
   /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never enforced the 64-byte
   id bound the read/patch/delete/usage/revoke handlers already share, so an overlong id fell

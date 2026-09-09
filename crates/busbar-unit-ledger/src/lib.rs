@@ -5,8 +5,23 @@
 //!
 //! What money IS, as opposed to where its bytes landed. This crate settles holds, keeps the running
 //! figures a checkpoint seals, states the one identity those figures have to satisfy, reprices every
-//! posting against the policy it was priced under, and hands each posting to the previous release's
-//! rows so nothing reading them notices a change.
+//! line by lookup against the dated rate-card history it was priced under, and hands each posting to
+//! the previous release's rows so nothing reading them notices a change.
+//!
+//! ## Quantities are the truth; a price is a lookup
+//!
+//! A booked line stores what happened — the quantities, the lane, the instant, the tier, the
+//! currency — and the two history numbers that say which snapshot it was settled under and which
+//! dated card that snapshot resolved to at that instant. It also stores a price, and that price is
+//! a CACHE: derived, re-derivable, and never the record. A statement is cut AS OF a snapshot and
+//! re-derives every figure from the quantities; it never sums the caches, so its answer does not
+//! depend on whether the recompute has been round yet.
+//!
+//! **A booked line is never rewritten.** An amendment to the history moves money by emitting an
+//! adjusting entry — one [`Repricing`] per affected balance and window, carrying both figures and
+//! the delta — which rides the `adjustments` cell the identity already has. `settled` does not
+//! move, no term is added to the identity, and a window already sealed into a signed checkpoint is
+//! corrected forward rather than edited backward.
 //!
 //! ## The five things in here, and why each is separate
 //!
@@ -25,10 +40,13 @@
 //! separate traits because they are separate claims, and a node that files its own signatures on its
 //! own disk has proved nothing to anybody. The crate says so rather than implying otherwise.
 //!
-//! [`mod@recompute`] — every posting priced again from sealed policy, from a watermark that is the last
-//! posting actually checked rather than the last checkpoint. The difference is not pedantry: at a
-//! busy node's rate "since the last checkpoint" covers a few percent of the postings, and a posting
-//! edited before that point would never be looked at again.
+//! [`mod@recompute`] — every line priced again by lookup against the sealed history, from a watermark
+//! that is the last line actually checked rather than the last checkpoint. The difference is not
+//! pedantry: at a busy node's rate "since the last checkpoint" covers a few percent of the lines,
+//! and a line edited before that point would never be looked at again. Because the lookup is the
+//! amount, the recompute now CORRECTS a stale cache rather than only reporting it — and it still
+//! tells the two cases apart, because a cache going stale behind a head that moved is an amendment
+//! and a cache going stale behind a head that did not is somebody's hand.
 //!
 //! ## What this crate does not do
 //!
@@ -74,11 +92,15 @@ pub use migration::{
     Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ,
 };
 pub use recompute::{
-    apply_tier, recheck, recompute, Divergence, Finding as RecomputeFinding, Pass, PolicyArchive,
-    Posting, PostingOrigin, PricedLine, RateCard, SealedPolicy, Watermark, BASIS_POINTS,
+    apply_tier, divergence_of, price_line, recheck, recompute, DerivedPrice, Divergence,
+    Finding as RecomputeFinding, HistoryArchive, Pass, Posting, PostingOrigin, PricedLine, Recheck,
+    SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };
-pub use settle::{Ledger, Overdraft, Settlement};
-pub use totals::{Book, BucketId, BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
+pub use settle::{adjusting_entries, Ledger, Overdraft, Repricing, Settlement};
+pub use totals::{
+    totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,
+    TotalsKey, Unpriced, WindowStart,
+};
 pub use verify::{
     sequences_are_monotonic, verify, AllWindowsOpen, Finding as VerifyFinding, WindowState,
 };

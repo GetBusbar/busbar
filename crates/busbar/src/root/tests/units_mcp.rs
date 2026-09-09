@@ -409,12 +409,13 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
             _now: u64,
             expected_aud: Option<&str>,
         ) -> Option<KeyFacts> {
-            // The audience is the plane boundary, and the verifier is where it is enforced.
-            (credential == "tok" && expected_aud == Some(<McpPlane as PlaneMeta>::KEY)).then(|| {
-                KeyFacts {
-                    id: "key-mcp-1".to_string(),
-                    name: "an approved key".to_string(),
-                }
+            // The audience is the plane boundary, and the verifier is where it is enforced. Pinned
+            // to the literal, not to <McpPlane as PlaneMeta>::KEY: production supplies the audience
+            // from that identical expression, so comparing against it here would let both sides
+            // drift together if the plane's key string ever changed.
+            (credential == "tok" && expected_aud == Some("mcp")).then(|| KeyFacts {
+                id: "key-mcp-1".to_string(),
+                name: "an approved key".to_string(),
             })
         }
 
@@ -1216,7 +1217,12 @@ fn the_record_names_the_caller_the_class_and_the_resource() {
         record.subject,
         busbar_unit_audit::Subject::PrincipalId("vk_mcp".to_string())
     );
-    assert_eq!(record.what.op_class, record_op_class(ops::OP_TOOL_CALL));
+    assert_eq!(
+        record.what.op_class,
+        busbar_unit_audit::record::OpClassId::new("tool_call"),
+        "the record must file under the plane's own literal op-class name, not a re-derivation \
+         of whatever record_op_class happens to produce today"
+    );
     assert_eq!(
         record.what.destination.as_deref(),
         Some("mcp_tool:fs"),

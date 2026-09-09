@@ -211,7 +211,7 @@ pub(crate) fn settle(demotions: &DemotionRecord, server: &str, state: crate::tru
         // The WALL clock, not the sweep's monotonic tick: this timestamp is read by an operator
         // after a restart, and a tick would be meaningless to them.
         crate::trust::TrustState::Quarantined => {
-            demotions.record(server, state.word(), crate::state::now())
+            demotions.record(server, state.word(), busbar_substrate::store::now())
         }
         crate::trust::TrustState::Approved => demotions.clear(server),
         _ => {}

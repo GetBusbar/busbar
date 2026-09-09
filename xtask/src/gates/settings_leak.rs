@@ -23,7 +23,10 @@
 //!   of 277 files, and renaming it leaves 127 — which clears a floor of 100 and prints `passed`.
 //! * `settings-leak:scan-floor` — the aggregate floor, which catches a root that moved.
 //! * `settings-leak:no-raw-bag` — the finding: R1, a struct field named `settings`/`*_settings`
-//!   declared as a raw bag type; R2, a hand-built `json!` member named `"settings"`.
+//!   declared as a raw bag type; R2, a hand-built `json!` member named `"settings"` — but NOT the
+//!   head of an inline JSON-SCHEMA sub-schema, which describes the shape of a bag and never carries
+//!   one (see [`opens_schema_fragment`] for how narrowly that is recognised, and the selftest case
+//!   that proves a real bag written beside a schema fragment is still named).
 //!
 //! THE ALLOWLIST is explicit, per-line and self-documenting — `// settings-leak-lint: allow —
 //! <reason>` on the line or the comment block immediately above — and covers exactly the one
@@ -32,7 +35,10 @@
 //! other reason is the bug this gate exists to catch, in a costume.
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::gates::population;
+use crate::gates::{
+    prove_green, prove_red, prove_rows_red_at, Gate, Report, PLANE_ROOT_MISSING_FIXTURE,
+};
 use crate::ledger::{Row, Verdict};
 use crate::parity::LegacyRun;
 use crate::planes::PlaneRoots;
@@ -54,9 +60,9 @@ const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
 
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The aggregate floor. Not `> 0` — one file is as vacuous as none; it tracks the real tree (123
-/// files when written) with slack for genuine consolidation.
-const SCAN_FLOOR: usize = 100;
+// THE AGGREGATE FLOOR MOVED TO `gates::population`. It was 100 against a scan set of 280 — 180
+// files of slack, enough to lose `busbar-core`'s 151 and still print `ok`. The floor that replaces
+// it is measured against the whole tree, because the scan set now IS the whole tree.
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 
@@ -198,16 +204,70 @@ fn is_raw_bag_field(line: &str) -> bool {
     false
 }
 
+/// The JSON-Schema keywords a SUB-SCHEMA can lead with. Closed and small on purpose: this list is
+/// the only thing standing between a schema fragment and the R2 rule, so it names the vocabulary
+/// (draft 2020-12) rather than accepting any object.
+const SCHEMA_KEYWORDS: &[&str] = &[
+    "type",
+    "$ref",
+    "$dynamicRef",
+    "properties",
+    "patternProperties",
+    "additionalProperties",
+    "items",
+    "prefixItems",
+    "required",
+    "oneOf",
+    "anyOf",
+    "allOf",
+    "not",
+    "const",
+    "enum",
+    "format",
+    "pattern",
+    "description",
+    "title",
+    "default",
+    "nullable",
+];
+
+/// Is the text after a `"settings":` the start of an inline JSON-SCHEMA sub-schema, rather than a
+/// value expression?
+///
+/// A schema fragment DESCRIBES the shape of a settings bag; it never carries one. `"settings":
+/// {"type": "object"}` in [`secret_ref::oneof_schema`] is the `x-busbar-secret` field's own
+/// `oneOf` — the schema busbar-ui composes a reference against — and reading it as a leak was R2
+/// mistaking a description of the bag for the bag.
+///
+/// It is recognised as narrowly as it can be and still be recognised: the value must be an INLINE
+/// object literal whose FIRST member is spelled with one of [`SCHEMA_KEYWORDS`]. Nothing else
+/// qualifies — not a bare `{}`, not an identifier, not a call, not `{ "settings": settings }` —
+/// so a real bag written on the same line, or on the next one, is untouched by this.
+fn opens_schema_fragment(after_colon: &str) -> bool {
+    let Some(inner) = after_colon.trim_start().strip_prefix('{') else {
+        return false;
+    };
+    let inner = inner.trim_start();
+    SCHEMA_KEYWORDS.iter().any(|k| {
+        inner
+            .strip_prefix(&format!("\"{k}\""))
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+    })
+}
+
 /// R2 — a hand-built JSON response member named `settings`: `"settings"` then optional whitespace
-/// then `:`.
+/// then `:`, and NOT the head of a JSON-Schema sub-schema (see [`opens_schema_fragment`]).
 fn is_raw_bag_member(line: &str) -> bool {
     let needle = "\"settings\"";
     let mut rest = line;
     while let Some(i) = rest.find(needle) {
-        if rest[i + needle.len()..].trim_start().starts_with(':') {
-            return true;
+        let after = &rest[i + needle.len()..];
+        if let Some(value) = after.trim_start().strip_prefix(':') {
+            if !opens_schema_fragment(value) {
+                return true;
+            }
         }
-        rest = &rest[i + needle.len()..];
+        rest = after;
     }
     false
 }
@@ -300,19 +360,39 @@ impl Gate for SettingsLeakGate {
             }
         };
 
-        // EACH ROOT ON ITS OWN, before the total means anything.
-        let mut unusable = Vec::new();
-        let mut files = Vec::new();
+        // THE POPULATION IS DERIVED FROM THE TREE, not from `roots`: every non-test `.rs` under
+        // `crates/`. `roots` is still resolved above, because a plane that cannot be located is its
+        // own refusal — but it no longer decides what gets opened.
+        let population = match population::source_population(cx) {
+            Ok(p) => p,
+            Err(why) => {
+                return Verdict::of(vec![
+                    Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
+                    Row::fail(ROW_SCAN_ROOTS, "the tree would not list", why),
+                    Row::fail(
+                        ROW_SCAN_FLOOR,
+                        "the scan set is unknown",
+                        DID_NOT_RUN.to_string(),
+                    ),
+                    Row::fail(
+                        ROW_NO_RAW_BAG,
+                        "the scan did not run",
+                        DID_NOT_RUN.to_string(),
+                    ),
+                ]);
+            }
+        };
+        let mut unusable: Vec<String> = population
+            .drained
+            .iter()
+            .map(|c| format!("crates/{c}: has a src/ and contributed no file to the scan"))
+            .collect();
         for root in &roots {
-            let spec = WalkSpec::new([root.clone()])
-                .ext("rs")
-                .exclude([EXCLUDE_TESTS_DIR])
-                .min_files(1);
-            match cx.walk(&spec) {
-                Ok(f) => files.extend(f),
-                Err(e) => unusable.push(format!("{root}: {e}")),
+            if !cx.exists(root) {
+                unusable.push(format!("{root}: not on disk"));
             }
         }
+        let files = population.files.clone();
         if !unusable.is_empty() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
@@ -339,25 +419,21 @@ impl Gate for SettingsLeakGate {
             ]);
         }
 
-        files.sort_by_key(crate::ctx::SourceFile::rel_str);
-        files.dedup_by_key(|f| f.rel_str());
-
-        if files.len() < SCAN_FLOOR {
+        if population.below_floor() {
             return Verdict::of(vec![
                 Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
                 Row::pass(
                     ROW_SCAN_ROOTS,
                     "every scan root holds production source",
-                    CLEAN,
+                    population.census(),
                 ),
                 Row::fail(
                     ROW_SCAN_FLOOR,
                     "the scan set is below its floor",
                     format!(
-                        "found {} non-test .rs file(s) across the scan roots, expected >= \
-                         {SCAN_FLOOR}. This gate scanned (almost) nothing, so its verdict is \
-                         meaningless — it is NOT a pass.",
-                        files.len()
+                        "{}. This gate scanned (almost) nothing, so its verdict is meaningless — \
+                         it is NOT a pass.",
+                        population.census()
                     ),
                 ),
                 Row::fail(
@@ -378,10 +454,14 @@ impl Gate for SettingsLeakGate {
             Row::pass(ROW_PLANE_ROOTS, "every plane root resolved", CLEAN),
             Row::pass(
                 ROW_SCAN_ROOTS,
-                "every scan root holds production source",
-                CLEAN,
+                "every crate under crates/ contributed its source",
+                population.census(),
             ),
-            Row::pass(ROW_SCAN_FLOOR, "the scan set cleared its floor", CLEAN),
+            Row::pass(
+                ROW_SCAN_FLOOR,
+                "the scan set cleared its floor",
+                population.census(),
+            ),
             row_no_raw_bag(&offenders),
         ])
     }
@@ -490,6 +570,40 @@ impl Gate for SettingsLeakGate {
             &["1 finding(s)", "planted_scope.rs:5"],
         ));
 
+        // A SCHEMA FRAGMENT IS NOT A BAG, AND THE EXEMPTION IS NOT A MUTE FOR THE LINE BELOW IT.
+        // R2 read `"settings": {"type": "object"}` — the `x-busbar-secret` oneOf, a DESCRIPTION of
+        // a settings bag — as a leak. The exemption is scoped to an inline object literal leading
+        // with a schema keyword, so a raw bag two lines down, and a bare `{}` that names no
+        // keyword, are both still named. Both are planted here BESIDE the fragment: an exemption
+        // proved only on a file that holds nothing else proves nothing about a real tree.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-core/src/planted_schema.rs",
+            "fn secret_schema() -> serde_json::Value {\n\
+             \x20   json!({\"properties\": {\n\
+             \x20       \"module\": {\"type\": \"string\"},\n\
+             \x20       \"settings\": {\"type\": \"object\"},\n\
+             \x20       \"either\": {\"settings\": {\"oneOf\": [{\"const\": \"none\"}]}},\n\
+             \x20   }})\n}\n\n\
+             fn hook_status() -> Response {\n\
+             \x20   ok_json(StatusCode::OK, &json!({\n\
+             \x20       \"settings\": settings,\n\
+             \x20       \"also\": {\"settings\": {}},\n\
+             \x20   }))\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a JSON-Schema fragment is exempt and a raw bag beside it is still named",
+            &[ROW_NO_RAW_BAG],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_schema.rs:11",
+                "planted_schema.rs:12",
+            ],
+        ));
+
         // THE INSTRUMENT: A ROOT THAT LEFT THE SCAN. `$CORE` is 150 of 277 files; renaming it left
         // 127, which cleared a floor of 100 and printed `passed`. Drain ONE root and the per-root
         // check must bite even though the aggregate would still clear.
@@ -563,6 +677,20 @@ impl Gate for SettingsLeakGate {
             }
             Err(_) => { /* already reported by the case above */ }
         }
+
+        // THE PLANE ROOTS: the row this gate's header calls the only thing that can catch a plane
+        // that split, and which had no red proof at all — a plane that left takes its projections
+        // with it, and every remaining root still clears its floor. Driven THROUGH `Gate::run`
+        // over a fixture tree in which no plane declares its grammar; the plane resolver reads
+        // `std::fs`, so no overlay can plant this.
+        report.push(prove_rows_red_at(
+            cx,
+            self,
+            "a plane that cannot be located is refused, not scanned as a smaller tree",
+            &[ROW_PLANE_ROOTS],
+            PLANE_ROOT_MISSING_FIXTURE,
+            &["PLANE-ROOT-MISSING"],
+        ));
 
         report
     }

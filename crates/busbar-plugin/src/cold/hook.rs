@@ -84,6 +84,11 @@ pub struct ConfigureBody {
     /// The hook's registry name (context echo).
     pub hook: String,
     /// The opaque settings map from the hook's registry entry (operator/API-owned).
+    // settings-leak-lint: allow — PLUGIN ABI WIRE STRUCT, and OUTBOUND: this is the `configure`
+    // request payload the host serializes INTO the plugin's `busbar_call`, which is what pushing
+    // desired state to a hook means. It is never deserialized into an admin response, and the bag
+    // is the one the hook must actually receive — projecting it to key names here would push a
+    // configuration the hook cannot run.
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// Monotonic settings version (the config_version that committed them) — the ack echoes it.
     pub settings_version: u64,

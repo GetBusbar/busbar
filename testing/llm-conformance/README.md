@@ -42,6 +42,13 @@ fetches with curl into `~/.cache/busbar-llm-specs/<spec>/<digest>/` and **refuse
 (exit 3, download deleted), exactly as `testing/shadow-oracle/fetch-golden.sh` pins the 1.5.5
 binary. The documents are not vendored into the repository (about 7 MB); the digests are.
 
+**The pin is re-measured on every run, by both halves.** `vendor.sh` digests the cached file itself
+rather than reading a note it wrote beside it, so `--check` names cache drift as drift and fetch
+mode re-downloads what no longer matches; `validate.py` sha256s the document again before parsing
+it, and parses only the bytes it measured. There is no pre-parsed copy of a spec any more — it cost
+an unmeasured schema and saved about half a second across all five documents. The consequence is
+that PyYAML ≥ 6.0 is needed on **every** run, not only the first.
+
 | spec | dialects | document |
 |---|---|---|
 | openai | `openai` (chat completions), `responses` | `openai/openai-openapi` `openapi.yaml` at a pinned commit |
@@ -57,7 +64,20 @@ paste it in and read what changed in the report before trusting it.
 
 A SKIP is never a pass. It is printed with `::warning ... DID NOT VERIFY`, listed in
 `owed-gaps.txt`, and removed from the owed set so the verdict can still judge the rows that exist.
-The gaps that exist today:
+
+That removal is also exactly how a gap could hide: an id that stops being checked stops being
+counted, and a run that verified one thing fewer read the same green as a run that verified one
+more. So the gaps a run may have are **declared in `named-gaps.json`** — one entry per gap, `cells`
+a regex over the ledger id, plus an `owner` and a `rationale`, and an `expected` ceiling on how many
+SKIP rows there may be. `run.sh` reconciles the observed gaps against that file and writes its
+answer as a ledger row (`gate|llm-conformance|named-gaps`) added to the owed set, so the single
+verdict decides it like every other check and the reconciliation failing to run is DID NOT RUN. A
+gap no entry names is red; a gap whose own row carries no reason is red; more gaps than were
+declared is red — including one that falls inside an entry the file already names, which the naming
+alone cannot see. **Fewer** gaps than declared is never red: a gap that closed is what the file
+exists to drive towards, and the run prints the instruction to lower `expected` behind it.
+
+The kinds of gap that arise:
 
 * **Gemini error bodies.** The discovery document does not describe error responses. They are
   checked against `schemas/google-rpc-status.json`, a hand transcription of `google.rpc.Status`
@@ -87,8 +107,8 @@ testing/llm-conformance/run.sh --recording target/oracle/recordings/candidate
 testing/llm-conformance/run.sh --recording target/oracle/recordings/golden   # what 1.5.5 does
 ```
 
-`validate.py` is stdlib Python; the two YAML specs (openai, cohere) need PyYAML ≥ 6.0 the first
-time they are parsed, after which the parsed document is cached as JSON beside the spec. The
+`validate.py` is stdlib Python apart from PyYAML ≥ 6.0, which the YAML specs need on every run
+(they are re-measured against their pin and re-parsed each time; see "The specs, pinned"). The
 checker is a small JSON-schema subset (`type`, `const`, `enum`, `required`, `properties`,
 `additionalProperties`, `patternProperties`, `items`, `min/max*`, `pattern`, `allOf/anyOf/oneOf/not`,
 `nullable`, `discriminator`) written here on purpose: a verdict must not move because a validator

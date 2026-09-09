@@ -590,6 +590,10 @@ pub const AUTH_ABI_VERSION: u32 = 2;
 pub enum SecretRequest {
     /// `resolve` - one secret reference's opaque settings map in, the secret bytes out.
     Resolve {
+        // settings-leak-lint: allow — PLUGIN ABI WIRE STRUCT, and OUTBOUND: the secret `call`
+        // request payload the host serializes INTO the plugin. It carries the REFERENCE's own
+        // module settings (`{key: …}` / `{path: …}`), never a resolved secret, and the resolver
+        // cannot locate the secret without them. Nothing deserializes this into an admin response.
         settings: serde_json::Map<String, serde_json::Value>,
         /// Optional caller-side deadline in milliseconds. `#[serde(default)]` so an OLD
         /// plugin decoding a request from a NEW engine (which doesn't know this field) still

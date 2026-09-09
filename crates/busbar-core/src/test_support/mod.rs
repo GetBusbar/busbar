@@ -1438,7 +1438,7 @@ impl TestApp {
     }
     /// Set a pool's resolved `breaker:` config (the runtime `store::BreakerCfg`, flattened to the
     /// neutral carrier the plane reconstructs it from).
-    pub fn pool_breaker(mut self, name: &str, b: &crate::store::BreakerCfg) -> Self {
+    pub fn pool_breaker(mut self, name: &str, b: &busbar_substrate::store::BreakerCfg) -> Self {
         self.pool_breaker.insert(name.into(), b.to_llm());
         self
     }

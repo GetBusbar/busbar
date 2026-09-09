@@ -41,7 +41,7 @@ fn gov_and_store() -> (Arc<GovState>, Arc<MemoryStore>) {
 /// EXPLICIT, caller-supplied clock (`gov.verify_token(&token, NOW, None)`), so a frozen epoch is
 /// fine there. The data-plane test runs the token through a REAL HTTP round trip, and the `keys`
 /// engine arm on that path (`keys_arm_verdict` in `crate::auth`) checks the token's `exp` against
-/// the process's real wall clock (`crate::store::now()`), never an injected one — so a token minted
+/// the process's real wall clock (`busbar_substrate::store::now()`), never an injected one — so a token minted
 /// against a frozen historical epoch is genuinely expired by the time the request lands, and gets
 /// refused for exactly the reason the module doc says IS enforced (the token's own `exp`), not the
 /// row's `expires_at` this test is about.
@@ -130,12 +130,12 @@ async fn a_key_row_whose_expires_at_is_in_the_past_is_admitted_on_the_data_plane
     let server = MockServer::new(state).await;
 
     // This request goes through a REAL HTTP round trip and the `keys` engine arm checks the
-    // token's own `exp` against the process's REAL wall clock (`crate::store::now()`), not an
+    // token's own `exp` against the process's REAL wall clock (`busbar_substrate::store::now()`), not an
     // injected one — so, unlike the seam test above, the token here must be minted relative to the
     // actual current time, not the module's frozen `NOW`/`TOKEN_EXP` constants (those would already
     // be expired by wall-clock time and get refused for the token's own `exp`, not for anything to
     // do with the row's `expires_at`).
-    let real_now = crate::store::now();
+    let real_now = busbar_substrate::store::now();
     let real_token_exp = real_now + 3_600;
     let real_row_expired_at = real_now - 30 * 86_400;
 

@@ -502,7 +502,7 @@ impl Walk {
             facts
                 .usage
                 .as_ref()
-                .map(crate::engine::usage::tier_usage)
+                .map(busbar_llm_codec::wire_shim::tier_usage)
                 .unwrap_or_default()
         };
         Some(LateReport {

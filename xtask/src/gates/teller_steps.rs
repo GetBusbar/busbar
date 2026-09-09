@@ -36,7 +36,75 @@ const MANIFEST_REL: &str = "crates/busbar/Cargo.toml";
 /// A root verdict owes an ARGUMENT, not a label. Sixty characters is the width `"not yet"` fails
 /// and a sentence someone could disagree with passes. It is a `const` here with no environment
 /// override on purpose: the only way to lower a floor is a reviewable source edit.
+///
+/// A CHARACTER COUNT IS NOT A CONTENT CHECK, and on its own this one was the whole rule. Sixty
+/// characters is cleared by `"aaaaaaaa…"`, by `"not yet not yet not yet not yet not yet not yet"`,
+/// and — the shape that actually happens — by ONE boilerplate sentence pasted into all fifty cells,
+/// which reads as fifty arguments and is one. Each of those is a label wearing a sentence's length.
+/// [`note_problem`] below adds the three cheap properties that separate an argument from padding,
+/// and every floor here is a `const` for the same reviewable-edit reason.
 const MIN_ROOT_NOTE: usize = 60;
+
+/// An argument is made of words. The committed matrix's thinnest note runs fourteen.
+const MIN_ROOT_NOTE_WORDS: usize = 8;
+
+/// …and of DIFFERENT words: repeating one phrase to reach a length is the cheapest way to clear a
+/// count. The committed matrix's thinnest note carries twelve distinct words.
+const MIN_ROOT_NOTE_DISTINCT_WORDS: usize = 7;
+
+/// No character may run longer than this. Padding to a length is a run; English is not. The
+/// committed matrix's longest run is two (`ll`, `ss`, …).
+const MAX_ROOT_NOTE_CHAR_RUN: usize = 4;
+
+/// The content half of the note rule: what a note must be BEYOND long enough. Returns the sentence
+/// naming the defect, or `None` when the note argues something.
+///
+/// Uniqueness is NOT here — it is a property of the note against every OTHER note in the matrix,
+/// so it is checked by the caller, which is the only place that can see them all.
+fn note_problem(note: &str) -> Option<String> {
+    if note.chars().count() < MIN_ROOT_NOTE {
+        return Some(format!(
+            "every root verdict owes a one-line argument (>= {MIN_ROOT_NOTE} chars), a proof as \
+             much as a gap"
+        ));
+    }
+    let words: Vec<String> = note
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.len() < MIN_ROOT_NOTE_WORDS {
+        return Some(format!(
+            "an argument is made of words, and this one has {} (>= {MIN_ROOT_NOTE_WORDS} owed). A \
+             character count alone is cleared by padding",
+            words.len()
+        ));
+    }
+    let distinct: BTreeSet<&str> = words.iter().map(String::as_str).collect();
+    if distinct.len() < MIN_ROOT_NOTE_DISTINCT_WORDS {
+        return Some(format!(
+            "{} distinct word(s) across {} (>= {MIN_ROOT_NOTE_DISTINCT_WORDS} owed): repeating one \
+             phrase to reach a length is a label, not an argument",
+            distinct.len(),
+            words.len()
+        ));
+    }
+    let mut run = 0usize;
+    let mut prev = None;
+    for c in note.chars() {
+        run = if Some(c) == prev { run + 1 } else { 1 };
+        if run > MAX_ROOT_NOTE_CHAR_RUN {
+            return Some(format!(
+                "the character {c:?} runs {run} times: padding to a length is a run, English is not"
+            ));
+        }
+        prev = Some(c);
+    }
+    None
+}
 
 const STATUSES: [&str; 3] = ["mapped", "new", "none"];
 const ROOT_STATES: [&str; 2] = ["none", "proven"];
@@ -250,16 +318,65 @@ pub fn resolve_cell(cx: &Ctx, cell_id: &str) -> Option<String> {
     None
 }
 
-/// The first file under `base`, in sorted path order, whose text contains `needle`. A plain
-/// substring, as the Python's `rest in text` is — a scenario id is declared as a literal.
+/// The characters a scenario id is made of. Anything else is a boundary, and a match that is not
+/// bounded on both sides is a match on a DIFFERENT id that merely starts or ends the same way.
+fn is_id_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '|' | '/')
+}
+
+/// Does `text` DECLARE `needle` — i.e. does the id occur as a whole token, not as a fragment of a
+/// longer one?
+///
+/// THE PLAIN SUBSTRING THIS REPLACES WAS THE BUG, and it was inherited from the Python's
+/// `rest in text`. A scenario id is a hyphenated word, and ids in a suite are near-neighbours by
+/// construction: `stream`, `stream-abort`, `stream-abort-mid-frame`. Under a naked `contains`,
+/// EVERY id that is a prefix — or an infix, or a suffix — of a surviving one resolves to the
+/// surviving one's file. So deleting `stream-abort` while `stream-abort-mid-frame` stays leaves the
+/// matrix's cell for the deleted scenario resolving green, owned by a file that declares something
+/// else entirely. That is the precise failure this whole rule exists to catch ("a claim may not
+/// outlive its evidence"), passing because of how the check was spelled.
+///
+/// Token-exactness is the fix: the id must be bounded on both sides by a character no id can
+/// contain — a quote, a bracket, whitespace, a comma, an equals sign, end of file. That is exactly
+/// how these ids are actually written down (as string literals and table keys), so nothing that
+/// genuinely declares an id stops matching, and a longer id that merely CONTAINS this one no longer
+/// answers for it.
+fn declares_id(text: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let bytes = text.as_bytes();
+    let nlen = needle.len();
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(needle) {
+        let start = from + rel;
+        let end = start + nlen;
+        let before_ok = start == 0 || !text[..start].chars().next_back().is_some_and(is_id_char);
+        let after_ok = end >= bytes.len() || !text[end..].chars().next().is_some_and(is_id_char);
+        if before_ok && after_ok {
+            return true;
+        }
+        // Advance by ONE character, not by the match length: overlapping occurrences are real, and
+        // skipping past a rejected match can step over the bounded one that follows it.
+        from = start + text[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
+/// The first file under `base`, in sorted path order, that DECLARES `needle` as a whole token.
 fn declared_in_source(cx: &Ctx, base: &str, needle: &str) -> Option<String> {
     let mut paths: Vec<String> = Vec::new();
     collect_paths(&cx.abs(base), cx.root(), &mut paths);
     paths.sort();
     paths
         .into_iter()
-        .find(|rel| cx.read(rel).is_ok_and(|t| t.contains(needle)))
+        .find(|rel| cx.read(rel).is_ok_and(|t| declares_id(&t, needle)))
 }
+
+/// Path components that are BUILD OUTPUT, never a declaration site. A `__pycache__/*.pyc` carries
+/// every id its source did, so a scenario deleted from the `.py` still resolves — to a compiled
+/// copy of the file it was deleted from. An id is owned by a source file or by nothing.
+const NOT_A_DECLARATION_SITE: [&str; 4] = ["__pycache__", ".git", "target", "node_modules"];
 
 fn collect_paths(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<String>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
@@ -267,6 +384,14 @@ fn collect_paths(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<St
     };
     for entry in rd.filter_map(Result::ok) {
         let path = entry.path();
+        let skip = path.file_name().is_some_and(|n| {
+            NOT_A_DECLARATION_SITE
+                .iter()
+                .any(|bad| n.to_string_lossy() == *bad)
+        });
+        if skip {
+            continue;
+        }
         if path.is_dir() {
             collect_paths(&path, root, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
@@ -405,6 +530,9 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
     let mut proven_per_leg: BTreeMap<String, usize> =
         leg_file.keys().map(|l| (l.clone(), 0usize)).collect();
 
+    // note text -> the `plane.step` that argued it first, for the reuse check below.
+    let mut seen_notes: BTreeMap<String, String> = BTreeMap::new();
+
     for plane in m.planes() {
         let Some(leg) = leg_of_plane.get(&plane) else {
             continue;
@@ -440,14 +568,26 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
                 continue;
             }
             let note = r.get("note").as_str().unwrap_or("").trim().to_string();
-            if note.chars().count() < MIN_ROOT_NOTE {
+            if let Some(why) = note_problem(&note) {
                 p.column.push(format!(
-                    "{LEDGER_REL}: matrix.{plane}.{step}.root has note {}: every root verdict \
-                     owes a one-line argument (>= {MIN_ROOT_NOTE} chars), a proof as much as a gap",
+                    "{LEDGER_REL}: matrix.{plane}.{step}.root has note {}: {why}",
                     json_lite::py_repr(&note)
                 ));
                 continue;
             }
+            // THE ARGUMENT MUST BE THIS CELL'S. One sentence pasted into every cell clears every
+            // length and shape floor above while saying nothing about any particular verdict --
+            // fifty identical arguments are one argument and forty-nine labels. The first cell to
+            // use a note keeps it; each later reuse is named against the cell it was taken from.
+            if let Some(first) = seen_notes.get(&note) {
+                p.column.push(format!(
+                    "{LEDGER_REL}: matrix.{plane}.{step}.root reuses the note already argued at \
+                     matrix.{first} verbatim: a note copied between cells is boilerplate, not an \
+                     argument about this cell's verdict"
+                ));
+                continue;
+            }
+            seen_notes.insert(note.clone(), format!("{plane}.{step}"));
             if state == "none" {
                 continue;
             }
@@ -1116,6 +1256,20 @@ impl Gate for TellerStepsGate {
             }
         };
 
+        // A REAL note from a DIFFERENT cell, for the boilerplate-reuse plant below. Lifted out of
+        // the committed matrix rather than invented, so the plant is a note that already clears
+        // every length and shape floor -- which is the entire point of the reuse rule.
+        let borrowed_note = doc
+            .get("matrix")
+            .get("mcp")
+            .as_object()
+            .and_then(|steps| {
+                steps
+                    .iter()
+                    .find_map(|(_, cell)| cell.get("root").get("note").as_str().map(str::to_string))
+            })
+            .unwrap_or_default();
+
         // Every plant is a MUTATION OF THE REAL COMMITTED MATRIX, not a synthetic fixture, so a
         // rule that stopped covering the real file's shape cannot pass its own selftest.
         let plants: Vec<Plantable> = vec![
@@ -1188,6 +1342,81 @@ impl Gate for TellerStepsGate {
                 "owes a one-line argument",
                 Box::new(|p: &mut Plant| {
                     p.set_root_field("llm", "meter", "note", Json::Str("not yet".into()));
+                }),
+            ),
+            // ── THE NOTE RULE WAS A CHARACTER COUNT. These three are the labels that cleared it. ──
+            (
+                "a root note padded to length by repeating one phrase",
+                ROW_ROOT_COLUMN,
+                "distinct word",
+                Box::new(|p: &mut Plant| {
+                    // 63 characters, sixteen words, TWO distinct: clears MIN_ROOT_NOTE outright,
+                    // and is the exact label ("not yet") the char-count floor was written against,
+                    // simply repeated until it was long enough.
+                    p.set_root_field(
+                        "llm",
+                        "meter",
+                        "note",
+                        Json::Str(
+                            "not yet not yet not yet not yet not yet not yet not yet not yet"
+                                .into(),
+                        ),
+                    );
+                }),
+            ),
+            (
+                "a root note padded to length with a character run",
+                ROW_ROOT_COLUMN,
+                "padding to a length is a run",
+                Box::new(|p: &mut Plant| {
+                    p.set_root_field(
+                        "llm",
+                        "meter",
+                        "note",
+                        Json::Str(format!(
+                            "the root leg proves this step and here is the argument {}",
+                            "a".repeat(40)
+                        )),
+                    );
+                }),
+            ),
+            (
+                "a root note copied verbatim from another cell",
+                ROW_ROOT_COLUMN,
+                "reuses the note already argued at",
+                Box::new(move |p: &mut Plant| {
+                    p.set_root_field("llm", "meter", "note", Json::Str(borrowed_note.clone()));
+                }),
+            ),
+            // ── THE RIG-CELL RESOLVER MATCHED A NAKED SUBSTRING. ──────────────────────────────
+            // `ADV.MALFORMED` is a strict PREFIX of the real, still-declared `ADV.MALFORMED-JSON`.
+            // Under the plain `contains` this replaces, the deleted id resolved to the surviving
+            // id's file and the cell stayed green — a claim outliving its evidence, which is the
+            // one thing this row exists to refuse. Token-exactness is what makes this plant red.
+            (
+                "a rig cell id that is only a PREFIX of a scenario that still exists",
+                ROW_RIG,
+                "NOTHING in the tree owns",
+                Box::new(|p: &mut Plant| {
+                    p.set_cell_field(
+                        "mcp",
+                        "decode",
+                        "cell",
+                        Json::Str("mcp.battery|ADV.MALFORMED".into()),
+                    );
+                }),
+            ),
+            (
+                "a rig cell id that is only a SUFFIX of a scenario that still exists",
+                ROW_RIG,
+                "NOTHING in the tree owns",
+                Box::new(|p: &mut Plant| {
+                    p.set_cell_field(
+                        "a2a",
+                        "authenticate",
+                        "cell",
+                        Json::Str("a2a.supplement|SERVER-002".into()),
+                    );
                 }),
             ),
             (

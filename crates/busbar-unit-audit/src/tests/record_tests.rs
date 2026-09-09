@@ -672,3 +672,7 @@ impl<T, E> UnwrapErrOrElse<T, E> for Result<T, E> {
         }
     }
 }
+
+/// What a break SAYS, and the two halves of the checks that find one.
+#[path = "break_reporting_tests.rs"]
+mod break_reporting_tests;

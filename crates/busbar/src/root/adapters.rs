@@ -47,7 +47,6 @@
 
 use busbar_caps::{Route, UnitToken};
 use busbar_contract::StatusClass;
-use busbar_contract::WireStatus;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::classify::Diagnostics;
 use busbar_unit_breaker::journal::NoopJournal;
@@ -219,11 +218,20 @@ impl BreakerAdapter {
     /// table the breaker has always read a classless answer through.
     fn narrow_code(status: UpstreamStatus) -> Option<busbar_unit_breaker::port::UpstreamCode> {
         use busbar_unit_breaker::port::UpstreamCode;
-        match status.code {
-            Some(WireStatus::Http(code)) => Some(UpstreamCode::Http(code)),
-            Some(WireStatus::Grpc(code)) => Some(UpstreamCode::Grpc(code)),
-            None => Self::fold_class(status.class).map(UpstreamCode::Http),
+        // Asked by NAMESPACE, not by arm. The narrowing is this adapter's own — the breaker's
+        // enum is closed and names the two numberings it keeps tables for — but the question put
+        // to the frame is a keyed one, so a numbering this adapter has no table for is simply not
+        // one of these two, and adding a family costs the transport contract nothing here.
+        let Some(code) = status.code else {
+            return Self::fold_class(status.class).map(UpstreamCode::Http);
+        };
+        if let Some(http) = code.http().and_then(|n| u16::try_from(n).ok()) {
+            return Some(UpstreamCode::Http(http));
         }
+        if let Some(grpc) = code.grpc().and_then(|n| u8::try_from(n).ok()) {
+            return Some(UpstreamCode::Grpc(grpc));
+        }
+        None
     }
 }
 

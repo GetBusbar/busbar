@@ -95,7 +95,7 @@ fn gov() -> Arc<crate::governance::GovState> {
 fn admit_over_facts_matches_try_admit() {
     let gov = gov();
     let cost = group_cost("team", 5); // 5c cap, 1c/request → 5 requests fit
-    let now = crate::store::now_ms() / 1_000;
+    let now = busbar_substrate::store::now_ms() / 1_000;
     // The real key the plane would resolve: `chain_for` reads only `id` + `group`.
     let key = busbar_api::VirtualKey {
         generation_hash: String::new(),
@@ -187,7 +187,7 @@ fn govern_admit_reason_reason_bytes_match_direct_try_admit() {
         let key = test_key("vk_reason", key_group);
         let gov = gov();
         let cost = make_cost();
-        let now = crate::store::now_ms() / 1_000;
+        let now = busbar_substrate::store::now_ms() / 1_000;
         // Exhaust the budget for the Limit case (a no-op for MissingGroup/Disabled, drain = 0).
         for _ in 0..drain {
             let _ = gov.try_admit(&cost, &key, pool, now);
@@ -295,7 +295,7 @@ fn govern_admit_reason_admits_and_registers_grant() {
 #[test]
 fn charge_over_usage_matches_record_metering() {
     let gov = gov();
-    let now = crate::store::now_ms() / 1_000;
+    let now = busbar_substrate::store::now_ms() / 1_000;
     // DIRECT: the plane's own metering row.
     gov.record_metering(
         "vk_faithful_meter",

@@ -1,5 +1,10 @@
 use super::*;
 
+// R5-store: the breaker's runtime config grammar is the substrate's and is named from there. These
+// tests drive core's in-memory FSM (`HealthState`), which still resolves through `super::*`; only
+// the config carriers moved out of core's re-export chain.
+use busbar_substrate::store::{BreakerCfg, TripConfig, TripMode};
+
 fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
     LaneData {
         model: format!("model-{}", id),
@@ -2445,7 +2450,7 @@ fn test_concurrent_pool_isolation_stress() {
                 // Transients route via pool "B" — must NOT affect pool A's cell.
                 s.record_transient_in("B", 0, "5xx", &c, None);
                 // Concurrent reads against both pools + a recovery, to stir the cells.
-                let t = crate::store::now();
+                let t = busbar_substrate::store::now();
                 let _ = s.usable_in("A", 0, t);
                 let _ = s.usable_in("B", 0, t);
             }
@@ -2458,7 +2463,7 @@ fn test_concurrent_pool_isolation_stress() {
     let total = (THREADS * ITERS) as u64;
     // (a) lane-global ok atomic is exact.
     assert_eq!(
-        store.snapshot(0, crate::store::now()).ok,
+        store.snapshot(0, busbar_substrate::store::now()).ok,
         total,
         "lane-global ok must be exact under concurrency"
     );
@@ -3538,7 +3543,7 @@ fn test_export_health_reads_consistent_state_cooldown_pair() {
 /// refuses until a held permit drops.
 #[test]
 fn test_unbounded_lane_skips_the_semaphore_bounded_still_enforces() {
-    use crate::store::Permit;
+    use busbar_substrate::store::Permit;
     // Unbounded: the sentinel capacity, exactly what main.rs seeds for an omitted max_concurrent.
     let unbounded = HealthState::new(vec![make_lane_data(0, tokio::sync::Semaphore::MAX_PERMITS)]);
     let before = unbounded.available_permits(0);

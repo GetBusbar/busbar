@@ -26,6 +26,280 @@ cd "$(dirname "$0")/../.." || exit 1
 # shellcheck source=scripts/release-gate/lib.sh
 . scripts/release-gate/lib.sh
 
+# ── THE TWO VERDICTS THE SELF-TEST BELOW DRIVES ─────────────────────────────────────────────────
+# Defined here, above the self-test, so the self-test exercises THE code the run uses rather than a
+# copy of its rule.
+
+# release:no-extras, both directions.
+no_extras_verdict() {  # no_extras_verdict <observed-names-newline-separated> <tag>
+  local got want extra missing
+  got="$(printf '%s\n' "$1" | awk 'NF' | sort)"
+  want="$(contract_asset_names "$2" | awk 'NF' | sort)" || {
+    record "release:no-extras" FAIL "cannot derive the contracted asset set from ${CONTRACT}" \
+      "the owed side of this comparison could not be built, so neither direction was asserted. A short owed list makes every un-owed asset look contracted. Fix: repair ${CONTRACT}."
+    return
+  }
+  extra="$(comm -23 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | tr '\n' ' ')"
+  # BOTH DIRECTIONS, WHICH IS WHAT THE TITLE ALREADY CLAIMED. `comm -23` alone answers only "is
+  # anything here that should not be"; a release with ZERO assets satisfies it, and the row then
+  # records "publishes exactly the contracted asset set" over an empty release. The per-target legs
+  # assert presence for the five archives, but the two metadata assets are owed by nobody else, and
+  # a leg that never ran reports nothing at all — which is the case this row is the backstop for.
+  missing="$(comm -13 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | tr '\n' ' ')"
+  if [ -z "${extra// /}" ] && [ -z "${missing// /}" ]; then
+    record "release:no-extras" PASS "Release ${2} publishes exactly the contracted asset set" ""
+  elif [ -n "${missing// /}" ]; then
+    record "release:no-extras" FAIL "Release ${2} is MISSING contracted assets" \
+      "missing: ${missing}${extra:+ | unaccounted: ${extra}}. The contract names an asset this release does not publish. Fix: re-run the job that uploads it, or stop contracting it in ${CONTRACT}."
+  else
+    record "release:no-extras" FAIL "Release ${2} carries assets the contract does not account for" \
+      "unaccounted: ${extra}. Either release.yml grew an artifact nobody verifies, or a contracted asset was renamed (in which case its old name is also reported missing above). Fix: add it to ${CONTRACT} so it is checked, or stop uploading it."
+  fi
+}
+
+# meta:openapi's version assertion. An ABSENT .info.version is a REFUSAL, not a skip: the guard was
+# `[ -n "$docver" ] && [ "$docver" != "$V" ]`, so a document with the field stripped or nulled fell
+# straight through to PASS — the "generated from the wrong ref" case the check exists for, satisfied
+# by deleting the evidence rather than by matching it.
+openapi_version_ok() {  # openapi_version_ok <docver> <want>
+  [ -n "$1" ] && [ "$1" = "$2" ]
+}
+
+# The pointer guard. One place, so a sixth pointer check cannot get a sixth answer. Returns 0 (and
+# records the row) when the newest published release could not be established, which is the caller's
+# cue not to make its own assertion — see the POINTER_UNRESOLVED block below for what it is for.
+POINTER_UNRESOLVED=0
+pointer_unresolved() {  # pointer_unresolved <id>
+  [ "$POINTER_UNRESOLVED" = 1 ] || return 1
+  record "$1" FAIL "the newest published release could not be established, so ${1} was not verified" \
+    "gh could not enumerate ${REPO:-the repository}'s releases (rate limit, token scope, or an outage). This row asserts what a user gets when they do not name a version; with the owed value unknown the only assertion available is against the version under test, which is this check's own input. Fix: re-run once the releases API is readable."
+  return 0
+}
+
+# ── --selftest ──────────────────────────────────────────────────────────────────────────────────
+#
+# Offline, before a single outbound call. Every case is one the code got WRONG in the green (or the
+# permanently-red) direction before the case existed; that is the entrance requirement.
+if [ "${1:-}" = "--selftest" ]; then
+  st_bad=0
+  ok()   { printf '  [ok]     %s\n' "$1"; }
+  nope() { printf '  [FAILED] %s\n' "$1"; st_bad=1; }
+  st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/relgate-channels-selftest-XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$st_tmp'" EXIT
+  LEDGER="$st_tmp/ledger.tsv"; : > "$LEDGER"
+  st_row() { awk -F'\t' -v i="$1" '$1==i{print $2; exit}' "$LEDGER"; }
+  st_reset() { : > "$LEDGER"; }
+
+  echo "channel-checks selftest"
+
+  # CASE 1: the metadata assets must be in the OWED list at all. The inline jq read
+  # `.metadata_assets[].name` out of an array of STRINGS and the placeholder as `{TAG}` rather than
+  # `{tag}`, so it exited 5, printed nothing, and its status went into a `$( )` — the owed list came
+  # back two names short on every run and both metadata assets were reported as unaccounted extras.
+  if names="$(contract_asset_names v9.9.9 2>"$st_tmp/err")"; then
+    if printf '%s\n' "$names" | grep -q 'busbar-v9\.9\.9\.cdx\.json' \
+       && printf '%s\n' "$names" | grep -q 'busbar-openapi-v9\.9\.9\.json'; then
+      ok "the owed asset list carries the metadata assets, tag-substituted"
+    else
+      nope "the owed asset list is missing a metadata asset: $(printf '%s' "$names" | tr '\n' ' ')"
+    fi
+    if [ "$(printf '%s\n' "$names" | awk 'NF{c++} END{print c+0}')" -ge 7 ]; then
+      ok "and one name per published target beside them"
+    else
+      nope "the owed asset list is short: $(printf '%s' "$names" | tr '\n' ' ')"
+    fi
+  else
+    nope "contract_asset_names FAILED on the real contract: $(tr '\n' ' ' < "$st_tmp/err")"
+  fi
+
+  # CASE 2: a release that publishes NOTHING must not satisfy "publishes exactly the contracted
+  # asset set". `comm -23` alone answers one direction, and an empty observed side has no extras.
+  st_reset; no_extras_verdict "" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "a release with zero assets is RED, not 'exactly the contracted set'"
+  else
+    nope "a release with ZERO assets recorded $(st_row release:no-extras) on release:no-extras"
+  fi
+
+  # CASE 3: one contracted asset missing is RED, and named.
+  st_reset
+  no_extras_verdict "$(contract_asset_names v9.9.9 | grep -v 'cdx')" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ] && grep -q 'cdx' "$LEDGER"; then
+    ok "a single missing contracted asset is RED and named"
+  else
+    nope "a missing SBOM asset recorded $(st_row release:no-extras)"
+  fi
+
+  # CASE 4: the exact contracted set is still GREEN — the fix must not make the row unpassable.
+  st_reset; no_extras_verdict "$(contract_asset_names v9.9.9)" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "PASS" ]; then
+    ok "the exact contracted set still passes"
+  else
+    nope "the exact contracted set recorded $(st_row release:no-extras) — the pass path is broken"
+  fi
+
+  # CASE 5: an extra asset is still RED (the direction that already worked must keep working).
+  st_reset
+  no_extras_verdict "$(contract_asset_names v9.9.9; echo busbar-nobody-verifies-this.tar.gz)" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ] && grep -q 'nobody-verifies-this' "$LEDGER"; then
+    ok "an asset the contract does not name is still RED and named"
+  else
+    nope "an unaccounted asset recorded $(st_row release:no-extras)"
+  fi
+
+  # CASE 6: a contract the owed side cannot be derived from is RED, never a short owed list.
+  printf 'not json\n' > "$st_tmp/broken.json"
+  st_reset
+  CONTRACT="$st_tmp/broken.json" no_extras_verdict "busbar-anything.tar.gz" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "an unreadable contract is RED, not an owed set of nothing"
+  else
+    nope "an unreadable contract recorded $(st_row release:no-extras)"
+  fi
+  st_reset
+  printf '{"targets":[],"metadata_assets":[]}\n' > "$st_tmp/empty.json"
+  CONTRACT="$st_tmp/empty.json" no_extras_verdict "busbar-anything.tar.gz" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "a contract that collapsed to zero assets is RED, not 'nothing is owed'"
+  else
+    nope "a collapsed contract recorded $(st_row release:no-extras)"
+  fi
+  # And the case the empty-array one does NOT reach: a contract that still PARSES and still yields
+  # names, just far too few. jq refuses an empty selection on its own; a contract that lost four of
+  # its five platforms does not, and that is the shape the floor is for.
+  st_reset
+  printf '{"targets":[{"target":"x86_64-unknown-linux-gnu","archive":"tar.gz","published":true}],"metadata_assets":["busbar-{tag}.cdx.json"]}\n' \
+    > "$st_tmp/thin.json"
+  # The observed list is EXACTLY what the thin contract owes, so the two-direction comparison is
+  # satisfied and the only thing that can refuse this run is the floor itself.
+  CONTRACT="$st_tmp/thin.json" no_extras_verdict \
+    "$(printf 'busbar-x86_64-unknown-linux-gnu.tar.gz\nbusbar-v9.9.9.cdx.json\n')" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "a contract that parses but lost most of its platforms trips the owed floor"
+  else
+    nope "a two-asset contract recorded $(st_row release:no-extras) — the owed floor did not fire"
+  fi
+
+  # CASE 6d: the FLOOR'S OWN vacuous case. `[ "" -lt 3 ]` is a shell ERROR, not false, so a count
+  # that could not be taken leaves the `if` untaken and the short list printed with a zero exit —
+  # the floor defeated by exactly the input it exists to catch. Driven against an `awk` on PATH that
+  # prints nothing, which is what a broken or absent awk looks like from here.
+  mkdir -p "$st_tmp/awkstub"
+  printf '#!/bin/sh\nexit 1\n' > "$st_tmp/awkstub/awk"; chmod +x "$st_tmp/awkstub/awk"
+  if ( PATH="$st_tmp/awkstub:$PATH"; contract_asset_names v9.9.9 ) >/dev/null 2>&1; then
+    nope "a count that could not be taken was accepted as a floor — the owed list went out unchecked"
+  else
+    ok "a count that could not be taken is a refusal, not an unchecked owed list"
+  fi
+
+  # CASE 7: an OpenAPI document whose .info.version is ABSENT must not pass the version assertion.
+  # `[ -n "$docver" ] && [ "$docver" != "$V" ]` skipped the comparison entirely when the field was
+  # stripped, and the row fell through to PASS — the exact "generated from the wrong ref" case the
+  # check exists for, satisfied by deleting the evidence.
+  if openapi_version_ok "1.6.0" "1.6.0"; then ok "a matching .info.version passes"; else nope "a matching .info.version was rejected"; fi
+  if openapi_version_ok "" "1.6.0"; then nope "an ABSENT .info.version passed the version assertion"; else ok "an absent .info.version is RED, not skipped"; fi
+  if openapi_version_ok "1.5.0" "1.6.0"; then nope "a WRONG .info.version passed"; else ok "a wrong .info.version is RED"; fi
+
+  # CASE 8: the POINTER GUARD. When gh cannot enumerate the published releases, the five pointer
+  # rows have no owed value; the code used to assign NEWEST="$V" and let them assert that the world
+  # points at the version under test — which is their own input. Each must be RED, by name, and the
+  # check that follows must not run.
+  POINTER_UNRESOLVED=1
+  REPO="acme/thing"
+  for st_id in release:latest-pointer helm:appversion brew:formula-version install:e2e site:download-page; do
+    st_reset
+    if pointer_unresolved "$st_id"; then
+      if [ "$(st_row "$st_id")" = "FAIL" ]; then
+        ok "${st_id} is RED when the newest published release cannot be established"
+      else
+        nope "${st_id} recorded $(st_row "$st_id") with the pointer set unresolved"
+      fi
+    else
+      nope "${st_id} was allowed to assert against its own input with the pointer set unresolved"
+    fi
+  done
+  POINTER_UNRESOLVED=0
+  st_reset
+  if pointer_unresolved release:latest-pointer; then
+    nope "the pointer guard fires even when the release list WAS readable — every pointer row is now dead"
+  else
+    ok "and with the release list readable the pointer checks run as before"
+  fi
+
+  # ── contract:drift — RED ONLY ON REAL DRIFT ─────────────────────────────────────────────────
+  #
+  # This row grepped a build matrix out of release.yml. The build moved to release-stage.yml, so
+  # the grep matched nothing, the empty-set guard fired, and the row recorded "could not read any
+  # build targets" on every healthy release. The guard was right — a comparison against nothing is
+  # not a pass — but a row that is red on a good release gets waived, and a waived drift check is
+  # an absent one. These cases hold both ends: green on the real tree, red on each drift that can
+  # still happen.
+  #
+  # Extracted by name out of THIS file so the selftest drives the row's own code and never a copy.
+  eval "$(awk '/^contract_drift_row\(\)/,/^}/' "$0")"
+
+  st_reset
+  contract_drift_row ".github/workflows/release-stage.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "PASS" ]; then
+    ok "contract:drift is GREEN on the tree as it stands (it was permanently red)"
+  else
+    nope "contract:drift is red on a healthy tree: $(awk -F'\t' '$1=="contract:drift"{print $4; exit}' "$LEDGER")"
+  fi
+
+  st_reset
+  contract_drift_row ".github/workflows/release.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "FAIL" ]; then
+    ok "a workflow that does NOT derive its matrix from the contract is drift"
+  else
+    nope "a workflow that never reads the contract recorded $(st_row contract:drift)"
+  fi
+
+  # A second, hand-typed list is the exact shape the single source removed. If one comes back
+  # naming a platform the contract does not declare, that is a leg verifying an artifact nobody
+  # described — the original failure, in the file the build actually lives in now.
+  st_reset
+  {
+    printf 'jobs:\n  build:\n    strategy:\n      matrix:\n        include:\n'
+    printf '          - target: x86_64-unknown-linux-gnu\n'
+    printf '          - target: sparc64-unknown-linux-gnu\n'
+    printf '    steps:\n      - run: cat .github/release-targets.json\n'
+  } > "$st_tmp/handlisted.yml"
+  contract_drift_row "$st_tmp/handlisted.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "FAIL" ]; then
+    ok "a hand-listed target the contract does not declare is drift, by name"
+  else
+    nope "a workflow naming sparc64 recorded $(st_row contract:drift)"
+  fi
+
+  # And a workflow that names ONLY declared targets, while still reading the manifest, is not drift
+  # — otherwise the row would be red on release-stage.yml's own verify-image legs.
+  st_reset
+  {
+    printf 'jobs:\n  verify:\n    strategy:\n      matrix:\n        include:\n'
+    printf '          - target: image-linux-amd64\n'
+    printf '    steps:\n      - run: cat .github/release-targets.json\n'
+  } > "$st_tmp/named-ok.yml"
+  contract_drift_row "$st_tmp/named-ok.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "PASS" ]; then
+    ok "naming a DECLARED target by hand is not drift (the image legs must not red the row)"
+  else
+    nope "a workflow naming only declared targets recorded $(st_row contract:drift)"
+  fi
+
+  st_reset
+  contract_drift_row "$st_tmp/there-is-no-such-workflow.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "FAIL" ]; then
+    ok "a staging workflow that is not there is red, not silently skipped"
+  else
+    nope "a missing staging workflow recorded $(st_row contract:drift)"
+  fi
+
+  echo
+  [ "$st_bad" = 0 ] && { echo "channel-checks selftest: the owed asset set and its two directions hold"; exit 0; }
+  echo "channel-checks selftest: FAILED"; exit 1
+fi
+
 VERSION="${1:?usage: channel-checks.sh <version>}"
 V="${VERSION#v}"
 TAG="v${V}"
@@ -53,11 +327,24 @@ NEWEST="$(gh api --paginate "repos/${REPO}/releases" \
   --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' 2>/dev/null \
   | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
 if [ -z "${NEWEST:-}" ]; then
-  # Not recoverable by guessing. Every pointer assertion below would be vacuous, and a vacuous
-  # assertion that reports PASS is the failure mode this whole gate exists to eliminate.
-  echo "::warning::could not enumerate ${REPO}'s published releases; pointer checks will assert against the version under test (${V})."
+  # NOT RECOVERABLE BY GUESSING, AND IT USED TO GUESS. The two lines above this one already said
+  # "every pointer assertion below would be vacuous, and a vacuous assertion that reports PASS is
+  # the failure mode this whole gate exists to eliminate" — and then the code assigned NEWEST="$V"
+  # and carried on. All five pointer rows (release:latest-pointer, helm:appversion,
+  # brew:formula-version, install:e2e, site:download-page) then asserted that the world points at
+  # the version under test, which is a value derived from their own input rather than from the
+  # world. On a `gh` rate-limit, a token-scope change or a GitHub outage, five rows go PASS having
+  # compared the release under test to itself.
+  #
+  # A `::warning::` is also not a ledger row, so gate.sh never saw that this happened at all.
+  #
+  # So the five ids are recorded FAIL, by name, and the checks below do not run: a pointer whose
+  # owed value could not be established has not been verified, and "not verified" is red here.
+  echo "::warning::could not enumerate ${REPO}'s published releases."
+  POINTER_UNRESOLVED=1
   NEWEST="$V"
 fi
+
 POINTER_NOTE=""
 if [ "$NEWEST" != "$V" ]; then
   POINTER_NOTE=" (NOTE: ${V} is not the newest published release — ${NEWEST} is — so the default-pointer checks below correctly assert ${NEWEST}, not ${V}.)"
@@ -85,12 +372,14 @@ fi
 # checked over plain HTTP rather than api.github.com deliberately: the API is the exact dependency
 # install:no-api-github forbids, and using it here would make the gate's own resolution the first
 # thing to 403.
-loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)"
-if [ "${loc##*/releases/tag/}" = "$PTAG" ]; then
-  record "release:latest-pointer" PASS "github.com/${REPO}/releases/latest -> ${PTAG}${POINTER_NOTE}" ""
-else
-  record "release:latest-pointer" FAIL "the /releases/latest redirect does not point at ${PTAG}" \
-    "expected .../releases/tag/${PTAG} (the newest published release), observed '${loc:-<no redirect>}'. install.sh and every download button on getbusbar.com resolve through this, so all of them are handing users a different release. Fix: mark Release ${PTAG} as 'latest' — it is probably still a draft or flagged prerelease."
+if ! pointer_unresolved release:latest-pointer; then
+  loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)"
+  if [ "${loc##*/releases/tag/}" = "$PTAG" ]; then
+    record "release:latest-pointer" PASS "github.com/${REPO}/releases/latest -> ${PTAG}${POINTER_NOTE}" ""
+  else
+    record "release:latest-pointer" FAIL "the /releases/latest redirect does not point at ${PTAG}" \
+      "expected .../releases/tag/${PTAG} (the newest published release), observed '${loc:-<no redirect>}'. install.sh and every download button on getbusbar.com resolve through this, so all of them are handing users a different release. Fix: mark Release ${PTAG} as 'latest' — it is probably still a draft or flagged prerelease."
+  fi
 fi
 
 # ── release:no-extras — the asset list is exactly the contract, in both directions ──────────────
@@ -100,20 +389,7 @@ fi
 # missing — which the presence check catches, but which reads as an unexplained absence rather than
 # a rename until you can see what IS there.
 if [ -n "$rel_json" ]; then
-  got="$(printf '%s' "$rel_json" | jq -r '.assets[].name' | sort)"
-  want="$( { while read -r t; do
-               [ -n "$t" ] || continue
-               printf 'busbar-%s.%s\n' "$t" "$(target_field "$t" archive)"
-             done < <(published_targets)
-             jq -r --arg tag "$TAG" '.metadata_assets[].name | gsub("\\{TAG\\}"; $tag)' "$CONTRACT"
-           } | sort )"
-  extra="$(comm -23 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | tr '\n' ' ')"
-  if [ -z "${extra// /}" ]; then
-    record "release:no-extras" PASS "Release ${TAG} publishes exactly the contracted asset set" ""
-  else
-    record "release:no-extras" FAIL "Release ${TAG} carries assets the contract does not account for" \
-      "unaccounted: ${extra}. Either release.yml grew an artifact nobody verifies, or a contracted asset was renamed (in which case its old name is also reported missing above). Fix: add it to .github/release-targets.json so it is checked, or stop uploading it."
-  fi
+  no_extras_verdict "$(printf '%s' "$rel_json" | jq -r '.assets[].name')" "$TAG"
 else
   record "release:no-extras" FAIL "cannot compare the asset list — Release ${TAG} was not readable" "see release:exists."
 fi
@@ -166,9 +442,9 @@ check_metadata_asset() {  # check_metadata_asset <id> <name> <min-bytes> <kind>
           "observed openapi='$(jq -r '.openapi // "<absent>"' "${WORK}/${name}")'. Fix: re-run release.yml's openapi job."
         return
       fi
-      if [ -n "$docver" ] && [ "$docver" != "$V" ]; then
-        record "$id" FAIL "${name} describes version ${docver}, not ${V}" \
-          "the document was generated from the wrong ref; its filename says ${TAG}. Fix: re-run release.yml's openapi job at ${TAG}."
+      if ! openapi_version_ok "$docver" "$V"; then
+        record "$id" FAIL "${name} describes version ${docver:-<absent>}, not ${V}" \
+          "the document was generated from the wrong ref, or it carries no .info.version at all; its filename says ${TAG}. Fix: re-run release.yml's openapi job at ${TAG}."
         return
       fi
       ;;
@@ -227,11 +503,13 @@ resolve_appver() {
     | awk '/^  busbar:/{f=1} f && /appVersion:/{print $2; exit}' | tr -d '"')"
   [ "$appver" = "$NEWEST" ]
 }
-if retry 8 15 resolve_appver; then
-  record "helm:appversion" PASS "GetBusbar/helm-charts busbar chart appVersion == ${NEWEST}${POINTER_NOTE}" ""
-else
-  record "helm:appversion" FAIL "the published helm chart's appVersion is not ${NEWEST}" \
-    "observed '${appver:-<none>}' in https://getbusbar.github.io/helm-charts/index.yaml. \`helm install\` deploys a different busbar than the newest release. Fix: re-run GetBusbar/helm-charts' release-on-upstream workflow for v${NEWEST}."
+if ! pointer_unresolved helm:appversion; then
+  if retry 8 15 resolve_appver; then
+    record "helm:appversion" PASS "GetBusbar/helm-charts busbar chart appVersion == ${NEWEST}${POINTER_NOTE}" ""
+  else
+    record "helm:appversion" FAIL "the published helm chart's appVersion is not ${NEWEST}" \
+      "observed '${appver:-<none>}' in https://getbusbar.github.io/helm-charts/index.yaml. \`helm install\` deploys a different busbar than the newest release. Fix: re-run GetBusbar/helm-charts' release-on-upstream workflow for v${NEWEST}."
+  fi
 fi
 
 # ── helm:render — the chart is not merely INDEXED, it renders ──────────────────────────────────
@@ -320,7 +598,9 @@ fetch_formula() {
 }
 if retry 6 15 fetch_formula; then
   fver="$(printf '%s' "$formula" | sed -n 's/^ *version *"\([^"]*\)".*/\1/p' | head -1)"
-  if [ "$fver" = "$NEWEST" ]; then
+  if pointer_unresolved brew:formula-version; then
+    :
+  elif [ "$fver" = "$NEWEST" ]; then
     record "brew:formula-version" PASS "the homebrew tap formula is version ${NEWEST}${POINTER_NOTE}" ""
   else
     record "brew:formula-version" FAIL "the homebrew tap formula is version '${fver:-<none>}', not ${NEWEST}" \
@@ -427,7 +707,9 @@ fi
 # install:e2e — run the LIVE script, with the environment scrubbed of GitHub credentials, and prove
 # a binary lands and reports the version under test. Deliberately not ./install.sh from the
 # checkout: a fix that merged and never deployed must still fail here.
-if [ -n "$script_body" ]; then
+if pointer_unresolved install:e2e; then
+  :
+elif [ -n "$script_body" ]; then
   ins="${WORK}/install"; mkdir -p "$ins"
   printf '%s' "$script_body" > "${ins}/install.sh"
   if ( cd "$ins" && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_ACTIONS -u CI \
@@ -455,7 +737,9 @@ fi
 # advertising v1.5.20, which is the shape of bug that only shows up once the minor rolls over.
 DL_URL="https://getbusbar.com/download/"
 dl_code="$(http_code "$DL_URL")"
-if [ "$dl_code" = "200" ]; then
+if pointer_unresolved site:download-page; then
+  :
+elif [ "$dl_code" = "200" ]; then
   page="$(fetch "$DL_URL" || true)"
   # ANCHORED ON BOTH SIDES. The old unanchored substring grep passed v1.5.2 against a page
   # advertising v1.5.20 — a bug that only appears once the patch number rolls into two digits, so
@@ -496,50 +780,81 @@ fi
 
 # ── contract:drift — the contract still describes the thing it claims to describe ───────────────
 #
-# The whole gate is derived from .github/release-targets.json. If the build grows a sixth target and
-# the contract does not, the gate keeps passing while an entire platform ships unverified — green and
-# blind, which is worse than absent.
+# THE ROW WAS READING A FILE THAT NO LONGER HOLDS A BUILD MATRIX, AND SAYING SO FOREVER.
 #
-# THIS ROW WAS READING A FILE THAT NO LONGER HOLDS THE MATRIX. It grepped release.yml for
-# `- target: <triple>` lines. The build moved to release-stage.yml when the pipeline split
-# (build+verify+record on qa, promote-only on main), and it moved as a DERIVATION rather than a
-# literal: release-stage.yml's `targets` job reads this very contract and filters on `published`.
-# So the grep matched nothing, the `-z "$wf_targets"` branch fired, and the row recorded FAIL on
-# every single run — a standing red that says "update the parser", which is a message about this
-# script rather than about the release, and which trains a reader to ignore the one row whose job is
-# to notice that the gate has gone blind.
+# It grepped `^ *- target: ...` out of .github/workflows/release.yml and compared the result to the
+# contract's published targets. The build moved: release.yml now only PROMOTES what qa staged, and
+# every target is enumerated in release-stage.yml. So the grep matched nothing, the empty-set guard
+# fired, and the row recorded
 #
-# What can drift now is a different shape, so this asserts a different thing — and it is a STRONGER
-# property than the old list comparison, because a derivation cannot disagree with its own source:
+#     could not read any build targets out of .github/workflows/release.yml
 #
-#   1. release-stage.yml really does derive its build matrix FROM THIS CONTRACT, filtered on
-#      `published`. If that derivation is ever replaced by a literal list, the build's list and the
-#      gate's list become independent again and this row must go red the moment it happens.
-#   2. NO workflow carries a literal `- target: <triple>` build matrix. That is precisely the shape
-#      the old parser looked for, and finding one anywhere means a SECOND build path exists whose
-#      target list nothing compares to the contract — the original defect, relocated.
-wf=".github/workflows/release-stage.yml"
-contract_file="${CONTRACT##*/}"
-contract_targets="$(published_targets | sort -u)"
-# Deliberately over the whole workflows directory, not just $wf: the point is that no build path
-# ANYWHERE enumerates targets by hand, and a new file is exactly where one would reappear.
-literal_matrices="$(grep -rlE '^ *- target: [A-Za-z0-9_.-]+' .github/workflows 2>/dev/null | sort | tr '\n' ' ')"
+# on every run. That guard was right to refuse an empty set — a comparison against nothing is not a
+# pass — but a row that is red on a healthy release is a row somebody eventually waives, and the
+# moment it is waived the drift check is gone with it. A permanent red and an absent check are the
+# same check.
+#
+# WHAT DRIFT STILL MEANS, NOW THAT THERE IS ONE SOURCE. release-stage.yml's `targets` job builds
+# the matrix by READING .github/release-targets.json and filtering on `published`. The old failure
+# — a workflow growing a platform the contract does not know about — cannot happen through that
+# path, because there is no second list to disagree with; that is the fix the split already made.
+# Two things can still drift, and both are what this row now asserts:
+#
+#   1. THE DERIVATION ITSELF. If the staging workflow ever stops reading the manifest and starts
+#      carrying its own list, the single source is gone and the old failure is back. So the row
+#      requires that release-stage.yml reads the contract file by name.
+#   2. THE TARGETS IT NAMES BY HAND. release-stage.yml names `image-linux-amd64` and
+#      `image-linux-arm64` literally, in the verify-image matrix, because an image target is not a
+#      cargo triple and cannot come from the build matrix. Every literally-named target must be
+#      DECLARED in the contract, or a leg is verifying an artifact the contract does not describe.
+#
+# And where a hand-written `- target:` list does exist alongside the derivation, it is still
+# compared to the contract, so re-introducing one is caught rather than ignored.
+# Taken as a PARAMETER and written as a function so channel-checks --selftest can drive THIS code
+# against a staged workflow — a real one, a hand-listed one, one naming an undeclared target — with
+# no network and no release. A drift check nobody can exercise is a drift check nobody trusts, and
+# this one spent its whole life red without anyone being able to ask it a question.
+contract_drift_row() {  # contract_drift_row <staging-workflow-path>
+  local wf="$1" contract_targets declared_targets wf_named wf_body drift undeclared
 if [ ! -f "$wf" ]; then
   record "contract:drift" FAIL "${wf} not found" \
-    "the build matrix lives in that file and the gate cannot check itself for drift without it. Fix: run this from a full checkout, or — if the staging workflow was renamed — update this row to name the file that now derives the matrix."
-elif [ -z "$contract_targets" ]; then
-  record "contract:drift" FAIL "${CONTRACT} declares no published targets" \
-    "every per-target id in the gate is derived from that list, so an empty one makes the entire platform fan-out vacuous and the gate green over nothing. Fix: restore the targets and their published flags in ${CONTRACT}."
-elif ! grep -qF "$contract_file" "$wf"; then
-  record "contract:drift" FAIL "${wf} no longer reads ${CONTRACT}" \
-    "its build matrix used to be derived from the same file this gate derives its expected checks from, which is what made drift impossible rather than unlikely. It is not derived from it now, so the built set and the verified set are independent lists again. Fix: restore the derivation in ${wf}'s \`targets\` job, or point this row at whatever file now derives the matrix."
-elif ! grep -qF 't["published"]' "$wf"; then
-  record "contract:drift" FAIL "${wf} reads ${CONTRACT} but no longer filters on \`published\`" \
-    "without that predicate the matrix picks up the musl and image entries, which are inputs to the container rather than release downloads — the build is asked for \`cargo build --target image-linux-amd64\` and the asset list asserts names nothing uploads. \`published\` is the field that says which is which, and scripts/release-gate/lib.sh's published_targets() filters on the same one. Fix: restore the filter in ${wf}'s \`targets\` job."
-elif [ -n "$literal_matrices" ]; then
-  record "contract:drift" FAIL "a workflow enumerates release targets by hand: ${literal_matrices}" \
-    "a literal \`- target: <triple>\` matrix is a second, independent statement of which platforms a release ships, and nothing compares it to ${CONTRACT}. That is how a platform comes to be built and never verified (or verified and never built). Fix: derive that matrix from ${CONTRACT} the way ${wf}'s \`targets\` job does."
+    "the gate cannot check itself for drift. Fix: run this from a full checkout. If staging moved to another workflow, this row must move with it rather than be waived."
 else
-  record "contract:drift" PASS "${wf} derives its build matrix from ${CONTRACT} (published only), and no workflow hardcodes one" \
-    "gate publishes: $(printf '%s' "$contract_targets" | tr '\n' ' ')"
+  contract_targets="$(published_targets | sort -u)"
+  declared_targets="$(jq -r '.targets[].target' "$CONTRACT" 2>/dev/null | sort -u)"
+  # Every target the staging workflow names in its own text, comments stripped — a sentence about a
+  # target is not a leg that runs one, and prose must not satisfy this row any more than it
+  # satisfies coverage.
+  wf_body="$(grep -v '^[[:space:]]*#' "$wf")"
+  wf_named="$(printf '%s\n' "$wf_body" | grep -oE '^ *- target: [A-Za-z0-9_.-]+' | awk '{print $3}' | sort -u)"
+  drift=""
+  # A `case` and not `| grep -q`. Under `set -o pipefail` — which every file in this gate sets —
+  # `grep -q` exits the instant it matches, the upstream grep dies of SIGPIPE, and the PIPELINE's
+  # status is 141. So the test read "no match" on precisely the input that matches, and the row
+  # would have gone on being permanently red for a second reason after being fixed for the first.
+  case "$wf_body" in
+    *release-targets.json*) ;;
+    *)
+      drift="${drift}${wf} no longer reads ${CONTRACT}, so the build matrix is not derived from the contract any more and the two lists can disagree again. "
+      ;;
+  esac
+  if [ -z "$declared_targets" ]; then
+    drift="${drift}no targets could be read out of ${CONTRACT} at all, so this comparison would be against nothing. "
+  fi
+  # Named-but-undeclared, by set difference. A target the workflow names and the contract does not
+  # describe is a leg asserting properties nobody wrote down.
+  undeclared="$(comm -23 <(printf '%s\n' "$wf_named" | awk 'NF') <(printf '%s\n' "$declared_targets" | awk 'NF') | tr '\n' ' ')"
+  if [ -n "$(printf '%s' "$undeclared" | tr -d ' ')" ]; then
+    drift="${drift}${wf} names target(s) ${undeclared}that ${CONTRACT} does not declare. "
+  fi
+  if [ -n "$drift" ]; then
+    record "contract:drift" FAIL "${CONTRACT} and ${wf} no longer describe the same release" \
+      "${drift}A target in one and not the other either ships unverified or is verified and never built. Fix: reconcile the two — the contract is the source of truth, and release-stage.yml must derive its build matrix from it rather than carry a second list."
+  else
+    record "contract:drift" PASS "${wf} derives its matrix from ${CONTRACT}, and every target it names is declared there" \
+      "publishes: $(printf '%s' "$contract_targets" | tr '\n' ' '); named by hand in the workflow: $(printf '%s' "$wf_named" | tr '\n' ' ')"
+  fi
 fi
+}
+
+contract_drift_row ".github/workflows/release-stage.yml"

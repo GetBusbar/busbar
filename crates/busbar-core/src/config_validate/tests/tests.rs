@@ -4596,6 +4596,46 @@ advanced:
     assert_eq!(cfg.limits.rate_sweep_interval, 256);
 }
 
+/// BOOT-043b — AN UNDEFINED POOL MEMBER IS REFUSED BY THE VALIDATOR, IN 1.5.5's WORDS, NOT BY THE
+/// RESOLVER.
+///
+/// 1.6.0 resolves pool members against three top-level maps (`models:`/`tools:`/`agents:`) to infer
+/// a pool's plane, and the inference loop briefly refused a member that resolved to NONE of them —
+/// which moved the refusal from `config validation failed:` to the resolver's `config errors:`
+/// frame. The sentence was better; the frame line is what a CI job greps, and moving it breaks the
+/// job over a config that was already broken. The inference loop no longer refuses it.
+///
+/// THE POINT OF THE TEST IS BOTH HALVES: `resolve` must return `Ok` (nothing about the dangling
+/// member may reach the operator from that stage), and `validate` must then refuse it with 1.5.5's
+/// exact sentence. Without the second half the first is just a hole.
+///
+/// The fixture names NO provider and NO model on purpose. A pool whose member nothing defines is
+/// the whole subject, so a provider entry would only add a dialect name to a neutral crate's test
+/// text (which `plane-purity-strict` counts, rightly) for a member the test never looks up.
+#[test]
+fn test_undefined_pool_member_is_refused_by_validate_in_1_5_5_words() {
+    let yaml = r#"
+listen: "0.0.0.0:8080"
+providers: {}
+models: {}
+pools:
+  oracle-unused:
+    members:
+      - model: nope
+store:
+  module: memory
+"#;
+    let cfg = resolve_yaml(yaml).expect(
+        "the resolver must not refuse a pool member nothing defines — the validator owns it",
+    );
+    let errs = validate(&cfg).expect_err("an undefined pool member must still refuse the config");
+    assert!(
+        errs.iter()
+            .any(|e| e == "pool 'oracle-unused' references unknown model 'nope'"),
+        "the 1.5.5 sentence must be the one the operator reads; got: {errs:?}"
+    );
+}
+
 /// The DOCUMENTED "secrets are plugins" vault example — a provider
 /// `api_key: { module: acme-vault }` (docs/plugins.md, configuration.md, migration-1.5.md) — RESOLVES
 /// and passes the shared boot/`--validate` semantic gate. `validate` runs before the plugin registry

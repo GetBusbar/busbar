@@ -18,7 +18,7 @@
 #                    check is a no-op that regenerates the goldens instead of comparing to them), and
 #                    every filtered step declares its test count so a filter that selects nothing is
 #                    RED rather than vacuously green (see filtered_cargo_test).
-#   config-stability scripts/config-stability-gate.sh --check (config-schema.snapshot.json byte-stable).
+#   config-stability cargo xtask gate config-schema (config-schema.snapshot.json byte-stable).
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
@@ -37,7 +37,7 @@
 #   parity           testing/shadow-oracle: this build vs the PUBLISHED 1.5.5 binary, 0 divergences
 #                    across every recorded cell family (wire, admin, boot, CLI, config, billing,
 #                    failover, plugins); golden gaps are named, never passes.
-#   design           scripts/design-bindings.sh --check --strict: every ARCHITECTURE.md Appendix B
+#   design           cargo xtask gate design-bindings --strict: every ARCHITECTURE.md Appendix B
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
@@ -70,6 +70,9 @@
 #
 # bash 3.2 + POSIX, the same bare-runner posture as the sibling gates.
 set -uo pipefail
+# Resolved BEFORE the cd, because the floor below is counted out of this file and `$0` stops
+# resolving the moment the working directory moves under a relative invocation.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -118,11 +121,57 @@ step() {   # $1 = label ; rest = command
 # banner and the SAME exit 0 as a full run — and the banner and the exit code are all a wrapper
 # script, a CI step or the proof-manifest collator ever sees. A provisional answer must not be
 # spendable as the real one.
-# The floor is the number of begin_group/end_group pairs this file defines (19 today). Raise it
-# with a new group; a run that reports fewer is a run that lost groups, not a run that passed.
-DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-19}"
+# THE FLOOR IS COUNTED OUT OF THIS FILE, AND IT IS NOT LOWERABLE FROM THE ENVIRONMENT.
+#
+# It was a hand-maintained constant, `DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-19}"`, and it had two
+# holes that both end in the DONE banner and exit 0 — which is all a wrapper, a CI step or the proof
+# collator ever reads:
+#
+#   * IT HAD FALLEN BEHIND THE FILE. This script defines TWENTY begin_group/end_group pairs; the
+#     constant still said nineteen. So a run that lost a whole group — a `begin_group` moved inside
+#     an `if` that did not fire, a sourced fragment that returned early, a group deleted in a
+#     refactor and its constant left alone — reported "19 / 19 groups GREEN" and announced DONE. The
+#     floor exists precisely to catch that, and it was one short of being able to.
+#   * IT WAS AN ENVIRONMENT OVERRIDE. `DONE_GROUP_FLOOR=1 scripts/verify-1.6.0-done.sh` made one
+#     green group a DONE claim. Every other operator-chosen repoint in this file is refused by
+#     assert_bless_env_empty for exactly this reason; the floor on the verdict itself was the one
+#     that could still be dialled down, and unlike a blessed golden it leaves nothing behind.
+#
+# So: the number of groups this file DEFINES is counted from the file, the declared constant must
+# agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
+# may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
+DONE_GROUPS_DECLARED=21
+# awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
+# obvious fallback fires on top of grep's own output and the variable becomes the two-line string
+# "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
+# (gate.sh carries the same note over the same trap.) awk prints exactly one number, always.
+DONE_GROUPS_DEFINED="$(awk '/^begin_group /{n++} END{print n+0}' "$SELF" 2>/dev/null)"
+[ -n "$DONE_GROUPS_DEFINED" ] || DONE_GROUPS_DEFINED=0
+DONE_GROUP_FLOOR="$DONE_GROUPS_DECLARED"
+# An override may only tighten. `-gt` and not `-ne`: a caller raising the floor is asserting more,
+# which is always safe to honour; a caller lowering it is un-owing groups from outside the file.
+if [ -n "${DONE_GROUP_FLOOR_MIN:-}" ] && [ "${DONE_GROUP_FLOOR_MIN}" -gt "$DONE_GROUP_FLOOR" ] 2>/dev/null; then
+  DONE_GROUP_FLOOR="$DONE_GROUP_FLOOR_MIN"
+fi
+
+# Checked at the top of the verdict rather than here, so --selftest can drive it.
+floor_is_honest() {
+  if [ "${DONE_GROUPS_DEFINED:-0}" -lt 1 ] 2>/dev/null; then
+    red "══ done-oracle: could not count the begin_group definitions in ${SELF} — the floor would be"
+    red "   whatever the constant happens to say, checked against nothing. Refusing to render a verdict. ══"
+    return 1
+  fi
+  if [ "$DONE_GROUPS_DEFINED" != "$DONE_GROUPS_DECLARED" ]; then
+    red "══ done-oracle: this file defines ${DONE_GROUPS_DEFINED} group(s) but declares a floor of"
+    red "   ${DONE_GROUPS_DECLARED}. A group was added or removed and the declaration did not follow, so the"
+    red "   floor no longer measures anything. Set DONE_GROUPS_DECLARED=${DONE_GROUPS_DEFINED}. ══"
+    return 1
+  fi
+  return 0
+}
 final_verdict() {
   local fail=0 green=0 total=0 i
+  floor_is_honest || return 1
   if [ "${#G_NAME[@]}" -gt 0 ]; then
     for i in $(seq 0 $(( ${#G_NAME[@]} - 1 ))); do
       total=$((total+1))
@@ -170,14 +219,61 @@ if [ "$SELFTEST" -eq 1 ]; then
       printf 'FAIL  %s (rc=%s want=%s, looked for %s)\n' "$label" "$rc" "$want" "$needle"; _st_fails=$((_st_fails+1))
     fi
   }
+  # THE COUNTS ARE TAKEN FROM THE FILE, NOT TYPED. They used to be the literal 19 the floor
+  # happened to say, so the case that is supposed to prove "a lost group is refused" was passing a
+  # number that WAS the floor rather than one below the groups this file actually defines — which is
+  # how the floor came to sit one under reality with a green self-test over it.
+  _n="$DONE_GROUPS_DEFINED"
   # A --fast run whose groups are all green must NOT be spendable as the DONE claim.
-  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 19 0
-  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 19 0
-  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 18 1
-  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 18 1
+  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 "$_n"           0
+  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 "$_n"           0
+  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 "$((_n - 1))"   1
+  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 "$((_n - 1))"   1
   # Zero groups is not DONE: nothing raised `fail`, because nothing ran.
-  _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0  0
-  _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3  0
+  _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0              0
+  _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3              0
+  # ONE group short of what this file DEFINES. The case the old literal could not express: with the
+  # floor one under the group count, this run printed "19 / 19 groups GREEN" and the DONE banner.
+  _st "one group short of the defined set -> RED"        1 "floor is"       0 "$((_n - 1))"   0
+
+  # THE FLOOR ITSELF MUST BE HONEST, and it must not be dialled down from outside the file.
+  if floor_is_honest >/dev/null 2>&1; then
+    printf 'PASS  the declared floor matches the %s group(s) this file defines\n' "$_n"
+  else
+    printf 'FAIL  the declared floor (%s) does not match the %s group(s) defined\n' \
+      "$DONE_GROUPS_DECLARED" "$_n"; _st_fails=$((_st_fails + 1))
+  fi
+  ( DONE_GROUPS_DECLARED=$((_n - 1)); floor_is_honest ) >/dev/null 2>&1 \
+    && { printf 'FAIL  a declaration one under the defined group count was accepted\n'; _st_fails=$((_st_fails + 1)); } \
+    || printf 'PASS  a declaration that has fallen behind the group count -> RED\n'
+  ( DONE_GROUPS_DEFINED=0; floor_is_honest ) >/dev/null 2>&1 \
+    && { printf 'FAIL  a group count that could not be taken was accepted as a floor\n'; _st_fails=$((_st_fails + 1)); } \
+    || printf 'PASS  a group count that could not be taken -> RED, not a floor of zero\n'
+  # The environment may raise the floor and may not lower it. Driven through a real re-read of the
+  # floor block out of this file, so it is the shipped derivation under test and not a copy of it.
+  _floor_under() {  # _floor_under <env assignment>  -> prints the floor the script would use
+    env "$1" bash -c '
+      SELF="$1"; shift
+      eval "$(awk "/^DONE_GROUPS_DECLARED=/,/^fi\$/" "$SELF")"
+      echo "$DONE_GROUP_FLOOR"' _ "$SELF"
+  }
+  if [ "$(_floor_under DONE_GROUP_FLOOR=1)" = "$_n" ]; then
+    printf 'PASS  DONE_GROUP_FLOOR=1 in the environment cannot lower the floor\n'
+  else
+    printf 'FAIL  the environment lowered the floor to %s\n' "$(_floor_under DONE_GROUP_FLOOR=1)"
+    _st_fails=$((_st_fails + 1))
+  fi
+  if [ "$(_floor_under DONE_GROUP_FLOOR_MIN=1)" = "$_n" ]; then
+    printf 'PASS  DONE_GROUP_FLOOR_MIN below the floor cannot lower it\n'
+  else
+    printf 'FAIL  DONE_GROUP_FLOOR_MIN lowered the floor to %s\n' "$(_floor_under DONE_GROUP_FLOOR_MIN=1)"
+    _st_fails=$((_st_fails + 1))
+  fi
+  if [ "$(_floor_under DONE_GROUP_FLOOR_MIN=$((_n + 5)))" = "$((_n + 5))" ]; then
+    printf 'PASS  DONE_GROUP_FLOOR_MIN above the floor still raises it (a caller may owe more)\n'
+  else
+    printf 'FAIL  DONE_GROUP_FLOOR_MIN could not raise the floor\n'; _st_fails=$((_st_fails + 1))
+  fi
   echo
 fi
 
@@ -228,9 +324,16 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #
 # A DONE run means "this tree was measured against something outside itself". Any of these set means
 # it was measured against something the operator chose, which is a different claim.
+#
+# UPDATE_CONFIG_SCHEMA IS GONE FROM THIS LIST, and its absence is a strengthening rather than a
+# relaxation. The config-schema gate's regen path is now the `--write` FLAG, not an environment
+# variable, and this script invokes the gate without it — so a DONE run structurally CANNOT
+# regenerate the snapshot, where before it could only be asserted not to have. A flag has to be
+# written at the call site, in a diff. The two CONFIG_SCHEMA_* variables stay: the gate still reads
+# both, and both still defeat the claim this script makes.
 assert_bless_env_empty() {
   local v bad=0
-  for v in UPDATE_OPENAPI UPDATE_CONFIG_SCHEMA BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
+  for v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
            SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
     if [ -n "${!v:-}" ]; then echo "regen/repoint env var $v is SET ('${!v}') — the comparison would be against something the operator chose, not the pinned reference"; bad=1; fi
   done
@@ -254,7 +357,7 @@ if [ "$SELFTEST" -eq 1 ]; then
     assert_bless_env_empty 2>&1 | sed 's/^/           /'
     st_fail=1
   fi
-  for st_v in UPDATE_OPENAPI UPDATE_CONFIG_SCHEMA BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
+  for st_v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
               SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
     # A subshell so the plant cannot leak, driving the REAL assert_bless_env_empty — not a copy of
     # its rule, which would prove only that the copy agrees with itself.
@@ -297,6 +400,17 @@ step "plane-purity --strict"   cargo xtask gate plane-purity-strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+# THE SHIP CRITERION (owner, 2026-09-07): the ~10 plugin kinds never cross-contaminate, and on the
+# ship SHA that is ZERO — zero fused names, zero cross-kind edges, zero cross-kind vocabulary, one
+# entry surface per kind and one shared conformance battery per kind, with no permanent exemptions.
+# The four enforceable rows are BLOCKING on every push as `kind-isolation`; the strict twin adds the
+# two rows that are red on HEAD by design, and this is where they have to reach zero.
+begin_group "KIND-ISOLATION — the plugin kinds never cross-contaminate (ship criterion, 0 exemptions)"
+step "kind-isolation --selftest" cargo xtask gate kind-isolation-ship --selftest
+step "kind-isolation --ship"     cargo xtask gate kind-isolation-ship
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "PLANE-DELETE — each plane (llm/mcp/a2a/voice) is deletable"
 step "plane-delete-test --selftest" bash scripts/plane-delete-test.sh --selftest
 step "plane-delete-test --all"      bash scripts/plane-delete-test.sh --all
@@ -305,7 +419,7 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "BYTE-IDENTITY — the money path is byte-stable"
 if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
-  printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/UPDATE_CONFIG_SCHEMA/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
+  printf '  \033[32m[ok]\033[0m   bless/regen env (UPDATE_OPENAPI/BLESS_*/BUSBAR_BLESS_GOLDEN) is empty\n'
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide) — the golden
   # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
   # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
@@ -324,8 +438,8 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "CONFIG-STABILITY — config-schema.snapshot.json is additive-only / byte-stable"
-step "config-stability-gate --selftest" bash scripts/config-stability-gate.sh --selftest
-step "config-stability-gate --check"    bash scripts/config-stability-gate.sh --check
+step "config-schema gate --selftest" cargo xtask gate config-schema --selftest
+step "config-schema gate"            cargo xtask gate config-schema
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -492,12 +606,8 @@ begin_group "DESIGN — every ARCHITECTURE.md Appendix B binding is mapped to a 
 # The design bindings ledger (qa/design-bindings.json) maps each parity binding to the tests, oracle
 # cells, lints and gates that prove it. Plain --check reports gaps; --strict owes EVERY binding to the
 # verdict so an unmapped binding is red. DONE means the design is fully bound, not partly.
-if [ -f scripts/design-bindings.sh ]; then
-  step "design-bindings --selftest"        bash scripts/design-bindings.sh --selftest
-  step "design-bindings --check --strict"  bash scripts/design-bindings.sh --check --strict
-else
-  absent_step "design bindings gate" "scripts/design-bindings.sh"
-fi
+step "design-bindings --selftest"  cargo xtask gate design-bindings --selftest
+step "design-bindings --strict"    cargo xtask gate design-bindings --strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

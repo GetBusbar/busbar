@@ -838,7 +838,8 @@ fn catalog_cache_ttl_prunes_stale_entries() {
     {
         let mut cache = catalog_cache().lock().unwrap();
         let entry = cache.get_mut(&dir).expect("entry present");
-        entry.inserted_at = crate::store::now().saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
+        entry.inserted_at =
+            busbar_substrate::store::now().saturating_sub(CATALOG_CACHE_TTL_SECS + 1);
     }
 
     // A cache access against a DIFFERENT directory still prunes the aged entry — `retain()` runs
@@ -873,7 +874,7 @@ fn catalog_cache_future_inserted_at_is_treated_as_stale() {
     {
         let mut cache = catalog_cache().lock().unwrap();
         let entry = cache.get_mut(&dir).expect("entry present");
-        entry.inserted_at = crate::store::now() + CATALOG_CACHE_TTL_SECS + 1;
+        entry.inserted_at = busbar_substrate::store::now() + CATALOG_CACHE_TTL_SECS + 1;
     }
 
     // Any cache access prunes it — a future `inserted_at` must not make the entry immortal.
@@ -1625,7 +1626,7 @@ async fn get_group_usage_splits_window_pool_buckets_and_derives_remaining() {
     // One request through `frontier` (100k tokens = 100 cents), one through `value` (50k =
     // 50 cents). The frontier bucket must see only the first; the group-wide buckets both.
     let k = usage_key("acme");
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     gov.try_admit(&app.cost, &k, "frontier", now)
         .expect("frontier request admits");
     gov.record_usage(&app.cost, &k, "frontier", "m", &input_toks(100_000), now);

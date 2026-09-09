@@ -286,8 +286,8 @@ fn openai_tool_after_finish_chunk_claims_a_fresh_index() {
     // Require all THREE blocks to exist before comparing. As `Option`s, both `assert_ne!`s below
     // were satisfied by the other operand being `None`: a reader that dropped the text block or the
     // pre-finish `get_weather` BlockStart proved the "must not collide" claim against a phantom.
-    let post_finish_tool_index = post_finish_tool_index
-        .expect("the post-finish tool_calls chunk must still open a block");
+    let post_finish_tool_index =
+        post_finish_tool_index.expect("the post-finish tool_calls chunk must still open a block");
     let text_index = text_index.expect("the text chunk must open a text block");
     let pre_finish_tool_index =
         pre_finish_tool_index.expect("the pre-finish get_weather chunk must open a tool block");

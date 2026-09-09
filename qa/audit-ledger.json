@@ -174,12 +174,12 @@
     "crates/auth-admin-tokens/src"
    ],
    "tree_hash": "f3712a56c4c5f077ef5eb92e41a0276f85e1882b6652e4af8e8423048da7a79e",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
    "result": "zero",
    "counts": {},
    "report": "zero; read fully",
-   "auditor": "opus-pass1",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/auth-admin-tokens/src/tests"
@@ -193,6 +193,15 @@
      "tree_hash": "f3712a56c4c5f077ef5eb92e41a0276f85e1882b6652e4af8e8423048da7a79e",
      "counts": {},
      "report": "zero; read fully"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "f3712a56c4c5f077ef5eb92e41a0276f85e1882b6652e4af8e8423048da7a79e",
+     "counts": {},
+     "report": "zero; read fully"
     }
    ]
   },
@@ -203,14 +212,12 @@
     "crates/auth-static-plugin/src"
    ],
    "tree_hash": "5b262becf58afcc3f997a73a817b5cf7a981636c3bb331e36cb0e6b28f42912c",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
-   "result": "findings",
-   "counts": {
-    "NIT": 2
-   },
-   "report": "license compared with ==, whitespace-only token accepted (test-support plugin); read fully",
-   "auditor": "opus-pass1",
+   "result": "zero",
+   "counts": {},
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/auth-static-plugin/src/tests"
@@ -226,6 +233,15 @@
       "NIT": 2
      },
      "report": "license compared with ==, whitespace-only token accepted (test-support plugin); read fully"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "5b262becf58afcc3f997a73a817b5cf7a981636c3bb331e36cb0e6b28f42912c",
+     "counts": {},
+     "report": "zero; read fully"
     }
    ]
   },
@@ -339,15 +355,31 @@
    "paths": [
     "crates/busbar/build.rs"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "25c9bc0bac0ce503b401dbcaa8786ab071db759b621e1b5113673929ec1bdf79",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "pgo=true in the build-provenance stamp can be faked by setting an env var that no shipping build path sets any more, and the stamp's target-cpu/target-features/lto substrings are spliced in unvalidated despite the file's own no-spaces invariant",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "25c9bc0bac0ce503b401dbcaa8786ab071db759b621e1b5113673929ec1bdf79",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "pgo=true in the build-provenance stamp can be faked by setting an env var that no shipping build path sets any more, and the stamp's target-cpu/target-features/lto substrings are spliced in unvalidated despite the file's own no-spaces invariant"
+    }
+   ]
   },
   {
    "id": "crates/busbar-a2a/src",
@@ -393,12 +425,15 @@
     "crates/busbar-a2a-codec/src"
    ],
    "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "zero",
-   "counts": {},
-   "report": "zero; every production file read fully",
-   "auditor": "opus-pass2",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 7,
+   "result": "findings",
+   "counts": {
+    "LOW": 1,
+    "NIT": 1
+   },
+   "report": "the crate does not forbid unsafe while every plane crate does; one wire error code is declared twice, once here in the shared table and once again in the plane module that reads this table by identity",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-a2a-codec/src/tests"
@@ -435,6 +470,18 @@
      "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
      "counts": {},
      "report": "zero; every production file read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
+     "counts": {
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "the crate does not forbid unsafe while every plane crate does; one wire error code is declared twice, once here in the shared table and once again in the plane module that reads this table by identity"
     }
    ]
   },
@@ -880,16 +927,16 @@
    "paths": [
     "crates/busbar-llm-codec/src"
    ],
-   "tree_hash": "0a6238586d970b53cf4a42c5e3735b8b8eb1b2085d8b3a36695d67b97ab68654",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 7,
+   "tree_hash": "c9dbf628379a71ddd4163ebcda50a031b83e2f36993462dd614916ee8eee8392",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 5,
-    "MEDIUM": 5
+    "HIGH": 1,
+    "LOW": 1
    },
-   "report": "3 fixed (gemini tail toolUse tokens, openai cache_write tier, gemini open_tools product cap), 8 HIGH/MEDIUM unfixed handed to a follow-up wave; conformance 255/260 unchanged",
-   "auditor": "opus-p3-llm-codec",
+   "report": "a detected provider usage shortfall is computed and threaded through the whole streaming fold and then read by nobody, so a unit whose provider reported more tokens than the buckets account for is metered on the smaller number and the note saying so goes nowhere; the crate does not forbid unsafe",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm-codec/src/tests"
@@ -942,6 +989,18 @@
       "MEDIUM": 5
      },
      "report": "3 fixed (gemini tail toolUse tokens, openai cache_write tier, gemini open_tools product cap), 8 HIGH/MEDIUM unfixed handed to a follow-up wave; conformance 255/260 unchanged"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "c9dbf628379a71ddd4163ebcda50a031b83e2f36993462dd614916ee8eee8392",
+     "counts": {
+      "HIGH": 1,
+      "LOW": 1
+     },
+     "report": "a detected provider usage shortfall is computed and threaded through the whole streaming fold and then read by nobody, so a unit whose provider reported more tokens than the buckets account for is metered on the smaller number and the note saying so goes nowhere; the crate does not forbid unsafe"
     }
    ]
   },
@@ -1000,13 +1059,16 @@
    "paths": [
     "crates/busbar-mcp-codec/src"
    ],
-   "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "zero",
-   "counts": {},
-   "report": "zero; every production file read fully",
-   "auditor": "opus-pass2",
+   "tree_hash": "83e9793543bff14b7620caca98f41d6aaeba6f02255cefcff3b397aaf6cf9764",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "the markup-normalisation floor is applied by the retiring engine and by nothing in the plane crate that replaces it, so the migration drops a control the module header calls universal and security-critical; the crate does not forbid unsafe",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-mcp-codec/src/tests"
@@ -1043,6 +1105,18 @@
      "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
      "counts": {},
      "report": "zero; every production file read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "83e9793543bff14b7620caca98f41d6aaeba6f02255cefcff3b397aaf6cf9764",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the markup-normalisation floor is applied by the retiring engine and by nothing in the plane crate that replaces it, so the migration drops a control the module header calls universal and security-critical; the crate does not forbid unsafe"
     }
    ]
   },
@@ -1052,17 +1126,18 @@
    "paths": [
     "crates/busbar-plane-a2a/src"
    ],
-   "tree_hash": "6e4248149e6ae8af8c4a6a179ba702b39841ef75bbc19d5144af5bc0e0494760",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 7,
+   "tree_hash": "113e10ea52291da00b19034073f7952af0396cd12412387c22fb2be34e7af75a",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
+    "HIGH": 2,
+    "MEDIUM": 4,
     "LOW": 1,
     "NIT": 1
    },
-   "report": "push-config create decoded before its body arrived (fixed); DELETE /a2a/tasks/{id} decodes as a read",
-   "auditor": "opus-pass3",
+   "report": "an ordinary non-streaming answer never ends its unit (the terminal test asks only whether the result carries a kind discriminator, so every Task and Message answer reads as a mid-stream frame and an envelope with neither result nor error reads as complete); refusals outside the first twenty reasons all render as internal error; a message with no identifier is answered; approve names the first configured agent whatever the unit asked for and never the task",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-a2a/src/tests"
@@ -1112,6 +1187,20 @@
       "NIT": 1
      },
      "report": "push-config create decoded before its body arrived (fixed); DELETE /a2a/tasks/{id} decodes as a read"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "113e10ea52291da00b19034073f7952af0396cd12412387c22fb2be34e7af75a",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 4,
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "an ordinary non-streaming answer never ends its unit (the terminal test asks only whether the result carries a kind discriminator, so every Task and Message answer reads as a mid-stream frame and an envelope with neither result nor error reads as complete); refusals outside the first twenty reasons all render as internal error; a message with no identifier is answered; approve names the first configured agent whatever the unit asked for and never the task"
     }
    ]
   },
@@ -1179,17 +1268,16 @@
    "paths": [
     "crates/busbar-plane-llm/src"
    ],
-   "tree_hash": "df2d3d5c22c0dfaa6602fa06c09f1bc8c5be3278575f1d87e0ad2b9f98cebde1",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "2b8c22a9427515307b077e736454485006c154b9446183941d9b7c6053ff29af",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
     "MEDIUM": 2,
-    "LOW": 3,
-    "NIT": 1
+    "LOW": 1
    },
-   "report": "same-dialect answer relay parsed the answer it relayed (fixed, gate added); request-relay alloc gate red on protocol_for's boxed handle; two money-shaped coverage gaps named",
-   "auditor": "opus-p3-plane-llm",
+   "report": "the crate carries none of the kind skeleton (no conformance module, no src tests directory, the plane implementation lives in the codec file, every submodule is public) and it names its own dialect crate as a dependency; a comment claims an allocation gate holds the answer-relay borrow and the only gate in the crate measures the request direction",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
@@ -1241,6 +1329,18 @@
       "NIT": 1
      },
      "report": "same-dialect answer relay parsed the answer it relayed (fixed, gate added); request-relay alloc gate red on protocol_for's boxed handle; two money-shaped coverage gaps named"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "2b8c22a9427515307b077e736454485006c154b9446183941d9b7c6053ff29af",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "the crate carries none of the kind skeleton (no conformance module, no src tests directory, the plane implementation lives in the codec file, every submodule is public) and it names its own dialect crate as a dependency; a comment claims an allocation gate holds the answer-relay borrow and the only gate in the crate measures the request direction"
     }
    ]
   },
@@ -1250,18 +1350,17 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "6cebc296f647d07fb7ff5737035c29b561d638216be1b83dd2cdeea59f7b7c56",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 7,
+   "tree_hash": "2dfbaad176b7b8f051090da7e8e22da4ed5029f3a2d00ecabac9ef9fd84b6477",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 1,
-    "LOW": 1,
-    "NIT": 2
+    "HIGH": 1,
+    "MEDIUM": 5,
+    "LOW": 1
    },
-   "report": "caller could send server notices into the catalogue write (fixed), server notices never reached their route (fixed), non-object result lost the discriminator (fixed)",
-   "auditor": "opus-pass3",
+   "report": "refusals outside the first twenty reasons all render as internal error, so a rate limit, an open breaker and a drain reach the caller as a node fault; an answer carrying neither result nor error is reported and billed as complete; the markup-normalisation floor the retiring engine applies has no call site here; the plane names another plane as a string literal; the round cap the session counter exists for has no reader",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
@@ -1312,6 +1411,19 @@
       "NIT": 2
      },
      "report": "caller could send server notices into the catalogue write (fixed), server notices never reached their route (fixed), non-object result lost the discriminator (fixed)"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "2dfbaad176b7b8f051090da7e8e22da4ed5029f3a2d00ecabac9ef9fd84b6477",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 5,
+      "LOW": 1
+     },
+     "report": "refusals outside the first twenty reasons all render as internal error, so a rate limit, an open breaker and a drain reach the caller as a node fault; an answer carrying neither result nor error is reported and billed as complete; the markup-normalisation floor the retiring engine applies has no call site here; the plane names another plane as a string literal; the round cap the session counter exists for has no reader"
     }
    ]
   },
@@ -1321,18 +1433,17 @@
    "paths": [
     "crates/busbar-plane-voice/src"
    ],
-   "tree_hash": "93b607552cefb66d2d4c2cf84bc416680235f0f9d251998cac13e7b7035c5ccd",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 8,
    "result": "findings",
    "counts": {
     "HIGH": 1,
-    "MEDIUM": 2,
-    "LOW": 1,
-    "NIT": 4
+    "MEDIUM": 3,
+    "NIT": 1
    },
-   "report": "second turn of a call never a unit (fixed), downlink frames named no turn (fixed), telephony frames carried an empty stream id (fixed), style check read half the source (fixed); every file read fully",
-   "auditor": "opus-pass2",
+   "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-voice/src/tests"
@@ -1372,6 +1483,32 @@
       "NIT": 4
      },
      "report": "second turn of a call never a unit (fixed), downlink frames named no turn (fixed), telephony frames carried an empty stream id (fixed), style check read half the source (fixed); every file read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-streams-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 8,
+      "LOW": 3
+     },
+     "report": "unit 0's egress body never dialect-framed (session.update reaches the upstream as empty bytes; encode_egress untested); a barge-in drops the interrupted turn's audio_ms_in/tool_calls and misattributes the next usage report; twilio stop drops the same counters; the Pending stash is written on the client half and taken on the destination half so it is always dead; encode_refusal is dialect-blind on a justification that is false (PlaneSessionState::get takes &self); refusal map has a catch-all and its battery samples 9 of ~77 variants; the crate-root dependency-seam doc is false in three respects; twilio mediaFormat parsed then discarded; empty streamSid defeats the forgery guard; ulaw tests are self-consistency (algorithm itself re-derived and cleared). 4 rejected of 21 distinct, 2 off-by-one quote mismatches; tests/clippy/plane-purity/voice-conformance all green against every finding"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "950bba3ac899c7b4f18462087b271dfc69ceba094c42614eaef4cf223b4a82be",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "NIT": 1
+     },
+     "report": "every streamed tool-call argument is discarded (only the call-open event is read, so a tool call reaches its executor with a name and an identifier and no arguments); a banned owned byte carrier is constructed per uplink frame on the fifty-hertz path; the tool-executor port is referenced by nothing and is the only reason this pure crate names an async-trait dependency"
     }
    ]
   },
@@ -1381,17 +1518,17 @@
    "paths": [
     "crates/busbar-plugin/src"
    ],
-   "tree_hash": "caf3501a42089431888d219c29c8915c31ae7b1515597eff9a94ec84c970193e",
-   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-   "round": 1,
+   "tree_hash": "1d41ec5939e4835e31401eafb9ea0e3c731a51d1a6fa33f4a583ce3e207b8ca8",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 4,
-    "MEDIUM": 15,
-    "LOW": 24
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1
    },
-   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
-   "auditor": "opus-prod-auditor-plugins",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plugin/src/tests"
@@ -1409,6 +1546,19 @@
       "LOW": 24
      },
      "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "1d41ec5939e4835e31401eafb9ea0e3c731a51d1a6fa33f4a583ce3e207b8ca8",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1
+     },
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -1600,15 +1750,15 @@
    "paths": [
     "crates/busbar-transport-grpc/src"
    ],
-   "tree_hash": "34eb0c899feda55018ab137ec7c64b4b957fba8f1fe43eaded0d264217ed344a",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "tree_hash": "742ee8d5a7bdeec8d4de9d5f65c0bf89e2ca7b861dd49efce3db489e882ab74a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "LOW": 1
+    "MEDIUM": 3
    },
-   "report": "per-stream Reset reaches the reader without a StreamId (needs a contract-transport seam); all files read fully",
-   "auditor": "opus-pass2",
+   "report": "no configured body cap is read at listen or dial, so every message is pinned to the codec library default rather than the operator limit the sibling websocket wire reads for exactly this reason; a decoder failure on a served request body is reported as a network reset, discarding the status and collapsing a caller fault into the variant reserved for a broken connection when a framing variant exists; no meta, claims or conformance module exists, and the frame-meta honesty check is asserted against one correct value with no inflating or deflating fixture to prove it discriminates",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-grpc/src/tests"
@@ -1646,6 +1796,17 @@
       "LOW": 1
      },
      "report": "per-stream Reset reaches the reader without a StreamId (needs a contract-transport seam); all files read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "742ee8d5a7bdeec8d4de9d5f65c0bf89e2ca7b861dd49efce3db489e882ab74a",
+     "counts": {
+      "MEDIUM": 3
+     },
+     "report": "no configured body cap is read at listen or dial, so every message is pinned to the codec library default rather than the operator limit the sibling websocket wire reads for exactly this reason; a decoder failure on a served request body is reported as a network reset, discarding the status and collapsing a caller fault into the variant reserved for a broken connection when a framing variant exists; no meta, claims or conformance module exists, and the frame-meta honesty check is asserted against one correct value with no inflating or deflating fixture to prove it discriminates"
     }
    ]
   },
@@ -1655,16 +1816,16 @@
    "paths": [
     "crates/busbar-transport-http/src"
    ],
-   "tree_hash": "fa09fcb995f50a9bfa58b0311374af2cf0b0c2cba868d359daaa4e6110a78ff2",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "tree_hash": "38a9657f93521e9b3f46d829cc4a4c4b464da9d84a42fbb466aa2aaa42b8703a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
-    "LOW": 1
+    "MEDIUM": 3,
+    "LOW": 2
    },
-   "report": "100-continue answered before the body cap (fixed); misplaced test doc (fixed); all files read fully",
-   "auditor": "opus-pass2",
+   "report": "the chunked ingress body cap is checked one read late and is skipped entirely when the pre-loop feed completes the decode, so a cap set below the read chunk size is not enforced on that path; the egress re-segmenter omits the chunked-plus-content-length refusal its ingress twin performs, forwarding the request-smuggling shape it refuses inbound; serve is public on the mount seam, the vocabulary the kind rules forbid on a plugin surface; no meta, claims or conformance module exists; the plane-name guard duplicates its sibling byte for byte and one self-test line is always true",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-http/src/tests"
@@ -1703,6 +1864,18 @@
       "LOW": 1
      },
      "report": "100-continue answered before the body cap (fixed); misplaced test doc (fixed); all files read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "38a9657f93521e9b3f46d829cc4a4c4b464da9d84a42fbb466aa2aaa42b8703a",
+     "counts": {
+      "MEDIUM": 3,
+      "LOW": 2
+     },
+     "report": "the chunked ingress body cap is checked one read late and is skipped entirely when the pre-loop feed completes the decode, so a cap set below the read chunk size is not enforced on that path; the egress re-segmenter omits the chunked-plus-content-length refusal its ingress twin performs, forwarding the request-smuggling shape it refuses inbound; serve is public on the mount seam, the vocabulary the kind rules forbid on a plugin surface; no meta, claims or conformance module exists; the plane-name guard duplicates its sibling byte for byte and one self-test line is always true"
     }
    ]
   },
@@ -1712,13 +1885,16 @@
    "paths": [
     "crates/busbar-transport-sse/src"
    ],
-   "tree_hash": "4dfff42f96a95069a657b0b9cdee84b21a5161b20ff82f4500bee59c23173f54",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
-   "result": "zero",
-   "counts": {},
-   "report": "zero (two nits); all files read fully",
-   "auditor": "opus-pass3",
+   "tree_hash": "3ae1b7074cc82763e8003dd9e1336987b752bc12e231aa266a0391cdbc99aa8d",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "findings",
+   "counts": {
+    "LOW": 2,
+    "NIT": 1
+   },
+   "report": "a line carrying no colon is treated as carrying no field, but the event-stream grammar reads such a line as a field whose value is empty, so a legal frame whose only line is a bare field name is dropped as if it were a comment keepalive; this wire names a model vendor in a doc comment and in a test name while carrying no vocabulary guard at all; the test-only reference parser trims all whitespace where the grammar strips a single leading space",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-sse/src/tests"
@@ -1763,6 +1939,18 @@
      "tree_hash": "4dfff42f96a95069a657b0b9cdee84b21a5161b20ff82f4500bee59c23173f54",
      "counts": {},
      "report": "zero (two nits); all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "3ae1b7074cc82763e8003dd9e1336987b752bc12e231aa266a0391cdbc99aa8d",
+     "counts": {
+      "LOW": 2,
+      "NIT": 1
+     },
+     "report": "a line carrying no colon is treated as carrying no field, but the event-stream grammar reads such a line as a field whose value is empty, so a legal frame whose only line is a bare field name is dropped as if it were a comment keepalive; this wire names a model vendor in a doc comment and in a test name while carrying no vocabulary guard at all; the test-only reference parser trims all whitespace where the grammar strips a single leading space"
     }
    ]
   },
@@ -1772,16 +1960,16 @@
    "paths": [
     "crates/busbar-transport-stdio/src"
    ],
-   "tree_hash": "e3dc7383b3c9d22359657014256c76889159f50a0956c42b165a484336dd5cf5",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "aa24ae1786643cb9ff93d064a1c1ab8b5332eeac6cf11de1672dfec0bd7c259b",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
     "MEDIUM": 1,
-    "NIT": 2
+    "LOW": 1
    },
-   "report": "write never refused a payload spelling the frame delimiter (fixed); all files read fully",
-   "auditor": "opus-pass3",
+   "report": "the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it discriminates a wrong byte count from a right one; two battery tests assert a reader is parked by sleeping and then checking the task is unfinished, which is equally true of a task the runtime has not polled yet, so under contention the test passes without the interleaving it documents; no meta, claims or conformance module exists",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
@@ -1829,6 +2017,18 @@
       "NIT": 2
      },
      "report": "write never refused a payload spelling the frame delimiter (fixed); all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "aa24ae1786643cb9ff93d064a1c1ab8b5332eeac6cf11de1672dfec0bd7c259b",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it discriminates a wrong byte count from a right one; two battery tests assert a reader is parked by sleeping and then checking the task is unfinished, which is equally true of a task the runtime has not polled yet, so under contention the test passes without the interleaving it documents; no meta, claims or conformance module exists"
     }
    ]
   },
@@ -1838,15 +2038,15 @@
    "paths": [
     "crates/busbar-transport-tcp/src"
    ],
-   "tree_hash": "31c9932fbaca8aa2338d79f2b5086860d6745d9164b93a12fb7ee70031abd1a9",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "b2542b627fa8efa5df43774d57dd0048f54a79a5fc677a9de6f04a0e85858273",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1
+    "LOW": 2
    },
-   "report": "tests.rs read fully; half_close test performs a full close; connect timeout absent; RawStream::from constant-fold survived a plant",
-   "auditor": "opus-pass3",
+   "report": "no meta, claims or conformance module exists, so this wire diverges from the uniform skeleton its kind requires of every sibling; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning, one of them a contract-derived cap and this one a plain read size",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
@@ -1894,6 +2094,17 @@
       "MEDIUM": 1
      },
      "report": "tests.rs read fully; half_close test performs a full close; connect timeout absent; RawStream::from constant-fold survived a plant"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "b2542b627fa8efa5df43774d57dd0048f54a79a5fc677a9de6f04a0e85858273",
+     "counts": {
+      "LOW": 2
+     },
+     "report": "no meta, claims or conformance module exists, so this wire diverges from the uniform skeleton its kind requires of every sibling; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning, one of them a contract-derived cap and this one a plain read size"
     }
    ]
   },
@@ -1903,16 +2114,16 @@
    "paths": [
     "crates/busbar-transport-tls/src"
    ],
-   "tree_hash": "d3cadadde498bc0df2de6f0a78a7211d823c0e0e33a4f84d1a461638126eb4ac",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "8f92881ca723f3ba550e24e79541f35d2f51b50f7d9baac6e0ec1f1c3609856a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 1
+    "MEDIUM": 2,
+    "LOW": 1
    },
-   "report": "pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed); tcp connect has no timeout on tcp and tls dial; tests.rs read fully",
-   "auditor": "opus-pass3",
+   "report": "a peer that vanishes without the close alert surfaces as an unexpected end of file, and the io mapper has no arm for it, so it falls through to the same generic closed value a tidy shutdown produces even though this crate own doc names that signature as what a truncation looks like from the inside; no meta, claims or conformance module exists and the frame-meta honesty check has no inflating or deflating fixture; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tls/src/tests"
@@ -1964,6 +2175,18 @@
       "MEDIUM": 1
      },
      "report": "pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed); tcp connect has no timeout on tcp and tls dial; tests.rs read fully"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "8f92881ca723f3ba550e24e79541f35d2f51b50f7d9baac6e0ec1f1c3609856a",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "a peer that vanishes without the close alert surfaces as an unexpected end of file, and the io mapper has no arm for it, so it falls through to the same generic closed value a tidy shutdown produces even though this crate own doc names that signature as what a truncation looks like from the inside; no meta, claims or conformance module exists and the frame-meta honesty check has no inflating or deflating fixture; the read chunk constant is a public name shared with two siblings that give it a different value and a different meaning"
     }
    ]
   },
@@ -1973,15 +2196,16 @@
    "paths": [
     "crates/busbar-transport-ws/src"
    ],
-   "tree_hash": "f5b37edf1ae00860916b06c3b7617ae6199ffc84115c77be407f93b4c006ea2d",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "tree_hash": "11bf76b53f0a253448c726d140e55e3baac02333a4f05dd8ef9ae4c6b511983a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1
+    "MEDIUM": 2,
+    "LOW": 1
    },
-   "report": "battery.rs read fully; userinfo guard, max_frame_size and poisoned-arm plants survived; timing constants asserted against themselves",
-   "auditor": "opus-pass3",
+   "report": "no meta, claims or conformance module exists; the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it can go red, unlike three of its siblings; a battery test asserts a reader is parked by sleeping and then checking the task is unfinished, which is also true of a task that was never polled, so the interleaving it claims to establish may never occur",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
@@ -2031,6 +2255,18 @@
       "MEDIUM": 1
      },
      "report": "battery.rs read fully; userinfo guard, max_frame_size and poisoned-arm plants survived; timing constants asserted against themselves"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "11bf76b53f0a253448c726d140e55e3baac02333a4f05dd8ef9ae4c6b511983a",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "no meta, claims or conformance module exists; the frame-meta honesty check is asserted against a single correct value with no inflating or deflating fixture to prove it can go red, unlike three of its siblings; a battery test asserts a reader is parked by sleeping and then checking the task is unfinished, which is also true of a task that was never polled, so the interleaving it claims to establish may never occur"
     }
    ]
   },
@@ -2040,13 +2276,16 @@
    "paths": [
     "crates/busbar-unit-admission/src"
    ],
-   "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "fb870bf44ea33c2b91e54ed5e09d9f4e2a770305b27cf8548d141444d25072a9",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "LOW": 2
+   },
+   "report": "the door keeps a second hand-written copy of the cents projection and of the nano-per-cent constant while already delegating the rate conversion to the crate that owns the pricing law; the shipped cell store implements none of the three duties its own trait doc assigns a store, so its per-bucket map holds an entry per principal ever seen and the last-used field provided for eviction is read by nothing",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-admission/src/tests"
@@ -2074,6 +2313,18 @@
      "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "fb870bf44ea33c2b91e54ed5e09d9f4e2a770305b27cf8548d141444d25072a9",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 2
+     },
+     "report": "the door keeps a second hand-written copy of the cents projection and of the nano-per-cent constant while already delegating the rate conversion to the crate that owns the pricing law; the shipped cell store implements none of the three duties its own trait doc assigns a store, so its per-bucket map holds an entry per principal ever seen and the last-used field provided for eviction is read by nothing"
     }
    ]
   },
@@ -2084,15 +2335,12 @@
     "crates/busbar-unit-audit/src"
    ],
    "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1,
-    "NIT": 1
-   },
-   "report": "legacy pipe-joined digest precondition unenforced at AuditEntry (byte-frozen; owner decision); all files read fully",
-   "auditor": "opus-pass3",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
+   "counts": {},
+   "report": "chain digesting, amendment and the legacy ring were read and nothing survived triage; three lenses left scope unread, so this is a sample",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-audit/src/tests"
@@ -2141,6 +2389,15 @@
       "NIT": 1
      },
      "report": "legacy pipe-joined digest precondition unenforced at AuditEntry (byte-frozen; owner decision); all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "26343255f8865554112494380c77058905872e5c89c8a5fc882d5675ed2d6031",
+     "counts": {},
+     "report": "chain digesting, amendment and the legacy ring were read and nothing survived triage; three lenses left scope unread, so this is a sample"
     }
    ]
   },
@@ -2150,13 +2407,16 @@
    "paths": [
     "crates/busbar-unit-auth/src"
    ],
-   "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "484bf94021ea6a4ad7aed4d8d72c3f9d36a2788f31e5a2222a0b8247e738d57e",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "LOW": 1
+   },
+   "report": "the admin scope mirror re-implements the scope unit's rungs with no cross-crate test holding the two answers together, unlike the breaker mirror next door which has one; the credential cache builds an owned key on every lookup including the hit it exists to make cheap; the crate's dialect ladder spells one dialect differently from the plane's claim table and the egress-auth header table",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-auth/src/tests"
@@ -2184,6 +2444,18 @@
      "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "484bf94021ea6a4ad7aed4d8d72c3f9d36a2788f31e5a2222a0b8247e738d57e",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 1
+     },
+     "report": "the admin scope mirror re-implements the scope unit's rungs with no cross-crate test holding the two answers together, unlike the breaker mirror next door which has one; the credential cache builds an owned key on every lookup including the hit it exists to make cheap; the crate's dialect ladder spells one dialect differently from the plane's claim table and the egress-auth header table"
     }
    ]
   },
@@ -2193,13 +2465,17 @@
    "paths": [
     "crates/busbar-unit-breaker/src"
    ],
-   "tree_hash": "8dc4d147509a13ef5d6a7508e32f84fd1eb6e978d60b8ed7ccacebcfbb70555f",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "052a2b88e04b7516be9a6a641a4e60ac41be8a77144bc6c08a85f506ffe7421d",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "an upstream failure the path could put no number on falls through the status ladder into the arm meant for an unexpected success and is recorded as the caller's fault, so a destination failing that way never trips its cell and keeps taking full traffic; the four per-destination maps insert and never remove, so retired destinations stay resident for the life of the process; a reopen journals a cooldown re-read after its own transition lock was released",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-breaker/src/tests"
@@ -2227,6 +2503,19 @@
      "tree_hash": "8dc4d147509a13ef5d6a7508e32f84fd1eb6e978d60b8ed7ccacebcfbb70555f",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "052a2b88e04b7516be9a6a641a4e60ac41be8a77144bc6c08a85f506ffe7421d",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "an upstream failure the path could put no number on falls through the status ladder into the arm meant for an unexpected success and is recorded as the caller's fault, so a destination failing that way never trips its cell and keeps taking full traffic; the four per-destination maps insert and never remove, so retired destinations stay resident for the life of the process; a reopen journals a cooldown re-read after its own transition lock was released"
     }
    ]
   },
@@ -2236,13 +2525,15 @@
    "paths": [
     "crates/busbar-unit-cost/src"
    ],
-   "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "49228f678db78e962beb2a0c1cbf1f9808640f5dee033f7669a6f5b1d60a3a41",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "pricing one settled unit heap-allocates a string per usage line and one more for the fee line, from a class name that is already static, on a path the crate's own allocation case does not cover",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-cost/src/tests"
@@ -2270,6 +2561,17 @@
      "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "49228f678db78e962beb2a0c1cbf1f9808640f5dee033f7669a6f5b1d60a3a41",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "pricing one settled unit heap-allocates a string per usage line and one more for the fee line, from a class name that is already static, on a path the crate's own allocation case does not cover"
     }
    ]
   },
@@ -2279,13 +2581,16 @@
    "paths": [
     "crates/busbar-unit-egress/src"
    ],
-   "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "00077db60c5f40cd66b8c9e3a21a50b2455f010bda16bb2c05918b94cb8e3727",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 2
+   },
+   "report": "the pool name is copied into an owned string on every attempt and again on delivery, so a failover pays for it several times per request; the outbound request that carries the substituted cleartext credential derives its debug output where the sibling credential type hand-writes one that prints presence only; the pick rebuilds the whole candidate list on every retry",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-egress/src/tests"
@@ -2313,6 +2618,18 @@
      "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "00077db60c5f40cd66b8c9e3a21a50b2455f010bda16bb2c05918b94cb8e3727",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 2
+     },
+     "report": "the pool name is copied into an owned string on every attempt and again on delivery, so a failover pays for it several times per request; the outbound request that carries the substituted cleartext credential derives its debug output where the sibling credential type hand-writes one that prints presence only; the pick rebuilds the whole candidate list on every retry"
     }
    ]
   },
@@ -2322,13 +2639,13 @@
    "paths": [
     "crates/busbar-unit-egress-auth/src"
    ],
-   "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
+   "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
    "result": "in_progress",
    "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "report": "the signer's canonicalization and key derivation were checked against the published algorithm and matched; the conformance reading covered a fifth of the scope, so this is a sample",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-egress-auth/src/tests"
@@ -2356,6 +2673,15 @@
      "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
+     "counts": {},
+     "report": "the signer's canonicalization and key derivation were checked against the published algorithm and matched; the conformance reading covered a fifth of the scope, so this is a sample"
     }
    ]
   },
@@ -2366,15 +2692,15 @@
     "crates/busbar-unit-ledger/src"
    ],
    "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 7,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "LOW": 3,
-    "NIT": 1
+    "HIGH": 1,
+    "MEDIUM": 1
    },
-   "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
-   "auditor": "opus-p3-wal-ledger-verbs",
+   "report": "the book of balances grows a row per bucket, dimension, scope and window for the life of the process and the one function that retires a sealed window has no caller outside its own cases; separately every mutation and every read clones a string-owning key to reach a map entry that in the common case inserts nothing, justified by a comment saying the identifier has no total order when it does",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-ledger/src/tests"
@@ -2425,6 +2751,18 @@
       "NIT": 1
      },
      "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds"
+    },
+    {
+     "round": 8,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1
+     },
+     "report": "the book of balances grows a row per bucket, dimension, scope and window for the life of the process and the one function that retires a sealed window has no caller outside its own cases; separately every mutation and every read clones a string-owning key to reach a map entry that in the common case inserts nothing, justified by a comment saying the identifier has no total order when it does"
     }
    ]
   },
@@ -2435,12 +2773,12 @@
     "crates/busbar-unit-scope/src"
    ],
    "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
    "result": "in_progress",
    "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "report": "read as the authority the auth unit's admin mirror defers to; nothing survived triage in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-scope/src/tests"
@@ -2468,6 +2806,15 @@
      "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
+     "counts": {},
+     "report": "read as the authority the auth unit's admin mirror defers to; nothing survived triage in what was opened"
     }
    ]
   },
@@ -2477,13 +2824,13 @@
    "paths": [
     "crates/busbar-unit-transport-key/src"
    ],
-   "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
-   "result": "zero",
+   "tree_hash": "9cfdb0cb7d5db8651c3fcce3b0b069a888adef9701d9904abf2265481a02eebf",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
    "counts": {},
-   "report": "zero confirmed; all files read fully",
-   "auditor": "opus-pass3",
+   "report": "the default protocol list and the config builder's own literal are pinned by two cases that would go red on a change, so the documented identity between them holds; nothing survived triage",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-transport-key/src/tests"
@@ -2529,6 +2876,15 @@
      "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
      "counts": {},
      "report": "zero confirmed; all files read fully"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "9cfdb0cb7d5db8651c3fcce3b0b069a888adef9701d9904abf2265481a02eebf",
+     "counts": {},
+     "report": "the default protocol list and the config builder's own literal are pinned by two cases that would go red on a change, so the documented identity between them holds; nothing survived triage"
     }
    ]
   },
@@ -2538,13 +2894,15 @@
    "paths": [
     "crates/busbar-unit-trust/src"
    ],
-   "tree_hash": "fbc6a4c033bc2c5d5fde6ca2cef59ea5910f9548b48ac54bd8201b3f3ce4dc94",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "12d3b9b5fb0a6209d7de8be5a246c033026d33b7866406cb5bea1a68823689f5",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the per-hop candidate list is rebuilt in full on every retry inside the pick loop; the weighted walk's credits are bounded by the algorithm's own invariant, so the plain addition there is not the hazard it looks like",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-trust/src/tests"
@@ -2572,6 +2930,17 @@
      "tree_hash": "fbc6a4c033bc2c5d5fde6ca2cef59ea5910f9548b48ac54bd8201b3f3ce4dc94",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "12d3b9b5fb0a6209d7de8be5a246c033026d33b7866406cb5bea1a68823689f5",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the per-hop candidate list is rebuilt in full on every retry inside the pick loop; the weighted walk's credits are bounded by the algorithm's own invariant, so the plain addition there is not the hazard it looks like"
     }
    ]
   },
@@ -2581,13 +2950,15 @@
    "paths": [
     "crates/busbar-unit-usage/src"
    ],
-   "tree_hash": "47d129e75c87118d11b74c9d5bf02bd366ea71fc4e54a2739e50ff025232d655",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "in flight; no reading recorded against this scope yet",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "aec26e16a2f5da2d6ee4548ddf56f394999e5d483345e2300ba60d00c0c43031",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the locator floor's lower band truncates to zero and can never fire for a kernel floor smaller than the configured ratio, while the upper band works at every size",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-usage/src/tests"
@@ -2615,6 +2986,17 @@
      "tree_hash": "47d129e75c87118d11b74c9d5bf02bd366ea71fc4e54a2739e50ff025232d655",
      "counts": {},
      "report": "in flight; no reading recorded against this scope yet"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "aec26e16a2f5da2d6ee4548ddf56f394999e5d483345e2300ba60d00c0c43031",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the locator floor's lower band truncates to zero and can never fire for a kernel floor smaller than the configured ratio, while the upper band works at every size"
     }
    ]
   },
@@ -2624,17 +3006,13 @@
    "paths": [
     "crates/busbar-unit-verbs/src"
    ],
-   "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "HIGH": 1,
-    "MEDIUM": 1,
-    "LOW": 3
-   },
-   "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
-   "auditor": "opus-p3-wal-ledger-verbs",
+   "tree_hash": "1ba453ab2313c7fe43830eacb7225da04186c5f9dc2dfe0947a29309043ca205",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
+   "counts": {},
+   "report": "the mint plan, idempotency probe, posture and rate paths were read and nothing survived triage; the group-name ceiling sits at the provisioning door by design",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-verbs/src/tests"
@@ -2688,6 +3066,15 @@
       "LOW": 3
      },
      "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "1ba453ab2313c7fe43830eacb7225da04186c5f9dc2dfe0947a29309043ca205",
+     "counts": {},
+     "report": "the mint plan, idempotency probe, posture and rate paths were read and nothing survived triage; the group-name ceiling sits at the provisioning door by design"
     }
    ]
   },
@@ -2697,16 +3084,13 @@
    "paths": [
     "crates/busbar-unit-wal/src"
    ],
-   "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 7,
-   "result": "findings",
-   "counts": {
-    "MEDIUM": 1,
-    "LOW": 2
-   },
-   "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
-   "auditor": "opus-p3-wal-ledger-verbs",
+   "tree_hash": "72b37e94e96e3314aa0d61d4a4cdb059f2b6cd1c3656266d32d0fe442f126144",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 8,
+   "result": "in_progress",
+   "counts": {},
+   "report": "segment, journal, recovery and shipping were read and nothing survived triage; three lenses left scope unread, so this is a sample",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-wal/src/tests"
@@ -2760,6 +3144,15 @@
       "LOW": 2
      },
      "report": "every fix proven by a failing case first, 15/15 plants caught after two coverage adds"
+    },
+    {
+     "round": 8,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "72b37e94e96e3314aa0d61d4a4cdb059f2b6cd1c3656266d32d0fe442f126144",
+     "counts": {},
+     "report": "segment, journal, recovery and shipping were read and nothing survived triage; three lenses left scope unread, so this is a sample"
     }
    ]
   },
@@ -2804,17 +3197,16 @@
    "paths": [
     "crates/busbar-voice-codec/src"
    ],
-   "tree_hash": "a2fa8be7163c6ba98bdbb7fdfb99f15680d3977511267c856d222ea1a3fd761b",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "tree_hash": "45662ac5f3c7872c4dc6e80ad0ee4c094cfcb3bfafc784634491571cfa4b9804",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 5,
-    "LOW": 4,
-    "NIT": 2
+    "MEDIUM": 2,
+    "LOW": 2
    },
-   "report": "mulaw admitted as pcm (fixed), null tool result (fixed), totals without breakdown metered free (fixed), nested argument lost the call (fixed); gemini uplink labelled with the output format reported (DecodeState seam); every production file read fully",
-   "auditor": "opus-pass2",
+   "report": "a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit",
+   "auditor": "opus-streams-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-voice-codec/src/tests"
@@ -2855,6 +3247,18 @@
       "NIT": 2
      },
      "report": "mulaw admitted as pcm (fixed), null tool result (fixed), totals without breakdown metered free (fixed), nested argument lost the call (fixed); gemini uplink labelled with the output format reported (DecodeState seam); every production file read fully"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-streams-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "45662ac5f3c7872c4dc6e80ad0ee4c094cfcb3bfafc784634491571cfa4b9804",
+     "counts": {
+      "MEDIUM": 2,
+      "LOW": 2
+     },
+     "report": "a full owned serde_json::Value tree is built per wire frame on the 50 Hz duplex path and the alloc gate pins only the marginal owned-vs-borrowed delta, never an absolute per-frame budget; topology/twilio.rs duplicates the plane crate's own hand-rolled Twilio reader/writer and base64 with no shared golden test and already divergent shapes (Bytes vs Vec, flat vs nested Start, only one validates mediaFormat, differing member order); the crate declares no forbid(unsafe_code) though it is the pure half of a pure plane's scanned closure; no test sends media-before-start, stop-without-start or a zero-length payload. topology/* is runtime-gated and out of the shipping plane's build -- a perf HIGH against it was rejected on that ground. 4 rejected of 21 distinct across the unit"
     }
    ]
   },
@@ -2864,18 +3268,32 @@
    "paths": [
     "crates/export-example-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9d3eb355998d73305de7f4630616152c07afba086ac5bfbb12653414274b44e4",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "header falsely claims to mirror the store example's config-less posture, but that store parses and acts on a config key that switches its backend to a disk-backed store",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/export-example-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "9d3eb355998d73305de7f4630616152c07afba086ac5bfbb12653414274b44e4",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "header falsely claims to mirror the store example's config-less posture, but that store parses and acts on a config key that switches its backend to a disk-backed store"
+    }
+   ]
   },
   {
    "id": "crates/hook-test-plugin/src",
@@ -2883,18 +3301,28 @@
    "paths": [
     "crates/hook-test-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "eda658c1cd42ece0c548974c0a8e4ddf410773f377f3c85cc4240356590553f4",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/hook-test-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "eda658c1cd42ece0c548974c0a8e4ddf410773f377f3c85cc4240356590553f4",
+     "counts": {},
+     "report": "zero; read fully"
+    }
+   ]
   },
   {
    "id": "crates/hooks-ranking/src",
@@ -2902,56 +3330,28 @@
    "paths": [
     "crates/hooks-ranking/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "21df9039c11b6bf7b4283e21837425e19724295b786e029fcd01c0dcb2e97068",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/hooks-ranking/src/tests"
    ],
-   "rounds": []
-  },
-  {
-   "id": "crates/plane-abi-spike/src",
-   "kind": "production",
-   "paths": [
-    "crates/plane-abi-spike/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/plane-abi-spike/src/tests"
-   ],
-   "rounds": []
-  },
-  {
-   "id": "crates/plane-abi-spike-plugin/src",
-   "kind": "production",
-   "paths": [
-    "crates/plane-abi-spike-plugin/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/plane-abi-spike-plugin/src/tests"
-   ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "21df9039c11b6bf7b4283e21837425e19724295b786e029fcd01c0dcb2e97068",
+     "counts": {},
+     "report": "zero; read fully"
+    }
+   ]
   },
   {
    "id": "crates/plugin-loader/src",
@@ -3023,16 +3423,16 @@
     "crates/plugin-pack/src"
    ],
    "tree_hash": "c4eee4b0205e454824878bfa779aeffb42caead81efdb062e8c3daa98f0a7f85",
-   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-   "round": 1,
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 4,
-    "MEDIUM": 15,
-    "LOW": 24
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1
    },
-   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
-   "auditor": "opus-prod-auditor-plugins",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-pack/src/tests"
@@ -3050,6 +3450,19 @@
       "LOW": 24
      },
      "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "c4eee4b0205e454824878bfa779aeffb42caead81efdb062e8c3daa98f0a7f85",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1
+     },
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3060,16 +3473,16 @@
     "crates/plugin-sdk/src"
    ],
    "tree_hash": "34a10e3aced4ac756871a07cbde23fb71d78f8b16cb5eb962742d90ffcc758d7",
-   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-   "round": 6,
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 4,
-    "MEDIUM": 15,
-    "LOW": 24
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1
    },
-   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
-   "auditor": "opus-prod-auditor-plugins",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sdk/src/tests"
@@ -3101,6 +3514,19 @@
       "LOW": 24
      },
      "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "34a10e3aced4ac756871a07cbde23fb71d78f8b16cb5eb962742d90ffcc758d7",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1
+     },
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3110,17 +3536,17 @@
    "paths": [
     "crates/plugin-sign/src"
    ],
-   "tree_hash": "b39cbda5887ca455a23ff38104dfb538ea110cdb0c259a6d4f585b0c9669b14c",
-   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "5f4c91cdb52915b2a182e4a96c08743758a2ecd32cf2048e059029a22f7b5364",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 2,
+   "result": "zero",
    "counts": {
-    "HIGH": 4,
-    "MEDIUM": 15,
-    "LOW": 24
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
    },
-   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
-   "auditor": "opus-prod-auditor-plugins",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sign/src/tests"
@@ -3138,6 +3564,19 @@
       "LOW": 24
      },
      "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    },
+    {
+     "round": 2,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "5f4c91cdb52915b2a182e4a96c08743758a2ecd32cf2048e059029a22f7b5364",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3148,16 +3587,16 @@
     "crates/plugin-testkit/src"
    ],
    "tree_hash": "4721b81ba45d84cd262a119b1f128455767c0b47f32bda368d65e4670fe1d965",
-   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
-   "round": 1,
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 4,
-    "MEDIUM": 15,
-    "LOW": 24
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0
    },
-   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
-   "auditor": "opus-prod-auditor-plugins",
+   "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-testkit/src/tests"
@@ -3175,6 +3614,19 @@
       "LOW": 24
      },
      "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "4721b81ba45d84cd262a119b1f128455767c0b47f32bda368d65e4670fe1d965",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0
+     },
+     "report": "11 Sonnet lens finders at e36685644; 6 raw -> 4 confirmed (0 HIGH, 1 MEDIUM, 3 LOW/NIT), 33% reject rate, 2 quote mismatches; NOT CONVERGED (no lens retired, hot/pod.rs second half unread)"
     }
    ]
   },
@@ -3184,18 +3636,28 @@
    "paths": [
     "crates/secret-example-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e86d337b033f3271f936f391d6afd9fe43d3b7dc0afa5493d372ad852e1581fe",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/secret-example-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "e86d337b033f3271f936f391d6afd9fe43d3b7dc0afa5493d372ad852e1581fe",
+     "counts": {},
+     "report": "zero; read fully"
+    }
+   ]
   },
   {
    "id": "crates/secret-ref/src",
@@ -3240,18 +3702,34 @@
    "paths": [
     "crates/store-example-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "366bba79faaecbc93aa82567b622edb652cce51e96a9f439405513faaed37baa",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "NIT": 1
+   },
+   "report": "depends on a sibling instance of its own kind even though the normative spec forbids that absolutely for any kind ('no sibling instance, ever'), which only passes because the gate's manifest allowlist waives it by name; redeem_plane_token makes every plane token except 'ask' infinitely replayable via the trait's default, the opposite of the in-tree store backend's own documented anti-replay stance; and its tests live at a different path than every other crate in the unit uses",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/store-example-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "366bba79faaecbc93aa82567b622edb652cce51e96a9f439405513faaed37baa",
+     "counts": {
+      "MEDIUM": 2,
+      "NIT": 1
+     },
+     "report": "depends on a sibling instance of its own kind even though the normative spec forbids that absolutely for any kind ('no sibling instance, ever'), which only passes because the gate's manifest allowlist waives it by name; redeem_plane_token makes every plane token except 'ask' infinitely replayable via the trait's default, the opposite of the in-tree store backend's own documented anti-replay stance; and its tests live at a different path than every other crate in the unit uses"
+    }
+   ]
   },
   {
    "id": "crates/store-memory/src",
@@ -3259,18 +3737,32 @@
    "paths": [
     "crates/store-memory/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "0de17045348b5691ccbe74cb48a6f5da7836306eeda7430ad847045403094d0b",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "the map backing the contract's record verbs has no sweep, ticker, TTL or delete verb -- unlike every other map in the file -- so it grows without bound for the life of a long-lived process",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "exclude": [
     "crates/store-memory/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "0de17045348b5691ccbe74cb48a6f5da7836306eeda7430ad847045403094d0b",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "the map backing the contract's record verbs has no sweep, ticker, TTL or delete verb -- unlike every other map in the file -- so it grows without bound for the life of a long-lived process"
+    }
+   ]
   },
   {
    "id": "xtask/src",
@@ -3278,17 +3770,18 @@
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
-   "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
-   "round": 2,
+   "tree_hash": "b84282b4d5d7eb63734a051aced041e8affae6fd809e91b1ead454a7be455a6b",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 19,
-    "MEDIUM": 34,
-    "LOW": 24
+    "HIGH": 5,
+    "MEDIUM": 10,
+    "LOW": 7,
+    "NIT": 1
    },
-   "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree",
-   "auditor": "opus-xtask-auditor-a",
+   "report": "ten lens finders at this hash; 35 raw -> 33 distinct -> 22 confirmed (5 HIGH), 15 percent reject rate, 0 quote mismatches; a mistyped gate flag is ignored so a release arm reports green having checked less; three walks read a failed or empty scan as a clean tree; two sites abort the process where the design says refuse; a corrupt register makes ledger sync overwrite the audit history on exit 0; four defects are repeats from earlier rounds; NOT CONVERGED, no lens retired, the four largest gates unread",
+   "auditor": "opus-gates-auditor-c",
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
@@ -3319,6 +3812,20 @@
       "LOW": 24
      },
      "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-gates-auditor-c",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "b84282b4d5d7eb63734a051aced041e8affae6fd809e91b1ead454a7be455a6b",
+     "counts": {
+      "HIGH": 5,
+      "MEDIUM": 10,
+      "LOW": 7,
+      "NIT": 1
+     },
+     "report": "ten lens finders at this hash; 35 raw -> 33 distinct -> 22 confirmed (5 HIGH), 15 percent reject rate, 0 quote mismatches; a mistyped gate flag is ignored so a release arm reports green having checked less; three walks read a failed or empty scan as a clean tree; two sites abort the process where the design says refuse; a corrupt register makes ledger sync overwrite the audit history on exit 0; four defects are repeats from earlier rounds; NOT CONVERGED, no lens retired, the four largest gates unread"
     }
    ]
   },
@@ -3349,18 +3856,33 @@
    ]
   },
   {
+   "id": "crates/api/tests",
+   "kind": "test",
+   "paths": [
+    "crates/api/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/auth-admin-tokens/src/tests",
    "kind": "test",
    "paths": [
     "crates/auth-admin-tokens/src/tests"
    ],
    "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
-   "result": "findings",
+   "result": "zero",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-root.md",
-   "auditor": "opus-test-auditor-root",
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
@@ -3371,8 +3893,32 @@
      "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-root.md"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
+     "counts": {},
+     "report": "zero; read fully"
     }
    ]
+  },
+  {
+   "id": "crates/auth-admin-tokens/tests",
+   "kind": "test",
+   "paths": [
+    "crates/auth-admin-tokens/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/auth-static-plugin/src/tests",
@@ -3380,13 +3926,13 @@
    "paths": [
     "crates/auth-static-plugin/src/tests"
    ],
-   "tree_hash": "b920f1ddf8fa341026ed3ca50bd55053e16da7d9be7af55750ad4ea05151e66e",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "tree_hash": "e335b44627b8e94246a6585b4a92afbd07d19497dd005fafa7ffd4b161a11f83",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
    "round": 1,
-   "result": "findings",
+   "result": "zero",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-root.md",
-   "auditor": "opus-test-auditor-root",
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
@@ -3397,6 +3943,15 @@
      "tree_hash": "b920f1ddf8fa341026ed3ca50bd55053e16da7d9be7af55750ad4ea05151e66e",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-root.md"
+    },
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "e335b44627b8e94246a6585b4a92afbd07d19497dd005fafa7ffd4b161a11f83",
+     "counts": {},
+     "report": "zero; read fully"
     }
    ]
   },
@@ -3491,6 +4046,21 @@
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-caps/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-caps/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-contract/tests",
@@ -3816,14 +4386,29 @@
    "paths": [
     "crates/busbar-plane-a2a/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "dcb8b5fb9cec33e769ee94c0cf1fcbbcdf5c06586ce10d8b18a82761d837c256",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow",
+   "auditor": "opus-plane-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "dcb8b5fb9cec33e769ee94c0cf1fcbbcdf5c06586ce10d8b18a82761d837c256",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-a2a/tests",
@@ -3831,13 +4416,15 @@
    "paths": [
     "crates/busbar-plane-a2a/tests"
    ],
-   "tree_hash": "b9e93945fae157395cd4f3d0124da766887c2b0ad6d6cf501bcf4a1cedbd8217",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "f32359e0115a71a690893451672b8fe11cdf68c625e64bd596fb75f6339fbecb",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the only allocation gate measures the request direction, so nothing holds the per-frame relay path the arena reset is pinned for; no test feeds an ordinary successful answer through the response decoder, which is what let the terminal test ship wrong in both directions",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -3848,6 +4435,17 @@
      "tree_hash": "b9e93945fae157395cd4f3d0124da766887c2b0ad6d6cf501bcf4a1cedbd8217",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "f32359e0115a71a690893451672b8fe11cdf68c625e64bd596fb75f6339fbecb",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the only allocation gate measures the request direction, so nothing holds the per-frame relay path the arena reset is pinned for; no test feeds an ordinary successful answer through the response decoder, which is what let the terminal test ship wrong in both directions"
     }
    ]
   },
@@ -3872,13 +4470,16 @@
    "paths": [
     "crates/busbar-plane-llm/tests"
    ],
-   "tree_hash": "de96fdf3ddb0bab81363dcf97ba0e9f8f937f7276de4e69a8df1a8ee93341997",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "9a185c356d0e0a6bad5f14a7204c7a565fa9ff565b47d80c619e95c5f9f523b7",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
+   "counts": {
+    "LOW": 1,
+    "NIT": 1
+   },
+   "report": "the only allocation gate measures the request direction while a comment in the source claims it holds the answer relay; the dialect-envelope test covers six of forty-two refusal reasons, which is coverage only because the mapping it guards is exhaustive",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -3889,6 +4490,18 @@
      "tree_hash": "de96fdf3ddb0bab81363dcf97ba0e9f8f937f7276de4e69a8df1a8ee93341997",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "9a185c356d0e0a6bad5f14a7204c7a565fa9ff565b47d80c619e95c5f9f523b7",
+     "counts": {
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "the only allocation gate measures the request direction while a comment in the source claims it holds the answer relay; the dialect-envelope test covers six of forty-two refusal reasons, which is coverage only because the mapping it guards is exhaustive"
     }
    ]
   },
@@ -3898,14 +4511,29 @@
    "paths": [
     "crates/busbar-plane-mcp/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "3d8170989b9f8491d418a2a5daf2d732e99c04ac5ac705a7a2caa9fadbeed794",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "LOW": 1
+   },
+   "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow",
+   "auditor": "opus-plane-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "3d8170989b9f8491d418a2a5daf2d732e99c04ac5ac705a7a2caa9fadbeed794",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the session-counter test increments the field itself and then asserts the result, so it passes with the production increment deleted; the refusal totality test enumerates twenty of forty-two reasons by hand against a match that carries a catch-all arm, so it can never force the list to grow"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-mcp/tests",
@@ -3913,17 +4541,15 @@
    "paths": [
     "crates/busbar-plane-mcp/tests"
    ],
-   "tree_hash": "56342b88ee8fb65b1ecd3f343114e02fa25e214500b25a6e6294a6a1334bb4cc",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "aeed184d77afa725528a0a40e6762942f94caa2dd948b7cb375bf6b8ec4484c8",
+   "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 3,
-    "LOW": 5
+    "LOW": 1
    },
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
+   "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for",
+   "auditor": "opus-plane-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -3938,6 +4564,17 @@
       "LOW": 5
      },
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-plane-auditor-b",
+     "audited_at": "1b616b2580d09c96bab0b0dbdbb5cc1e8703deb0",
+     "tree_hash": "aeed184d77afa725528a0a40e6762942f94caa2dd948b7cb375bf6b8ec4484c8",
+     "counts": {
+      "LOW": 1
+     },
+     "report": "the only allocation gate calls no plane method at all, so nothing holds the per-frame relay path the arena reset is pinned for"
     }
    ]
   },
@@ -4000,12 +4637,16 @@
     "crates/busbar-plugin/src/tests"
    ],
    "tree_hash": "ca963de88b5595f90b883824ad626048e13c6e6caf3ec8c86ec81ef429f95a78",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-planes.md",
-   "auditor": "opus-test-auditor-planes",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 2,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
+   },
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
    "rounds": [
     {
@@ -4016,6 +4657,19 @@
      "tree_hash": "ca963de88b5595f90b883824ad626048e13c6e6caf3ec8c86ec81ef429f95a78",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-planes.md"
+    },
+    {
+     "round": 2,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "ca963de88b5595f90b883824ad626048e13c6e6caf3ec8c86ec81ef429f95a78",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
     }
    ]
   },
@@ -4189,13 +4843,15 @@
    "paths": [
     "crates/busbar-transport-grpc/src/tests"
    ],
-   "tree_hash": "192afb06e04c29f8932f69d8e75fad27ce7a9eb29fb24426bcee87d7543b299d",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "37285e369656f4a3dddcbe5d3ad24bf1f6134695de530590dc8aa5c933b76825",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "read fully; the frame-meta honesty check is a single equality against one hardcoded payload length, so a metering regression returning a constant that happens to match it would ship green, and no test perturbs a real frame to prove the check discriminates; half-close, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4206,6 +4862,49 @@
      "tree_hash": "192afb06e04c29f8932f69d8e75fad27ce7a9eb29fb24426bcee87d7543b299d",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "37285e369656f4a3dddcbe5d3ad24bf1f6134695de530590dc8aa5c933b76825",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "read fully; the frame-meta honesty check is a single equality against one hardcoded payload length, so a metering regression returning a constant that happens to match it would ship green, and no test perturbs a real frame to prove the check discriminates; half-close, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts and the emission clock have no test"
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-grpc/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/tests"
+   ],
+   "tree_hash": "f389bbb861e799cb16b7fafec1a4e53535359bca77d9152910c2aab259948036",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "the guard that keeps a wire from naming a plane holds a word list with no model vendor name and no billing word, so it cannot fail on the dialect class it is named for; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail whatever the matcher returns; the file is byte-identical to another crate copy rather than shared from one place",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "f389bbb861e799cb16b7fafec1a4e53535359bca77d9152910c2aab259948036",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the guard that keeps a wire from naming a plane holds a word list with no model vendor name and no billing word, so it cannot fail on the dialect class it is named for; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail whatever the matcher returns; the file is byte-identical to another crate copy rather than shared from one place"
     }
    ]
   },
@@ -4215,14 +4914,61 @@
    "paths": [
     "crates/busbar-transport-http/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "65dc81a68d42da7517debfdb74aff75b8d661d8f50171e49c2d504d0899a0205",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "read fully; this crate is one of only three whose frame-meta honesty test perturbs a real frame both ways and asserts the check goes red, and that shape is the one four sibling wires lack; the battery leaves half-close, backpressure, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts, multiplexed streams, K writers, overlap cases and the emission clock with no test",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "65dc81a68d42da7517debfdb74aff75b8d661d8f50171e49c2d504d0899a0205",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "read fully; this crate is one of only three whose frame-meta honesty test perturbs a real frame both ways and asserts the check goes red, and that shape is the one four sibling wires lack; the battery leaves half-close, backpressure, two-level composition with a bottom-layer credential, in-band upgrade with cleared facts, multiplexed streams, K writers, overlap cases and the emission clock with no test"
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-http/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-http/tests"
+   ],
+   "tree_hash": "734bfb225f6a27c7f865fe982f96d23251367aec297b4164b7acbae2e2e74cc2",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "the guard that keeps a wire from naming a plane holds a word list that contains no model vendor name and no billing word, so it cannot fail on the dialect class it is named for, and a live instance of that class sits in a sibling wire; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail; the file is byte-identical to another crate copy rather than shared",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "734bfb225f6a27c7f865fe982f96d23251367aec297b4164b7acbae2e2e74cc2",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "the guard that keeps a wire from naming a plane holds a word list that contains no model vendor name and no billing word, so it cannot fail on the dialect class it is named for, and a live instance of that class sits in a sibling wire; one self-test line is a disjunction whose right half is a literal that is always true, so that case cannot fail; the file is byte-identical to another crate copy rather than shared"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-sse/src/tests",
@@ -4230,14 +4976,29 @@
    "paths": [
     "crates/busbar-transport-sse/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "0e8652e00bf2d4bfa834a709fe8b3779eb71a8a7d6c288aeef977e1066b05646",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "NIT": 1
+   },
+   "report": "read fully; this crate is one of three that does perturb a real frame both ways to prove the frame-meta honesty check goes red; a test name and a doc comment in the crate under test name model vendors, which no vocabulary guard here would catch because this wire carries none; half-close, cancel mid-frame, K writers, multiplexed streams, overlap cases and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "0e8652e00bf2d4bfa834a709fe8b3779eb71a8a7d6c288aeef977e1066b05646",
+     "counts": {
+      "NIT": 1
+     },
+     "report": "read fully; this crate is one of three that does perturb a real frame both ways to prove the frame-meta honesty check goes red; a test name and a doc comment in the crate under test name model vendors, which no vocabulary guard here would catch because this wire carries none; half-close, cancel mid-frame, K writers, multiplexed streams, overlap cases and the emission clock have no test"
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-stdio/src/tests",
@@ -4245,13 +5006,16 @@
    "paths": [
     "crates/busbar-transport-stdio/src/tests"
    ],
-   "tree_hash": "1af4fcc0e10064e63cb8808098017deb0d5dd400ef15dd1531c0b841d6ca482d",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "tree_hash": "245eecf9b80a29b93fc95f0d09c4bf2b7e57b7d2b52b30b8593fcb5cfd8a8916",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "read fully; two tests establish that a reader is parked by sleeping fifty milliseconds and asserting the task is unfinished, which is equally true of a task the runtime has not polled, so on a contended runner the fixture the message calls honest never holds and the test still passes; the frame-meta honesty check has no inflating or deflating fixture; in-band upgrade with cleared facts, multiplexed streams, overlap cases and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4262,8 +5026,50 @@
      "tree_hash": "1af4fcc0e10064e63cb8808098017deb0d5dd400ef15dd1531c0b841d6ca482d",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "245eecf9b80a29b93fc95f0d09c4bf2b7e57b7d2b52b30b8593fcb5cfd8a8916",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "read fully; two tests establish that a reader is parked by sleeping fifty milliseconds and asserting the task is unfinished, which is equally true of a task the runtime has not polled, so on a contended runner the fixture the message calls honest never holds and the test still passes; the frame-meta honesty check has no inflating or deflating fixture; in-band upgrade with cleared facts, multiplexed streams, overlap cases and the emission clock have no test"
     }
    ]
+  },
+  {
+   "id": "crates/busbar-transport-tcp/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-tcp/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-tls/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-tls/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-transport-ws/src/tests",
@@ -4272,12 +5078,15 @@
     "crates/busbar-transport-ws/src/tests"
    ],
    "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
-   "auditor": "opus-test-auditor-substrate",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 1
+   },
+   "report": "read fully; the frame-meta honesty check is a single equality with no fixture proving it discriminates an inflated or deflated count; a test presumes the pump is suspended in its socket read purely because twenty milliseconds elapsed after spawning it, with no primitive proving it was ever polled, so the wake-a-suspended-read path it documents may not be exercised; two-level composition with a bottom-layer credential, overlap cases and the emission clock have no test",
+   "auditor": "opus-wire-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4288,6 +5097,18 @@
      "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-substrate.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-wire-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "read fully; the frame-meta honesty check is a single equality with no fixture proving it discriminates an inflated or deflated count; a test presumes the pump is suspended in its socket read purely because twenty milliseconds elapsed after spawning it, with no primitive proving it was ever polled, so the wake-a-suspended-read path it documents may not be exercised; two-level composition with a bottom-layer credential, overlap cases and the emission clock have no test"
     }
    ]
   },
@@ -4297,17 +5118,13 @@
    "paths": [
     "crates/busbar-unit-admission/src/tests"
    ],
-   "tree_hash": "02b0ec22593c021a3706948c8e86cb828521460754bdd57f2789f1379224512b",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "HIGH": 14,
-    "MEDIUM": 16,
-    "LOW": 13
-   },
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "tree_hash": "5503756dbf5c8dab0316bb4edd74f53369235e90d18d7a5f643d63cfd6406b29",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
+   "counts": {},
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4322,6 +5139,15 @@
       "LOW": 13
      },
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "5503756dbf5c8dab0316bb4edd74f53369235e90d18d7a5f643d63cfd6406b29",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4331,13 +5157,13 @@
    "paths": [
     "crates/busbar-unit-audit/src/tests"
    ],
-   "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "0fe8e4dc1592bd440db786a819ce47ca9e16e0f602cbf48033b4152e443fb314",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4348,6 +5174,15 @@
      "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "0fe8e4dc1592bd440db786a819ce47ca9e16e0f602cbf48033b4152e443fb314",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4358,12 +5193,12 @@
     "crates/busbar-unit-auth/src/tests"
    ],
    "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "left unread by every lens this round; the production surface was read instead",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4374,6 +5209,15 @@
      "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
+     "counts": {},
+     "report": "left unread by every lens this round; the production surface was read instead"
     }
    ]
   },
@@ -4383,14 +5227,25 @@
    "paths": [
     "crates/busbar-unit-breaker/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "b1f4bfa439fea9b374281db54ab68e48863b1ced8cb6a538f9ec9f68813361d8",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 1,
+   "result": "in_progress",
    "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "report": "left unread by every lens this round; the production surface was read instead",
+   "auditor": "opus-units-auditor-b",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "b1f4bfa439fea9b374281db54ab68e48863b1ced8cb6a538f9ec9f68813361d8",
+     "counts": {},
+     "report": "left unread by every lens this round; the production surface was read instead"
+    }
+   ]
   },
   {
    "id": "crates/busbar-unit-cost/src/tests",
@@ -4399,12 +5254,12 @@
     "crates/busbar-unit-cost/src/tests"
    ],
    "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4415,6 +5270,15 @@
      "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4425,12 +5289,14 @@
     "crates/busbar-unit-cost/tests"
    ],
    "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
    "result": "findings",
-   "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "the allocation case measures the rate lookup only, so the function that prices a settled unit allocates outside anything the case can see",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4441,6 +5307,17 @@
      "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "the allocation case measures the rate lookup only, so the function that prices a settled unit allocates outside anything the case can see"
     }
    ]
   },
@@ -4450,13 +5327,13 @@
    "paths": [
     "crates/busbar-unit-egress/src/tests"
    ],
-   "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "2a45665002fd0fd1261d01e9813bb642e16a3baeb7698f870ad31f167aaf8dce",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "left unread by every lens this round; the production surface was read instead",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4467,6 +5344,15 @@
      "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "2a45665002fd0fd1261d01e9813bb642e16a3baeb7698f870ad31f167aaf8dce",
+     "counts": {},
+     "report": "left unread by every lens this round; the production surface was read instead"
     }
    ]
   },
@@ -4476,13 +5362,13 @@
    "paths": [
     "crates/busbar-unit-egress/tests"
    ],
-   "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "531952f1df3987fa04fbed0c057661635774566d3c0e5e7cc246752adfbaa0ed",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "the cross-crate breaker adapter case was read and is a real agreement test, not one that passes by construction",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4493,6 +5379,15 @@
      "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "531952f1df3987fa04fbed0c057661635774566d3c0e5e7cc246752adfbaa0ed",
+     "counts": {},
+     "report": "the cross-crate breaker adapter case was read and is a real agreement test, not one that passes by construction"
     }
    ]
   },
@@ -4502,13 +5397,13 @@
    "paths": [
     "crates/busbar-unit-ledger/src/tests"
    ],
-   "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "7fca94edb019117dd26129b8b65c66fe426e54c6e82d90c65f5c204e68b0dc06",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4519,6 +5414,15 @@
      "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "7fca94edb019117dd26129b8b65c66fe426e54c6e82d90c65f5c204e68b0dc06",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4528,13 +5432,13 @@
    "paths": [
     "crates/busbar-unit-trust/src/tests"
    ],
-   "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "37885d786faaf1daf9ff22702495adeeb9da3e745251e83300115fd7e7a38f61",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "sampled for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4545,6 +5449,15 @@
      "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "37885d786faaf1daf9ff22702495adeeb9da3e745251e83300115fd7e7a38f61",
+     "counts": {},
+     "report": "sampled for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4555,12 +5468,12 @@
     "crates/busbar-unit-trust/tests"
    ],
    "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "the weighted-allocation case was read and measures what it claims to",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4571,6 +5484,15 @@
      "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
+     "counts": {},
+     "report": "the weighted-allocation case was read and measures what it claims to"
     }
    ]
   },
@@ -4581,12 +5503,12 @@
     "crates/busbar-unit-usage/src/tests"
    ],
    "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4597,6 +5519,15 @@
      "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4606,13 +5537,13 @@
    "paths": [
     "crates/busbar-unit-verbs/src/tests"
    ],
-   "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4623,6 +5554,15 @@
      "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "3dc4eecacb0222d99751ed94a5c6d4bdc52c2e5d43188d55d883755b976d998a",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4632,13 +5572,13 @@
    "paths": [
     "crates/busbar-unit-wal/src/tests"
    ],
-   "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
-   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
-   "round": 1,
-   "result": "findings",
+   "tree_hash": "da7d9cab5fca1ad8035f853335bf54a0f5f9597f072bad9f64c7289325b923ff",
+   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+   "round": 2,
+   "result": "in_progress",
    "counts": {},
-   "report": "busbar-landq-state/gate/audits/tests-units.md",
-   "auditor": "opus-test-auditor-units",
+   "report": "read for tautologies and shared-fixture races; none found in what was opened",
+   "auditor": "opus-units-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -4649,6 +5589,15 @@
      "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
      "counts": {},
      "report": "busbar-landq-state/gate/audits/tests-units.md"
+    },
+    {
+     "round": 2,
+     "result": "in_progress",
+     "auditor": "opus-units-auditor-b",
+     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
+     "tree_hash": "da7d9cab5fca1ad8035f853335bf54a0f5f9597f072bad9f64c7289325b923ff",
+     "counts": {},
+     "report": "read for tautologies and shared-fixture races; none found in what was opened"
     }
    ]
   },
@@ -4690,21 +5639,31 @@
    "paths": [
     "crates/hooks-ranking/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "60089f3c952f82910fe9abe81b78d446393ad10872c43d27808da2834b315ac9",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "60089f3c952f82910fe9abe81b78d446393ad10872c43d27808da2834b315ac9",
+     "counts": {},
+     "report": "zero; read fully"
+    }
+   ]
   },
   {
-   "id": "crates/plane-abi-spike/src/tests",
+   "id": "crates/hooks-ranking/tests",
    "kind": "test",
    "paths": [
-    "crates/plane-abi-spike/src/tests"
+    "crates/hooks-ranking/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4713,24 +5672,7 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null,
-   "rounds": []
-  },
-  {
-   "id": "crates/plane-abi-spike/benches",
-   "kind": "test",
-   "paths": [
-    "crates/plane-abi-spike/benches"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "rounds": []
+   "fixed_at": null
   },
   {
    "id": "crates/plugin-loader/src/tests",
@@ -4770,15 +5712,33 @@
    "paths": [
     "crates/plugin-pack/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "44fae6ebeab54f12cf8b1481d76b9c4a8ce984096df6c1609f07d817e7ce6951",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
+   },
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "44fae6ebeab54f12cf8b1481d76b9c4a8ce984096df6c1609f07d817e7ce6951",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+    }
+   ]
   },
   {
    "id": "crates/plugin-sdk/src/tests",
@@ -4786,15 +5746,33 @@
    "paths": [
     "crates/plugin-sdk/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "c94caec0fcc26700f00abbe15f72aae0d09e8bdd9fbf6dbc195f8395eb2e8acd",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
+   },
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "c94caec0fcc26700f00abbe15f72aae0d09e8bdd9fbf6dbc195f8395eb2e8acd",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+    }
+   ]
   },
   {
    "id": "crates/plugin-sdk/tests",
@@ -4818,15 +5796,33 @@
    "paths": [
     "crates/plugin-sign/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "e8c354c126a2d9f42397fed1b66182f2b3da220b5117f8a01969765f2a44ac17",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
+   },
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "e8c354c126a2d9f42397fed1b66182f2b3da220b5117f8a01969765f2a44ac17",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+    }
+   ]
   },
   {
    "id": "crates/plugin-testkit/src/tests",
@@ -4834,15 +5830,33 @@
    "paths": [
     "crates/plugin-testkit/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "cee6c95caa42cd80108087fa5a7a151f28aba7d5138af43ee8054f543561cbb9",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0
+   },
+   "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus",
+   "auditor": "opus-plugins-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-plugins-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "cee6c95caa42cd80108087fa5a7a151f28aba7d5138af43ee8054f543561cbb9",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0
+     },
+     "report": "tests lens (Sonnet) read all 4,592 test lines in full; zero findings IN the test modules (the one MEDIUM is in plugin-testkit/src production battery). Not retired: Sonnet, not opus"
+    }
+   ]
   },
   {
    "id": "crates/secret-ref/src/tests",
@@ -4861,10 +5875,10 @@
    "rounds": []
   },
   {
-   "id": "crates/store-memory/src/tests",
+   "id": "crates/secret-ref/tests",
    "kind": "test",
    "paths": [
-    "crates/store-memory/src/tests"
+    "crates/secret-ref/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -4873,8 +5887,48 @@
    "counts": {},
    "report": null,
    "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/store-example-plugin/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/store-example-plugin/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/store-memory/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/store-memory/src/tests"
+   ],
+   "tree_hash": "44477e616be2d93673c854623cf0f15028128cdddd6735ad93a09ceca816807f",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "zero",
+   "counts": {},
+   "report": "zero; read fully",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "44477e616be2d93673c854623cf0f15028128cdddd6735ad93a09ceca816807f",
+     "counts": {},
+     "report": "zero; read fully"
+    }
+   ]
   },
   {
    "id": "crates/store-memory/tests",
@@ -5152,15 +6206,31 @@
    "paths": [
     "examples"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "6e975225085e845189ec229a50cc56eca7a1061f570aa2382142445019316fd4",
+   "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1,
+    "LOW": 2
+   },
+   "report": "a router example's copy-paste config names a module that does not exist for the in-process shape it claims, when the shipped binary is actually an out-of-process socket server needing different config; its two reference sidecars read peer input with no size cap; and a usage script neither enables strict shell error handling nor checks its cloud CLI's exit status, so a failing query silently reads as empty",
+   "auditor": "opus-examples-auditor-a",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-examples-auditor-a",
+     "audited_at": "e36685644ca9399d68d209c2b4244f2884a9dc15",
+     "tree_hash": "6e975225085e845189ec229a50cc56eca7a1061f570aa2382142445019316fd4",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 2
+     },
+     "report": "a router example's copy-paste config names a module that does not exist for the in-process shape it claims, when the shipped binary is actually an out-of-process socket server needing different config; its two reference sidecars read peer input with no size cap; and a usage script neither enables strict shell error handling nor checks its cloud CLI's exit status, so a failing query silently reads as empty"
+    }
+   ]
   },
   {
    "id": ".github",
@@ -5560,7 +6630,7 @@
     "MEDIUM": 14,
     "LOW": 10
    },
-   "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red",
+   "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3: harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red",
    "auditor": "opus-oracle-auditor-b",
    "fixed_at": null,
    "rounds": [
@@ -5654,7 +6724,7 @@
       "MEDIUM": 14,
       "LOW": 12
      },
-     "report": "audits/oracle-tool-a.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): enumerate-cells swallows a corrupt cells.json and can shrink the corpus green; an improvement waiver can forgive a body-10 refusal; rigs-ledger fails open on a corrupt/missing baseline"
+     "report": "audits/oracle-tool-a.md — PARTIAL, tool busbar-oracle v0.2.3: enumerate-cells swallows a corrupt cells.json and can shrink the corpus green; an improvement waiver can forgive a body-10 refusal; rigs-ledger fails open on a corrupt/missing baseline"
     },
     {
      "round": 7,
@@ -5667,7 +6737,7 @@
       "MEDIUM": 14,
       "LOW": 10
      },
-     "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red"
+     "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3: harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red"
     }
    ]
   },

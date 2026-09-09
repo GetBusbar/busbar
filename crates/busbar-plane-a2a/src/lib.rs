@@ -46,6 +46,7 @@ pub mod meta;
 pub mod ops;
 pub mod plane;
 pub mod records;
+pub mod surface;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};

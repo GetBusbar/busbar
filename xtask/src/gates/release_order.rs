@@ -37,7 +37,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Case, Gate, Report};
+use crate::gates::{prove_green, prove_red, prove_rows_red, Case, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
 const WORKFLOWS: &str = ".github/workflows";
@@ -1490,6 +1490,23 @@ impl Gate for ReleaseOrderGate {
         for m in mutations() {
             report.push(m.case(cx, self));
         }
+
+        // R0 — THE WORKFLOWS THIS GATE READS. Every mutation above EDITS a workflow; not one takes
+        // a workflow away, so the rule that refuses a missing file was carried by the whole-tree
+        // green alone and could have been deleted with `cargo xtask selftest` still passing. It is
+        // the rule the rest of the gate rests on: a release.yml that is not there ends the scan,
+        // and eight rules then report "no violation" over a scan that never happened.
+        let mut ov = Overlay::new();
+        ov.remove(format!("{WORKFLOWS}/release.yml"));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the release workflow is gone, so the rules below it judged nothing",
+            &["R0"],
+            ov,
+            &["release.yml is missing"],
+        ));
+
         report
     }
 }

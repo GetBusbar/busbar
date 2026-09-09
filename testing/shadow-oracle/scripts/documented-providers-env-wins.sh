@@ -23,7 +23,16 @@ source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
 W="$RAW/providers-env-work"; mkdir -p "$W"
 
-"$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
+# THIS DRIVER USED TO HAVE NO GIVE-UP PATH AT ALL. Every step below was unchecked, so a setup that
+# died half-way still reached the final `jq` and wrote a well-formed captured.json — and the old
+# script-cell verdict, which only looked at that file, recorded PASS. `fail` marks the run as a
+# harness error (never a busbar difference) so the recorder files it FAIL instead of freezing the
+# recorder's own breakage into the golden.
+fail() { jq -n --arg body "$1" '{status:0, headers:{}, body:$body, effects:{harness_error:$body}}' >"$RAW/captured.json"; exit 0; }
+
+"$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null \
+  || fail "--generate-signing-key exited non-zero; there is no signing key to configure"
+[ -s "$W/signing.key" ] || fail "--generate-signing-key wrote an empty signing key"
 
 cat >"$W/providers-config.yaml" <<YAML
 openai-chat:
@@ -86,3 +95,7 @@ jq -n --argjson rc "$rc" --arg stdout "$stdout_scrubbed" --arg stderr "$stderr_s
     effects:{exit_code:$rc, stdout:$stdout, stderr:$stderr, resolved:$resolved,
              note:"resolved=env means BUSBAR_PROVIDERS won over providers_file: (the actual 1.5.5 code path); resolved=config would match the CHANGELOG:134-137 text"}}' \
   >"$RAW/captured.json"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

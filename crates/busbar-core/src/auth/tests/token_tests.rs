@@ -631,7 +631,7 @@ async fn credential_submit_issues_via_shared_seam() {
         .governance
         .as_ref()
         .unwrap()
-        .verify_token(&key, crate::store::now(), None)
+        .verify_token(&key, busbar_substrate::store::now(), None)
         .is_some());
 }
 
@@ -690,7 +690,7 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
 
     assert_ne!(key1, key2, "Refresh must mint a DIFFERENT token");
     let gov = app.governance.as_ref().unwrap();
-    let now = crate::store::now();
+    let now = busbar_substrate::store::now();
     assert!(
         gov.verify_token(&key1, now, None).is_none(),
         "the prior token must stop verifying after Refresh (rotation)"

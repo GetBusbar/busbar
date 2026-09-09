@@ -97,7 +97,7 @@ fn envelope_for(method: &str, params: serde_json::Value) -> serde_json::Value {
 /// The v0.3 submission, answered by a backend that is still WORKING.
 ///
 /// WORKING and not completed, and that is load-bearing rather than incidental: busbar does not arm
-/// a backend for a task it already holds as terminal (`pushback::worth_registering`), because that
+/// a backend for a task it already holds as terminal (`pushback::token_live`), because that
 /// would be registering a webhook for an event that cannot happen. A fixture whose task completed
 /// would make every test in this file assert nothing.
 fn submission() -> serde_json::Value {
@@ -925,6 +925,132 @@ async fn the_callback_endpoint_refuses_everything_but_the_token_busbar_minted() 
             push_to_busbar(&h, &presented, &document).await,
             401,
             "the callback endpoint admitted {what}"
+        );
+    }
+}
+
+// ══ THE CAPABILITY'S LIFETIME ════════════════════════════════════════════════════════════════════
+
+/// The document a backend pushes to report a state. `id` is the BACKEND's own name for the task,
+/// which is what rides the substituted registration.
+fn pushed(state: &str) -> serde_json::Value {
+    serde_json::json!({ "id": BACKEND_TASK, "kind": "task", "status": { "state": state } })
+}
+
+/// Assert that busbar makes NO further hop. A bounded wait rather than an instant read: the
+/// delivery this must NOT see is spawned detached, so an immediate assertion would pass against a
+/// delivery that was merely still in flight — which is the false green that would certify the leak
+/// as fixed while it is not.
+async fn no_hop_within(h: &Harness, before: usize, what: &str) {
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let sent = h.sent();
+        assert!(
+            sent.len() <= before,
+            "{what}: busbar made a delivery it must not have made: {:?}",
+            sent.into_iter().skip(before).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// **THE TOKEN EXPIRES WITH THE TASK. A capability for work that has ENDED authorises nothing.**
+///
+/// The defect this pins: the push token was authenticated by its MAC and by the row existing, and
+/// by nothing else. No liveness check, no revocation, no deadline — so a token captured anywhere it
+/// travels (it rides `Authorization: Bearer` on an outbound hop, so a backend's own logs, a proxy
+/// and an error page all hold one) replayed for as long as the process lived, on a task that ended
+/// days ago.
+///
+/// And the replay did not even have to lie. Re-reporting the state busbar ALREADY HOLDS is treated
+/// as a retry rather than a transition — correctly, since `transition` refuses a move to the state
+/// it is already in — so the transition table's terminal-refuses-everything rule never ran. Each
+/// replay POSTed to the caller's webhook again and appended another `task.push_delivered` to that
+/// task's durable provenance chain: repeated "your task moved" notifications for a task that had
+/// ended, and a hash chain an external party could grow without bound.
+///
+/// The two mitigations that existed closed neither half. A process-local secret means a RESTART
+/// invalidates the token — not the task ending. `forget` drops the caller's credential after the
+/// first terminal delivery — so the replays arrive at the webhook UNAUTHENTICATED, which stops
+/// neither the delivery nor the chain append.
+#[tokio::test]
+async fn a_token_for_a_task_that_has_ended_authorises_nothing() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &submission()).await;
+    let before = h.sent().len();
+    let registration = issued_last(&h, before, &create_call(&task)).await;
+    let token = token_on_the_wire(&registration);
+    let after_registration = h.sent().len();
+
+    // THE LEGITIMATE ENDING. This one must work: it is the whole point of the substitution, and a
+    // fix that killed it would have closed the hole by removing the feature.
+    assert_eq!(
+        push_to_busbar(&h, &token, &pushed("completed")).await,
+        202,
+        "the backend's report of the ending is the capability being used for what it is for"
+    );
+    let delivered = wait_for_hop(&h, after_registration).await;
+    assert_eq!(
+        delivered.url, CALLER_HOOK,
+        "the terminal delivery must still reach the caller's own webhook"
+    );
+    let after_delivery = h.sent().len();
+
+    // AND THE REPLAY. Same token, same body, same state — the exact shape that used to be taken as
+    // a retry and delivered again.
+    assert_eq!(
+        push_to_busbar(&h, &token, &pushed("completed")).await,
+        401,
+        "a push token for a task busbar holds as terminal still authorised the endpoint. The task \
+         has nothing left to report, so the capability that spoke for it must be dead"
+    );
+    no_hop_within(&h, after_delivery, "a replay on a terminal task").await;
+
+    // A DIFFERENT terminal state does not revive it either: the capability is dead, not merely
+    // unable to repeat itself.
+    assert_eq!(
+        push_to_busbar(&h, &token, &pushed("failed")).await,
+        401,
+        "a dead token authorised a DIFFERENT terminal report; the refusal is about the task having \
+         ended, not about the body repeating"
+    );
+    no_hop_within(
+        &h,
+        after_delivery,
+        "a replay reporting another terminal state",
+    )
+    .await;
+}
+
+/// **AND IT IS NOT SPENT BY BEING USED.** One task draws several callbacks — `working`,
+/// `input-required`, then its ending — and every one of them is the same capability being used for
+/// what it is for.
+///
+/// This is the twin the fix above needs. "Refuse the second push" would pass that test and would
+/// break the feature: an interrupted task that reports progress twice before it finishes is the
+/// ordinary case, not the attack. The capability ends with the TASK, and with nothing else.
+#[tokio::test]
+async fn a_token_is_not_spent_by_being_used_while_the_task_is_live() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &submission()).await;
+    let before = h.sent().len();
+    let registration = issued_last(&h, before, &create_call(&task)).await;
+    let token = token_on_the_wire(&registration);
+
+    // The task is `working`. Two non-terminal reports, then the ending: three uses of one token.
+    for state in ["input-required", "working", "completed"] {
+        assert_eq!(
+            push_to_busbar(&h, &token, &pushed(state)).await,
+            202,
+            "the token was refused for `{state}` on a task that had not ended; a per-task \
+             capability is not a single-use one"
         );
     }
 }

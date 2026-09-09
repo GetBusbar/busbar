@@ -1320,10 +1320,16 @@ async fn run(data_workers: usize) {
         .map(|p| (p.base_url.clone(), p.api_key.clone()));
 
     // THE RELOAD HOOK, installed BEFORE the first app build below so the boot's own rate resolution
-    // is the card's first apply and nothing has to read the configuration twice. From here on the
-    // root's card is whatever the last resolution said, and each unit prices against the one it
-    // pinned at admission. Off, no holder is installed and the seam is silent, which is the honest
-    // answer for a binary with no root ledger in it.
+    // is the history's OPENING ENTRY and nothing has to read the configuration twice. That ordering
+    // is what makes the opening entry a real one rather than a placeholder: the first apply the
+    // holder ever hears is the deployment's configured card, and it is written effective from
+    // instant zero, so no instant is ever in a hole.
+    //
+    // From here on each resolution APPENDS an entry dated at the moment it landed, and no entry is
+    // ever rewritten — an operator's price edit prices what happens after it and leaves what already
+    // happened where it was booked. Each unit resolves against the snapshot it pinned at admission,
+    // at its own arrival instant. Off, no holder is installed and the seam is silent, which is the
+    // honest answer for a binary with no root ledger in it.
     #[cfg(feature = "root-llm")]
     root::kernel::install_card_repricer();
 
@@ -2317,6 +2323,13 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
 // yet: the root is built before any plane is switched onto it, so the shape can be checked against
 // the real traits while the serving path is untouched.
 mod root;
+
+/// The stamp's derivation half, shared VERBATIM with `build.rs` (which `include!`s the same file).
+/// Mounted only under `cfg(test)` because the binary itself reads the stamp out of `env!` constants
+/// build.rs already baked — the functions are here so the decisions they encode can be asserted, not
+/// so main can call them. See `src/build_stamp.rs`.
+#[cfg(test)]
+mod build_stamp;
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

@@ -8,8 +8,10 @@
 //! ## The RPC path: the destination's, with this crate's own as the fallback
 //!
 //! gRPC's own wire format names every call by an HTTP/2 `:path` of the shape
-//! `/package.Service/Method`. A dialled call uses the method the destination named —
-//! `UpstreamAddress::Grpc` carries it, and `GrpcTransport::dial` reads it — so two plane operations
+//! `/package.Service/Method`. A dialled call uses the method the destination named — the
+//! destination declares it under the reserved `method` key and `GrpcTransport::dial` reads it back
+//! through `UpstreamAddress::extra`, ignoring every key it does not understand — so two plane
+//! operations
 //! on one transport can reach two upstream methods. Only a destination naming none falls back to
 //! [`RPC_PATH`], which is also the path this byte-blind server answers on: served calls are
 //! answered whatever `:path` they arrive with, since the transport reads no meaning from it beyond
@@ -27,6 +29,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use tonic::{Request, Response, Status};
 
 use busbar_contract::wire::Frame;
+use busbar_contract::TransportMeta;
 use busbar_contract::{SlabBytes, StreamId};
 use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::FrameMeta;
@@ -225,7 +228,15 @@ pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Fr
         // WHICH numbering this is can read it. Handing `14` up unnamed had it matched against
         // HTTP's bands, where it falls in none, so an `UNAVAILABLE` upstream was read as the
         // caller's fault: no breaker record, no failover.
-        status_code: u8::try_from(code as i32).ok().map(WireStatus::Grpc),
+        // The namespace is the one the transport DECLARES, not one this line spells: a frame
+        // cannot report in a numbering the transport did not say it reports in.
+        status_code: <crate::transport::GrpcTransport as TransportMeta>::STATUS_NAMESPACE.and_then(
+            |ns| {
+                u32::try_from(code as i32)
+                    .ok()
+                    .map(|n| WireStatus::new(ns, n))
+            },
+        ),
         retry_after_secs: None,
     };
     Frame {

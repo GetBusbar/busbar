@@ -37,4 +37,10 @@ export BUSBAR_ORACLE_DATA="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
 # which left this tree with the tool. They find them through this variable, never by a path beside
 # themselves, so a driver cannot silently fall back to a stale in-tree copy.
 export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$("$root/.venv/bin/python" -c 'import busbar_oracle, os; print(os.path.dirname(busbar_oracle.__file__))')}"
+# `tool-dir` is BUSBAR'S OWN word, handled here and never passed through: it installs the pin if it
+# is not installed yet (the block above) and prints where the tool landed. It exists so a caller that
+# needs ONE tool FILE rather than a tool COMMAND -- the llm-conformance gate reaches for the tool's
+# build-request.py when a recording lacks raw request bytes -- can find it through the same pin every
+# other caller is judged by, instead of guessing a path beside busbar's data directory.
+if [ "${1:-}" = tool-dir ]; then echo "$BUSBAR_ORACLE_TOOL_DIR"; exit 0; fi
 exec "$root/bin/busbar-oracle" "$@"

@@ -149,10 +149,9 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         // ── B ── plugin FFI/ABI: one export boundary. A hand-written export skips the
         //         null-out-guard-before-alloc, the mandatory catch_unwind and the total status map.
         //
-        //         LEDGERED EXEMPTION for the ABI spike plugin: a P0 benchmark cdylib whose entire
-        //         purpose is to measure the PLT delta of a hand-declared host call across a real
-        //         `dlopen`, so routing its one export through the macro would wrap the very seam the
-        //         benchmark exists to time.
+        //         The ABI spike plugin's ledgered exemption is RETIRED: that crate was deleted per
+        //         docs/design/PLUGIN-TREE.md §7, so the SDK is once again the only file in the tree
+        //         allowed to spell the export by hand.
         ChokeRow {
             id: "B-plugin-export".into(),
             tag: "EXPORT-BYPASS".into(),
@@ -163,10 +162,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                 BanRule::new(
                     r"#\[(unsafe\()?no_mangle",
                     "hand-rolled #[no_mangle] export",
-                    &[
-                        "crates/plugin-sdk/src/lib.rs".into(),
-                        "crates/plane-abi-spike-plugin/src/lib.rs".into(),
-                    ],
+                    &["crates/plugin-sdk/src/lib.rs".into()],
                 ),
                 BanRule::new(
                     r"#\[(unsafe\()?export_name",

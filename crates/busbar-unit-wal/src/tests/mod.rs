@@ -5,6 +5,7 @@
 
 mod bounds;
 mod fixtures;
+mod idempotence;
 mod journal_chain;
 mod kill_at_every_offset;
 mod no_disk;

@@ -578,6 +578,9 @@ pub mod pushnotify;
 /// was left when it moved out — this plane's method vocabulary, its verb dispatch and its refusal
 /// wording.
 pub mod receive;
+/// THE CALLER'S HALF of a hop refusal — the stable code and the fixed sentence a client reads,
+/// held apart from `relay`'s `Display`, which is the operator's and names the backend.
+pub(crate) mod refusal_client;
 pub(crate) mod registry;
 pub(crate) mod relay;
 /// The plane's HTTP+JSON binding — the SECOND wire format, re-framed onto `ingress`'s one sequence.

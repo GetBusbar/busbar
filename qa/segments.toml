@@ -114,7 +114,7 @@ id     = "config-stability"
 status = "active"
 tier   = "fast"
 # The config-stability gate: the drift guard, the additive-only classifier, and its self-test.
-run    = "scripts/config-stability-gate.sh --selftest && scripts/config-stability-gate.sh --check"
+run    = "cargo xtask gate config-schema --selftest && cargo xtask gate config-schema"
 
 [[segment]]
 id     = "method-coverage-acceptance"
@@ -222,30 +222,34 @@ run    = "cargo build --release -p busbar-store-example-plugin -p busbar-hook-te
 id     = "benches"
 status = "active"
 tier   = "live-mock"
-# THE BENCHES, COMPILED AND — for the one claim that is a GATE — ASSERTED.
+# THE BENCHES, COMPILED.
 #
 # `cargo bench` ran nowhere: not in .github/workflows/, not in scripts/. `ci.yml`'s workspace test
-# leg passes neither `--benches` nor `--all-targets`, and the three bench targets
-# (crates/busbar/benches/hook_path.rs, crates/busbar-core/benches/pool_upstream_creds.rs,
-# crates/plane-abi-spike/benches/abi_bench.rs) all set `harness = false`, so libtest never picks them
-# up either. The only thing touching them at all was `cargo clippy --all-targets`, which COMPILES and
-# never runs. That left two different problems, and this segment answers both differently on purpose:
+# leg passes neither `--benches` nor `--all-targets`, and both bench targets
+# (crates/busbar/benches/hook_path.rs, crates/busbar-core/benches/pool_upstream_creds.rs) set
+# `harness = false`, so libtest never picks them up either. The only thing touching them at all was
+# `cargo clippy --all-targets`, which COMPILES and never runs.
 #
-#  - A BENCH THAT NO LONGER COMPILES is a silent rot: nobody notices until the day somebody needs the
-#    number. `cargo bench --workspace --no-run` builds every bench target and asserts nothing about
-#    the figures, which is the right strength for a measurement instrument — a wall-clock number on a
-#    shared CI runner is not a thing to fail a release on.
-#  - A BENCH WHOSE HEADER READS AS A GATE is worse than no gate, because it is consulted and cannot
-#    fail. `abi_bench.rs` computed its 1µs/call verdict and its alloc-gate result and then printed
-#    them as the words "UNDER"/"OVER" and "PASS"/"FAIL". Those two claims now have an ASSERTED twin —
-#    `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate` — which is
-#    `#[ignore]`d by default and invoked explicitly here.
+# A BENCH THAT NO LONGER COMPILES is a silent rot: nobody notices until the day somebody needs the
+# number. `cargo bench --workspace --no-run` builds every bench target and asserts nothing about the
+# figures, which is the right strength for a measurement instrument — a wall-clock number on a shared
+# CI runner is not a thing to fail a release on.
 #
-# WHY THIS TIER. The asserted twin measures WALL CLOCK and uses a process-global counting allocator,
-# so it is only meaningful running ALONE (`--ignored --test-threads=1`) on a machine that is not also
-# running a dozen other tests. That is the qa cadence, not the per-push one; and compiling criterion
-# for three bench targets is minutes of build the per-push suite should not be paying.
-run    = "cargo bench --workspace --no-run && cargo test --release -p plane-abi-spike --lib -- --ignored --test-threads=1"
+# RE-LANDED (was OWED): `plane-abi-spike`'s asserted twin,
+# `the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate`, is back — now
+# against the PRODUCTION vtable/POD types (`crates/busbar-plugin/src/hot/host.rs`,
+# `crates/busbar-plugin/src/hot/pod.rs`), not a spike copy of them. It asserts the vtable-hop
+# fn-pointer wall-clock budget and the no-allocation property of the POD host-call paths, using this
+# crate's own per-thread `CountingAlloc` (`crates/busbar-plugin/src/lib.rs`, `#[cfg(test)]`-only —
+# the same idiom as `busbar-llm`'s `CountingJemalloc` alloc gates). `--ignored` because it measures
+# wall clock and a per-thread allocation count, both only meaningful alone; `--test-threads=1` for
+# the same reason. `--release` because the budget it checks (1000ns/call) is calibrated against an
+# optimized build — an unoptimized vtable hop is dominated by missing inlining that has nothing to
+# do with the ABI cost being measured, and would flake this gate on debug noise.
+#
+# WHY THIS TIER. Compiling criterion for the bench targets is minutes of build the per-push suite
+# should not be paying; that is the qa cadence, not the per-push one.
+run    = "cargo bench --workspace --no-run && cargo test --release -p busbar-plugin --lib -- --ignored --test-threads=1 the_vtable_hop_stays_under_the_budget_and_the_pod_paths_still_do_not_allocate"
 
 [[segment]]
 id     = "core-data-plane"
@@ -382,16 +386,16 @@ run    = "bash testing/llm-conformance/selftest.sh && bash testing/llm-conforman
 id     = "construction-gate"
 status = "active"
 tier   = "fast"
-# THE CONSTRUCTION GATE (scripts/construction-gate.sh) — how the tree is BUILT measured against
+# THE CONSTRUCTION GATE (cargo xtask gate construction) — how the tree is BUILT measured against
 # docs/design/ARCHITECTURE.md with the ceilings in qa/construction.toml (one attempt seam, request-path
 # function size, ports-only plane→kernel reaches, no uninstalled seam, neutral-no-dialect, single
-# terminal). RUNS REPORT-ONLY here (`--summary`: prints STATUS rule current/ceiling per row plus the
-# verdict line, exits 0), the same posture as plane-grep/secret-hygiene above, because `--check` is RED
-# by design on HEAD (three rows over their ceilings) while the construction work it measures is in
-# flight; ci.yml runs the real `--check` in its own job with continue-on-error for the same reason.
-# Arming is a one-token change (`--summary` -> `--check`) once every row is within its ceiling — no code
-# edit. The --selftest (each rule proves it sees its own planted violation; zero rows is red) runs FIRST.
-run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --summary"
+# terminal). RUNS REPORT-ONLY here (`--report`: prints every row and the verdict line, exits 0), the
+# same posture as plane-grep/secret-hygiene above, because the verdict is RED by design on HEAD (rows
+# over their ceilings) while the construction work it measures is in flight; ci.yml runs the scored
+# form in its own job with continue-on-error for the same reason. Arming is a one-token change
+# (`--report` -> nothing) once every row is within its ceiling — no code edit. The --selftest (each
+# rule proves it sees its own planted violation; zero rows is red) runs FIRST.
+run    = "cargo xtask gate construction --selftest && cargo xtask gate construction --report"
 
 [[segment]]
 id     = "documented-claims"
@@ -413,14 +417,15 @@ run    = "scripts/documented-claims-check.sh --selftest && scripts/documented-cl
 id     = "design-bindings"
 status = "active"
 tier   = "fast"
-# THE DESIGN BINDINGS GATE (scripts/design-bindings.sh) — "is what we built compliant with what we
-# designed?" qa/design-bindings.json maps every ARCHITECTURE.md Appendix B binding to the checks that
-# prove it (tests, oracle cells, lints, gates); `--check` proves every referenced check still EXISTS in
+# THE DESIGN BINDINGS GATE (cargo xtask gate design-bindings) — "is what we built compliant with what
+# we designed?" qa/design-bindings.json maps every ARCHITECTURE.md Appendix B binding to the checks that
+# prove it (tests, oracle cells, lints, gates); the run proves every referenced check still EXISTS in
 # the tree (a renamed-away test or dropped cell is RED) and lists every UNMAPPED binding as a named gap
 # (plain mode: reported, not red — the strict form that makes a gap red is verify-1.6.0-done.sh's DONE
-# claim). Regen-cleanliness of the committed ledger is asserted in ci.yml's design-bindings job. The
-# --selftest (one bogus ref exactly one FAIL, empty table vacuous-red, strict vs plain on a gap) runs FIRST.
-run    = "scripts/design-bindings.sh --selftest && scripts/design-bindings.sh --check"
+# claim). Regen-cleanliness of the committed ledger is no longer a separate CI step: it is the owed row
+# `design-bindings:regen-clean`, reconciled here with all the others. The --selftest (one bogus ref
+# exactly one FAIL, an emptied table leaving every owed binding unrecorded, a stale ledger) runs FIRST.
+run    = "cargo xtask gate design-bindings --selftest && cargo xtask gate design-bindings"
 
 [[segment]]
 id     = "kernel-token-wire-purity"
@@ -492,12 +497,17 @@ tier   = "fast"
 # would have been invisible until release. `--root-legs` builds the binary crate with
 # root-admin,root-mcp,root-a2a,root-voice,root-llm, which is why it is the slowest row in this
 # manifest; it is worth it, because it is the only one that proves the cells execute.
-# NOTE: `--root-legs-gating` IS a real arm (the shipped root legs owe every gating step a cell over
-# the loop) and the runner refuses an unknown flag with exit 2 — the Python fell through into its
-# default path, so a mistyped arm ran a check nobody asked for. The --selftest (a matrix with
-# borrowed root evidence, a labelled root verdict, an unanswered plane, and a leg proving zero steps
-# each REFUSED) runs FIRST.
-run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs"
+# `--root-legs-gating` is the fourth arm and it now RUNS here: a `root-*` feature on the manifest's
+# own `default` line is the shipped path for its plane, so a gating step no cell drives over that leg
+# is a half-answer, not a queue entry. It was implemented, tested, called "a real arm" in this very
+# note — and wired into no job, no segment and no script. An arm nobody runs is an arm whose red
+# nobody sees. It reads two files, so it goes first, before the arm that builds the binary crate.
+# The runner refuses an unknown flag with exit 2 — the Python fell through into its default path, so
+# a mistyped arm ran a check nobody asked for. The --selftest (a matrix with borrowed root evidence,
+# a labelled root verdict, a note padded to length three different ways, a rig cell id that is only a
+# prefix of a scenario that still exists, an unanswered plane, and a leg proving zero steps each
+# REFUSED) runs FIRST.
+run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs-gating && cargo xtask teller-steps --root-legs"
 
 # ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate
 # that cannot pass is a red that teaches people to ignore the manifest. Each names exactly what has

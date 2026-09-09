@@ -85,6 +85,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # SELF-TEST FIRST, and before anything is installed or pulled: it needs no BOLT, no image and
+      # no profile, so it costs seconds and it is the only thing here that proves the script's
+      # preconditions still REFUSE. Chief among them the profile floor — the check used to be
+      # `[ -s ]`, which a one-byte file cleared, so a near-empty capture produced a green rewrite of
+      # an essentially unoptimized binary that then shipped wearing the measured +38%.
+      - name: bolt-pass self-test (every precondition proven to refuse)
+        run: scripts/bolt-pass.sh --selftest
+
       # Ubuntu 24.04's packaged BOLT. scripts/bolt-pass.sh finds the tools under
       # /usr/lib/llvm-20/bin itself, so no PATH surgery here.
       - name: Install LLVM BOLT

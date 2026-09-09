@@ -16,7 +16,7 @@
     "`counts` block below is what the claims actually add up to, that every `cell` id named here exists",
     "in testing/shadow-oracle/cells.json AND was RECORDED PASS by the pinned golden, and that both",
     "CONTRADICTED rows stay flagged, cell-pinned, and carry the behaviour the code actually has.",
-    "An earlier version of this note claimed scripts/design-bindings.sh --check verified the `cell` ids.",
+    "An earlier version of this note claimed the design-bindings gate verified the `cell` ids.",
     "It did not: nothing in the tree opened this file at all."
   ],
   "source": "docs/design/inventory/1.5.5-ops-observability.md §8 (§8.3 :1047-1073, §8.4 :1087-1115)",

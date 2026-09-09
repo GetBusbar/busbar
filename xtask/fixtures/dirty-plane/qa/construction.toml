@@ -1,0 +1,27 @@
+# FIXTURE: an INTACT scoping table over a tree that is genuinely dirty.
+#
+# The twin of `renamed-rule-table`, and the twin is the point. There the rule table was renamed away
+# and the tool had to refuse a vacuous "0 crate(s) scanned"; here the table is spelled exactly as
+# the real one is, so the scan really happens — and `crates/busbar-plane-demo` depends directly on
+# `libc`, one of the banned crates.
+#
+# What it proves: `denylist:hits` is a rule that can still fail. The gate's own crate-level battery
+# runs the predicate beside the gate; this fixture drives the predicate THROUGH `Gate::run`, so the
+# hit has to survive as far as a RED ledger row. Invert the row's verdict and this case goes green,
+# which is exactly the mutation that had no proof before.
+[gate]
+test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
+
+[gate.plugin_kinds]
+plane = ["crates/busbar-plane-*"]
+hook = ["crates/hook*"]
+pure_auth = ["crates/auth-*"]
+egress_auth = ["crates/egress-auth-*"]
+
+[rules.source-denylist]
+patterns = [
+  'std::net', 'std::fs', 'std::process', 'std::os', 'std::env',
+  'tokio::net', 'tokio::fs', 'tokio::process',
+  'async_std', 'libc', 'reqwest', 'hyper',
+]
+kinds = ["plane", "hook", "pure_auth", "egress_auth"]
