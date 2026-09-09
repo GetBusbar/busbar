@@ -289,7 +289,16 @@ root-mcp = []
 # that guarantees the inner surface answers exactly as it did. It costs the shipped binary nothing —
 # `root-admin` is in `default` and already carries the same edge — and a build with none of the
 # three drops it.
-root-mcp-serve = ["dep:tower"]
+#
+# It IMPLIES `root-mcp` AND `plane-mcp`, both of which it always needed and did not say. Everything
+# the serving path is composed from — the leg, the mount, the boot composition — reaches into the
+# MCP plane's units, which are behind `root-mcp`; and the boot composition reads the `tools:`
+# registrations and the `mcp:` endpoint block off the sections THIS PLANE declares, which are behind
+# `plane-mcp`. A build asking to serve the plane without compiling it did not compile at all, so the
+# two implications make the manifest state what the compiler already enforced rather than adding a
+# new dependency. Neither is a change to the shipped feature set: `default` already carries both, and
+# does not carry this switch.
+root-mcp-serve = ["root-mcp", "plane-mcp", "dep:tower"]
 # THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
 # off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
 # request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
