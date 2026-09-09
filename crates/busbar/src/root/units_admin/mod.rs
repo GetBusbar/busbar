@@ -1448,6 +1448,7 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::CommitUpgrade => "commit_upgrade",
         KernelVerb::ExportKeyset => "export_keyset",
         KernelVerb::Approve => "approve",
+        KernelVerb::AmendRateHistory => "amend_rate_history",
         KernelVerb::GetLedgerTotals => "get_ledger_totals",
         KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
         KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",

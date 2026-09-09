@@ -3076,9 +3076,9 @@ fn the_verbs_the_loop_answers_are_the_ones_the_surface_pin_measured() {
         "the composition root answers a different set of operations than the served surface pin \
          measured; one of the two has moved without the other"
     );
-    // The complement is not empty and is not the whole table: sixty-eight of the eighty-three are
+    // The complement is not empty and is not the whole table: sixty-nine of the eighty-four are
     // still produced by the surface underneath, which is the fact the migration exists to change.
-    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 68);
+    assert_eq!(busbar_plane_admin::verbs::table().len() - owned.len(), 69);
 }
 
 // ── the crossed operations, asked of the composition ────────────────────────────────────────────

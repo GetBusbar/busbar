@@ -4,7 +4,7 @@
 //!
 //! One implementation of the plugin contract's plane kind, for the closed table of 66 operations the
 //! 1.5.5 admin API tag defines (mechanically extracted into `generated::verb_table_1_5_5`, 49
-//! paths, 34 read-only and 32 full) plus the 12 additional 1.6.0 operator verbs the design
+//! paths, 34 read-only and 32 full) plus the 13 additional 1.6.0 operator verbs the design
 //! names by name (`verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`,
 //! `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `commit_upgrade`,
 //! `export_keyset`, `approve`), and the 5 1.6.0 ledger views (the read-only
@@ -15,7 +15,7 @@
 //!
 //! ## What this crate is NOT — an explicit scope boundary
 //!
-//! The design's admin section pins the closed 66+12+5 table AND separately names five 1.5.5 surfaces
+//! The design's admin section pins the closed 66+13+5 table AND separately names five 1.5.5 surfaces
 //! that live outside it, each pinned by its own handler rather than by this table: the self-serve
 //! token exchange (`POST /auth/token` and its browser-facing `GET` twin), the governance-scoped
 //! model listings (`GET /v1/models`, `/v1beta/models`), `/stats`, the unconditional-bypass

@@ -9,7 +9,7 @@
 //!   tag (49 paths, 34 read-only / 32 full) — see [`LEGACY_VERBS`], and the conformance test in
 //!   `tests/table_matches_openapi.rs` that fails the build if this list and the committed fixture
 //!   ever disagree, by even one operation or one scope;
-//! - one of the **17 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
+//! - one of the **13 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
 //! - one of the **five 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
 //!   ledger already holds, so they are the one group of 1.6.0 additions that is `ReadOnly` rather
 //!   than `Full`, and the only group that is never posture-gated: reading a figure changes nothing,
@@ -131,7 +131,7 @@ macro_rules! legacy_row {
 
 /// The closed kernel-verb table.
 ///
-/// Three groups, in the order the module doc names them: 66 legacy verbs, 17 new verbs, then the
+/// Three groups, in the order the module doc names them: 66 legacy verbs, 13 new verbs, then the
 /// named non-admin surfaces. `#[non_exhaustive]` is deliberately NOT used — the whole point of a
 /// closed table is that a `match` on this enum fails to compile the day a new operation is added
 /// without updating this file, and a wildcard arm would silently swallow that.
@@ -282,7 +282,7 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/signing-key/rotate`
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (12) ----
+    // ---- 1.6.0 new verbs (13) ----
     /// Verify a claim/signature outside the normal request path.
     Verify,
     /// Read plane facts (a plane's own declared facts surface).
@@ -309,6 +309,12 @@ pub enum KernelVerb {
     ExportKeyset,
     /// The maker-checker approval verb (checked, not itself dual-controlled).
     Approve,
+    /// ADD a dated row to the rate history — the one money verb, and not a correction.
+    ///
+    /// It appends; it never edits. An appended row re-prices every subsequent read of every window
+    /// it covers, with no posted line touched, because price is never stored and is derived at read
+    /// time against the row in force.
+    AmendRateHistory,
 
     // ---- 1.6.0 ledger views (5) ----
     /// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and
@@ -658,7 +664,7 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 12 new 1.6.0 verbs, in the order the architecture document names them.
+/// The 13 new 1.6.0 verbs, in the order the architecture document names them.
 ///
 /// Five verbs the earlier draft of this list carried are GONE, and their absence is the money
 /// model rather than an omission: `adjust`, `resolve_slice`, `resolve_dispute`,
@@ -666,6 +672,12 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
 /// to its own books. busbar is a meter and an audit trail — a sealed line is written once at the
 /// end of a unit and never edited — so a correction has nothing here to correct. The calling app
 /// corrects against the exported sealed lines.
+///
+/// What the model DOES keep is the ability to REPRICE, and that is the last member below.
+/// [`KernelVerb::AmendRateHistory`] adds a dated rate row and never edits one; every read that
+/// follows derives its money against the rows in force, so a reprice needs no correction verb to
+/// carry it. It is the one money verb, and it is add-only, which is why deleting five verbs and
+/// adding one is not a trade of one correction surface for another.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
@@ -679,12 +691,13 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::CommitUpgrade,
     KernelVerb::ExportKeyset,
     KernelVerb::Approve,
+    KernelVerb::AmendRateHistory,
 ];
 
-/// The two of the twelve the architecture document binds as `GET` — "POST for every mutating
+/// The two of the thirteen the architecture document binds as `GET` — "POST for every mutating
 /// verb, GET for the two read-only verbs (`verify`, `plane_facts`)".
 ///
-/// They stay members of [`NEW_VERBS`] because they ARE two of the twelve, and the operator
+/// They stay members of [`NEW_VERBS`] because they ARE two of the thirteen, and the operator
 /// ceremony still reaches them through the same gate every other new verb runs (neither is in
 /// [`IRREDUCIBLE_VERBS`], so that gate admits them). What being named here changes is everything
 /// that follows from a verb being a read rather than a mutation: the scope it asks for, the mutation

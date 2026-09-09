@@ -24,6 +24,7 @@ fn every_new_verb_except_set_operator_key_and_export_keyset_is_refused_under_uns
             KernelVerb::PlaneFacts
             | KernelVerb::PlaneRecordWrite
             | KernelVerb::Approve
+            | KernelVerb::AmendRateHistory
             | KernelVerb::Verify => {
                 // Not in the irreducible set: the operator gate never applies to these.
                 assert!(
