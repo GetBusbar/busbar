@@ -47,8 +47,13 @@
 //!   a codec ever names a transport crate.
 //! * `kind-isolation:registry` — every crate in the census resolves to a kind IN THE TABLE. One
 //!   that does not is refused with the owner's own instruction: **make a new plugin kind, do not
-//!   fuse two.** The row also holds the census floor, the dead-kind rule, the
-//!   `qa/construction.toml [gate.plugin_kinds]` cross-check and the LEGACY RATCHET.
+//!   fuse two.** THE CENSUS IS EVERY `Cargo.toml` IN THE REPOSITORY, and where a manifest sits is a
+//!   finding rather than a filter: `off-tree-crate` for a crate of a kind living outside
+//!   `crates/<dir>`, `nested-crate` for one buried inside another crate's directory, `unmembered`
+//!   for one on disk and off `[workspace.members]`. All three were walked through by a red team
+//!   with every gate green. The row also holds the census floor, the dead-kind rule, the
+//!   `qa/construction.toml [gate.plugin_kinds]` cross-check, the [`OFF_TREE_MANIFESTS`] expiry and
+//!   the LEGACY RATCHET.
 //! * `kind-isolation:matrix` — the rows above hold the line for the WIRES, and none of them looked
 //!   at `crates/busbar`, the COMPOSITION ROOT, where the tree hand-wires one file per plane and
 //!   where a plane-named accept loop was landed on a sibling branch, all of it green because
@@ -410,6 +415,37 @@ const LEGACY_CRATES: &[&str] = &[
     "busbar-mcp",
     "busbar-a2a",
     "busbar-voice",
+];
+
+/// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
+/// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
+/// covers no manifest is RED, so the list cannot become a set of holes nobody re-reads.
+///
+/// An entry ending in `/` covers a directory; anything else is one exact path. THIS IS THE WHOLE
+/// EXEMPTION. Every other `Cargo.toml` in the repository is a crate of this tree, is censused, is
+/// resolved to a kind, has its edges scored, and owes a `[workspace.members]` entry — which is what
+/// closes the hole a plane-kind crate at `vendor/` walked through.
+const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
+    (
+        "xtask/Cargo.toml",
+        "the gate RUNNER. It is a workspace member and it is not a crate of the product tree: it \
+         has no kind, it ships in no artifact, and every rule here is a rule it enforces rather \
+         than one it is subject to.",
+    ),
+    (
+        "xtask/fixtures/",
+        "the gate self-tests' throwaway workspaces. Each one is a whole fake tree a rule is run \
+         over — `dirty-plane/crates/busbar-plane-demo` exists precisely so a plane rule can be \
+         proven RED — so they are inputs to the gates, never crates of the tree. They are outside \
+         `[workspace.members]` by design and nothing in the product build reaches them.",
+    ),
+    (
+        "examples/smart-router/rust-hook/Cargo.toml",
+        "a documentation example: a standalone crate a READER of the docs compiles on their own \
+         machine against the published plugin ABI. It is deliberately not a workspace member — \
+         building it here would pin it to this tree's paths, which is the opposite of what the \
+         example demonstrates.",
+    ),
 ];
 
 /// `qa/construction.toml`'s `[gate.plugin_kinds]` keys, each mapped onto the kind it names here.
@@ -1037,8 +1073,11 @@ fn parse_registry(text: &str) -> KindRegistry {
 /// One crate, as this gate sees it.
 #[derive(Debug, Clone)]
 struct CrateInfo {
-    /// `crates/<dir>`.
+    /// The directory the manifest governs — `crates/<dir>` for a crate of this tree, and whatever
+    /// directory an OFF-TREE manifest happens to sit in for one that is not.
     dir: String,
+    /// The manifest's own path, so a finding about WHERE a crate lives can name the file.
+    manifest: String,
     /// The package name from `[package] name = …`.
     name: String,
     /// `None` when the name matches no kind, or matches two at one precedence.
@@ -1254,24 +1293,71 @@ fn load_registry(cx: &Ctx) -> Result<KindRegistry, String> {
     cx.read(REGISTRY_FILE).map(|t| parse_registry(&t))
 }
 
+/// EVERY `Cargo.toml` IN THE REPOSITORY, and its text.
+///
+/// The census read `crates/<dir>/Cargo.toml` and nothing else, on the comment "a manifest one level
+/// deeper belongs to a fixture" — and that comment WAS the hole. A red team put a plane-kind crate
+/// at `vendor/busbar-plane-shim/`, path-depended it from a transport, and every gate in this tree
+/// stayed green; the same crate one level deeper, at `crates/busbar-transport-tcp/internal/shim/`,
+/// was equally invisible; and a live crate could be struck from `[workspace.members]` with nothing
+/// red at all. A census that recognises almost everything is the passing answer to a rule about
+/// everything.
+///
+/// So the walk is the WHOLE TREE, and WHERE a manifest sits is a FINDING rather than a filter.
+fn manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
+    let files = cx
+        .walk(&WalkSpec::new(["."]).ext("toml"))
+        .map_err(|e| e.to_string())?;
+    Ok(files
+        .iter()
+        .map(|f| (f.rel_str(), f.text.clone()))
+        .filter(|(rel, _)| rel == "Cargo.toml" || rel.ends_with("/Cargo.toml"))
+        .collect())
+}
+
+/// The directory a manifest governs. The workspace root's is the empty string.
+fn manifest_dir(rel: &str) -> String {
+    rel.strip_suffix("/Cargo.toml").unwrap_or("").to_string()
+}
+
+/// Is `rel` exactly `crates/<dir>/Cargo.toml` — the layout every crate of this tree has?
+fn is_tree_crate(rel: &str) -> bool {
+    let parts: Vec<&str> = rel.split('/').collect();
+    parts.len() == 3 && parts[0] == "crates" && parts[2] == "Cargo.toml"
+}
+
+/// THE ONE OFF-TREE LIST, for the sibling gate that asks the same question.
+///
+/// `workspace-deps:set-equality` compares the DECLARED member list against the manifests actually
+/// on disk, and it owes the same answer this gate does about which of them are not crates of the
+/// tree. Two lists would be two answers.
+pub fn off_tree_manifest_reason(rel: &str) -> Option<&'static str> {
+    off_tree_entry(rel).map(|(_, why)| *why)
+}
+
+/// Which reviewed off-tree entry, if any, covers `rel`.
+fn off_tree_entry(rel: &str) -> Option<&'static (&'static str, &'static str)> {
+    OFF_TREE_MANIFESTS.iter().find(|(path, _)| {
+        path.strip_suffix('/').map_or(rel == *path, |prefix| {
+            rel.starts_with(&format!("{prefix}/"))
+        })
+    })
+}
+
 fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     let reg = load_registry(cx).unwrap_or_default();
     let overrides = reg.overrides();
-    let files = cx
-        .walk(&WalkSpec::new(["crates"]).ext("toml"))
-        .map_err(|e| e.to_string())?;
     // THE WORKSPACE'S OWN RENAMES, read once: a member that inherits reaches the package the
     // workspace named, not the word the member spelled.
     let renames = manifest::workspace_renames(&cx.read("Cargo.toml").unwrap_or_default());
     let mut out = Vec::new();
-    for f in &files {
-        let rel = f.rel_str();
-        // Exactly `crates/<dir>/Cargo.toml` — a manifest one level deeper belongs to a fixture.
-        let parts: Vec<&str> = rel.split('/').collect();
-        if parts.len() != 3 || parts[2] != "Cargo.toml" {
+    for (rel, text) in manifests(cx)? {
+        // A manifest a reviewed entry covers is not a crate of this tree — see
+        // [`OFF_TREE_MANIFESTS`], whose entries expire on the registry row.
+        if off_tree_entry(&rel).is_some() {
             continue;
         }
-        let Some(name) = package_name(&f.text) else {
+        let Some(name) = package_name(&text) else {
             continue;
         };
         let (kind, remainder, ambiguous) = resolve_kind(&name);
@@ -1283,9 +1369,10 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
         // off the marker its name carries — which is why the served-surface vocabulary is unchanged
         // by the registration.
         let kind = overrides.get(name.as_str()).copied().or(kind);
-        let (deps, dev_deps) = deps_of(&f.text, &renames);
+        let (deps, dev_deps) = deps_of(&text, &renames);
         out.push(CrateInfo {
-            dir: format!("crates/{}", parts[1]),
+            dir: manifest_dir(&rel),
+            manifest: rel,
             name,
             kind,
             family: family_of(kind),
@@ -1296,7 +1383,7 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
             ambiguous,
         });
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| a.name.cmp(&b.name).then(a.dir.cmp(&b.dir)));
     Ok(out)
 }
 
@@ -2120,6 +2207,104 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
                 crates.len()
             ),
         );
+    }
+
+    // WHERE A CRATE LIVES IS A FINDING, NOT A FILTER. The census walks every `Cargo.toml` in the
+    // repository; these three arms say what it found.
+    let root_manifest = cx.read("Cargo.toml").unwrap_or_default();
+    let members: BTreeSet<String> = manifest::workspace_members(&root_manifest)
+        .into_iter()
+        .collect();
+    let dirs: BTreeSet<&str> = crates.iter().map(|c| c.dir.as_str()).collect();
+    let announced_names = reg.announced_names();
+    for c in crates {
+        // 1. OFF-TREE. A crate of a kind, living somewhere `crates/<dir>` is not, reached by a path
+        //    dependency and compiled into the artifact all the same.
+        if !is_tree_crate(&c.manifest) {
+            // 2. NESTED. A manifest INSIDE another crate's directory. "A manifest one level deeper
+            //    belongs to a fixture" was the census's own comment, and it was the hole.
+            let host = dirs
+                .iter()
+                .filter(|d| !d.is_empty() && c.dir.starts_with(&format!("{d}/")))
+                .max_by_key(|d| d.len());
+            match host {
+                Some(host) => offenders.push(format!(
+                    "nested-crate\t{}\t`{}` is a whole crate nested inside `{host}`. A manifest \
+                     under another crate's directory is a crate `--workspace` does not see and a \
+                     path dependency reaches anyway; move it to crates/<dir> or delete it.",
+                    c.manifest, c.name
+                )),
+                None => offenders.push(format!(
+                    "off-tree-crate\t{}\t`{}` resolves to kind `{}` and does not live at \
+                     crates/<dir>/Cargo.toml. Every crate of a kind is a crate of the tree, in the \
+                     tree's own layout, on the member list — or it is a kind nobody censuses, \
+                     nobody scans and nobody scores.",
+                    c.manifest,
+                    c.name,
+                    c.kind.unwrap_or("?")
+                )),
+            }
+        }
+        // 3. UNMEMBERED. On disk, off `[workspace.members]`: `--workspace` never compiles it,
+        //    never tests it, never clippies it and never denies it, and a path dependency ships it
+        //    regardless. Deleting one line is the whole of the manoeuvre.
+        //
+        //    AN `[[announced]]` CRATE IS EXEMPT, and only while its announcement stands. An
+        //    announcement is the reviewed sentence that says this crate is landing right now, and
+        //    the member line arrives with the rest of it; the announcement's own expiry — struck
+        //    when the crate is real, RED on the ship sha — is what stops that from becoming a way
+        //    to keep a crate out of `--workspace` indefinitely.
+        if !members.contains(&c.dir) && !announced_names.contains(c.name.as_str()) {
+            let reached: Vec<&str> = crates
+                .iter()
+                .filter(|o| {
+                    o.deps
+                        .iter()
+                        .chain(o.dev_deps.iter())
+                        .any(|d| d.pkg == c.name)
+                })
+                .map(|o| o.name.as_str())
+                .collect();
+            offenders.push(format!(
+                "unmembered\t{}\t`{}` is on disk and not in [workspace.members], so --workspace \
+                 compiles, tests, clippies and denies everything BUT it{}",
+                c.dir,
+                c.name,
+                if reached.is_empty() {
+                    ". Add it to the member list or delete the crate.".to_string()
+                } else {
+                    format!(
+                        " — and it is still path-depended by {}, so it ships uncovered. Add it to \
+                         the member list.",
+                        reached.join(", ")
+                    )
+                }
+            ));
+        }
+    }
+
+    // A REVIEWED OFF-TREE ENTRY THAT COVERS NOTHING IS A DEAD ALLOWANCE.
+    let seen_manifests: Vec<String> = match manifests(cx) {
+        Ok(m) => m.into_iter().map(|(rel, _)| rel).collect(),
+        Err(e) => {
+            offenders.push(format!(
+                "unreadable\tCargo.toml\t{e} — the manifest walk is this row's own input, and a \
+                 walk that did not read is not a walk that found nothing."
+            ));
+            Vec::new()
+        }
+    };
+    for (path, _) in OFF_TREE_MANIFESTS {
+        let covered = seen_manifests
+            .iter()
+            .any(|rel| off_tree_entry(rel).map(|(p, _)| *p) == Some(*path));
+        if !covered {
+            offenders.push(format!(
+                "dead-off-tree\t{path}\tthe off-tree entry for `{path}` covers no manifest any \
+                 more. Strike it — an exemption that outlives what it excused is a hole nobody \
+                 re-reads."
+            ));
+        }
     }
 
     // EVERY CRATE RESOLVES TO A KIND IN THE TABLE. This is the row the ruling is written on.
@@ -3892,6 +4077,86 @@ impl Gate for KindIsolationGate {
             &[ROW_REGISTRY],
             manifest_plant("crates/busbar-frobnicator", "busbar-frobnicator", &[]),
             &["unknown-kind", MAKE_A_NEW_KIND],
+        ));
+
+        // WHERE A CRATE LIVES. The census read `crates/<dir>/Cargo.toml` and nothing else, and the
+        // three plants below are the three shapes that walked past it.
+
+        // A CRATE OUTSIDE `crates/` IS STILL A CRATE OF A KIND. The red team's own plant: a
+        // plane-kind crate under `vendor/`, path-depended by a transport. Every gate was green.
+        let mut ov = manifest_plant(
+            "vendor/busbar-plane-shim",
+            "busbar-plane-shim",
+            &["busbar-plane-llm"],
+        );
+        ov.set(
+            "crates/busbar-transport-tls/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tls/Cargo.toml",
+                "\n[dependencies]\nbusbar-plane-shim = { path = \"../../vendor/busbar-plane-shim\" }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a crate outside crates/ is still a crate of a kind",
+            &[ROW_REGISTRY, ROW_DEPS],
+            ov,
+            &[
+                "off-tree-crate",
+                "vendor/busbar-plane-shim",
+                "transport -> plane",
+            ],
+        ));
+
+        // A CRATE NESTED UNDER ANOTHER CRATE IS NOT A FIXTURE. "A manifest one level deeper belongs
+        // to a fixture" was the census's own comment, and it was the hole: `--workspace` never
+        // compiles this crate and a path dependency reaches it anyway.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a crate nested under another crate is not a fixture",
+            &[ROW_REGISTRY],
+            manifest_plant(
+                "crates/busbar-transport-tcp/internal/shim",
+                "busbar-plane-shim2",
+                &[],
+            ),
+            &["nested-crate", "crates/busbar-transport-tcp/internal/shim"],
+        ));
+
+        // A CRATE ON DISK AND OFF THE MEMBERS LIST. One deleted line drops a live, path-depended
+        // crate out of every `--workspace` test, clippy and deny run, and the crate still ships.
+        let mut ov = Overlay::new();
+        ov.set(
+            "Cargo.toml",
+            cx.read("Cargo.toml").unwrap_or_default().replacen(
+                "    \"crates/busbar-plane-llm\",\n",
+                "",
+                1,
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a crate on disk and off the members list",
+            &[ROW_REGISTRY],
+            ov,
+            &["unmembered", "busbar-plane-llm", "still path-depended"],
+        ));
+
+        // AN OFF-TREE ENTRY THAT COVERS NOTHING IS A DEAD ALLOWANCE, on the same ratchet as every
+        // other exemption in this file.
+        let mut ov = Overlay::new();
+        ov.remove("examples/smart-router/rust-hook/Cargo.toml");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an off-tree exemption that outlived its manifest is refused",
+            &[ROW_REGISTRY],
+            ov,
+            &["dead-off-tree", "examples/smart-router/rust-hook"],
         ));
 
         // THE LEGACY RATCHET, proven by retiring one.
