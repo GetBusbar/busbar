@@ -59,6 +59,11 @@
 # `auth.lifecycle`, `billing` and `ledger` ALL identical. That is the set to compare against, and
 # nothing outside `admin.ops` should appear.
 
+# AND THE r31i CUT: the A2A plane's agent grant is read off the ENFORCED key rather than off the
+# legacy carrier, and it is refused before the dial rather than after it. `auth.lifecycle` is the
+# key's own arc and `a2a` is the plane whose grant moved; `admin.ops` and `neutrality` are named
+# because the same read is what an administrative view of a key displays.
+#
 # AND THE r31h CUT, on the same branch: the composition root gains ONE data-plane chain and the A2A
 # plane is composed through it, behind `root-a2a-serve` — which is NOT in `default` on this cut, so
 # the shipped binary is unchanged. `a2a` is named because this is the branch that puts that plane on
