@@ -386,20 +386,35 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[("voice", "streams", "busbar-plan
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
 /// exists, the entry must be struck, or a kind would be both pending and live.
-const PENDING_KINDS: &[(&str, &str)] = &[(
-    "dialect",
-    "the four-segment `busbar-plane-<plane>-<dialect>` form. The pre-split dialects are today's \
-     `*-codec` crates; the rename that splits them is what creates the first crate of this kind.",
-)];
+// THE `dialect` ROW IS STRUCK, AND THE EXPIRY IS THE RATCHET WORKING RATHER THAN A ROW BEING
+// TIDIED. It read: "the four-segment `busbar-plane-<plane>-<dialect>` form. The pre-split dialects
+// are today's `*-codec` crates; the rename that splits them is what creates the first crate of this
+// kind." `busbar-plane-llm-openai` IS that first crate, so the kind is live and the dead-kind rule
+// watches it like every other. `kind-arrived` refused the row the moment the crate landed, which is
+// exactly what the entry was written to make happen.
+//
+// The list is EMPTY, and an empty list is this mechanism working rather than resting: every kind the
+// target scheme defines now has at least one crate in the tree.
+const PENDING_KINDS: &[(&str, &str)] = &[];
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
 const PENDING_EDGES: &[(&str, &str)] = &[
-    ("dialect", "plane"),
-    ("dialect", "grammar"),
-    ("dialect", "substrate"),
-    ("dialect", "api"),
-    ("dialect", "timing"),
+    // THE FIVE `dialect` ROWS ARE STRUCK, and what struck them is the first dialect crate MEASURING
+    // its own sink set. They read `dialect -> plane`, `-> grammar`, `-> substrate`, `-> api` and
+    // `-> timing`, and they were written for a dialect shaped like the `*-codec` crate it was going
+    // to be carved out of: a codec reaches the span grammar, the substrate's values and the timing
+    // wheel because a codec PARSES. A dialect does not parse. It DECLARES — a ladder, a location
+    // row, a credential scheme — and the parsing stays the plane's, reached with the declaration as
+    // an argument. `busbar-plane-llm-openai` ships with exactly two dependencies, the contract and
+    // its plane, and no dev-dependencies at all.
+    //
+    // So four of the five classes are not "not yet", they are NOT: a dialect that named the grammar
+    // would be a dialect with a parser in it, which is the shape the split exists to remove. They
+    // are deleted rather than promoted. `dialect -> plane` is real and moved to
+    // [`ARCHITECTURE_ALLOWED`], where the ship twin reads it, alongside `dialect -> contract` —
+    // which was never on this list at all, and whose absence is why the gate refused the first
+    // dialect crate's contract edge as one this branch introduced.
     // THE `core` KIND'S NEUTRAL SPINE, and deliberately nothing else. The crates being carved out
     // of `busbar-core` land branch by branch, so their edges cannot be measured yet; what CAN be
     // stated in advance is the same sink set `kernel` and `caps` have. A `core` crate that reaches
@@ -568,6 +583,15 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("codec", "grammar"),
     ("contract", "contract-transport"),
     ("contract", "grammar"),
+    // A DIALECT'S WHOLE SINK SET, AND IT IS TWO. The architecture writes it as one sentence —
+    // `busbar-plane-<p>-<d>` deps are exactly the contract and its own plane — which is the
+    // narrowest set in the tree and the reason a plane can stay dialect-neutral while its wire
+    // surface stays open. Both rows were in [`PENDING_EDGES`] while the kind had no crates; the
+    // first one landed, so the grant moves here, where the ship twin reads it. The reverse
+    // (`plane -> dialect`) is absent on purpose and stays absent: a plane naming a dialect inverts
+    // the edge the kind exists to establish.
+    ("dialect", "contract"),
+    ("dialect", "plane"),
     ("kernel", "caps"),
     ("kernel", "contract"),
     ("kernel", "grammar"),
@@ -578,6 +602,11 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "caps"),
     ("root", "contract"),
     ("root", "control"),
+    // The root is what SEALS a dialect into the plane it declares. A dialect registers by claim —
+    // it publishes one `const` and a composition root reads it — so the edge has to exist somewhere,
+    // and the root is the only place it may: the root already names every other kind, and the
+    // alternative is the plane naming the dialect, which is the one edge the kind refuses.
+    ("root", "dialect"),
     ("root", "kernel"),
     ("root", "legacy"),
     ("root", "plane"),
@@ -608,6 +637,12 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
 const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     ("plugin-tooling", "api"),
     ("plugin-tooling", "caps"),
+    // The conformance testkit asserts things about the CONTRACT's own closed sets — that the kind
+    // table and the contract's `Kind` enum name the same kinds, and that every kind's entry face is
+    // object-safe. It cannot make either statement without naming the crate the sets live in. The
+    // edge is TCB for the reason every other row here is: the tooling is not a kind, so the kind
+    // rules do not speak to it, and the ship twin still refuses it by name.
+    ("plugin-tooling", "contract"),
     ("plugin-tooling", "kernel"),
     ("plugin-tooling", "plugin-abi"),
     ("plugin-tooling", "plugin-tooling"),
