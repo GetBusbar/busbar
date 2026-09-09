@@ -744,7 +744,7 @@ fn a_panicking_catalog_scan_unwinds_rather_than_inventing_an_answer() {
     let _ = svc.plugin_catalog("store");
 }
 
-/// A caller that cannot even ACQUIRE `CATALOG_SCAN_GATE` within `CATALOG_SCAN_GATE_WAIT` (a scan
+/// A caller that cannot even ACQUIRE a directory's scan gate within `CATALOG_SCAN_GATE_WAIT` (a scan
 /// holding the gate that never returns, e.g. a stale/hung `plugins_dir` mount) must be answered with
 /// a clear, retryable condition rather than hang forever.
 ///
