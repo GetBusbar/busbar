@@ -413,6 +413,350 @@ fn find_scope<'a>(scopes: &'a mut [Json], sid: &str) -> Option<&'a mut Json> {
         .find(|s| s.get("id").as_str() == Some(sid))
 }
 
+// ---------------------------------------------------------------------------------------------
+// public-hygiene refusal — `record --report` must not reintroduce the class of leak this branch
+// just cleaned out of qa/audit-ledger.json (an audit-round label, a bare commit-hash citation, a
+// pointer to a document the reader has never seen). `scripts/public-hygiene-lint.py` is the full
+// 11-rule instrument and stays the source of truth for what SHIPS; xtask has no `regex` dependency
+// (see xtask/Cargo.toml's own comment on why), so this is a dependency-free, hand-rolled mirror of
+// the THREE rules that actually fired against this file — `internal-issue-id`,
+// `commit-hash-citation` and `private-doc-reference` — narrow enough to be exact where it matters
+// and conservative (never over-fires on legitimate technical prose) rather than byte-for-byte with
+// the Python. It runs on `--report` alone: `--auditor` is a free-text identity field the register
+// already spells many ways (`opus-pass1`, `round-4 finder fleet`), not a place this refusal reaches.
+// ---------------------------------------------------------------------------------------------
+
+fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Case-insensitive whole-word search: hyphen-permissive, exactly as in the Python's `\b` (a
+/// hyphenated identifier that embeds the flagged word still matches; an underscore-joined one,
+/// which reads as a name rather than prose, does not).
+fn contains_word_ci(text: &str, word: &str) -> bool {
+    let hay: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    let pat: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+    if pat.is_empty() || hay.len() < pat.len() {
+        return false;
+    }
+    for i in 0..=(hay.len() - pat.len()) {
+        if hay[i..i + pat.len()] == pat[..] {
+            let before_ok = i == 0 || !is_ident_char(hay[i - 1]);
+            let after = i + pat.len();
+            let after_ok = after >= hay.len() || !is_ident_char(hay[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mirrors `\b(?:round|wave|audit)\s*#?\s*\d+\b` (`hash_required = false`) and
+/// `\b(?:task|item|finding|issue|defect|gap|guard|ticket)s?\s*#\s*\d+` (`hash_required = true`):
+/// one of `words`, word-bounded, an optional trailing `s`, optional spaces, a `#` (required only
+/// when `hash_required`), optional spaces, then at least one digit. Returns the matched slice.
+fn word_then_number(text: &str, words: &[&str], hash_required: bool) -> Option<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    for word in words {
+        let pat: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+        if pat.len() > lower.len() {
+            continue;
+        }
+        for i in 0..=(lower.len() - pat.len()) {
+            if lower[i..i + pat.len()] != pat[..] {
+                continue;
+            }
+            let before_ok = i == 0 || !is_ident_char(lower[i - 1]);
+            if !before_ok {
+                continue;
+            }
+            let mut k = i + pat.len();
+            if k < lower.len() && lower[k] == 's' {
+                k += 1;
+            }
+            while k < lower.len() && lower[k] == ' ' {
+                k += 1;
+            }
+            let saw_hash = k < lower.len() && lower[k] == '#';
+            if saw_hash {
+                k += 1;
+            }
+            if hash_required && !saw_hash {
+                continue;
+            }
+            while k < lower.len() && lower[k] == ' ' {
+                k += 1;
+            }
+            let digits_start = k;
+            while k < lower.len() && lower[k].is_ascii_digit() {
+                k += 1;
+            }
+            if k > digits_start {
+                return Some(chars[i..k].iter().collect());
+            }
+        }
+    }
+    None
+}
+
+/// Rule 1 — `internal-issue-id`: an audit-round or tracker citation the reader cannot open.
+fn rule_internal_issue_id(text: &str) -> Option<String> {
+    // The literal word this whole rule exists to catch, not a citation of it.
+    // public-hygiene-lint: allow — the pattern this rule is written to detect, not a leaked reference
+    if contains_word_ci(text, "codeaudit") {
+        return Some("cites the audit-tool name this rule exists to catch".to_string());
+    }
+    if let Some(hit) = word_then_number(text, &["round", "wave", "audit"], false) {
+        return Some(format!("cites `{hit}`, an audit-round label"));
+    }
+    if let Some(hit) = word_then_number(
+        text,
+        &[
+            "task", "item", "finding", "issue", "defect", "gap", "guard", "ticket",
+        ],
+        true,
+    ) {
+        return Some(format!("cites `{hit}`, a tracker/finding id"));
+    }
+    None
+}
+
+/// The crypto/algorithm vocabulary that keeps a hex-shaped word from reading as a commit citation
+/// (`sha256`, `secp256k1`, `(ed25519)`, `blake3`, `hash & (N-1)`'s neighbours). `sha`/`secp`/`aes`/
+/// `poly` only count when immediately followed by a digit, matching the Python's `sha-?\d` etc.;
+/// the rest are plain substrings.
+fn crypto_context(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    if [
+        "digest", "checksum", "blake", "hmac", "argon", "scrypt", "bcrypt", "base64", "25519",
+        "chacha",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
+    {
+        return true;
+    }
+    let chars: Vec<char> = lower.chars().collect();
+    for prefix in ["sha", "secp", "aes", "poly"] {
+        let mut start = 0;
+        while let Some(pos) = lower[start..].find(prefix) {
+            let idx = start + pos;
+            let mut after = idx + prefix.len();
+            if chars.get(after) == Some(&'-') {
+                after += 1;
+            }
+            if chars.get(after).is_some_and(char::is_ascii_digit) {
+                return true;
+            }
+            start = idx + 1;
+        }
+    }
+    false
+}
+
+fn looks_like_hash(hit: &[char]) -> bool {
+    (7..=40).contains(&hit.len())
+        && hit.iter().any(char::is_ascii_digit)
+        && hit.iter().any(|c| c.is_ascii_alphabetic())
+}
+
+/// Rule 2 — `commit-hash-citation`: a keyword-led or bare-parenthesized hex run. A hash resolves
+/// only against history the reader does not have.
+fn rule_commit_hash(text: &str) -> Option<String> {
+    if crypto_context(text) {
+        return None;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+
+    for kw in [
+        "fixed in",
+        "landed in",
+        "introduced in",
+        "reverted in",
+        "commit",
+        "sha",
+        "rev",
+        "revision",
+    ] {
+        let pat: Vec<char> = kw.chars().collect();
+        if pat.len() > lower.len() {
+            continue;
+        }
+        for i in 0..=(lower.len() - pat.len()) {
+            if lower[i..i + pat.len()] != pat[..] {
+                continue;
+            }
+            let before_ok = i == 0 || !is_ident_char(lower[i - 1]);
+            if !before_ok {
+                continue;
+            }
+            let mut k = i + pat.len();
+            while k < lower.len() && lower[k] == ' ' {
+                k += 1;
+            }
+            for quote in ['`', '"', '\''] {
+                if k < lower.len() && lower[k] == quote {
+                    k += 1;
+                }
+            }
+            let start = k;
+            while k < lower.len() && lower[k].is_ascii_hexdigit() {
+                k += 1;
+            }
+            if looks_like_hash(&chars[start..k]) {
+                let hit: String = chars[start..k].iter().collect();
+                return Some(format!("cites commit `{hit}`"));
+            }
+        }
+    }
+
+    // The bare parenthetical form: a hex run inside unlabeled parentheses.
+    for i in 0..chars.len() {
+        if chars[i] != '(' {
+            continue;
+        }
+        let mut k = i + 1;
+        while k < chars.len() && chars[k] == ' ' {
+            k += 1;
+        }
+        let start = k;
+        while k < chars.len() && chars[k].is_ascii_hexdigit() {
+            k += 1;
+        }
+        let mut close = k;
+        while close < chars.len() && chars[close] == ' ' {
+            close += 1;
+        }
+        if close < chars.len() && chars[close] == ')' && (7..=12).contains(&(k - start)) {
+            let hit: &[char] = &chars[start..k];
+            if looks_like_hash(hit) {
+                let hit: String = hit.iter().collect();
+                return Some(format!("cites commit `({hit})`"));
+            }
+        }
+    }
+    None
+}
+
+/// Rule 3 — `private-doc-reference`: a pointer to a document the reader cannot open. This mirrors
+/// the LITERAL-NAME half of the Python rule (the half responsible for the 3 real hits this branch
+/// found and fixed) rather than the `§`-with-forbid-list half, whose false-positive controls (a
+/// doc citing its own section, RFC/OIDC/JSON-RPC citations) are load-bearing enough that a partial
+/// port would either miss real leaks or nag on legitimate standards prose.
+fn rule_private_doc(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+    // Two of the Python rule's literal-phrase needles, quoted here only because this function's
+    // whole job is to detect them, not to cite them.
+    // public-hygiene-lint: allow — needles this rule is written to detect, not leaked references
+    if lower.contains("companion design") {
+        return Some("cites an internal companion write-up the reader cannot open".into());
+    }
+    // public-hygiene-lint: allow — needle this rule is written to detect, not a leaked reference
+    if lower.contains("design doc") || lower.contains("design document") {
+        return Some("cites an internal planning document the reader cannot open".into());
+    }
+    // Named internal documents. Each is a needle this rule exists to catch, not a citation of one.
+    for needle in [
+        "engine-bugs.md",            // public-hygiene-lint: allow — needle, not a citation
+        "mcp-design.md",             // public-hygiene-lint: allow — needle, not a citation
+        "a2a-design.md",             // public-hygiene-lint: allow — needle, not a citation
+        "smart-router-design.md",    // public-hygiene-lint: allow — needle, not a citation
+        "config-redesign-design.md", // public-hygiene-lint: allow — needle, not a citation
+        "busbarai-private",          // public-hygiene-lint: allow — needle, not a citation
+        "_handoffs",                 // public-hygiene-lint: allow — needle, not a citation
+    ] {
+        if lower.contains(needle) {
+            return Some("cites an internal document the reader cannot open".to_string());
+        }
+    }
+    if let Some(pos) = lower.find("-spec.md") {
+        let start = lower[..pos]
+            .rfind(|c: char| !is_ident_char(c) && c != '-')
+            .map_or(0, |p| p + 1);
+        let hit = &text[start..pos + "-spec.md".len()];
+        return Some(format!(
+            "cites `{hit}`, an internal spec document the reader cannot open"
+        ));
+    }
+    if let Some(pos) = lower.find("audit-decisions") {
+        if let Some(end) = lower[pos..].find(".md") {
+            let hit = &text[pos..pos + end + 3];
+            return Some(format!(
+                "cites `{hit}`, an internal document the reader cannot open"
+            ));
+        }
+    }
+    None
+}
+
+/// The three rules together, for `record --report`. `None` means the text is clean.
+pub fn hygiene_refusal(report: &str) -> Option<String> {
+    rule_internal_issue_id(report)
+        .or_else(|| rule_commit_hash(report))
+        .or_else(|| rule_private_doc(report))
+}
+
+#[cfg(test)]
+mod hygiene_tests {
+    use super::hygiene_refusal;
+
+    // Every fixture below quotes a REAL example of the class each rule refuses -- that is the
+    // point of a RED test -- so each is exactly the kind of text `hygiene_refusal` exists to
+    // catch, not a reference leaked into shipped prose. Each line carries its own escape hatch
+    // (the marker is per-line, not per-file) rather than one blanket exemption for the module.
+    #[test]
+    fn red_internal_issue_id() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("gate/audits/codeaudit-examples-r1.md").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("filed against round 4 of the audit").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("would have caught task #141 earlier").is_some());
+    }
+
+    #[test]
+    fn red_commit_hash() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("fixed in 4bb03d7 after the parser regressed").is_some());
+        // Pure-digit parentheticals are not hex CITATIONS (no [a-f] letter to distinguish them
+        // from any other number in prose) -- matches the lint's own `(?=[0-9a-f]*[a-f])` guard.
+        assert!(hygiene_refusal("the prior behaviour (2789501) allowed it").is_none());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("the prior behaviour (53d5774bd70d) allowed it").is_some());
+    }
+
+    #[test]
+    fn red_private_doc() {
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("see the companion design for the projection rules").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("recorded in audit-decisions-1.5.3.md as resolved").is_some());
+        // public-hygiene-lint: allow — RED fixture quoting the exact class this rule refuses
+        assert!(hygiene_refusal("filed in plugin-settings-schema-SPEC.md").is_some());
+    }
+
+    #[test]
+    fn green_ordinary_behaviour_prose() {
+        assert!(hygiene_refusal("zero; read fully").is_none());
+        assert!(hygiene_refusal(
+            "foreign wire field bricks a VirtualKey row (fixed); redeem_plane_token defaulted \
+             to first-redemption (fixed); all 10 production files read"
+        )
+        .is_none());
+        // Crypto vocabulary that merely LOOKS hex-shaped must stay silent.
+        assert!(hygiene_refusal("the digest is sha256(prev_hash | seq | ts)").is_none());
+        assert!(hygiene_refusal("a signed token: (ed25519), two base64url segments").is_none());
+        // Ordinary prose using "round" as an English word with no attached number stays silent.
+        assert!(
+            hygiene_refusal("every fix proven by a failing case first, 15/15 plants caught")
+                .is_none()
+        );
+    }
+}
+
 fn cmd_record(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
     let doc = match audit::load(register) {
         Ok(d) => d,
@@ -451,6 +795,17 @@ fn cmd_record(git: &Git, register: &std::path::Path, a: &Args) -> i32 {
                 json_lite::py_repr(value)
             ));
         }
+    }
+    // THE REGISTER IS A PUBLIC FILE. `public-hygiene-lint.py` gates every file a customer can
+    // read, qa/audit-ledger.json included, and a `--report` that cites an audit round, a bare
+    // commit hash or a document the reader cannot open is the exact class of leak this refuses
+    // before it is ever written, rather than caught the next time the lint happens to run.
+    if let Some(why) = hygiene_refusal(report) {
+        return die(format!(
+            "--report {} {why} -- describe the BEHAVIOUR the round found, not the artifact that \
+             recorded it (see scripts/public-hygiene-lint.py)",
+            json_lite::py_repr(report)
+        ));
     }
 
     let counts = match parse_counts(a.map.get("counts").map(String::as_str)) {
