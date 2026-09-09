@@ -100,11 +100,9 @@ pub struct Registration {
 pub const REPORT_ONLY: &[Posture] = &[
     Posture {
         name: "construction",
-        why: "RED BY DESIGN on HEAD while the construction work it measures is in flight. ci.yml \
-              runs it `continue-on-error` with the verdict printed by the umbrella, and \
-              qa/full-gate.toml names the scored form in its skip list for the same reason; \
-              scoring it here would red the whole run on a fact CI does not score.",
-        excuse: Excused::Whole,
+        why: "RED BY DESIGN on HEAD while the construction work it measures is in flight — but \
+              red about a NAMED, FINITE list of rows and nothing else",
+        excuse: Excused::OnlyRows(CONSTRUCTION_STANDING_REDS),
     },
     Posture {
         name: "kind-isolation-ship",
@@ -124,6 +122,42 @@ pub const REPORT_ONLY: &[Posture] = &[
               that breaks for any other reason is scored here like any other red.",
         excuse: Excused::OnlyAbout("scripts/inventory-coverage.sh"),
     },
+];
+
+/// THE CONSTRUCTION GATE'S STANDING REDS, BY NAME.
+///
+/// `Excused::Whole` used to cover this gate: no fact-check, no expiry, no list. `gate --all` exited
+/// 0 however red construction got, and a real regression landing on a keep branch was
+/// indistinguishable from the standing red — which is the exact failure the header above this list
+/// describes happening once already, to `design-bindings` and `kind-isolation-ship`.
+///
+/// So the excuse names its rows. A construction red that is NOT on this list is scored like any
+/// other gate's, and a name on this list that is no longer red is STALE and also scores — otherwise
+/// the list would only ever grow, and a list that only grows is the blanket excuse it replaces.
+/// Draining a row means striking its name here in the same commit, which is the transaction the
+/// whole gate exists to force.
+///
+/// Keep in step with `land_construction_standing_reds` in scripts/land.sh, which subtracts the same
+/// rows so that every landing can run the gate over EVERY row instead of a caller-chosen few.
+///
+/// `ceiling-rose` is on this list for one reason only: the stale `[gate.ceiling_raises]` 26 -> 47
+/// entry in qa/construction.toml, which is being struck separately. STRIKE THIS NAME ON THE SAME
+/// COMMIT that strikes that entry — the stale-name check above will red until you do, which is the
+/// point.
+pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
+    "ceiling-rose",
+    // The scan-set floor added 2026-09-09 scores an absent subject RED instead of PASS, and this
+    // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
+    // the route step" that found no `.await` in scope at all, and passed on that basis.
+    "hold-discipline:cancellation-before-await",
+    "hold-escapes",
+    "kernel-seal-impls",
+    "one-pick-site",
+    "one-pricing-site:fee-fields",
+    "plane-no-money",
+    "ports-only-tests:busbar-llm",
+    "request-path-fn-size",
+    "terminal-doors-in-audit-step",
 ];
 
 /// One entry of [`REPORT_ONLY`].
@@ -147,6 +181,16 @@ pub enum Excused {
     /// reconciliation problem, must name this needle; one that does not is a red this excuse was
     /// not written for, and the gate is scored.
     OnlyAbout(&'static str),
+    /// The gate is red about a NAMED, FINITE set of rows and nothing else.
+    ///
+    /// The `OnlyAbout` treatment for a gate whose standing reds have no single needle in common.
+    /// It fails the excuse in BOTH directions, and the second is the one that gives it an expiry:
+    ///
+    /// * a non-PASS row (or a reconciliation problem) this list does not name is a NEW red, and the
+    ///   gate is scored — which is the whole signal `Excused::Whole` threw away;
+    /// * a name on this list that is NOT red any more is a STALE entry, and the gate is scored for
+    ///   that too. Without it the list only ever grows and drifts back into being a blanket.
+    OnlyRows(&'static [&'static str]),
 }
 
 /// Why `--all` did not count this gate's red, or `None` if it must count it.
@@ -197,6 +241,65 @@ pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<Strin
             if unexplained.is_empty() {
                 Some(format!("{} — every red row names `{needle}`", p.why))
             } else {
+                None
+            }
+        }
+        Excused::OnlyRows(named) => {
+            // A row that emitted nothing at all reaches the verdict as a reconciliation problem
+            // (`"<id>: … DID NOT RUN"`), never as a row, so the named ids are matched against both.
+            // A rule that stopped running is not a rule that is red for a known reason: a problem
+            // about an id this list does not name fails the excuse exactly like a new red row.
+            let red_now: BTreeSet<&str> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .map(|r| r.id.as_str())
+                .collect();
+
+            let mut unexplained: Vec<String> = verdict
+                .rows
+                .iter()
+                .filter(|r| r.status != crate::ledger::Status::Pass)
+                .filter(|r| !named.contains(&r.id.as_str()))
+                .map(|r| format!("NEW RED {} {}", r.id, r.detail))
+                .collect();
+            unexplained.extend(
+                verdict
+                    .problems
+                    .iter()
+                    .filter(|t| !named.iter().any(|id| t.starts_with(&format!("{id}: "))))
+                    .map(|t| format!("NEW RED {t}")),
+            );
+            // THE EXPIRY. A named row that is green again is a list that has outlived its facts.
+            unexplained.extend(
+                named
+                    .iter()
+                    .filter(|id| {
+                        !red_now.contains(*id)
+                            && !verdict
+                                .problems
+                                .iter()
+                                .any(|t| t.starts_with(&format!("{id}: ")))
+                    })
+                    .map(|id| {
+                        format!(
+                            "STALE `{id}` is named as a standing red and is not red any more — \
+                             strike it from CONSTRUCTION_STANDING_REDS (and from \
+                             land_construction_standing_reds in scripts/land.sh)"
+                        )
+                    }),
+            );
+
+            if unexplained.is_empty() {
+                Some(format!(
+                    "{} — red on exactly the {} named standing row(s) and nothing else",
+                    p.why,
+                    named.len()
+                ))
+            } else {
+                for u in &unexplained {
+                    eprintln!("  construction posture: {u}");
+                }
                 None
             }
         }
@@ -1539,6 +1642,64 @@ mod posture_tests {
         assert!(
             excused_from_all("kind-isolation-ship", &cx.with_overlay(ov), &red).is_none(),
             "an excuse whose fact stopped holding excuses nothing"
+        );
+    }
+
+    /// THE CONSTRUCTION POSTURE, WHICH USED TO BE `Excused::Whole` — no fact-check, no expiry, no
+    /// list. `gate --all` exited 0 however red construction got, so a real regression on a keep
+    /// branch was indistinguishable from the standing red. All three arms of the replacement:
+    #[test]
+    fn the_construction_posture_excuses_its_named_rows_and_nothing_else() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let standing: Vec<Row> = CONSTRUCTION_STANDING_REDS
+            .iter()
+            .map(|id| Row::fail(*id, "t", "the standing red this list was written for"))
+            .collect();
+
+        // 1. Red on exactly the named rows: excused.
+        assert!(
+            excused_from_all("construction", &cx, &verdict(standing.clone())).is_some(),
+            "the standing reds are what the entry names, and naming them is the whole entry"
+        );
+
+        // 2. One more red about anything else: SCORED. This is the signal `Excused::Whole` threw
+        //    away, and the reason this gate can now be a blocking CI job.
+        let mut plus = standing.clone();
+        plus.push(Row::fail("plane-no-dialect", "t", "a brand new coupling"));
+        assert!(
+            excused_from_all("construction", &cx, &verdict(plus)).is_none(),
+            "a red the list does not name is a regression, and an excuse covering it would be a \
+             switch nobody could see was off"
+        );
+
+        // 3. A named row that went GREEN: also scored, because the list has gone stale. Without
+        //    this the list only ever grows and drifts back into being the blanket it replaced.
+        let mut drained = standing;
+        drained.pop();
+        assert!(
+            excused_from_all("construction", &cx, &verdict(drained)).is_none(),
+            "a name that is no longer red must be struck, in the commit that drained it"
+        );
+    }
+
+    /// A row that emitted nothing at all reaches the verdict as a reconciliation PROBLEM, never as
+    /// a row. A rule that stopped running is not a rule that is red for a known reason, so a
+    /// problem about an id the list does not name must fail the excuse like any new red.
+    #[test]
+    fn a_row_that_did_not_run_is_not_excused_by_the_standing_list() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let mut v = verdict(
+            CONSTRUCTION_STANDING_REDS
+                .iter()
+                .map(|id| Row::fail(*id, "t", "standing"))
+                .collect(),
+        );
+        v.problems
+            .push("ceiling-census: owed but no row was recorded — DID NOT RUN".to_string());
+        v.red = true;
+        assert!(
+            excused_from_all("construction", &cx, &v).is_none(),
+            "a rule that vanished is not a rule that is red for a known reason"
         );
     }
 

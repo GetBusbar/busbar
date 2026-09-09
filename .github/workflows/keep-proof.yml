@@ -21,7 +21,7 @@ name: keep-proof
 #             `cargo xtask gate --all`, `cargo xtask selftest`, the structure gate, the
 #             design-bindings gate (existence + regen-clean), the SHADOW ORACLE against the published
 #             1.5.5 binary scoped to the families the branch names, and the construction gate
-#             (report-only, exactly as in ci.yml).
+#             (BLOCKING on its posture, exactly as in ci.yml).
 #   THE ORACLE IS THE POINT. It is the most expensive thing an agent runs locally -- a release build
 #             plus `record --plane all` is the better part of half an hour of a laptop, several
 #             laptops at once, producing a claim nobody else can check. Here it runs on a runner
@@ -760,13 +760,14 @@ jobs:
             -f description="$(printf '%.140s' "$line")" \
             -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-  # ── CONSTRUCTION GATE (REPORT-ONLY, EXACTLY AS IN ci.yml) ──────────────────────────────────────
-  # Red by design on HEAD while the construction work it measures is in flight. It is run and
-  # PRINTED so a hand-back can be read against it, and deliberately NOT scored: a report-only gate
-  # that silently becomes blocking in a second workflow is the same drift ci.yml's umbrella refuses.
-  # Flip `continue-on-error` here on the same day ci.yml's job is flipped, not before.
+  # ── CONSTRUCTION GATE (BLOCKING ON ITS POSTURE, AS IN ci.yml) ──────────────────────────────────────
+  # Red by design on HEAD while the construction work it measures is in flight, which is why it runs
+  # `--posture`: green while the gate is red on exactly the rows `gates::REPORT_ONLY` names, red the
+  # moment a row it does not name goes red. Scored here and in ci.yml, the same way, off the same
+  # list — a gate that is blocking in one workflow and report-only in the other is the drift both
+  # umbrellas exist to refuse.
   construction-gate:
-    name: construction gate (report-only)
+    name: construction gate (blocking on its posture)
     runs-on: [self-hosted, linux, x64, busbar-xl]
     # Measured: this gate is CANCELLED at ci.yml's 15-minute ceiling on every recent run, and it was
     # cancelled again at 25 here, so its true runtime is still unknown and >25. 40 is a ceiling meant
@@ -774,7 +775,11 @@ jobs:
     # The gate's runtime is itself an owner item; this only stops the runner burning 25 minutes to
     # learn nothing.
     timeout-minutes: 40
-    continue-on-error: true
+    # `continue-on-error: true` IS GONE. Together with the `|| true` on the run step below and the
+    # exclusion from RESULTS, it was three separate ways for this job to fail without anything
+    # noticing — and keep-proof is the ONLY judge of an agent hand-back, since ci.yml does not run
+    # on `keep-**` at all. `--posture` is what makes blocking possible without blocking on the
+    # standing work; see the same job in ci.yml.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -788,10 +793,19 @@ jobs:
           key: xtask
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
-      - name: Construction gate self-test
-        run: scripts/construction-gate.sh --selftest
-      - name: Construction gate (report-only)
-        run: scripts/construction-gate.sh || true
+      # BOTH STEPS RAN A SCRIPT THAT IS NOT IN THIS TREE. `scripts/construction-gate.sh` does not
+      # exist — the shell was converted to `cargo xtask gate construction` and this file was never
+      # updated — so the self-test step failed on a missing file and the gate step swallowed the
+      # same failure with `|| true`, under a `continue-on-error` job that was excluded from RESULTS.
+      # Four layers, and underneath them a job that could not have run the gate even if it wanted to.
+      - name: Construction gate self-test (every rule proves it sees its planted violation)
+        # See ci.yml's copy of this step: 394s measured over thirty-two planted trees, so the hang
+        # ceiling is raised FOR THIS GATE ONLY rather than globally.
+        env:
+          XTASK_GATE_CEILING_SECS_CONSTRUCTION: "1800"
+        run: cargo xtask gate construction --selftest
+      - name: Construction gate (BLOCKING on its posture — a NEW red fails this job)
+        run: cargo xtask gate construction --posture
 
   # ── THE ONE LINE THE HARVESTER READS ───────────────────────────────────────────────────────────
   # The whole point of the file. A harvester asking "is keep-foo green?" should get an answer from
@@ -813,8 +827,6 @@ jobs:
       - gates
       - design-bindings
       - oracle
-      # In `needs` so the verdict waits for it and prints it, NOT in RESULTS below: report-only,
-      # exactly as ci.yml's umbrella treats the same gate.
       - construction-gate
     env:
       # jobkey|result, one per scored job. Same shape as ci.yml's umbrella ledger, and for the same
@@ -826,6 +838,11 @@ jobs:
         gates|${{ needs.gates.result }}
         design-bindings|${{ needs.design-bindings.result }}
         oracle|${{ needs.oracle.result }}
+        # COUNTED. It was in `needs` and out of RESULTS, so a FAIL -- or a timeout-cancellation --
+        # never reddened this verdict, and keep-proof is the ONLY judge of an agent hand-back
+        # (ci.yml does not run on `keep-**` at all). The job runs `--posture`, so it is green while
+        # the gate is red on exactly its named standing rows.
+        construction-gate|${{ needs.construction-gate.result }}
       CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -844,7 +861,7 @@ jobs:
               reds="${reds}${reds:+, }${job}"
             fi
           done <<< "$RESULTS"
-          printf '  %-16s REPORT-ONLY (%s)\n' "construction-gate" "${CONSTRUCTION_RESULT:-unset}"
+          printf '  %-16s SCORED, posture (%s)\n' "construction-gate" "${CONSTRUCTION_RESULT:-unset}"
 
           if [ "$fails" -eq 0 ]; then
             state="success"

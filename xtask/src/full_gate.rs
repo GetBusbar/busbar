@@ -138,6 +138,11 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate config-schema",
     "cargo xtask gate construction --selftest",
     "cargo xtask gate construction --report",
+    // The POSTURE form, which is what ci.yml and keep-proof.yml now run as a blocking step. It
+    // exits 0 while the gate is red on exactly the rows `gates::REPORT_ONLY` names and 1 on any
+    // other red, so unlike the bare scored form it is runnable locally without redding the whole
+    // local gate on the standing work — which is precisely why CI can block on it.
+    "cargo xtask gate construction --posture",
     "cargo xtask gate design-bindings --selftest",
     "cargo xtask gate design-bindings",
     "cargo xtask gate field-inventory --selftest",
@@ -177,7 +182,7 @@ pub const CARGO_CI_ONLY: &[(&str, &str)] = &[
     ("cargo build -p busbar-core -p busbar-substrate -p busbar-api --no-default-features --features \"$FEATS\" --locked", "the plane-DELETION matrix build. $FEATS is '${{ matrix.features }}', which expands per kept-plane combination -- a CI matrix construct with no single local form, and the literal string is not a runnable command. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."),
     ("cargo build -p busbar-core -p busbar-substrate -p busbar-api --no-default-features --locked", "the same plane-DELETION matrix build's EMPTY-features arm (every plane removed). Same matrix job, same local mirror in the delete-test gate; listed separately because the step branches on $FEATS and both arms are real invocations."),
     ("cargo test -p busbar-llm --lib alloc_gate -- --nocapture", "the deterministic alloc-count perf gate, invoked BY NAME so a regression reds this one line rather than a 400-test workspace run. The same tests are also executed by 'cargo test --workspace --locked' above, which DOES run locally. (It read '-p busbar-core' here for as long as ci.yml did, matching zero tests in both places — a libtest filter that selects nothing exits 0.)"),
-    ("cargo xtask gate construction", "the SCORED form of the construction gate, which is RED BY DESIGN on HEAD while the construction work it measures is in flight. ci.yml runs it in a continue-on-error job so the verdict is printed by the umbrella and not counted; running the scored form here would red the whole local gate on a fact CI does not score. It is not that a laptop cannot run it — the same measurement runs locally on the line above it, as 'cargo xtask gate construction --report', which prints every row and exits 0. DELETE this entry and move the bare form to CARGO_LOCAL when the CI job is flipped to blocking."),
+    ("cargo xtask gate construction", "the SCORED-AGAINST-ZERO form of the construction gate, which is RED BY DESIGN on HEAD while the construction work it measures is in flight; running it here would red the whole local gate on a fact nothing scores that way. ci.yml and keep-proof.yml no longer run this form at all: they run 'cargo xtask gate construction --posture' as a BLOCKING step, which is green while the gate is red on exactly the rows gates::REPORT_ONLY names and red on any other row — and that form IS in CARGO_LOCAL and does run locally, alongside '--report'. DELETE this entry when CONSTRUCTION_STANDING_REDS is empty and the bare form is green on HEAD."),
 ];
 
 /// WHERE AN EXCUSED GATE IS ACTUALLY RUN — the checkable half of a written reason.

@@ -160,7 +160,7 @@ jobs:
               echo "Push to a non-promotion branch (\`$REF\`), so this run proved:"
               echo "structure lint, fmt/clippy/build/test, config-stability, public-hygiene,"
               echo "generated-artifact-drift, shadow-oracle, llm-conformance, design-bindings"
-              echo "(construction-gate ran and reported, but is not yet a blocking gate)."
+              echo "and construction-gate (blocking on its posture: a NEW red fails the run)."
               echo ""
               echo "It did NOT run: openapi-schema, migration-corpus, executable-config,"
               echo "no-default-features, no-plugins-gate, txn-guards, timing, windows."
@@ -2356,13 +2356,17 @@ jobs:
   # FAST tier, no toolchain. Self-test FIRST — every rule must prove it sees its own planted
   # violation before its verdict on the tree is believed.
   #
-  # REPORT-ONLY FOR NOW, AND SAID SO. The gate is RED on HEAD by design (three rows over their
-  # ceilings) while the construction work it measures is in flight. So this job runs, fails its
-  # check step honestly, publishes the report, and hands the umbrella a named `verdict` output —
-  # but `continue-on-error: true` keeps it from turning the umbrella red, and the umbrella prints
-  # the verdict as information rather than counting it. THE FLIP: when `--check` is green on HEAD
-  # (every row within its ceiling), delete `continue-on-error: true` from this job and move
-  # `construction-gate` into the umbrella's RESULTS list as a `fast` row. Nothing else changes.
+  # BLOCKING, ON ITS POSTURE. This job used to be `continue-on-error: true` AND excluded from the
+  # umbrella's RESULTS — two of the four independent downgrades that between them meant a construction
+  # FAIL, or a timeout-cancellation, could not redden anything. The reason given was real (the gate
+  # is RED on HEAD by design while the work it measures is in flight) but the remedy threw away the
+  # signal along with the noise: a NEW red was indistinguishable from the standing ones.
+  #
+  # `cargo xtask gate construction --posture` is the third answer. It exits 0 while the gate is red
+  # on exactly the rows `gates::REPORT_ONLY` names and nothing else, and 1 the moment a row appears
+  # that the list does not name — or a named row goes green and the list has gone stale. So the job
+  # blocks, the standing work does not block it, and draining a row is a diff somebody reads.
+  # THE FLIP IS DONE. What remains is to empty CONSTRUCTION_STANDING_REDS, one row at a time.
   # TELLER STEPS — tracker H2's claim in executable form: "conformance rigs carry one cell per Teller
   # step per plane". Three assertions, each doing something the other two cannot:
   #   1. --selftest  the matrix LOADER refuses a matrix that lies — root evidence borrowed from
@@ -2421,10 +2425,14 @@ jobs:
         run: cargo xtask teller-steps --root-legs
 
   construction-gate:
-    name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)
+    name: construction gate (how the tree is built vs ARCHITECTURE.md — BLOCKING, on its posture)
     runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 15
-    continue-on-error: true
+    # `continue-on-error: true` IS GONE, AND SO IS THE REASON FOR IT. It was here because the gate
+    # is RED BY DESIGN on HEAD and the only two answers available were "green" and "red", neither of
+    # which was true. `--posture` is the third: green while the gate is red on exactly the rows
+    # `gates::REPORT_ONLY` names, red the instant a row it does not name goes red — or a named row
+    # goes green and the list is stale. So this job can block without blocking on the standing work.
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
@@ -2453,12 +2461,14 @@ jobs:
         env:
           XTASK_GATE_CEILING_SECS_CONSTRUCTION: "1800"
         run: cargo xtask gate construction --selftest
-      - name: Construction gate (RED by design today; see the job comment for the flip)
+      - name: Construction gate (BLOCKING on its posture — a NEW red fails this job)
         id: check
         run: |
           set -uo pipefail
           mkdir -p target/construction
-          cargo xtask gate construction | tee target/construction/report.md; rc="${PIPESTATUS[0]}"
+          # 2>&1: --posture names the NEW or STALE rows on stderr, and those lines are the whole
+          # point of the report when this job fails.
+          cargo xtask gate construction --posture 2>&1 | tee target/construction/report.md; rc="${PIPESTATUS[0]}"
           echo "$rc" > target/construction/rc
           exit "$rc"
       - name: Name the verdict for the umbrella
@@ -2536,11 +2546,6 @@ jobs:
       - llm-conformance
       - design-bindings
       - teller-steps
-      # In `needs` so the umbrella waits for it and can print its verdict, but NOT in RESULTS below:
-      # the job is report-only (continue-on-error) until its check is green on HEAD. See the job.
-      # report-only: construction-gate -- RED BY DESIGN on HEAD while the construction work it
-      #   measures is in flight; waited for and PRINTED by this job, deliberately not counted, until
-      #   the job is flipped off continue-on-error. Delete this line and add a RESULTS row then.
       - construction-gate
     # ── THE JOBS DELIBERATELY OUTSIDE THIS LIST ───────────────────────────────────────────────────
     # scripts/ci-umbrella-lint.py reads these two lines and requires that EVERY job in this file is
@@ -2586,6 +2591,13 @@ jobs:
         windows|full|${{ needs.windows.result }}
         perf-build-gate|full|${{ needs.perf-build-gate.result }}
         teller-steps|full|${{ needs.teller-steps.result }}
+        # COUNTED NOW. It was in `needs` and out of RESULTS, which meant a FAIL — or a
+        # timeout-cancellation — could never redden the umbrella. Together with the job's
+        # `continue-on-error` that was two of the four independent downgrades on this one gate. The
+        # job runs `--posture`, so it is green while the gate is red on exactly its named standing
+        # rows and red the moment a NEW row goes red; scoring it here is what makes that mean
+        # anything.
+        construction-gate|fast|${{ needs.construction-gate.result }}
     steps:
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
       # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
@@ -2613,12 +2625,10 @@ jobs:
             fi
             printf '  %-24s %s\n' "$job" "$status"
           done <<< "$RESULTS"
-          # The construction gate: shown, not scored. A red here is the instrument working on a
-          # tree still under construction; it becomes a scored row when its job is flipped.
-          printf '  %-24s %s\n' "construction-gate" "REPORT-ONLY: verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; not counted until flipped)"
-          if [ "${CONSTRUCTION_VERDICT:-}" != "green" ]; then
-            echo "::warning::construction gate is ${CONSTRUCTION_VERDICT:-unset} on this ref — report-only, not blocking; see the construction-report artifact."
-          fi
+          # The construction gate is SCORED in RESULTS above, like every other job. This line is the
+          # detail behind that row: `verdict` is what `--posture` decided, and a red there means a
+          # row went red that the gate's standing list does not name.
+          printf '  %-24s %s\n' "construction-gate" "posture verdict=${CONSTRUCTION_VERDICT:-unset} (job result ${CONSTRUCTION_RESULT:-unset}; SCORED)"
           if [ "$fails" -ne 0 ]; then
             echo "::error::ci umbrella: RED — ${fails} required job(s) did not pass on this ref."
             echo "::error::A skipped, failed, or cancelled required job is NOT a pass. DO NOT PROMOTE."

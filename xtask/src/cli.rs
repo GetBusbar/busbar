@@ -327,6 +327,49 @@ fn gate(args: &[String]) -> i32 {
     if cx.env().report_only {
         return 0;
     }
+    // `--posture` SCORES THE GATE AGAINST ITS REPORT-ONLY ENTRY INSTEAD OF AGAINST ZERO REDS.
+    //
+    // This is the arm CI needs and did not have. The construction gate is RED BY DESIGN on HEAD, so
+    // its job was `continue-on-error: true` and its verdict was excluded from both umbrellas'
+    // RESULTS — four independent downgrades, and between them a NEW construction red could not
+    // redden anything. "Green" was not available and "red" carried no information.
+    //
+    // `--posture` gives the third answer: exit 0 when the gate is red on exactly the rows
+    // [`gates::REPORT_ONLY`] names and nothing else, and exit 1 the moment a red appears that the
+    // list does not name — or a named row goes green and the list is stale. It is the SAME
+    // `excused_from_all` the `--all` run applies, so the posture CI enforces and the posture
+    // `--all` prints cannot drift apart, and the standing reds are written down in exactly one
+    // place in Rust rather than pasted into two workflows.
+    //
+    // A gate with no posture entry has nothing to score against and says so rather than passing.
+    if args.iter().any(|a| a == "--posture") {
+        if !reg.has_posture() {
+            eprintln!(
+                "xtask gate {name} --posture: `{name}` has no entry in REPORT_ONLY, so there is no \
+                 standing-red list to score it against and this flag would be a green nobody \
+                 defined. Run it plainly."
+            );
+            return 2;
+        }
+        if !verdict.red {
+            println!("{name} --posture: green outright");
+            return 0;
+        }
+        return match gates::excused_from_all(reg.name, &cx, &verdict) {
+            Some(why) => {
+                println!("{name} --posture: EXCUSED — {why}");
+                0
+            }
+            None => {
+                eprintln!(
+                    "xtask gate {name} --posture: RED beyond its standing list (the lines above \
+                     name what changed). Either fix it, or move the row onto \
+                     CONSTRUCTION_STANDING_REDS in xtask/src/gates/mod.rs in a diff somebody reads."
+                );
+                1
+            }
+        };
+    }
     i32::from(verdict.red)
 }
 
