@@ -6,12 +6,15 @@
 #
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
 #              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
-#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
-#              small, load-bearing slice rather than a claim about all twenty-six families: billing
-#              and ledger are the money path — if a CI change could somehow perturb a recorded
-#              behaviour, it is these cells that must say so.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
-families = '^(billing|ledger)([|.]|$)'
-tests = ["busbar-unit-cost"]
+#              better part of half an hour. This is the openapi/overlay landing line, and these are
+#              the five prefixes whose recorded behaviour it can move: `admin.ops` (the admin
+#              plane's own responses — the openapi document, the overlay-section 404), `cli` (the
+#              CLI's `--help`/`--version` text), `boot` (the validation stderr whose expected-one-of
+#              list grew), `crosscut` (the traps that read the served document) and `documented`
+#              (the docs cells that quote both). Nothing outside them is touched by this branch.
+#   tests    — the packages whose test binaries the sharded legs must include by name: `busbar` is
+#              the CLI whose usage line moved, `busbar-plane-admin` the plane that serves the
+#              openapi document, `busbar-core` the crate that owns the views, the error taxonomy
+#              and the overlay message.
+families = '^(admin\.ops|cli|boot|crosscut|documented)'
+tests = ["busbar", "busbar-plane-admin", "busbar-core"]
