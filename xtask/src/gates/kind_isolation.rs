@@ -2100,6 +2100,31 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         Half::Test => Vec::new(),
     };
 
+    // A SECTION HEADER THIS READER COULD NOT PARSE IS A REFUSAL, NOT A SKIP.
+    //
+    // The reader's blind spots are the only ones that matter, because a dependency table missing
+    // from its answer is indistinguishable from a dependency table missing from the build. Two were
+    // proven: `[target.'cfg(all())'.dependencies] # extra` failed the "ends in `]`" test, so the
+    // parser stayed in the PREVIOUS section and filed a plane into a wire as a dev-dependency; and
+    // `target."cfg(unix)".dependencies.wire = { workspace = true }` is a top-level dotted key under
+    // no section at all, which `:deps` never saw — only the `Cargo.lock` cross-check caught it, and
+    // that cross-check is itself census-gated. Both are now reported by name.
+    if half == Half::Shipped {
+        for c in crates {
+            let Ok(text) = cx.read(&c.manifest) else {
+                continue;
+            };
+            for why in manifest::unreadable(&text) {
+                offenders.push(format!(
+                    "unreadable-manifest\t{}\t{why}. A table this reader cannot place is a table \
+                     whose edges are not scored, and an unscored edge is the one thing this row \
+                     exists to make impossible.",
+                    c.manifest
+                ));
+            }
+        }
+    }
+
     // THE STRUCTURAL REFUSALS, which no ledger row can waive: they are not about how MANY
     // declarations a pair has, they are about the pair existing at all.
     for c in crates {
@@ -5330,6 +5355,58 @@ impl Gate for KindIsolationGate {
                     "dead-dep-edge",
                     "busbar-contract -> busbar-grammar",
                     "Strike the row",
+                ],
+            ));
+
+            // A SECTION HEADER THIS READER CANNOT PARSE IS A REFUSAL, NOT A SKIP. The dotted-key
+            // form sits under no `[section]` at all: `:deps` never saw it, and the only net that
+            // did was the `Cargo.lock` cross-check, which is itself census-gated.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a dotted-key dependency table is reported, not skipped",
+                &[ROW_DEPS],
+                {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        "crates/busbar-transport-tcp/Cargo.toml",
+                        manifest_plus(
+                            cx,
+                            "crates/busbar-transport-tcp/Cargo.toml",
+                            "target.\"cfg(unix)\".dependencies.wire = { path = \
+                             \"../busbar-plane-llm\" }\n",
+                        ),
+                    );
+                    ov
+                },
+                &["unreadable-manifest", "DOTTED KEY", "busbar-transport-tcp"],
+            ));
+
+            // …AND A COMMENTED HEADER IS THE HEADER IT SAYS IT IS. `[target.'cfg(all())'
+            // .dependencies] # extra` did not end in `]`, so the reader stayed in the PREVIOUS
+            // section and filed a plane linked into a wire as a DEV-dependency — the wrong half of
+            // the build graph, on the strength of a comment. The needle is `shipped`.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a table header with a trailing comment is the table it names, in the right half",
+                &[ROW_DEPS],
+                {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        "crates/busbar-transport-tcp/Cargo.toml",
+                        manifest_plus(
+                            cx,
+                            "crates/busbar-transport-tcp/Cargo.toml",
+                            "[target.'cfg(all())'.dependencies] # extra\nbusbar-plane-llm = { path \
+                             = \"../busbar-plane-llm\" }\n",
+                        ),
+                    );
+                    ov
+                },
+                &[
+                    "busbar-transport-tcp -> busbar-plane-llm",
+                    "is a shipped edge",
                 ],
             ));
 
