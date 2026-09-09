@@ -2344,3 +2344,18 @@ impl GovState {
 fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
     cost.bucket_enforces_a_cap(bucket_id)
 }
+
+/// Core-side [`GovResolve`]: re-resolve a principal by its stable subject id against the LIVE
+/// governance registry. This is the one core capability a `Standing` re-ask needs; threading it as
+/// a trait keeps the standing primitive itself transport-neutral (it holds an `id`, re-asks through
+/// this, and never names `GovState`). An in-memory index read — no store round trip, nothing to
+/// await — exactly as the pre-relocation `Standing::still_permitted` performed inline.
+///
+/// It lives HERE, beside the state it resolves against, and not beside the validator: the trait is
+/// `busbar-substrate`'s and the type is core's, so the ORPHAN RULE puts this impl in core, and the
+/// only core module that has any business spelling `lookup_by_sub` is the one that defines it.
+impl busbar_substrate::trust::validate::GovResolve for GovState {
+    fn resolve_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
+        self.lookup_by_sub(sub)
+    }
+}
