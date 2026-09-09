@@ -5461,6 +5461,34 @@ impl Gate for KindIsolationGate {
             &["cross-instance", "busbar-plane-llm"],
         ));
 
+        // …AND THE DIALECT DIRECTION, WHICH IS THE ONE THE SPLIT DEPENDS ON. `cross-instance` reads
+        // the two crates' INSTANCES and says nothing when they match, so a plane reaching back into
+        // its OWN dialect walked through it: same instance, same family, no finding. That edge is
+        // the re-fusion the `busbar-plane-<plane>-<dialect>` rename exists to undo — a dialect names
+        // its plane, a plane never names a dialect — and a mutation campaign found nothing proving
+        // it. The plant is the first crate of the pending `dialect` kind plus the edge back.
+        let mut ov = manifest_plant(
+            "crates/busbar-plane-llm-openai",
+            "busbar-plane-llm-openai",
+            &["busbar-plane-llm"],
+        );
+        ov.set(
+            "crates/busbar-plane-llm/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-plane-llm/Cargo.toml",
+                "\n[dependencies]\nbusbar-plane-llm-openai = { workspace = true }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plane depending on its own dialect is the re-fusion the rename exists to undo",
+            &[ROW_DEPS],
+            ov,
+            &["plane-names-dialect", "busbar-plane-llm-openai"],
+        ));
+
         // THE LEDGER CASES BELONG TO THE PER-PUSH GATE ALONE. Every one is about the `[[dep]]`
         // rows in the registry file, and the SHIP twin does not read them: it owes the
         // ARCHITECTURE'S graph, so planting a raised row against it would produce the same red it
@@ -7440,6 +7468,63 @@ impl Gate for KindIsolationGate {
             &[ROW_TESTKIT],
             ov,
             &["no-implementor", "busbar-store-subjectless", "Store"],
+        ));
+
+        // ── THE THREE SHIP FINDINGS WITH NO CASE ─────────────────────────────────────────────────
+        //
+        // `:shape` and `:testkit` derive what they demand: the skeleton and the single entry come
+        // from the kind's EXEMPLAR, and the battery is whichever one the kind's members already run.
+        // Both derivations have a degenerate answer — no exemplar, no entry, no battery — and in
+        // each of them the rule keeps going and judges every crate of the kind against nothing. A
+        // mutation campaign found all three unproven.
+
+        // THE EXEMPLAR ITSELF IS NOT IN THE TREE. `busbar-plane-a2a` is the canonical plane; without
+        // it the `plane` skeleton is derived from an empty file list and every plane in the tree
+        // passes a comparison against nothing.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-a2a/Cargo.toml");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind whose canonical exemplar is not in the tree derives its skeleton from nothing",
+            &[ROW_SHAPE],
+            ov,
+            &["no-exemplar", "busbar-plane-a2a"],
+        ));
+
+        // THE EXEMPLAR STATES NO SINGLE ENTRY. A second `impl Plane for …` in the canonical plane
+        // makes the kind's entry count TWO, and `entry-count` — the rule that holds every other
+        // plane to exactly one — is guarded on the exemplar stating exactly one, so it goes quiet
+        // for the whole kind. The finding is that the spec stopped saying anything, and it is a
+        // finding rather than a silence.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-a2a/src/planted_second_entry.rs",
+            "pub struct Second;\nimpl Plane for Second {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind whose exemplar states no single entry states nothing every member owes",
+            &[ROW_SHAPE],
+            ov,
+            &["no-entry", "busbar-plane-a2a", "2 time(s)"],
+        ));
+
+        // A KIND WITH NO SHARED BATTERY AT ALL. The `plane` kind's battery is the one its members
+        // already run — `tests/conformance.rs` in `busbar-plane-a2a` and `busbar-plane-mcp`. Take
+        // both away and the kind has no battery to be judged against, so `not-run` (which is
+        // guarded on there being one) says nothing about the other planes at all.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-a2a/tests/conformance.rs");
+        ov.remove("crates/busbar-plane-mcp/tests/conformance.rs");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind no member of which runs any shared battery has no battery, and is told so",
+            &[ROW_TESTKIT],
+            ov,
+            &["no-battery", "kind:plane"],
         ));
 
         // ── THE SHIP TWIN'S OWN FLOORS: ZERO IS A REFUSAL, NOT A CLEAN TREE ──────────────────────
