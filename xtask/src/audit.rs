@@ -37,9 +37,7 @@
 //!    commit a record names, the anti-forgery rule is RED, never silent — see [`audited_tree_hash`].
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use crate::json_lite::{self, Json, Obj};
 use crate::sha256::Sha256;
@@ -259,61 +257,72 @@ impl Git {
     /// LOC per blob, through ONE `git cat-file --batch` process rather than one per file.
     ///
     /// A final unterminated line counts as a line, which is what `wc -l` does not do and what the
-    /// Python does. An oid that is not a blob would desync the stream, so a record that does not
-    /// parse ends the read rather than shifting every later count by one file.
+    /// Python does.
+    ///
+    /// **STREAMED, IN LOCKSTEP WITH THE WRITER**, through [`crate::gitp::ask`]. `cat-file --batch`
+    /// answers while it is still being asked, and this call asks about EVERY TRACKED BLOB IN THE
+    /// TREE at once: thousands of oids of requests and megabytes of file bodies of answers, in
+    /// both directions, through pipes that hold 64 KiB on Linux and 16 KiB on macOS. Writing the
+    /// whole request list and only then reading — which is what this did — wedged the parent and
+    /// the child against each other's full pipe, at 4% CPU, indefinitely. It is the reason
+    /// `cargo xtask gate --all` did not finish.
+    ///
+    /// Reading record by record also keeps MEMORY bounded: only one file's bytes are held at a
+    /// time, and only long enough to count newlines in them, rather than a copy of the repository.
+    ///
+    /// TWO KINDS OF ODD RECORD, told apart on purpose. `<oid> missing` (and `<oid> ambiguous`) is
+    /// a complete two-field answer git gives for an object it cannot resolve: the stream is still
+    /// in sync, so it is SKIPPED and the rest of the batch is still counted. Anything else that
+    /// does not parse means the stream itself is no longer where this thinks it is, and continuing
+    /// would attribute one file's count to another file — so that ends the read.
     pub fn line_counts(&self, oids: &BTreeSet<String>) -> BTreeMap<String, usize> {
         let mut out = BTreeMap::new();
         if oids.is_empty() {
             return out;
         }
-        let mut child = match Command::new("git")
-            .arg("-C")
-            .arg(&self.repo)
-            .arg("cat-file")
-            .arg("--batch")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => return out,
-        };
-        let feed: String = oids
+        let requests: Vec<u8> = oids
             .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(feed.as_bytes());
-        }
-        let Ok(done) = child.wait_with_output() else {
-            return out;
-        };
-        let buf = done.stdout;
-        let mut i = 0usize;
-        while i < buf.len() {
-            let Some(nl) = buf[i..].iter().position(|b| *b == b'\n') else {
-                break;
-            };
-            let header = String::from_utf8_lossy(&buf[i..i + nl]).into_owned();
-            i += nl + 1;
-            let mut cols = header.split_whitespace();
-            let (Some(oid), Some(_kind), Some(size)) = (cols.next(), cols.next(), cols.next())
-            else {
-                break;
-            };
-            let Ok(size) = size.parse::<usize>() else {
-                break;
-            };
-            if i + size > buf.len() {
-                break;
+            .flat_map(|o| o.bytes().chain(std::iter::once(b'\n')))
+            .collect();
+
+        let answered = crate::gitp::ask(&self.repo, &["cat-file", "--batch"], requests, |r| {
+            let mut counts = BTreeMap::new();
+            let mut header = String::new();
+            loop {
+                header.clear();
+                match r.read_line(&mut header) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let mut cols = header.split_whitespace();
+                let (Some(oid), rest) = (cols.next(), (cols.next(), cols.next())) else {
+                    break;
+                };
+                let (Some(_kind), Some(size)) = rest else {
+                    // "<oid> missing" — a whole answer, not a desync. Ask about the next one.
+                    if matches!(rest.0, Some("missing") | Some("ambiguous")) {
+                        continue;
+                    }
+                    break;
+                };
+                let Ok(size) = size.parse::<usize>() else {
+                    break;
+                };
+                // The body, plus the newline git writes after every record.
+                let mut body = vec![0u8; size + 1];
+                if r.read_exact(&mut body).is_err() {
+                    break;
+                }
+                let body = &body[..size];
+                let lines = body.iter().filter(|b| **b == b'\n').count()
+                    + usize::from(!body.is_empty() && body.last() != Some(&b'\n'));
+                counts.insert(oid.to_string(), lines);
             }
-            let body = &buf[i..i + size];
-            let lines = body.iter().filter(|b| **b == b'\n').count()
-                + usize::from(!body.is_empty() && body.last() != Some(&b'\n'));
-            out.insert(oid.to_string(), lines);
-            i += size + 1; // the record's trailing newline
+            counts
+        });
+
+        if let Ok(answered) = answered {
+            out = answered.value;
         }
         out
     }

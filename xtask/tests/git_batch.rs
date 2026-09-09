@@ -185,7 +185,9 @@ fn check_ignore_over_more_paths_than_a_pipe_buffer_holds_does_not_deadlock() {
     let repo = scratch_repo("check-ignore-deadlock");
     std::fs::write(repo.join(".gitignore"), "*.junk\n").expect(".gitignore written");
 
-    let asked: Vec<String> = (0..60000).map(|i| format!("dir/file-{i:06}.junk")).collect();
+    let asked: Vec<String> = (0..60000)
+        .map(|i| format!("dir/file-{i:06}.junk"))
+        .collect();
     let n = asked.len();
 
     let repo2 = repo.clone();
