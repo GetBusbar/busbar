@@ -182,6 +182,72 @@ fn split_kv(line: &str) -> Option<(String, &str)> {
     Some((k.to_string(), v))
 }
 
+/// ONE LINE WITH ITS BOM AND ITS TRAILING `#` COMMENT REMOVED, because Cargo removes both and a
+/// reader that does not is a reader whose answer differs from the compiler's.
+///
+/// The comment is what a red team used: `[target.'cfg(all())'.dependencies] # extra` does not end
+/// in `]`, so the header test failed, so the line was not a header — and the parser therefore STAYED
+/// IN THE PREVIOUS SECTION and attributed every dependency under it to that one. A plane linked
+/// into a wire was scored as a dev-dependency, on the strength of a comment.
+///
+/// Naive on quoting on purpose: a `#` inside a quoted `target.'cfg(…)'` key would be cut here. No
+/// cfg expression Cargo accepts contains one, and the alternative — a reader that tracks quotes to
+/// decide whether a comment is a comment — is a second parser to be wrong in a second way. Anything
+/// this cut makes unreadable is reported by [`unreadable`] rather than skipped.
+fn strip_comment(raw: &str) -> &str {
+    let t = raw.trim_start_matches('\u{feff}').trim();
+    match t.find('#') {
+        Some(at) => t[..at].trim(),
+        None => t,
+    }
+}
+
+/// THE LINES THIS READER COULD NOT PARSE AND WOULD OTHERWISE HAVE SKIPPED.
+///
+/// A dependency table is the one thing in a manifest whose absence from this reader's answer is
+/// indistinguishable from its absence from the build. So every line that LOOKS like a table header
+/// and does not resolve to one, and every top-level dotted key whose first segment is a dependency
+/// word (`target."cfg(unix)".dependencies.wire = { … }` sits under no `[section]` at all, and the
+/// red team's version of it was caught only by the `Cargo.lock` cross-check), is handed back to the
+/// caller to REPORT. A section header this reader could not parse is a refusal, not a skip.
+pub fn unreadable(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let t = strip_comment(raw);
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with('[') {
+            if !t.ends_with(']') {
+                out.push(format!(
+                    "`{}` opens with `[` and does not close: this reader cannot tell which table \
+                     the lines under it belong to, and it will not guess",
+                    raw.trim()
+                ));
+            }
+            continue;
+        }
+        let Some((key, _)) = t.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if !key.contains('.') {
+            continue;
+        }
+        let segs = header_segments(key);
+        if segs.len() < 2 || !segs.iter().any(|s| DepTable::of_word(s).is_some()) {
+            continue;
+        }
+        out.push(format!(
+            "`{}` is a DOTTED KEY naming a dependency table from the top level of the file. It is \
+             a real edge Cargo links and it sits under no `[section]` this reader recognises: write \
+             it as a `[…dependencies]` table",
+            raw.trim()
+        ));
+    }
+    out
+}
+
 /// EVERY DEPENDENCY DECLARATION IN ONE MANIFEST, in every table and every spelling.
 ///
 /// `[workspace.dependencies]` is NOT one of them: that table is the workspace's version pin list,
@@ -194,7 +260,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
     let mut subtable: Option<usize> = None;
 
     for raw in text.lines() {
-        let t = raw.trim();
+        let t = strip_comment(raw);
         if let Some(header) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             let header = header.trim().trim_start_matches('[').trim_end_matches(']');
             section = None;
