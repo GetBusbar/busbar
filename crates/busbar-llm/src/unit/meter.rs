@@ -88,17 +88,20 @@
 //! this step takes the hold, accrues against it, and hands it straight back for the exit to close;
 //! it never builds a `Posted`. What it does own is the report the posting is made against.
 //!
-//! **What it accrues is MONEY, and this step is not what turns the counts into it.** A reservation
-//! is in nano-units, so the spend has to be too. The report's lines are quantities in four different
-//! meter classes and their sum is a figure in no unit at all. What those quantities are WORTH is a
-//! question about the deployment's rates, and the rates belong to whoever keeps the books — so this
-//! step assembles the report and asks, through [`Worth`], and takes the answer back. That is the
-//! same seam the late accrual goes through and the same report shape it hands back
-//! ([`crate::unit::walk::LateReport`]): one statement of what a unit consumed, whether it is read at
-//! the step or after the body drained, and one place that prices it.
+//! **What it accrues is QUANTITIES, and nothing here turns them into money.** The report's lines
+//! are counts in four meter classes, and what those counts are WORTH is not asked at this step and
+//! not carried out of it. Price is a READ-TIME conversion — the quantity times the rate row in
+//! force for its lane and class at the line's own instant — so the only moment a figure exists is
+//! the moment somebody reads the line, and a plane that carried one would be carrying a cached
+//! answer to a question nobody had asked yet.
+//!
+//! The step used to ask, through a `Worth` closure the composition root supplied, and to spend the
+//! answer against the unit's reservation. Both are gone. The hold rides through untouched: it is
+//! an in-memory reservation that gives an exact cap under concurrency, and it is released when the
+//! line is written rather than drawn down by a price computed here.
 //!
 //! So there is no rate, no fee, no card and no price anywhere in this file. A plane says what it
-//! did; the composition root says what it cost.
+//! did; whoever reads the line says what it cost.
 
 use std::sync::Arc;
 
@@ -294,16 +297,6 @@ pub struct Metered {
     /// disagree about what it consumed. `None` where there was no lane, no meter half, or nothing
     /// billable to report — which is the honest statement that there is nothing to price.
     pub report: Option<crate::unit::walk::LateReport>,
-    /// WHAT THAT REPORT IS WORTH, in nano-units, as the holder of the card answered it.
-    ///
-    /// Carried rather than left inside the hold, because the two are different questions with
-    /// different answers: this is what the unit consumed valued at the card the door pinned, and the
-    /// hold's `accrued` is what a reservation this step may not even have been handed has absorbed
-    /// of it. A caller that read the hold for the price got zero on every unit the loop kept its
-    /// reservation in the cell for — which is every unit the composition root drives.
-    ///
-    /// Zero where there was nothing to report.
-    pub priced: u64,
 }
 
 impl Metered {
@@ -325,28 +318,13 @@ impl Metered {
     }
 }
 
-/// WHAT A REPORT IS WORTH, as this plane is handed it.
-///
-/// A report goes in and an amount in nano-units comes back. That is the whole of the seam, and it is
-/// the reason no rate, no fee and no card appears on this side of it: the plane holds none of them,
-/// so it asks whoever does and takes the answer. The composition root supplies this against the card
-/// the admission pinned — the same card the late reading is priced against — and a build with no
-/// card bound answers zero, which is the honest figure for a node that can price nothing.
-pub type Worth<'a> = &'a dyn Fn(&crate::unit::walk::LateReport) -> u64;
-
 /// The shape of this step, as a value — the `Units::meter` row with the plane's own context.
 ///
 /// The kernel's row also takes the hold implicitly, through the cell; here it is passed and
 /// returned explicitly, because a plane holds no cell and the point is that the hold leaves this
 /// step exactly as it arrived plus its accrual.
-pub type MeterStep = for<'a> fn(
-    &UnitToken<Meter>,
-    &UsageToken,
-    &MeterCtx<'a>,
-    Option<Hold>,
-    &Outcome,
-    Worth<'a>,
-) -> Metered;
+pub type MeterStep =
+    for<'a> fn(&UnitToken<Meter>, &UsageToken, &MeterCtx<'a>, Option<Hold>, &Outcome) -> Metered;
 
 /// The four reserved meter classes, in the canonical order the pricer prices them.
 ///
@@ -369,7 +347,6 @@ pub fn meter(
     ctx: &MeterCtx<'_>,
     hold: Option<Hold>,
     _provisional: &Outcome,
-    worth: Worth<'_>,
 ) -> Metered {
     let delivered = ctx.delivered();
     // The fee is the KIND of leg and the client-facing status, and nothing else: one per delivered
@@ -452,50 +429,18 @@ pub fn meter(
     }
     let usage = Usage::report(usage_token, lines).expect("four tiers fit any record");
 
-    // WHAT THE HOLDER OF THE CARD SAYS THIS UNIT IS WORTH — asked ONCE, and asked whether or not
-    // this unit is carrying its reservation through the step.
+    // THE HOLD, HANDED STRAIGHT BACK. Nothing is spent against it and nothing settles here.
     //
-    // The ask used to be written inside the `hold.map(..)` below, which made it a question only a
-    // unit handed a hold ever got asked. On the composition root's loop no unit is: the reservation
-    // goes into the kernel's own cell at the door and the exit is the one place it comes out again,
-    // so the step is handed `None` on every live path and `None.map(..)` never runs the closure.
-    // The [`Worth`] seam the root supplies was therefore never invoked on a production unit, and the
-    // figure it answers did not exist anywhere in the shipped binary.
+    // A reservation is an in-memory cap, not a book: it exists so that concurrent units cannot
+    // collectively admit past a budget, and it is released when this unit's line is written. What
+    // that line is WORTH is a question for whoever reads it, against the rate row in force at the
+    // line's own instant — so there is no figure here to draw the reservation down by, and drawing
+    // it down by one computed here would be pricing a unit twice: once against a card pinned at the
+    // door, and again whenever the line is actually read.
     //
-    // It is hoisted because what a report is worth is a fact about the REPORT. Whether the unit is
-    // also carrying its hold through this step is a fact about the loop driving it, and one plane
-    // asking the card a different number of questions depending on which loop drives it is two
-    // answers to what one request cost.
-    //
-    // A unit with nothing to report is worth zero, which is the honest figure for one that reached
-    // no lane and for one that billed none.
-    let priced = report.as_ref().map(worth).unwrap_or(0);
-
-    // The hold, spent against and handed straight back. Nothing settles here.
-    let hold = hold.map(|mut h| {
-        // Nano-units against a reservation in nano-units. The report's own quantity sum is still
-        // there to be read and is still not a money figure.
-        //
-        // `spend` rather than `accrue`, and with ZERO headroom. The difference between them is what
-        // happens when the spend runs past the reservation: `accrue` reports it and `spend` records
-        // it. The reservation was sized by a guess made at the door before a single upstream token
-        // existed, and the value has been delivered by the time this step prices it — so a guess
-        // that came in low is a normal outcome, not an error, and the excess is carried out on the
-        // hold into the next window's admissible budget. Dropping it would settle the unit as one
-        // that fitted.
-        //
-        // The headroom is zero because this step has none to offer. Drawing a top-up from the
-        // principal's slice of the bucket window is the admission unit's act against a slice this
-        // plane does not hold; claiming headroom here would mean growing a reservation against
-        // budget nobody checked. So the whole shortfall is carried, which is the conservative half
-        // of the same accounting.
-        //
-        // WHAT IS SPENT IS WHAT THE HOLDER OF THE CARD SAID, and nothing this file worked out. It is
-        // the one figure above, asked once: a second `worth(..)` here would be the card asked twice
-        // about one report, and two asks are two answers waiting to differ.
-        h.spend(priced, 0);
-        h
-    });
+    // This is where `h.spend(priced, 0)` used to be, and with it the overdraft carry that recorded
+    // how far a price ran past a reservation sized by a guess made before a single upstream token
+    // existed. Priced at read time there is no guess to run past.
 
     Metered {
         decision: Decision::proceed(unit_token, usage),
@@ -504,7 +449,6 @@ pub fn meter(
         fee_count,
         posted,
         report,
-        priced,
     }
 }
 
