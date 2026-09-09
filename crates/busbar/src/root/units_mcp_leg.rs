@@ -728,7 +728,7 @@ impl McpLeg {
         kernel: &Kernel,
         ctx: &UnitCtx,
         run: Run<'_>,
-        dispatch: Option<&dyn crate::root::transports::PlaneDispatch>,
+        dispatch: Option<&dyn crate::root::transports::MountDispatch>,
     ) -> (Ended, Option<crate::root::transports::PlaneAnswer>) {
         // THE TWO CLOCKS, PINNED ONCE, HERE. Two readings and not one number written twice: the wall
         // epoch dates the unit and the monotonic reading orders it. Read at the top of the walk so

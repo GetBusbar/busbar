@@ -25,7 +25,7 @@
 //!
 //! The router that goes in is the one that already answers the protocol — the legacy plugin's, with
 //! its own route specifications. The router that comes out answers the same addresses THROUGH THE
-//! KERNEL'S LOOP. The seam between them is [`crate::root::transports::PlaneDispatch`], so the inner
+//! KERNEL'S LOOP. The seam between them is [`crate::root::transports::MountDispatch`], so the inner
 //! router remains the only thing that knows what any of these operations do, and the bytes a caller
 //! reads are the ones that surface wrote.
 //!
@@ -66,7 +66,7 @@ use std::sync::Arc;
 
 use busbar_contract::grammar::{Claim, PathSeg, Selector};
 
-use crate::root::transports::{PlaneAnswer, PlaneDispatch};
+use crate::root::transports::{MountDispatch, PlaneAnswer};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   WHAT A MOUNT NEEDS OF A LEG
@@ -96,7 +96,7 @@ pub trait MountedLeg: Send + Sync + 'static {
         kernel: &busbar_kernel::teller::Kernel,
         ctx: &busbar_kernel::teller::UnitCtx,
         run: busbar_kernel::teller::Run<'_>,
-        dispatch: Option<&dyn PlaneDispatch>,
+        dispatch: Option<&dyn MountDispatch>,
     ) -> (
         busbar_kernel::teller::Ended,
         Option<crate::root::transports::PlaneAnswer>,
@@ -277,7 +277,7 @@ type Errand = (
 /// which knows nothing about runtimes.
 ///
 /// **Bound to ONE request,** because a unit of a mounted plane is assembled per arrival and so is its
-/// seam. That is the shape [`PlaneDispatch`] has, and the reason it takes no request: the request
+/// seam. That is the shape [`MountDispatch`] has, and the reason it takes no request: the request
 /// travelled across when the dispatch was built.
 pub(crate) struct RequestDispatch {
     errands: tokio::sync::mpsc::UnboundedSender<Errand>,
@@ -303,7 +303,7 @@ impl RequestDispatch {
     }
 }
 
-impl PlaneDispatch for RequestDispatch {
+impl MountDispatch for RequestDispatch {
     fn execute(&self, _op: busbar_contract::ids::OpClassId) -> PlaneAnswer {
         let taken = self
             .request
@@ -471,7 +471,7 @@ pub fn mount(
                 // differently for a reason nobody wrote down.
                 let forwarded =
                     axum::http::Request::from_parts(parts, axum::body::Body::from(bytes.clone()));
-                let dispatch: Arc<dyn PlaneDispatch> =
+                let dispatch: Arc<dyn MountDispatch> =
                     Arc::new(RequestDispatch::new(errands, forwarded));
                 let answered = tokio::task::spawn_blocking(move || {
                     with_arrival(&facts, &bytes, |arrival| {
@@ -595,7 +595,7 @@ impl MountedNode {
     fn answer(
         &self,
         arrival: &busbar_contract::transport::Arrival<'_>,
-        dispatch: &dyn PlaneDispatch,
+        dispatch: &dyn MountDispatch,
     ) -> axum::http::Response<axum::body::Body> {
         let key = busbar_caps::UnitKey::new(
             self.next_key

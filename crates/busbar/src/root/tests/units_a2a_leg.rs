@@ -516,7 +516,7 @@ const SURFACE_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the su
 /// The status it answers with, deliberately not one the loop's own narrowing would produce.
 const SURFACE_STATUS: u16 = 207;
 
-impl crate::root::transports::PlaneDispatch for CountingSurface {
+impl crate::root::transports::MountDispatch for CountingSurface {
     fn execute(
         &self,
         _op: busbar_contract::ids::OpClassId,
@@ -976,7 +976,7 @@ fn serve_one(
     leg: &A2aLeg,
     kernel: &Kernel,
     body: &[u8],
-    dispatch: Option<&dyn crate::root::transports::PlaneDispatch>,
+    dispatch: Option<&dyn crate::root::transports::MountDispatch>,
 ) -> (Ended, Option<crate::root::transports::PlaneAnswer>) {
     serve_presenting(leg, kernel, body, None, dispatch)
 }
@@ -991,7 +991,7 @@ fn serve_presenting(
     kernel: &Kernel,
     body: &[u8],
     credential: Option<&str>,
-    dispatch: Option<&dyn crate::root::transports::PlaneDispatch>,
+    dispatch: Option<&dyn crate::root::transports::MountDispatch>,
 ) -> (Ended, Option<crate::root::transports::PlaneAnswer>) {
     let mut facts: Vec<(&str, &str)> = vec![
         ("path", "/a2a"),

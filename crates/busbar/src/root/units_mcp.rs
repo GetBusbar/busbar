@@ -1483,7 +1483,7 @@ pub fn balance(principal: &PrincipalId) -> TotalsKey {
 
 /// THE SEAM IS NOT THIS PLANE'S, and that is why it is not defined here.
 ///
-/// [`PlaneAnswer`] and [`PlaneDispatch`] live in [`crate::root::transports`], beside
+/// [`PlaneAnswer`] and [`MountDispatch`] live in [`crate::root::transports`], beside
 /// [`crate::root::transports::PlaneLeg`], because nothing in either is about any protocol: the
 /// argument is an `OpClassId`, which every plane declares, and the answer is a status, headers and
 /// bytes, which every surface writes. The A2A leg reached them first under this plane's sibling's
@@ -1491,7 +1491,7 @@ pub fn balance(principal: &PrincipalId) -> TotalsKey {
 /// than gaining an MCP-shaped twin of either.
 ///
 /// Re-exported here rather than merely moved, so this plane's units read as one file.
-pub use crate::root::transports::{PlaneAnswer, PlaneDispatch};
+pub use crate::root::transports::{MountDispatch, PlaneAnswer};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   WHAT THE PLANE ANSWERED
@@ -1718,7 +1718,7 @@ pub struct McpBindings<'r> {
     /// required binding because that posture is a real one and not a missing source — a build
     /// without the serving switch composes no dispatch, and the boot assembly must not refuse for
     /// the absence of a thing it deliberately did not build.
-    pub dispatch: Option<&'r dyn PlaneDispatch>,
+    pub dispatch: Option<&'r dyn MountDispatch>,
     /// The sealed origin the audit record is written under. Sealed by the kernel and carried here
     /// because `Origin::seal` takes the kernel's seal and this is not the kernel.
     pub origin: busbar_caps::Origin,
