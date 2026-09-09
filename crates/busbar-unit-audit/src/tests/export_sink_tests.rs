@@ -10,7 +10,13 @@
 //! admission. Serialising concurrent appends and shedding under saturation belong to the caller
 //! that owns the sink's configuration, and are proven there.
 
-use crate::export::{append_line, Rotation, ROTATE_ARCHIVE_LIMIT};
+use crate::export::{append_line, Fault, Rotation, ROTATE_ARCHIVE_LIMIT};
+
+/// A fault sink for the cases that expect none: any report through it fails the test with the report
+/// in the message, because "and nothing went wrong" is part of what each of those cases claims.
+fn no_faults(f: Fault<'_>) {
+    panic!("the writer reported a fault where the case expects none: {f:?}");
+}
 
 /// A scratch directory unique to this test binary and thread.
 fn scratch(tag: &str) -> std::path::PathBuf {
@@ -32,11 +38,11 @@ fn an_unbounded_sink_appends_and_never_rotates() {
     let p = path.to_string_lossy().to_string();
 
     assert!(matches!(
-        append_line(&p, None, r#"{"n":1}"#),
+        append_line(&p, None, r#"{"n":1}"#, &mut no_faults),
         Rotation::NotNeeded
     ));
     assert!(matches!(
-        append_line(&p, None, r#"{"n":2}"#),
+        append_line(&p, None, r#"{"n":2}"#, &mut no_faults),
         Rotation::NotNeeded
     ));
 
@@ -65,13 +71,18 @@ fn rotation_renames_and_preserves_every_prior_line() {
     // The file does not exist yet, so the first append cannot rotate; it lands in a fresh file and
     // pushes its size past the 16-byte bound.
     assert!(matches!(
-        append_line(&p, Some(16), r#"{"evidence":"pre-rotation"}"#),
+        append_line(
+            &p,
+            Some(16),
+            r#"{"evidence":"pre-rotation"}"#,
+            &mut no_faults
+        ),
         Rotation::NotNeeded
     ));
     // The second append sees the file over the bound and must roll it over BEFORE writing.
     assert!(
         matches!(
-            append_line(&p, Some(16), r#"{"evidence":"post"}"#),
+            append_line(&p, Some(16), r#"{"evidence":"post"}"#, &mut no_faults),
             Rotation::Renamed
         ),
         "crossing the size bound must report a completed rename, so the caller can count it"
@@ -107,7 +118,7 @@ fn the_archive_series_shifts_oldest_first_and_stops_at_the_retention_limit() {
     // One line per rotation, each identifiable, with one more rotation than the series can retain.
     let rolls = ROTATE_ARCHIVE_LIMIT + 1;
     for i in 0..=rolls {
-        append_line(&p, Some(1), &format!("{{\"line\":{i}}}"));
+        append_line(&p, Some(1), &format!("{{\"line\":{i}}}"), &mut no_faults);
     }
 
     assert!(
@@ -127,5 +138,33 @@ fn the_archive_series_shifts_oldest_first_and_stops_at_the_retention_limit() {
             "archive slot {k} must still hold the line it was written with, unaltered"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A FAILURE IS HANDED BACK, NOT SWALLOWED. Each of the five ways this writer can fail is a coded
+/// diagnostic an operator already greps for, and the codes live with the composition that emits
+/// them — so the writer's obligation is to report the failure, naming what it could not do and to
+/// which path. A sink pointed at a DIRECTORY cannot be opened for append, which is the one failure
+/// mode a test can produce on any filesystem without permissions games.
+#[test]
+fn a_failure_to_open_is_handed_back_naming_the_path() {
+    let dir = scratch("fault");
+    let p = dir.to_string_lossy().to_string();
+
+    let mut opens: Vec<String> = Vec::new();
+    let rotation = append_line(&p, None, r#"{"n":1}"#, &mut |f| match f {
+        Fault::Open { path, .. } => opens.push(path.to_string()),
+        other => panic!("expected an open fault, got {other:?}"),
+    });
+
+    assert_eq!(
+        opens,
+        vec![p.clone()],
+        "exactly one open fault, naming the sink's own path, must reach the caller"
+    );
+    assert!(
+        matches!(rotation, Rotation::NotNeeded),
+        "an unbounded sink reports no rotation even when its write fails"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
