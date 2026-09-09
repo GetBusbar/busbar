@@ -1,0 +1,60 @@
+# WHAT CI's keep-proof JOB MUST PROVE ABOUT THIS BRANCH.
+#
+# Branch: queue-rebased-A3plus — the original landing lines A3..A7 re-cut onto keep-queue-AB2
+# (6e9ac9a56 = blocks A1+A2 rebased onto 9abf7f09b). Block B (B1..B7) is NOT on this branch.
+#
+# `tests` is the crates this branch actually TOUCHED, not the union of the five original lines'
+# `--tests` lists: a package no commit here reaches proves nothing about these commits and only
+# lengthens the run. Every crate below has at least one changed file between 6e9ac9a56 and the tip.
+#
+# `families` is the union of the five lines' `--families` regexes, RE-ANCHORED. The queue's original
+# spelling used `[|]`, which matches a literal pipe and therefore matches nothing under
+# `replay --family` — the anchor has to be `([|.]|$)` so a family name is matched whole, at a pipe,
+# at a dot, or at the end. `^(billing|ledger|llm)([|.]|$)` is unioned in on top, per the money rule:
+# these picks move the LLM plane's meter, the voice unit's settlement and the ledger migration's
+# key space, so the money families judge them whether or not a line named them.
+#
+# The bare prefixes (`^(hazard|plugins|documented)`, `^(plugins|boot|auth)`,
+# `^(auth\.lifecycle|documented|plugins)`, `^(admin\.ops|config|boot)`,
+# `^(neutrality|boot|hazard|llm)`) are deliberately UNANCHORED — that is how the original lines
+# spelled them, and they are prefix selectors over whole family groups (`boot.refusal`,
+# `boot.warning`, `plugins.load`, `plugins.store-persist`, `config.migrate`), not single names.
+
+families = '^(hazard|plugins|documented)|^neutrality([|.]|$)|^(llm|route\.failover|hooks)([|.]|$)|^(plugins|boot|auth)|^(billing|llm|hooks|route\.failover|teller)([|.]|$)|^admin\.ops([|.]|$)|^(billing|cli|http\.crosscut)([|.]|$)|^(admin\.ops|hooks)([|.]|$)|^(auth\.lifecycle|hazard)|^(auth\.lifecycle|documented|plugins)|^(neutrality|hooks)([|.]|$)|^(admin\.ops|config|boot)|^(admin\.ops|billing|ops\.scrape)([|.]|$)|^(billing|llm|hooks|neutrality)([|.]|$)|^(neutrality|boot|hazard|llm)|^(llm|route\.failover|billing)([|.]|$)|^(billing|ledger|llm)([|.]|$)'
+
+tests = [
+  "busbar",
+  "busbar-api",
+  "busbar-auth-admin-tokens",
+  "busbar-a2a",
+  "busbar-caps",
+  "busbar-contract",
+  "busbar-contract-transport",
+  "busbar-core",
+  "busbar-kernel",
+  "busbar-llm",
+  "busbar-llm-codec",
+  "busbar-mcp",
+  "busbar-plugin-loader",
+  "busbar-plugin-pack",
+  "busbar-plugin-sign",
+  "busbar-plugin-testkit",
+  "busbar-substrate",
+  "busbar-substrate-values",
+  "busbar-timing",
+  "busbar-transport-tcp",
+  "busbar-transport-tls",
+  "busbar-transport-ws",
+  "busbar-unit-audit",
+  "busbar-unit-egress",
+  "busbar-unit-ledger",
+  "busbar-unit-verbs",
+  "busbar-voice",
+  "busbar-voice-codec",
+  "xtask",
+]
+
+# The construction-gate rows the five original lines named, unioned. A row that matches nothing is
+# not a failure (`stale-waiver` and `rigs` name no construction row on this tree — they are the
+# no-deferral gate's and the rigs battery's), but a row that matches and is RED is.
+gate = 'stale-waiver|kernel-seal|rigs|seal-sites|surface-ceiling|teller-step-order|secret-carrier-debug|no-uninstalled-seam'
