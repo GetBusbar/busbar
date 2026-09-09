@@ -38,6 +38,21 @@ apt-get install -y -qq build-essential pkg-config libssl-dev git curl jq unzip z
 systemctl enable --now docker
 usermod -aG docker ubuntu
 
+# ── The GitHub CLI ──────────────────────────────────────────────────────────────────────────────
+# `gh` is on the GitHub-HOSTED image and is not in Ubuntu's archive, so a self-hosted box does not
+# have it and nothing says so until a workflow reaches for it. keep-proof.yml and ci.yml both do —
+# the oracle's one-line summary, the keep-proof verdict and the golden-artefact download are all
+# `gh api` — and the failure is `gh: command not found`, exit 127, at the very END of a job whose
+# expensive work has already succeeded. That is the worst place to learn about a missing package.
+# Installed from the pinned release tarball rather than a third-party apt repo: one download, one
+# binary, no key to rotate.
+GH_VER="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | jq -r .tag_name | tr -d v)"
+[ -n "$GH_VER" ] && [ "$GH_VER" != "null" ] || GH_VER="2.82.1"
+curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" \
+  | tar -xz -C /tmp
+install -m 0755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh
+gh --version || true
+
 # ── sccache, shared by every agent on the box ───────────────────────────────────────────────────
 # S3 backend, not the GitHub Actions cache: the GHA cache is rate-limited per repo and every
 # read crosses the public internet, which is exactly the tax self-hosting is meant to remove.
