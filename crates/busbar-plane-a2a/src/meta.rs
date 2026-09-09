@@ -45,6 +45,15 @@ const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
 /// The class key the metering step reports under.
 pub const CLASS_BYTES: MeterClassId = MeterClassId::new("bytes");
 
+/// EVERY CLASS THIS PLANE REPORTS, AS DATA.
+///
+/// The declaration above carries a family, a direction and a divisor beside each key, all of which
+/// are this plane's own business. This is the same list reduced to the one thing a reader OUTSIDE
+/// the plane needs: the class strings, so boot validation can ask "does every class this plane
+/// reports have a rate row on its lanes?" without naming this plane's type or the contract shapes
+/// its declaration is written in.
+pub const METER_CLASS_NAMES: &[&str] = &[CLASS_BYTES.as_str()];
+
 /// The read-only verb that lists the agents this node fronts.
 pub const VERB_AGENTS: AdminVerbId = AdminVerbId::new("agents");
 

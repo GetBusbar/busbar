@@ -52,29 +52,63 @@ const BYTES_PER_TOKEN: u32 = 4;
 /// and the registry refuses it from one.
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
-        key: MeterClassId::new("tokens_in"),
+        key: CLASS_TOKENS_INPUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("tokens_out"),
+        key: CLASS_TOKENS_OUTPUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("cache_read"),
+        key: CLASS_TOKENS_CACHE_READ,
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheRead,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("cache_write"),
+        key: CLASS_TOKENS_CACHE_WRITE,
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheWrite,
         default_divisor: BYTES_PER_TOKEN,
     },
+];
+
+// THE CLASS KEYS, EXPORTED, so the declaration above and the metering step that emits them are one
+// spelling rather than two. They used to be `tokens_in`/`tokens_out`/`cache_read`/`cache_write` here
+// and four bare literals in `codec.rs`, which is two chances for a class to be declared under one
+// name and reported under another - and a class reported under a name no rate row carries prices at
+// zero without saying so. The names are the CONFIG/WIRE spellings: `tokens_input`, `tokens_output`,
+// `tokens_cache_read`, `tokens_cache_write` are what the usage JSON already answers with and what a
+// group limit is already written against (`LimitMetric::TokensInput` and its three siblings), so a
+// rate row an operator writes against a class reads the same as the cap they wrote beside it.
+
+/// The class key a turn's prompt tokens are reported under.
+pub const CLASS_TOKENS_INPUT: MeterClassId = MeterClassId::new("tokens_input");
+
+/// The class key a turn's generated tokens are reported under.
+pub const CLASS_TOKENS_OUTPUT: MeterClassId = MeterClassId::new("tokens_output");
+
+/// The class key prompt tokens served from an upstream cache are reported under.
+pub const CLASS_TOKENS_CACHE_READ: MeterClassId = MeterClassId::new("tokens_cache_read");
+
+/// The class key prompt tokens written to an upstream cache are reported under.
+pub const CLASS_TOKENS_CACHE_WRITE: MeterClassId = MeterClassId::new("tokens_cache_write");
+
+/// EVERY CLASS THIS PLANE REPORTS, AS DATA.
+///
+/// The declaration above carries a family, a direction and a divisor beside each key, all of which
+/// are this plane's business. This is the same list reduced to the one thing a reader OUTSIDE the
+/// plane needs: the class strings, so boot validation can ask "does every class this plane reports
+/// have a rate row on its lanes?" without naming the plane's type or its contract shapes.
+pub const METER_CLASS_NAMES: &[&str] = &[
+    CLASS_TOKENS_INPUT.as_str(),
+    CLASS_TOKENS_OUTPUT.as_str(),
+    CLASS_TOKENS_CACHE_READ.as_str(),
+    CLASS_TOKENS_CACHE_WRITE.as_str(),
 ];
 
 /// The operation classes a unit of this plane can be.
