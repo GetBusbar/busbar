@@ -413,10 +413,15 @@ impl Ctx {
         if let Some(ov) = self.overlay() {
             for (path, change) in &ov.files {
                 let s = path.to_string_lossy().replace('\\', "/");
+                // `.` IS THE WHOLE TREE, AND A PLANT INTO A DIRECTORY THAT DOES NOT EXIST YET IS
+                // STILL UNDER IT. A gate that walks the repository for every manifest — the census
+                // `kind-isolation:registry` runs — is proven by planting `vendor/…/Cargo.toml`,
+                // and the prefix test `"vendor/…".starts_with("./")` is false, so the plant would
+                // have been filtered out of the very walk it exists to be found by.
                 let under_a_root = spec
                     .roots
                     .iter()
-                    .any(|r| s.starts_with(&format!("{r}/")) || &s == r);
+                    .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
                 match change {
                     Change::Absent => rels.retain(|p| p != path),
                     Change::Content(_) => {

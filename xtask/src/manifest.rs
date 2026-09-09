@@ -286,6 +286,60 @@ pub fn workspace_renames(root_manifest: &str) -> BTreeMap<String, String> {
     out
 }
 
+/// The `[workspace] members = [ … ]` list, in declaration order.
+///
+/// A crate ON DISK and off this list is a crate `--workspace` never compiles, never tests, never
+/// clippies and never denies — and a path dependency reaches it anyway, so it ships. That is the
+/// hole `unmembered` is named for.
+pub fn workspace_members(root_manifest: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    let mut collecting = false;
+    for raw in root_manifest.lines() {
+        let t = raw.trim();
+        if let Some(header) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            if !collecting {
+                inside = header_segments(header.trim()) == ["workspace"];
+                continue;
+            }
+        }
+        if !inside {
+            continue;
+        }
+        if !collecting {
+            let Some((k, v)) = split_kv(t) else { continue };
+            if k != "members" {
+                continue;
+            }
+            collecting = true;
+            for part in v.split(['[', ',']) {
+                push_member(part, &mut out);
+            }
+            if v.contains(']') {
+                collecting = false;
+                inside = false;
+            }
+            continue;
+        }
+        for part in t.split(',') {
+            push_member(part, &mut out);
+        }
+        if t.contains(']') {
+            collecting = false;
+            inside = false;
+        }
+    }
+    out
+}
+
+fn push_member(part: &str, out: &mut Vec<String>) {
+    let p = part.trim().trim_end_matches(']').trim();
+    let p = p.trim_matches(['"', '\'']).trim();
+    if !p.is_empty() && !p.starts_with('#') {
+        out.push(p.to_string());
+    }
+}
+
 /// Resolve every INHERITED declaration through the workspace's own renames. A declaration that
 /// states its own `package =` is already final: the member's word wins over the workspace's.
 pub fn resolve_inherited(decls: &mut [DepDecl], renames: &BTreeMap<String, String>) {
@@ -401,6 +455,18 @@ llm-serve = []
         assert!(d[0].inherits);
         resolve_inherited(&mut d, &workspace_renames(root));
         assert_eq!(d[0].pkg, "busbar-plane-llm");
+    }
+
+    #[test]
+    fn the_member_list_is_read_in_both_layouts() {
+        assert_eq!(
+            workspace_members("[workspace]\nresolver = \"2\"\nmembers = [\n  \"crates/a\",\n  \"xtask\",\n]\n\n[workspace.dependencies]\nserde = \"1\"\n"),
+            vec!["crates/a", "xtask"]
+        );
+        assert_eq!(
+            workspace_members("[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n"),
+            vec!["crates/a", "crates/b"]
+        );
     }
 
     /// The workspace's own pin table is not an edge OF the workspace root.

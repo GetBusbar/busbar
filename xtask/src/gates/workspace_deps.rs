@@ -24,8 +24,13 @@
 //! 4. `workspace-deps:no-orphans` — every `[workspace.dependencies]` entry is used by at least one
 //!    member. An unused pin is a version requirement nothing obeys.
 //! 5. `workspace-deps:set-equality` — the members this gate inspected are exactly the members the
-//!    workspace declares. A manifest that is skipped is a manifest that is UNCHECKED, which is not
-//!    the same as clean.
+//!    workspace declares, AND exactly the crates on disk. A manifest that is skipped is a manifest
+//!    that is UNCHECKED, which is not the same as clean. The third set is the one that was missing:
+//!    `inspected` is DERIVED from `declared`, so deleting a member line shrank both and the row
+//!    stayed green at 60 where it had been green at 61 — a live, path-depended crate dropped out of
+//!    every `--workspace` test, clippy and deny run with nothing red anywhere. The manifests that
+//!    are not crates of this tree come off `kind-isolation`'s own off-tree list, so the two gates
+//!    give one answer.
 //! 6. `workspace-deps:member-floor` — at least [`MIN_MEMBERS`] member manifests were inspected.
 //! 7. `workspace-deps:inherited-floor` — at least [`MIN_INHERITED`] inheriting declarations were
 //!    seen. Either the table is not actually in use or the walk is broken; both are RED.
@@ -363,6 +368,68 @@ fn survey(cx: &Ctx, root: &toml_lite::Document) -> Survey {
     s
 }
 
+/// EVERY CRATE ON DISK THAT NO MEMBER LINE DECLARES.
+///
+/// The walk is the whole repository, because a crate outside `crates/` is exactly the one a member
+/// list can silently drop. The manifests that are NOT crates of this tree — the runner, the gate
+/// fixtures, the standalone documentation example — are read off
+/// [`crate::gates::kind_isolation::off_tree_manifest_reason`], which is the same list
+/// `kind-isolation:registry` scores its own `off-tree-crate` finding against: two lists would be
+/// two answers to one question.
+///
+/// THE WALK IS SCOPED TO THE ROOTS THE MEMBER LIST ITSELF CLAIMS — the top-level directory of every
+/// declared member, which in this tree is `crates/` and `xtask/`. That is not a softening: it is
+/// the difference between "a member line was deleted", which is this row's question, and "a crate
+/// appeared somewhere nobody declared", which is `kind-isolation:registry`'s `off-tree-crate` and
+/// is refused there with no scoping at all. Without it this row would also grade the real
+/// repository whenever a self-test plants a SYNTHETIC workspace over it, and a row that reds on
+/// its neighbour's fixtures is a row nobody can read.
+fn on_disk_unmembered(cx: &Ctx, declared: &[String]) -> Vec<String> {
+    let claimed: BTreeSet<&str> = declared
+        .iter()
+        .filter_map(|m| m.split('/').next())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let Ok(files) = cx.walk(&WalkSpec::new(["."]).ext("toml")) else {
+        return vec![
+            "the manifest walk did not run, so no crate on disk could be compared with the member \
+             list — a walk that did not read is not a walk that found nothing."
+                .to_string(),
+        ];
+    };
+    let mut out = Vec::new();
+    for f in &files {
+        let rel = f.rel_str();
+        // The workspace root declares the members; it is not one of them.
+        if rel == "Cargo.toml" || !rel.ends_with("/Cargo.toml") {
+            continue;
+        }
+        if crate::gates::kind_isolation::off_tree_manifest_reason(&rel).is_some() {
+            continue;
+        }
+        if !rel
+            .split('/')
+            .next()
+            .is_some_and(|top| claimed.contains(top))
+        {
+            continue;
+        }
+        if !f.text.contains("[package]") {
+            continue;
+        }
+        let dir = rel.trim_end_matches("/Cargo.toml").to_string();
+        if !declared.iter().any(|d| d.trim_end_matches('/') == dir) {
+            out.push(format!(
+                "{dir}: a crate on disk that no [workspace] members entry declares. --workspace \
+                 compiles, tests, clippies and denies every crate BUT this one, and a path \
+                 dependency reaches it regardless — so it ships unchecked. Add the member line or \
+                 delete the crate."
+            ));
+        }
+    }
+    out
+}
+
 impl Gate for WorkspaceDepsGate {
     fn name(&self) -> &'static str {
         "workspace-deps"
@@ -472,11 +539,24 @@ impl Gate for WorkspaceDepsGate {
             )
         });
 
+        // THE THIRD SET, AND IT IS THE ONE THAT WAS MISSING: what is ON DISK.
+        //
+        // This row compared `inspected` with `declared`, and `inspected` is DERIVED from `declared`
+        // — so deleting a member line shrinks both and the row stays green at 60 where it was green
+        // at 61. A red-team pass struck `crates/busbar-plane-llm` from the list, left the path
+        // dependency that reaches it in place, and dropped a live crate out of every `--workspace`
+        // test, clippy and deny run with nothing red anywhere in the tree. A set-equality row that
+        // reads one set twice is not a set-equality row.
+        let unmembered = on_disk_unmembered(cx, &s.declared);
         rows.push(
-            if s.unreadable.is_empty() && s.inspected.len() == s.declared.len() {
+            if s.unreadable.is_empty()
+                && s.inspected.len() == s.declared.len()
+                && unmembered.is_empty()
+            {
                 Row::pass(
                     ROW_SET_EQUALITY,
-                    "the members inspected are exactly the members the workspace declares",
+                    "the members inspected are exactly the members the workspace declares, and \
+                     exactly the crates on disk",
                     format!("{} member(s)", s.inspected.len()),
                 )
             } else {
@@ -486,6 +566,7 @@ impl Gate for WorkspaceDepsGate {
                     .filter(|m| !s.inspected.contains(m))
                     .collect();
                 let mut detail = s.unreadable.clone();
+                detail.extend(unmembered.iter().cloned());
                 detail.push(format!(
                     "inspected {} members but the workspace declares {}; unreadable: {missing:?}",
                     s.inspected.len(),
@@ -493,7 +574,8 @@ impl Gate for WorkspaceDepsGate {
                 ));
                 Row::fail(
                     ROW_SET_EQUALITY,
-                    "the inspected member set is not the declared member set",
+                    "the inspected member set is not the declared member set, or a crate on disk \
+                     is on no member list",
                     detail.join(" | "),
                 )
             },
@@ -548,6 +630,28 @@ impl Gate for WorkspaceDepsGate {
             self,
             "every dependency in the real workspace goes through the table",
             &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
+        ));
+        // THE MEMBER LINE, DELETED. This is the one case that has to run against the REAL tree:
+        // the hole was that `inspected` is derived from `declared`, so a synthetic workspace whose
+        // member list is the whole truth cannot show it. Strike one line from the real root
+        // manifest and the crate is still on disk, still path-depended, and no longer in a single
+        // `--workspace` run.
+        let mut ov = Overlay::new();
+        ov.set(
+            "Cargo.toml",
+            cx.read("Cargo.toml").unwrap_or_default().replacen(
+                "    \"crates/busbar-plane-llm\",\n",
+                "",
+                1,
+            ),
+        );
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "a member line deleted leaves a live crate on disk and out of every --workspace run",
+            &[ROW_SET_EQUALITY],
+            ov,
+            &["crates/busbar-plane-llm", "no [workspace] members entry"],
         ));
         for plant in plants(cx) {
             report.push(plant.case(cx, self));
