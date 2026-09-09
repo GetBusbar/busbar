@@ -25,6 +25,16 @@ use crate::ctx::Ctx;
 
 /// The overlay key a self-test plants the delegated purity scan under.
 pub const PURITY_HITS_KEY: &str = "construction:purity-hits";
+
+/// THE ONE ANSWER A PLANTED STRING CANNOT OTHERWISE SPELL: the scan could not be made at all.
+///
+/// Every other planted value is a hits file, and the empty hits file is a REAL and different answer
+/// — "the scan ran and found nothing", which the rule reads as a clean tree. "The scan did not run"
+/// is the answer this rule exists to distinguish from that one, and before this sentinel a self-test
+/// had no way to plant it: the artefact is produced in-process, so there is no file to remove and no
+/// subprocess to break. That left the `hits.is_none()` refusal — the one the rule was WRITTEN for,
+/// after a deleted script made the scan silently stop running — unproven.
+pub const PURITY_HITS_ABSENT: &str = "#DID-NOT-RUN";
 /// The overlay key a self-test plants one surface-ceiling measurement under.
 pub const SURFACE_KEY_PREFIX: &str = "construction:loc-surface:";
 /// The overlay key a self-test plants the transitive-closure scan's answer under.
@@ -43,7 +53,7 @@ pub const DENYLIST_KEY: &str = "construction:denylist-tsv";
 /// as zero hits.
 pub fn purity_hits(cx: &Ctx) -> Option<String> {
     if let Some(planted) = cx.overlay_command(PURITY_HITS_KEY) {
-        return Some(planted);
+        return (planted != PURITY_HITS_ABSENT).then_some(planted);
     }
     crate::gates::plane_purity::check_hits_artefact(cx).ok()
 }

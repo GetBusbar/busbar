@@ -367,6 +367,22 @@ fn delegated_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         ov,
         &["scanned zero files"],
     ));
+
+    // THE THIRD ANSWER, and the one this rule was rewritten for. The case above plants a scan that
+    // RAN and reached nothing; this one plants a scan that could not be made at all. They are not
+    // the same fact and only one of them used to be planted, so the arm that says "did not run" —
+    // the arm that exists because a deleted script once made this rule report zero hits for weeks
+    // — could be forced to PASS with the whole self-test still green.
+    let mut ov = on(base);
+    ov.set_command(external::PURITY_HITS_KEY, external::PURITY_HITS_ABSENT);
+    r.push(prove_red(
+        cx,
+        gate,
+        "the delegated purity scan producing no hits file at all is not a clean tree either",
+        &["neutral-no-dialect"],
+        ov,
+        &["the delegated scan did not run"],
+    ));
     r
 }
 
