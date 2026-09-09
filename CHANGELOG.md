@@ -359,10 +359,10 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 The accepted-differences register for this release has exactly eight entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
-from the hook view, one refusal that now comes out of the resolver rather than the validator, one
-key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
-edit stops repricing history it should not touch, and one provider credential that no longer
-degrades to an empty key.
+from the hook view, one key-rotate endpoint that now refuses an overlong id like its siblings, one
+where a rate-card edit stops repricing history it should not touch, one provider credential that no
+longer degrades to an empty key, and one upstream failure that stops being billed for a delivery
+that never happened.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -443,6 +443,19 @@ overlay at boot; the accepted-then-ignored `persist:` field on `PUT /api/v1/admi
 is now a `400` naming the field; and the always-`null` `at` field on the hook view gives way to
 `fires_at`. Details in [the 1.6.0 migration guide](docs/migration-1.6.md).
 
+- 1.6.0 Changed: an upstream failure that delivered nothing is recorded as a zero-quantity audit
+  line and is not billed. 1.5.5 charged for a delivery that never happened: a request whose only
+  upstream attempt returned 503 was recorded against the key at 250 cents and 18 tokens, while the
+  same release's own test fixture said what it should have recorded — "requests +1, billable
+  refunded, spend 0". 1.6.0 records what happened instead. A unit that ends without delivering
+  anything writes one sealed audit line carrying `outcome: failed`, its quantities at zero, and the
+  attempt still counted: `requests` stays 1, because a request that failed is still a request and a
+  cap that could be escaped by failing is not a cap. Pricing is where the failure is answered — a
+  `failed` outcome prices at zero in every class, the flat per-request fee included — so a
+  deployment that configures `per_request_fee` is never billed for a failure. **Migration:** a key's
+  reported `spend_cents` and `tokens` fall for any period in which its requests failed upstream;
+  `requests` is unchanged. If you reconciled 1.5.5 invoices against those figures, the difference is
+  the amount 1.5.5 billed for responses it never delivered.
 ### Deprecated env vars still honoured
 
 `BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`
