@@ -51,8 +51,10 @@ pub trait Store {
 
     /// `// contract:` the store-backed sealed idempotency cache for the NEW credential-minting
     /// verbs (`set_operator_key`, `export_keyset`'s recipient-sealed export, and any future
-    /// credential-minting new verb) — TTL `min(dispute_max_age, max(600s, longest finite cap
-    /// window + max_unit_duration))`, per the architecture document. Returns the previously
+    /// credential-minting new verb) — TTL `max(600s, longest finite cap window +
+    /// max_unit_duration)`, per the architecture document. (The `dispute_max_age` clamp the earlier
+    /// formula carried went with the dispute verbs: nothing here holds a dispute open, so nothing
+    /// here has a dispute's age to bound a replay slot by.) Returns the previously
     /// committed response bytes for a replay, or `None` on first sighting (in which case the
     /// integrator is expected to have already reserved the slot before this call returns,
     /// mirroring [`crate::idempotency::IdempotencyCache`]'s reservation discipline, but over

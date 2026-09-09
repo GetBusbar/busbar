@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Which of the 88 administrative operations the loop owns, and which the surface underneath still
+//! Which of the 83 administrative operations the loop owns, and which the surface underneath still
 //! answers — as a table joined from the two crates that declare them, not as a sentence.
 //!
 //! ## Why this pin exists beside the other one
 //!
-//! `new_verbs_legacy_leg.rs` pins one row of this question: of the seventeen 1.6.0-additive verbs,
-//! three are answered by the loop and fourteen reach a surface that has never had a route for them.
+//! `new_verbs_legacy_leg.rs` pins one row of this question: of the twelve 1.6.0-additive verbs,
+//! three are answered by the loop and nine reach a surface that has never had a route for them.
 //! It says nothing about the other seventy-one, and the sixty-six legacy operations are the ones the
 //! admin leg's migration is actually about — each of them is a verb the loop will one day produce the
 //! answer for and the surface underneath will stop answering, and the two halves of that have to
@@ -30,7 +30,7 @@
 //! fact under test in the negative, and counting them would let one silently leave.
 //!
 //! Then the derivation is MEASURED. The test serves the administrative surface and asks it, path by
-//! path with the method the table declares, which of the 88 it has a route for — and requires that
+//! path with the method the table declares, which of the 83 it has a route for — and requires that
 //! set to be exactly the rows this file derived as the surface's. A table checked only against
 //! itself would agree with any code; this one is checked against a running router, which is the only
 //! thing that can say what a router answers.
@@ -66,7 +66,7 @@ use std::net::SocketAddr;
 /// composition claims to answer.
 const OPENAPI_PATH: &str = "/api/v1/admin/openapi.json";
 
-/// The three of the eighty-eight whose effect lands on `Store` through the executing unit's own
+/// The three of the eighty-three whose effect lands on `Store` through the executing unit's own
 /// per-verb entry points, so the governance seam — and therefore the surface underneath — is never
 /// reached.
 ///
@@ -138,7 +138,7 @@ fn loop_answers(verb: &str) -> bool {
 /// A new one per question, which is not fastidiousness. The mutation rate limiter is held on `App`,
 /// it counts FAILED attempts on purpose (probing 404s spends the same budget as mutating, which is
 /// the anti-enumeration rule), and it runs in the auth middleware BEFORE any routing happens. Ask
-/// one surface about all eighty-eight rows and the config-class budget of ten is gone by the
+/// one surface about all eighty-three rows and the config-class budget of ten is gone by the
 /// thirteenth, after which every remaining mutating row answers `429` — an answer that says the
 /// middleware ran and says nothing whatsoever about whether the route exists. The measurement would
 /// then depend on the order the table happens to be in.
@@ -231,7 +231,7 @@ fn concrete(template: &str) -> String {
 /// The admin surface carries one named-definition map per plane that declares one, mounted from the
 /// plane REGISTRY rather than from this plane's closed table: `tools:` is the MCP plane's and
 /// `agents:` is the A2A plane's. They are documented in the same discovery document because there is
-/// one document, and they are not rows of the eighty-eight because the eighty-eight are the admin
+/// one document, and they are not rows of the eighty-three because the eighty-three are the admin
 /// plane's own.
 ///
 /// Named rather than skipped by a pattern, for the reason every other set in this file is named: a
@@ -283,7 +283,7 @@ async fn documented_gets() -> Vec<String> {
 
 /// The whole partition, derived from the two crates and then measured against a running surface.
 #[tokio::test]
-async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
+async fn the_eighty_three_are_split_between_the_loop_and_the_surface() {
     busbar_core::metrics::init();
 
     let absent = ask_a_fresh_surface("GET", A_PATH_THAT_DOES_NOT_EXIST).await;
@@ -300,8 +300,8 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
     let table = busbar_plane_admin::verbs::table();
     assert_eq!(
         table.len(),
-        88,
-        "the plane's table is no longer the 88 operations this partition covers"
+        83,
+        "the plane's table is no longer the 83 operations this partition covers"
     );
 
     // THE JOIN. Every row of the plane's table has to be a verb the executing unit knows, or the two
@@ -354,7 +354,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
     );
     assert_eq!(
         nobody_answers.len(),
-        14,
+        9,
         "the number of operations gated by every gate and then answered by nobody has changed: \
          {nobody_answers:?}"
     );
@@ -398,7 +398,7 @@ async fn the_eighty_eight_are_split_between_the_loop_and_the_surface() {
     for template in documented_gets().await {
         let path = concrete(&template);
         let Some(row) = busbar_plane_admin::verbs::resolve("GET", &path) else {
-            // Not a row of the eighty-eight. The only documented GETs that can be true of are the
+            // Not a row of the eighty-three. The only documented GETs that can be true of are the
             // named-definition maps another plane owns, and the assertion after the loop says the
             // set collected here is exactly those and nothing else.
             elsewhere.push(template);

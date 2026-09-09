@@ -282,7 +282,7 @@ pub enum KernelVerb {
     /// `POST /api/v1/admin/signing-key/rotate`
     PostSigningKeyRotate,
 
-    // ---- 1.6.0 new verbs (17) ----
+    // ---- 1.6.0 new verbs (12) ----
     /// Verify a claim/signature outside the normal request path.
     Verify,
     /// Read plane facts (a plane's own declared facts surface).
@@ -302,18 +302,8 @@ pub enum KernelVerb {
     ResealEpochFloor,
     /// Flip dual-control posture between `single` and `required` (irreducible).
     SetDualControl,
-    /// Set a bucket's overdraft ceiling.
-    SetOverdraftCeiling,
-    /// Set `dispute_max_age`.
-    SetDisputeMaxAge,
     /// Commit the schema/version upgrade (irreducible).
     CommitUpgrade,
-    /// Resolve an open dispute (irreducible above `adjust_threshold`).
-    ResolveDispute,
-    /// Resolve a slice-level dispute.
-    ResolveSlice,
-    /// Manually adjust a ledger figure (irreducible above `adjust_threshold`).
-    Adjust,
     /// Export the deployment keyset, sealed to a recipient public key (irreducible; the one verb
     /// admitted under `operator: unset` besides `SetOperatorKey`).
     ExportKeyset,
@@ -668,7 +658,14 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 17 new 1.6.0 verbs, in the order the architecture document names them.
+/// The 12 new 1.6.0 verbs, in the order the architecture document names them.
+///
+/// Five verbs the earlier draft of this list carried are GONE, and their absence is the money
+/// model rather than an omission: `adjust`, `resolve_slice`, `resolve_dispute`,
+/// `set_dispute_max_age` and `set_overdraft_ceiling` were the corrections a billing system makes
+/// to its own books. busbar is a meter and an audit trail — a sealed line is written once at the
+/// end of a unit and never edited — so a correction has nothing here to correct. The calling app
+/// corrects against the exported sealed lines.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
@@ -679,20 +676,15 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::StoreRestore,
     KernelVerb::ResealEpochFloor,
     KernelVerb::SetDualControl,
-    KernelVerb::SetOverdraftCeiling,
-    KernelVerb::SetDisputeMaxAge,
     KernelVerb::CommitUpgrade,
-    KernelVerb::ResolveDispute,
-    KernelVerb::ResolveSlice,
-    KernelVerb::Adjust,
     KernelVerb::ExportKeyset,
     KernelVerb::Approve,
 ];
 
-/// The two of the seventeen the architecture document binds as `GET` — "POST for every mutating
+/// The two of the twelve the architecture document binds as `GET` — "POST for every mutating
 /// verb, GET for the two read-only verbs (`verify`, `plane_facts`)".
 ///
-/// They stay members of [`NEW_VERBS`] because they ARE two of the seventeen, and the operator
+/// They stay members of [`NEW_VERBS`] because they ARE two of the twelve, and the operator
 /// ceremony still reaches them through the same gate every other new verb runs (neither is in
 /// [`IRREDUCIBLE_VERBS`], so that gate admits them). What being named here changes is everything
 /// that follows from a verb being a read rather than a mutation: the scope it asks for, the mutation
@@ -730,11 +722,12 @@ pub const NAMED_SURFACES: &[KernelVerb] = &[
 ];
 
 /// The irreducible set, required in both dual-control postures (architecture doc: "Irreducible
-/// set, required in both postures"). `Adjust` and `ResolveDispute` are irreducible only ABOVE
-/// `adjust_threshold` — that quantity is not decidable from the verb alone, so callers that need
-/// the threshold-gated form check it themselves (see [`crate::posture`]); they are still listed
-/// here so the closed set names every verb the document calls irreducible, with the caveat carried
-/// in this doc comment rather than silently dropped.
+/// set, required in both postures").
+///
+/// Every member is now irreducible UNCONDITIONALLY. The two amount-gated members the earlier list
+/// carried (`Adjust` and `ResolveDispute`, irreducible only above `adjust_threshold`) are gone
+/// with the verbs themselves: no verb in this crate edits a posted figure, so no verb in this set
+/// needs a threshold to decide how hard to gate it.
 pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
     KernelVerb::ChainBreak,
     KernelVerb::StoreRestore,
@@ -744,8 +737,6 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
     KernelVerb::SetOperatorKey,
     KernelVerb::SetEscrow,
     KernelVerb::ExportKeyset,
-    KernelVerb::Adjust,
-    KernelVerb::ResolveDispute,
 ];
 
 /// The two verbs admitted under `operator: unset` (every other irreducible verb is refused until

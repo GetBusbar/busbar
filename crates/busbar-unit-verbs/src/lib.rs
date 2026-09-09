@@ -18,7 +18,7 @@
 //! ## The closed table
 //!
 //! [`verb::KernelVerb`] is the closed set: 66 legacy operations mechanically derived from 1.5.5's
-//! `openapi.json` at the tag (49 paths, 34 `read-only` / 32 `full`), the 17 new 1.6.0 verbs, and
+//! `openapi.json` at the tag (49 paths, 34 `read-only` / 32 `full`), the 12 new 1.6.0 verbs, and
 //! the named non-admin surfaces (`/auth/token`, `/v1/models`, `/v1beta/models`, `/stats`,
 //! `/healthz`, `/metrics`, `/metrics/hooks`). A test in `src/tests/table_matches_openapi.rs` parses
 //! the committed `testing/shadow-oracle/fixtures/openapi-1.5.5.json` fixture and fails the build if
@@ -39,7 +39,7 @@
 //! a mint and `(actor, "rotate:{id}:{k}")` for a rotate, no body hash), the mutation rate limiter
 //! ([`rate`]; fixed one-minute windows, `Config`/`Crud`/`PluginInspect` budgets, failed attempts
 //! count too), the mint's parent-existence-only group plan ([`mint`]), and the posture rules for
-//! the 17 new verbs ([`posture`]; refused under `operator: unset` except `set_operator_key` and
+//! the 12 new verbs ([`posture`]; refused under `operator: unset` except `set_operator_key` and
 //! `export_keyset`; refused under `required` dual control without a matching `approve`).
 //!
 //! Everything else a legacy verb or a new verb actually DOES to the record store — 60 of the 66

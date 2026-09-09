@@ -177,8 +177,10 @@ fn overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with() 
 /// `Overdraft::Ceiling` is what `slice::overdraft(_, at_ceiling)` answers when a bucket is at its
 /// ceiling. Nothing outside the rule's own module names that verdict, so no shipped path branches
 /// on it and no shipped path can end a unit by it: the ceiling is unbounded in force, and the
-/// operator verb that would set one (`KernelVerb::SetOverdraftCeiling`) is carried in the
-/// vocabulary with no dispatch arm behind it — flag-only, exactly as the binding says.
+/// operator verb that would once have set one (`KernelVerb::SetOverdraftCeiling`) is not in the
+/// vocabulary at all — 1.6.0's money model deleted it with the other four correction verbs, so the
+/// "flag-only" scan below now answers "no such name anywhere", which is the same claim proven
+/// harder. The scan stays: it is what catches the verb, or a payload for it, coming back.
 #[test]
 fn the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on() {
     let mut namers = BTreeSet::new();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Dual-control posture and the operator-key ceremony gate, for the 17 new 1.6.0 verbs.
+//! Dual-control posture and the operator-key ceremony gate, for the 12 new 1.6.0 verbs.
 //!
 //! Two independent gates, both sealed at `Bootstrap` and both read here as plain values the
 //! integrator resolves from the sealed `Policy` (the resolution itself — reading the journal — is a
@@ -103,7 +103,7 @@ pub fn check_dual_control(
     if verb == KernelVerb::Approve {
         return Ok(());
     }
-    // Maker-checker is scoped to MUTATING verbs, and two of the seventeen are not: `verify` and
+    // Maker-checker is scoped to MUTATING verbs, and two of the twelve are not: `verify` and
     // `plane_facts` are bound `GET`. A read has no pending mutation, so there is nothing a checker
     // could ever approve for it — holding one here does not delay it, it refuses it for as long as
     // the posture stands, and `verify` is the check an operator runs to find out what state the
@@ -161,7 +161,7 @@ pub fn check_set_dual_control_required(distinct_admin_principals: usize) -> Resu
     Ok(())
 }
 
-/// The full posture check for the 17 new verbs, run in the order the module doc names: operator
+/// The full posture check for the 12 new verbs, run in the order the module doc names: operator
 /// gate first, then dual control. Legacy verbs and named surfaces are never subject to either gate
 /// here (the architecture document scopes the operator/dual-control machinery to the irreducible
 /// set and the mutating-verb maker-checker rule, both of which this crate reads through
