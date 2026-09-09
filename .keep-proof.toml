@@ -1,0 +1,47 @@
+# What CI must prove for this keep branch, so the proof is not a local claim.
+#
+# Local workspace builds and local oracle recordings are OFF (owner process change, 2026-09-08):
+# an agent proving its own work on its own machine is a proof nobody else can check, and the machine
+# was carrying enough parallel builds that the runs stopped being trustworthy anyway. What an agent
+# proves locally is `cargo test -p` for the crates it touched; CI's keep-proof does the rest.
+
+# The oracle families this branch can move, as a regex over cell ids.
+#
+# `admin.ops` because the admin surface's verb table and its answers are what this branch changes:
+# the thirteen 1.6.0 verbs' rows, `verify`'s answer, and the one recorded cell named in register
+# entry A-1 (`admin.ops|GetAuth|ok`).
+#
+# `auth.lifecycle` because the keys-arm fix moves what `GET /api/v1/admin/auth` reports about a
+# chain, and the lifecycle family is where a credential's own story is recorded. Naming it here
+# rather than discovering it in a red run is the point: A-1 is scoped to exactly one `admin.ops`
+# cell, so if anything in `auth.lifecycle` moves, the register is wrong and not the run.
+families = '^(admin\.ops|auth\.lifecycle)([|.]|$)'
+
+# The crates whose tests are this branch's proof.
+#
+# DERIVED, NOT ASSUMED. `git diff --name-only keep-admin-17-verbs...HEAD` says the committed branch
+# touches `busbar`, `busbar-plane-admin`, `busbar-unit-cost` and `busbar-unit-verbs`; the uncommitted
+# item-(7) work adds `busbar-core`. That measurement disagrees with the list handed down in two
+# places, and the file records the disagreement rather than quietly resolving it:
+#
+#   * `busbar-unit-verbs` and `busbar-unit-cost` were NOT in the handed-down list and ARE touched.
+#     They are added. `busbar-unit-verbs` is where cut 0 retired the ceremony — five verbs, the
+#     posture module, two closed sets — which is landing work, not money work, so CI leaving that
+#     crate unproven would be a real hole. `busbar-unit-cost` carries `IdentityDeltaView`, which
+#     `verify` answers with.
+#   * `busbar-unit-auth` WAS in the handed-down list and is NOT touched by this branch: item (7)
+#     changes `busbar-core`'s auth module (`AuthMiddleware`), not the unit crate. It is kept anyway
+#     — it is small, it is the crate the root's reporting is derived from, and proving one crate too
+#     many costs a minute where proving one too few costs a landing.
+#
+# The money commits (`adjust`/`resolve_slice`) also touch `busbar-unit-verbs` and `busbar-unit-cost`
+# and are expected to be DROPPED at landing under the owner's final money model. That is not a
+# reason to drop the crates from this list: the same crates carry cut 0 and `verify`, which stay.
+tests = [
+  "busbar",
+  "busbar-core",
+  "busbar-plane-admin",
+  "busbar-unit-auth",
+  "busbar-unit-cost",
+  "busbar-unit-verbs",
+]

@@ -283,15 +283,24 @@ fn test_open_door_regardless_of_upstream_creds() {
 }
 
 /// `chain: [keys]` sets the `keys_in_chain` flag rather than installing a boxed module: virtual
-/// keys authenticate on the governance path, so the entry records operator intent for
-/// validation/reporting and the boxed chain stays empty.
+/// keys authenticate on the governance path, so the entry records operator intent and the BOXED
+/// chain stays empty.
+///
+/// The boxed chain and the REPORTED chain are two different things, and this test reads both. They
+/// used to be conflated through `chain_names()`, which is how an operator who configured
+/// `auth.chain: [keys]` came to be told `chain: []` by `GET /api/v1/admin/auth`.
 #[test]
 fn test_keys_in_chain_sets_flag_not_module() {
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
     assert!(mw.keys_in_chain, "chain: [keys] must set keys_in_chain");
     assert!(
-        mw.chain_names().is_empty(),
+        mw.chain.is_empty(),
         "keys is engine-handled, never a boxed module"
+    );
+    assert_eq!(
+        mw.chain_names(),
+        vec!["keys"],
+        "the report names the arm the operator configured"
     );
 
     let mw = AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none());
@@ -300,7 +309,16 @@ fn test_keys_in_chain_sets_flag_not_module() {
     // keys + an external module: the flag is set AND the boxed module still identifies.
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys", "test-groups-module"]));
     assert!(mw.keys_in_chain);
-    assert_eq!(mw.chain_names(), vec!["test-groups-module"]);
+    assert_eq!(
+        mw.chain.len(),
+        1,
+        "only the external module is boxed; keys is the engine arm"
+    );
+    assert_eq!(
+        mw.chain_names(),
+        vec!["keys", "test-groups-module"],
+        "both arms are reported, in the order they were configured"
+    );
     assert!(mw.validate_token(Some("grp:dev")));
     assert!(!mw.validate_token(Some("wrong")), "still fail-closed");
 }
