@@ -1,0 +1,20 @@
+# WHAT CI HAS TO PROVE ABOUT THIS BRANCH, named by the branch itself.
+#
+# The keep-proof workflow does the workspace build, clippy, the gates, the
+# selftests and the shadow oracle; this file is the branch's own statement of the
+# two things only the branch knows — which oracle CELLS its change could move, and
+# which PACKAGES carry the tests that judge it.
+#
+# THE CONFIG LAYER LEFT busbar-core FOR A CRATE OF ITS OWN. Every cell family
+# below is one the config document is read on: `config` (the served config
+# surface), `boot` (every refusal and warning the loader and validator emit before
+# a listener binds), `cli` (`--validate`, `--print-config`, the flag paths) and
+# `config.migrate` (the 1.4.x->1.5.0 migrator over its whole corpus). If a
+# relocation moved a byte an operator sees, it moved one of those.
+families = '^(config|boot|cli|config\.migrate)([|.]|$)'
+
+# The packages whose tests judge the change: the new home, the neutral substrate
+# the registry population moved into, the engine that re-exports both modules, the
+# composition root that now names the layer directly, and the gate tool whose
+# tracked-source set and neutral-root list followed the grammar.
+tests = ["busbar-core-config", "busbar-substrate", "busbar-core", "busbar", "xtask"]
