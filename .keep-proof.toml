@@ -4,20 +4,33 @@
 # scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
 # something specific instead of "everything, slowly".
 #
+# This branch is the money model's rates-and-classes cut (money-a), the meter half (money-b), and
+# the four owner rulings stacked on top: the per-class rate grammar, the metrics tier labels in
+# their wire spelling, the "enabled plane" = configured plane reading of the unpriced-class boot
+# refusal, and `on_exhaust: cut`.
+#
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
 #              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch is the money model's rates-and-classes cut:
-#              the declared meter classes, the add-only dated rate table, and the unpriced-class boot
-#              refusal wired into config validation behind an opt-in key. The four families are the
-#              ones that could possibly answer differently if any of that leaked: `billing` and
-#              `ledger` are the money path itself; `boot` and `config` are where the new refusal and
-#              the new `require_priced_classes:` key live, and where the whole 1.5.5 guarantee is
-#              made — a config that omits the key must validate, boot and refuse byte-identically to
-#              the release before it.
+#              better part of half an hour. `billing` and `ledger` are the money path itself.
+#              `boot` and `config` are where the unpriced-class refusal, the `require_priced_classes:`
+#              key and the new rate rows live, and where the 1.5.5 guarantee is made — a config that
+#              omits the new keys must validate, boot and refuse byte-identically to the release
+#              before it. `llm` and `route.failover` are the unit chain `on_exhaust: cut` severs.
+#              `ops.scrape` is the metrics scrape, whose tier labels this branch renames to their
+#              wire spelling — a declared break, registered in accepted-differences.json.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
 #              `busbar-unit-cost` holds the rate table, the pricing arithmetic and the unpriced-class
 #              rule; `busbar-unit-ledger` is the quantities that rule is asked about; `busbar-substrate`
-#              carries the plane registry the declared classes are handed across on; `busbar` is the
-#              composition root and the integration surface where a boot actually refuses.
-families = '^(billing|ledger|boot|config)([|.]|$)'
-tests = ["busbar-unit-cost", "busbar-unit-ledger", "busbar-substrate", "busbar"]
+#              carries the plane registry the declared classes are handed across on; `busbar-llm` is
+#              the unit chain that must end a unit at the cap; `busbar-unit-admission` is the door
+#              that carries the budget in; `busbar` is the composition root and the integration
+#              surface where a boot actually refuses.
+families = '^(billing|ledger|boot|config|llm|route\.failover|ops\.scrape)([|.]|$)'
+tests = [
+  "busbar-unit-cost",
+  "busbar-unit-ledger",
+  "busbar-substrate",
+  "busbar-llm",
+  "busbar-unit-admission",
+  "busbar",
+]

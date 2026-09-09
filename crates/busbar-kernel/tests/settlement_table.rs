@@ -336,7 +336,11 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
         u32,
         bool,
     )] = &[
-        (None, None, None, 1, false),
+        // NO STATUS LEG AND NO VERDICT: nothing stated how this unit ended, so nothing is
+        // billed. This row read `1` until the money model made the unit's own outcome the
+        // single source of the fee — the one shape of this evidence that could charge a
+        // caller for a failure nobody had reported.
+        (None, None, None, 0, false),
         (None, None, Some(FinishClass::Complete), 1, false),
         (None, None, Some(FinishClass::TurnComplete), 1, false),
         (None, None, Some(FinishClass::Partial), 1, false),
