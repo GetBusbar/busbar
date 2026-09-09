@@ -2398,6 +2398,14 @@ jobs:
       verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # THE `ceiling-rose` ROW READS HISTORY. It compares every integer in qa/construction.toml
+          # and qa/kind-isolation.toml against the same integer at this branch's base, which it
+          # resolves as the merge-base with the integration line (or HEAD~1 where that is HEAD). A
+          # shallow clone has neither, and the row is RED when it cannot establish a base — a
+          # ratchet that switches itself off on the runner where it is cheapest to switch off is not
+          # a ratchet. So the history is fetched.
+          fetch-depth: 0
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
       # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
       # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.

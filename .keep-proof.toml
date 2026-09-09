@@ -4,16 +4,17 @@
 # scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
 # something specific instead of "everything, slowly".
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch adds a GATE ROW and
-#              a ceiling ledger; it changes no crate's behaviour and no wire byte. The honest scope
-#              is therefore the two families that are about the gate's own subject rather than about
-#              money or a wire: `neutrality` (the plane/transport separation this row extends to the
-#              composition root) and `documented` (the claims the docs make about it, which this
-#              branch edits in ARCHITECTURE.md, PLUGIN-TREE.md and xtask-gates.md). An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. The row, its two scanners, its ledger reader and its
-#              thirty-one self-test cases all live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^(neutrality|documented)([|.]|$)'
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is entirely about
+#              THE GATE MACHINERY: two ceiling ratchets, one taxonomy reconciliation, the `--all`
+#              excuse table, land.sh's gate-file selection, an audit-ledger reachability rule and a
+#              scan memo. It changes no crate's behaviour, no wire byte and no money arithmetic; the
+#              one user-visible surface it touches is the DOCUMENTATION, in ARCHITECTURE.md's kind
+#              list, PLUGIN-TREE.md's `[[registered]]` citation and the two qa ceilings files. So
+#              the honest scope is `documented` and nothing else — an unfiltered replay is the
+#              better part of half an hour and would be a claim about twenty-six families no line
+#              of this branch can reach.
+#   tests    — `xtask` and nothing else. Every rule, every plant, the toml reader's array-of-tables
+#              support and the construction gate's scan memo live in that package; no other crate's
+#              test binary contains a line this branch changed.
+families = '^documented'
 tests = ["xtask"]
