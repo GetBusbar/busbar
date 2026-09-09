@@ -774,9 +774,7 @@ name = "busbar-plane-llm-openai"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
- "busbar-llm-codec",
  "busbar-plane-llm",
- "serde_json",
 ]
 
 [[package]]
