@@ -41,6 +41,7 @@ pub mod gates;
 pub mod gitp;
 pub mod json_lite;
 pub mod ledger;
+pub mod manifest;
 pub mod parity;
 pub mod planes;
 pub mod rx;
