@@ -736,6 +736,19 @@ fn render_drain(matrix: &Matrix) -> String {
     out
 }
 
+/// EVERY CELL'S MEASURED COUNT, for the one caller that needs the numbers without the verdict:
+/// `--write`, which re-pins a `[[cell]]` row DOWNWARD to what the tree measures today.
+pub fn measured_cells(
+    cx: &Ctx,
+    crates: &[CrateInfo],
+) -> Result<BTreeMap<(String, String), usize>, String> {
+    let (matrix, _) = measure(cx, crates)?;
+    Ok(matrix
+        .into_iter()
+        .map(|((krate, kind), cell)| ((krate, kind.to_string()), cell.count))
+        .collect())
+}
+
 pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, ship: bool) -> Row {
     let (matrix, scanned) = match measure(cx, crates) {
         Ok(m) => m,

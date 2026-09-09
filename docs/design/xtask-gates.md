@@ -1104,3 +1104,148 @@ A class whose citation is emptied needs no case of its own: it is refused by the
 without a row filter, so a landing that raises a ceiling is red on the runner. `qa/full-gate.toml`
 and `full_gate.rs` invoke `cargo xtask gate kind-isolation`, which owes the row. `keep-proof.yml`'s
 gate job runs `cargo xtask gate --all`, which walks the registry and therefore includes it.
+
+## 9. The DEPENDENCY side of the gate — every manifest, every table, every edge instance
+
+Section 8 measured the composition root's vocabulary. This section is the other half of the same
+ruling — "core is core, plugins are plugins, transport, everything" — applied to what the MANIFESTS
+say and to the ways into a crate that are not a `use` line at all. Three red-team passes over the
+gate found fourteen ways to carry a plane into a transport with every gate in the tree green, and
+they reduce to five root causes, each closed here.
+
+**One manifest reader, and it reads every table.** `deps_of` looked for the literal section name
+`dependencies` and recorded the manifest KEY. `construction::tree::read_cargo_deps_text` had the
+identical shape, so fixing one would have left the other. There is now one reader,
+`xtask::manifest`, and both gates call it. It reads `[dependencies]`, `[dev-dependencies]`,
+`[build-dependencies]` and the per-target forms of all three, and it resolves the PACKAGE each
+declaration reaches: `foo = { package = "busbar-plane-llm", … }` is an edge to the plane, not to a
+crate called `foo`, and `foo = { workspace = true }` under a `[workspace.dependencies]` entry that
+renames it is the same edge stated one file away. Every one of those five spellings was planted in
+the real tree and left every gate green. Widening `construction`'s reader made it see one dependency
+it never could — a `[target.'cfg(unix)'.dependencies] libc` that ships in every Linux artefact this
+tree builds — which is now reviewed in `qa/construction.toml` rather than re-narrowed.
+
+**The test graph is scored, on its own row.** `[dev-dependencies]` was read by the battery rule and
+by nothing else, on the sentence "a test edge is not a shipped edge". That is true, and it is not a
+reason to leave it unmeasured: a plane declared in a transport's `[dev-dependencies]` is a plane
+compiled into that transport's test binary. `kind-isolation:test-deps` holds it against its own half
+of the ledger, because folding it into `:deps` would grant the shipped artefact the same edge.
+
+**The census is every `Cargo.toml` in the repository.** It read `crates/<dir>/Cargo.toml` and
+nothing else, under its own comment "a manifest one level deeper belongs to a fixture" — and that
+comment was the hole. A plane-kind crate at `vendor/busbar-plane-shim/`, path-depended from a
+transport, was invisible; so was the same crate at `crates/busbar-transport-tcp/internal/shim/`; and
+striking a crate from `[workspace.members]` dropped it out of every `--workspace` test, clippy and
+deny run with `workspace-deps:set-equality` still PASS, because that row compared the members it
+INSPECTED — derived from the declared list — against the declared list itself. Where a manifest sits
+is now a finding: `off-tree-crate`, `nested-crate`, `unmembered`. The exemption is one reviewed
+table, `OFF_TREE_MANIFESTS` — the runner, the gate fixtures, the standalone documentation example —
+and each entry is RED the day the path it names is gone. `workspace-deps` reads that same table
+rather than keeping a second one, and gained the third set its own row was missing: what is on disk.
+
+**The ratchet moves one EDGE INSTANCE at a time.** `MEASURED_EDGES` was a table of kind-to-kind
+CLASSES, and a class ratchet has unlimited slack inside a class: `transport -> unit` was one line, so
+a second transport growing a dependency on a unit was green, and so was a third. An audit of all 220
+workspace-internal edges found 105 the architecture grants, 87 it does not, 15 in the loader/tooling
+trusted base and 13 it never rules on at all — all held by 38 lines recording which pairs of kind
+WORDS had ever appeared together. So `qa/kind-isolation.toml` gained a row per (from-crate, to-crate)
+pair, per half, read by the same hand reader the `[[cell]]` rows use and refused at load on a missing
+field, an empty one, an unknown one or a duplicate row:
+
+```toml
+[[dep]]
+from    = "busbar-transport-tls"
+to      = "busbar-unit-transport-key"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 \"A transport cannot name a plane or a unit.\" …"
+why     = "…"
+drain   = "delete the busbar-unit-transport-key dependency from …"
+```
+
+exact in both directions, on the same terms `[[cell]]` already lives under: above is the landing that
+grew the coupling, below is stale slack, a row whose edge is gone is a dead allowance, and an edge
+with no row is refused whatever the architecture may grant — an edge nobody wrote down is an edge
+nobody reviewed.
+
+**A row may not grant itself an edge.** `verdict` is one of `allowed`, `tcb`, `not-allowed`,
+`owner-ruling-pending`, and the first two are READINGS of `ARCHITECTURE.md` rather than opinions the
+ledger is entitled to hold: the class tables `ARCHITECTURE_ALLOWED` and `ARCHITECTURE_TCB` live in
+`xtask/src/gates/kind_isolation.rs`, and a row claiming an edge the architecture withholds is refused
+as an unsupported verdict. The thirteen edges the architecture never rules on are
+`owner-ruling-pending` and each carries a `[[question]]` row with the full question, so a ruling can
+be given by reading the file and nothing else. `UNSCORED_SOURCES` and `SPEC_SINK` are gone: the
+composition root and the retiring legacy crates are scored like everything else and their edges are
+rows.
+
+**The ship twin owes the architecture's graph, not yesterday's measurement.** It does not read the
+ledger at all. Only the classes `ARCHITECTURE_ALLOWED` names are permitted; `tcb`, `not-allowed` and
+`owner-ruling-pending` are all refused, because the criterion for a tag is not "no worse than the
+last commit". The legacy drain's expiry moved to its own ship-only row,
+`kind-isolation:legacy-drain`, because "the drain finished" and "the graph is the architecture's" are
+two claims and neither could be proven while they shared a verdict.
+
+### 9.1 `kind-isolation:build-inputs` — the ways in that are not a dependency
+
+Every other row reads a dependency table or a `use` line. Five plants used neither:
+`#[path = "../../busbar-plane-llm/src/meta.rs"]`, `[lib] path = "../busbar-plane-llm/src/lib.rs"`,
+`include_str!` of another crate's source in a `build.rs`, a `Cargo.lock` naming an edge no manifest
+has, and `[features] llm-serve = []` in a transport. The `#[path]` and `include_str!` paths are read
+off the RAW line — `:vocab` blanks literals before it reads, which is exactly why they were invisible
+there — and every path is resolved against the file that wrote it and asked one question: does it
+leave the crate's own directory?
+
+Two narrowings, both the rule rather than a softening of it. A path landing outside every crate is
+not this row's subject: a test pinning a table against `qa/method-inventory.json` is reading a
+repository artefact and there is no kind on the other end of it. And a path into a crate this one
+already DEPENDS on is an edge that is written down, at its exact count, with its verdict. What is
+left is the reach with no edge at all. A `[lib]` target is refused either way, because it does not
+LINK the other crate — it compiles its source as this crate's own body.
+
+The composition root's `root-*` features are the written exemption, with a green case beside the red
+one, and it is an exemption with a NUMBER attached: `:matrix` counts every one of those words against
+`[[cell]] busbar / plane` at an exact ceiling. `plugins.yaml`'s kind words are the tree's third kind
+vocabulary, mapped once here; an entry whose crate name resolves to a kind other than the one it is
+filed under is `registry-kind-mismatch`, because the registry is what the loader believes.
+
+### 9.2 `kind-isolation:faces` — no crate implements another kind's entry face
+
+A crate's kind is a claim about what it is; a trait implementation is the same claim made to the
+COMPILER, and when the two disagree the compiler's is the one that runs. `:shape` counts a crate's
+implementations of ITS OWN kind's trait, so `impl Plane for Wire` inside a transport and
+`impl Transport for P` inside a plane left that row byte-identical in both directions. `:faces` asks
+the other question, per-push rather than at release, because a wire that implements `Plane` is a
+plane on the commit that lands it. `impl_trait_on` now reads the qualified spelling
+(`impl busbar_contract::Plane for X`), which was a one-keystroke bypass of anything written on it.
+
+Four crates implement a foreign face today; each is a `[[face]]` row at its exact count with its
+citation and the line that deletes it, and the ship twin owes zero.
+
+### 9.3 `--write` re-pins DOWN, and refuses if anything would rise
+
+An exact ratchet taxes the landing that does the right thing: a cut that removes two of a crate's
+plane hits leaves the row three too high and the gate is red until somebody edits a number by hand.
+`cargo xtask gate kind-isolation --write` lowers every `[[cell]]`, `[[dep]]` and `[[face]]` count to
+what the tree measures, so a landing that drains a coupling re-pins it in the same landing.
+
+It REFUSES WHOLESALE if any count would rise, naming every row that would: a run that grew a coupling
+is a landing that has to be read, and a tool that quietly re-pinned the falls in the same breath
+would hand it a file that looks reviewed. The write is a line-by-line rewrite of one number per row
+rather than a re-render, because this file is written by hand and its comments ARE the reasoning.
+
+### 9.4 The self-test, and the sub-checks that had no plant
+
+Every red-team case is a named case. Beyond them, eight arms of `:registry` had no plant of their
+own — `dead-kind`, `kind-arrived`, `alias-retired`, `no-construction-kinds`, `unmapped-kind`,
+`unreadable`, and the two floors — and an audit proved what that costs: gutting the `unmapped-kind`
+arm left `kind-isolation: green` and `17 case(s), 0 skipped — the gate is proven RED-able` in the
+same breath, because the row was still red-able through its neighbours. Each of the eight now has a
+fixture that only it rejects, and the two floors fail apart: four manifests is under the census floor
+and nowhere near the source floor, and four sources are the mirror.
+
+One performance note, because it is what made the battery runnable: `:transport-registration` lexed
+every source file once PER WIRE — 85% of the gate's runtime, seven times the work for an answer that
+does not depend on which wire is being looked for. Hoisted, the gate is 22s and the battery is five
+minutes rather than twenty. `--selftest` re-runs the whole gate once per planted case, so it needs
+`XTASK_GATE_CEILING_SECS` raised above the 300s per-gate default.

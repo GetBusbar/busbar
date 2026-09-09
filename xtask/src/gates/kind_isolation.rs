@@ -2606,6 +2606,20 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
         }
     };
 
+    // EVERY WORKSPACE CRATE'S PATH SPELLING, so a source line that names one can be asked whether
+    // its own manifest declares the edge. Both spellings, because `busbar_plane_llm::` and
+    // `busbar-plane-llm` are one crate and a rule that reads one of them reads half the tree.
+    let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
+    let crate_paths: Vec<(String, String)> = crates
+        .iter()
+        .flat_map(|c| {
+            [
+                (format!("{}::", c.name.replace('-', "_")), c.name.clone()),
+                (format!("{}::", c.name), c.name.clone()),
+            ]
+        })
+        .collect();
+
     let mut offenders: Vec<String> = Vec::new();
     let mut scanned = 0usize;
     for f in &files {
@@ -2620,10 +2634,10 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
         let Some(kind) = kind_of.get(dir.as_str()) else {
             continue;
         };
-        let banned = banned_for(kind, planes);
-        if banned.is_empty() {
+        let Some(me) = by_dir.get(dir.as_str()) else {
             continue;
-        }
+        };
+        let banned = banned_for(kind, planes);
         scanned += 1;
         if *kind == "control" {
             for (lineno, code) in scan::production_lines(&f.text) {
@@ -2648,6 +2662,36 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
             // prose in a `format!` is a ban that reds on documentation.
             let code = scan::blank_literals(&code);
             let lower = code.to_lowercase();
+
+            // NO CRATE NAMES A CRATE IT DOES NOT DEPEND ON, whatever kind either of them is.
+            //
+            // `banned_for` had an arm for four kind words, so `store`, `auth`, `secret`, `hooks`,
+            // `export`, `unit`, `kernel` and `substrate` source could name ANY other kind freely —
+            // a red team put `busbar_plane_llm::VERSION` and `busbar_transport_http::Client` in
+            // `crates/store-memory/src` and this row scanned zero files of it. The generalisation
+            // is not a longer list of kind words: it is that naming a crate path you declare no
+            // dependency on is a reach with no edge to score, in EVERY direction at once. Where the
+            // dependency exists the edge is in the ledger, at its exact count, with its verdict.
+            for (path, owner) in &crate_paths {
+                if owner.as_str() == me.name || !lower.contains(path.as_str()) {
+                    continue;
+                }
+                if me
+                    .deps
+                    .iter()
+                    .chain(me.dev_deps.iter())
+                    .any(|d| &d.pkg == owner)
+                {
+                    continue;
+                }
+                offenders.push(format!(
+                    "undeclared-crate-path\t{rel}:{lineno}\t{} ({kind} crate) names `{owner}` and \
+                     declares no dependency on it in any table: {}",
+                    me.name,
+                    code.trim()
+                ));
+            }
+
             for (needle, why) in &banned {
                 let hit = if needle.contains(':') || needle.ends_with('_') || needle.ends_with('-')
                 {
@@ -2668,7 +2712,7 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
     if scanned == 0 {
         return Row::fail(
             ROW_VOCAB,
-            "no plane, transport or codec source was scanned at all",
+            "no crate source was scanned at all",
             "0 file(s) reached the vocabulary rule. Zero files name zero leaks, which reads exactly \
              like a clean tree and is not one."
                 .to_string(),
@@ -2680,7 +2724,10 @@ fn rule_vocab(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row 
         return Row::pass(
             ROW_VOCAB,
             "no kind's source names another kind's instance vocabulary",
-            format!("{scanned} plane/transport/codec source file(s) scanned, 0 findings"),
+            format!(
+                "{scanned} source file(s) scanned over {} crate(s), 0 findings",
+                crates.len()
+            ),
         );
     }
     Row::fail(
@@ -4130,6 +4177,233 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 }
 
 // ------------------------------------------------------------------------------------------------
+// `--write` — THE RE-PIN, AND IT ONLY EVER GOES DOWN
+// ------------------------------------------------------------------------------------------------
+
+/// The row `--write` reports on. Owed by neither registration: it exists only in write mode, and
+/// [`KindIsolationGate::run`] returns it INSTEAD of the ordinary rows when the flag is set.
+pub const ROW_WRITE: &str = "kind-isolation:write";
+
+/// One row of the registry whose number this run would move.
+struct Repin {
+    /// `[[cell]] busbar × plane`, `[[dep]] a -> b (shipped)`, `[[face]] c / Plane` — what a reader
+    /// is looking at.
+    label: String,
+    /// The lines that identify the row in the file, so the rewrite cannot move the wrong one.
+    keys: Vec<(String, String)>,
+    table: &'static str,
+    was: i64,
+    now: i64,
+}
+
+/// EVERY EXACT-COUNT ROW IN THE REGISTRY, MEASURED, and which way each one would have to move.
+fn repins(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Result<Vec<Repin>, String> {
+    let mut out: Vec<Repin> = Vec::new();
+
+    let cells = matrix::measured_cells(cx, crates)?;
+    for c in &reg.matrix_cells {
+        let now = cells
+            .get(&(c.krate.clone(), c.kind.clone()))
+            .copied()
+            .unwrap_or(0) as i64;
+        if now != c.count {
+            out.push(Repin {
+                label: format!("[[cell]] {} × {}", c.krate, c.kind),
+                keys: vec![
+                    ("crate".to_string(), c.krate.clone()),
+                    ("kind".to_string(), c.kind.clone()),
+                ],
+                table: "cell",
+                was: c.count,
+                now,
+            });
+        }
+    }
+
+    for half in [Half::Shipped, Half::Test] {
+        let measured = measure_edges(crates, half);
+        for row in reg.dep_edges.iter().filter(|d| d.half == half.word()) {
+            let now = measured
+                .iter()
+                .find(|e| e.from == row.from && e.to == row.to)
+                .map_or(0, |e| e.count) as i64;
+            if now != row.count {
+                out.push(Repin {
+                    label: format!("[[dep]] {} -> {} ({})", row.from, row.to, half.word()),
+                    keys: vec![
+                        ("from".to_string(), row.from.clone()),
+                        ("to".to_string(), row.to.clone()),
+                        ("half".to_string(), row.half.clone()),
+                    ],
+                    table: "dep",
+                    was: row.count,
+                    now,
+                });
+            }
+        }
+    }
+
+    let idx = index_sources(cx)?;
+    for f in &reg.faces {
+        let now = crates
+            .iter()
+            .find(|c| c.name == f.krate)
+            .and_then(|c| idx.impls.get(&c.dir))
+            .and_then(|m| m.get(&f.face))
+            .copied()
+            .unwrap_or(0) as i64;
+        if now != f.count {
+            out.push(Repin {
+                label: format!("[[face]] {} / {}", f.krate, f.face),
+                keys: vec![
+                    ("crate".to_string(), f.krate.clone()),
+                    ("face".to_string(), f.face.clone()),
+                ],
+                table: "face",
+                was: f.count,
+                now,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The registry file with each named row's `count` rewritten, and nothing else touched.
+///
+/// A line-by-line rewrite rather than a re-render, and that is the point: this file is written by
+/// hand, its comments ARE the reasoning, and a generator that re-emitted it would quietly delete
+/// every sentence a reviewer wrote. What `--write` edits is one number per row.
+fn rewrite_counts(text: &str, repins: &[Repin]) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut i = 0usize;
+    while i < lines.len() {
+        let t = lines[i].trim();
+        let Some(head) = t.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) else {
+            out.push(lines[i].to_string());
+            i += 1;
+            continue;
+        };
+        // Buffer the whole row, so it can be identified before any of it is written.
+        let head = head.trim().to_string();
+        let start = i;
+        i += 1;
+        while i < lines.len() && !lines[i].trim().starts_with('[') {
+            i += 1;
+        }
+        let row = &lines[start..i];
+        let field = |key: &str| -> Option<String> {
+            row.iter().find_map(|l| {
+                let (k, v) = l.trim().split_once('=')?;
+                (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
+            })
+        };
+        let hit = repins.iter().find(|r| {
+            r.table == head
+                && r.keys
+                    .iter()
+                    .all(|(k, v)| field(k).as_deref() == Some(v.as_str()))
+        });
+        for l in row {
+            match (hit, l.trim().split_once('=')) {
+                (Some(r), Some((k, _))) if k.trim() == "count" => {
+                    out.push(format!("count = \"{}\"", r.now));
+                }
+                _ => out.push((*l).to_string()),
+            }
+        }
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+/// `cargo xtask gate kind-isolation --write` — RE-PIN DOWN, NEVER UP.
+///
+/// The ratchet is exact in both directions, and that is what makes it a ratchet: a count above its
+/// row is the landing that grew the coupling, and a count BELOW it is stale slack nobody drained on
+/// the commit that drained the edge. Exactness has one cost, though, and it lands on the landing
+/// that does the RIGHT thing: a cut that removes two of a crate's plane hits leaves the row three
+/// too high, and the gate is red until somebody edits a number by hand. That is a tax on draining,
+/// which is the opposite of what the ratchet is for.
+///
+/// So the flag exists, and it does exactly one thing: it lowers a row to what the tree measures.
+///
+/// IT REFUSES TO RUN IF ANY COUNT WOULD RISE, and it refuses WHOLESALE — not "writes the ones that
+/// fell and complains about the rest". A run that grew a coupling is a landing that has to be read,
+/// and a tool that quietly re-pinned the falls in the same breath would hand it a file that looks
+/// reviewed. The refusal names every row that would rise.
+fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
+    let repins = match repins(cx, crates, reg) {
+        Ok(r) => r,
+        Err(e) => {
+            return Row::fail(
+                ROW_WRITE,
+                "the measurement --write would re-pin to could not be taken",
+                format!("{e} — a re-pin to a number nobody measured is a number nobody measured."),
+            )
+        }
+    };
+    let (up, down): (Vec<&Repin>, Vec<&Repin>) = repins.iter().partition(|r| r.now > r.was);
+    if !up.is_empty() {
+        return Row::fail(
+            ROW_WRITE,
+            "--write refuses: a count would RISE, and this flag only ever lowers one",
+            format!(
+                "{} row(s) would rise and {} would fall; NOTHING was written. A count above its \
+                 row is the landing that grew the coupling, and it is read by a person, never \
+                 re-pinned by a tool. Rising: {}",
+                up.len(),
+                down.len(),
+                up.iter()
+                    .map(|r| format!("{} {} -> {}", r.label, r.was, r.now))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        );
+    }
+    if down.is_empty() {
+        return Row::pass(
+            ROW_WRITE,
+            "every count in the registry already equals what the tree measures",
+            format!("{REGISTRY_FILE} is at the measurement; nothing to re-pin"),
+        );
+    }
+    let text = match cx.read(REGISTRY_FILE) {
+        Ok(t) => t,
+        Err(e) => {
+            return Row::fail(
+                ROW_WRITE,
+                "the registry file could not be read",
+                format!("{e} — there is nothing to re-pin."),
+            )
+        }
+    };
+    let rewritten = rewrite_counts(&text, &repins);
+    match std::fs::write(cx.abs(REGISTRY_FILE), &rewritten) {
+        Ok(()) => Row::pass(
+            ROW_WRITE,
+            "every count that fell is re-pinned to what the tree measures",
+            format!(
+                "{} row(s) lowered in {REGISTRY_FILE}: {}",
+                down.len(),
+                down.iter()
+                    .map(|r| format!("{} {} -> {}", r.label, r.was, r.now))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+        Err(e) => Row::fail(
+            ROW_WRITE,
+            "the registry file could not be written",
+            format!("{e} — the re-pin was measured and not committed."),
+        ),
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
 // the gate
 // ------------------------------------------------------------------------------------------------
 
@@ -4150,17 +4424,34 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 pub struct KindIsolationGate {
     /// Owe and evaluate the two ship-criterion rows.
     ship: bool,
+    /// `--write`: re-pin the registry's exact counts DOWNWARD, and refuse if any would rise.
+    write: bool,
 }
 
 impl KindIsolationGate {
     /// The per-push gate: the four rows the tree holds today.
     pub fn check() -> KindIsolationGate {
-        KindIsolationGate { ship: false }
+        KindIsolationGate {
+            ship: false,
+            write: false,
+        }
+    }
+
+    /// The write arm. It is a SEPARATE construction rather than a flag read off the context inside
+    /// `run`, so `owed` — which the reconciliation is written against — can say what this run emits.
+    pub fn write() -> KindIsolationGate {
+        KindIsolationGate {
+            ship: false,
+            write: true,
+        }
     }
 
     /// The release-time twin: the same four, plus the surface and battery criteria.
     pub fn ship() -> KindIsolationGate {
-        KindIsolationGate { ship: true }
+        KindIsolationGate {
+            ship: true,
+            write: false,
+        }
     }
 }
 
@@ -4174,6 +4465,12 @@ impl Gate for KindIsolationGate {
     }
 
     fn owed(&self) -> Vec<String> {
+        // IN WRITE MODE THE GATE OWES ONE ROW AND EMITS ONE ROW. `--write` is not a verdict about
+        // the tree, it is an edit to the ledger, and reconciling it against the ordinary owed set
+        // would demand every rule re-run against a file this run is in the middle of moving.
+        if self.write {
+            return vec![ROW_WRITE.to_string()];
+        }
         let mut owed = vec![
             ROW_NAME.to_string(),
             ROW_DEPS.to_string(),
@@ -4251,6 +4548,10 @@ impl Gate for KindIsolationGate {
             }
         };
 
+        if self.write {
+            return Verdict::of(vec![rule_write(cx, &crates, &reg)]);
+        }
+
         let mut rows = vec![
             rule_name(&crates, &planes, &ports, &reg),
             rule_deps(cx, &crates, &reg, Half::Shipped, self.ship),
@@ -4304,6 +4605,41 @@ impl Gate for KindIsolationGate {
 
     fn selftest(&self, cx: &Ctx) -> Report {
         let mut report = Report::new();
+
+        // THE WRITE ARM PROVES ITSELF WITHOUT WRITING ANYTHING, and that is not a compromise: the
+        // two claims it makes are exactly the two paths that write nothing. "Already at the
+        // measurement" returns before the file is opened, and "a count would RISE" is a REFUSAL —
+        // wholesale, so a run that grew a coupling cannot be handed back a file that looks
+        // reviewed. The third path, the one that lowers, is the one a self-test must not take over
+        // the real tree, because a battery that edits the ledger it is proving is a battery that
+        // makes itself pass.
+        if self.write {
+            report.push(prove_rows_green(
+                cx,
+                self,
+                "every count already equals the measurement, so --write writes nothing",
+                &[ROW_WRITE],
+                Overlay::new(),
+            ));
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "--write refuses wholesale when any count would RISE",
+                &[ROW_WRITE],
+                registry_with(
+                    cx,
+                    "crate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"1\"",
+                    "crate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"0\"",
+                ),
+                &[
+                    "would RISE",
+                    "NOTHING was written",
+                    "busbar-kernel × plane 0 -> 1",
+                ],
+            ));
+            return report;
+        }
+
         // THE UNPLANTED ARM. It is narrowed to the four enforceable rows in the ship twin, and
         // that narrowing is the honest form of the claim: the two ship rows are RED on this tree
         // ON PURPOSE (the criterion is about the ship SHA), so asserting them green here would be
@@ -4878,6 +5214,145 @@ impl Gate for KindIsolationGate {
                 ],
             ));
         }
+
+        // NO KIND NAMES ANOTHER KIND'S CRATE PATH. `banned_for` had an arm for four kind words, so
+        // `store`, `auth`, `secret`, `hooks`, `export`, `unit`, `kernel` and `substrate` source
+        // could name any other kind freely — and this row scanned ZERO files of them.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/store-memory/src/planted_leak.rs",
+            "pub fn leak() { let _ = busbar_plane_llm::VERSION; let _ = \
+             busbar_transport_http::Client::default(); }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no kind names another kind's crate path",
+            &[ROW_VOCAB],
+            ov,
+            &[
+                "undeclared-crate-path",
+                "busbar_plane_llm",
+                "busbar-store-memory",
+            ],
+        ));
+
+        // ── THE REGISTRY ROW'S SUB-CHECKS, ONE PLANT EACH ────────────────────────────────────────
+        //
+        // A GUTTED SUB-CHECK IS NOT A DELETED ROW. The battery proved `:registry` RED-able through
+        // two of its arms, and an audit gutted `unmapped-kind` — replaced its body with nothing —
+        // and got `kind-isolation: green` and `17 case(s), 0 skipped — the gate is proven RED-able`
+        // in the same breath, because the row was still emitted and still red-able through its
+        // neighbours. Eight arms had no plant of their own. These are those eight.
+
+        // A KIND NOBODY INSTANTIATES IS A DEAD ROW IN THE TABLE.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-grammar/Cargo.toml");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind in the table that no crate is any more",
+            &[ROW_REGISTRY],
+            ov,
+            &["dead-kind", "grammar"],
+        ));
+
+        // …AND THE RATCHET RUNS THE OTHER WAY FOR A PENDING ONE: the first crate of a pending kind
+        // retires its entry, so a kind can never be both pending and live.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a pending kind that now has crates must have its entry struck",
+            &[ROW_REGISTRY],
+            manifest_plant(
+                "crates/busbar-plane-llm-openai",
+                "busbar-plane-llm-openai",
+                &["busbar-contract"],
+            ),
+            &["kind-arrived", "dialect"],
+        ));
+
+        // THE RENAME ALIAS EXPIRES WITH THE CRATE IT TRANSLATES.
+        let mut ov = Overlay::new();
+        ov.remove("crates/busbar-plane-voice/Cargo.toml");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plane alias that outlived the crate it translates",
+            &[ROW_REGISTRY],
+            ov,
+            &["alias-retired", "busbar-plane-voice"],
+        ));
+
+        // THE SECOND KIND VOCABULARY, GONE. `qa/construction.toml`'s `[gate.plugin_kinds]` renamed
+        // away leaves the cross-check reading nothing, which is not the same as agreeing.
+        let mut ov = Overlay::new();
+        ov.set(
+            "qa/construction.toml",
+            cx.read("qa/construction.toml")
+                .unwrap_or_default()
+                .replacen("[gate.plugin_kinds]", "[gate.plugin_kinds_renamed]", 1),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the second kind vocabulary renamed away leaves the cross-check reading nothing",
+            &[ROW_REGISTRY],
+            ov,
+            &["no-construction-kinds", "qa/construction.toml"],
+        ));
+
+        // …AND A KEY IN IT THAT MAPS ONTO NOTHING HERE IS THE TWO VOCABULARIES DRIFTING APART.
+        let mut ov = Overlay::new();
+        ov.set(
+            "qa/construction.toml",
+            cx.read("qa/construction.toml")
+                .unwrap_or_default()
+                .replacen(
+                    "[gate.plugin_kinds]\n",
+                    "[gate.plugin_kinds]\nfrobnicator = [\"crates/busbar-frobnicator-*\"]\n",
+                    1,
+                ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a kind key in the second vocabulary that maps onto no kind here",
+            &[ROW_REGISTRY],
+            ov,
+            &["unmapped-kind", "frobnicator"],
+        ));
+
+        // AND THE FILE ABSENT IS A REFUSAL, NEVER AN AGREEMENT.
+        let mut ov = Overlay::new();
+        ov.remove("qa/construction.toml");
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the second kind vocabulary absent is a refusal, never an agreement",
+            &[ROW_REGISTRY],
+            ov,
+            &["unreadable", "qa/construction.toml"],
+        ));
+
+        // THE TWO FLOORS, AND THEY FAIL APART. A census that finds almost nothing recognises almost
+        // everything, and a scan of no files names no leak — both read exactly like a clean tree.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the crate census collapsed below its floor",
+            &[ROW_REGISTRY],
+            all_but(cx, "toml", 4),
+            &["floor", &MIN_MANIFESTS.to_string()],
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the source walk collapsed below its floor",
+            &[ROW_VOCAB],
+            all_but(cx, "rs", 4),
+            &["floor", &MIN_SOURCES.to_string()],
+        ));
 
         // ── THE ENTRY FACES ──────────────────────────────────────────────────────────────────────
         //
@@ -5837,6 +6312,23 @@ impl Gate for KindIsolationGate {
 fn registry_plant(rows: &str) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(REGISTRY_FILE, rows.to_string());
+    ov
+}
+
+/// THE TREE WITH ALMOST EVERY FILE OF ONE EXTENSION REMOVED, for the two floors.
+///
+/// A floor is the only rule whose subject is the SIZE of its own input, so the only honest fixture
+/// for one is a tree that really is that small. `keep` files survive, which is what makes the two
+/// floors fail APART: four manifests is under the census floor and nowhere near the source floor,
+/// and four sources are the mirror.
+fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
+    let mut ov = Overlay::new();
+    let Ok(files) = cx.walk(&WalkSpec::new(["crates"]).ext(ext)) else {
+        return ov;
+    };
+    for f in files.iter().skip(keep) {
+        ov.remove(f.rel_str());
+    }
     ov
 }
 
