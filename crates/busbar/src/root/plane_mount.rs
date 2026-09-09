@@ -68,11 +68,6 @@ use busbar_contract::grammar::{Claim, PathSeg, Selector};
 
 use crate::root::transports::{unavailable_answer, MountDispatch, MountedReply, PlaneAnswer};
 
-// The header conversion lives beside the buffering that needs it, in `transports`, because that file
-// is compiled whether or not any plane has a mount. Re-exported rather than re-declared: a second
-// copy of it is a second answer to what a header value is on the wire.
-pub(crate) use crate::root::transports::header_pairs;
-
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   WHAT A MOUNT NEEDS OF A LEG
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -261,10 +256,14 @@ fn unavailable_response() -> MountedReply {
 /// runtime is on the other side. A plane that wants its answer buffered is asking the same channel
 /// for a second favour, not reaching for a second mechanism — so the channel carries a sum of the
 /// two rather than only the first, and a plane that never buffers never sends the second.
-enum Errand {
+pub(crate) enum Errand {
     /// One request handed to the mounted router, and the response that router wrote.
+    ///
+    /// BOXED, because a request carries a method, a target, a header map and a body while the other
+    /// errand carries a body alone: unboxed, every buffering errand would be moved through the
+    /// channel in a slot sized for the larger one.
     Call(
-        axum::http::Request<axum::body::Body>,
+        Box<axum::http::Request<axum::body::Body>>,
         std::sync::mpsc::SyncSender<MountedReply>,
     ),
     /// One body read to its end on the runtime that owns it.
@@ -326,7 +325,11 @@ impl MountDispatch for RequestDispatch {
             return unavailable_response();
         };
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        if self.errands.send(Errand::Call(request, reply)).is_err() {
+        if self
+            .errands
+            .send(Errand::Call(Box::new(request), reply))
+            .is_err()
+        {
             // The driving task is gone, which happens only as the node itself goes away.
             return unavailable_response();
         }
@@ -363,7 +366,7 @@ pub(crate) fn drive(
                 Errand::Call(request, reply) => {
                     let inner = inner.clone();
                     tokio::spawn(async move {
-                        let _ = reply.send(call(inner, request).await);
+                        let _ = reply.send(call(inner, *request).await);
                     });
                 }
                 // A buffering errand runs on its own task for the same reason an executing one does:

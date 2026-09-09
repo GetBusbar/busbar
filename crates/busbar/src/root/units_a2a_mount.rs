@@ -36,7 +36,12 @@ use crate::root::units_a2a_leg::A2aLeg;
 // narrowing is a second answer, and the cells below are asserting about the ONE the mount uses.
 pub use crate::root::plane_mount::MEDIA_JSON;
 #[cfg(test)]
-pub(crate) use crate::root::plane_mount::{drive, header_pairs, status_of, RequestDispatch};
+pub(crate) use crate::root::plane_mount::{drive, status_of, RequestDispatch};
+// The header conversion lives in `transports`, beside the generic buffering that needs it and where
+// it compiles whether or not any plane has a mount. Named from there rather than re-exported through
+// the mount: one path to one answer about what a header value is on the wire.
+#[cfg(test)]
+pub(crate) use crate::root::transports::header_pairs;
 #[cfg(test)]
 use busbar_contract::grammar::{PathSeg, Selector};
 
