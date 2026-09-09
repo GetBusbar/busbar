@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "603"
+count = "610"
 
 [[cell]]
 crate = "busbar-core"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5200"
+count = "5521"
 
 [[cell]]
 crate = "busbar-core"
@@ -1644,17 +1644,17 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3033"
+count = "3067"
 
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "265"
+count = "266"
 
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "319"
+count = "337"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,7 +1674,7 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2117"
+count = "2145"
 
 [[cell]]
 crate = "busbar-core"
@@ -1829,7 +1829,7 @@ count = "60"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "284"
+count = "285"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -1844,7 +1844,7 @@ count = "13"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "transport"
-count = "596"
+count = "615"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -2124,7 +2124,7 @@ count = "58"
 [[cell]]
 crate = "busbar-plugin"
 kind = "control"
-count = "34"
+count = "35"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2149,7 +2149,7 @@ count = "137"
 [[cell]]
 crate = "busbar-plugin"
 kind = "unit"
-count = "12"
+count = "13"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2649,7 +2649,7 @@ count = "165"
 [[cell]]
 crate = "busbar-unit-admission"
 kind = "caps"
-count = "48"
+count = "50"
 
 [[cell]]
 crate = "busbar-unit-admission"
