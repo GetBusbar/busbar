@@ -258,7 +258,40 @@ pub struct Case {
 }
 
 impl Case {
+    /// A RED CASE MUST NAME SOMETHING THE ROW ID DOES NOT ALREADY SAY.
+    ///
+    /// `evidence_for` formats every evidence line as `"{id} {title} {detail}"`, and the reconciler
+    /// arm it also collects is formatted `"{id}: …"`. BOTH BEGIN WITH THE ID. So a `naming` entry
+    /// that IS a covered row id is matched by `contains` no matter what the gate reported, and the
+    /// second half of the proof — "and it named what I planted" — is satisfied by construction. The
+    /// case then proves only "this row went red", which is the exact answer
+    /// [`Case::failure`]'s own message calls not an accepted answer.
+    ///
+    /// The check is EXISTENTIAL, not universal: at least one entry must be something other than a
+    /// covered id. Naming the row id ALONGSIDE a real token is informative and common — a dozen
+    /// call sites in `changelog_register`, more in `changelog`, and two in `plane_purity` do it —
+    /// and refusing those would turn a one-gate defect into a crate-wide breakage for a redundancy
+    /// that costs nothing.
+    fn self_satisfying(&self) -> Option<String> {
+        let Expect::Red { naming } = &self.expected else {
+            return None;
+        };
+        if naming.is_empty() || naming.iter().any(|n| !self.covers.contains(n)) {
+            return None;
+        }
+        Some(format!(
+            "{}: every string this case requires the report to name is one of its own covered row \
+             ids ({naming:?}). Every evidence line begins with the row id, so that check cannot \
+             fail and the case proves only that the row went red — never that it named what was \
+             planted. Name a token from the OFFENDER instead.",
+            self.name
+        ))
+    }
+
     fn failure(&self) -> Option<String> {
+        if let Some(tautology) = self.self_satisfying() {
+            return Some(tautology);
+        }
         match (&self.expected, &self.got) {
             (Expect::Green, Expect::Green) => None,
             (Expect::Red { naming: want }, Expect::Red { naming: got }) => {
