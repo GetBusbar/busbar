@@ -117,8 +117,13 @@ fn gate(args: &[String]) -> i32 {
     if args.iter().any(|a| a == "--all") {
         let mut red = Vec::new();
         for reg in gates::REGISTRY {
-            let gate = (reg.build)();
-            let verdict = gates::execute(gate.as_ref(), &cx);
+            // EVERY ROW UNDER A WALL-CLOCK CEILING. A gate that wedges — the way one did against a
+            // `git cat-file --batch` child, for 43 minutes, at 4% CPU — is RED with `hung` in its
+            // rows and the remaining gates still run. See `gates::execute_within`.
+            let verdict = match gates::ceiling_from_env(reg.name) {
+                Some(ceiling) => gates::execute_within(reg.name, reg.build, &cx, ceiling),
+                None => gates::execute((reg.build)().as_ref(), &cx),
+            };
             if tsv {
                 gates::print_rows_tsv(&verdict.rows);
             } else {
@@ -268,11 +273,17 @@ fn gate(args: &[String]) -> i32 {
 
     // `--strict` REFUSES THE GATE'S OWN SKIP ALLOWLIST. A named gap is a reported gap in the plain
     // form and a red one here, which is what makes "DONE means no gap" a claim rather than a hope.
+    // UNDER THE WALL-CLOCK CEILING, like every other gate run. This arm builds the gate with
+    // flags a `fn()` pointer cannot carry, so it cannot hand the gate to a worker thread the way
+    // `--all` does; the watchdog prints the hung rows and takes the process down instead. Either
+    // way the answer is a refusal that NAMES the gate, never a job timeout that names nothing.
+    let watchdog = gates::Watchdog::arm(reg.name, gate.owed(), gates::ceiling_from_env(reg.name));
     let verdict = if args.iter().any(|a| a == "--strict") {
         gates::execute_strict(gate.as_ref(), &cx)
     } else {
         gates::execute(gate.as_ref(), &cx)
     };
+    drop(watchdog);
     if tsv {
         gates::print_rows_tsv(&verdict.rows);
     } else {
@@ -291,7 +302,16 @@ fn gate(args: &[String]) -> i32 {
 
 fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     println!("xtask selftest {}", gate.name());
+    // A SELFTEST GETS THE SAME CEILING AS A RUN. It plants fixtures and executes the gate over
+    // each one, so every way a gate can wedge is a way a selftest can wedge — and it was a
+    // `--selftest` sitting at seven minutes that made the deadlock visible in the first place.
+    let watchdog = gates::Watchdog::arm(
+        gate.name(),
+        gate.owed(),
+        gates::ceiling_from_env(gate.name()),
+    );
     let report = gate.selftest(cx);
+    drop(watchdog);
     for case in report.cases() {
         let got = match &case.got {
             gates::Expect::Green => "GREEN",
