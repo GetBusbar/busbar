@@ -171,15 +171,22 @@ pub(crate) struct ConfigRollbackView {
 pub(crate) struct OverlayResetView {
     /// The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).
     //
-    // 1.5.5 text, VERBATIM and frozen: schemars generates this property's `description` from the
-    // doc comment, and PB-75 binds the served document to 1.5.5 byte-for-byte outside additive
-    // endpoints. 1.6.0 replaced the enumeration with a pointer to the path parameter — a genuine
-    // improvement, because this hand-written copy DOES go stale the moment a section is added, and
-    // it has: the live set is `OverlaySection::valid_names()`, which now also carries
-    // `identity-providers`, `export`, `tools` and `agents`. Both facts are true at once — the list
-    // above is incomplete, and it is the published 1.5.5 contract — so the correction is the
-    // owner's to make deliberately rather than as a side effect. The `section` PATH PARAMETER is
-    // the authoritative enumeration and is derived, not restated.
+    // THE OWNER HAS NOW RULED, AND THIS DOC COMMENT IS NO LONGER WHAT IS SERVED. The tension this
+    // comment used to describe was real: schemars generates the property's `description` from the
+    // text above, PB-75 binds the served document to 1.5.5's bytes, and yet the hand-written list
+    // WENT STALE the moment a section was added — 1.5.5 named four, 1.6.0 has eight, so the served
+    // document told a client that a reset of `export` could not happen while the route was
+    // answering it. Neither "freeze it" nor "rewrite it" was right on its own.
+    //
+    // Owner ruling PB-75 (2026-09-08), the same rule F-013 applies to the message: THE WORDING
+    // STAYS 1.5.5's, THE LIST GROWS. `openapi_doc` re-renders this description from the live
+    // `OverlaySection::all()` in 1.5.5's own spaced-pipe spelling, so what ships is 1.5.5's
+    // sentence with the four 1.6.0 sections appended and nothing else moved. The text above is
+    // therefore the TEMPLATE, kept verbatim so the diff against 1.5.5 is a pure list growth; it is
+    // not the served string. `the_overlay_reset_description_grows_the_live_section_set` pins that.
+    //
+    // The `section` PATH PARAMETER remains the authoritative machine-readable enumeration and is
+    // derived, not restated — this description is the human-readable echo of the same set.
     pub(crate) reset: String,
     pub(crate) config_version: u64,
     /// `true` when the reset discarded overlay mutations; `false` for an already-empty section.

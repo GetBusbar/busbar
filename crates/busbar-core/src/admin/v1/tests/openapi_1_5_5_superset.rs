@@ -63,6 +63,15 @@ const ACCEPTED: &[(&str, &str)] = &[
          its own CHANGELOG line.",
     ),
     (
+        "/components/schemas/OverlayResetView/properties/reset/description",
+        "The overlay `section` enumeration again, on the RESULT view. LIST GROWTH ONLY, in 1.5.5's \
+         own spaced-pipe spelling (a third spelling of the same set — see \
+         `OverlaySection::valid_names_spaced_piped`). Frozen verbatim it was a published document \
+         asserting a reset of `export` could not happen while the route answered it; under PB-75 \
+         the wording stays and the list grows. Pinned by \
+         `the_overlay_reset_description_grows_the_live_section_set`.",
+    ),
+    (
         "/components/schemas/NamedDefView/properties/max_admin_scope/description",
         "PB-75 REGISTERED CORRECTION (owner ruling 2026-09-08): the 1.5.5 text advertised a `none` \
          ceiling token that 1.5.5's own parser never accepted — `Scope` has exactly two variants \
@@ -193,8 +202,11 @@ fn the_1_5_5_schema_descriptions_are_frozen_verbatim() {
         ("HookView", "properties/at/description"),
         ("NamedDefView", "description"),
         ("NamedDefView", "properties/module/description"),
-        ("OverlayResetView", "properties/reset/description"),
     ];
+    // `OverlayResetView/properties/reset/description` is deliberately NOT here any more: it
+    // ENUMERATES the sections, so freezing it froze a list that had gone stale. Under PB-75 it now
+    // grows in 1.5.5's own wording, pinned by
+    // `the_overlay_reset_description_grows_the_live_section_set` below.
     for (schema, rel) in frozen {
         let mut o = &old["components"]["schemas"][schema];
         let mut n = &new["components"]["schemas"][schema];
@@ -286,6 +298,73 @@ fn the_openapi_section_list_keeps_1_5_5_pipe_spelling() {
              to the 400 BODY, not here. Render `OverlaySection::valid_names_piped` from the error \
              taxonomy, never `valid_names_oxford`.",
             rel.join("/")
+        );
+    }
+}
+
+/// THE RESET VIEW'S SECTION LIST IS LIVE, AND IN 1.5.5's WORDING.
+///
+/// `OverlayResetView.reset`'s description enumerates the sections, and schemars generates it from a
+/// doc comment — a static string, which is precisely how it went stale: 1.5.5 named four sections,
+/// 1.6.0 has eight, and the served document therefore told a client that a reset of `export` could
+/// not happen while the route was answering it. Freezing it verbatim preserved that lie; rewriting
+/// it freely would edit a published contract.
+///
+/// Owner ruling PB-75 (2026-09-08), the same rule F-013 applies to the wire message: THE WORDING
+/// STAYS 1.5.5's, THE LIST GROWS. This asserts both halves at once — the served description is
+/// 1.5.5's fixture bytes with ONLY the enumeration replaced by the live set, in 1.5.5's own
+/// SPACED-pipe spelling (`` `a` | `b` ``, a third spelling of this same set; the 400 description
+/// uses bare pipes and the 400 body uses Oxford commas, and PB-75 freezes each surface's
+/// punctuation as it found it).
+///
+/// The set is not restated here: it is read from `OverlaySection::all()`, so adding a section
+/// updates this expectation and the document together, and the failure mode this test exists to
+/// catch — a description that stops tracking the sections — cannot come back.
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn the_overlay_reset_description_grows_the_live_section_set() {
+    use crate::config::overlay::OverlaySection;
+
+    let old: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(V155_FIXTURE).expect("read the 1.5.5 fixture"),
+    )
+    .expect("1.5.5 fixture is JSON");
+    let new = crate::admin::v1::json::openapi_doc();
+
+    let old_run = "`groups` | `hooks` | `root` | `plugin_versions`";
+    let new_run = OverlaySection::valid_names_spaced_piped();
+    assert!(
+        new_run.starts_with(old_run),
+        "the reset view's section list must keep 1.5.5's four names first, in 1.5.5's order and \
+         spaced-pipe spelling; got {new_run}"
+    );
+
+    let o = old["components"]["schemas"]["OverlayResetView"]["properties"]["reset"]["description"]
+        .as_str()
+        .expect("1.5.5 fixture has OverlayResetView/properties/reset/description");
+    let n = new["components"]["schemas"]["OverlayResetView"]["properties"]["reset"]["description"]
+        .as_str()
+        .expect("served OverlayResetView/properties/reset/description");
+
+    assert!(
+        o.contains(old_run),
+        "the 1.5.5 fixture leaf no longer carries the spaced-pipe run this test is about: {o}"
+    );
+    assert_eq!(
+        n,
+        o.replace(old_run, &new_run),
+        "the served `reset` description is not 1.5.5's sentence with only the section list grown. \
+         It must name the LIVE set (`OverlaySection::all`) in 1.5.5's spaced-pipe spelling — a \
+         frozen four-name copy is a document that denies a reset the route performs, and a \
+         respelled one edits the published contract."
+    );
+
+    // The whole point: the live sections really are in there, not just 1.5.5's four.
+    for s in OverlaySection::all() {
+        assert!(
+            n.contains(&format!("`{}`", s.as_str())),
+            "the served `reset` description omits the live section `{}`: {n}",
+            s.as_str()
         );
     }
 }

@@ -1922,7 +1922,7 @@
             "type": "integer"
           },
           "reset": {
-            "description": "The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).",
+            "description": "The section that was reset (`groups` | `hooks` | `root` | `plugin_versions` | `identity-providers` | `export` | `tools` | `agents`).",
             "type": "string"
           }
         },
