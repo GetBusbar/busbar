@@ -5538,3 +5538,93 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
     );
 }
+
+/// A SECOND `admin-tokens` provider is silently ignored today, and that is the defect.
+///
+/// `AuthCfg::admin_token_ref` walks `admin_auth ++ chain` and takes the FIRST entry whose module is
+/// `admin-tokens`, so an operator who configures two operator credentials gets one working token
+/// and one that authenticates nothing — with no boot error, no warning, and nothing in the config
+/// report to say so. The second token is simply not a credential, and the only way to find out is
+/// to try it.
+///
+/// These pin BOTH halves of that: what the accessor sees, and what it misses.
+#[test]
+fn a_second_admin_tokens_provider_is_visible_to_the_config() {
+    let auth = parse_auth(
+        r#"
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+  ops-oncall:   { module: admin-tokens, token: { env: BUSBAR_OPS_TOKEN } }
+auth:
+  admin_auth: [admin-tokens, ops-oncall]
+"#,
+    );
+
+    // The single-token accessor sees exactly one, which is the shipped behaviour and is why the
+    // second credential does nothing. Asserted rather than assumed, so the day it changes this test
+    // is what says so.
+    assert!(
+        auth.admin_token_ref().is_some(),
+        "the first operator credential resolves"
+    );
+
+    // Every configured operator credential, in config order. Two providers, two credentials.
+    let all = auth.admin_token_refs();
+    assert_eq!(
+        all.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+        vec!["admin-tokens", "ops-oncall"],
+        "both admin-tokens providers must be visible, in the order the operator wrote them"
+    );
+}
+
+/// A `token:` on the SECOND provider is found even when the first carries none.
+///
+/// The sharper edge of the same defect: `admin_token_ref` finds the first admin-tokens ENTRY and
+/// only then asks for its token, so a first entry with no `token:` makes it answer `None` and
+/// discards a perfectly good credential on the entry beside it. The node then boots with the admin
+/// API disabled while the operator is looking at a configured token.
+#[test]
+fn a_token_on_the_second_provider_is_not_lost_to_a_tokenless_first() {
+    let auth = parse_auth(
+        r#"
+identity-providers:
+  corp-sso:     { module: admin-tokens }
+  ops-oncall:   { module: admin-tokens, token: { env: BUSBAR_OPS_TOKEN } }
+auth:
+  admin_auth: [corp-sso, ops-oncall]
+"#,
+    );
+
+    // THE DEFECT, pinned directly: the single-token accessor takes the first admin-tokens ENTRY
+    // and only then asks it for a token, so it answers `None` and the node boots with the admin API
+    // disabled while the operator is looking at a configured credential.
+    assert!(
+        auth.admin_token_ref().is_none(),
+        "this is the shipped behaviour being recorded, not an aspiration: if this starts \
+         resolving, `admin_token_ref` has changed and the note above it is stale"
+    );
+
+    assert_eq!(
+        auth.admin_token_refs()
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>(),
+        vec!["ops-oncall"],
+        "a credential on the second provider must not be lost because the first has none"
+    );
+}
+
+/// One provider is still one provider — the ordinary deployment shape must not move.
+#[test]
+fn a_single_admin_tokens_provider_still_reads_as_one() {
+    let auth = parse_auth(
+        r#"
+identity-providers:
+  admin-tokens: { module: admin-tokens, token: { env: BUSBAR_ADMIN_TOKEN } }
+auth:
+  admin_auth: [admin-tokens]
+"#,
+    );
+    assert_eq!(auth.admin_token_refs().len(), 1);
+    assert!(auth.admin_token_ref().is_some());
+}

@@ -398,12 +398,41 @@ impl AuthCfg {
     }
 
     /// The `admin-tokens` operator-credential secret reference, if configured.
+    ///
+    /// THE FIRST ONE ONLY, and the `find` is doing two things a reader should see separately: it
+    /// takes the first admin-tokens ENTRY, and only then asks that entry for a token. A first entry
+    /// carrying no `token:` therefore answers `None` even when the entry beside it carries one.
+    ///
+    /// Kept as-is because it is what the single-credential paths mean and what every shipped
+    /// deployment resolves through. Anything that has to see EVERY configured operator credential
+    /// uses [`AuthCfg::admin_token_refs`] instead.
     pub fn admin_token_ref(&self) -> Option<&SecretRef> {
         self.admin_auth
             .iter()
             .chain(self.chain.iter())
             .find(|e| e.module == ADMIN_TOKENS_MODULE)
             .and_then(|e| e.token.as_ref())
+    }
+
+    /// EVERY configured `admin-tokens` operator credential, as `(provider name, secret ref)`, in
+    /// config order — `admin_auth:` first, then `chain:`.
+    ///
+    /// The provider NAME is carried because it is what distinguishes two operator credentials from
+    /// each other: it is the key `role_bindings.admin-tokens.<name>` binds a scope to, and the
+    /// identity a second credential authenticates as. A list of bare secret refs would say a
+    /// deployment has two admin tokens without saying which is which, which is not enough to
+    /// authorise either.
+    ///
+    /// Entries with no `token:` are SKIPPED rather than yielded as `None`. An admin-tokens provider
+    /// without a credential has nothing to authenticate with — it is a declaration and not a door —
+    /// so it is absent from a list of credentials rather than present and empty.
+    pub fn admin_token_refs(&self) -> Vec<(&str, &SecretRef)> {
+        self.admin_auth
+            .iter()
+            .chain(self.chain.iter())
+            .filter(|e| e.module == ADMIN_TOKENS_MODULE)
+            .filter_map(|e| e.token.as_ref().map(|t| (e.name.as_str(), t)))
+            .collect()
     }
 
     /// Whether a USABLE ADMIN MINT PATH exists — the STRUCTURAL precondition for putting the `keys`
