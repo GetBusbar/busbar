@@ -111,7 +111,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         //         LEDGERED EXEMPTION, `fs::rename`, for the request-log sink's rotate-by-rename:
         //         rotation renames a file whose bytes are already fully on disk, and `fs::rename`
         //         moves a directory entry without touching them, so there is no torn state to
-        //         protect. LEDGERED EXEMPTION, `sync_[ad]` and `create_dir_all`, for the WAL: it is
+        //         protect. The exemption follows the writer: the rule about what happens to bytes
+        //         already written now lives with the sealed chain, in busbar-unit-audit::export,
+        //         and busbar-core's export/file.rs — which keeps the sink's configuration and its
+        //         fan-out — renames nothing at all. LEDGERED EXEMPTION, `sync_[ad]` and `create_dir_all`, for the WAL: it is
         //         a SIBLING durability primitive, not a consumer — a log appends into a segment
         //         that stays put and fsyncs it IN PLACE, and it performs the parent fsync itself.
         ChokeRow {
@@ -124,7 +127,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                 BanRule::new(
                     r"fs::rename\(",
                     "hand-rolled rename-to-publish",
-                    &["crates/api/src/durable.rs".into(), format!("{core}/export/file.rs")],
+                    &[
+                        "crates/api/src/durable.rs".into(),
+                        "crates/busbar-unit-audit/src/export.rs".into(),
+                    ],
                 ),
                 BanRule::new(
                     "sync_[ad]",
