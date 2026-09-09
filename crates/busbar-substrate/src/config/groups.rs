@@ -216,11 +216,17 @@ impl<'de> Deserialize<'de> for LimitCfg {
         impl<'de> Visitor<'de> for LimitVisitor {
             type Value = LimitCfg;
 
+            /// FROZEN (PB-40): 1.5.5's words, and only 1.5.5's four metric names. The four 1.6.0
+            /// `tokens_*` metrics are accepted by `visit_map` below and are deliberately absent
+            /// here — the same discipline the config pre-pass applies to the 1.6.0-additive
+            /// top-level keys, which parse without joining the frozen `expected one of` list an
+            /// operator's log matcher already reads. Pinned by
+            /// `frozen_limit_grammar_tests::the_expecting_line_is_1_5_5s` against the committed
+            /// 1.5.5 golden for BOOT-P30.
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(
                     "a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
-                     <metric> is one of requests|tokens|tokens_input|tokens_output|\
-                     tokens_cache_read|tokens_cache_write|budget|concurrent and <window> one of \
+                     <metric> is one of requests|tokens|budget|concurrent and <window> one of \
                      minute|hour|day|month|total (omit `per` for concurrent; `pool` is optional \
                      and scopes the limit to one pool's traffic)",
                 )
@@ -275,15 +281,16 @@ impl<'de> Deserialize<'de> for LimitCfg {
                             None
                         }
                         other => {
+                            // FROZEN (PB-40): the `expected one of` list serde builds from this
+                            // slice is 1.5.5's EIGHT keys. The four 1.6.0 `tokens_*` metrics are
+                            // matched above — they parse — and are deliberately not named here.
+                            // Pinned by `frozen_limit_grammar_tests::the_unknown_field_list_is_1_5_5s`
+                            // against the committed 1.5.5 golden for BOOT-P29.
                             return Err(de::Error::unknown_field(
                                 other,
                                 &[
                                     "requests",
                                     "tokens",
-                                    "tokens_input",
-                                    "tokens_output",
-                                    "tokens_cache_read",
-                                    "tokens_cache_write",
                                     "budget",
                                     "concurrent",
                                     "per",
@@ -307,10 +314,13 @@ impl<'de> Deserialize<'de> for LimitCfg {
                 }
 
                 let Some((metric, amount)) = metric else {
+                    // FROZEN (PB-40): 1.5.5's sentence and 1.5.5's four metric names; the 1.6.0
+                    // `tokens_*` metrics parse but do not join the list. Pinned by
+                    // `frozen_limit_grammar_tests::the_no_metric_key_refusal_is_1_5_5s` against
+                    // the committed 1.5.5 golden for BOOT-P20.
                     return Err(de::Error::custom(
                         "a limit needs exactly one metric key \
-                         (requests | tokens | tokens_input | tokens_output | tokens_cache_read | \
-                         tokens_cache_write | budget | concurrent)",
+                         (requests | tokens | budget | concurrent)",
                     ));
                 };
 
@@ -422,3 +432,7 @@ impl Serialize for LimitCfg {
         map.end()
     }
 }
+
+#[cfg(test)]
+#[path = "tests/groups.rs"]
+mod frozen_limit_grammar_tests;
