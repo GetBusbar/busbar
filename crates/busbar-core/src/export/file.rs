@@ -11,14 +11,15 @@
 //! append-never-truncate, rollover by rename, a retention-bounded archive series — is a claim about
 //! recorded history, so it belongs to the unit that answers for recorded history and lives in
 //! [`busbar_unit_audit::export`]. This module owns only what is offered to it: the projection each
-//! named instance carries, its own in-flight admission cap, and getting the blocking write off the
-//! request path.
+//! named instance carries, its own in-flight admission cap, getting the blocking write off the
+//! request path, the two rotation counters, and the coded words — the writer hands a failure back as
+//! a [`Fault`] and [`report`] renders it under the code operators already grep for.
 
 use crate::config::ExportCfg;
 use crate::export::projection::Projection;
 use crate::export::PayloadCache;
 use crate::limits::admission::AdmissionGate;
-use busbar_unit_audit::export::{append_line, Rotation};
+use busbar_unit_audit::export::{append_line, Fault, Rotation};
 use std::sync::{Mutex, OnceLock};
 
 /// How many blocking append tasks ONE file sink may have in flight at once. Every append is a
@@ -100,11 +101,16 @@ fn append_one(sink: &'static FileSink, line: String) {
     tokio::task::spawn_blocking(move || {
         let _permit = permit; // slot releases on task end via the owned permit's Drop.
         let _guard = sink.lock.lock().unwrap_or_else(|e| e.into_inner());
-        // The unit owns the rule (append, never truncate; roll over by rename; bounded retention)
-        // and the coded diagnostics for every way it can fail. It reports back only the one thing
-        // this side cannot derive — whether a rollover happened — because the counters are core's.
-        match append_line(&sink.path, sink.rotate_bytes, &line) {
+        // The unit owns the RULE — append, never truncate; roll over by rename; a retention-bounded
+        // archive series — and hands back the two things it cannot speak for: whether a rollover
+        // happened, because the counters are this side's, and anything it could not do, because the
+        // coded words for those are this side's too and an operator greps for exactly these codes.
+        let rotation = append_line(&sink.path, sink.rotate_bytes, &line, &mut |fault| {
+            report(fault)
+        });
+        match rotation {
             Rotation::Renamed => {
+                tracing::info!(path = %sink.path, archive = %format!("{}.1", sink.path), "request-log file rotated by rename");
                 metrics::counter!(crate::metrics::FILE_LOGS_ROTATED_TOTAL).increment(1);
             }
             Rotation::RenameFailed => {
@@ -113,6 +119,46 @@ fn append_one(sink: &'static FileSink, line: String) {
             Rotation::NotNeeded => {}
         }
     });
+}
+
+/// Render one thing the writer could not do under the code an operator already greps for.
+///
+/// One arm per [`Fault`] variant and nothing else: the CODE, the fields and the words are exactly
+/// the ones this module published before the writer moved, because a diagnostic that changed its
+/// code is a diagnostic somebody's alert no longer matches. What each failure MEANS for recorded
+/// history is the unit's doc; what it is CALLED is the catalog's, and the catalog is here.
+fn report(fault: Fault<'_>) {
+    match fault {
+        Fault::Append { path, error } => {
+            crate::diagnostics::diag_warn!(crate::diagnostics::FILE_LOG_APPEND_FAILED, path = %path, error = %error, "request-log file append failed; this log was dropped");
+        }
+        Fault::Open { path, error } => {
+            crate::diagnostics::diag_warn!(crate::diagnostics::FILE_LOG_OPEN_FAILED, path = %path, error = %error, "request-log file open failed; this log was dropped");
+        }
+        Fault::RetentionCleanup { archive, error } => {
+            crate::diagnostics::diag_warn!(
+                crate::diagnostics::FILE_LOG_RETENTION_FAILED,
+                archive = %archive, error = %error,
+                "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
+            );
+        }
+        Fault::ArchiveShift { from, to, error } => {
+            crate::diagnostics::diag_warn!(
+                crate::diagnostics::FILE_LOG_SHIFT_FAILED,
+                from = %from, to = %to, error = %error,
+                "request-log archive shift failed; older archive left in place rather than lost"
+            );
+        }
+        Fault::RotateRename { path, error } => {
+            crate::diagnostics::diag_warn!(
+                crate::diagnostics::FILE_LOG_ROTATE_RENAME_FAILED,
+                path = %path, error = %error,
+                "request-log file rotation rename failed; continuing to APPEND to the current file \
+                 rather than truncate it, so no recorded data is lost — the file will exceed rotate_mb \
+                 until this is resolved"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

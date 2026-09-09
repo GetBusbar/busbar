@@ -19,17 +19,21 @@
 //!
 //! ## What is deliberately NOT here
 //!
-//! The writer is a free function over a path. It holds no state, takes no lock, spawns nothing, and
-//! counts nothing. Which lines are OFFERED to it — the projection that bounds the payload, the
-//! per-instance admission gate that sheds under saturation, the `spawn_blocking` that keeps the
-//! filesystem off the request path, and the mutex that serialises concurrent appends to one sink —
-//! belongs to the composition that configures the sink, and stays there. The unit owns the rule
-//! about what happens to bytes already written; it does not own the telemetry fan-out.
+//! The writer is a free function over a path. It holds no state, takes no lock, spawns nothing,
+//! counts nothing and LOGS nothing. Which lines are OFFERED to it — the projection that bounds the
+//! payload, the per-instance admission gate that sheds under saturation, the `spawn_blocking` that
+//! keeps the filesystem off the request path, and the mutex that serialises concurrent appends to
+//! one sink — belongs to the composition that configures the sink, and stays there. The unit owns
+//! the rule about what happens to bytes already written; it does not own the telemetry fan-out.
 //!
-//! The one thing the caller cannot derive for itself is whether a rollover happened, so
-//! [`append_line`] reports it as a [`Rotation`] and the caller counts it. The coded diagnostics for
-//! every failure are emitted here, because the words about lost or preserved history are the unit's
-//! words.
+//! Nor does it own the WORDS. Every way this can fail is already a coded diagnostic an operator
+//! greps for, and those codes live in the one catalog beside the composition that emits them. A
+//! second catalog reachable from here would be a second code for the same operational fact, and
+//! reaching for the existing one would be this unit taking a dependency on a crate of another kind
+//! for no reason but a string. So a failure is handed BACK, as a [`Fault`] naming exactly what could
+//! not be done and to which path, and the caller renders it under the code it has always used. The
+//! same goes for the one fact the caller cannot derive — whether a rollover happened — which comes
+//! back as a [`Rotation`] for the caller to count.
 
 use std::io::Write;
 
@@ -44,9 +48,8 @@ pub const ROTATE_ARCHIVE_LIMIT: usize = 9;
 
 /// What [`append_line`] did about the size bound before it wrote, so the caller can count it.
 ///
-/// The caller counts rather than the writer because the counters are the composition's
-/// (`busbar_file_logs_rotated_total`, `busbar_file_logs_rotate_failed_total`) and a unit that
-/// emitted them would be a second metrics vocabulary.
+/// The caller counts rather than the writer because the counters are the composition's and a unit
+/// that emitted them would be a second metrics vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rotation {
     /// No rollover was attempted — either the sink is unbounded, or the file is under its bound (or
@@ -59,18 +62,74 @@ pub enum Rotation {
     RenameFailed,
 }
 
+/// One thing the writer could not do, handed back for the caller to diagnose under the code it
+/// already publishes for it.
+///
+/// Every variant is NON-FATAL by construction — the writer carries on and degrades toward keeping
+/// data — so the report is an operational picture, never a control signal.
+#[derive(Debug)]
+pub enum Fault<'a> {
+    /// The current file could not be opened for append. This line was dropped.
+    Open {
+        /// The sink's path.
+        path: &'a str,
+        /// Why the open failed.
+        error: std::io::Error,
+    },
+    /// The file was open but the line could not be written. This line was dropped.
+    Append {
+        /// The sink's path.
+        path: &'a str,
+        /// Why the write failed.
+        error: std::io::Error,
+    },
+    /// The oldest archive could not be removed to make room, so the series may exceed
+    /// [`ROTATE_ARCHIVE_LIMIT`]. Nothing recorded was lost — an archive that should have aged out is
+    /// still on disk.
+    RetentionCleanup {
+        /// The archive that should have aged out.
+        archive: &'a str,
+        /// Why the removal failed.
+        error: std::io::Error,
+    },
+    /// One archive could not be shifted one slot older. The older archive was left in place rather
+    /// than overwritten, so nothing recorded was lost.
+    ArchiveShift {
+        /// The archive that could not be moved.
+        from: &'a str,
+        /// The slot it should have moved to.
+        to: &'a str,
+        /// Why the rename failed.
+        error: std::io::Error,
+    },
+    /// The current file could not be renamed to `<path>.1`, so the rollover did not happen. The
+    /// writer APPENDED to the current file rather than truncating it, so no recorded data was lost —
+    /// the file will exceed its cap until this is resolved.
+    RotateRename {
+        /// The sink's path.
+        path: &'a str,
+        /// Why the rename failed.
+        error: std::io::Error,
+    },
+}
+
 /// Append one already-serialised line to `path`, rolling the file over first if it has reached
-/// `rotate_bytes`.
+/// `rotate_bytes`, and reporting anything that could not be done through `fault`.
 ///
 /// The line is written verbatim followed by a newline — the caller owns the line's shape, this owns
-/// only that it lands on the end of the file. An open or write failure is DIAGNOSED and dropped
+/// only that it lands on the end of the file. An open or write failure is REPORTED and dropped
 /// rather than propagated: a sink that could refuse would be a sink that can affect serving, and the
 /// contract is the other way round.
 ///
 /// This is a synchronous, blocking filesystem call by construction. It must be invoked somewhere
 /// that can block (the caller's blocking pool), and concurrent appends to the SAME path must be
 /// serialised by the caller, or two lines can interleave.
-pub fn append_line(path: &str, rotate_bytes: Option<u64>, line: &str) -> Rotation {
+pub fn append_line(
+    path: &str,
+    rotate_bytes: Option<u64>,
+    line: &str,
+    fault: &mut dyn FnMut(Fault<'_>),
+) -> Rotation {
     // Best-effort size bound: when the file has reached the configured size, roll it over by RENAME,
     // never by truncation — this sink can be an audit trail, and destroying recorded history on a
     // size threshold is not an acceptable "rotation". A file that does not exist yet, or whose
@@ -80,7 +139,7 @@ pub fn append_line(path: &str, rotate_bytes: Option<u64>, line: &str) -> Rotatio
         .and_then(|limit| std::fs::metadata(path).ok().map(|m| m.len() >= limit))
         .unwrap_or(false);
     let rotation = if needs_rotate {
-        rotate(path)
+        rotate(path, fault)
     } else {
         Rotation::NotNeeded
     };
@@ -93,21 +152,11 @@ pub fn append_line(path: &str, rotate_bytes: Option<u64>, line: &str) -> Rotatio
         .open(path);
     match opened {
         Ok(mut file) => {
-            if let Err(e) = writeln!(file, "{line}") {
-                busbar_substrate_values::diag_warn!(
-                    busbar_substrate_values::diagnostics::FILE_LOG_APPEND_FAILED,
-                    path = %path, error = %e,
-                    "request-log file append failed; this log was dropped"
-                );
+            if let Err(error) = writeln!(file, "{line}") {
+                fault(Fault::Append { path, error });
             }
         }
-        Err(e) => {
-            busbar_substrate_values::diag_warn!(
-                busbar_substrate_values::diagnostics::FILE_LOG_OPEN_FAILED,
-                path = %path, error = %e,
-                "request-log file open failed; this log was dropped"
-            );
-        }
+        Err(error) => fault(Fault::Open { path, error }),
     }
     rotation
 }
@@ -135,18 +184,17 @@ pub fn append_line(path: &str, rotate_bytes: Option<u64>, line: &str) -> Rotatio
 /// legitimately hundreds of MB — into memory just to re-emit it as "new" bytes. This is a LEDGERED
 /// exemption in the `structure-lint` gate's choke-point registry (row A-persistence), not a silent
 /// bypass.
-fn rotate(path: &str) -> Rotation {
+fn rotate(path: &str, fault: &mut dyn FnMut(Fault<'_>)) -> Rotation {
     // Free the oldest archive slot first so the shift below never collides with a still-occupied
     // name. Retention is a deliberate, documented bound (`ROTATE_ARCHIVE_LIMIT`), not a side effect
     // of the rotation mechanism.
     let oldest = format!("{path}.{ROTATE_ARCHIVE_LIMIT}");
     if std::path::Path::new(&oldest).exists() {
-        if let Err(e) = std::fs::remove_file(&oldest) {
-            busbar_substrate_values::diag_warn!(
-                busbar_substrate_values::diagnostics::FILE_LOG_RETENTION_FAILED,
-                archive = %oldest, error = %e,
-                "request-log archive retention cleanup failed; the archive series may exceed ROTATE_ARCHIVE_LIMIT"
-            );
+        if let Err(error) = std::fs::remove_file(&oldest) {
+            fault(Fault::RetentionCleanup {
+                archive: &oldest,
+                error,
+            });
         }
     }
     // Shift path.{i} -> path.{i+1}, oldest first, so no archive is ever renamed onto one that still
@@ -155,30 +203,21 @@ fn rotate(path: &str) -> Rotation {
         let from = format!("{path}.{i}");
         if std::path::Path::new(&from).exists() {
             let to = format!("{path}.{}", i + 1);
-            if let Err(e) = std::fs::rename(&from, &to) {
-                busbar_substrate_values::diag_warn!(
-                    busbar_substrate_values::diagnostics::FILE_LOG_SHIFT_FAILED,
-                    from = %from, to = %to, error = %e,
-                    "request-log archive shift failed; older archive left in place rather than lost"
-                );
+            if let Err(error) = std::fs::rename(&from, &to) {
+                fault(Fault::ArchiveShift {
+                    from: &from,
+                    to: &to,
+                    error,
+                });
             }
         }
     }
     // The rotation that matters: the just-completed, still-un-archived current file becomes `.1`.
     let archive = format!("{path}.1");
     match std::fs::rename(path, &archive) {
-        Ok(()) => {
-            tracing::info!(path = %path, archive = %archive, "request-log file rotated by rename");
-            Rotation::Renamed
-        }
-        Err(e) => {
-            busbar_substrate_values::diag_warn!(
-                busbar_substrate_values::diagnostics::FILE_LOG_ROTATE_RENAME_FAILED,
-                path = %path, error = %e,
-                "request-log file rotation rename failed; continuing to APPEND to the current file \
-                 rather than truncate it, so no recorded data is lost — the file will exceed rotate_mb \
-                 until this is resolved"
-            );
+        Ok(()) => Rotation::Renamed,
+        Err(error) => {
+            fault(Fault::RotateRename { path, error });
             Rotation::RenameFailed
         }
     }
