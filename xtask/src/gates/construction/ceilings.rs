@@ -331,12 +331,17 @@ pub fn base_ref(cx: &Ctx) -> Result<String, String> {
 
 /// No ceiling in either qa ceilings file is higher than it was at the base.
 ///
-/// EVERY INTEGER IS A CEILING HERE, and that is deliberate rather than lazy. The alternative is a
+/// EVERY NUMBER IS A CEILING HERE, and that is deliberate rather than lazy. The alternative is a
 /// list of which keys count, and a list is exactly the thing the next rule to be added forgets to
-/// join — the `[cell.<crate>.<kind>] count` rows in `qa/kind-isolation.toml` are 304 numbers that
-/// no hand-kept list would have covered. The owner's ruling is "I'd rather it false-fail than
-/// not": a number that legitimately rises reddens this row and is unredded by the review that
-/// should have accompanied it, which is the transaction this rule exists to force.
+/// join — the `[[cell]] count` rows in `qa/kind-isolation.toml` are hundreds of numbers that no
+/// hand-kept list would have covered. The owner's ruling is "I'd rather it false-fail than not": a
+/// number that legitimately rises reddens this row and is unredded by the review that should have
+/// accompanied it, which is the transaction this rule exists to force.
+///
+/// "NUMBER" RATHER THAN "INTEGER" IS THE LOAD-BEARING WORD, and this comment used to get it wrong.
+/// The kind-isolation counts are all written as quoted strings (`count = "122"`), so for as long as
+/// [`ints_of`] read TOML integers only, this row measured NOTHING in that file while its own doc
+/// comment named those numbers as the reason it scans everything. See [`ints_of`].
 ///
 /// A base that cannot be established is RED, never green. "The branch has no history here" is the
 /// state a shallow clone is in, and a ratchet that switches itself off on the runner where it is
@@ -535,15 +540,25 @@ pub fn raises(cx: &Ctx) -> BTreeMap<String, Raise> {
     out
 }
 
-/// Every integer in a TOML document, by dotted path. The reader this crate has refuses a document
-/// it does not understand, which is the behaviour wanted here too: a ceilings file that cannot be
-/// parsed is a comparison that cannot be made.
+/// Every integer in a TOML document, by dotted path — WHETHER IT IS WRITTEN AS A TOML INTEGER OR
+/// AS A QUOTED STRING. The reader this crate has refuses a document it does not understand, which
+/// is the behaviour wanted here too: a ceilings file that cannot be parsed is a comparison that
+/// cannot be made.
+///
+/// THE STRING FALLBACK IS NOT A CONVENIENCE. Every one of the `[[cell]] count` numbers in
+/// `qa/kind-isolation.toml` is written `count = "122"`, and an integer-only reader scores that file
+/// at zero ceilings: the whole file was re-pinnable by hand with this row printing PASS. How a
+/// number is spelled is a matter of the file's own style, and a ratchet that a change of quoting
+/// switches off is not a ratchet.
 fn ints_of(text: &str) -> Result<BTreeMap<String, i64>, String> {
     let doc = crate::toml_doc::parse_str(text)?;
     let mut out = BTreeMap::new();
     for (path, table) in doc.tables() {
         for key in table.keys() {
-            if let Some(v) = table.int_of(key) {
+            if let Some(v) = table
+                .int_of(key)
+                .or_else(|| table.str_of(key).and_then(|s| s.trim().parse::<i64>().ok()))
+            {
                 let dotted = if path.is_empty() {
                     key.clone()
                 } else {
@@ -567,6 +582,29 @@ mod tests {
         let ints = ints_of(DOC).expect("the fixture parses");
         assert_eq!(ints.get("gate.surface_ceilings.grammar"), Some(&500));
         assert_eq!(ints.get("rules.x.n"), Some(&1));
+    }
+
+    /// THE `qa/kind-isolation.toml` SHAPE. Every `[[cell]] count` in that file is a quoted string,
+    /// and for as long as this reader took TOML integers only, `ceiling-rose` scored that entire
+    /// file at zero ceilings — a hand re-pin of any cell passed unremarked. How a number is spelled
+    /// is the file's own style; it is not a switch that turns the ratchet off.
+    #[test]
+    fn a_count_written_as_a_quoted_string_is_still_a_ceiling() {
+        let doc = "[[cell]]\ncrate = \"busbar\"\nkind = \"api\"\ncount = \"122\"\n";
+        let ints = ints_of(doc).expect("the fixture parses");
+        assert_eq!(ints.get("cell.0.count"), Some(&122));
+        // The neighbouring strings are words, not numbers, and must not become ceilings.
+        assert_eq!(ints.get("cell.0.crate"), None);
+        assert_eq!(ints.get("cell.0.kind"), None);
+    }
+
+    /// A string that is not a number is not a ceiling, and must not make the file unreadable
+    /// either: `ints_of` returning `Err` would take the whole comparison down with it.
+    #[test]
+    fn a_string_that_is_not_a_number_is_simply_not_a_ceiling() {
+        let ints = ints_of("[t]\nword = \"none\"\nspaced = \" 7 \"\n").expect("the fixture parses");
+        assert_eq!(ints.get("t.word"), None);
+        assert_eq!(ints.get("t.spaced"), Some(&7));
     }
 
     /// The re-pin edits ONE line and leaves every other byte — the prose around a ceiling is what
