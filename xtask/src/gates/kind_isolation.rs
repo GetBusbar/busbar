@@ -1592,6 +1592,49 @@ fn rule_name(
         ));
     }
 
+    // A CRATE NAMED `busbar-<kind>-<another kind's instance>` IS THE FUSION, AND NO WAIVER REACHES
+    // IT.
+    //
+    // `fused-instance` above already refuses the owner's own example, `busbar-transport-a2a` — but
+    // only because `transport` HAS an instance vocabulary, so the crate's own name makes `a2a` a
+    // transport instance as well as a plane one and the collision is visible one level up. A
+    // NEUTRAL kind creates no collision: `busbar-unit-llm` is a unit named after the llm plane
+    // instance, `unit` contributes no instance vocabulary, nothing collides — and a red team landed
+    // exactly that crate with ONE `ACCEPTED_NAMES` line and got `kind-isolation: green` and
+    // `--selftest: the gate is proven RED-able` in the same breath. The waiver list was protecting
+    // only the six names the battery happened to plant.
+    //
+    // So the refusal is structural and sits outside the waiver loop, on the same terms
+    // `fused-instance` does. WHAT IT REFUSES IS THE NAME THAT *IS* THE INSTANCE: a remainder of
+    // exactly one segment, and that segment another kind's instance id. That is the fusion —
+    // "the llm unit", "the mcp store" — and it is what the ruling refuses by name. It is not the
+    // same shape as a QUALIFIER: `busbar-auth-admin-tokens` is the admin surface's TOKEN issuer,
+    // its last segment says what it is, and its reviewed sentence is a sentence about a qualifier.
+    // A waiver may still excuse that; it may never excuse a crate whose whole remainder is another
+    // kind's instance.
+    for c in crates {
+        let [only] = &c.remainder[..] else { continue };
+        if fused.contains(only.as_str()) {
+            continue;
+        }
+        for (owner, label, vocab) in [
+            (Family::Plane, "a PLANE", planes),
+            (Family::Transport, "a TRANSPORT", ports),
+        ] {
+            if vocab.contains(only.as_str()) && owner != c.family {
+                offenders.push(format!(
+                    "fused-instance-name\t{}\t`{}` IS {label} instance wearing a `{}` marker: its \
+                     whole remainder is `{only}`, so the crate is named for another kind's \
+                     instance rather than for what it does. No reviewed sentence reaches this — a \
+                     waiver excuses a QUALIFIER, never a fusion; {MAKE_A_NEW_KIND}",
+                    c.dir,
+                    c.name,
+                    c.kind.unwrap_or("?")
+                ));
+            }
+        }
+    }
+
     for c in crates {
         let mut findings: Vec<String> = Vec::new();
 
@@ -4072,7 +4115,47 @@ impl Gate for KindIsolationGate {
             "a unit named after a plane instance (`busbar-unit-mcp`)",
             &[ROW_NAME],
             manifest_plant("crates/busbar-unit-mcp", "busbar-unit-mcp", &[]),
-            &["busbar-unit-mcp", "mcp"],
+            &["fused-instance-name", "busbar-unit-mcp", "mcp"],
+        ));
+
+        // THE WAIVER LIST CANNOT REACH THE FUSION, and this is the case a red team landed against
+        // the old rule: `crates/busbar-unit-llm` plus ONE `ACCEPTED_NAMES` line produced
+        // `kind-isolation: green` AND `--selftest: the gate is proven RED-able` in the same breath,
+        // because the waiver loop protected only the six names the battery happened to plant.
+        // `busbar-transport-a2a` was safe for a reason that does not generalise — `transport` HAS
+        // an instance vocabulary, so that crate's own name made `a2a` a transport instance and the
+        // collision was visible one level up as `fused-instance`. `unit` is NEUTRAL and collides
+        // with nothing.
+        //
+        // The refusal is now structural: a remainder that IS another kind's instance is reported
+        // before the waiver map is consulted, so no reviewed sentence — existing or added — reaches
+        // it. What a waiver may still excuse is a QUALIFIER: `busbar-auth-admin-tokens` is the
+        // admin surface's token issuer, its last segment says what it is, and the unplanted green
+        // arm above holds that distinction on the real tree.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "no reviewed sentence can waive a crate whose whole name is another kind's instance",
+            &[ROW_NAME],
+            manifest_plant("crates/busbar-unit-llm", "busbar-unit-llm", &[]),
+            &[
+                "fused-instance-name",
+                "busbar-unit-llm",
+                "a waiver excuses a QUALIFIER, never a fusion",
+            ],
+        ));
+
+        // THE SAME FUSION IN A KIND THAT ALREADY CARRIES A WAIVER. Shorten the reviewed
+        // `busbar-auth-admin-tokens` to `busbar-auth-admin` and the qualifier is gone: what is left
+        // is an auth plugin named for the control surface's instance. The waiver beside it does not
+        // move, and the crate is refused anyway.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "shortening a waived name to the fusion form is refused with the waiver still standing",
+            &[ROW_NAME],
+            manifest_plant("crates/auth-admin-tokens", "busbar-auth-admin", &[]),
+            &["fused-instance-name", "busbar-auth-admin", "admin"],
         ));
 
         // THE PLANE-TRANSPORT the ruling names by name: two KIND words, no instance at all.
