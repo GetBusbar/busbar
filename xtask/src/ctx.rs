@@ -499,6 +499,24 @@ impl Ctx {
     /// into an ignored path is a file CI would never see, so a gate that went red on one would be
     /// proven by a fixture the rule cannot encounter. It is also what makes this filter provable
     /// at all — the self-test plants an ignored file and requires the gate to stay green.
+    /// THE IGNORE FILTER, EXPOSED — for the one rule whose subject IS the ignore list rather than
+    /// its effect.
+    ///
+    /// [`Ctx::drop_ignored`] uses this to keep a build artefact out of a scan set, which is the
+    /// right answer for every rule that reads source. It is the WRONG answer for a file the
+    /// compiler links: `crates/*/src/target/leak.rs` is dropped by the walker and by the bare
+    /// `target/` in `.gitignore`, and compiled anyway. A rule that wants to say so has to be able
+    /// to ask which paths the filter claims, so it can ask that question of the COMPILED set.
+    ///
+    /// A tracked path is never reported by `git check-ignore` (it consults the index), so the
+    /// answer is exactly the population that is both ignored and live.
+    pub fn ignored(&self, rels: &[String]) -> std::collections::BTreeSet<String> {
+        gitp::check_ignore(&self.root, rels)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+
     fn drop_ignored(&self, rels: Vec<PathBuf>) -> Vec<PathBuf> {
         let asked: Vec<String> = rels
             .iter()

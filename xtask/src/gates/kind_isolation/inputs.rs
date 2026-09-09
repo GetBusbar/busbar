@@ -288,6 +288,451 @@ fn registry_entries(text: &str) -> Vec<(usize, String, String)> {
     out
 }
 
+/// THE MODULE DIRECTORY of a source file — the directory a `mod x;` written inside it resolves
+/// against.
+///
+/// A crate ROOT (`lib.rs`, `main.rs`, a `tests/`/`examples/`/`benches/`/`src/bin` binary,
+/// `build.rs`) and a `mod.rs` both root their children in their OWN directory; every other file
+/// roots them in a directory named after itself. Getting this wrong in either direction turns a
+/// real module into an unresolvable one, so the two shapes are spelled out rather than guessed.
+fn module_dir(rel: &str) -> String {
+    let dir = dir_of(rel);
+    let name = rel.rsplit('/').next().unwrap_or("");
+    let parent = dir.rsplit('/').next().unwrap_or("");
+    if matches!(name, "lib.rs" | "main.rs" | "mod.rs" | "build.rs")
+        || matches!(parent, "tests" | "examples" | "benches" | "bin")
+    {
+        return dir;
+    }
+    let stem = name.strip_suffix(".rs").unwrap_or(name);
+    if dir.is_empty() {
+        stem.to_string()
+    } else {
+        format!("{dir}/{stem}")
+    }
+}
+
+/// Every `mod NAME;` DECLARATION on one line — the ones that name a FILE, never the inline
+/// `mod NAME { … }` that carries its own body.
+///
+/// Read off the raw line and anywhere in it, because `#[cfg(unix)] mod x;` is one line and a rule
+/// that only reads the start of one would miss it.
+fn mod_decls(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let t = line.trim_start();
+    if t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+        return out;
+    }
+    let b = line.as_bytes();
+    let mut i = 0usize;
+    while let Some(p) = line[i..].find("mod ") {
+        let at = i + p;
+        i = at + 4;
+        let ok_before = at == 0 || !(b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_');
+        if !ok_before {
+            continue;
+        }
+        let rest = &line[at + 4..];
+        let Some(semi) = rest.find(';') else { continue };
+        let head = &rest[..semi];
+        if head.contains('{') || head.contains('"') {
+            continue;
+        }
+        let name = head.trim();
+        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// EVERY WAY A SOURCE FILE NAMES A PATH THE COMPILER WILL OPEN, with the finding each one earns.
+///
+/// `include!` was NOT on this list, and it is the strongest dual compile there is: `#[path]` at
+/// least declares a module, while `include!("../../busbar-plane-llm/src/meta.rs")` splices another
+/// crate's source into this one's body with no module, no dependency and no name. A red team walked
+/// it through with every gate green. It reads as `path-include` because that is what it is.
+const INCLUDE_MARKERS: &[(&str, &str, &str)] = &[
+    ("#[path", "path-include", "a module compiled from"),
+    ("include!", "path-include", "source spliced into it from"),
+    (
+        "include_str!",
+        "build-script-reach",
+        "a file read at build time from",
+    ),
+    (
+        "include_bytes!",
+        "build-script-reach",
+        "bytes read at build time from",
+    ),
+];
+
+/// THE PATH ONE `marker` NAMES, resolved — or the splice this gate refuses to guess at.
+///
+/// `tail` is the file's text from just after the marker, NOT the line's: `include_str!(concat!(` is
+/// a real spelling in this tree and its literals are two lines further down, so a line-shaped reader
+/// sees an argument list that is not there.
+///
+/// THREE ANSWERS, and the middle one is the whole rule.
+///
+/// * A plain `"literal"` resolves against the file that wrote it.
+/// * `concat!(env!("CARGO_MANIFEST_DIR"), "…")` resolves against the CRATE DIRECTORY, because that
+///   is exactly what cargo sets that variable to. This is the idiom the tree already uses eight
+///   times over, and it is also the spelling a red team used to reach
+///   `"/../busbar-plane-mcp/src/lib.rs"` — so it is RESOLVED rather than refused, which is
+///   strictly stronger than either reading it wrong or declining to read it.
+/// * Anything else spliced — `format!`, `stringify!`, `option_env!`, a `concat!` of some other
+///   variable — is an `Err`, and the caller reds on it. An input this gate cannot resolve is an
+///   input it cannot score, and `quoted_after` took the FIRST literal, so
+///   `concat!(env!("X"), "…")` used to resolve to a path inside the crate and be dropped.
+fn include_targets(tail: &str, crate_dir: &str, here: &str) -> Vec<Result<String, String>> {
+    let t = tail.trim_start();
+    // `#[path = "…"]` — an `=` and a literal, never a call.
+    let Some(rest) = t.strip_prefix('(') else {
+        return match first_literal(t) {
+            Some(p) => vec![Ok(resolve(here, &p))],
+            None => Vec::new(),
+        };
+    };
+    let rest = rest.trim_start();
+    if rest.starts_with('"') {
+        return match first_literal(rest) {
+            Some(p) => vec![Ok(resolve(here, &p))],
+            None => Vec::new(),
+        };
+    }
+    let ident: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if ident.is_empty() || !rest[ident.len()..].starts_with('!') {
+        return Vec::new();
+    }
+    let Some(inner) = balanced(&rest[ident.len() + 1..]) else {
+        return vec![Err(format!("{ident}!(…)"))];
+    };
+    let lits = literals(inner);
+    if ident == "concat" && lits.first().is_some_and(|l| l == "CARGO_MANIFEST_DIR") {
+        let joined: String = lits[1..].concat();
+        return vec![Ok(resolve(crate_dir, &joined))];
+    }
+    vec![Err(format!("{ident}!(…)"))]
+}
+
+/// The first `"…"` literal in `s`, unescaped only as far as this reader needs: a path.
+fn first_literal(s: &str) -> Option<String> {
+    let open = s.find('"')?;
+    let close = s[open + 1..].find('"')?;
+    Some(s[open + 1..open + 1 + close].to_string())
+}
+
+/// The text inside a `(…)` group that `s` opens, balanced.
+fn balanced(s: &str) -> Option<&str> {
+    let s = s.strip_prefix('(')?;
+    let mut depth = 1i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every `"…"` literal in a fragment, in order.
+fn literals(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else { break };
+        out.push(after[..close].to_string());
+        rest = &after[close + 1..];
+    }
+    out
+}
+
+/// EVERY READ A BUILD SCRIPT MAKES THAT LEAVES ITS OWN CRATE DIRECTORY.
+///
+/// > "a build script that reads its siblings by directory walk, not by name" — the plant that went
+/// > green
+///
+/// The marker loop above only reports a path that lands in ANOTHER CENSUSED CRATE, which is the
+/// right narrowing for a library file and the wrong one for a build script. A `build.rs` that does
+/// `read_dir("..")` and reads every `*/src/plane.rs` it finds names no crate at all, resolves to a
+/// directory outside every crate, and was green everywhere — while compiling the whole tree's plane
+/// sources into a transport's generated output. So a build script is held to the DIRECTORY rather
+/// than to the name: a literal path that starts at `/` or climbs out through `..` is reported for
+/// what it is, whatever it lands on. `build-script-reach` is also the needle a self-test has
+/// expected since the row was written, and until now NO RULE EMITTED IT.
+fn build_script_reach(
+    by_dir: &BTreeMap<&str, &CrateInfo>,
+    me: &CrateInfo,
+    here: &str,
+    rel: &str,
+    line_no: usize,
+    raw: &str,
+) -> Vec<String> {
+    const READS: &[(&str, &str)] = &[
+        ("read_to_string", "reads"),
+        ("read_dir", "walks"),
+        ("File::open", "opens"),
+        ("fs::read(", "reads"),
+        ("include_str!", "reads"),
+        ("include_bytes!", "reads"),
+        ("include!", "compiles"),
+    ];
+    let mut out = Vec::new();
+    for (marker, verb) in READS {
+        for p in quoted_after(raw, marker) {
+            if !(p.starts_with('/') || p.split('/').any(|s| s == "..")) {
+                continue;
+            }
+            let target = resolve(here, &p);
+            let lands = by_dir
+                .values()
+                .find(|o| inside(&o.dir, &target))
+                .map(|o| format!("{} (kind {})", o.name, o.kind.unwrap_or("?")))
+                .unwrap_or_else(|| "a path outside every crate in the census".to_string());
+            out.push(format!(
+                "build-script-reach\t{rel}:{}\t{}'s build script {verb} `{p}` — a path outside its \
+                 own crate directory, resolving to `{target}`: {lands}. A build script runs with \
+                 the whole checkout under it and writes into the crate it builds, so a read that \
+                 climbs out is another crate's source compiled in with no edge to score, and a \
+                 `read_dir` that climbs out names no crate at all and so is reported by the \
+                 DIRECTORY rather than by what it happens to find. {MAKE_A_NEW_KIND}",
+                line_no + 1,
+                me.name
+            ));
+        }
+    }
+    out
+}
+
+/// The name of an INLINE `mod NAME { … }` opened on this line — the shape that makes a DIRECTORY
+/// for every child module declared inside it.
+fn inline_mod(code: &str) -> Option<String> {
+    let b = code.as_bytes();
+    let mut i = 0usize;
+    while let Some(p) = code[i..].find("mod ") {
+        let at = i + p;
+        i = at + 4;
+        if at != 0 && (b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_') {
+            continue;
+        }
+        let rest = code[at + 4..].trim_start();
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        if rest[name.len()..].trim_start().starts_with('{') {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// EVERY FILE THIS CRATE COMPILES, AS THE SOURCE ITSELF NAMES IT — one entry per `mod`/`#[path]`
+/// declaration, resolved to the path the compiler will open.
+#[derive(Clone)]
+struct Compiled {
+    /// The file that wrote the declaration, and the line it is on.
+    at: String,
+    /// How it was written, for the finding.
+    how: String,
+    /// Every path the compiler would accept for it. A plain `mod x;` has two.
+    candidates: Vec<String>,
+}
+
+/// THE COMPILED SET AGAINST THE SCANNED SET.
+///
+/// > "nothing plane-specific anywhere; kinds never cross-contaminate; make it so hard it catches
+/// > false positives." — owner
+///
+/// Every rule in this gate that reads source reads the SCANNED SET: `crates/**` as the walker
+/// yields it, minus any directory named `target` and minus anything `git check-ignore` claims. A
+/// red team walked a whole plane through the gap between that set and the set the COMPILER reads:
+/// `crates/store-memory/src/target/leak.rs`, naming `busbar-plane-llm` and defining `fn mc p_hook`,
+/// reached by `#[path = "target/leak.rs"] pub mod leak;` in `lib.rs`. Live, linked, shipped code
+/// naming another kind's instance — and invisible twice over, because the walker skips any
+/// directory called `target` and `.gitignore` carries a bare `target/`.
+///
+/// So the two sets are compared, by name, and a compiled file that is not in the scanned set is
+/// reported whatever the reason. A `git check-ignore` hit on a compiled path is reported as well
+/// and in its own words, because that is the same hole reachable from a file nobody has to name:
+/// one line in a `.gitignore` retires a source file from every scanner in this gate at once.
+fn hidden_sources(cx: &Ctx, scanned: &BTreeSet<String>, files: &[crate::ctx::SourceFile]) -> Vec<String> {
+    let mut compiled: Vec<Compiled> = Vec::new();
+    for f in files {
+        compiled.extend(compiled_in(&f.rel_str(), &f.text).iter().cloned());
+    }
+
+    // ONE `check-ignore` FOR THE WHOLE COMPILED SET. A tracked path is never reported by git, so
+    // what comes back is exactly the dangerous population: a file the compiler opens and no scanner
+    // in this repository will ever be handed.
+    let asked: Vec<String> = compiled
+        .iter()
+        .flat_map(|c| c.candidates.iter().cloned())
+        .collect();
+    let ignored = cx.ignored(&asked);
+
+    let mut out = Vec::new();
+    for c in &compiled {
+        for cand in &c.candidates {
+            if ignored.contains(cand) {
+                out.push(format!(
+                    "hidden-source\t{}\t`{}` compiles `{cand}`, and `git check-ignore` claims that \
+                     path. An ignored file is a file every scanner in this gate is handed a tree \
+                     without — the walker drops it — while the compiler links it in. One line in a \
+                     `.gitignore` retires a source file from the whole gate, and this is that line \
+                     doing it. {MAKE_A_NEW_KIND}",
+                    c.at, c.how
+                ));
+            }
+        }
+        if c.candidates.iter().any(|p| scanned.contains(p)) {
+            continue;
+        }
+        out.push(format!(
+            "hidden-source\t{}\t`{}` compiles a file that is in no scan this gate runs: {}. Every \
+             rule here reads the SCANNED SET; the compiler reads the COMPILED SET, and a file in \
+             the second and not the first is source code no rule in this repository has ever \
+             looked at. Move it under a directory the walker reads, or delete it. {MAKE_A_NEW_KIND}",
+            c.at,
+            c.how,
+            c.candidates
+                .iter()
+                .map(|p| format!("`{p}`"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ));
+    }
+    out
+}
+
+/// THE COMPILED SET OF ONE FILE, MEMOISED — a pure function of its path and its bytes.
+///
+/// The reasoning is `matrix.rs`'s, and so is the arithmetic: every planted case re-runs the whole
+/// gate, a plant changes ONE file, and re-lexing 1 600 of them for each of 120 plants is the
+/// difference between a battery that runs in minutes and one nobody waits for. The key is the path
+/// and the text, because the answer depends on nothing else.
+fn compiled_in(rel: &str, text: &str) -> std::sync::Arc<Vec<Compiled>> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rel.hash(&mut h);
+    text.hash(&mut h);
+    let key = h.finish();
+    static MEMO: std::sync::OnceLock<
+        std::sync::Mutex<BTreeMap<u64, std::sync::Arc<Vec<Compiled>>>>,
+    > = std::sync::OnceLock::new();
+    let memo = MEMO.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    if let Some(hit) = memo.lock().ok().and_then(|m| m.get(&key).cloned()) {
+        return hit;
+    }
+    let built = std::sync::Arc::new(read_compiled(rel, text));
+    if let Ok(mut m) = memo.lock() {
+        m.insert(key, built.clone());
+    }
+    built
+}
+
+fn read_compiled(rel: &str, text: &str) -> Vec<Compiled> {
+    let mut compiled: Vec<Compiled> = Vec::new();
+    {
+        let root_dir = module_dir(rel);
+        let file_dir = dir_of(rel);
+        // AN INLINE `mod x { … }` IS A DIRECTORY. `pub mod a2a { pub mod anomaly; }` in a `lib.rs`
+        // compiles `src/a2a/anomaly.rs`, not `src/anomaly.rs`, and a `#[path]` written inside one
+        // resolves against that same directory. So the nesting is tracked, by brace depth, over
+        // text the lexer has already blanked — the counter this crate has exactly one of.
+        let mut st = crate::scan::LexState::default();
+        let mut depth = 0i32;
+        let mut open_mods: Vec<(String, i32)> = Vec::new();
+        let mut pending: Option<String> = None;
+        for (line_no, raw) in text.lines().enumerate() {
+            let code = crate::scan::blank_code(raw, &mut st);
+            let at = format!("{rel}:{}", line_no + 1);
+            let here = if open_mods.is_empty() {
+                root_dir.clone()
+            } else {
+                format!(
+                    "{root_dir}/{}",
+                    open_mods
+                        .iter()
+                        .map(|(n, _)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                )
+            };
+            // THE ATTRIBUTE IS READ OFF THE RAW LINE and GATED ON THE BLANKED ONE: the path is a
+            // string literal the blanker would erase, and a `#[path = "…"]` quoted inside a comment
+            // is not a declaration. `busbar-core`'s own header describes the shims it deleted in
+            // exactly that shape, and reading it would have re-declared them.
+            let on_this_line = if code.contains("#[path") {
+                quoted_after(raw, "#[path").into_iter().next()
+            } else {
+                None
+            };
+            let names = mod_decls(&code);
+            let attr = on_this_line.clone().or_else(|| pending.clone());
+            for name in &names {
+                match &attr {
+                    // A `#[path]` OUTSIDE AN INLINE BLOCK IS RELATIVE TO THE FILE'S OWN DIRECTORY,
+                    // and INSIDE one it is relative to the module directory — the language's rule,
+                    // and the difference between reading `src/tests/auth_tests.rs` (which exists,
+                    // sixty times over in this tree) and `src/auth/tests/auth_tests.rs` (which does
+                    // not). A rule that got this backwards would report every one of them.
+                    Some(p) => compiled.push(Compiled {
+                        at: at.clone(),
+                        how: format!("#[path = \"{p}\"] mod {name};"),
+                        candidates: vec![resolve(
+                            if open_mods.is_empty() { &file_dir } else { &here },
+                            p,
+                        )],
+                    }),
+                    None => compiled.push(Compiled {
+                        at: at.clone(),
+                        how: format!("mod {name};"),
+                        candidates: vec![
+                            resolve(&here, &format!("{name}.rs")),
+                            resolve(&here, &format!("{name}/mod.rs")),
+                        ],
+                    }),
+                }
+            }
+            // A `#[path]` AND ITS `mod` ARE RARELY ADJACENT. `#[cfg(…)]`, `#[allow(dead_code)]` and
+            // a doc line all sit between them in this tree, so the attribute survives anything that
+            // is itself an attribute, a comment or blank, and nothing else.
+            let t = code.trim();
+            pending = match on_this_line {
+                Some(p) => Some(p),
+                None if !names.is_empty() => None,
+                None if t.is_empty() || t.starts_with("#[") || t.starts_with("#!") => pending,
+                None if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') => pending,
+                None => None,
+            };
+
+            if let Some(name) = inline_mod(&code) {
+                open_mods.push((name, depth));
+            }
+            depth += crate::scan::delta(&code, '{', '}');
+            while open_mods.last().is_some_and(|(_, d)| depth <= *d) {
+                open_mods.pop();
+            }
+        }
+    }
+    compiled
+}
+
 pub fn rule_inputs(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) -> Row {
     let mut offenders: Vec<String> = Vec::new();
     let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
@@ -318,39 +763,65 @@ pub fn rule_inputs(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) ->
         };
         scanned += 1;
         let here = dir_of(&rel);
+        let mut line_start = 0usize;
         for (line_no, raw) in f.text.lines().enumerate() {
             // THE ATTRIBUTE IS READ OFF THE RAW LINE. `blank_literals` would erase the very string
             // this rule is about — which is exactly why `#[path]` was invisible to `:vocab`.
-            for (marker, label, what) in [
-                ("#[path", "path-include", "a module compiled from"),
-                (
-                    "include_str!",
-                    "build-script-reach",
-                    "a file read at build time from",
-                ),
-                (
-                    "include_bytes!",
-                    "build-script-reach",
-                    "bytes read at build time from",
-                ),
-            ] {
-                for p in quoted_after(raw, marker) {
-                    let target = resolve(&here, &p);
-                    let Some(theirs) = foreign_owner(&by_dir, me, &target) else {
-                        continue;
-                    };
-                    offenders.push(format!(
-                        "{label}\t{rel}:{}\t{} is {what} `{target}` — {}'s own source, and {} \
-                         declares no dependency on it in any table. A crate reaches another crate \
-                         through Cargo, where the edge is written down and scored; reading its \
-                         files compiles it in with no edge to score. {MAKE_A_NEW_KIND}",
-                        line_no + 1,
-                        me.name,
-                        theirs.name,
-                        me.name
-                    ));
+            if rel.ends_with("build.rs") {
+                offenders.extend(build_script_reach(&by_dir, me, &here, &rel, line_no, raw));
+            }
+            for (marker, label, what) in INCLUDE_MARKERS {
+                let mut cut = 0usize;
+                while let Some(p) = raw[cut..].find(marker) {
+                    let at = line_start + cut + p + marker.len();
+                    cut += p + marker.len();
+                    // THE ARGUMENT, NOT THE REST OF THE FILE. Far enough to cross the two or three
+                    // lines a wrapped `concat!(` spans, and no further, so a marker that carries no
+                    // argument cannot borrow a literal from the next function.
+                    let end = (at + 400..=f.text.len())
+                        .find(|i| f.text.is_char_boundary(*i))
+                        .unwrap_or(f.text.len());
+                    for target in include_targets(&f.text[at..end], &me.dir, &here) {
+                        // A PATH THIS GATE CANNOT RESOLVE IS RED, NOT SKIPPED. Splicing is not a
+                        // spelling this row is allowed to read past: an input it cannot resolve is
+                        // one it cannot score, and the softest possible failure of the rule that
+                        // matters most is to resolve a path the compiler never opens and say
+                        // nothing about the one it does.
+                        let target = match target {
+                            Ok(t) => t,
+                            Err(built_with) => {
+                                offenders.push(format!(
+                                    "unresolvable-include\t{rel}:{}\t{} builds a `{marker}` path \
+                                     with `{built_with}`, which this gate cannot resolve. An input \
+                                     it cannot resolve is an input it cannot score, and the first \
+                                     literal inside a splice is not the path. Write the path, or \
+                                     splice it from `env!(\"CARGO_MANIFEST_DIR\")`, which resolves \
+                                     to this crate's own directory and IS scored. \
+                                     {MAKE_A_NEW_KIND}",
+                                    line_no + 1,
+                                    me.name
+                                ));
+                                continue;
+                            }
+                        };
+                        let Some(theirs) = foreign_owner(&by_dir, me, &target) else {
+                            continue;
+                        };
+                        offenders.push(format!(
+                            "{label}\t{rel}:{}\t{} is {what} `{target}` — {}'s own source, and {} \
+                             declares no dependency on it in any table. A crate reaches another \
+                             crate through Cargo, where the edge is written down and scored; \
+                             reading its files compiles it in with no edge to score. \
+                             {MAKE_A_NEW_KIND}",
+                            line_no + 1,
+                            me.name,
+                            theirs.name,
+                            me.name
+                        ));
+                    }
                 }
             }
+            line_start += raw.len() + 1;
         }
     }
     if scanned == 0 {
@@ -361,6 +832,10 @@ pub fn rule_inputs(cx: &Ctx, crates: &[CrateInfo], planes: &BTreeSet<String>) ->
                 .to_string(),
         );
     }
+
+    // ── 1b. THE COMPILED SET IS THE SCANNED SET ──────────────────────────────────────────────────
+    let scan_set: BTreeSet<String> = files.iter().map(|f| f.rel_str()).collect();
+    offenders.extend(hidden_sources(cx, &scan_set, &files));
 
     // ── 2 and 5. THE PATHS AND THE NAMES A MANIFEST WRITES ───────────────────────────────────────
     for c in crates {
