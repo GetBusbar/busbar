@@ -43,6 +43,15 @@ pub const ROW_MISSING: &str = "audit-ledger:missing-scopes";
 pub const ROW_READABLE: &str = "audit-ledger:readable";
 pub const ROW_INVALID: &str = "audit-ledger:invalid-result";
 pub const ROW_STAMPED: &str = "audit-ledger:hash-matches-commit";
+/// THE COMMIT A RECORD NAMES IS ONE THIS REPOSITORY STILL CARRIES.
+///
+/// [`ROW_STAMPED`] proves a record's `tree_hash` is what its commit's tree actually held, and it
+/// proves it by asking git to produce that tree today. That proof is only as durable as the commit:
+/// one reachable from no branch, no tag and no pin is one `git gc` away from not being producible
+/// at all, and every round stamped against it becomes a number nobody can recompute. The register
+/// is the tree's audit history, and a history citing commits the repository is free to discard is a
+/// history of nothing.
+pub const ROW_REACHABLE: &str = "audit-ledger:audited-at-reachable";
 pub const ROW_OWED: &str = "audit-ledger:fix-owes-confirmation";
 
 pub struct AuditLedgerGate;
@@ -55,7 +64,7 @@ fn row(problems: &[String], id: &str, ok: &str, bad: &str, ok_detail: String) ->
     }
 }
 
-/// The FIVE rows the gate owns. The two `--check`-only rules are deliberately absent; see the
+/// The SIX rows the gate owns. The two `--check`-only rules are deliberately absent; see the
 /// module note.
 pub fn rows_from(f: &CheckFindings) -> Vec<Row> {
     vec![
@@ -88,6 +97,13 @@ pub fn rows_from(f: &CheckFindings) -> Vec<Row> {
             format!("{} scope(s)", f.scopes),
         ),
         row(
+            &f.unreachable,
+            ROW_REACHABLE,
+            "every commit a record names is one this repository still carries",
+            "a record names a commit reachable from neither HEAD nor an audit pin",
+            format!("{} scope(s)", f.scopes),
+        ),
+        row(
             &f.owed,
             ROW_OWED,
             "every HIGH/MEDIUM finding stamped fixed carries a confirming round",
@@ -108,6 +124,7 @@ impl Gate for AuditLedgerGate {
             ROW_READABLE.to_string(),
             ROW_INVALID.to_string(),
             ROW_STAMPED.to_string(),
+            ROW_REACHABLE.to_string(),
             ROW_OWED.to_string(),
         ]
     }
@@ -383,6 +400,27 @@ impl Gate for AuditLedgerGate {
             "a record naming a commit this repository cannot resolve",
             ROW_STAMPED,
             &["cannot be resolved"],
+        );
+
+        // …AND THE SAME PLANT IS THE REACHABILITY ROW'S RED, because it goes down the same path.
+        // The rule asks `merge-base --is-ancestor` FIRST and only then asks whether the commit
+        // resolves at all, so a commit git cannot produce and a commit on no branch reach this row
+        // through one code path and differ only in the sentence it prints. That is deliberate: a
+        // plant that could only exercise the unresolvable arm would leave the arm that actually
+        // catches drift — a real commit on no ref — proven by nothing, and the honest way to avoid
+        // that is to give both arms the same body rather than to write an object into the
+        // developer's repository to plant against.
+        plant_rows(
+            cx,
+            self,
+            &mut report,
+            &planted,
+            "a record naming a commit no branch, tag or audit pin reaches",
+            ROW_REACHABLE,
+            &[
+                "reachable from neither HEAD nor an audit pin",
+                "does not resolve in this repository",
+            ],
         );
 
         report

@@ -1021,6 +1021,8 @@ pub struct CheckFindings {
     pub invalid: Vec<String>,
     pub opens: Vec<String>,
     pub stamped: Vec<String>,
+    /// Records whose `audited_at` is reachable from neither HEAD nor any `refs/audit-pins/*`.
+    pub unreachable: Vec<String>,
     pub owed: Vec<String>,
     pub scopes: usize,
     pub clean_pct: f64,
@@ -1034,6 +1036,7 @@ impl CheckFindings {
             || !self.invalid.is_empty()
             || !self.opens.is_empty()
             || !self.stamped.is_empty()
+            || !self.unreachable.is_empty()
             || !self.owed.is_empty()
     }
 }
@@ -1089,6 +1092,12 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
     // dozen distinct commits between them, and re-resolving each one per round is the difference
     // between a check and a coffee break.
     let mut trees: TreeCache = BTreeMap::new();
+
+    // ONE REACHABILITY ANSWER PER COMMIT, and the pins read once. `merge-base --is-ancestor` is a
+    // process; 150 scopes carrying 236 rounds name a couple of dozen distinct commits between them.
+    let head_rev = git.head()?;
+    let pins = git.audit_pins();
+    let mut reach: BTreeMap<String, Option<String>> = BTreeMap::new();
 
     for r in &rows {
         let sc = &r.scope;
@@ -1162,6 +1171,46 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
                 continue;
             };
             let short = &at[..8.min(at.len())];
+
+            // A COMMIT NOBODY CAN REACH IS A TREE NOBODY CAN RE-READ. The hash check above proves
+            // the record's `tree_hash` is what its commit's tree ACTUALLY held — and it proves it
+            // by asking git to produce that tree today. A commit on no branch, no tag and no pin is
+            // one `git gc` away from not being producible at all, at which point every round
+            // stamped against it becomes unverifiable and the register's whole claim rests on a
+            // number nobody can recompute. The register is the tree's audit history; a history that
+            // cites commits the repository is free to discard is a history of nothing.
+            //
+            // Reachable from HEAD is the ordinary case. Reachable from `refs/audit-pins/*` is the
+            // declared one, for a reading taken off the current line — a ref somebody wrote, that
+            // `for-each-ref` shows and that clones and fetches carry.
+            let verdict = reach
+                .entry(at.to_string())
+                .or_insert_with(|| {
+                    if git.is_ancestor(at, &head_rev) {
+                        return None;
+                    }
+                    if pins.iter().any(|p| git.is_ancestor(at, p)) {
+                        return None;
+                    }
+                    Some(if git.resolves(at) {
+                        format!(
+                            "resolves, and is an ancestor of neither HEAD nor any of the {} \
+                             refs/audit-pins/* ref(s) this repository carries — one `git gc` from \
+                             a tree nobody can re-read. Pin it: git update-ref \
+                             refs/audit-pins/<name> {at}",
+                            pins.len()
+                        )
+                    } else {
+                        "does not resolve in this repository at all, so the tree it claims to \
+                         have read cannot be produced from here"
+                            .to_string()
+                    })
+                })
+                .clone();
+            if let Some(why) = verdict {
+                f.unreachable
+                    .push(format!("{label}  audited_at {short} {why}"));
+            }
             match stamped_hash(git, &mut trees, sc, rec) {
                 Ok(actual) if actual.as_deref() == rec.get("tree_hash").as_str() => {}
                 Ok(_) => f.stamped.push(format!("{label}  audited_at {short}")),

@@ -248,6 +248,44 @@ impl Git {
         Ok(table)
     }
 
+    /// THE AUDIT PINS. A round may legitimately name a commit that is not on the current line —
+    /// a reading taken on a branch, a reading taken before a rebase — and the way to keep such a
+    /// reading honest is to PIN the commit under `refs/audit-pins/<something>` so it survives, is
+    /// visible in `git for-each-ref`, and is fetched with the repository. A commit reachable from
+    /// nowhere at all is a commit that will be garbage-collected, and a record whose tree can be
+    /// collected is a record whose claim cannot be re-checked by anybody.
+    pub fn audit_pins(&self) -> Vec<String> {
+        self.run(&["for-each-ref", "--format=%(refname)", "refs/audit-pins/"])
+            .map(|out| {
+                out.lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Is `commit` an ancestor of `of` (or the same commit)?
+    ///
+    /// A commit git cannot resolve is NOT an ancestor, and that is the same answer for the same
+    /// reason: the tree it names cannot be produced from this repository. The two are distinguished
+    /// in the finding's wording, never in the verdict.
+    pub fn is_ancestor(&self, commit: &str, of: &str) -> bool {
+        self.run(&["merge-base", "--is-ancestor", commit, of])
+            .is_ok()
+    }
+
+    pub fn resolves(&self, commit: &str) -> bool {
+        self.run(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{commit}^{{commit}}"),
+        ])
+        .is_ok()
+    }
+
     pub fn commits_between(&self, old: &str, new: &str) -> Option<u64> {
         self.run(&["rev-list", "--count", &format!("{old}..{new}")])
             .ok()
@@ -1091,6 +1129,74 @@ pub fn production(rows: &[RowView]) -> Vec<&RowView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE PIN ARM, PROVEN IN A THROWAWAY REPOSITORY.
+    ///
+    /// `audit-ledger:audited-at-reachable` accepts a commit an audit pin reaches. That arm cannot
+    /// be planted through the gate's register overlay — an overlay can change what the register
+    /// SAYS, not what refs the repository HAS — and creating a ref to plant against would be
+    /// writing into the tree the developer is standing in. So the two git reads the rule is built
+    /// out of are proven here instead, over a repository this test makes and owns: a commit on no
+    /// branch is not an ancestor of HEAD, and pinning it under `refs/audit-pins/` is what makes it
+    /// one.
+    #[test]
+    fn a_pinned_commit_is_reachable_and_an_unpinned_one_is_not() {
+        let root = std::env::temp_dir().join(format!("xtask-audit-pins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("the scratch repository directory is creatable");
+        let git = Git::new(&root);
+        let hooks = root.join("nohooks");
+        std::fs::create_dir_all(&hooks).expect("the empty hooks directory is creatable");
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "audit@selftest"],
+            vec!["config", "user.name", "audit"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec![
+                "config",
+                "core.hooksPath",
+                hooks.to_str().expect("utf-8 path"),
+            ],
+        ] {
+            git.run(&args)
+                .expect("the scratch repository is configurable");
+        }
+        std::fs::write(root.join("f.txt"), "base\n").expect("the scratch file is writable");
+        git.run(&["add", "-A"]).expect("add");
+        git.run(&["commit", "-qm", "base"]).expect("commit");
+        let base = git.head().expect("HEAD resolves");
+
+        // A commit made on a side branch and then abandoned: real, resolvable, on no branch the
+        // line can see.
+        git.run(&["checkout", "-q", "-b", "side"]).expect("branch");
+        std::fs::write(root.join("g.txt"), "side\n").expect("the scratch file is writable");
+        git.run(&["add", "-A"]).expect("add");
+        git.run(&["commit", "-qm", "side"]).expect("commit");
+        let side = git.head().expect("HEAD resolves");
+        git.run(&["checkout", "-q", "master"])
+            .or_else(|_| git.run(&["checkout", "-q", "main"]))
+            .expect("back to the initial branch");
+        git.run(&["branch", "-qD", "side"])
+            .expect("the side branch is deleted");
+
+        assert!(git.resolves(&side), "the abandoned commit still resolves");
+        assert!(
+            !git.is_ancestor(&side, &base),
+            "and it is reachable from the line by nothing, which is the finding"
+        );
+        assert!(git.audit_pins().is_empty(), "no pin has been written yet");
+
+        git.run(&["update-ref", "refs/audit-pins/reading-1", &side])
+            .expect("the pin is writable");
+        let pins = git.audit_pins();
+        assert_eq!(pins, vec!["refs/audit-pins/reading-1".to_string()]);
+        assert!(
+            pins.iter().any(|p| git.is_ancestor(&side, p)),
+            "a pinned commit is reachable, which is the whole of what the pin is for"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     const HASH: &str = "aaaa";
     const OLD: &str = "bbbb";
