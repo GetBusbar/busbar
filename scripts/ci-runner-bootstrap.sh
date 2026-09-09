@@ -33,25 +33,10 @@ apt-get update -qq
 # schema/dispatcher lints, gdb for the crash-artefact step, docker for the postgres/valkey service
 # containers, the usual native build chain for ring/openssl).
 apt-get install -y -qq build-essential pkg-config libssl-dev git curl jq unzip zstd cmake clang \
-  gdb python3 python3-pip python3-venv python3-yaml docker.io ca-certificates rsync
+  gdb python3 python3-pip python3-yaml docker.io ca-certificates rsync
 
 systemctl enable --now docker
 usermod -aG docker ubuntu
-
-# ── The GitHub CLI ──────────────────────────────────────────────────────────────────────────────
-# `gh` is on the GitHub-HOSTED image and is not in Ubuntu's archive, so a self-hosted box does not
-# have it and nothing says so until a workflow reaches for it. keep-proof.yml and ci.yml both do —
-# the oracle's one-line summary, the keep-proof verdict and the golden-artefact download are all
-# `gh api` — and the failure is `gh: command not found`, exit 127, at the very END of a job whose
-# expensive work has already succeeded. That is the worst place to learn about a missing package.
-# Installed from the pinned release tarball rather than a third-party apt repo: one download, one
-# binary, no key to rotate.
-GH_VER="$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | jq -r .tag_name | tr -d v)"
-[ -n "$GH_VER" ] && [ "$GH_VER" != "null" ] || GH_VER="2.82.1"
-curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" \
-  | tar -xz -C /tmp
-install -m 0755 "/tmp/gh_${GH_VER}_linux_amd64/bin/gh" /usr/local/bin/gh
-gh --version || true
 
 # ── sccache, shared by every agent on the box ───────────────────────────────────────────────────
 # S3 backend, not the GitHub Actions cache: the GHA cache is rate-limited per repo and every
@@ -80,7 +65,8 @@ if [ "${SCCACHE_BACKEND}" = "s3" ]; then
 SCCACHE_REGION=${SCCACHE_REGION}
 SCCACHE_S3_KEY_PREFIX=busbar"
 else
-  SCCACHE_ENV=""   # decided per agent in the loop below — see the comment there
+  SCCACHE_ENV="SCCACHE_DIR=/var/cache/sccache
+SCCACHE_CACHE_SIZE=60G"
 fi
 
 # ── Rust, pinned to rust-toolchain.toml's channel ───────────────────────────────────────────────
@@ -115,55 +101,11 @@ while [ "$i" -le "$AGENTS" ]; do
   # box would each spawn 32 rustc threads: 4x oversubscription, every job slower than if it had
   # run alone. Pinning each agent to its fair share (32/AGENTS) is what makes several agents per
   # box a throughput win instead of a wash.
-  #
-  # EACH AGENT GETS ITS OWN CARGO_HOME AND RUSTUP_HOME. All four agents run as `ubuntu`, so without
-  # this they share ~/.cargo and ~/.rustup — and rustup is not concurrency-safe. Two agents whose
-  # jobs both reach `dtolnay/rust-toolchain` at the same moment race on the same directory, and the
-  # observed result is ~/.cargo/bin/rustup MISSING while its fourteen shims still point at it: every
-  # `cargo` on the box, including a remote proof that had nothing to do with either job, becomes
-  # "command not found". Twice, before it was diagnosed. Per-agent homes cost ~1.5 GB of toolchain
-  # and a private registry cache each — on a 300 GB disk that is the cheapest bug fix available.
-  # sccache stays SHARED, deliberately: it is content-addressed and safe to share, and sharing it is
-  # the entire point.
-  install -d -o ubuntu -g ubuntu "$d/.cargo" "$d/.rustup"
-  cp -a /home/ubuntu/.rustup/. "$d/.rustup/" 2>/dev/null || true
-  cp -a /home/ubuntu/.cargo/.  "$d/.cargo/"  2>/dev/null || true
-  chown -R ubuntu:ubuntu "$d/.cargo" "$d/.rustup"
-  # SCCACHE IS PER-AGENT ON LOCAL DISK, AND THAT IS NOT AN OVERSIGHT.
-  #
-  # sccache is a client plus a long-lived SERVER, and the server is addressed by a TCP port that
-  # defaults to 4226 for every process on the box. Four agents therefore share one server by
-  # accident: `mozilla-actions/sccache-action` runs `sccache --start-server` in each of them, and
-  # between jobs a `--stop-server` from one agent kills the server two neighbours are mid-compile
-  # against. The symptom is not a cache miss, it is a BUILD FAILURE that reads like a flaky
-  # compiler:
-  #
-  #     sccache: error: failed to execute compile
-  #     sccache: caused by: Connection reset by peer (os error 104)
-  #     error: could not compile `busbar` (test "plane_transport_neutrality")
-  #
-  # So each agent gets its own server port AND its own cache directory — two servers sharing one
-  # on-disk LRU is the same class of bug one level down. The cost is that an entry is warmed four
-  # times instead of once, on a disk sized for it.
-  #
-  # This is exactly what `CI_RUNNER_SCCACHE=s3` fixes properly: an S3 backend has no local server
-  # contention and IS shared across the whole fleet. That is why the bucket and its IAM policy are
-  # provisioned either way.
-  if [ -n "$SCCACHE_ENV" ]; then
-    AGENT_SCCACHE="$SCCACHE_ENV"
-  else
-    install -d -o ubuntu -g ubuntu "$d/sccache"
-    AGENT_SCCACHE="SCCACHE_DIR=$d/sccache
-SCCACHE_CACHE_SIZE=20G"
-  fi
   cat > "$d/.env" <<ENVEOF
-PATH=$d/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+PATH=/home/ubuntu/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 HOME=/home/ubuntu
-CARGO_HOME=$d/.cargo
-RUSTUP_HOME=$d/.rustup
 RUSTC_WRAPPER=sccache
-${AGENT_SCCACHE}
-SCCACHE_SERVER_PORT=$(( 4226 + i ))
+${SCCACHE_ENV}
 SCCACHE_IDLE_TIMEOUT=0
 CARGO_INCREMENTAL=0
 CARGO_BUILD_JOBS=${VCPU_PER_AGENT}
@@ -211,25 +153,13 @@ chmod 0755 /usr/local/bin/busbar-runner-register
 # under _work are exactly what this catches.
 cat > /opt/job-started-hook.sh <<'HOOKEOF'
 #!/usr/bin/env bash
-# THE RUNNER INVOKES THIS AS `bash -e <hook>`, NOT via its shebang. That is the whole reason this
-# file is written the way it is: under -e the first command with a non-zero status ends the hook,
-# the runner reports `Set up runner` as FAILED, and the job dies before checkout with no error
-# anywhere that names a cleanup step. It happened — `find ... -exec rm -rf {} +` returning 1 on a
-# workspace another job had already emptied took a whole test shard down. So every line here is
-# forgiven explicitly and the file ends in an unconditional `exit 0`: a workspace cleaner must
-# never be able to fail a job it was only meant to tidy up for.
 set -uo pipefail
 if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "${RUNNER_WORKSPACE}" ]; then
-  find "${RUNNER_WORKSPACE}" -maxdepth 1 -mindepth 1 -name '_temp*' -exec rm -rf {} + 2>/dev/null || true
+  find "${RUNNER_WORKSPACE}" -maxdepth 1 -mindepth 1 -name '_temp*' -exec rm -rf {} + 2>/dev/null
 fi
-# `until=1h` because the neighbours matter: three other agents on this box may be mid-job, and an
-# unfiltered prune is a cleanup step reaching into somebody else's run. An hour is longer than any
-# job's container lives and shorter than the leak this is here to stop.
-docker container prune -f --filter until=1h >/dev/null 2>&1 || true
-docker network   prune -f --filter until=1h >/dev/null 2>&1 || true
-docker volume    prune -f                   >/dev/null 2>&1 || true
-df -h / | tail -1 || true
-exit 0
+docker container prune -f  >/dev/null 2>&1
+docker volume    prune -f  >/dev/null 2>&1
+df -h / | tail -1
 HOOKEOF
 chmod 0755 /opt/job-started-hook.sh
 for d in /opt/runner-*; do
@@ -268,8 +198,7 @@ systemctl enable --now busbar-runner-nightly-stop.timer
 # in /var/log/busbar-runner-bootstrap.log instead of failing somebody's hand-back.
 su - ubuntu -c "git clone -q --depth 50 https://github.com/${ORG}/busbar.git /home/ubuntu/prewarm" || true
 su - ubuntu -c "cd /home/ubuntu/prewarm && \
-  RUSTC_WRAPPER=sccache $(printf '%s ' ${SCCACHE_ENV:-SCCACHE_DIR=/var/cache/sccache}) \
-  SCCACHE_SERVER_PORT=4300 CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER=sccache $(printf '%s ' ${SCCACHE_ENV}) CARGO_INCREMENTAL=0 \
   cargo build --workspace --locked" || true
 
 touch /var/run/busbar-runner-ready

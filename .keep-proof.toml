@@ -1,0 +1,17 @@
+# WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
+#
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
+# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
+# something specific instead of "everything, slowly".
+#
+#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
+#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
+#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
+#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
+#              small, load-bearing slice rather than a claim about all twenty-six families: billing
+#              and ledger are the money path — if a CI change could somehow perturb a recorded
+#              behaviour, it is these cells that must say so.
+#   tests    — the packages whose test binaries the sharded legs must include by name.
+#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
+families = '^(billing|ledger)([|.]|$)'
+tests = ["busbar-unit-cost"]
