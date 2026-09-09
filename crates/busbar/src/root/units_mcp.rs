@@ -2153,8 +2153,13 @@ impl Units for McpUnits<'_> {
         // metering step reads the draft's own figures and the settlement reads the same evidence it
         // always did, and what this records is the bytes the Encode step reports on — the answer's
         // size, which is not a priced quantity.
+        // THE BUFFERING IS THIS PLANE'S CHOICE AND IT IS MADE HERE, for the reason the A2A plane's
+        // Route step gives: `execute` hands back the surface's own response with its body unread, and
+        // this plane's exit path carries bytes. `collected` is the generic buffering over the seam's
+        // two methods, so the mount does not read a body on every plane's behalf — one that streamed
+        // its answer would otherwise be buffered against its will.
         if let (Some(dispatch), Some(op)) = (self.bindings.dispatch, self.draft.op) {
-            let answered = dispatch.execute(op);
+            let answered = crate::root::transports::collected(dispatch, op);
             let mut progress = read_through_poison(&self.progress);
             progress.encoded = answered.body.len() as u64;
             progress.answer = Some(answered);

@@ -66,7 +66,12 @@ use std::sync::Arc;
 
 use busbar_contract::grammar::{Claim, PathSeg, Selector};
 
-use crate::root::transports::{MountDispatch, PlaneAnswer};
+use crate::root::transports::{unavailable_answer, MountDispatch, MountedReply, PlaneAnswer};
+
+// The header conversion lives beside the buffering that needs it, in `transports`, because that file
+// is compiled whether or not any plane has a mount. Re-exported rather than re-declared: a second
+// copy of it is a second answer to what a header value is on the wire.
+pub(crate) use crate::root::transports::header_pairs;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   WHAT A MOUNT NEEDS OF A LEG
@@ -238,17 +243,8 @@ pub(crate) fn http_response(answer: PlaneAnswer) -> axum::http::Response<axum::b
 ///
 /// No document, because there is no plane answer to render: the loop produced no ending of its own,
 /// so anything in the body would be this file's prose about a unit it did not decide.
-fn unavailable_response() -> axum::http::Response<axum::body::Body> {
+fn unavailable_response() -> MountedReply {
     http_response(unavailable_answer())
-}
-
-/// What the seam answers when there is no surface left to ask.
-fn unavailable_answer() -> PlaneAnswer {
-    PlaneAnswer {
-        status: 503,
-        headers: Vec::new(),
-        body: Vec::new(),
-    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -259,10 +255,24 @@ fn unavailable_answer() -> PlaneAnswer {
 ///
 /// The request goes one way and the answer comes back the other, on a channel the caller owns, so the
 /// asynchronous side never has to know which of several outstanding calls it is answering.
-type Errand = (
-    axum::http::Request<axum::body::Body>,
-    std::sync::mpsc::SyncSender<PlaneAnswer>,
-);
+///
+/// **TWO ERRANDS AND ONE DOOR.** Executing an operation and reading a body to its end are both
+/// things a synchronous loop cannot do for itself, for the same reason and with the same remedy: the
+/// runtime is on the other side. A plane that wants its answer buffered is asking the same channel
+/// for a second favour, not reaching for a second mechanism — so the channel carries a sum of the
+/// two rather than only the first, and a plane that never buffers never sends the second.
+enum Errand {
+    /// One request handed to the mounted router, and the response that router wrote.
+    Call(
+        axum::http::Request<axum::body::Body>,
+        std::sync::mpsc::SyncSender<MountedReply>,
+    ),
+    /// One body read to its end on the runtime that owns it.
+    Collect(
+        axum::body::Body,
+        std::sync::mpsc::SyncSender<Option<Vec<u8>>>,
+    ),
+}
 
 /// The dispatch that hands one operation to the surface it is already mounted on.
 ///
@@ -304,7 +314,7 @@ impl RequestDispatch {
 }
 
 impl MountDispatch for RequestDispatch {
-    fn execute(&self, _op: busbar_contract::ids::OpClassId) -> PlaneAnswer {
+    fn execute(&self, _op: busbar_contract::ids::OpClassId) -> MountedReply {
         let taken = self
             .request
             .lock()
@@ -313,14 +323,28 @@ impl MountDispatch for RequestDispatch {
         let Some(request) = taken else {
             // The seam was driven twice for one arrival. Nothing here can answer that honestly, and
             // executing the operation a second time is the one thing it must not do.
-            return unavailable_answer();
+            return unavailable_response();
         };
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
-        if self.errands.send((request, reply)).is_err() {
+        if self.errands.send(Errand::Call(request, reply)).is_err() {
             // The driving task is gone, which happens only as the node itself goes away.
-            return unavailable_answer();
+            return unavailable_response();
         }
-        answer.recv().unwrap_or_else(|_| unavailable_answer())
+        // WHAT COMES BACK IS THE SURFACE'S RESPONSE, and it is handed on as it stands. Nothing here
+        // reads its body, adds a header or recomputes its status: the caller asked for the answer
+        // and this is the answer.
+        answer.recv().unwrap_or_else(|_| unavailable_response())
+    }
+
+    fn collect(&self, body: axum::body::Body) -> Option<Vec<u8>> {
+        let (reply, bytes) = std::sync::mpsc::sync_channel(1);
+        if self.errands.send(Errand::Collect(body, reply)).is_err() {
+            return None;
+        }
+        // A receive that fails is a body that never finished, which is exactly what `None` says. The
+        // two failures are the same failure to the caller and are deliberately not distinguished:
+        // both mean the node cannot produce the answer.
+        bytes.recv().ok().flatten()
     }
 }
 
@@ -334,55 +358,53 @@ pub(crate) fn drive(
 ) -> tokio::sync::mpsc::UnboundedSender<Errand> {
     let (errands, mut inbox) = tokio::sync::mpsc::unbounded_channel::<Errand>();
     runtime.spawn(async move {
-        while let Some((request, reply)) = inbox.recv().await {
-            let inner = inner.clone();
-            tokio::spawn(async move {
-                let _ = reply.send(call(inner, request).await);
-            });
+        while let Some(errand) = inbox.recv().await {
+            match errand {
+                Errand::Call(request, reply) => {
+                    let inner = inner.clone();
+                    tokio::spawn(async move {
+                        let _ = reply.send(call(inner, request).await);
+                    });
+                }
+                // A buffering errand runs on its own task for the same reason an executing one does:
+                // a body that takes a while to finish must not hold up the operation behind it.
+                Errand::Collect(body, reply) => {
+                    tokio::spawn(async move {
+                        let _ = reply.send(collect(body).await);
+                    });
+                }
+            }
         }
     });
     errands
 }
 
-/// Hand one request to the router and take its whole answer.
-async fn call(inner: axum::Router, request: axum::http::Request<axum::body::Body>) -> PlaneAnswer {
+/// Hand one request to the router and take its whole RESPONSE.
+///
+/// **NOTHING IS READ HERE.** This used to buffer the body and hand back three fields, which made
+/// every mounted answer of every plane a `Vec<u8>` assembled inside the mount whether its plane
+/// wanted one or not. What that cost is not abstract: a streamed answer arrived complete or not at
+/// all, the chunk boundaries the surface chose were gone, and anything the surface attached to its
+/// response as an extension had nowhere to survive. The response is the plane's, so it travels.
+async fn call(inner: axum::Router, request: axum::http::Request<axum::body::Body>) -> MountedReply {
     use tower::ServiceExt;
 
     // The router's own error type is uninhabited: a mounted axum router answers, and failing is not
     // among the things it can do. So there is no error arm to write, and writing one anyway would be
     // a branch that can never be taken pretending to be a fallback that could be.
-    let response = inner.oneshot(request).await.unwrap_or_else(|e| match e {});
-    let (parts, body) = response.into_parts();
-    // The surface answered and its body did not come back. Serving the status with an EMPTY body
-    // would read, to every client and every dashboard, as an operation that succeeded and returned
-    // nothing. The node could not produce the answer, and that is what it says.
-    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
-        return unavailable_answer();
-    };
-    PlaneAnswer {
-        status: parts.status.as_u16(),
-        headers: header_pairs(&parts.headers),
-        body: bytes.to_vec(),
-    }
+    inner.oneshot(request).await.unwrap_or_else(|e| match e {})
 }
 
-/// Header names and values as owned pairs, in emission order.
+/// Read one body to its end, on the runtime that owns it.
 ///
-/// A header value is bytes rather than text, and this is the one place that matters: these protocols'
-/// answers carry a content type and a streamed one carries a cache directive, and every byte of them
-/// has to reach the wire unchanged. Everything emitted here is ASCII, so the conversion is exact —
-/// and it is written as a conversion rather than an assumption so that a value which was not would be
-/// visible rather than silent.
-pub(crate) fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
-    headers
-        .iter()
-        .map(|(name, value)| {
-            (
-                name.as_str().to_string(),
-                String::from_utf8_lossy(value.as_bytes()).into_owned(),
-            )
-        })
-        .collect()
+/// No cap, and the absence is deliberate: the operator's ingress cap is applied to what ARRIVES, in
+/// the wrap below, and a surface's own answer is not an untrusted quantity. A limit invented here
+/// would be a second, quieter answer to how large this deployment's responses may be.
+async fn collect(body: axum::body::Body) -> Option<Vec<u8>> {
+    axum::body::to_bytes(body, usize::MAX)
+        .await
+        .ok()
+        .map(|bytes| bytes.to_vec())
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════

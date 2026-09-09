@@ -361,8 +361,109 @@ pub struct PlaneAnswer {
 /// carrying one identical method, and the first thing to differ between two of them would have been
 /// a difference nobody meant.
 pub trait MountDispatch: Send + Sync {
-    /// Hand one operation to the surface it is mounted on, and take back its whole answer.
-    fn execute(&self, op: busbar_contract::ids::OpClassId) -> PlaneAnswer;
+    /// Hand one operation to the surface it is mounted on, and take back its whole RESPONSE.
+    ///
+    /// The response is the plane's own, exactly as its surface wrote it — status, headers and a body
+    /// that has not been read. A caller that wants bytes asks for them; a caller that does not gets
+    /// a body it can hand onward as it stands.
+    fn execute(&self, op: busbar_contract::ids::OpClassId) -> MountedReply;
+
+    /// Read one body to its end, THROUGH THE SAME DOOR [`MountDispatch::execute`] used.
+    ///
+    /// A body is read on the runtime that owns it, and the caller of this trait is a synchronous
+    /// loop that is not on that runtime. So buffering is an errand like execution is an errand,
+    /// posted on the one channel this seam has, rather than a second mechanism a plane would have to
+    /// find its own way onto.
+    ///
+    /// `None` where the body did not finish. It is not an empty body: an empty body says the
+    /// operation answered with nothing, and a read that did not complete says the node could not
+    /// produce the answer at all. Collapsing the two would report a truncated stream as a successful
+    /// empty one to every client and every dashboard.
+    fn collect(&self, body: axum::body::Body) -> Option<Vec<u8>>;
+}
+
+/// ONE REPLY, AS THE PLANE'S OWN RESPONSE, carried rather than rebuilt.
+///
+/// The seam used to hand back [`PlaneAnswer`] — a status, headers and `Vec<u8>` — which meant every
+/// answer of every mounted plane was read to its end inside the mount before one byte of it reached
+/// the wire. That is a buffer no plane asked for: a streamed answer stopped being streamed at the
+/// seam, a chunk boundary the surface chose was lost, and an extension the surface attached to its
+/// response was dropped on the floor because a three-field struct has nowhere to put one.
+///
+/// It is an alias and not a new type on purpose. The whole content of the change is "the response
+/// is the plane's", and a wrapper would be this root holding the plane's answer in a container of
+/// its own design — which is the thing the alias exists to stop.
+pub type MountedReply = axum::http::Response<axum::body::Body>;
+
+/// ONE OPERATION, EXECUTED AND THEN BUFFERED, for a plane whose exit path carries bytes.
+///
+/// ## Why this is here rather than in either plane
+///
+/// Two of the planes mounted today report the size of their answer at Route and carry the bytes out
+/// on their exit frame, so they need the whole body before the unit ends. That is a property of
+/// THOSE PLANES' exit paths and not of the mount, which is why the mount stopped doing it — but it
+/// is also identical between them, and two copies of "execute, then read the body, then put the
+/// three fields in a struct" are two things that can drift. The first thing to drift would have been
+/// the figure one of them reports as its encoded size.
+///
+/// So the buffering is written ONCE, generically, over the seam's own two methods, and a plane opts
+/// into it by calling this instead of [`MountDispatch::execute`]. Nothing here names a protocol: the
+/// argument is an operation class, the answer is the three fields every surface writes, and a plane
+/// that does not want a buffer simply does not call it.
+///
+/// **The bytes are unchanged.** The status, the headers in emission order and the body are the same
+/// three values the seam handed back when it did this internally, which is what keeps the figure a
+/// plane records as `encoded` — and therefore its exit frame — byte-identical across the change.
+#[must_use]
+pub fn collected(dispatch: &dyn MountDispatch, op: busbar_contract::ids::OpClassId) -> PlaneAnswer {
+    let (parts, body) = dispatch.execute(op).into_parts();
+    // The surface answered and its body did not come back. Serving the status with an EMPTY body
+    // would read, to every client and every dashboard, as an operation that succeeded and returned
+    // nothing. The node could not produce the answer, and that is what it says.
+    let Some(body) = dispatch.collect(body) else {
+        return unavailable_answer();
+    };
+    PlaneAnswer {
+        status: parts.status.as_u16(),
+        headers: header_pairs(&parts.headers),
+        body,
+    }
+}
+
+/// What the seam answers when there is no surface left to ask.
+///
+/// No document, because there is no plane answer to render: nothing decided anything, so anything in
+/// the body would be this file's prose about a unit it did not judge.
+#[must_use]
+pub fn unavailable_answer() -> PlaneAnswer {
+    PlaneAnswer {
+        status: 503,
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+}
+
+/// Header names and values as owned pairs, in emission order.
+///
+/// A header value is bytes rather than text, and this is the one place that matters: these protocols'
+/// answers carry a content type and a streamed one carries a cache directive, and every byte of them
+/// has to reach the wire unchanged. Everything emitted here is ASCII, so the conversion is exact —
+/// and it is written as a conversion rather than an assumption so that a value which was not would be
+/// visible rather than silent.
+///
+/// Here rather than in the mount because [`collected`] needs it and the mount is compiled only where
+/// some plane HAS a mount. One copy either way: the mount re-exports this one.
+#[must_use]
+pub fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_string(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect()
 }
 
 // ── the leg a driver walks an arrival against ───────────────────────────────────────────────────
