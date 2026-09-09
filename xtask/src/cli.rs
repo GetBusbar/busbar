@@ -334,10 +334,16 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
     }
     match gates::verify_report(gate, &report) {
         Ok(()) => {
+            let slowest = report
+                .slowest()
+                .map(|(n, t)| format!(", slowest {:.1}s ({n})", t.as_secs_f64()))
+                .unwrap_or_default();
             println!(
-                "  {} case(s), {} skipped — the gate is proven RED-able",
+                "  {} case(s), {} skipped, {:.1}s / {:.0} work units{slowest} — the gate is proven RED-able",
                 report.cases().len(),
-                report.skipped()
+                report.skipped(),
+                report.total().as_secs_f64(),
+                report.units()
             );
             0
         }

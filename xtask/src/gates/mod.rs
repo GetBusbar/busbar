@@ -211,6 +211,132 @@ impl Registration {
     }
 }
 
+/// TWO GUARDS, ONE RUNNER, AND THEY ARE NOT THE SAME GUARD.
+///
+/// [`execute_within`] and [`Watchdog`] are the HANG guard: a wall-clock ceiling, five minutes by
+/// default, per gate RUN, tunable from the environment because the box that needs a bigger number
+/// is never the box the number was written on. Its finding says `hung: the gate did not finish
+/// within Ns`, and what it is about is a gate that has stopped making progress at all.
+///
+/// The budget below is the REGRESSION guard: it is about a self-test that still finishes and has
+/// quietly become ten times more expensive, which no ceiling can see because every individual run
+/// is still under it. Its finding says `spent N work units against a budget of M`. Neither
+/// subsumes the other — a hang blows the ceiling and never reaches the budget; a regression that
+/// triples the shard never blows the ceiling — so both are red, separately, with messages a reader
+/// can tell apart.
+///
+/// THE SELF-TEST BUDGET, AND WHY IT IS NOT MEASURED IN SECONDS.
+///
+/// `cargo test -p xtask` runs `xtask selftest`, which drives EVERY registered gate's cases. That is
+/// the only place several of these gates are ever proven RED-able, so the shard cannot simply be
+/// made smaller -- and it grew past fifty-one minutes, on a runner whose ssh session dies at about
+/// fifty and whose gate job was cancelled at twenty-five. Nothing measured it. A rule that grew a
+/// whole-tree scan per plant looked exactly like one that did not, right up to the point where the
+/// job was killed and the verdict was "cancelled", which is neither green nor red.
+///
+/// A WALL-CLOCK BUDGET WAS TRIED FIRST AND IS WRONG, and the measurement that says so was taken in
+/// this repository: `cargo test -p xtask` runs the lib tests and the integration tests
+/// CONCURRENTLY, and several of them drive whole gates, so a case that costs 4 seconds alone costs
+/// 23 under the shard's own contention. Fifty-four budgets fired, on a tree with no regression in
+/// it. A gate that is red because the machine was busy is a gate somebody deletes.
+///
+/// So the budget is denominated in WORK UNITS: [`work_unit`] times a fixed, deterministic piece of
+/// arithmetic once per process, and every budget is a multiple of that. A box four times slower, or
+/// four times more contended, produces a calibration four times slower too, and the ratio the
+/// budget is about survives both. It is not a perfect proxy -- the calibration is arithmetic and
+/// the gates are regex and I/O -- which is exactly why the multiples carry roughly twice the
+/// measured cost rather than a tight fit. The failure being caught is a factor of ten.
+///
+/// THE BUDGET IS ON THE GATE'S TOTAL, not on one case. A rule that grew a whole-tree scan makes
+/// EVERY case slower by the same factor, so a per-case limit would have to be set high enough to
+/// pass the slowest legitimate case and would then miss the uniform regression that actually costs
+/// the shard its hour. The slowest case is printed beside the total, because that is what a reader
+/// needs in order to act on it.
+/// Everything not named below. The most expensive gate that is NOT named measured 2 811 units, so
+/// this is about three times the dearest ordinary self-test in the registry.
+const DEFAULT_BUDGET_UNITS: f64 = 9000.0;
+
+/// The gates whose self-tests legitimately cost more, each with its MEASURED cost and the reason.
+/// An entry for a gate that is no longer registered is refused by `gates::posture_tests`.
+///
+/// Every number is about three times what the gate measured on the host this table was calibrated
+/// on. Three, not one-point-two, for two reasons: the ruler is arithmetic and the gates are regex
+/// and I/O, so the proxy drifts a little with the machine; and the failure being caught is a rule
+/// that grew a whole-tree scan per plant, which is a factor of ten. A budget tight enough to flap
+/// is a budget somebody raises without reading it.
+const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
+    (
+        "plane-purity",
+        80000.0,
+        "25 792 units measured, the dearest self-test in the registry by a factor of two. Not analysed here; the entry is the measurement, written down so that a doubling is a red row rather than four minutes nobody attributes. It is the first name on the shard's own drain list.",
+    ),
+    (
+        "plane-purity-strict",
+        45000.0,
+        "13 959 units measured, the ratcheted twin of plane-purity and the second name on the same drain list. Not analysed here either.",
+    ),
+    (
+        "structure-lint",
+        22000.0,
+        "6 914 units measured. One gate over a dozen rule families, each with its own planted tree, and the census walks the whole workspace.",
+    ),
+    (
+        "audit-ledger",
+        22000.0,
+        "6 552 units measured, down from 7 868 once the reachability rule stopped forking a `merge-base` per record per pin. What is left is `ls-tree` and `cat-file` per planted register, which is the instrument reading the repository rather than the register.",
+    ),
+    (
+        "construction",
+        50000.0,
+        "about 15 600 units: thirty-six rules over a 660k-line tree, thirty cases, the plants grouped by family so one case carries every edit a family needs. The file scan is memoised; what is left is the rules themselves.",
+    ),
+    (
+        "kind-isolation",
+        65000.0,
+        "about 19 500 units, down from 52 000 once the registration scan stopped re-lexing the tree once per wire. Eight rows over every crate under crates/, three of them whole-tree scans, fifty-eight cases. The residue is the rule's own design: a plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo.",
+    ),
+    (
+        "kind-isolation-ship",
+        80000.0,
+        "the same, plus the ship rows -- the source index, the shape check, the control-path scan and the conformance battery walk -- which are not on the per-push twin.",
+    ),
+];
+
+/// One WORK UNIT: how long THIS process takes to run a fixed piece of arithmetic, measured once.
+///
+/// Deterministic and dependency-free on purpose. It is not a benchmark of anything a gate does; it
+/// is a ruler that shrinks and stretches with the machine and its load, which is the only property
+/// a budget compared against it needs.
+pub fn work_unit() -> std::time::Duration {
+    static UNIT: std::sync::OnceLock<std::time::Duration> = std::sync::OnceLock::new();
+    *UNIT.get_or_init(|| {
+        let t = std::time::Instant::now();
+        let buf: Vec<u8> = (0..1u32 << 16).map(|i| (i % 251) as u8).collect();
+        let mut acc: u64 = 0;
+        for round in 0..64u64 {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            round.hash(&mut h);
+            buf.hash(&mut h);
+            acc = acc.wrapping_add(h.finish());
+        }
+        // The accumulator is fed to something the caller could observe, so the loop is not code the
+        // optimiser may delete: a ruler that compiles away measures nothing.
+        if acc == u64::MAX {
+            eprintln!("xtask: the calibration ruler measured {acc}");
+        }
+        t.elapsed().max(std::time::Duration::from_micros(1))
+    })
+}
+
+fn selftest_budget(gate: &str) -> f64 {
+    SELFTEST_BUDGETS
+        .iter()
+        .find(|(n, _, _)| *n == gate)
+        .map(|(_, u, _)| *u)
+        .unwrap_or(DEFAULT_BUDGET_UNITS)
+}
+
 pub trait Gate {
     fn name(&self) -> &'static str;
 
@@ -462,11 +588,28 @@ impl Case {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Report {
     cases: Vec<Case>,
+    /// What each case COST, in the same order. Parallel to `cases` rather than a field of `Case`,
+    /// because a `Case` is built in twenty places across the gates and a timer is not something any
+    /// of them should have to remember to start.
+    took: Vec<std::time::Duration>,
     /// Failures that are not about a single case — an unplantable fixture, an unreadable tree.
     infra: Vec<String>,
+    /// When the previous case finished. The work a case costs happens between two pushes.
+    mark: std::time::Instant,
+}
+
+impl Default for Report {
+    fn default() -> Report {
+        Report {
+            cases: Vec::new(),
+            took: Vec::new(),
+            infra: Vec::new(),
+            mark: std::time::Instant::now(),
+        }
+    }
 }
 
 impl Report {
@@ -475,6 +618,8 @@ impl Report {
     }
 
     pub fn push(&mut self, case: Case) {
+        self.took.push(self.mark.elapsed());
+        self.mark = std::time::Instant::now();
         self.cases.push(case);
     }
 
@@ -482,7 +627,26 @@ impl Report {
     /// assembled from per-rule sub-reports rather than written as one list.
     pub fn append(&mut self, other: Report) {
         self.cases.extend(other.cases);
+        self.took.extend(other.took);
         self.infra.extend(other.infra);
+        self.mark = std::time::Instant::now();
+    }
+
+    /// What this report cost, in [`work_unit`]s.
+    pub fn units(&self) -> f64 {
+        self.total().as_secs_f64() / work_unit().as_secs_f64()
+    }
+
+    pub fn total(&self) -> std::time::Duration {
+        self.took.iter().sum()
+    }
+
+    pub fn slowest(&self) -> Option<(&str, std::time::Duration)> {
+        self.cases
+            .iter()
+            .zip(self.took.iter())
+            .max_by_key(|(_, t)| **t)
+            .map(|(c, t)| (c.name.as_str(), *t))
     }
 
     pub fn note_infra_failure(&mut self, msg: impl Into<String>) {
@@ -725,6 +889,23 @@ pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Ver
 /// declaration that no longer names an owed row is itself refused.
 pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
+
+    // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
+    // runner kills it, and a killed job is neither green nor red.
+    let budget = selftest_budget(gate.name());
+    let spent = report.units();
+    if spent > budget {
+        let slowest = report
+            .slowest()
+            .map(|(n, t)| format!(" Slowest case: `{n}`, {:.1}s.", t.as_secs_f64()))
+            .unwrap_or_default();
+        errs.push(format!(
+            "{}: this self-test spent {spent:.0} work units against a budget of {budget:.0} (one unit is {:.1}ms on this box right now, so {:.0}s of wall clock here). A self-test that grew a whole-tree scan per plant is how the xtask shard goes from minutes to an hour, and the runner that finds out is the one that cancels the job.{slowest}",
+            gate.name(),
+            work_unit().as_secs_f64() * 1000.0,
+            report.total().as_secs_f64()
+        ));
+    }
 
     if !report
         .cases
@@ -1366,6 +1547,34 @@ mod posture_tests {
         let cx = Ctx::workspace().expect("the workspace opens");
         let red = verdict(vec![Row::fail("x", "t", "d")]);
         assert!(excused_from_all("plane-purity", &cx, &red).is_none());
+    }
+
+    /// A budget for a gate that is not registered is a number nobody reads, and a reason too short
+    /// to be one is a number nobody argued for.
+    #[test]
+    fn every_selftest_budget_names_a_registered_gate_with_a_reason() {
+        for (name, units, why) in SELFTEST_BUDGETS {
+            assert!(
+                find(name).is_some(),
+                "`{name}` has a self-test budget and is not a registered gate"
+            );
+            assert!(
+                *units > DEFAULT_BUDGET_UNITS,
+                "`{name}`'s budget of {units} units is not above the default; strike the entry"
+            );
+            assert!(
+                why.len() > 60,
+                "`{name}`'s budget reason is too short to be one"
+            );
+        }
+    }
+
+    /// The ruler must be a ruler: measurable, and the same every time it is asked.
+    #[test]
+    fn the_work_unit_is_a_positive_memoised_measurement() {
+        let a = work_unit();
+        assert!(a > std::time::Duration::ZERO);
+        assert_eq!(a, work_unit());
     }
 
     /// Every posture names a registered gate. An entry for a gate that no longer exists is a

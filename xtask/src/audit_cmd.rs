@@ -1095,7 +1095,6 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
 
     // ONE REACHABILITY ANSWER PER COMMIT, and the pins read once. `merge-base --is-ancestor` is a
     // process; 150 scopes carrying 236 rounds name a couple of dozen distinct commits between them.
-    let head_rev = git.head()?;
     let pins = git.audit_pins();
     let mut reach: BTreeMap<String, Option<String>> = BTreeMap::new();
 
@@ -1186,10 +1185,7 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
             let verdict = reach
                 .entry(at.to_string())
                 .or_insert_with(|| {
-                    if git.is_ancestor(at, &head_rev) {
-                        return None;
-                    }
-                    if pins.iter().any(|p| git.is_ancestor(at, p)) {
+                    if git.reachable().contains(at) {
                         return None;
                     }
                     Some(if git.resolves(at) {

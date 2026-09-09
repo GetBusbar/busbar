@@ -3013,6 +3013,56 @@ fn wire_symbol(instance: &str) -> String {
     out
 }
 
+/// THE PER-FILE REGISTRATION SCAN, MEMOISED — the same device `:matrix` already uses, for the same
+/// reason: every self-test case re-runs the whole gate over a tree that differs from the last one by
+/// a single file.
+///
+/// The key is everything the answer depends on: the file's path, its bytes, and the needle set (so
+/// a plant that registers a transport invalidates every entry). The scan is a pure function of those
+/// three, so a hit is a memo and never a stale reading.
+type WireHits = std::sync::Arc<BTreeSet<String>>;
+
+static WIRE_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, WireHits>>> =
+    std::sync::OnceLock::new();
+
+fn wires_named_in(rel: &str, text: &str, needles: &[(String, String, String)]) -> WireHits {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    rel.hash(&mut h);
+    text.hash(&mut h);
+    for (n, p, s) in needles {
+        n.hash(&mut h);
+        p.hash(&mut h);
+        s.hash(&mut h);
+    }
+    let key = h.finish();
+    let memo = WIRE_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the wire memo mutex is never poisoned")
+        .get(&key)
+    {
+        return std::sync::Arc::clone(found);
+    }
+    let mut hit: BTreeSet<String> = BTreeSet::new();
+    for (_, code) in scan::production_lines(text) {
+        if hit.len() == needles.len() {
+            break;
+        }
+        let lower = scan::blank_literals(&code).to_lowercase();
+        for (name, path, sym) in needles {
+            if !hit.contains(name) && lower.contains(path.as_str()) && word_ci(&lower, sym) {
+                hit.insert(name.clone());
+            }
+        }
+    }
+    let entry = std::sync::Arc::new(hit);
+    memo.lock()
+        .expect("the wire memo mutex is never poisoned")
+        .insert(key, std::sync::Arc::clone(&entry));
+    entry
+}
+
 fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let wires: Vec<&CrateInfo> = crates
         .iter()
@@ -3074,6 +3124,21 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.dir.as_str(), k)))
         .collect();
+    // THE NEEDLES ARE DERIVED ONCE, and the file is read ONCE. Both halves were per-wire before:
+    // the scan re-ran `production_lines` and `blank_literals` over the whole file for each of the
+    // seven wires, so a 1 500-file tree was lexed ten thousand times per run — 8.2 of the gate's
+    // 12.6 seconds, on every one of the fifty-eight self-test cases.
+    let needles: Vec<(String, String, String)> = wires
+        .iter()
+        .map(|w| {
+            let instance = w.remainder.join("-");
+            (
+                w.name.clone(),
+                format!("busbar_transport_{}::", instance.replace('-', "_")),
+                wire_symbol(&instance).to_lowercase(),
+            )
+        })
+        .collect();
     let mut sites: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for f in &files {
         let rel = f.rel_str();
@@ -3086,17 +3151,8 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         if kind_of.get(dir.as_str()) == Some(&"transport") {
             continue;
         }
-        for w in &wires {
-            let instance = w.remainder.join("-");
-            let path = format!("busbar_transport_{}::", instance.replace('-', "_"));
-            let sym = wire_symbol(&instance).to_lowercase();
-            for (_, code) in scan::production_lines(&f.text) {
-                let lower = scan::blank_literals(&code).to_lowercase();
-                if lower.contains(&path) && word_ci(&lower, &sym) {
-                    sites.entry(w.name.clone()).or_default().insert(rel.clone());
-                    break;
-                }
-            }
+        for name in wires_named_in(&rel, &f.text, &needles).iter() {
+            sites.entry(name.clone()).or_default().insert(rel.clone());
         }
     }
     for w in &wires {

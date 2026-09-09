@@ -206,11 +206,16 @@ pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
 /// The git reads the register rests on, always `-C <repo>` and never a `cd`.
 pub struct Git {
     repo: std::path::PathBuf,
+    /// See [`Git::reachable`]. Resolved at most once, and never from anything an overlay can move.
+    reachable: std::sync::OnceLock<BTreeSet<String>>,
 }
 
 impl Git {
     pub fn new(repo: impl Into<std::path::PathBuf>) -> Git {
-        Git { repo: repo.into() }
+        Git {
+            repo: repo.into(),
+            reachable: std::sync::OnceLock::new(),
+        }
     }
 
     pub fn repo(&self) -> &Path {
@@ -271,6 +276,31 @@ impl Git {
     /// A commit git cannot resolve is NOT an ancestor, and that is the same answer for the same
     /// reason: the tree it names cannot be produced from this repository. The two are distinguished
     /// in the finding's wording, never in the verdict.
+    /// EVERY COMMIT REACHABLE FROM HEAD OR FROM AN AUDIT PIN, as one set, resolved ONCE per
+    /// process.
+    ///
+    /// The obvious spelling -- `merge-base --is-ancestor` per record, then once per pin when that
+    /// says no -- is one git process per question, and the self-test asks the whole register's
+    /// worth of questions again for every planted case. With thirteen pins that is hundreds of
+    /// processes per case and thousands per run, and it showed: `audit-ledger --selftest` spent
+    /// eight seconds a case, almost all of it forking.
+    ///
+    /// One `rev-list` answers all of them. The set is memoised for the life of the process because
+    /// its two inputs -- HEAD and the pin refs -- are exactly what an overlay CANNOT change: a
+    /// plant may rewrite the register, which is the file this gate judges, but it cannot rewrite
+    /// the repository's refs. A memo keyed on something a plant could move would be a stale
+    /// reading rather than a fast one.
+    pub fn reachable(&self) -> &BTreeSet<String> {
+        self.reachable.get_or_init(|| {
+            let mut argv: Vec<String> = vec!["rev-list".to_string(), "HEAD".to_string()];
+            argv.extend(self.audit_pins());
+            let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+            self.run(&refs)
+                .map(|out| out.lines().map(str::trim).map(str::to_string).collect())
+                .unwrap_or_default()
+        })
+    }
+
     pub fn is_ancestor(&self, commit: &str, of: &str) -> bool {
         self.run(&["merge-base", "--is-ancestor", commit, of])
             .is_ok()
