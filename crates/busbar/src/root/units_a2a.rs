@@ -1017,6 +1017,20 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// takes the kernel's seal, and this is not the kernel. `UnitCtx` hands each step the origin's
     /// KIND, which is what the destination rules read; the sealed value is what the record needs.
     pub origin: busbar_caps::Origin,
+    /// **WHETHER THE ADDRESS THIS UNIT ARRIVED ON IS ONE THE PLANE DECLARED OPEN.**
+    ///
+    /// Read once per arrival off the plane's own declared surface, and the SAME reading that
+    /// chooses which door this unit is judged behind. It is a binding rather than something the
+    /// approve step re-derives, because a second reading is a second answer: an address judged open
+    /// by the door and closed by the grant would refuse every caller the door just admitted, and an
+    /// address judged closed by the door and open by the grant would enforce nothing on a path a
+    /// credential was demanded for.
+    ///
+    /// A declared-open address admits an UNIDENTIFIED caller by construction, so there is no key to
+    /// read a grant off and the operation's real authority is the surface's own — the push
+    /// callback's token is inside the request, which is where the shipped release checks it. Every
+    /// other address is credentialed, and on those the agent grant is enforced.
+    pub open_address: bool,
 }
 
 /// A lock this plane holds, taken the way the root takes its locks.
@@ -1042,6 +1056,14 @@ struct Progress {
     principal: Option<PrincipalId>,
     /// The grants that principal holds.
     grants: Option<Grants>,
+    /// THE ENFORCED KEY the authenticate step resolved, where an engine arm resolved one.
+    ///
+    /// Recorded at the step that produced it and read at the step that enforces against it, which
+    /// is the only way it can travel: a sealed decision carries a principal and nothing else, so
+    /// the key's own GRANTS have no other route from the chain to the approve step. `None` is a
+    /// caller no signed key identified — an open door, or an external module whose answer type
+    /// cannot carry a key — and the approve step reads it fail-closed.
+    key: Option<busbar_unit_auth::ResolvedKey>,
     /// What the verify step sealed.
     lanes: Vec<LaneId>,
     /// What the record legs came back with.
@@ -1185,6 +1207,44 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     ///
     /// A guard refused, the agent is unpinned, the network guard refused the address, or the
     /// destination's own kind rule did not pass.
+    /// **DOES THE CALLER'S OWN KEY GRANT THE RESOURCE THIS UNIT NAMES?**
+    ///
+    /// The grant is a `(kind, value)` membership test on the enforced key the authenticate step
+    /// resolved, and the semantics are the frozen ones the key itself owns: an OMITTED grant list
+    /// is the only wildcard, an explicit list is exhaustive ACROSS ALL KINDS, and an empty list is
+    /// the empty set. This function does not re-spell any of that — it asks
+    /// `ResolvedKey::scope_allowed`, which is the one place it is written.
+    ///
+    /// ## The kind is the PLANE's word, not this file's
+    ///
+    /// The locator carries its own kind, and that kind is asked verbatim. A plane that started
+    /// naming a second kind of resource would have it enforced here without a line changing, and —
+    /// more to the point — a locator of a kind the key was never granted under refuses, because
+    /// that is what the cross-kind rule says. Reading the kind and then checking only the ones this
+    /// file recognised would be the fail-open version of the same code.
+    ///
+    /// ## The two arms that do not consult a key, and why each is what it is
+    ///
+    /// A DECLARED-OPEN address holds: it admits an unidentified caller by construction, so there is
+    /// no key for a grant to live on, and the operation's authority is the surface's own — the push
+    /// callback's token is inside the request. Refusing there would turn every real push delivery
+    /// into a refusal before the surface ever saw the token.
+    ///
+    /// EVERY OTHER ADDRESS with no resolved key REFUSES. That arm is reached by a caller an
+    /// external auth module identified, or by one the open front door admitted on a credentialed
+    /// address: neither has a grant list, and "no grants to read" is not "every grant". The
+    /// alternative reading is the one that would hand a caller with no agent entitlement whatsoever
+    /// every agent this deployment fronts.
+    fn grant_held(&self, resource: ResourceLocator) -> bool {
+        if self.bindings.open_address {
+            return true;
+        }
+        read_through_poison(&self.progress)
+            .key
+            .as_ref()
+            .is_some_and(|key| key.scope_allowed(resource.kind, resource.name))
+    }
+
     pub fn verified_lanes(&self, origin: OriginKind) -> Result<Vec<LaneId>, Refusal> {
         // Guard one, two and three: the pool's allow-list, every fallback pool reachable from it,
         // and the unpriced-name gate.
@@ -1466,14 +1526,20 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // what the `new_unit` answer above is FOR: an unbound session asks it every unit, a bound
         // one never does, and neither question could be asked at all while the argument was absent.
         let seams = self.bindings.auth_bindings;
-        self.bindings.auth.resolve(
+        // THE KEY IS RECORDED BESIDE THE DECISION, because the grant this plane enforces is a
+        // statement about the key and the decision cannot carry one. See [`Progress::key`].
+        let mut key = None;
+        let decision = self.bindings.auth.resolve_recording_key(
             &request,
             seams.cache(),
             seams.keys(),
             seams.revocations(),
             None,
             token,
-        )
+            &mut key,
+        );
+        read_through_poison(&self.progress).key = key;
+        decision
     }
 
     fn verify(
@@ -1526,18 +1592,32 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         else {
             return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
         };
-        match busbar_unit_scope::approve(self.grants, needed) {
-            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
-            Ok(()) => {
-                // The plane says WHAT is being asked for; the resource travels with the approval so
-                // the record names the agent rather than the method.
-                let mut facts = ScopeFacts::default();
-                if let Some(resource) = self.draft.resource {
-                    let _ = facts.resources.push(resource);
-                }
-                Decision::proceed(token, facts)
+        if busbar_unit_scope::approve(self.grants, needed).is_err() {
+            return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        }
+        // THE AGENT GRANT, and it is a SECOND question rather than a stricter reading of the first.
+        //
+        // The rung above asks what the deployment's policy says about this OPERATION CLASS: may a
+        // caller of this standing move a task at all. This asks what the CALLER'S OWN KEY says
+        // about this named agent: may THIS caller reach THIS one. Two keys of identical standing
+        // front different agents, and a check that only asked the first would let either of them
+        // call both — which is the whole of what an agent grant is for.
+        //
+        // Asked HERE, before the backend runs, because a refusal that arrives after the work is
+        // done has already cost the operator the work, and on this plane the work may be a
+        // long-running task that reached down into L2 tools.
+        if let Some(resource) = self.draft.resource {
+            if !self.grant_held(resource) {
+                return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
             }
         }
+        // The plane says WHAT is being asked for; the resource travels with the approval so the
+        // record names the agent rather than the method.
+        let mut facts = ScopeFacts::default();
+        if let Some(resource) = self.draft.resource {
+            let _ = facts.resources.push(resource);
+        }
+        Decision::proceed(token, facts)
     }
 
     fn admit(
