@@ -90,17 +90,25 @@ pub trait MountedLeg: Send + Sync + 'static {
     fn recognises(&self, arrival: &busbar_contract::transport::Arrival<'_>) -> bool;
 
     /// Walk one arrival through the kernel's steps WITH the mount's seam, and hand back both halves.
-    fn serve(
-        &self,
-        arrival: &busbar_contract::transport::Arrival<'_>,
-        kernel: &busbar_kernel::teller::Kernel,
-        ctx: &busbar_kernel::teller::UnitCtx,
-        run: busbar_kernel::teller::Run<'_>,
-        dispatch: Option<&dyn MountDispatch>,
-    ) -> (
-        busbar_kernel::teller::Ended,
-        Option<crate::root::transports::PlaneAnswer>,
-    );
+    ///
+    /// **A FUTURE, AND THE PLANE'S OWN RESPONSE.** Two changes with one cause. The mount used to run
+    /// this on a blocking worker and take back three fields, which decided two things on every
+    /// plane's behalf that are not the mount's to decide: that the walk blocks, and that the answer
+    /// is bytes. A plane whose walk is genuinely asynchronous had nowhere to be one, and a plane
+    /// whose answer is a run of events had it flattened.
+    ///
+    /// So the leg says what it is. A synchronous leg wraps its own walk in [`sync_leg`] and steps off
+    /// the reactor itself — which is where that decision belongs, because whether a walk blocks is a
+    /// property of the walk. An asynchronous one simply awaits. Either way what comes back is the
+    /// plane's own [`MountedReply`], and this file does not look inside it.
+    fn serve<'a>(
+        &'a self,
+        arrival: &'a busbar_contract::transport::Arrival<'a>,
+        kernel: &'a busbar_kernel::teller::Kernel,
+        ctx: &'a busbar_kernel::teller::UnitCtx,
+        run: busbar_kernel::teller::Run<'a>,
+        dispatch: Option<&'a dyn MountDispatch>,
+    ) -> Walked<'a>;
 
     /// The plane's own refusal document for one ending, where the plane has one.
     fn render_refusal(
@@ -115,6 +123,54 @@ pub trait MountedLeg: Send + Sync + 'static {
     /// PLANE's, so the type has to come from the plane rather than be assumed here — even though
     /// both protocols mounted today answer with the same one.
     fn media_type(&self) -> &'static str;
+}
+
+/// ONE LEG'S WALK, AS A FUTURE THE MOUNT AWAITS.
+///
+/// Boxed because the trait is used as `dyn MountedLeg` — the whole point of the trait is that the
+/// mount holds one leg without knowing which plane's it is, and a leg that returned an opaque future
+/// type could not be a trait object. The lifetime is one lifetime for every borrow the walk is given,
+/// which is what lets the arrival, the kernel and the run live on the mount's own stack frame rather
+/// than being cloned into the future.
+pub type Walked<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = (busbar_kernel::teller::Ended, Option<MountedReply>)>
+            + Send
+            + 'a,
+    >,
+>;
+
+/// RUN ONE SYNCHRONOUS WALK OFF THE REACTOR.
+///
+/// ## Why a leg calls this and the mount does not
+///
+/// The mount used to put every walk on a blocking worker, which is the right thing to do to a
+/// synchronous walk and the wrong thing to assume about all of them. Whether a walk blocks is a
+/// property of the WALK: the two legs mounted today step through the kernel's teller synchronously
+/// and must not hold a reactor thread while they do it, and a leg that is genuinely asynchronous
+/// would have been shipped to a blocking pool to await there for no reason. So the decision moved to
+/// the only place that knows the answer, and this is the generic way to spell it — no plane's name
+/// appears in it, and a leg opts in by calling it.
+///
+/// ## Why `block_in_place` and not `spawn_blocking`
+///
+/// `spawn_blocking` needs `'static`, and a walk borrows: the arrival, the kernel, the run's four
+/// counters and the seam are all on the mount's stack. Meeting that with `spawn_blocking` would mean
+/// cloning or `Arc`-ing every one of them into the closure — a per-request allocation to satisfy a
+/// lifetime rather than a need. `block_in_place` tells the runtime this worker is about to block so
+/// it hands the rest of its queue to another, which is the same outcome for everything else on the
+/// reactor and costs the borrow nothing.
+///
+/// **On a single-threaded runtime the walk runs inline**, because `block_in_place` panics there and
+/// there is no second worker to hand anything to. The hazard is named rather than hidden: a mount
+/// composed on a current-thread runtime serialises its walks against the task that drives the
+/// mounted router, so it is a shape for a probe and not for a node. Every mount in this tree — the
+/// binary's and every cell that composes one — is on the multi-threaded runtime.
+pub fn sync_leg<T>(walk: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::CurrentThread) | Err(_) => walk(),
+        Ok(_) => tokio::task::block_in_place(walk),
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -219,7 +275,7 @@ fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
 /// a protocol under one status with no headers at all. Written once because two paths reach it —
 /// the unit that ran and the one this wrap refused before the loop was entered — and a second builder
 /// would be a second chance for the two to differ.
-pub(crate) fn http_response(answer: PlaneAnswer) -> axum::http::Response<axum::body::Body> {
+pub(crate) fn http_response(answer: PlaneAnswer) -> MountedReply {
     let mut response = axum::http::Response::builder().status(answer.status);
     for (name, value) in &answer.headers {
         response = response.header(name.as_str(), value.as_str());
@@ -498,19 +554,18 @@ pub fn mount(
                     axum::http::Request::from_parts(parts, axum::body::Body::from(bytes.clone()));
                 let dispatch: Arc<dyn MountDispatch> =
                     Arc::new(RequestDispatch::new(errands, forwarded));
-                let answered = tokio::task::spawn_blocking(move || {
-                    with_arrival(&facts, &bytes, |arrival| {
-                        node.answer(arrival, dispatch.as_ref())
-                    })
-                })
-                .await;
 
-                match answered {
-                    Ok(response) => response,
-                    // The blocking worker went away with the unit on it. There is no ending to
-                    // render and no answer to carry out.
-                    Err(_) => unavailable_response(),
-                }
+                // AWAITED HERE, ON THE REACTOR, and no longer shipped to a blocking worker. Whether
+                // a walk blocks is the LEG's property, and the leg now says so for itself through
+                // `sync_leg`. A mount that decided it for every plane decided it wrong for any plane
+                // whose walk is asynchronous — and paid for a `'static` closure, with every borrow
+                // cloned or `Arc`-ed into it, to express a decision it had no business making.
+                //
+                // The arrival is composed on THIS frame so it outlives the await. That is what
+                // `arrival_over` returning a value rather than lending one to a closure is for.
+                let pairs = fact_pairs(&facts);
+                let arrival = arrival_over(&pairs, &bytes);
+                node.answer(&arrival, dispatch.as_ref()).await
             }
         },
     ))
@@ -568,34 +623,67 @@ fn mount_facts(parts: &axum::http::request::Parts) -> Vec<(&'static str, String)
     out
 }
 
-/// Compose one arrival over these facts and these bytes, for the length of one call.
+/// The composed stack this listener is: TCP underneath, the document transport above it.
 ///
-/// A closure rather than a returned value because an `Arrival` BORROWS its fact slice, and a
-/// function cannot hand back one over a vector it built. Written once because two callers want the
-/// same arrival — the recognition question and the walk — and two constructions would be two chances
-/// for the loop to be handed something the recognition never saw.
-///
-/// The composed stack is what this listener is: TCP underneath, the document transport above it.
 /// Named here because the mount is the one thing that knows how the bytes got in, and the audit
 /// record reads it off the arrival.
-fn with_arrival<T>(
-    facts: &[(&'static str, String)],
-    body: &[u8],
-    f: impl FnOnce(&busbar_contract::transport::Arrival<'_>) -> T,
-) -> T {
-    let pairs: Vec<(&str, &str)> = facts.iter().map(|(k, v)| (*k, v.as_str())).collect();
-    let chain: [&'static str; 2] = ["tcp", "http"];
-    f(&busbar_contract::transport::Arrival {
-        facts: &pairs,
+const CHAIN: [&str; 2] = ["tcp", "http"];
+
+/// The facts of one arrival as the borrowed pairs an arrival reads.
+///
+/// [`busbar_contract::transport::Arrival`] holds a slice of borrowed pairs and the mount holds owned
+/// ones, so somebody has to materialise the borrow and somebody has to own the vector it borrows
+/// from. This is the first half; the caller keeps the vector alive for as long as the arrival.
+fn fact_pairs<'a>(facts: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
+    facts.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
+/// COMPOSE ONE ARRIVAL OVER these pairs and these bytes.
+///
+/// ## Why this is a value and no longer a closure
+///
+/// It was `with_arrival(facts, body, |arrival| …)`, a closure rather than a returned value because
+/// an `Arrival` borrows its fact slice and a function cannot hand back one over a vector it built.
+/// That reasoning is still true, and the answer is now to build the vector one level up: the caller
+/// holds the pairs, this composes an arrival over them, and the arrival lives exactly as long as
+/// they do.
+///
+/// The split is not cosmetic. A closure can only hand its arrival to something SYNCHRONOUS — an
+/// arrival composed inside one cannot be borrowed across an `await`, because the closure returns
+/// before the future it made is ever polled. The walk is now a future, so the arrival has to outlive
+/// the call that made it, and that is exactly what returning it does.
+///
+/// Still ONE construction for both callers — the recognition question and the walk — because two
+/// would be two chances for the loop to be handed something the recognition never saw.
+fn arrival_over<'a>(
+    pairs: &'a [(&'a str, &'a str)],
+    body: &'a [u8],
+) -> busbar_contract::transport::Arrival<'a> {
+    busbar_contract::transport::Arrival {
+        facts: pairs,
         body,
         transport: "http",
-        chain: &chain,
+        chain: &CHAIN,
         // The address named no operation: this is a MOUNT, and which operation these bytes are is
         // the plane's to say off the document. Saying otherwise would be the transport axis naming
         // an operation it did not read.
         operation: None,
         bar: busbar_contract::transport::Bar::Open,
-    })
+    }
+}
+
+/// Compose one arrival over these facts and these bytes, for the length of one SYNCHRONOUS call.
+///
+/// The recognition question is a plain function call and wants the short spelling; the walk is a
+/// future and cannot use it. Both compose through [`arrival_over`], so there is still one arrival
+/// shape and not two.
+fn with_arrival<T>(
+    facts: &[(&'static str, String)],
+    body: &[u8],
+    f: impl FnOnce(&busbar_contract::transport::Arrival<'_>) -> T,
+) -> T {
+    let pairs = fact_pairs(facts);
+    f(&arrival_over(&pairs, body))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -617,11 +705,18 @@ struct MountedNode {
 
 impl MountedNode {
     /// Walk one arrival through the loop and answer with what it produced.
-    fn answer(
+    ///
+    /// **ASYNC, AND THE LEG'S RESPONSE IS RETURNED UNTOUCHED.** There is no `http_response` on this
+    /// path any more, and that absence is the whole change: a response rebuilt from three fields is
+    /// a response whose body has been read, whose chunk boundaries are gone and whose extensions
+    /// were dropped. The one call to `http_response` left in this file is on the REFUSAL path, where
+    /// there is no plane response to carry because the unit never reached the seam — so the frame is
+    /// built here, over the plane's own document.
+    async fn answer(
         &self,
         arrival: &busbar_contract::transport::Arrival<'_>,
         dispatch: &dyn MountDispatch,
-    ) -> axum::http::Response<axum::body::Body> {
+    ) -> MountedReply {
         let key = busbar_caps::UnitKey::new(
             self.next_key
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
@@ -645,25 +740,29 @@ impl MountedNode {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let (ended, answer) = self.leg.serve(
-            arrival,
-            &self.kernel,
-            &ctx,
-            busbar_kernel::teller::Run {
-                cell: &cell,
-                parent: None,
-                leases: &leases,
-                gauge: &self.gauge,
-                canary: &self.canary,
-                meter: &meter,
-            },
-            Some(dispatch),
-        );
-        // THE ANSWER IS THE SURFACE'S WHERE THERE IS ONE. A unit that reached Route carries the
-        // status, the headers and the body the operation's own surface wrote, and every one of them
-        // reaches the wire unchanged.
+        let (ended, answer) = self
+            .leg
+            .serve(
+                arrival,
+                &self.kernel,
+                &ctx,
+                busbar_kernel::teller::Run {
+                    cell: &cell,
+                    parent: None,
+                    leases: &leases,
+                    gauge: &self.gauge,
+                    canary: &self.canary,
+                    meter: &meter,
+                },
+                Some(dispatch),
+            )
+            .await;
+        // THE ANSWER IS THE SURFACE'S WHERE THERE IS ONE, and it is handed on as it stands. A unit
+        // that reached Route carries the response the operation's own surface wrote — its status,
+        // its headers, and its body with the boundaries it chose and anything it attached — and this
+        // file does not open it.
         match answer {
-            Some(answer) => http_response(answer),
+            Some(reply) => reply,
             // And a unit that did not is rendered by the PLANE, from the ending's own step and
             // reason. Never this file's prose: a refusal document this root wrote would be a status
             // and a body a caller pinned, invented by the one axis with no business deciding either.
@@ -685,7 +784,7 @@ fn refused_response(
     leg: &dyn MountedLeg,
     arrival: &busbar_contract::transport::Arrival<'_>,
     ended: &busbar_kernel::teller::Ended,
-) -> axum::http::Response<axum::body::Body> {
+) -> MountedReply {
     let status = status_of(crate::root::transports::outcome_of(ended));
     let body = leg.render_refusal(arrival, ended).unwrap_or_default();
     let headers = if body.is_empty() {

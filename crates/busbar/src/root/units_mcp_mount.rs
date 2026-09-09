@@ -70,18 +70,22 @@ impl MountedLeg for McpLeg {
         McpLeg::recognises(self, arrival)
     }
 
-    fn serve(
-        &self,
-        arrival: &busbar_contract::transport::Arrival<'_>,
-        kernel: &busbar_kernel::teller::Kernel,
-        ctx: &busbar_kernel::teller::UnitCtx,
-        run: busbar_kernel::teller::Run<'_>,
-        dispatch: Option<&dyn crate::root::transports::MountDispatch>,
-    ) -> (
-        busbar_kernel::teller::Ended,
-        Option<crate::root::transports::PlaneAnswer>,
-    ) {
-        McpLeg::serve(self, arrival, kernel, ctx, run, dispatch)
+    fn serve<'a>(
+        &'a self,
+        arrival: &'a busbar_contract::transport::Arrival<'a>,
+        kernel: &'a busbar_kernel::teller::Kernel,
+        ctx: &'a busbar_kernel::teller::UnitCtx,
+        run: busbar_kernel::teller::Run<'a>,
+        dispatch: Option<&'a dyn crate::root::transports::MountDispatch>,
+    ) -> plane_mount::Walked<'a> {
+        Box::pin(async move {
+            // SYNCHRONOUS, and it says so for itself — the reason the A2A mount beside this one
+            // gives. The mount no longer assumes it on any plane's behalf.
+            let (ended, answer) =
+                plane_mount::sync_leg(|| McpLeg::serve(self, arrival, kernel, ctx, run, dispatch));
+            // And the frame is built by the plane that asked for bytes, not by the mount.
+            (ended, answer.map(plane_mount::http_response))
+        })
     }
 
     fn render_refusal(
