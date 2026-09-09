@@ -228,7 +228,6 @@ pub use busbar_substrate::transport;
 #[cfg(test)]
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
-pub mod trust;
 
 // ── THE CRATE-ROOT SURFACE ───────────────────────────────────────────────────────────────────────
 // The moved crate-root items live in three modules split by concern (`appbuild`, `preflight`,

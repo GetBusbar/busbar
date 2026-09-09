@@ -30,7 +30,10 @@ const MIGRATED_FILES: &[&str] = &[
     // `egress_auth/bearer_token.rs` (the OAuth cached-token refresh loop, the one egress_auth file
     // that emits coded diagnostics) RELOCATED to `busbar-substrate` with the whole egress_auth module;
     // substrate carries its own uncoded-diagnostic floor, so core no longer scans it here.
-    "src/trust/verify.rs",
+    // `trust/verify.rs` (the verify-on-call gate, the one `trust/` file that emitted coded
+    // diagnostics) RELOCATED to `busbar-substrate` with the whole trust module, and core's
+    // re-export shim for it has now been deleted outright (D33 §2 — a re-export is a spelling, not
+    // a module). Substrate carries its own uncoded-diagnostic floor, so core no longer scans it.
     "src/oauth_as/plane.rs",
     // `sigv4` / `eventstream` (and the other neutral utils) RELOCATED to `busbar-substrate`; each
     // carries its own uncoded-diagnostic floor in that crate, so core no longer scans them here.
