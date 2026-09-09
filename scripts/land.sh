@@ -82,6 +82,7 @@ LAND_ORACLE_DIFF="${LAND_ORACLE_DIFF:-merged}"
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 land_parse_args() {
   P_tests=""; P_families=""; P_gate=""; P_prove=0; P_hashes=""; P_batch=""; P_selftest=0
+  P_remote="${P_remote:-}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --tests) P_tests="$2"; shift 2 ;;
@@ -89,6 +90,9 @@ land_parse_args() {
       --gate) P_gate="$2"; shift 2 ;;
       --batch) P_batch="$2"; shift 2 ;;
       --selftest) P_selftest=1; shift ;;
+      # --remote: honoured ONLY at the top level (see MAIN). land_parse_args also parses every
+      # batch LINE, and a line cannot choose its own host — the whole batch is proven on one tree.
+      --remote) P_remote="$2"; shift 2 ;;
       # --prove: pick nothing; prove the tip as it stands (a landing whose picks are already on
       # the tree but whose legs were never run to green).
       --prove) P_prove=1; shift ;;
@@ -1048,6 +1052,21 @@ EOF
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 land_parse_args "$@"
+
+# ── --remote: THE SAME LANDING, ON A FLEET BOX ────────────────────────────────────────────────────
+# The owner's ruling during dev churn is that GitHub Actions judges integration/qa/main and nothing
+# else; a landing is proven on the EC2 fleet, directly. That is a transport decision, not a proof
+# decision, so it is delegated here and NOTHING below this block changes: scripts/land-remote.sh
+# pushes this tree and the batch's picks to a box, runs THIS script there with the same arguments
+# minus --remote, streams the log back, copies <batch>.result back to the path the local runner
+# reads, and exits with the REMOTE's status.
+#
+# LAND_REMOTE_INNER is what stops the delegation from being infinite: the copy running on the box
+# has it set, sees it, and falls through to the ordinary engine.
+[ -n "${LAND_REMOTE:-}" ] && [ -z "$P_remote" ] && P_remote="$LAND_REMOTE"
+if [ -n "$P_remote" ] && [ -z "${LAND_REMOTE_INNER:-}" ] && [ "$P_selftest" != 1 ]; then
+  exec "$(cd "$(dirname "$0")" && pwd)/land-remote.sh" --host "$P_remote" "$@"
+fi
 
 if [ "$P_selftest" = 1 ]; then land_selftest; exit $?; fi
 

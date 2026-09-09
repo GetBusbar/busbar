@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Prove a hand-back ON THE FLEET, over ssh, and stream the whole thing back to this terminal.
+#
+#   ./scripts/prove-remote.sh --setup [host]        # prepare one box, or every box
+#   ./scripts/prove-remote.sh                       # prove THIS worktree's tip
+#   ./scripts/prove-remote.sh <branch>              # prove a local branch's tip
+#   ./scripts/prove-remote.sh --host i-0abc <branch>
+#
+# ── WHY NOT GITHUB ACTIONS ──────────────────────────────────────────────────────────────────────
+# During dev churn the owner's ruling is that Actions judges integration/qa/main and nothing else.
+# For an agent hand-back, Actions is a queue, a checkout, a cold target/ and a verdict twenty
+# minutes after the question — and, on a `keep-*` push, twelve jobs of it. The box is already warm:
+# the toolchain the repo pins, an sccache with this workspace's objects in it, a target/ from the
+# previous proof, and docker for the oracle's services. Pushing 200 KB of objects to it over ssh
+# and running the SAME legs there is the same proof, minus the queue.
+#
+# ── WHAT IT PROVES, AND WHERE THAT LIST COMES FROM ──────────────────────────────────────────────
+# Exactly the legs keep-proof.yml runs, in the same order, scoped by the SAME .keep-proof.toml the
+# workflow reads off the branch root: workspace build, rustfmt, clippy -D warnings, the named test
+# packages (or the whole suite when the branch names none), `cargo xtask gate --all`, `xtask
+# selftest`, and the shadow oracle over `families` against the published 1.5.5 recording. A green
+# here and a green there are the same sentence about the same tree; that is the whole point of
+# reading the same scope file rather than inventing a second one.
+#
+# THE EXIT CODE IS THE REMOTE'S. Not "0 if the transport worked" — that is the failure mode where a
+# proof harness reports success because it successfully failed to prove anything.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+# shellcheck source=scripts/ci-remote-lib.sh
+. "$HERE/ci-remote-lib.sh"
+
+HOST=""; BRANCH=""; SETUP=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --setup) SETUP=1; shift ;;
+    --host)  HOST="$2"; shift 2 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -*) rdie "unknown option $1" ;;
+    *) if [ -z "$HOST" ] && [ "$SETUP" = 1 ]; then HOST="$1"; else BRANCH="$1"; fi; shift ;;
+  esac
+done
+
+remote_wrapper
+
+if [ "$SETUP" = 1 ]; then
+  rc=0
+  if [ -n "$HOST" ]; then
+    remote_setup "$HOST" || rc=1
+  else
+    for h in $(fleet_hosts); do remote_setup "$h" || rc=1; done
+  fi
+  exit "$rc"
+fi
+
+[ -n "$HOST" ] || HOST="$(fleet_pick_host)"
+TIP="$(git -C "$REPO" rev-parse "${BRANCH:-HEAD}")" || rdie "no such rev: ${BRANCH:-HEAD}"
+REF="prove-$(date -u +%Y%m%d-%H%M%S)-$$"
+rlog "host $HOST   tip $(git -C "$REPO" rev-parse --short "$TIP")   ref $REF"
+
+# The scope file is read LOCALLY as well as remotely: the operator should see the scope before the
+# twenty minutes start, not in the log afterwards.
+SCOPE_FAM='.'; SCOPE_TESTS=''
+if [ -f "$REPO/.keep-proof.toml" ]; then
+  SCOPE_FAM="$(sed -n "s/^[[:space:]]*families[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" "$REPO/.keep-proof.toml" | head -1)"
+  [ -n "$SCOPE_FAM" ] || SCOPE_FAM='.'
+  SCOPE_TESTS="$(sed -n 's/^[[:space:]]*tests[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' "$REPO/.keep-proof.toml" \
+                 | head -1 | tr -d '"'"'" | tr ',' ' ')"
+else
+  rlog "no .keep-proof.toml at the tree root — the oracle filter is '.' (every family)"
+fi
+rlog "oracle families: $SCOPE_FAM"
+rlog "test packages:   ${SCOPE_TESTS:-<the whole workspace>}"
+
+remote_push_tree "$HOST" "$REPO" "$REF" "$TIP"
+
+START=$(date +%s)
+set +e
+rsh_script "$HOST" "$REF" "$SCOPE_FAM" "$SCOPE_TESTS" <<'PROVE'
+set -uo pipefail
+REF="$1"; FAMILIES="$2"; TESTS="$3"
+export PATH="$HOME/.cargo/bin:$PATH"
+export CARGO_TERM_COLOR=always CARGO_INCREMENTAL=0
+export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
+export RUSTFLAGS="-D warnings"
+# EIGHT, not nproc. A box runs up to four proofs at once (it also carries four runner agents); a
+# cargo that takes all 32 cores makes every neighbour slower and itself no faster.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+W="$HOME/busbar-prove"
+cd "$W" || { echo "no $W — run: ./scripts/prove-remote.sh --setup $(hostname)"; exit 2; }
+
+step() { printf '\n\033[1m══ %s\033[0m  (%s)\n' "$1" "$(date -u +%H:%M:%S)"; }
+T0=$(date +%s); mark() { printf '   [%s] %ss\n' "$1" "$(( $(date +%s) - T0 ))"; T0=$(date +%s); }
+
+step "checkout $REF"
+git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" || exit 2
+git checkout -q -f "$REF" || exit 2
+# target/ and the cargo registry are the warm state; everything else the last proof left is noise.
+git clean -qffdx -e target -e .cargo -e node_modules
+git --no-pager log --oneline -1
+mark checkout
+
+step "build (workspace, locked)"
+cargo build --workspace --locked || exit 1
+mark build
+
+step "fmt"
+cargo fmt --all -- --check || exit 1
+mark fmt
+
+step "clippy -D warnings"
+cargo clippy --workspace --all-targets --locked -- -D warnings || exit 1
+mark clippy
+
+step "tests${TESTS:+ (packages: $TESTS)}"
+if [ -n "$TESTS" ]; then
+  args=""; for p in $TESTS; do args="$args -p $p"; done
+  # shellcheck disable=SC2086
+  cargo test --locked $args || exit 1
+else
+  cargo test --workspace --locked || exit 1
+fi
+mark tests
+
+step "cargo xtask gate --all"
+cargo run -q -p xtask -- gate --all || exit 1
+mark gate
+
+step "cargo xtask selftest"
+cargo run -q -p xtask -- selftest || exit 1
+mark selftest
+
+step "shadow oracle (filter: $FAMILIES)"
+if [ -x ./bin/oracle ]; then
+  cargo build -p busbar --release --locked || exit 1
+  rm -rf target/oracle/recordings/candidate
+  mkdir -p target/oracle/recordings/candidate
+  # THE BOX'S OWN PORTS. Four proofs may run here at once and the recorder binds a fixed block;
+  # deriving the base from the shell pid keeps two concurrent proofs off each other's sockets, the
+  # same knob land.sh documents for two worktrees on one laptop.
+  export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
+  ./bin/oracle record --plane all --bin target/release/busbar \
+     --filter "$FAMILIES" --out target/oracle/recordings/candidate || exit 1
+  ./bin/oracle replay --golden target/oracle/recordings/golden \
+     --candidate target/oracle/recordings/candidate --out target/oracle/reports/prove || exit 1
+else
+  echo "   (no ./bin/oracle in this tree — the oracle leg is NOT part of this verdict)"
+fi
+mark oracle
+
+echo
+echo "PROVE-REMOTE: GREEN on $(hostname) for $(git rev-parse --short HEAD)"
+PROVE
+RC=$?
+set -e
+END=$(date +%s)
+
+rlog "host $HOST   exit $RC   wall $(( END - START ))s"
+exit "$RC"
