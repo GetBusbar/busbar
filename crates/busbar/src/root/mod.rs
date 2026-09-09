@@ -91,6 +91,8 @@ pub mod units_mcp;
 // plane-gated module named from code under a different feature is what the root's own escape test
 // refuses. The serving switch is on the FILE.
 #[cfg(feature = "root-mcp")]
+pub mod units_mcp_boot;
+#[cfg(feature = "root-mcp")]
 pub mod units_mcp_leg;
 #[cfg(feature = "root-mcp")]
 pub mod units_mcp_mount;
