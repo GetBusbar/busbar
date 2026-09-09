@@ -1,0 +1,27 @@
+# WHAT CI MUST PROVE ABOUT THIS BRANCH.
+#
+# The cut is r31h: the composition root gains ONE data-plane chain, and the A2A plane is composed
+# through it and WIRED AT BOOT behind `root-a2a-serve` (which is NOT in `default`, so the shipped
+# binary is unchanged).
+#
+# `tests` is the package set whose files this branch touched — one package, because every source
+# change is in the composition root's own crate. `families` is the oracle cell-id regex the
+# neutrality claim rests on: `neutrality` and `admin.ops` are the two families with recorded cells,
+# and `a2a` is named because this branch is the one that puts that plane on the loop (its cells are
+# SKIP on the golden by design — a2a is judged by its own conformance rig, and that rig's number is
+# in the hand-back).
+
+families = '^(neutrality|admin\.ops|a2a)([|.]|$)'
+tests = ["busbar"]
+
+# The construction rows this cut moves, or must be seen not to move. Every one of them is GREEN on
+# the base and must stay green; the tree's other FAIL rows are pre-existing and are not this
+# branch's to clear.
+gate = '^(legacy-reach|no-test-doubles-in-production|no-test-doubles-in-production:doubles|one-pricing-site)$'
+
+# The feature this branch adds a serving path behind. It is default-OFF, so a build without it is
+# the shipped one; CI should build the package BOTH ways, because the cells above are recorded off
+# the default build and the new serving path only exists in the other.
+features = ["root-a2a-serve"]
+
+base = "6ec297f92ee742dec5b66fe955efbb9d926465d1"
