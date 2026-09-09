@@ -30,6 +30,7 @@ pub mod claims;
 pub mod codec;
 pub mod dialect;
 pub mod meta;
+pub mod registry;
 
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
@@ -61,13 +62,30 @@ pub struct Upstream {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LlmPlane {
     upstreams: &'static [Upstream],
+    registry: registry::DialectRegistry,
 }
 
 impl LlmPlane {
     /// A plane with a configured upstream set.
     #[must_use]
     pub const fn new(upstreams: &'static [Upstream]) -> Self {
-        Self { upstreams }
+        Self {
+            upstreams,
+            registry: registry::DialectRegistry::EMPTY,
+        }
+    }
+
+    /// The same plane, with a boot's registered dialects sealed into it.
+    ///
+    /// Registration is CONSTRUCTION, which is why this returns a new value rather than mutating
+    /// one: a plane whose dialect set could change after the boot proved its claims disjoint would
+    /// be a plane whose claims in force are not the claims that were proved.
+    #[must_use]
+    pub const fn with_dialects(self, registry: registry::DialectRegistry) -> Self {
+        Self {
+            upstreams: self.upstreams,
+            registry,
+        }
     }
 
     /// A plane with nothing configured.
