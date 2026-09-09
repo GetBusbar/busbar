@@ -6645,6 +6645,80 @@ impl Gate for KindIsolationGate {
             &["not-legacy", "busbar-unit-audit"],
         ));
 
+        // ── THE READER'S OWN REFUSALS, EACH WITH A CASE ──────────────────────────────────────────
+        //
+        // A MUTATION CAMPAIGN STUBBED EVERY REFUSAL IN THIS PARSER AND THE BATTERY STAYED GREEN for
+        // nine of the ten: `errors.push(format!(…))` became `drop(format!(…))`, the row loaded
+        // anyway, and 107 cases said nothing. `not-legacy` above was the only one anybody had
+        // written a fixture for. A refusal nothing proves is a refusal the next edit deletes by
+        // accident, so each of them gets the smallest plant that reaches it — one `registry_plant`
+        // per case, so what a case proves is what its own row said.
+        for (name, rows, needles) in [
+            (
+                "a [[transitional]] row with an empty field is refused at load",
+                "[[transitional]]\nfrom = \"\"\nto = \"busbar-unit-*\"\nreason = \"planted\"\n",
+                &["empty-field", "transitional", "from"][..],
+            ),
+            (
+                "a [[transitional]] row missing a field is refused at load",
+                "[[transitional]]\nfrom = \"busbar-core\"\nto = \"busbar-unit-*\"\n",
+                &["missing-field", "transitional", "reason"][..],
+            ),
+            (
+                "a row declaring a field this gate does not read is refused, not ignored",
+                "[[transitional]]\nfrom = \"busbar-core\"\nto = \"busbar-unit-*\"\nreason = \
+                 \"planted\"\nowner = \"someone\"\n",
+                &["unknown-field", "transitional", "owner"][..],
+            ),
+            (
+                "a [[transitional]] glob that is not a trailing `*` is refused",
+                "[[transitional]]\nfrom = \"busbar-core\"\nto = \"busbar-unit-*-x\"\nreason = \
+                 \"planted\"\n",
+                &["bad-glob", "busbar-unit-*-x"][..],
+            ),
+            (
+                "an [[announced]] row naming a kind the table does not have is refused",
+                "[[announced]]\ncrate = \"busbar-nosuch-x\"\nkind = \"nosuchkind\"\nreason = \
+                 \"planted\"\n",
+                &["unknown-kind", "announced", "nosuchkind"][..],
+            ),
+            (
+                "a [[registered]] row naming a kind the table does not have is refused",
+                "[[registered]]\ncrate = \"busbar-nosuch-x\"\nkind = \"nosuchkind\"\nreason = \
+                 \"planted\"\n",
+                &["unknown-kind", "registered", "nosuchkind"][..],
+            ),
+            (
+                "a [[cell]] count that is not a number is refused",
+                "[[cell]]\ncrate = \"busbar-kernel\"\nkind = \"plane\"\ncount = \"lots\"\n",
+                &["bad-count", "lots", "not a number"][..],
+            ),
+            (
+                "a [[table]] this gate does not read is refused, not skipped",
+                "[[ceilings]]\nx = \"1\"\n",
+                &["unknown-table", "ceilings"][..],
+            ),
+            (
+                "a line that is not `key = \"value\"` is refused",
+                "[[transitional]]\nfrom busbar-core\n",
+                &["unreadable-line", "from busbar-core"][..],
+            ),
+            (
+                "a field sitting under no [[table]] header is refused",
+                "from = \"busbar-core\"\n",
+                &["orphan-field", "from"][..],
+            ),
+        ] {
+            report.push(prove_rows_red(
+                cx,
+                self,
+                name,
+                &[ROW_REGISTRY],
+                registry_plant(rows),
+                needles,
+            ));
+        }
+
         // THE TABLE IS AN INPUT. Without it there is no drain exemption to read and no announcement
         // to read, and a gate that treats a missing input as an empty one is a gate that goes green
         // when its own data file is deleted.
