@@ -1371,9 +1371,22 @@ fn validate_rejects_a_set_but_empty_admin_token() {
         !stdout.contains("ok: config valid"),
         "--validate must not green-light a config boot refuses: {stdout}"
     );
+    // BOOT'S OWN SENTENCE, and boot has two for this. `preflight.rs`'s admin-tokens guard says
+    // "resolved to an EMPTY/whitespace-only value"; the generic resolver in `busbar-api`'s
+    // `secret.rs` says "resolved to an EMPTY value; a secret must be non-empty (fail-closed)".
+    // Which one an operator sees is decided by ORDER, and on this tree the strict-secret step runs
+    // first — so the generic guard answers and the admin-tokens guard is never reached. Both are
+    // boot's, both are fail-closed, and both are reached from `--validate` and from a start alike,
+    // which is what this test exists to prove. So what is pinned is the pair of facts that make the
+    // refusal actionable rather than the spelling of whichever guard got there first: it IS a
+    // blank-secret refusal, and it NAMES the variable the operator has to go and set.
     assert!(
-        stderr.contains("EMPTY/whitespace-only value"),
-        "the refusal must be boot's own sentence, verbatim: {stderr}"
+        stderr.contains("EMPTY"),
+        "the refusal must be boot's own blank-secret sentence: {stderr}"
+    );
+    assert!(
+        stderr.contains("BUSBAR_TEST_BLANK_ADMIN_TOKEN"),
+        "and it must name the variable, or an operator cannot act on it: {stderr}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
