@@ -6063,6 +6063,96 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // …AND A BUILD SCRIPT THAT READS ITS SIBLINGS BY DIRECTORY WALK RATHER THAN BY NAME. The
+        // marker loop reports a path that lands in another CENSUSED CRATE, which is the right
+        // narrowing for a library file and the wrong one for a build script: `read_dir("..")` names
+        // no crate, lands outside every one of them, and was green everywhere while compiling the
+        // whole tree's plane sources into a transport's generated output. A build script is held to
+        // the DIRECTORY instead.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/build.rs",
+            "fn main() {\n    for e in std::fs::read_dir(\"..\").unwrap() {\n        let f = \
+             e.unwrap().path().join(\"src\").join(\"plane.rs\");\n        if f.exists() { let _ = \
+             std::fs::read_to_string(&f); }\n    }\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a build script that reads its siblings by directory walk, not by name",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "build-script-reach",
+                "busbar-transport-tcp",
+                "outside its own crate directory",
+            ],
+        ));
+
+        // `include!` IS A DUAL COMPILE TOO, and it was not on the marker list at all. `#[path]` at
+        // least declares a module; this splices another crate's source into this one's body with no
+        // module, no dependency and no name.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_include.rs",
+            "pub mod smuggled {\n    include!(\"../../busbar-plane-llm/src/meta.rs\");\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an `include!` of another kind's source is a dual compile",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "path-include",
+                "busbar-plane-llm",
+                "busbar-transport-tcp",
+            ],
+        ));
+
+        // …AND A `CARGO_MANIFEST_DIR` SPLICE IS RESOLVED, NOT GUESSED AT. `quoted_after` took the
+        // FIRST literal, so `include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
+        // "/../busbar-plane-mcp/src/lib.rs"))` resolved to a path INSIDE the crate and the finding
+        // was dropped — the softest possible failure of the rule that matters most. That variable
+        // is exactly the crate directory, so the path is resolved against it, which is strictly
+        // stronger than refusing the spelling: the tree already uses this idiom eight times.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_spliced.rs",
+            "pub const S: &str = include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \
+             \"/../busbar-plane-mcp/src/lib.rs\"));\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an include path spliced from CARGO_MANIFEST_DIR is resolved against the crate \
+             directory",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "build-script-reach",
+                "busbar-plane-mcp",
+                "busbar-transport-tcp",
+            ],
+        ));
+
+        // …AND EVERY OTHER SPLICE IS REFUSED. `include!(concat!("../../busbar-p", "lane-l", …))`
+        // spells the name in pieces no scanner reads and resolves to a path no reader here can
+        // derive. An input this gate cannot resolve is an input it cannot score, so it fails closed.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/src/planted_pieces.rs",
+            "include!(concat!(\"../../busbar-p\", \"lane-l\", \"lm/src/me\", \"ta.rs\"));\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an include path spliced out of pieces is refused, not resolved",
+            &[ROW_INPUTS],
+            ov,
+            &["unresolvable-include", "concat", "busbar-transport-tcp"],
+        ));
+
         // A LOCK FILE NAMING AN EDGE NO MANIFEST HAS. Nothing in the tree read `Cargo.lock` at all,
         // so the file that says what cargo COMPILES was never compared with the files that say what
         // was asked for.
@@ -6139,6 +6229,67 @@ impl Gate for KindIsolationGate {
             "the composition root's own `root-*` plane features are the written exemption",
             &[ROW_INPUTS],
             ov,
+        ));
+
+        // ── THE COMPILED SET IS THE SCANNED SET ─────────────────────────────────────────────────
+        //
+        // THE WORST MISS A RED TEAM LANDED, and it went around every scanner rather than through
+        // one: `crates/store-memory/src/target/leak.rs`, naming `busbar-plane-llm` and defining
+        // `fn mcp_hook`, reached by `#[path = "target/leak.rs"] pub mod leak;` in the store's own
+        // `lib.rs`. Live, linked, SHIPPED code naming another kind's instance, with all six gates
+        // green — because the walker skips any directory called `target` and `.gitignore` carries a
+        // bare `target/`, so the file was invisible twice over. The plant is that file.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/store-memory/src/target/leak.rs",
+            "pub const P: &str = \"busbar-plane-llm\";\npub fn mcp_hook() {}\n",
+        );
+        ov.set(
+            "crates/store-memory/src/lib.rs",
+            format!(
+                "{}\n#[path = \"target/leak.rs\"]\npub mod leak;\n",
+                cx.read("crates/store-memory/src/lib.rs")
+                    .unwrap_or_default()
+                    .trim_end()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a compiled source in a walker-skipped, gitignored directory is source no rule has read",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "hidden-source",
+                "crates/store-memory/src/target/leak.rs",
+                "git check-ignore",
+            ],
+        ));
+
+        // …AND THE SAME REFUSAL WITHOUT AN ATTRIBUTE. A plain `mod x;` whose file the scan set does
+        // not carry is the same hole reached by the shortest spelling there is, and it is the arm
+        // that would go quiet the day the walker gains one more skipped directory name.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/store-memory/src/lib.rs",
+            format!(
+                "{}\npub mod planted_ghost;\n",
+                cx.read("crates/store-memory/src/lib.rs")
+                    .unwrap_or_default()
+                    .trim_end()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `mod` whose file is in no scan this gate runs is refused",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "hidden-source",
+                "planted_ghost",
+                "crates/store-memory/src/planted_ghost.rs",
+            ],
         ));
 
         // THE VOCABULARY, BOTH DIRECTIONS.
