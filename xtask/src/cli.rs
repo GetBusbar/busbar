@@ -94,6 +94,24 @@ fn gate(args: &[String]) -> i32 {
     let report_only = args.iter().any(|a| a == "--report");
     let want_selftest = args.iter().any(|a| a == "--selftest");
 
+    // AN UNCONSUMED `--selftest` IS AN ERROR, NOT A NO-OP.
+    //
+    // `--list` and `--all` both `return` before `want_selftest` is ever read, so
+    // `cargo xtask gate --all --selftest` printed every gate's ordinary verdict and exited on it
+    // while the caller believed they had just self-tested the whole registry. That is the worst
+    // possible shape for a flag: it reports success for a thing it did not do. The only "every
+    // gate" self-test is the bare `cargo xtask selftest` subcommand, and this says so.
+    if want_selftest && args.iter().any(|a| a == "--list" || a == "--all") {
+        eprintln!(
+            "xtask gate: --selftest cannot be combined with --list or --all — neither runs a \
+             self-test, and this used to be accepted and silently ignored, which reports a \
+             proof that was never taken."
+        );
+        eprintln!("  every gate's self-test:  cargo xtask selftest");
+        eprintln!("  one gate's self-test:    cargo xtask gate <name> --selftest");
+        return 2;
+    }
+
     if args.iter().any(|a| a == "--list") {
         for reg in gates::REGISTRY {
             println!(
