@@ -738,24 +738,6 @@ fn render_drain(matrix: &Matrix) -> String {
 
 /// EVERY CELL'S MEASURED COUNT, for the one caller that needs the numbers without the verdict:
 /// `--write`, which re-pins a `[[cell]]` row DOWNWARD to what the tree measures today.
-/// TEMPORARY PLANT — proving `gate-mutants` on this branch, removed in the next commit.
-///
-/// This is the liveness test behind the `dead-edge` finding, lifted out of `rule_matrix` so the
-/// mutation job's `--in-diff` scope contains it. Per the mutation audit, `dead-edge` is one of the
-/// `:matrix` findings that NO self-test case names, so both stubs cargo-mutants writes for this
-/// function (`-> true`, `-> false`) should SURVIVE the four gates' own proof — which is exactly the
-/// red this job is supposed to produce.
-fn edge_is_live(
-    matrix: &Matrix,
-    kind_of: &BTreeMap<&str, &'static str>,
-    src: &str,
-    dst: &str,
-) -> bool {
-    matrix.iter().any(|((k, kd), c)| {
-        *kd == dst && c.count > 0 && kind_of.get(k.as_str()).copied() == Some(src)
-    })
-}
-
 pub fn measured_cells(
     cx: &Ctx,
     crates: &[CrateInfo],
@@ -986,7 +968,9 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         }
     }
     for (src, dst) in listed.edges.keys() {
-        let live = edge_is_live(&matrix, &kind_of, src, dst);
+        let live = matrix.iter().any(|((k, kd), c)| {
+            kd == dst && c.count > 0 && kind_of.get(k.as_str()).copied() == Some(src.as_str())
+        });
         if !live {
             offenders.push(format!(
                 "dead-edge\t{src} -> {dst}\tthe `[[edge]]` row covers nothing: no crate of kind \
