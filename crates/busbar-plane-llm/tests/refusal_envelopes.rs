@@ -10,7 +10,6 @@ mod harness;
 use busbar_contract::bounded::Labels;
 use busbar_contract::plane::Plane;
 use busbar_contract::unit::{Refusal, RefusalReason, Step};
-use busbar_plane_llm::LlmPlane;
 
 /// The six dialects, and the request target that names each.
 const DIALECTS: &[&str] = &[
@@ -24,7 +23,7 @@ const DIALECTS: &[&str] = &[
 
 /// Render one refusal in one dialect.
 fn refuse(dialect: &str, reason: RefusalReason) -> Vec<u8> {
-    let plane = LlmPlane::EMPTY;
+    let plane = harness::plane(&[]);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(dialect), &[]);
@@ -124,7 +123,7 @@ fn the_minted_identifier_keeps_its_native_shape() {
 #[test]
 fn the_minted_identifier_follows_the_entropy_it_is_handed() {
     let at = |unix_secs: u64| -> Vec<u8> {
-        let plane = LlmPlane::EMPTY;
+        let plane = harness::plane(&[]);
         let arena = harness::LeakArena;
         let config = harness::EmptyConfig;
         let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);

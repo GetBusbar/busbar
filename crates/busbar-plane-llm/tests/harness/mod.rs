@@ -15,10 +15,15 @@
 use busbar_contract::bounded::SlabBytes;
 use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Facts, Ir, Labels, Span};
 use busbar_contract::dest::{DestinationFacts, VerifiedDestination};
+use busbar_contract::grammar::{ArrivalLocation, Location, Selector};
 use busbar_contract::ids::{LaneId, OpClassId, StreamId};
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::unit::{Clock, ConfigView, Ctx, Origin, TransportView, Unit};
 use busbar_contract::wire::{Direction, Frame, FrameMeta};
+use busbar_plane_llm::claims::{claim, LadderClaim};
+use busbar_plane_llm::dialect::Dialect;
+use busbar_plane_llm::registry::{DialectEntry, DialectRegistry};
+use busbar_plane_llm::{LlmPlane, Upstream};
 use std::sync::Arc;
 
 /// An arena that never reuses a byte.
@@ -205,4 +210,86 @@ pub fn path_for(dialect: &str) -> &'static str {
         "responses" => "/v1/responses",
         other => panic!("no request target is declared for the dialect {other}"),
     }
+}
+
+// ------------------------------------------------------------------------------------------------
+// THE CARVED-OUT DIALECTS, AS FIXTURES
+// ------------------------------------------------------------------------------------------------
+
+/// The `openai` row and rungs, AS A TEST FIXTURE, because the real ones live in another crate.
+///
+/// WHY THIS IS A COPY AND NOT AN IMPORT. `busbar-plane-llm-openai` depends on this crate; this crate
+/// may not depend on it back, in a test target or anywhere else — `kind-isolation:deps` refuses a
+/// plane naming a dialect, and that refusal is the whole point of the split. So the plane's own
+/// battery, which needs SOME registered dialect to exercise the registered path with, registers a
+/// copy of the real one.
+///
+/// WHY A COPY IS SAFE HERE, stated rather than assumed. This fixture is never the authority on what
+/// `openai` is. It is a stand-in that lets the plane's cases be about the PLANE — that a registered
+/// row resolves, that a registered rung is walked at its number, that the codec bodies read the row
+/// they are handed. The authority is the dialect crate's own battery, which drives the REAL `ENTRY`
+/// through these same codec bodies and reproduces the frozen golden cells byte for byte. A copy
+/// that drifted from the real row would not make a false claim about `openai` here; it would make
+/// this crate's fixture stop matching the frozen bytes those cases also read, which is how the
+/// existing request-body copies in `golden_parity.rs` have always been checked.
+pub const OPENAI: Dialect = Dialect {
+    name: "openai",
+    model_location: Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/model")),
+    max_response_pointers: &["/max_tokens", "/max_completion_tokens"],
+    input_pointer: "/messages",
+    tokens_in_pointer: "/usage/prompt_tokens",
+    tokens_out_pointer: "/usage/completion_tokens",
+    cache_read_pointer: Some("/usage/prompt_tokens_details/cached_tokens"),
+    cache_write_pointer: None,
+    scheme_alt: "bearer",
+    egress_scheme: "bearer",
+};
+
+/// The fixture's rungs, at the numbers the real crate declares them.
+///
+/// Seven and fourteen, because a rung is a statement about a CONTEST and a fixture registered at
+/// the wrong number would have the plane's cases winning and losing contests the shipped tree does
+/// not.
+pub const OPENAI_LADDER: &[LadderClaim] = &[
+    LadderClaim {
+        rung: 7,
+        dialect: "openai",
+        claim: claim(Selector::PathSuffix("/v1/chat/completions")),
+    },
+    LadderClaim {
+        rung: 14,
+        dialect: "openai",
+        claim: claim(Selector::PathSuffix("/v1/embeddings")),
+    },
+    LadderClaim {
+        rung: 14,
+        dialect: "openai",
+        claim: claim(Selector::PathSuffix("/v1/moderations")),
+    },
+    LadderClaim {
+        rung: 14,
+        dialect: "openai",
+        claim: claim(Selector::PathContains("/v1/images/")),
+    },
+    LadderClaim {
+        rung: 14,
+        dialect: "openai",
+        claim: claim(Selector::PathSuffix("/v1/audio/translations")),
+    },
+];
+
+/// Every carved-out dialect this crate's battery registers, as a boot would.
+pub const REGISTERED: &[DialectEntry] = &[DialectEntry {
+    locations: OPENAI,
+    ladder: OPENAI_LADDER,
+}];
+
+/// A plane configured the way a boot configures one: upstreams, and the dialects that registered.
+///
+/// EVERY CASE IN THIS BATTERY BUILDS ITS PLANE HERE, so no case can accidentally be about a plane
+/// with nothing registered. A case that wants the bare plane says `LlmPlane::new` itself and says
+/// why.
+#[must_use]
+pub fn plane(upstreams: &'static [Upstream]) -> LlmPlane {
+    LlmPlane::new(upstreams).with_dialects(DialectRegistry::sealed(REGISTERED))
 }
