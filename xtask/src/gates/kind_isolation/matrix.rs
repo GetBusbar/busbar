@@ -207,6 +207,33 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
             }
         }
     }
+    // THE `dialect` KIND'S VOCABULARY IS NOT ITS CRATES', BECAUSE IT HAS NONE YET.
+    //
+    // Every other kind above derives its needles from the census, which works because every other
+    // kind has members. `dialect` lands as `busbar-plane-<plane>-<dialect>` once the codec split
+    // finishes; until then the census contributes nothing and the matrix carried no `dialect`
+    // column at all. A red team walked through that gap with `const VD = "anthropic";` and
+    // `fn openai_shim()` in `busbar-store-memory` and got six green gates.
+    //
+    // A dialect's vocabulary is its VENDOR NAME — that is what the `<dialect>` segment of the name
+    // will be, and it is the word already in the tree today. So the needles are the DIALECT rule's
+    // own list, imported rather than copied: `plane-purity`'s scanner is the one place the vendor
+    // names are written down, and a hand list here would be a second place to keep in step. When a
+    // real `busbar-plane-llm-anthropic` lands, the loop above contributes its package name and its
+    // kind-qualified id on top of these, and the dedup below keeps one of each.
+    {
+        let entry = out.entry("dialect").or_default();
+        for d in crate::gates::plane_purity::scanner::DIALECTS {
+            entry.push(Needle {
+                word: d.to_lowercase(),
+                // No owner and no id: a vendor name is not a crate's own spelling of itself, so
+                // there is no crate for `needles_for` to strike it from.
+                owner: String::new(),
+                id: String::new(),
+            });
+        }
+    }
+
     let names: Vec<Vec<String>> = crates
         .iter()
         .map(|c| needle_segments(&c.name.to_lowercase()))
@@ -475,6 +502,17 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     for c in crates {
         let mut p = Plan::default();
         for (kind, words) in &vocab {
+            // A PLANE MAY SAY ITS OWN DIALECTS' NAMES, AND NOTHING ELSE MAY.
+            //
+            // The dialect vocabulary is the one column whose needles do not come from the census,
+            // so it is the one column with no owner to strike itself out. A plane crate IS where
+            // the vendor names live until the split lands, and a dialect crate is the vendor name;
+            // for those two kinds the column is not a coupling and is not measured. For every
+            // other kind — neutral, unit, store, transport, codec, control, root — a vendor name
+            // is another kind's vocabulary on exactly the terms every other cell is scored on.
+            if *kind == "dialect" && matches!(c.kind, Some("plane") | Some("dialect")) {
+                continue;
+            }
             for n in needles_for(words, c) {
                 let parts = needle_segments(&n.word);
                 if parts.is_empty() {
@@ -1098,8 +1136,31 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
         ),
     ] {
         let was = super::base::row_keys(&base.registry, table, ids);
+        // A WHOLE COLUMN THAT DID NOT EXIST IS THE RULE ARRIVING, NOT A CEILING RISING.
+        //
+        // Every key here is `<row> \u{d7} <column>` — a crate and the kind it names, or an edge's two
+        // ends — and the mint rule is about the ROW: a second `[[cell]]` in a column that already
+        // has some is a coupling somebody grew, and it is refused. A column with NO row at the base
+        // at all is a different event: it is the commit that taught this rule to measure something
+        // it could not measure before, and every cell of it is a FIRST measurement by construction.
+        // The `dialect` column arrived exactly that way — the vendor names were unmeasurable until
+        // the vocabulary was derived from the DIALECT list rather than from a census with no dialect
+        // crate in it — and refusing 25 rows there is refusing the instrument, the same reason
+        // `registry_present` above exempts the branch that adds the ledger itself. The carve-out is
+        // narrow on purpose: it fires once per column, ever, and every later row in that column is
+        // a mint like any other.
+        let columns: std::collections::BTreeSet<&str> = was
+            .iter()
+            .filter_map(|k| k.rsplit_once(" \u{d7} ").map(|(_, col)| col))
+            .collect();
         for key in super::base::row_keys(&now, table, ids) {
             if was.contains(&key) {
+                continue;
+            }
+            if key
+                .rsplit_once(" \u{d7} ")
+                .is_some_and(|(_, col)| !columns.contains(col))
+            {
                 continue;
             }
             out.push(format!(
@@ -1776,6 +1837,25 @@ pub fn selftest(
             "pub const UC: &str = \"v\u{43e}ice\";\n",
         ),
         &["confusable", "busbar-transport-tcp"],
+    ));
+
+    // -- THE DIALECT VOCABULARY -----------------------------------------------------------------
+    //
+    // A red team put `const VD = "anthropic";` and `fn openai_shim()` into `busbar-store-memory`
+    // and every gate in the tree stayed green (`audit-gate-round2-naming.md`, plant 40). The vendor
+    // names are the `dialect` kind's vocabulary, and the `dialect` kind has no crate yet, so the
+    // census derived NO needles for it and the matrix had no row to raise. The vocabulary is read
+    // from the DIALECT rule's own list rather than written out here, so the two cannot drift.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a vendor name in a neutral crate is dialect vocabulary, scored like any other kind",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-store-memory/src/vendor.rs",
+            "pub const VD: &str = \"anthropic\";\npub fn openai_shim() {}\n",
+        ),
+        &["busbar-store-memory", "dialect"],
     ));
 
     // THE LEDGER ITSELF GONE. A row that cannot read its allowance is not a row that found nothing.
