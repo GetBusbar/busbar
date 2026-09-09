@@ -128,6 +128,32 @@ land_floor_plan() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHICH TOUCHED FILES ARE THE GATES' OWN.
+#
+# Two sets, because they are proven two different ways, and both are functions so the selftest can
+# assert the patterns directly rather than by reading the log of a landing.
+#
+#   land_gate_scripts  the runnable gates: parsed, and their own --selftest run.
+#   land_gate_data     the gates' DATA and SOURCE: qa/*.toml and xtask/src/gates/**.
+#
+# The second set is the one that was missing, and the gap was measured: `gatefiles` matched only
+# `^(scripts|testing|\.github)/.*\.(sh|py|mjs|yml|yaml)$`, so a landing whose only edit was
+# `legacy-reach.ceiling: 92 -> 200` in qa/construction.toml selected NO cargo package, ran plugins,
+# fmt, gatefiles (zero files), workspace-clippy and kind-isolation, and printed GREEN having
+# executed nothing that reads a ceiling. Raising a ceiling was the cheapest unproven landing in the
+# tree. The same held for the gate SOURCE: `xtask/src/gates/**` is where every ratchet, exemption
+# table and waiver list lives, and none of it was a gate file either.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+land_gate_scripts() {  # $1 = newline-separated touched paths
+  printf '%s\n' "$1" | grep -E '^(scripts|testing|\.github)/.*\.(sh|py|mjs|yml|yaml)$' || true
+}
+
+land_gate_data() {  # $1 = newline-separated touched paths
+  printf '%s\n' "$1" | grep -E '^(qa/.*\.toml|xtask/src/gates/.*\.rs)$' || true
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # SHARDING THE ORACLE RECORDING.
 #
 # record.sh selects cells with bash's own `[[ "$id" =~ $FILTER ]]` (record.sh:958) — an UNANCHORED
@@ -418,7 +444,7 @@ EOF
       # advertises a `--selftest` runs it. These are cheap (seconds) and they catch the two failures
       # that actually happen to a picked gate script: it no longer parses, and its own self-test
       # cases no longer hold.
-      local gate_files; gate_files="$(printf '%s\n' "$touched" | grep -E '^(scripts|testing|\.github)/.*\.(sh|py|mjs|yml|yaml)$' || true)"
+      local gate_files; gate_files="$(land_gate_scripts "$touched")"
       local n_parsed=0 n_selftests=0 f
       if [ -n "$gate_files" ]; then
         while IFS= read -r f; do
@@ -475,6 +501,31 @@ EOF
 $gate_files
 EOF
         PROVEN="$PROVEN $n_parsed gate file(s) parsed, $n_selftests self-test(s) green;"
+      fi
+
+      # …AND THE GATES' OWN DATA AND SOURCE. A landing that edits a ceiling, a waiver table or the
+      # rule that reads one must run something that READS it; see land_gate_data's header for what
+      # this used to cost. The construction gate is the reader for `qa/*.toml` — its `ceiling-rose`
+      # row compares every integer in qa/construction.toml and qa/kind-isolation.toml against the
+      # base, and its `ceiling-slack` row holds each ratcheted ceiling to its measurement — and its
+      # self-test is what proves the gate that reads them can still fail. The gate is RED BY DESIGN
+      # on HEAD, so its exit status is not the verdict here; the two ceiling rows are.
+      local gate_data; gate_data="$(land_gate_data "$touched")"
+      if [ -n "$gate_data" ]; then
+        local ndata; ndata="$(printf '%s\n' "$gate_data" | grep -c . || true)"
+        (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
+          || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
+        (cd "$here" && cargo xtask gate construction --selftest >"$here/target/land-cselftest-$stamp.log" 2>&1) \
+          || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
+               echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
+        local clog="$here/target/land-ceilings-$stamp.log"
+        ( cd "$here" && cargo xtask gate construction --report ) >"$clog" 2>&1 || true
+        local crows; crows="$(grep -cE '^(PASS|FAIL)  ' "$clog" || true)"
+        [ "${crows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $clog)" >&2; return 1; }
+        local cbad; cbad="$(grep -E '^FAIL  (ceiling-rose|ceiling-slack) ' "$clog" || true)"
+        [ -z "$cbad" ] || { printf '%s\n' "$cbad" >&2
+               echo "land.sh: RED — a ceiling rose, or a ceiling has slack under it (log: $clog)" >&2; return 1; }
+        PROVEN="$PROVEN $ndata gate data/source file(s): construction self-test + ceiling ratchets green;"
       fi ;;
 
     tests)
@@ -879,6 +930,20 @@ land_selftest() {
   _stgrep "plan(named) has the gate row leg"           "$root/plan-full.txt" '(^| )gate( |$)'
   _stgrep "plan(named) has the oracle leg"             "$root/plan-full.txt" 'oracle'
   _stno   "plan(named) does NOT fall back to workspace" "$root/plan-full.txt" 'workspace-clippy'
+
+  echo "land.sh selftest: the gate-file patterns (a ceiling edit is not an unproven landing)"
+  land_gate_data "qa/construction.toml" >"$root/gd-ceiling.txt"
+  _stgrep "a qa ceilings edit is a gate file"      "$root/gd-ceiling.txt" '^qa/construction\.toml$'
+  land_gate_data "qa/kind-isolation.toml" >"$root/gd-kis.txt"
+  _stgrep "the kind allowance is a gate file"      "$root/gd-kis.txt" '^qa/kind-isolation\.toml$'
+  land_gate_data "xtask/src/gates/construction/ceilings.rs" >"$root/gd-src.txt"
+  _stgrep "a gate SOURCE edit is a gate file"      "$root/gd-src.txt" 'gates/construction/ceilings\.rs'
+  land_gate_data "crates/busbar/src/main.rs" >"$root/gd-crate.txt"
+  _stno   "an ordinary crate edit is not one"      "$root/gd-crate.txt" '[^[:space:]]'
+  land_gate_scripts "scripts/land.sh" >"$root/gs-sh.txt"
+  _stgrep "a shell gate script is still one"       "$root/gs-sh.txt" '^scripts/land\.sh$'
+  land_gate_scripts "qa/construction.toml" >"$root/gs-toml.txt"
+  _stno   "the two sets do not overlap"            "$root/gs-toml.txt" '[^[:space:]]'
 
   echo "land.sh selftest: the shard partition (record.sh's own matcher)"
   if [ -f "$here/testing/shadow-oracle/cells.json" ]; then
