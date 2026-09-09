@@ -379,9 +379,15 @@ secret) may name `busbar-contract` and the closed grammar it is written on (`bus
 every other workspace crate it names is either an \
 automatic RED (busbar-kernel, busbar-caps, a busbar-unit-*, another plane, a transport — the \
 coupling the ABI exists to prevent, and no allow-list can excuse it) or must be on the reviewed \
-list below, named once with its reason. Parsed straight from each crate's `[dependencies]` table \
-(not `[dev-dependencies]` or target-cfg tables — a deliberate, honestly-stated narrowing: those \
-never ship in the plugin binary the manifest allow-list is protecting); `cargo metadata` is \
+list below, named once with its reason. Parsed out of every SHIPPED dependency table each crate \
+declares — `[dependencies]`, `[build-dependencies]` and the per-target forms of both, with \
+`package = "…"` and workspace renames resolved — through the one manifest reader (xtask \
+`manifest::shipped_dep_names`). It read `[dependencies]` alone until 2026-09-09, on the stated \
+ground that the other tables "never ship in the plugin binary": a `[target.'cfg(unix)'.dependencies]` \
+entry ships in every Linux artifact this tree builds, and a red-team pass carried a whole plane into \
+a transport through that table with every gate green. `[dev-dependencies]` is still out — a test \
+edge is not a shipped edge, and it is scored on `kind-isolation:test-deps` instead of here. \
+`cargo metadata` is \
 consulted when present to widen the same check to transitive path/workspace deps, and skipped \
 (noted, not failed) when cargo is unavailable, keeping this gate cargo-optional."""
 # Every dependency a plugin-kind crate may name beyond busbar-contract, with the review recorded in
@@ -407,6 +413,14 @@ reviewed_allowlist = ["busbar-api", "busbar-plugin-sdk", "serde", "serde_json", 
 # the workspace. This ratchet describes a tree that no longer exists and tells a reader the coupling
 # is still there. Delete it (PLUGIN-TREE.md section 9) — noted here, not done here, because a rule
 # change is not this commit's business.
+#
+# REVIEWED 2026-09-09, and it is the first dependency this rule could see: the manifest reader read
+# `[dependencies]` and nothing else, so a `[target.'cfg(unix)'.dependencies]` entry was invisible to
+# it — and `cfg(unix)` is true on every runner and every shipped Linux artifact this tree builds, so
+# what the narrowing excluded was a dependency that ships. `libc` here is the advisory whole-file
+# `flock` FileStore takes around its read-modify-write (crates/store-example-plugin/src/lib.rs,
+# FileLock), unix-only, in the fixture that models a fleet sharing one durable path.
+store-example-plugin = ["libc"]
 [rules.manifest-allowlist.known_red_deps]
 busbar-plane-llm = ["busbar-llm"]
 busbar-plane-a2a = ["busbar-a2a"]

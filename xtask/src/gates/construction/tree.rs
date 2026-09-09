@@ -633,9 +633,15 @@ pub fn crate_name_of_dir(dir: &str) -> String {
         .to_string()
 }
 
-/// A deliberately small `[dependencies]` reader: the exact-name keys under `[dependencies]` only,
-/// never `[dev-dependencies]` or a target-cfg table. Both `name = { … }` and `[dependencies.name]`
-/// are handled. A missing file reads as no dependencies.
+/// THE SHIPPED DEPENDENCY NAMES OF ONE MANIFEST — every dependency table, in every spelling.
+///
+/// It was "a deliberately small `[dependencies]` reader: the exact-name keys under
+/// `[dependencies]` only, never `[dev-dependencies]` or a target-cfg table", and the shape it
+/// shared with `kind_isolation::deps_of` was the shape they were BOTH blind in: a red-team pass
+/// carried a plane into a transport through `[build-dependencies]`, through
+/// `[target.'cfg(unix)'.dependencies]` and through `package = "…"`, and the two gates that read the
+/// manifests were green in all three. Fixing one copy would have left the other, so there is now
+/// one reader: [`crate::manifest`]. A missing file still reads as no dependencies.
 pub fn read_cargo_deps(path: &Path) -> Vec<String> {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -644,30 +650,7 @@ pub fn read_cargo_deps(path: &Path) -> Vec<String> {
 }
 
 pub fn read_cargo_deps_text(raw: &str) -> Vec<String> {
-    let mut deps = Vec::new();
-    let mut section: Option<String> = None;
-    for line in raw.split('\n') {
-        let s = line.trim();
-        if s.starts_with('[') {
-            if s.starts_with("[dependencies.") && s.ends_with(']') {
-                section = Some("dependencies".to_string());
-                deps.push(s["[dependencies.".len()..s.len() - 1].trim().to_string());
-                continue;
-            }
-            section = Some(s.trim_matches(['[', ']']).to_string());
-            continue;
-        }
-        if section.as_deref() == Some("dependencies") && !s.is_empty() && !s.starts_with('#') {
-            let name: String = s
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-                .collect();
-            if !name.is_empty() && s[name.len()..].trim_start().starts_with('=') {
-                deps.push(name);
-            }
-        }
-    }
-    deps
+    crate::manifest::shipped_dep_names(raw)
 }
 
 #[cfg(test)]
@@ -765,16 +748,22 @@ trait T {
         assert!(glob_segment("busbar-unit-*", "busbar-unit-cost"));
     }
 
-    /// `[dev-dependencies]` and target-cfg tables are out of scope by design (they never ship in
-    /// the plugin binary the manifest allow-list protects). The `[dependencies.name]` long form
-    /// leaves the reader inside `dependencies`, so that table's own keys are read as names too —
-    /// a quirk of the Python this port keeps deliberately, because the allow-list is calibrated
-    /// against what that reader actually returns and "fixing" it here would move a ceiling.
+    /// EVERY SHIPPED TABLE, AND ONLY THE SHIPPED ONES. `[dev-dependencies]` stays out — a test edge
+    /// is not a shipped edge, and `kind-isolation:test-deps` is the row that scores it — while
+    /// `[build-dependencies]` and the per-target forms are in, because `cfg(unix)` is true in every
+    /// artifact this tree ships and a red-team pass carried a whole plane through that table.
+    ///
+    /// The `[dependencies.tracing]` long form used to leave the old reader inside `dependencies`,
+    /// so that sub-table's own keys came back as dependency names and `version` was reported as a
+    /// crate. It is a name no allow-list should ever have had to carry, and it is gone.
     #[test]
-    fn cargo_deps_reads_the_dependencies_table_the_way_the_allow_list_was_calibrated_against() {
+    fn cargo_deps_reads_every_shipped_table_and_no_test_one() {
         let deps = read_cargo_deps_text(
-            "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\nbusbar-contract = { path = \"..\" }\n\n[dev-dependencies]\ntokio = \"1\"\n\n[dependencies.tracing]\nversion = \"0.1\"\n",
+            "[package]\nname = \"x\"\n\n[dependencies]\nserde = \"1\"\nbusbar-contract = { path = \"..\" }\n\n[dev-dependencies]\ntokio = \"1\"\n\n[dependencies.tracing]\nversion = \"0.1\"\n\n[build-dependencies]\ncc = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nlibc = \"0.2\"\n",
         );
-        assert_eq!(deps, vec!["serde", "busbar-contract", "tracing", "version"]);
+        assert_eq!(
+            deps,
+            vec!["busbar-contract", "cc", "libc", "serde", "tracing"]
+        );
     }
 }

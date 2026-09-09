@@ -26,10 +26,21 @@
 //!   `busbar-transport-a2a`, `busbar-plane-http`, `busbar-unit-mcp` and `busbar-plane-transport`
 //!   are all refused.
 //! * `kind-isolation:deps` — the kind-to-kind edge CLASSES in the manifests are the ones measured
-//!   in [`MEASURED_EDGES`]. A NEW class is refused; a class that no longer exists is refused as a
+//!   in [`MEASURED_EDGES`]. EVERY SHIPPED DEPENDENCY TABLE IS A MANIFEST EDGE — `[dependencies]`,
+//!   `[build-dependencies]` and the per-target forms of both, with `package = "…"` and
+//!   `[workspace.dependencies]` renames resolved to the package they name; see [`crate::manifest`]
+//!   for the five spellings the one-section reader could not see, every one of which was proven to
+//!   carry a plane into a transport with this row green.
+//!   A NEW class is refused; a class that no longer exists is refused as a
 //!   dead allowance. The measured graph is printed in the row's detail so the owner can tighten it
 //!   by deleting lines rather than by re-deriving it. Inside the plane family a crate may only
 //!   name its OWN instance, so `busbar-plane-llm` naming `busbar-mcp-codec` is refused.
+//! * `kind-isolation:test-deps` — THE OTHER HALF OF THE BUILD GRAPH. `[dev-dependencies]` was read
+//!   by the battery rule and by nothing else, on the sentence "a test edge is not a shipped edge" —
+//!   which is true, and is not a reason to leave it unmeasured. A plane declared in a transport's
+//!   `[dev-dependencies]` is a plane compiled into that transport's test binary, and a red team
+//!   walked one in through that table with every gate green. Its own row, its own graph: folding it
+//!   into `:deps` would grant the shipped artifact the same edge.
 //! * `kind-isolation:vocab` — non-comment, literal-blanked source of a kind-X crate never names
 //!   another kind's instance identifiers: a transport never says `a2a`/`mcp`/`voice`/`llm`/`admin`,
 //!   a plane never says `axum`/`hyper`/`tonic`/`tungstenite`/`tokio::net`, and neither a plane nor
@@ -118,6 +129,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_rows_green, prove_rows_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
+use crate::manifest::{self, DepDecl};
 use crate::scan;
 
 mod matrix;
@@ -126,6 +138,12 @@ pub use matrix::ROW_MATRIX;
 
 pub const ROW_NAME: &str = "kind-isolation:name";
 pub const ROW_DEPS: &str = "kind-isolation:deps";
+/// THE TEST HALF OF THE BUILD GRAPH, on its own row. `[dev-dependencies]` was read by the battery
+/// rule and by nothing else, on the sentence "a test edge is not a shipped edge" — which is true,
+/// and is not a reason to leave it unmeasured: a plane declared in a transport's `[dev-dependencies]`
+/// is a plane compiled into that transport's test binary, and the red team walked a plane in
+/// through this table with every gate green.
+pub const ROW_TEST_DEPS: &str = "kind-isolation:test-deps";
 pub const ROW_VOCAB: &str = "kind-isolation:vocab";
 pub const ROW_REGISTRY: &str = "kind-isolation:registry";
 /// THE SHIP-CRITERION ROWS. Owed only by the `kind-isolation-ship` registration — see the twin's
@@ -512,6 +530,25 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     ("transport", "unit"),
     ("unit", "caps"),
     ("unit", "contract-transport"),
+    ("unit", "unit"),
+];
+
+/// THE KIND-TO-KIND EDGE CLASSES THE `cargo test` BUILD GRAPH HAS, measured and written down.
+///
+/// The same ratchet as [`MEASURED_EDGES`], over the other half of the graph. It is a SEPARATE table
+/// and not a union, because the two are separate claims: a shared fixture reaching a sibling kind
+/// is a fact about the test build, and folding it into the shipped graph would grant the shipped
+/// artifact the same edge.
+const MEASURED_TEST_EDGES: &[(&str, &str)] = &[
+    ("codec", "legacy"),
+    ("codec", "substrate"),
+    ("plane", "codec"),
+    ("plugin-tooling", "plugin-abi"),
+    ("plugin-tooling", "store"),
+    ("store", "plugin-tooling"),
+    ("substrate", "substrate"),
+    ("transport", "caps"),
+    ("unit", "api"),
     ("unit", "unit"),
 ];
 
@@ -1011,12 +1048,15 @@ struct CrateInfo {
     remainder: Vec<String>,
     /// The instance this crate is an instance OF, when its remainder names one.
     instance: Option<String>,
-    /// Normal (`[dependencies]`) dependency names, workspace crates only.
-    deps: Vec<String>,
-    /// `[dev-dependencies]` names. Scored by the battery rule and by NOTHING else: a test edge is
-    /// not a shipped edge, and folding it into the kind graph would make every shared fixture read
-    /// as a kind learning about another kind.
-    dev_deps: Vec<String>,
+    /// THE SHIPPED DEPENDENCY DECLARATIONS — `[dependencies]`, `[build-dependencies]` and both of
+    /// their per-target forms, with `package = …` and `[workspace.dependencies]` renames resolved.
+    /// See [`crate::manifest`] for the five spellings the one-section reader could not see.
+    deps: Vec<DepDecl>,
+    /// `[dev-dependencies]`, likewise. A test edge is not a SHIPPED edge — which is why it is
+    /// scored on its own row rather than folded into the shipped graph, so a shared fixture does
+    /// not read as a kind learning about another kind — but it is a real edge of the `cargo test`
+    /// build graph and it is scored.
+    dev_deps: Vec<DepDecl>,
     /// Two kinds claimed this name at one precedence — the fusion refusal.
     ambiguous: Vec<&'static str>,
 }
@@ -1158,35 +1198,17 @@ fn package_name(text: &str) -> Option<String> {
     None
 }
 
-/// Every key of `[<section>]` and every `[<section>.<name>]` sub-table of one dependency section.
-/// The kind graph reads `dependencies` — a dev-dependency is a test edge and the graph is a claim
-/// about what SHIPS — and the battery rule reads `dev-dependencies`.
-fn deps_of(text: &str, want: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut in_deps = false;
-    let sub = format!("{want}.");
-    for raw in text.lines() {
-        let t = raw.trim();
-        if let Some(section) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            let section = section.trim();
-            in_deps = section == want;
-            if let Some(name) = section.strip_prefix(sub.as_str()) {
-                out.push(name.trim().to_string());
-            }
-            continue;
-        }
-        if !in_deps || t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        let Some((k, _)) = t.split_once('=') else {
-            continue;
-        };
-        let k = k.trim().trim_matches('"');
-        if !k.is_empty() && !k.contains(' ') {
-            out.push(k.to_string());
-        }
-    }
-    out
+/// EVERY DEPENDENCY DECLARATION OF ONE MANIFEST, split into the shipped half and the test half.
+///
+/// It read ONE section (`dependencies`) and recorded the manifest KEY, which is five blind spots in
+/// four lines: `[build-dependencies]`, `[target.'cfg(…)'.dependencies]`, `[dev-dependencies]`,
+/// `package = "…"` and `[workspace.dependencies]` renames. Every one of them was proven to carry a
+/// plane into a transport with this row green. The reading is now [`crate::manifest`]'s, which is
+/// the SAME reader `construction`'s tree rule calls, so the two gates cannot drift back apart.
+fn deps_of(text: &str, renames: &BTreeMap<String, String>) -> (Vec<DepDecl>, Vec<DepDecl>) {
+    let mut decls = manifest::dep_decls(text);
+    manifest::resolve_inherited(&mut decls, renames);
+    decls.into_iter().partition(|d| d.table.shipped())
 }
 
 /// The crate census, read through the context so a planted manifest counts exactly as a real one.
@@ -1238,6 +1260,9 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
     let files = cx
         .walk(&WalkSpec::new(["crates"]).ext("toml"))
         .map_err(|e| e.to_string())?;
+    // THE WORKSPACE'S OWN RENAMES, read once: a member that inherits reaches the package the
+    // workspace named, not the word the member spelled.
+    let renames = manifest::workspace_renames(&cx.read("Cargo.toml").unwrap_or_default());
     let mut out = Vec::new();
     for f in &files {
         let rel = f.rel_str();
@@ -1258,6 +1283,7 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
         // off the marker its name carries — which is why the served-surface vocabulary is unchanged
         // by the registration.
         let kind = overrides.get(name.as_str()).copied().or(kind);
+        let (deps, dev_deps) = deps_of(&f.text, &renames);
         out.push(CrateInfo {
             dir: format!("crates/{}", parts[1]),
             name,
@@ -1265,8 +1291,8 @@ fn census(cx: &Ctx) -> Result<Vec<CrateInfo>, String> {
             family: family_of(kind),
             remainder,
             instance: None,
-            deps: deps_of(&f.text, "dependencies"),
-            dev_deps: deps_of(&f.text, "dev-dependencies"),
+            deps,
+            dev_deps,
             ambiguous,
         });
     }
@@ -1492,10 +1518,61 @@ fn render_graph(edges: &BTreeSet<(String, String)>) -> String {
         .join(" ")
 }
 
-fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, ship: bool) -> Row {
+/// WHICH HALF OF THE BUILD GRAPH a run of the edge rule is reading.
+///
+/// The split is not an exemption, it is two claims: the SHIPPED graph is what the artifact links,
+/// the TEST graph is what `cargo test` links. Folding the second into the first would make every
+/// shared fixture read as a kind learning about another kind; dropping it — which is what reading
+/// only `[dependencies]` did — leaves a plane wired into a transport with the gate green, and the
+/// red team walked straight through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Half {
+    Shipped,
+    Test,
+}
+
+impl Half {
+    fn row(self) -> &'static str {
+        match self {
+            Half::Shipped => ROW_DEPS,
+            Half::Test => ROW_TEST_DEPS,
+        }
+    }
+
+    fn table(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Half::Shipped => MEASURED_EDGES,
+            Half::Test => MEASURED_TEST_EDGES,
+        }
+    }
+
+    fn table_name(self) -> &'static str {
+        match self {
+            Half::Shipped => "MEASURED_EDGES",
+            Half::Test => "MEASURED_TEST_EDGES",
+        }
+    }
+
+    fn decls(self, c: &CrateInfo) -> &[DepDecl] {
+        match self {
+            Half::Shipped => &c.deps,
+            Half::Test => &c.dev_deps,
+        }
+    }
+
+    fn noun(self) -> &'static str {
+        match self {
+            Half::Shipped => "shipped",
+            Half::Test => "test",
+        }
+    }
+}
+
+fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -> Row {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let drain_targets: BTreeSet<&str> = DRAIN_TARGET_KINDS.iter().copied().collect();
-    let measured: BTreeSet<(String, String)> = MEASURED_EDGES
+    let measured: BTreeSet<(String, String)> = half
+        .table()
         .iter()
         .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
         .collect();
@@ -1515,8 +1592,9 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, ship: bool) -> Row {
 
     for c in crates {
         let Some(from) = c.kind else { continue };
-        for dep in &c.deps {
-            let Some(target) = by_name.get(dep.as_str()) else {
+        for decl in half.decls(c) {
+            let dep = decl.cite();
+            let Some(target) = by_name.get(decl.pkg.as_str()) else {
                 continue;
             };
             let Some(to) = target.kind else { continue };
@@ -1591,7 +1669,7 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, ship: bool) -> Row {
                 && !reg
                     .transitional
                     .iter()
-                    .any(|t| t.covers(&c.name, dep.as_str()))
+                    .any(|t| t.covers(&c.name, decl.pkg.as_str()))
             {
                 offenders.push(format!(
                     "unlisted-transitional\t{}\t{} depends on {dep}, a `{to}` crate. While the \
@@ -1649,9 +1727,11 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, ship: bool) -> Row {
     // going away makes the gate demand the line be struck.
     for edge in measured.difference(&seen) {
         offenders.push(format!(
-            "dead-edge-class\tMEASURED_EDGES\t{} -> {} no longer exists in the tree; strike the \
+            "dead-edge-class\t{}\t{} -> {} no longer exists in the tree; strike the \
              line so the graph the gate enforces is the graph the tree has",
-            edge.0, edge.1
+            half.table_name(),
+            edge.0,
+            edge.1
         ));
     }
 
@@ -1659,8 +1739,13 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, ship: bool) -> Row {
     offenders.dedup();
     if offenders.is_empty() {
         return Row::pass(
-            ROW_DEPS,
-            "every kind-to-kind dependency edge is one the measured graph already has",
+            half.row(),
+            match half {
+                Half::Shipped => {
+                    "every kind-to-kind dependency edge is one the measured graph already has"
+                }
+                Half::Test => "every kind-to-kind TEST edge is one the measured test graph has",
+            },
             format!(
                 "{} edge class(es): {} || {} transitional drain row(s) in {REGISTRY_FILE}",
                 seen.len(),
@@ -1675,12 +1760,22 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, ship: bool) -> Row {
     // ratchet a reader has to edit is `MEASURED_EDGES`, so that is what is printed under its own
     // name; the observed set is printed beside it, labelled as what it is.
     Row::fail(
-        ROW_DEPS,
-        "a dependency crosses a kind boundary the measured graph does not have",
+        half.row(),
+        match half {
+            Half::Shipped => {
+                "a dependency crosses a kind boundary the measured graph does not have"
+            }
+            Half::Test => {
+                "a TEST dependency crosses a kind boundary the measured test graph does \
+                           not have"
+            }
+        },
         format!(
-            "{} finding(s): {} || MEASURED_EDGES ({}): {} || observed in the tree ({}): {}",
+            "{} finding(s) in the {} graph: {} || {} ({}): {} || observed in the tree ({}): {}",
             offenders.len(),
+            half.noun(),
             offenders.join(" | "),
+            half.table_name(),
             measured.len(),
             render_graph(&measured),
             seen.len(),
@@ -2579,7 +2674,7 @@ fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
             .copied()
             .filter(|c| {
                 idx.conformance.contains(&c.dir)
-                    || c.dev_deps.iter().any(|d| d.contains(BATTERY_MARKER))
+                    || c.dev_deps.iter().any(|d| d.pkg.contains(BATTERY_MARKER))
             })
             .collect();
         checked += members.len();
@@ -3028,7 +3123,8 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
             continue;
         }
         for dep in &c.deps {
-            if by_name.get(dep.as_str()).and_then(|t| t.kind) == Some("transport") {
+            if by_name.get(dep.pkg.as_str()).and_then(|t| t.kind) == Some("transport") {
+                let dep = dep.cite();
                 offenders.push(format!(
                     "wire-dependency\t{}\t{} is kind `{kind}` and depends on the wire crate {dep}. \
                      A plugin declares WHICH transport it claims, as data; it never links the crate \
@@ -3180,6 +3276,7 @@ impl Gate for KindIsolationGate {
         let mut owed = vec![
             ROW_NAME.to_string(),
             ROW_DEPS.to_string(),
+            ROW_TEST_DEPS.to_string(),
             ROW_VOCAB.to_string(),
             ROW_REGISTRY.to_string(),
             ROW_STEPS.to_string(),
@@ -3251,7 +3348,8 @@ impl Gate for KindIsolationGate {
 
         let mut rows = vec![
             rule_name(&crates, &planes, &ports, &reg),
-            rule_deps(&crates, &reg, self.ship),
+            rule_deps(&crates, &reg, Half::Shipped, self.ship),
+            rule_deps(&crates, &reg, Half::Test, self.ship),
             rule_vocab(cx, &crates, &planes),
             rule_registry(cx, &crates, &reg, self.ship),
             rule_steps(cx, &crates),
@@ -3310,6 +3408,7 @@ impl Gate for KindIsolationGate {
                 &[
                     ROW_NAME,
                     ROW_DEPS,
+                    ROW_TEST_DEPS,
                     ROW_VOCAB,
                     ROW_REGISTRY,
                     ROW_STEPS,
@@ -3566,6 +3665,131 @@ impl Gate for KindIsolationGate {
                 ),
             ));
         }
+
+        // THE FIVE SPELLINGS THE ONE-SECTION READER COULD NOT SEE. Every one of these was planted
+        // in the real tree by a red-team pass and left every gate GREEN; every one is a plane
+        // linked into a transport. See [`crate::manifest`] for the reading that closes them.
+
+        // A BUILD-DEPENDENCY IS A SHIPPED EDGE: the build script runs, and what it links is
+        // compiled into the making of the artifact.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tls/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tls/Cargo.toml",
+                "\n[build-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a build-dependency is a shipped edge",
+            &[ROW_DEPS],
+            ov,
+            &[
+                "new-edge-class",
+                "transport -> plane",
+                "[build-dependencies]",
+            ],
+        ));
+
+        // A PER-TARGET DEPENDENCY IS A DEPENDENCY, and `cfg(unix)` is true on every runner this
+        // tree builds on, so the edge is not even conditional.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tls/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tls/Cargo.toml",
+                "\n[target.'cfg(unix)'.dependencies]\nbusbar-plane-mcp = { workspace = true }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a per-target dependency is a dependency",
+            &[ROW_DEPS],
+            ov,
+            &["new-edge-class", "transport -> plane", "target."],
+        ));
+
+        // A RENAMED PACKAGE IS THE PACKAGE IT RENAMES. The needle list names the PLANE, because the
+        // finding that says only `wire` is a finding about a crate that resolves to no kind at all.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tls/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tls/Cargo.toml",
+                "\n[dependencies.wire]\npackage = \"busbar-plane-llm\"\npath = \"../busbar-plane-llm\"\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a renamed package is the package it renames",
+            &[ROW_DEPS],
+            ov,
+            &[
+                "new-edge-class",
+                "transport -> plane",
+                "busbar-plane-llm",
+                "as `wire`",
+            ],
+        ));
+
+        // THE SAME RENAME, STATED ONE FILE AWAY. `[workspace.dependencies]` renames it and the
+        // member says only `workspace = true`, so neither the member's manifest nor its source ever
+        // spells a plane word.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tls/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tls/Cargo.toml",
+                "\n[dependencies]\nwire-shim = { workspace = true }\n",
+            ),
+        );
+        ov.set(
+            "Cargo.toml",
+            cx.read("Cargo.toml").unwrap_or_default().replacen(
+                "[workspace.dependencies]\n",
+                "[workspace.dependencies]\nwire-shim = { package = \"busbar-plane-llm\", path = \
+                 \"crates/busbar-plane-llm\" }\n",
+                1,
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a workspace-inherited rename reaches the package the workspace named",
+            &[ROW_DEPS],
+            ov,
+            &["new-edge-class", "transport -> plane", "busbar-plane-llm"],
+        ));
+
+        // A DEV-DEPENDENCY IS A REAL EDGE OF THE `cargo test` BUILD GRAPH. It is not a SHIPPED
+        // edge, which is why it is on its own row and why THIS case requires `:deps` to stay green
+        // in the same breath — a rule that folded the two together would make every shared fixture
+        // read as a kind learning about another kind.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tls/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tls/Cargo.toml",
+                "\n[dev-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a dev-dependency crossing a kind is named on the test graph's own row",
+            &[ROW_TEST_DEPS],
+            ov,
+            &["new-edge-class", "transport -> plane", "[dev-dependencies]"],
+        ));
 
         // THE VOCABULARY, BOTH DIRECTIONS.
         let mut ov = Overlay::new();
@@ -4135,6 +4359,13 @@ fn registry_plant(rows: &str) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(REGISTRY_FILE, rows.to_string());
     ov
+}
+
+/// A real manifest with a section APPENDED, so a plant adds one edge and takes none away: a plant
+/// that rewrote the whole file would strike the crate's real edges too, and the dead-allowance
+/// findings that produced would be the ones a reader mistook for the case's own.
+fn manifest_plus(cx: &Ctx, rel: &str, extra: &str) -> String {
+    format!("{}\n{extra}", cx.read(rel).unwrap_or_default().trim_end())
 }
 
 /// A planted `Cargo.toml` for `dir`, declaring `name` and depending on `deps`. `set` rather than an
