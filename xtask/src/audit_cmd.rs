@@ -529,10 +529,12 @@ fn rule_internal_issue_id(text: &str) -> Option<String> {
 /// the rest are plain substrings.
 fn crypto_context(text: &str) -> bool {
     let lower = text.to_lowercase();
-    if ["digest", "checksum", "blake", "hmac", "argon", "scrypt", "bcrypt", "base64", "25519",
-        "chacha"]
-        .iter()
-        .any(|w| lower.contains(w))
+    if [
+        "digest", "checksum", "blake", "hmac", "argon", "scrypt", "bcrypt", "base64", "25519",
+        "chacha",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
     {
         return true;
     }
@@ -570,7 +572,13 @@ fn rule_commit_hash(text: &str) -> Option<String> {
     let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
 
     for kw in [
-        "fixed in", "landed in", "introduced in", "reverted in", "commit", "sha", "rev",
+        "fixed in",
+        "landed in",
+        "introduced in",
+        "reverted in",
+        "commit",
+        "sha",
+        "rev",
         "revision",
     ] {
         let pat: Vec<char> = kw.chars().collect();
@@ -652,13 +660,13 @@ fn rule_private_doc(text: &str) -> Option<String> {
     }
     // Named internal documents. Each is a needle this rule exists to catch, not a citation of one.
     for needle in [
-        "engine-bugs.md",       // public-hygiene-lint: allow — needle, not a citation
-        "mcp-design.md",        // public-hygiene-lint: allow — needle, not a citation
-        "a2a-design.md",        // public-hygiene-lint: allow — needle, not a citation
-        "smart-router-design.md", // public-hygiene-lint: allow — needle, not a citation
+        "engine-bugs.md",            // public-hygiene-lint: allow — needle, not a citation
+        "mcp-design.md",             // public-hygiene-lint: allow — needle, not a citation
+        "a2a-design.md",             // public-hygiene-lint: allow — needle, not a citation
+        "smart-router-design.md",    // public-hygiene-lint: allow — needle, not a citation
         "config-redesign-design.md", // public-hygiene-lint: allow — needle, not a citation
-        "busbarai-private",     // public-hygiene-lint: allow — needle, not a citation
-        "_handoffs",            // public-hygiene-lint: allow — needle, not a citation
+        "busbarai-private",          // public-hygiene-lint: allow — needle, not a citation
+        "_handoffs",                 // public-hygiene-lint: allow — needle, not a citation
     ] {
         if lower.contains(needle) {
             return Some("cites an internal document the reader cannot open".to_string());
@@ -669,12 +677,16 @@ fn rule_private_doc(text: &str) -> Option<String> {
             .rfind(|c: char| !is_ident_char(c) && c != '-')
             .map_or(0, |p| p + 1);
         let hit = &text[start..pos + "-spec.md".len()];
-        return Some(format!("cites `{hit}`, an internal spec document the reader cannot open"));
+        return Some(format!(
+            "cites `{hit}`, an internal spec document the reader cannot open"
+        ));
     }
     if let Some(pos) = lower.find("audit-decisions") {
         if let Some(end) = lower[pos..].find(".md") {
             let hit = &text[pos..pos + end + 3];
-            return Some(format!("cites `{hit}`, an internal document the reader cannot open"));
+            return Some(format!(
+                "cites `{hit}`, an internal document the reader cannot open"
+            ));
         }
     }
     None
@@ -738,8 +750,10 @@ mod hygiene_tests {
         assert!(hygiene_refusal("the digest is sha256(prev_hash | seq | ts)").is_none());
         assert!(hygiene_refusal("a signed token: (ed25519), two base64url segments").is_none());
         // Ordinary prose using "round" as an English word with no attached number stays silent.
-        assert!(hygiene_refusal("every fix proven by a failing case first, 15/15 plants caught")
-            .is_none());
+        assert!(
+            hygiene_refusal("every fix proven by a failing case first, 15/15 plants caught")
+                .is_none()
+        );
     }
 }
 
