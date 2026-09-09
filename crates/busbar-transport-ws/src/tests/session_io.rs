@@ -50,11 +50,11 @@ const BINDINGS: &[BindingDecl] = &[BindingDecl {
 
 const OPERATIONS: &[Operation] = &[Operation {
     op: "turn",
-    dispatch: &[Dispatch::Document {
+    // The DUPLEX kind: a session is addressed by its binding, and after the upgrade there is no
+    // document, no method and no target left for any other kind to be read from.
+    dispatch: &[Dispatch::Duplex {
         binding: "duplex",
         method: "GET",
-        member: "kind",
-        name: "turn",
         bar: Bar::Credential,
     }],
     answering: Answering::Stream,

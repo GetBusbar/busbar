@@ -39,10 +39,17 @@ use crate::WsTransport;
 
 // ── a declaration that is nobody's ──────────────────────────────────────────────────────────────
 
-/// Two bindings over two different wires, at two different mounts.
+/// Three bindings, and each of the last two is a way of being addressable that is NOT a session.
 ///
-/// The second one is the point of the pair: it is carried by another transport entirely, and a mount
-/// that addressed on the target alone would open sessions on it.
+/// * `duplex` is the session mount: this wire, and a duplex row declaring it.
+/// * `elsewhere` is carried by another transport entirely. A mount that addressed on the target
+///   alone would open sessions on it.
+/// * `posted` is the harder one, and the reason the declaration needs a duplex KIND rather than a
+///   duplex-shaped document row. It is on THIS wire, at a mount of its own, and it is an ordinary
+///   posted-envelope endpoint — a deployment is perfectly entitled to declare one over a wire that
+///   can also carry sessions. A mount that asked only "my transport?" and "a declared mount?" would
+///   upgrade a caller here and hand them a session on a surface whose own declaration says it
+///   answers one document with one answer.
 const BINDINGS: &[BindingDecl] = &[
     BindingDecl {
         name: "duplex",
@@ -54,16 +61,23 @@ const BINDINGS: &[BindingDecl] = &[
         transport: "http",
         mounts: &["/elsewhere"],
     },
+    BindingDecl {
+        name: "posted",
+        transport: "ws",
+        mounts: &["/posted"],
+    },
 ];
 
 const OPERATIONS: &[Operation] = &[
     Operation {
         op: "start",
-        dispatch: &[Dispatch::Document {
+        // THE DUPLEX KIND. The binding, the upgrade's method, the bar — the three facts this mount
+        // has before the protocol changes, and nothing it could not have afterwards. Declared as a
+        // document row instead, it would carry a member and a name that nothing here resolves and
+        // nothing here could resolve: after the upgrade there is no document to read either from.
+        dispatch: &[Dispatch::Duplex {
             binding: "duplex",
             method: "GET",
-            member: "kind",
-            name: "start",
             bar: Bar::Credential,
         }],
         answering: Answering::Stream,
@@ -77,6 +91,19 @@ const OPERATIONS: &[Operation] = &[
             method: "POST",
             member: "kind",
             name: "look",
+            bar: Bar::Open,
+        }],
+        answering: Answering::Unary,
+        request_media: "application/octet-stream",
+        response_media: "application/octet-stream",
+    },
+    Operation {
+        op: "post",
+        dispatch: &[Dispatch::Document {
+            binding: "posted",
+            method: "POST",
+            member: "kind",
+            name: "post",
             bar: Bar::Open,
         }],
         answering: Answering::Unary,
@@ -329,6 +356,21 @@ fn every_declared_spelling_of_a_mount_addresses() {
 fn another_wires_binding_does_not_address_here() {
     assert!(address(&SURFACE, "ws", CHAIN, &upgrade("/elsewhere")).is_err());
     assert!(address(&SURFACE, "ws", CHAIN, &upgrade("/nothing")).is_err());
+}
+
+/// A BINDING OF THIS VERY WIRE THAT DECLARED NO SESSION IS NOT A PLACE ONE MAY BE OPENED.
+///
+/// The cell the duplex kind exists for, and the one a transport-key-and-path reading gets wrong.
+/// `posted` is on `ws`, at a declared mount, and it is an ordinary posted-envelope endpoint: its
+/// only row answers one document with one answer. Nothing about the transport key or the path says
+/// so — the only thing that does is that the declarer wrote no duplex row for it.
+///
+/// Upgrading here would hand a stranger an open session on an endpoint whose declaration never
+/// offered one, and would then run it under a bar read off document rows, which are rows about
+/// requests this session will never carry.
+#[test]
+fn a_request_answer_binding_of_this_wire_is_not_a_session_mount() {
+    assert!(address(&SURFACE, "ws", CHAIN, &upgrade("/posted")).is_err());
 }
 
 /// The facts a session publishes are the ones this transport declares, path first.
