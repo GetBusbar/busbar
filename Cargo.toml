@@ -26,6 +26,11 @@ members = [
     "crates/busbar-unit-auth",
     "crates/busbar-unit-trust",
     "crates/busbar-plane-llm",
+    # The first crate of the DIALECT kind — `busbar-plane-<plane>-<dialect>`, the four-segment name
+    # that is the kind's only marker. It sits beside its plane rather than under it because a
+    # workspace member list is flat; the edge that makes it a dialect of `llm` is its dependency on
+    # `busbar-plane-llm`, and `kind-isolation:deps` is what refuses the reverse.
+    "crates/busbar-plane-llm-openai",
     "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-admin",

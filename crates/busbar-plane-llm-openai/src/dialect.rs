@@ -1,0 +1,108 @@
+//! Where this dialect keeps what the loop asks about, and the four codec methods.
+//!
+//! ## The row
+//!
+//! [`LOCATIONS`] is a table of PLACES and nothing else — where the model is, where the client's
+//! response ceiling may be, where the conversation is, where the four metered quantities are
+//! reported. Nothing here parses or writes anything; the reading and writing of those places is the
+//! plane's, on the other side of the four methods below.
+//!
+//! Two of the places are worth their own sentence.
+//!
+//! The response ceiling is declared under TWO member names, in precedence order. This vendor's
+//! reasoning models refuse the older key outright, so a client of one of them sends only the newer;
+//! declaring only the older — which is what the plane's own table did before this crate existed —
+//! meant a request carrying only the newer one sized its hold off a key the client had never sent.
+//! The older spelling is first because a request that carries both means the older one.
+//!
+//! There is no cache-WRITE pointer, and its absence is a declaration rather than an omission: this
+//! dialect reports no separate written-to-cache quantity, so a pointer here would name a member
+//! that never arrives and the class would meter zero on every request instead of not being
+//! reported at all.
+//!
+//! ## The four methods
+//!
+//! Each is the plane's own body, called with the row above. That is the whole implementation, and
+//! it is the reason this crate has no golden-parity suite against the reference codec: there is no
+//! second implementation to compare. What the crate's battery asserts instead is that the
+//! DELEGATION is to this dialect — that the row the plane is handed is this crate's row and not a
+//! neighbour's — because that is the one thing this file could get wrong.
+
+use busbar_contract::bounded::ArenaBytes;
+use busbar_contract::dest::{EgressBody, VerifiedDestination};
+use busbar_contract::plane::{Ingress, PlaneSessionState, Progress, Response};
+use busbar_contract::unit::{Ctx, Unit};
+use busbar_contract::wire::{Decode, Encode, FrameCursor};
+use busbar_plane_llm::dialect::Dialect as Locations;
+use busbar_plane_llm::registry::DialectEntry;
+
+use crate::claims::LADDER;
+use crate::OpenAi;
+
+/// Where this dialect keeps everything the loop asks about.
+pub const LOCATIONS: Locations = Locations {
+    name: crate::meta::KEY,
+    model_location: busbar_contract::grammar::Location::Arrival(
+        busbar_contract::grammar::ArrivalLocation::FirstFrameJsonPointer("/model"),
+    ),
+    max_response_pointers: &["/max_tokens", "/max_completion_tokens"],
+    input_pointer: "/messages",
+    tokens_in_pointer: "/usage/prompt_tokens",
+    tokens_out_pointer: "/usage/completion_tokens",
+    cache_read_pointer: Some("/usage/prompt_tokens_details/cached_tokens"),
+    // This dialect reports no separate written-to-cache quantity.
+    cache_write_pointer: None,
+    scheme_alt: "bearer",
+    egress_scheme: "bearer",
+};
+
+/// This dialect's whole contribution to its plane, as one `const` a composition root seals.
+///
+/// It is the only thing a boot needs from this crate to make the plane speak `openai`, and it is
+/// DATA: the plane holds a row and a ladder, never a value of [`OpenAi`], because holding the value
+/// would be the plane naming the dialect.
+pub const ENTRY: DialectEntry = DialectEntry {
+    locations: LOCATIONS,
+    ladder: LADDER,
+};
+
+impl busbar_contract::dialect::Dialect for OpenAi {
+    fn decode_ingress<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Ingress<'u>, Decode> {
+        self.plane().decode_ingress_as(&LOCATIONS, frames, st, ctx)
+    }
+
+    fn encode_egress<'u>(
+        &self,
+        u: &Unit<'u>,
+        dest: &VerifiedDestination,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<EgressBody<'u>, Encode> {
+        self.plane().encode_egress_as(&LOCATIONS, u, dest, st, ctx)
+    }
+
+    fn decode_response<'u>(
+        &self,
+        frames: &mut FrameCursor<'u>,
+        dest: &VerifiedDestination,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<Progress<'u>, Decode> {
+        self.plane()
+            .decode_response_as(&LOCATIONS, frames, dest, st, ctx)
+    }
+
+    fn encode_response<'u>(
+        &self,
+        r: &Response<'u>,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
+    ) -> Result<ArenaBytes<'u>, Encode> {
+        self.plane().encode_response_as(&LOCATIONS, r, st, ctx)
+    }
+}
