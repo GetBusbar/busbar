@@ -203,11 +203,20 @@ fn gate(args: &[String]) -> i32 {
     // a check that repairs what it is checking has not checked anything, and a caller that wanted
     // both would be asking a gate to make itself pass.
     if cx.env().write {
-        if reg.name != "design-bindings" {
-            eprintln!("xtask gate {name}: this gate has nothing to write");
-            return 2;
-        }
-        return match crate::gates::design_bindings::DesignBindingsGate::write(&cx) {
+        let written = match reg.name {
+            "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
+            // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
+            // only downward — see `gates::construction::ceilings`. It is the same derivation the
+            // `ceiling-slack` row reports, so the arm that repairs and the arm that judges cannot
+            // disagree about what the tree measures; what the flag changes is whether the answer
+            // is printed or committed.
+            "construction" => crate::gates::construction::ceilings::rewrite(&cx),
+            _ => {
+                eprintln!("xtask gate {name}: this gate has nothing to write");
+                return 2;
+            }
+        };
+        return match written {
             Ok(msg) => {
                 println!("{msg}");
                 0

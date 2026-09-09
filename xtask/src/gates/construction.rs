@@ -37,6 +37,7 @@
 //! still cannot be cited under a name the runner does not answer to — but only the flat one is the
 //! path a citation resolves to without a fallback, and four Appendix B bindings cite this gate.
 
+pub mod ceilings;
 pub mod external;
 pub mod model;
 pub mod rules;
@@ -116,18 +117,16 @@ impl ConstructionGate {
     /// change any file, and may add a file to a crate, but may not add or remove a CRATE — doing
     /// so would move the owed set out from under the run reconciling against it.
     /// The owed rows this gate REPORTS and does not judge — see [`Gate::informational`]. Derived
-    /// from the ceilings file rather than maintained beside it, so a prefix added to
-    /// `rules.legacy-reach.prefixes` brings its WARN sub-row with it, exactly as [`Self::ids`]
-    /// derives the owed set from the same table.
+    /// from the `forbid-unsafe` ratchet's own debt list rather than maintained beside it, so
+    /// closing a debt moves its crate back under the RED proof in the same edit.
+    ///
+    /// The three `legacy-reach:<crate>` rows USED TO BE HERE and are not any more: a per-crate
+    /// figure nothing could fail on let `busbar_substrate` sit twenty-one over it, passing, which
+    /// is the whole of what the exemption bought. They gate now, and `ceiling-slack` holds them to
+    /// the measurement from below.
     pub fn informational_ids(cx: &Ctx) -> Vec<String> {
         let mut ids = vec!["duplicate-dispatch".to_string()];
         if let Ok(cfg) = ConstructionGate::cfg(cx) {
-            ids.extend(
-                cfg.doc
-                    .children("rules.legacy-reach.prefixes")
-                    .into_iter()
-                    .map(|(k, _)| format!("legacy-reach:{k}")),
-            );
             for (kinds_key, missing_key, prefix) in UNSAFE_HALVES {
                 let (_, tracked) = ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key);
                 ids.extend(tracked.iter().map(|c| format!("{prefix}:{c}")));
@@ -205,6 +204,8 @@ impl ConstructionGate {
             "one-pricing-site",
             "one-pricing-site:fee-fields",
             "legacy-reach",
+            ceilings::ROW_ROSE,
+            ceilings::ROW_SLACK,
             "no-test-doubles-in-production",
             "no-test-doubles-in-production:doubles",
         ]
@@ -444,6 +445,13 @@ impl ConstructionGate {
         );
 
         rows.extend(surface_rows(cx, &cfg));
+        // LAST, AND IN THIS ORDER. `ceiling-slack` reads the OTHER ROWS' measurements rather than
+        // re-deriving them, so it must see every row this run produced — including the three
+        // surface rows above, which are the ones a re-measurement would be most likely to disagree
+        // with, since they come from a subprocess.
+        rows.extend(ceilings::ceiling_rose(cx));
+        let slack = ceilings::ceiling_slack(&cfg, &rows);
+        rows.extend(slack);
         Ok((rows, problems))
     }
 }

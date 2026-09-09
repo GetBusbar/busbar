@@ -147,6 +147,18 @@ impl Document {
             .collect()
     }
 
+    /// EVERY table in the document, in declaration order, each under its full dotted path (the
+    /// root table's path is the empty string). [`Document::descendants`] cannot answer this: its
+    /// prefix is `"<path>."`, so an empty `path` asks for tables whose name starts with a dot and
+    /// finds none. A rule about the SHAPE of a ceilings file — every integer in it, wherever it
+    /// sits — needs the whole document rather than one subtree of it.
+    pub fn tables(&self) -> Vec<(&str, &Table)> {
+        self.order
+            .iter()
+            .filter_map(|p| Some((p.as_str(), self.tables.get(p)?)))
+            .collect()
+    }
+
     fn table_mut(&mut self, path: &str) -> &mut Table {
         if !self.tables.contains_key(path) {
             self.order.push(path.to_string());

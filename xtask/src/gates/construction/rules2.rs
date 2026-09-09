@@ -8,9 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
-use crate::gates::construction::model::{
-    need_int, need_str, plain, py_list, row, CRow, Cfg, VACUOUS,
-};
+use crate::gates::construction::model::{need_int, need_str, plain, py_list, CRow, Cfg, VACUOUS};
 use crate::gates::construction::rules::call_sites;
 use crate::gates::construction::tree::{
     crate_name_of_dir, dirs_for_globs, fnmatch, read_cargo_deps_text, Tree,
@@ -1692,8 +1690,8 @@ pub fn legacy_reach(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             format!("{VACUOUS}no composition-root source is present in this tree")
         } else {
             format!(
-                "informational: the root names {current} distinct `{prefix}` symbol(s) (last \
-                 calibrated at {figure}; this row does not gate — the total does): {}",
+                "the root names {current} distinct `{prefix}` symbol(s) (ratchet {figure}, pinned \
+                 to the measurement and may only go down): {}",
                 if seen.is_empty() {
                     "none".to_string()
                 } else {
@@ -1705,15 +1703,22 @@ pub fn legacy_reach(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
                 }
             )
         };
-        rows.push(row(
+        // GATING, AND EXACT. This row was `informational()` — PASS whatever it measured, titled
+        // `WARN` — on the reasoning that the total was the claim and a per-crate figure could
+        // legitimately rise while the total fell. What that bought was `busbar_substrate` at 47
+        // against a figure of 26, twenty-one over, PASSING, for as long as the total held: the
+        // slack mechanism firing exactly as designed, inside the row built to make it invisible. A
+        // figure nothing fails on is a comment. Both directions are the gate now — over its figure
+        // is this row, under it is `ceiling-slack` — and the intermediate step the WARN posture
+        // existed to permit is a re-pin of the two figures in the commit that makes it.
+        rows.push(plain(
             format!("legacy-reach:{key}"),
             current <= figure,
-            format!("the root's reach into `{prefix}`"),
+            format!("the root's reach into `{prefix}` only shrinks"),
             detail,
             current,
             figure,
             offenders,
-            true,
         ));
     }
     let named = prefixes

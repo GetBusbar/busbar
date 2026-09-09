@@ -30,22 +30,28 @@
 //! whole path — it did — but `naming` lists only strings the plant is the sole cause of, because a
 //! string that would be there anyway is a check that passes whatever the plant did.
 //!
-//! TWO ROW FAMILIES CANNOT GO RED, and are covered by the baseline case rather than pretended at:
-//! the informational rows (`duplicate-dispatch`, `legacy-reach:<crate>`), which are PASS whatever
-//! they measure and say `WARN` in their title; and a `forbid-unsafe:<crate>` row whose crate is on
-//! the `known_missing_*` ratchet, whose ceiling of 1 the single measurable value cannot exceed.
+//! TWO ROWS CANNOT GO RED, and are covered by the baseline case rather than pretended at:
+//! `duplicate-dispatch`, which reports a shape and carries no threshold; and a
+//! `forbid-unsafe:<crate>` row whose crate is on the `known_missing_*` ratchet, whose ceiling of 1
+//! the single measurable value cannot exceed.
 //!
-//! The first family is DECLARED, through [`crate::gates::Gate::informational`], rather than left
-//! to a baseline case whose `covers` list the harness reads as proof. `verify_report` counts
-//! coverage from RED cases only — so without the declaration these four rows would be refused, and
-//! the two ways to answer that without the declaration are to hand-write the case's `got` or to
-//! make the rows judge something the shell they were proven identical to does not judge. Naming
-//! them is the honest third answer, and the declaration is itself stale-checked.
+//! Both are DECLARED, through [`crate::gates::Gate::informational`], rather than left to a baseline
+//! case whose `covers` list the harness reads as proof. `verify_report` counts coverage from RED
+//! cases only — so without the declaration they would be refused, and the two ways to answer that
+//! without it are to hand-write the case's `got` or to make the rows judge something they do not.
+//! Naming them is the honest third answer, and the declaration is itself stale-checked.
+//!
+//! THE THREE `legacy-reach:<crate>` ROWS WERE ON THAT LIST AND ARE NOT ANY MORE. They gate, and
+//! [`ceiling_ratchet_cases`] plants their figures at zero to prove it — the plant that could not be
+//! written while they were PASS by construction.
 
 use crate::ctx::{Ctx, Overlay};
+use crate::gates::construction::model::Cfg;
 use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
-use crate::gates::construction::{external, ConstructionGate, UNSAFE_HALVES};
-use crate::gates::{execute, prove_red, prove_rows_green, Case, Expect, Gate, Report};
+use crate::gates::construction::{ceilings, external, ConstructionGate, CEILINGS, UNSAFE_HALVES};
+use crate::gates::{
+    execute, prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report,
+};
 
 /// The three delegated answers as the real tree gives them, captured once. Every plant starts from
 /// a clone of this, so a case that is not about a delegated input never pays for one.
@@ -442,7 +448,157 @@ fn ceiling_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         ov,
         &["999999"],
     ));
+
+    r.append(ceiling_ratchet_cases(gate, cx, base, &cfg));
     r
+}
+
+/// THE RULES ABOUT THE CEILINGS THEMSELVES, planted through the ceilings file rather than through
+/// the tree.
+///
+/// Both rules read a NUMBER, and the honest plant for a rule about a number is a different number:
+/// planting a bigger tree would prove the measurement moved, which is what every other case in this
+/// file already proves. So the ceilings file itself is the overlay, and the base commit's copy of
+/// it is the overlay's answer to the `show` the rule asks git for.
+fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -> Report {
+    let mut r = Report::new();
+    let Ok(text) = cx.read(CEILINGS) else {
+        r.note_infra_failure("the ceilings file could not be read, so it cannot be re-pinned");
+        return r;
+    };
+
+    // -- ceiling-slack ---------------------------------------------------------------------------
+    let Some(raised) = ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 1_000_000) else {
+        r.note_infra_failure(
+            "[rules.legacy-reach] carries no `ceiling` to raise, so the slack rule cannot be \
+             planted against the row it is written for",
+        );
+        return r;
+    };
+    let mut ov = on(base);
+    ov.set(CEILINGS, raised);
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a ceiling raised above what it measures is slack, and slack is a ceiling already spent",
+        &[ceilings::ROW_SLACK],
+        ov,
+        &["rules.legacy-reach.ceiling = 1000000"],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "on the committed ceilings file every ratcheted ceiling equals its measurement",
+        &[ceilings::ROW_SLACK],
+        on(base),
+    ));
+
+    // -- the per-crate reach figures, which used to be WARN rows nothing could fail on ------------
+    let mut pinned = text.clone();
+    let mut cover = Vec::new();
+    for (key, _) in cfg.doc.children("rules.legacy-reach.prefixes") {
+        let table = format!("rules.legacy-reach.prefixes.{key}");
+        if let Some(next) = ceilings::set_int(&pinned, &table, "figure", 0) {
+            pinned = next;
+            cover.push(format!("legacy-reach:{key}"));
+        }
+    }
+    if cover.is_empty() {
+        r.note_infra_failure(
+            "no `[rules.legacy-reach.prefixes.*]` figure could be planted, so the rows that used \
+             to be informational are unproven",
+        );
+    } else {
+        let mut ov = on(base);
+        ov.set(CEILINGS, pinned);
+        // The tree is UNCHANGED here and the figure is: a row that had stopped counting the root
+        // would measure 0 against 0 and pass, so this plant proves both halves at once.
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            "each retiring crate's own reach figure is a ratchet the root can exceed, not a \
+             comment beside one",
+            &refs(&cover),
+            ov,
+            &["ratchet 0, pinned to the measurement"],
+        ));
+    }
+
+    // -- ceiling-rose ----------------------------------------------------------------------------
+    let based = match ceilings::base_ref(cx) {
+        Ok(b) => b,
+        Err(e) => {
+            r.note_infra_failure(format!(
+                "no base commit could be resolved in this repository, so the rule that compares \
+                 against one is unproven here rather than passing: {e}"
+            ));
+            return r;
+        }
+    };
+    for (file, table, key) in rose_plants(cx) {
+        let Ok(now) = cx.read(&file) else { continue };
+        let Some(lowered) = ceilings::set_int(&now, &table, &key, 0) else {
+            continue;
+        };
+        let mut ov = on(base);
+        ov.set_command(format!("git-show:{based}:{file}"), lowered);
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            format!("a ceiling in {file} that is higher than it was at the base is refused"),
+            &[ceilings::ROW_ROSE],
+            ov,
+            &[&format!("{file} {table}.{key}: 0 ->")],
+        ));
+    }
+
+    // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
+    // comparison that cannot be made is not a comparison that passed.
+    let mut ov = on(base);
+    ov.set_command(
+        format!("git-show:{based}:{CEILINGS}"),
+        "[rules.x\nthis is not a ceilings file\n",
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a base whose ceilings file cannot be read is refused, never compared against nothing",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &["could not be compared against the base"],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "against the real base no ceiling on this branch has risen",
+        &[ceilings::ROW_ROSE],
+        on(base),
+    ));
+    r
+}
+
+/// One ceiling per watched file, chosen FROM THE FILE rather than named here: a plant that
+/// hard-codes a key is a plant that stops planting the day the key is renamed, and goes green.
+fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {
+    let mut out = vec![(
+        CEILINGS.to_string(),
+        "rules.legacy-reach".to_string(),
+        "ceiling".to_string(),
+    )];
+    if let Ok(text) = cx.read(ceilings::KIND_CEILINGS) {
+        if let Ok(doc) = crate::toml_doc::parse_str(&text) {
+            let found = doc.tables().iter().find_map(|(p, t)| {
+                t.keys()
+                    .iter()
+                    .find(|k| t.int_of(k).is_some())
+                    .map(|k| (p.to_string(), k.clone()))
+            });
+            if let Some((path, key)) = found {
+                out.push((ceilings::KIND_CEILINGS.to_string(), path, key));
+            }
+        }
+    }
+    out
 }
 
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.

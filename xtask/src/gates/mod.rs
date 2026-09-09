@@ -122,14 +122,17 @@ pub trait Gate {
     /// The narrow set of owed ids that are PASS BY CONSTRUCTION — a measurement the gate reports
     /// and does not judge. EMPTY BY DEFAULT, and it must stay that way for anything that is a rule.
     ///
-    /// One gate needs it. The construction gate reports four rows whose status is `Pass` however
-    /// they measure — `duplicate-dispatch` and the per-crate `legacy-reach:<crate>` figures, each
-    /// titled `WARN` — because the shell it was proven identical to reports them that way: the
-    /// gating claim is the TOTAL `legacy-reach` row, and these carry the breakdown a reader needs
-    /// to act on it. Demanding a RED case for a row that cannot be RED cannot be met honestly, and
-    /// the two dishonest ways to meet it — hand-writing the case's `got`, or making the row red and
-    /// losing parity with the instrument that licensed the conversion — are both worse than saying
-    /// which rows they are.
+    /// One gate needs it. The construction gate reports `duplicate-dispatch` and the
+    /// `forbid-unsafe:<crate>` rows of crates on its `known_missing_*` debt list as `Pass` however
+    /// they measure: the first is a shape report with no threshold, and a ratcheted `forbid-unsafe`
+    /// row measures 1 against a ceiling of 1, so no plant can drive it red. Demanding a RED case
+    /// for a row that cannot be RED cannot be met honestly, and the two dishonest ways to meet it —
+    /// hand-writing the case's `got`, or making the row judge something it does not — are both
+    /// worse than saying which rows they are.
+    ///
+    /// THE LIST ONLY EVER SHRINKS BY ARGUMENT. The three `legacy-reach:<crate>` rows were on it,
+    /// with a written reason, and the reason was wrong: it let one of them sit twenty-one over its
+    /// own figure, passing, for as long as the gating total held. They gate now.
     ///
     /// WHAT IS AND IS NOT GIVEN UP. This never touches a verdict: unlike [`Gate::skip_allow`] it is
     /// read only by [`verify_report`], so a declared row that somehow went FAIL would still turn

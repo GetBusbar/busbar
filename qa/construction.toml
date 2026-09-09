@@ -88,9 +88,9 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3500
-grammar = 500
-contract_transport = 1000
+contract_caps = 3478
+grammar = 388
+contract_transport = 845
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -306,15 +306,15 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 8000
+kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3500
+caps_contract_ceiling = 3480
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 45000
+unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
-verbs_ceiling = 15000
-union_ceiling = 56000
+verbs_ceiling = 1428
+union_ceiling = 23465
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -323,37 +323,37 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 1500
+ceiling = 606
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
 patterns = ["pump.rs"]
-ceiling = 1500
+ceiling = 453
 
 [rules.loc-ceilings.kernel_files.inflight]
 label = "in-flight/sessions"
 patterns = ["inflight.rs"]
-ceiling = 1000
+ceiling = 564
 
 [rules.loc-ceilings.kernel_files.recovery]
 label = "recovery"
 patterns = ["recovery.rs"]
-ceiling = 800
+ceiling = 177
 
 [rules.loc-ceilings.kernel_files.slice]
 label = "slice/lease"
 patterns = ["slice.rs"]
-ceiling = 800
+ceiling = 397
 
 [rules.loc-ceilings.kernel_files.registry]
 label = "registry + generations"
 patterns = ["registry.rs"]
-ceiling = 800
+ceiling = 313
 
 [rules.loc-ceilings.kernel_files.grammars]
 label = "grammars incl. JSON span scanner"
 patterns = ["grammar.rs"]
-ceiling = 800
+ceiling = 61
 
 [rules.loc-ceilings.kernel_files.ticks]
 # The file is `tick.rs`, singular, and always was. `ticks.rs`, `drain.rs` and `fleet.rs` matched no
@@ -365,12 +365,12 @@ ceiling = 800
 # grows this file is the line that has to justify itself.
 label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 200
+ceiling = 193
 
 [rules.loc-ceilings.kernel_files.arena]
 label = "arena/masking"
 patterns = ["arena.rs", "masking.rs"]
-ceiling = 300
+ceiling = 178
 
 # ── 15. manifest-allowlist (ARCHITECTURE.md section 1.2) ────────────────────────────────────────────────────
 [rules.manifest-allowlist]
@@ -930,15 +930,19 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 92
+ceiling = 91
 
-# Each sub-row below is INFORMATIONAL. `figure` is the last calibrated per-crate count -- a drift
-# marker for the report, never a gate. Nothing fails on it.
+# Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
+# MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
+# a drift marker nothing could fail on -- and what that bought was `busbar_substrate` sitting
+# twenty-one over its figure, passing, for as long as the gating total held. The intermediate step
+# the WARN posture existed to permit (a symbol moving off one retiring crate onto another) is now a
+# re-pin of two figures in the commit that makes it, which is a diff a reviewer can read.
 [rules.legacy-reach.prefixes.busbar_core]
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 49
+figure = 27
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
