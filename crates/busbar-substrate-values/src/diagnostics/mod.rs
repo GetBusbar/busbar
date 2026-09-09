@@ -3393,6 +3393,31 @@ pub const CONFIG_RATE_CARD_ALL_ZERO: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// An enabled plane reports a meter class that has no rate row on one of its lanes: the quantity
+/// would be metered and billed at nothing, and no invoice would say so.
+pub const CONFIG_CLASS_UNPRICED: Diagnostic = Diagnostic {
+    code: 3023,
+    class: Class::Config,
+    slug: "config-class-unpriced",
+    title: "an enabled plane reports a meter class with no rate row (boot refused)",
+    severity: Severity::Fatal,
+    summary: "A `rate_card` is present -- the deployment has opted into pricing -- but an enabled \
+              plane declares a meter class that has no rate row on one of its lanes. Money is a \
+              read-time conversion of a quantity against the rate row in force for its (lane, \
+              class), so a class with no row prices to nothing: the quantity is metered, the \
+              invoice is short by whatever it was worth, and nothing anywhere reports it. This is \
+              a REFUSAL rather than a warning because the failure is silent by construction -- an \
+              operator reading a total has no way to tell an under-bill from an honest one.",
+    action:
+        "Price the named (lane, class) under `rate_card` in micro-units per unit. If the class \
+             is genuinely free on that lane, say so with an EXPLICIT ZERO rate: free is a stated \
+             price, and a stated zero is what tells the next reader it was a decision. A \
+             deployment that configures no `rate_card` at all is not affected -- it has not opted \
+             into pricing, and boots exactly as before.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// A provider `error_map` entry names a status class busbar does not recognize; the mapping is
 /// ignored and classification falls through to the HTTP status.
 pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
@@ -3656,6 +3681,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &CONFIG_POOL_HETEROGENEOUS,
     &CONFIG_RATE_CARD_ALL_ZERO,
     &CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED,
+    &CONFIG_CLASS_UNPRICED,
     &CONFIG_AUTH_CHAIN_FULL_SCOPE,
     &CONFIG_OPEN_ADMIN_MINT,
     &CONFIG_PASSTHROUGH_UNUSED_APIKEY,

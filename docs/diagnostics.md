@@ -439,6 +439,17 @@ A provider's `error_map` maps an upstream error code or structured type to a str
 
 **What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in HTTP-status classification is what you want.
 
+<a id="config-class-unpriced"></a>
+### BUSBAR-3023 — an enabled plane reports a meter class with no rate row (boot refused)
+
+- **Severity:** fatal
+- **Since:** 1.6.0
+- **Slug:** `config-class-unpriced`
+
+A `rate_card` is present -- the deployment has opted into pricing -- but an enabled plane declares a meter class that has no rate row on one of its lanes. Money is a read-time conversion of a quantity against the rate row in force for its (lane, class), so a class with no row prices to nothing: the quantity is metered, the invoice is short by whatever it was worth, and nothing anywhere reports it. This is a REFUSAL rather than a warning because the failure is silent by construction -- an operator reading a total has no way to tell an under-bill from an honest one.
+
+**What to do:** Price the named (lane, class) under `rate_card` in micro-units per unit. If the class is genuinely free on that lane, say so with an EXPLICIT ZERO rate: free is a stated price, and a stated zero is what tells the next reader it was a decision. A deployment that configures no `rate_card` at all is not affected -- it has not opted into pricing, and boots exactly as before.
+
 ## 4xxx — Auth & identity
 
 <a id="token-exchange-mint-failed"></a>
