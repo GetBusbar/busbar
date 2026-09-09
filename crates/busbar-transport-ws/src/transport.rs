@@ -155,6 +155,55 @@ pub struct WsTransport {
     lower: Option<Arc<dyn Transport>>,
 }
 
+/// ONE SESSION THAT IS OPEN AND HAS NOT BEEN PUMPED.
+///
+/// The value [`WsTransport::serve_upgrade`] hands back and [`WsTransport::pump_session`] consumes,
+/// and the whole of what it exists for is to be a THING an acceptor holds. A boolean saying "a
+/// session is open" is a fact somebody has to remember to set, remember to clear and remember to
+/// read; a value that must be moved into the pump is the same fact with none of those three.
+///
+/// So an acceptor's stop reads off the type: it is either awaiting an [`OpenSession`] — nothing has
+/// been opened, nobody has been told yes, and the wait may simply be dropped — or it is holding one,
+/// which is a caller who has been told yes and is owed the session they were promised. That is the
+/// drain, stated in ownership, and it is stated identically for every plane because nothing about
+/// this value says which surface was mounted.
+///
+/// It carries no budget. How long a session may run is the composition's decision and arrives at
+/// [`WsTransport::pump_session`] with the pump, so an acceptor that held one of these across a
+/// configuration change is not holding a stale ceiling.
+#[cfg(feature = "serve-sessions")]
+pub struct OpenSession {
+    /// The upgraded carrier, still unread.
+    sock: Sock,
+    /// The driver's own handle for this session, minted inside the upgrade callback.
+    session: busbar_contract_transport::session::SessionHandle,
+}
+
+#[cfg(feature = "serve-sessions")]
+impl OpenSession {
+    /// The driver's handle for this session.
+    ///
+    /// Readable without consuming the value, because an acceptor that is recording what it has open
+    /// needs to name it before it starts pumping it — and after the pump has been handed the value
+    /// there is nothing left to ask.
+    #[must_use]
+    pub fn session(&self) -> busbar_contract_transport::session::SessionHandle {
+        self.session
+    }
+}
+
+#[cfg(feature = "serve-sessions")]
+impl std::fmt::Debug for OpenSession {
+    /// The handle and nothing else. The carrier is a live socket and has no legible rendering; the
+    /// target it was opened at is the driver's, published to it as a fact, and reprinting it here
+    /// would put a caller's request target into whatever a `Debug` is written to.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenSession")
+            .field("session", &self.session)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for WsTransport {
     fn default() -> Self {
         Self::new()
@@ -292,22 +341,70 @@ impl WsTransport {
     ///
     /// The serving twin of [`Transport::accept`], and the difference between them is the whole
     /// content of this method. `accept` upgrades a stream and hands back a connection for somebody
-    /// else to pump frames off; this one is the somebody else. The reason it cannot be spelled as a
-    /// call after `accept` is the ORDER: everything that decides whether a session may exist has to
-    /// happen while the HTTP leg is still there to answer on, and `accept` has already answered the
-    /// 101 by the time it returns.
+    /// else to pump frames off; this one is the somebody else.
     ///
-    /// So the addressing and the driver's own open both run INSIDE the upgrade callback, which is the
-    /// last moment this wire has a status line:
+    /// The two halves are [`WsTransport::serve_upgrade`] and [`WsTransport::pump_session`], and this
+    /// is the two of them in a row. It is kept as one call for the caller that has no stop to
+    /// answer: an embedder running one session to its end has nothing to distinguish, and making it
+    /// spell two calls would be making it carry a seam it has no use for.
     ///
-    /// * a target no binding of this transport declares is answered with the status the layer below
-    ///   already uses for one, and never upgraded;
+    /// # Errors
+    ///
+    /// The layer below could not accept, the stream could not be adopted, the upgrade failed, or the
+    /// session was refused before it opened.
+    #[cfg(feature = "serve-sessions")]
+    pub async fn serve_accept(
+        &self,
+        l: &Listener,
+        driver: &dyn busbar_contract_transport::session::SessionDriver,
+        surface: &busbar_contract_transport::surface::WireSurface,
+        budgets: crate::mount::SessionBudgets,
+    ) -> Result<busbar_contract_transport::session::SessionEnd, TransportError> {
+        let open = self.serve_upgrade(l, driver, surface).await?;
+        Ok(self.pump_session(open, driver, budgets).await)
+    }
+
+    /// THE WAITING HALF: take one upgrade off the layer below and OPEN the session it names — and
+    /// stop there, with the session open and not one frame pumped.
+    ///
+    /// ## Why this is where the cut is
+    ///
+    /// An acceptor that has to answer a stop needs to know which of two situations it is in. WAITING
+    /// for a connection, it owes nobody anything: nothing has been accepted, no caller has been told
+    /// yes, and dropping the wait is free and correct. MID-SESSION, a caller has been told yes and
+    /// is being served, and dropping that is a session cut by this node for a reason the caller has
+    /// no way to see. Those are the two halves of draining, and an acceptor holding a single
+    /// accept-upgrade-open-and-pump future cannot tell them apart: the one future spans both, so a
+    /// stop either cancels a live session or waits for a connection that may never come.
+    ///
+    /// So the return of this method IS the report the acceptor needs. It returns exactly when the
+    /// session is open and before the pump starts, which is the moment "waiting" ends and
+    /// "mid-session" begins — and it says so by handing back an [`OpenSession`] rather than by
+    /// setting a flag somebody has to remember to read.
+    ///
+    /// ## Why the open cannot be moved any later
+    ///
+    /// Everything that decides whether a session MAY exist has to happen while the HTTP leg still
+    /// has a status line, and `accept` has already answered the 101 by the time it returns. So the
+    /// addressing and the driver's own open both run INSIDE the upgrade callback:
+    ///
+    /// * a target no duplex binding of this transport declares is answered with the status the layer
+    ///   below already uses for one, and never upgraded;
     /// * a driver that will not open a session answers in the eight words, and the same mapping the
     ///   one-shot mount uses turns that into a status. The caller learns it was refused on the
     ///   protocol it spoke, rather than being told yes and then cut.
     ///
-    /// After the 101 there is no such answer left, which is why [`mount::pump`] is only reached on
-    /// the far side of a session that really opened.
+    /// After the 101 there is no such answer left, which is why the pump is only reached on the far
+    /// side of a session that really opened. A refusal therefore comes back as an `Err` from THIS
+    /// half, where an acceptor can go round again — no session opened, so nothing is draining.
+    ///
+    /// ## Cancel-safety, which is the point
+    ///
+    /// This future may be dropped. Everything it holds before the callback runs is this node's own —
+    /// a pending accept on the listener, a stream nobody above has been told about — and dropping it
+    /// tells no caller anything, because no caller has been answered yet. That is precisely what
+    /// makes it the arm of an acceptor's stop-or-accept race: a drop here is a connection not taken,
+    /// never a session cut.
     ///
     /// # Errors
     ///
@@ -318,13 +415,12 @@ impl WsTransport {
     /// library's own callback signature, and boxing it would mean not implementing that signature.
     #[allow(clippy::result_large_err)]
     #[cfg(feature = "serve-sessions")]
-    pub async fn serve_accept(
+    pub async fn serve_upgrade(
         &self,
         l: &Listener,
         driver: &dyn busbar_contract_transport::session::SessionDriver,
         surface: &busbar_contract_transport::surface::WireSurface,
-        budgets: crate::mount::SessionBudgets,
-    ) -> Result<busbar_contract_transport::session::SessionEnd, TransportError> {
+    ) -> Result<OpenSession, TransportError> {
         use busbar_contract_transport::session::SessionHandle;
         use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 
@@ -398,8 +494,31 @@ impl WsTransport {
         // than a comment.
         let session = opened.ok_or(TransportError::HandshakeFailed)?;
 
-        let (source, sink) = crate::session_io::split(sock);
-        Ok(crate::mount::pump(driver, session, source, sink, budgets).await)
+        Ok(OpenSession { sock, session })
+    }
+
+    /// THE MID-SESSION HALF: run one already-open session to its end.
+    ///
+    /// Takes the [`OpenSession`] by value, which is the ownership statement the drain needs. Once an
+    /// acceptor holds one, a session has been opened on the driver's side and a caller has been told
+    /// yes; handing it here is the acceptor saying it will be finished. There is no way to hold one
+    /// and never pump it that is not visible as a value nobody moved.
+    ///
+    /// It answers rather than erring, because past the 101 every ending is an ending: the peer went,
+    /// the deadline ran out, the driver ended it, the carrier failed. Which end cut it and why are in
+    /// the [`SessionEnd`](busbar_contract_transport::session::SessionEnd), and
+    /// [`SessionDriver::close`](busbar_contract_transport::session::SessionDriver::close) has been
+    /// called exactly once by the time this returns — on every one of those endings, including the
+    /// ugly ones.
+    #[cfg(feature = "serve-sessions")]
+    pub async fn pump_session(
+        &self,
+        open: OpenSession,
+        driver: &dyn busbar_contract_transport::session::SessionDriver,
+        budgets: crate::mount::SessionBudgets,
+    ) -> busbar_contract_transport::session::SessionEnd {
+        let (source, sink) = crate::session_io::split(open.sock);
+        crate::mount::pump(driver, open.session, source, sink, budgets).await
     }
 
     /// The one place a WebSocket connection is made, whichever direction it came from.
