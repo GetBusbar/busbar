@@ -7,7 +7,6 @@ use busbar_caps::{AdminToken, Route, Unit, UnitToken};
 
 use crate::governance::Governance;
 use crate::idempotency::ReplayEncoder;
-use crate::posture::{ApprovalState, PostureCtx};
 use crate::refusal::Refusal;
 use crate::store::Store;
 use crate::verb::{KernelVerb, VerbScope};
@@ -25,10 +24,6 @@ pub struct VerbInput<'a> {
     pub granted: VerbScope,
     /// The moment the request was pinned at — never a fresh clock read here.
     pub now: u64,
-    /// The operator posture, where the verb is posture-gated.
-    pub posture: Option<PostureCtx>,
-    /// The dual-control state, where the verb is approval-gated.
-    pub approval: ApprovalState,
     /// The request body.
     pub request: &'a [u8],
 }
@@ -66,8 +61,6 @@ impl<
             input.actor,
             input.granted,
             input.now,
-            input.posture,
-            input.approval,
             input.request,
         )
     }

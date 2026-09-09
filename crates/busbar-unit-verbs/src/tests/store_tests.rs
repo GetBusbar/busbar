@@ -13,7 +13,7 @@
 use busbar_caps::{AdminToken, KernelSeal};
 
 use crate::store::{DatedRateRow, RateHistory, RateRowAuthor, RateRowSeq, StoreError};
-use crate::verb::{KernelVerb, IRREDUCIBLE_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS};
+use crate::verb::{KernelVerb, NEW_VERBS, READ_ONLY_NEW_VERBS};
 
 /// THE EIGHT. The admin ledger verbs the money model leaves standing, in the order the model names
 /// them.
@@ -47,14 +47,12 @@ const THE_FIVE_THAT_LEFT: &[&str] = &[
     "set_overdraft_ceiling",
 ];
 
-/// The ceremony verbs: the members of `NEW_VERBS` the money ruling is not about.
-const THE_CEREMONY_VERBS: &[KernelVerb] = &[
-    KernelVerb::SetOperatorKey,
-    KernelVerb::SetEscrow,
-    KernelVerb::SetDualControl,
-    KernelVerb::ExportKeyset,
-    KernelVerb::Approve,
-];
+/// The ceremony verbs: EMPTY, and that is the ruling. `set_operator_key`, `set_escrow`,
+/// `set_dual_control`, `export_keyset` and `approve` left with the ceremony (admin cut 0) — the
+/// admin API is dumb and policy lives in the calling app — so the list they were named in is kept
+/// as the empty set rather than deleted: the derivation below still subtracts it, so a resurrected
+/// ceremony verb reappears here as a mismatch instead of quietly rejoining the ledger set.
+const THE_CEREMONY_VERBS: &[KernelVerb] = &[];
 
 /// The two the design binds as `GET`, named here so the split is asserted from this side too.
 const THE_TWO_READS: &[KernelVerb] = &[KernelVerb::Verify, KernelVerb::PlaneFacts];
@@ -100,7 +98,6 @@ fn no_correction_verb_survives_anywhere_in_the_closed_table() {
     // exists at all is spelled by `Debug` the moment it is named in any of these lists.
     let every_named: Vec<String> = NEW_VERBS
         .iter()
-        .chain(IRREDUCIBLE_VERBS.iter())
         .chain(crate::verb::LEDGER_VERBS.iter())
         .map(|v| format!("{v:?}").to_ascii_lowercase().replace('_', ""))
         .collect();
@@ -115,21 +112,6 @@ fn no_correction_verb_survives_anywhere_in_the_closed_table() {
 }
 
 #[test]
-fn every_member_of_the_irreducible_set_is_irreducible_unconditionally() {
-    // The two amount-gated members the earlier list carried (`Adjust`, `ResolveDispute`) went with
-    // the verbs. What is asserted is the consequence: every remaining member is a member of the
-    // closed new-verb list or a legacy ceremony verb, and none of them needs a threshold to decide
-    // how hard to gate it — there is no amount on any of them to compare a threshold against.
-    for verb in IRREDUCIBLE_VERBS {
-        assert!(
-            NEW_VERBS.contains(verb),
-            "{verb:?} is irreducible but is not one of the new verbs, so nothing gates it"
-        );
-    }
-    assert_eq!(IRREDUCIBLE_VERBS.len(), 8);
-}
-
-#[test]
 fn amend_rate_history_is_a_mutating_ledger_verb_and_not_irreducible() {
     // Not irreducible, and that is the design's own ruling rather than an omission: a single admin
     // may amend the rate history. The risk is real and it is bounded differently from the verbs that
@@ -137,7 +119,6 @@ fn amend_rate_history_is_a_mutating_ledger_verb_and_not_irreducible() {
     // what it did can always be read back, which was never true of a verb that moved a posted figure.
     assert!(NEW_VERBS.contains(&KernelVerb::AmendRateHistory));
     assert!(!READ_ONLY_NEW_VERBS.contains(&KernelVerb::AmendRateHistory));
-    assert!(!IRREDUCIBLE_VERBS.contains(&KernelVerb::AmendRateHistory));
 }
 
 // ── the seam, exercised ─────────────────────────────────────────────────────────────────────────

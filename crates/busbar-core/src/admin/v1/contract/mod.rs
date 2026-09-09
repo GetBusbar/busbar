@@ -670,6 +670,15 @@ pub(crate) struct PluginRollbackView {
     pub(crate) note: &'static str,
 }
 
+// NOTE (not a doc comment, deliberately): every `///` on this struct and its fields is rendered
+// into `openapi.json` as a schema description, and PB-75 freezes those byte-for-byte. What changed
+// in 1.6.0 is the VALUE of two fields, not their meaning, so the descriptions below stay exactly as
+// 1.5.5 wrote them and the explanation lives here instead.
+//
+// `chain` now names every arm the operator configured, INCLUDING the built-in `keys` verifier, and
+// `open` is false for a chain that names it. `keys` is not a boxed module — the engine runs it — and
+// reporting only the boxed ones told an operator who wrote `auth.chain: [keys]` that their chain was
+// empty and their door open, about a node whose door is shut. See register entry A-1.
 /// The ingress auth chain read (`GET /api/v1/admin/auth`): the ordered module names that authenticate
 /// callers + the upstream-credential mode. Never a secret: module names and the mode are config
 /// identifiers, not credentials. An empty `chain` is the open front door (admits every request).

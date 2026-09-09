@@ -750,7 +750,19 @@ fn keys_module_is_not_a_plugin_ref() {
     )
     .expect("keys chain builds");
     assert!(mw.keys_in_chain, "keys sets the engine flag");
-    assert!(mw.chain_names().is_empty(), "keys is not a boxed module");
+    // The BOXED modules, not the report. `chain_names()` is what
+    // `GET /api/v1/admin/auth` answers with, and it now names the `keys` arm on purpose — an
+    // operator who configured it was previously told their chain was empty. The property this test
+    // is about is the internal one, so it reads the internal thing.
+    assert!(
+        mw.chain.is_empty(),
+        "keys is not a boxed module and must not have been loaded as a plugin"
+    );
+    assert_eq!(
+        mw.chain_names(),
+        vec!["keys"],
+        "and the operator is told the arm they configured is there"
+    );
 }
 
 // ── THE AUTH CHAIN MUST NOT RUN ON THE REACTOR ───────────────────────────────────

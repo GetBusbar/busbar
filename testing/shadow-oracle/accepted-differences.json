@@ -68,6 +68,18 @@
       }
     },
     {
+      "id": "A-1 the auth view names the keys arm and stops calling a closed door open",
+      "kind": "breaking",
+      "changelog": "1.6.0 Breaking: GET /api/v1/admin/auth lists the built-in `keys` verifier in `chain` and reports `open: false` for a chain that names it. 1.5.5 reported `chain: []` and `open: true` for the same configuration. **Migration:** a client that inferred \"no auth is configured\" from an empty `chain` on a `chain: [keys]` node was reading a node whose front door was closed; the field now says so.",
+      "by": "integrator, 2026-09-08 admin-verbs item (7); owner ruling pending in the next status",
+      "cells": "^admin\\.ops\\|GetAuth\\|ok$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "rationale": "`keys` is not a boxed chain module: AuthMiddleware::new recognises it, sets keys_in_chain, and pushes nothing onto self.chain. Everything on the REQUEST path already compensates -- admission is `self.chain.is_empty() && !self.keys_in_chain` (auth/mod.rs:404) and the open-relay boot warning uses the identical test (auth/mod.rs:334). Two REPORTING paths did not, and both feed this one cell. (1) chain_names() walked the boxed modules, so an operator who wrote `auth.chain: [keys]` was answered `chain: []`. The oracle cell's own recorded `why` says the configuration under test IS [keys], so the served body contradicted the cell's description of it. (2) is_open() tested `self.chain.is_empty()` ALONE, so the same node answered `open: true`. That is the half with teeth: `open` is documented as 'the front door is open (empty chain admits unconditionally)', it is the field an operator greps to answer 'is this node exposed', and it was answering YES about a node whose door is shut and which runs the keys arm on every request. NO ADMISSION BEHAVIOUR CHANGES: is_open() has exactly ONE caller in the tree and it is this view; the request path never consulted it. REGISTERED breaking, NOT improvement, because the register's rule is that an improvement may not forgive a changed served body on a 1.5.5 path, and two fields of this document move. In substance it is a correction: no request is admitted or refused differently and the node being described is unchanged -- only the description of it was wrong. SCOPE is exactly one cell id. admin.ops|GetAuth|unauth is NOT in scope and must stay byte-identical: an unauthenticated caller never reaches the view, so its refusal cannot move. chain_names()'s only other caller is the plugin catalogue (service.rs:1260), and it CANNOT move: it decides `keys` active/inactive from keys_in_chain directly and only falls to `chain.contains(name)` for names that are not `keys`, so the arm being present in the reported list changes no branch it takes. That is a structural argument, not an observation about which configurations the cells happen to use. The direction is deliberately the safe one for a reader who does not update: a client that branched on `open` now sees false where it saw true, i.e. it treats a closed door as closed. The reverse mistake -- reporting a closed door as open -- is the one that was shipping."
+    },
+    {
       "id": "F-011 additive admin views",
       "kind": "additive",
       "changelog": "Admin views gained fields; none changed.",
