@@ -137,8 +137,10 @@ use crate::ledger::{Row, Verdict};
 use crate::manifest::{self, DepDecl};
 use crate::scan;
 
+mod inputs;
 mod matrix;
 
+pub use inputs::ROW_INPUTS;
 pub use matrix::ROW_MATRIX;
 
 pub const ROW_NAME: &str = "kind-isolation:name";
@@ -3901,6 +3903,7 @@ impl Gate for KindIsolationGate {
             ROW_NAME.to_string(),
             ROW_DEPS.to_string(),
             ROW_TEST_DEPS.to_string(),
+            ROW_INPUTS.to_string(),
             ROW_VOCAB.to_string(),
             ROW_REGISTRY.to_string(),
             ROW_STEPS.to_string(),
@@ -3975,6 +3978,7 @@ impl Gate for KindIsolationGate {
             rule_name(&crates, &planes, &ports, &reg),
             rule_deps(cx, &crates, &reg, Half::Shipped, self.ship),
             rule_deps(cx, &crates, &reg, Half::Test, self.ship),
+            inputs::rule_inputs(cx, &crates, &planes),
             rule_vocab(cx, &crates, &planes),
             rule_registry(cx, &crates, &reg, self.ship),
             rule_steps(cx, &crates),
@@ -4582,6 +4586,152 @@ impl Gate for KindIsolationGate {
                 ],
             ));
         }
+
+        // ── THE WAYS IN THAT ARE NOT A DEPENDENCY ────────────────────────────────────────────────
+        //
+        // Five plants, each proven by a red team to carry a whole plane into a transport with every
+        // gate in the tree green. See [`inputs`] for the rule.
+
+        // A CROSS-CRATE `#[path]` MODULE IS A DUAL COMPILE. The path is a STRING LITERAL, and
+        // `:vocab` blanks literals before it reads — which is exactly why this one was invisible
+        // there and is read off the RAW line here.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-http/src/planted_smuggle.rs",
+            "#[path = \"../../busbar-plane-llm/src/meta.rs\"]\npub mod smuggled;\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a cross-crate #[path] module is a dual compile, not a dependency",
+            &[ROW_INPUTS],
+            ov,
+            &["path-include", "busbar-plane-llm", "busbar-transport-http"],
+        ));
+
+        // A LIB TARGET POINTING INTO ANOTHER KIND. The transport IS the plane at link time, with
+        // zero dependencies and zero source of its own — and unlike a `#[path]` read, no dependency
+        // edge could make this a reach rather than an identity.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tcp/Cargo.toml",
+                "\n[lib]\npath = \"../busbar-plane-llm/src/lib.rs\"\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a lib target pointing into another kind's source",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "foreign-lib-path",
+                "busbar-transport-tcp",
+                "busbar-plane-llm",
+            ],
+        ));
+
+        // A BUILD SCRIPT READING ANOTHER KIND'S SOURCE. Nothing scanned `build.rs` for this, and
+        // the only incidental noise it produced was `audit-ledger:missing-scopes` naming the new
+        // FILE PATH — never its content.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tls/build.rs",
+            "fn main() { let _ = include_str!(\"../busbar-plane-mcp/src/lib.rs\"); }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a build script reading another kind's source",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "build-script-reach",
+                "busbar-transport-tls",
+                "busbar-plane-mcp",
+            ],
+        ));
+
+        // A LOCK FILE NAMING AN EDGE NO MANIFEST HAS. Nothing in the tree read `Cargo.lock` at all,
+        // so the file that says what cargo COMPILES was never compared with the files that say what
+        // was asked for.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a lock file naming an edge no manifest has",
+            &[ROW_INPUTS],
+            lock_plus(cx, "busbar-transport-tcp", "busbar-plane-llm"),
+            &["lock-drift", "Cargo.lock", "busbar-transport-tcp"],
+        ));
+
+        // A REGISTRY ENTRY FILED UNDER THE WRONG KIND. `plugins.yaml` is what the loader believes,
+        // and a store plugin filed as `auth` is a store handed the auth ABI.
+        let mut ov = Overlay::new();
+        ov.set(
+            "plugins.yaml",
+            cx.read("plugins.yaml").unwrap_or_default().replacen(
+                "  - repo: store-mysql\n    kind: store\n",
+                "  - repo: store-mysql\n    kind: auth\n",
+                1,
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a registry entry filed under the wrong kind",
+            &[ROW_INPUTS],
+            ov,
+            &[
+                "registry-kind-mismatch",
+                "busbar-store-mysql-plugin",
+                "store",
+            ],
+        ));
+
+        // A FEATURE NAME IS VOCABULARY TOO. `[features]` was the one part of a manifest no rule
+        // read.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-tcp/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tcp/Cargo.toml",
+                "\n[features]\nllm-serve = []\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a feature name is vocabulary too",
+            &[ROW_INPUTS],
+            ov,
+            &["feature-vocab", "llm-serve", "busbar-transport-tcp"],
+        ));
+
+        // …AND THE COMPOSITION ROOT'S `root-*` FEATURES ARE THE WRITTEN EXEMPTION. The root is the
+        // one place the tree assembles a plane, so a feature that switches one on is the root doing
+        // its job — and it is an exemption WITH A NUMBER ATTACHED, because `:matrix` counts every
+        // one of those words against the root's own cell at an exact ceiling. Without this case the
+        // exemption would be silence, which is what it was on a transport too.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar/Cargo.toml",
+                "\n[features]\nroot-llm-planted = []\n",
+            ),
+        );
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "the composition root's own `root-*` plane features are the written exemption",
+            &[ROW_INPUTS],
+            ov,
+        ));
 
         // THE VOCABULARY, BOTH DIRECTIONS.
         let mut ov = Overlay::new();
@@ -5317,6 +5467,31 @@ fn registry_with(cx: &Ctx, from: &str, to: &str) -> Overlay {
     let text = cx.read(REGISTRY_FILE).unwrap_or_default();
     let mut ov = Overlay::new();
     ov.set(REGISTRY_FILE, text.replacen(from, to, 1));
+    ov
+}
+
+/// The real `Cargo.lock` with one workspace-internal name added to a package's dependency list —
+/// the edge that lives in the lock and in no manifest.
+fn lock_plus(cx: &Ctx, package: &str, dep: &str) -> Overlay {
+    let text = cx.read("Cargo.lock").unwrap_or_default();
+    let head = format!("name = \"{package}\"");
+    let body = match text.find(&head) {
+        Some(at) => match text[at..].find("dependencies = [\n") {
+            Some(rel) => {
+                let cut = at + rel + "dependencies = [\n".len();
+                format!(
+                    "{}{}{}",
+                    &text[..cut],
+                    format_args!(" \"{dep}\",\n"),
+                    &text[cut..]
+                )
+            }
+            None => text.clone(),
+        },
+        None => text.clone(),
+    };
+    let mut ov = Overlay::new();
+    ov.set("Cargo.lock", body);
     ov
 }
 
