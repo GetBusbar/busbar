@@ -48,6 +48,24 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     correct by construction and is the cheap first half of kind-by-declaration.
 [gate.plugin_kinds]
 plane = ["crates/busbar-plane-*"]
+# THE THREE KINDS THIS TABLE DID NOT NAME, added 2026-09-09. ARCHITECTURE.md's kind list is
+# normative and names ten kinds plus the `unit` core row; this table named ten KEYS and three of the
+# eleven were missing from it -- `dialect`, `unit` and `control`. `cargo xtask gate kind-isolation`
+# cross-checked this table in ONE direction (a key here that maps onto no kind in its table was
+# refused), so a kind the design states and this file does not mention was invisible to both.
+# `kind-isolation:truths` compares the three vocabularies in both directions now.
+#
+# `dialect` has no crate yet: the pre-split dialects are the `*-codec` crates and the rename that
+# splits them into `busbar-plane-<plane>-<dialect>` is what creates the first one. The glob is
+# written for the shape it will have, and a kind whose glob matches nothing is a kind with no crate
+# rather than a rule switched off -- which is exactly the case `kind-isolation:truths` now watches.
+dialect = ["crates/busbar-plane-*-*"]
+# `control` is the tenth kind (owner ruling 2026-09-08). Its one member is `busbar-plane-admin`,
+# whose NAME says plane and which is not one; the R7 rename makes it `busbar-control-admin`. The
+# declaration lives in qa/kind-isolation.toml's [[registered]] row, which is where PLUGIN-TREE.md
+# has said it lives since it was written.
+control = ["crates/busbar-control-*"]
+unit = ["crates/busbar-unit-*"]
 hook = ["crates/hook*"]
 pure_auth = ["crates/auth-*"]
 egress_auth = ["crates/egress-auth-*"]

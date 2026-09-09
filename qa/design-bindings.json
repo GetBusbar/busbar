@@ -76,7 +76,7 @@
      "ref": "xtask/src/gates/construction.rs",
      "status": "mapped",
      "source": "hand",
-     "proves": "construction-gate `legacy-reach`: ONE ratchet over the composition root's TOTAL count of distinct symbols named through the retiring engine crates, which may only go down, with the per-crate figures kept as informational sub-rows -- so a cut that retargets a core symbol onto the substrate on its way to the kernel counts as the progress it is, and the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
+     "proves": "construction-gate `legacy-reach`: ONE ratchet over the composition root's TOTAL count of distinct symbols named through the retiring engine crates, which may only go down, with a per-crate figure per retiring crate that gates in both directions (over its figure is that row's own FAIL, under it is `ceiling-slack`) -- so a cut that retargets a core symbol onto the substrate on its way to the kernel is a re-pin of two figures in the commit that makes it rather than a number nothing could fail on, and the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
     }
    ],
    "verdict": "FAIL",

@@ -121,8 +121,10 @@ use crate::ledger::{Row, Verdict};
 use crate::scan;
 
 mod matrix;
+mod truths;
 
 pub use matrix::ROW_MATRIX;
+pub use truths::ROW_TRUTHS;
 
 pub const ROW_NAME: &str = "kind-isolation:name";
 pub const ROW_DEPS: &str = "kind-isolation:deps";
@@ -398,6 +400,9 @@ const LEGACY_CRATES: &[&str] = &[
 /// A key that maps onto nothing in [`KINDS`] is a second kind vocabulary drifting beside this one.
 const CONSTRUCTION_KIND_KEYS: &[(&str, &str)] = &[
     ("plane", "plane"),
+    ("dialect", "dialect"),
+    ("control", "control"),
+    ("unit", "unit"),
     ("transport", "transport"),
     ("store", "store"),
     ("hook", "hooks"),
@@ -1125,6 +1130,12 @@ fn canon_plane(name: &str) -> String {
         .iter()
         .find(|(from, _, _)| *from == name)
         .map_or_else(|| name.to_string(), |(_, to, _)| (*to).to_string())
+}
+
+/// The kind table's own names. Handed to [`truths::rule_truths`] rather than read there, so the
+/// reconciliation cannot drift from the table it reconciles.
+fn kind_names() -> Vec<&'static str> {
+    KINDS.iter().map(|d| d.kind).collect()
 }
 
 fn family_of(kind: Option<&str>) -> Family {
@@ -3184,6 +3195,7 @@ impl Gate for KindIsolationGate {
             ROW_REGISTRY.to_string(),
             ROW_STEPS.to_string(),
             ROW_WIRES.to_string(),
+            ROW_TRUTHS.to_string(),
             ROW_MATRIX.to_string(),
         ];
         if self.ship {
@@ -3256,6 +3268,7 @@ impl Gate for KindIsolationGate {
             rule_registry(cx, &crates, &reg, self.ship),
             rule_steps(cx, &crates),
             rule_wires(cx, &crates),
+            truths::rule_truths(cx, &kind_names(), &crates),
             matrix::rule_matrix(cx, &crates, &reg, self.ship),
         ];
         if self.ship {
@@ -3681,6 +3694,9 @@ impl Gate for KindIsolationGate {
             ov,
             &["legacy-retired", "busbar-core"],
         ));
+
+        // THE THREE TRUTHS, each planted in the file that carries it.
+        truths::selftest(cx, self, &mut report);
 
         // ── THE LEGACY DRAIN, NAMED ──────────────────────────────────────────────────────────────
 

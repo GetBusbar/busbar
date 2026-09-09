@@ -119,6 +119,8 @@ impl Table {
 pub struct Document {
     order: Vec<String>,
     tables: BTreeMap<String, Table>,
+    /// `[[name]]` -> how many were written. An entry is registered under `name.<i>`.
+    arrays: BTreeMap<String, usize>,
 }
 
 impl Document {
@@ -156,6 +158,22 @@ impl Document {
         self.order
             .iter()
             .filter_map(|p| Some((p.as_str(), self.tables.get(p)?)))
+            .collect()
+    }
+
+    /// How many `[[path]]` entries the document carries.
+    pub fn array_len(&self, path: &str) -> usize {
+        self.arrays.get(path).copied().unwrap_or(0)
+    }
+
+    /// Every `[[path]]` entry, in the order they were written.
+    ///
+    /// A caller that reached for `children(path)` instead would get the same tables today and
+    /// would silently start reading `[path.something]` sub-tables the day one was written, so the
+    /// array accessor is separate from the sub-table one.
+    pub fn array_of_tables(&self, path: &str) -> Vec<&Table> {
+        (0..self.array_len(path))
+            .filter_map(|i| self.tables.get(&format!("{path}.{i}")))
             .collect()
     }
 
@@ -397,8 +415,15 @@ pub fn parse_str(text: &str) -> Result<Document, String> {
         };
         if b == b'[' {
             sc.i += 1;
-            if sc.peek() == Some(b'[') {
-                return sc.err("arrays of tables are not a shape this reader accepts");
+            // AN ARRAY OF TABLES IS A REPEATED HEADER, and it is read as one: `[[registered]]`
+            // written three times registers `registered.0`, `registered.1`, `registered.2`. The
+            // reader refused the shape entirely until `qa/kind-isolation.toml` needed it —
+            // `docs/design/PLUGIN-TREE.md` cites `[[registered]]` rows as the mechanism that names
+            // a crate's kind ahead of its rename, and a document cannot be normative about a shape
+            // the only reader of it will not parse.
+            let array = sc.peek() == Some(b'[');
+            if array {
+                sc.i += 1;
             }
             let parts = sc.key_path()?;
             sc.skip_inline_space();
@@ -406,7 +431,19 @@ pub fn parse_str(text: &str) -> Result<Document, String> {
                 return sc.err("unterminated table header");
             }
             sc.i += 1;
-            cur = parts.join(".");
+            if array {
+                if sc.peek() != Some(b']') {
+                    return sc
+                        .err("an array-of-tables header opened with `[[` and closed with `]`");
+                }
+                sc.i += 1;
+                let base = parts.join(".");
+                let n = doc.array_len(&base);
+                doc.arrays.insert(base.clone(), n + 1);
+                cur = format!("{base}.{n}");
+            } else {
+                cur = parts.join(".");
+            }
             doc.table_mut(&cur);
             continue;
         }
@@ -440,6 +477,28 @@ pub fn parse(path: &Path) -> Result<Document, String> {
 
 #[cfg(test)]
 mod tests {
+    /// `[[registered]]` is a repeated header, and it is read as one entry per repetition rather
+    /// than as one table the last repetition wins. Reading it the other way would make a file with
+    /// three registrations describe one.
+    #[test]
+    fn an_array_of_tables_is_one_entry_per_repetition() {
+        let doc =
+            super::parse_str("[[registered]]\ncrate = \"a\"\n\n[[registered]]\ncrate = \"b\"\n")
+                .expect("the fixture parses");
+        assert_eq!(doc.array_len("registered"), 2);
+        let rows: Vec<&str> = doc
+            .array_of_tables("registered")
+            .iter()
+            .filter_map(|t| t.str_of("crate"))
+            .collect();
+        assert_eq!(rows, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn a_header_that_opens_with_two_brackets_must_close_with_two() {
+        assert!(super::parse_str("[[registered]\n").is_err());
+    }
+
     use super::*;
 
     /// The property this reader exists for: sub-tables come back in the order the owner wrote
