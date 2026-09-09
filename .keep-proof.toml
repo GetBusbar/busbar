@@ -1,0 +1,7 @@
+# What CI's keep-proof job must run for this branch, and what the owner proved locally.
+#
+# Locally proven: `cargo test -p` for the three crates touched, `cargo clippy
+# --all-targets -- -D warnings` over the same three, and `cargo fmt` on the
+# touched files. No workspace build and no local oracle run -- CI judges the rest.
+families = '^(admin\.ops|ledger|billing|documented)([|.]|$)'
+tests = ["busbar-unit-verbs", "busbar-plane-admin", "busbar"]
