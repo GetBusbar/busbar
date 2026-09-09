@@ -5087,6 +5087,26 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
         }
     }
 
+    // `OverlayResetView.reset`'s description ENUMERATES the sections, and schemars generates it from
+    // a doc comment — a static string, which is exactly why it went stale: 1.5.5 named four sections
+    // and 1.6.0 has eight, so the served document told a client that a `reset` of `export` could not
+    // happen while the route was answering it. Owner ruling PB-75 (2026-09-08): the wording stays
+    // 1.5.5's, the LIST grows. So the generated description is re-rendered here from the live set,
+    // in 1.5.5's own spaced-pipe spelling. Patched at assembly rather than in the doc comment
+    // because a doc comment cannot be computed, and restating the names beside the struct is the
+    // hand-maintained copy that went stale in the first place.
+    if let Some(desc) = schemas
+        .get_mut("OverlayResetView")
+        .and_then(|v| v.get_mut("properties"))
+        .and_then(|v| v.get_mut("reset"))
+        .and_then(|v| v.get_mut("description"))
+    {
+        *desc = serde_json::Value::String(format!(
+            "The section that was reset ({}).",
+            crate::config::overlay::OverlaySection::valid_names_spaced_piped()
+        ));
+    }
+
     json!({
         "openapi": "3.1.0",
         "info": {

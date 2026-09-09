@@ -730,6 +730,25 @@ impl OverlaySection {
             .collect::<Vec<_>>()
             .join("|")
     }
+
+    /// The valid section names as `OverlayResetView.reset`'s 1.5.5 description spells them:
+    /// backticked and joined by a SPACED pipe — `` `a` | `b` | `c` | `d` ``.
+    ///
+    /// A THIRD spelling, and deliberately so. 1.5.5 spelled this enumeration three different ways
+    /// on three surfaces — Oxford commas in the 400 BODY, bare pipes in the `delete` SUMMARY,
+    /// backticks with bare pipes in the 400 DESCRIPTION, and backticks with SPACED pipes here — and
+    /// PB-75 freezes the document's bytes, punctuation included. Normalising them would edit a
+    /// published contract; each is therefore reproduced, never unified. What is shared is the SET:
+    /// every spelling renders from [`OverlaySection::all`], so a new section reaches all of them or
+    /// none, which is the only invariant that ever mattered.
+    #[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
+    pub(crate) fn valid_names_spaced_piped() -> String {
+        OverlaySection::all()
+            .iter()
+            .map(|s| format!("`{}`", s.as_str()))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
 }
 
 /// Clear ONE section's entries + tombstones from the persisted overlay, IF persistence is enabled —
