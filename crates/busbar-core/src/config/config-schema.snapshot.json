@@ -461,6 +461,10 @@
           "optional": true,
           "type": "std::collections::BTreeMap<String, RateEntryCfg>"
         },
+        "require_priced_classes": {
+          "optional": true,
+          "type": "bool"
+        },
         "routing": {
           "optional": true,
           "type": "RoutingCfg"

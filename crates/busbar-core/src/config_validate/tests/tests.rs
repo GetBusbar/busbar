@@ -30,6 +30,8 @@ fn make_root_cfg(
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
+        // Absent in YAML, so `false` here: every test below drives the validation that shipped.
+        require_priced_classes: false,
         store: None,
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),
@@ -5576,5 +5578,136 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
             .iter()
             .any(|e| e.contains("providers.acme.api_key") && e.to_lowercase().contains("non-empty")),
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
+    );
+}
+
+// ── UNPRICED CLASS = BOOT REFUSAL (ruling 5, at the config-validation call site) ──────────────────
+//
+// The rule itself, its ordering, its free-is-an-explicit-zero case and its refusal wording are
+// proved in `busbar-unit-cost`'s own suite, over the rate table it reads. What these prove is the
+// CALL SITE: that config validation asks the question at all, asks it of the classes a plane
+// declares rather than of a list re-spelled here, and — the load-bearing one — that a deployment
+// which never writes the opt-in key boots exactly as it did before the key existed.
+
+/// The four token classes a 1.5.5 `rate_card:` entry has always priced, in the config/wire spelling
+/// the rate table derives its rows under. Spelled here as the LLM plane spells them, so a drift
+/// between the plane's declaration and the table's derivation shows up as a failure rather than as
+/// a config that quietly refuses.
+const LLM_CLASSES: &[&str] = &[
+    "tokens_input",
+    "tokens_output",
+    "tokens_cache_read",
+    "tokens_cache_write",
+];
+
+/// A CLASS AN ENABLED PLANE REPORTS WITH NO RATE ROW REFUSES, naming the plane, the lane and the
+/// class — every one of them, not the first.
+#[test]
+fn an_unpriced_declared_class_refuses_and_names_plane_lane_and_class() {
+    let card = std::collections::BTreeMap::from([
+        ("fast".to_string(), config::RateEntryCfg::default()),
+        ("slow".to_string(), config::RateEntryCfg::default()),
+    ]);
+    let refusal = crate::config_validate::unpriced_class_refusal(
+        Some(&card),
+        0,
+        &[("mcp", &["bytes"]), ("llm", LLM_CLASSES)],
+    )
+    .expect("a class with no rate row must refuse");
+
+    assert!(refusal.contains("plane `mcp`"), "{refusal}");
+    assert!(refusal.contains("class `bytes`"), "{refusal}");
+    // BOTH lanes, not just the first: an operator who fixes one and reboots into the next has been
+    // made to discover their config one restart at a time.
+    assert!(refusal.contains("lane `fast`"), "{refusal}");
+    assert!(refusal.contains("lane `slow`"), "{refusal}");
+    // The remedy names the zero row, because free is a price an operator STATES.
+    assert!(refusal.to_lowercase().contains("zero"), "{refusal}");
+    // The llm plane's four classes are all derived from the card, so none of them is named.
+    assert!(!refusal.contains("tokens_input"), "{refusal}");
+}
+
+/// A PLANE WHOSE EVERY CLASS THE CARD PRICES DOES NOT REFUSE — the 1.5.5 config's own case. Its
+/// card carries every class it has ever priced (the four tiers arrive as `0.0` when omitted and
+/// have always priced at zero), so the rule written after it is one it already satisfies.
+#[test]
+fn a_card_that_prices_every_declared_class_does_not_refuse() {
+    let card = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            input_utok: 3.0,
+            output_utok: 15.0,
+            ..config::RateEntryCfg::default()
+        },
+    )]);
+    assert!(
+        crate::config_validate::unpriced_class_refusal(Some(&card), 0, &[("llm", LLM_CLASSES)])
+            .is_none(),
+        "a card carrying every class the plane declares must boot"
+    );
+}
+
+/// A DEPLOYMENT WITH NO `rate_card:` HAS NOT OPTED INTO PRICING, so it is not a deployment with
+/// unpriced classes. Refusing it would refuse every config that has ever booted without a card.
+#[test]
+fn a_deployment_with_no_rate_card_is_never_refused() {
+    assert!(
+        crate::config_validate::unpriced_class_refusal(None, 0, &[("mcp", &["bytes"])]).is_none(),
+        "no card = no opt-in to pricing = nothing to be short on"
+    );
+}
+
+/// A PLANE THAT DECLARES NO CLASSES CAN NEVER BE THE REASON A BOOT FAILS. The admin plane's
+/// declaration is empty on purpose — its surface is priced under a kernel-reserved flat class — and
+/// an empty declaration is a real answer rather than a plane that forgot.
+#[test]
+fn a_plane_declaring_no_classes_is_never_the_reason_a_boot_fails() {
+    let card =
+        std::collections::BTreeMap::from([("m".to_string(), config::RateEntryCfg::default())]);
+    assert!(
+        crate::config_validate::unpriced_class_refusal(Some(&card), 0, &[("admin", &[])]).is_none(),
+        "an empty declaration contributes no cell to check"
+    );
+}
+
+/// THE OPT-IN KEY IS WHAT ARMS THE RULE, and its absence is the previous release's boot.
+///
+/// This is the 1.5.5 guarantee stated as a test rather than as a promise: a config that never
+/// writes `require_priced_classes:` deserializes it as `false`, and validation with it `false` is
+/// the validation that shipped — same errors, same warnings, same bytes. The stricter reading is
+/// something an operator turns on.
+#[test]
+fn the_absent_opt_in_key_is_false_and_validation_is_unchanged() {
+    let mut cfg = cost_cfg(&["m"]);
+    assert!(
+        !cfg.require_priced_classes,
+        "an absent `require_priced_classes:` must resolve to false — that is the 1.5.5 boot"
+    );
+    cfg.rate_card = Some(rate_card_of(&["m"]));
+    validate(&cfg).expect("a complete card with the key absent validates exactly as it did before");
+
+    // AND THE SAME CONFIG WITH THE KEY ON REFUSES, on this build, for a reason worth recording
+    // rather than smoothing over: `rate_card:` can express exactly the four token tiers and the flat
+    // fee, and the planes this test binary carries declare classes outside that vocabulary
+    // (`bytes`, `tool_calls`). So there is no config an operator can write that satisfies the rule
+    // on a build carrying those planes — the grammar to state their prices, free or otherwise, does
+    // not exist yet.
+    //
+    // The refusal is still the RIGHT answer: the alternative is metering those classes and billing
+    // them at nothing with no surface saying so, which is the exact failure the rule exists to
+    // catch. This asserts the refusal names them, so the day a per-class rate grammar lands, this
+    // test is the one that says the gap closed.
+    cfg.require_priced_classes = true;
+    let errs = validate(&cfg).expect_err(
+        "with the rule armed, a class today's `rate_card:` grammar cannot price must refuse",
+    );
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("no rate row"),
+        "the refusal must be the unpriced-class one: {joined}"
+    );
+    assert!(
+        joined.contains("lane `m`"),
+        "it must name the lane the operator wrote: {joined}"
     );
 }

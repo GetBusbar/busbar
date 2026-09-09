@@ -448,6 +448,9 @@ pub struct RootCfg {
     pub rate_card: Option<std::collections::BTreeMap<String, RateEntryCfg>>,
     /// Flat cents charged per request (default 0).
     pub per_request_fee: i64,
+    /// The resolved `require_priced_classes:` flag — see [`DeployCfg::require_priced_classes`].
+    /// `false` (the absent-key value) is the previous release's boot, byte for byte.
+    pub require_priced_classes: bool,
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
     pub store: Option<StoreCfg>,
@@ -1227,6 +1230,23 @@ pub struct DeployCfg {
     /// Flat cents (abstract minor units) charged per request for budget accounting. Default 0.
     #[serde(default = "default_per_request_fee")]
     pub(crate) per_request_fee: i64,
+    /// TOP-LEVEL MONEY-POLICY FLAG: must every meter class an enabled plane reports have a rate row
+    /// on every lane it is served on?
+    ///
+    /// `true` ⇒ a class with no row REFUSES BOOT, naming every `(plane, lane, class)` it refused
+    /// for. A class that is metered and has no price is billed at nothing and no invoice says so, so
+    /// the refusal exists to stop an under-bill that an operator reading a total cannot detect.
+    /// **FREE IS AN EXPLICIT ZERO ROW** — stating that a class costs nothing satisfies the rule
+    /// completely; what it refuses is silence.
+    ///
+    /// **ABSENT ⇒ `false` ⇒ EXACTLY THE PREVIOUS RELEASE'S BOOT.** The key is opt-in for one reason
+    /// and it is not timidity: widening completeness from "every configured model has a rate entry"
+    /// to "every declared class has a rate row" makes configs that boot today refuse, and which
+    /// configs those are depends on which planes a build carries. An operator opts into the stricter
+    /// reading deliberately; a config that never writes this key deserializes, validates and boots
+    /// byte-identically to one written before the key existed.
+    #[serde(default)]
+    pub(crate) require_priced_classes: bool,
     /// The durable store as `{ module, settings }`. Absent = the ephemeral RAM store.
     #[serde(default)]
     pub store: Option<StoreCfg>,
@@ -2656,6 +2676,7 @@ pub fn resolve(
             groups: deploy.groups.clone(),
             rate_card: deploy.rate_card.clone(),
             per_request_fee: deploy.per_request_fee,
+            require_priced_classes: deploy.require_priced_classes,
             store: deploy.store.clone(),
             secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,

@@ -161,7 +161,8 @@ except ImportError:  # pragma: no cover - CI images all ship PyYAML
 CONFIG_ROOT_KEYS = {
     "listen", "public_url", "tls", "admin_listen", "config", "providers_file", "admin_tls",
     "admin_require_mtls", "auth", "identity-providers", "providers", "models", "pools", "hooks",
-    "groups", "rate_card", "per_request_fee", "store", "secrets", "advanced", "export", "plugins",
+    "groups", "rate_card", "per_request_fee", "require_priced_classes",
+    "store", "secrets", "advanced", "export", "plugins",
     "security", "limits", "health", "routing",
     # 1.6.0 — the plane sections. Absent until this commit; see the note above.
     "agents", "mcp", "oauth_as", "streams", "tools",

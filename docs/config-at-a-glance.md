@@ -114,6 +114,9 @@ rate_card:                      # the ONLY cost source: per-model token rates in
   claude-sonnet-4-5:            # ALL-OR-NOTHING: present = must cover every configured model.
     { input_utok: 3, output_utok: 15, cache_read_utok: 0, cache_write_utok: 4 }
 per_request_fee: 0              # flat abstract charge added per request at admission
+require_priced_classes: false   # OPT-IN. true = every class an enabled plane reports must have a
+                                #   rate row on every lane, or boot REFUSES naming each one.
+                                #   Free is an EXPLICIT ZERO row; omitting the key is the 1.5.5 boot.
 ```
 
 ## Durability: [`store`](configuration.md#store)

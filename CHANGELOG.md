@@ -125,6 +125,16 @@ named next.
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **A metered class with no price can be made a boot refusal, by asking for it.** A new top-level
+  `require_priced_classes: true` widens rate-card completeness one level down: every meter class an
+  enabled plane REPORTS must have a rate row on every lane it is served on, or boot and `--validate`
+  refuse, naming every `(plane, lane, class)` they refused for rather than the first. The failure it
+  catches is silent by construction — a class that is metered with no price is billed at nothing and
+  no invoice says so, and an operator reading a total cannot tell an under-bill from an honest one.
+  **Free is an explicit zero row:** stating that a class costs nothing satisfies the rule
+  completely; what it refuses is silence. A deployment that writes no `rate_card:` has not opted
+  into pricing and is never affected, and a config that omits the key validates and boots exactly as
+  it did in 1.5.5. See [`require_priced_classes`](docs/configuration.md#rate_card-and-per_request_fee).
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into

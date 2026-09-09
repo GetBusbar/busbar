@@ -60,6 +60,10 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         groups: std::collections::BTreeMap::new(),
         rate_card: None,
         per_request_fee: 0,
+        // The unpriced-class refusal is OPT-IN: a fixture that does not ask for it gets the
+        // previous release's validation, which is what every fixture built before the key existed
+        // was written against.
+        require_priced_classes: false,
         store: None,
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),

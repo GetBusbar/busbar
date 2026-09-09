@@ -3589,6 +3589,7 @@ mod disposition_matrix_tests {
                 groups: std::collections::BTreeMap::new(),
                 rate_card: None,
                 per_request_fee: 0,
+                require_priced_classes: false,
                 store: None,
                 secrets: std::collections::BTreeMap::new(),
                 providers,

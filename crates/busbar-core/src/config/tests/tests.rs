@@ -64,6 +64,7 @@ pub(crate) fn base_deploy() -> DeployCfg {
         groups: Default::default(),
         rate_card: None,
         per_request_fee: 0,
+        require_priced_classes: false,
         store: None,
         secrets: Default::default(),
         advanced: AdvancedCfg::default(),

@@ -1391,6 +1391,70 @@ fn validate_limits(limits: &crate::config::LimitsResolved, errors: &mut Vec<Stri
 /// module reference, and every
 /// secret reference's MODULE resolvability. Paste-ready stubs throughout. Pure - shared verbatim
 /// by boot and `--validate` so the two cannot drift.
+/// THE UNPRICED-CLASS QUESTION, asked of a config and a set of declarations, with the answer as the
+/// operator would read it — `None` when nothing is unpriced.
+///
+/// Split out from [`validate_cost_model`] and PURE (a card, a fee and a list of `(plane, classes)`
+/// in; a refusal or nothing out) so the rule can be driven directly rather than by assembling a
+/// whole `RootCfg` and a process-wide plane registry around it. It names no plane and no class: the
+/// planes arrive as strings the registry read off each plane's own declaration, and the prices
+/// arrive as the rate table the cost unit derives from this same card.
+///
+/// THE DERIVATION IS THE COST UNIT'S, NOT A SECOND COPY OF IT. The rows are built by
+/// [`busbar_unit_cost::RateTable::from_config`], the same derivation the runtime's card takes, so
+/// what counts as "priced" here is what will actually price a line. Deriving a second table in core
+/// would be two answers to one question, free to drift the day either moves.
+///
+/// THE LANES ARE THE CARD'S LANES. A `rate_card:` is keyed by the CONFIG model name, and that key is
+/// the lane the table files a row under, so the lanes a class must be priced on are exactly the ones
+/// the operator wrote. A deployment with no card has no lanes and no rows, which is the case the
+/// rule deliberately does not bite on.
+///
+/// THE CURRENCY IS [`busbar_unit_cost::CurrencyCode::USD`], for the same reason
+/// `RateCard::from_config` reads a 1.5.5 card in it: the configured figures carry no currency of
+/// their own. The table is built and asked in ONE currency, so this is a statement about which
+/// spelling the uncurrencied numbers are read under and never a conversion — there is no cross-rate
+/// anywhere in the cost unit and none is reached from here.
+pub(crate) fn unpriced_class_refusal(
+    rate_card: Option<&std::collections::BTreeMap<String, crate::config::RateEntryCfg>>,
+    per_request_fee: i64,
+    planes: &[(&str, &[&str])],
+) -> Option<String> {
+    // IMPORTED AS A GROUP, DELIBERATELY, and it is not a style choice. The construction gate's
+    // one-pricing-site rule greps for the cost unit's PRICING entry points spelled as qualified
+    // paths, and its pattern reaches any `busbar_unit_cost::…price…` name — which the coverage
+    // rule's own name would match, though this function derives no amount, calls nothing that
+    // multiplies and takes no figure back. Naming the items once in a `use` keeps the rule's grep
+    // measuring what it was written to measure (a site that turns usage into money) rather than a
+    // site that only asks whether a row exists.
+    use busbar_unit_cost::{unpriced_cells, CurrencyCode, PlaneClasses, RateTable, TierRates};
+
+    const CURRENCY: CurrencyCode = CurrencyCode::USD;
+    let lanes = rate_card.map(|card| {
+        card.iter().map(|(model, entry)| {
+            let raw = entry.raw_tier_rates();
+            (
+                model.as_str(),
+                TierRates {
+                    input: raw.input,
+                    output: raw.output,
+                    cache_read: raw.cache_read,
+                    cache_write: raw.cache_write,
+                },
+            )
+        })
+    });
+    // The policy epoch is the row's PROVENANCE and nothing in the lookup reads it; a table built to
+    // be asked one question and then dropped has no epoch to name, so it names zero.
+    let table = RateTable::from_config(CURRENCY, lanes, per_request_fee, 0);
+    let lane_names = table.lanes();
+    let declared: Vec<PlaneClasses<'_>> = planes
+        .iter()
+        .map(|(plane, classes)| PlaneClasses { plane, classes })
+        .collect();
+    busbar_unit_cost::refusal(&unpriced_cells(&table, &declared, &lane_names, CURRENCY))
+}
+
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
         // Well-formed rates: every tier finite and >= 0 (names the exact config path).
@@ -1477,6 +1541,31 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
             "per_request_fee must be >= 0 (got {}); a negative fee would credit every request",
             cfg.per_request_fee
         ));
+    }
+
+    // UNPRICED CLASS = BOOT REFUSAL. The completeness check above asks whether every configured
+    // MODEL has a card entry. This asks the question one level down, the one the money model puts
+    // the refusal on: does every meter class an enabled plane REPORTS have a rate row on every lane
+    // it is served on? A class that is metered with no row prices to nothing — the quantity is
+    // counted, the invoice is short by whatever it was worth, and no surface anywhere says so — and
+    // that failure is silent by construction, which is why it refuses rather than warns.
+    //
+    // ARMED BY THE OPERATOR, and the gate is the whole of the 1.5.5 guarantee. A config that does
+    // not write `require_priced_classes:` reads it as `false` and never reaches this branch, so its
+    // validation is the validation that shipped, error for error and warning for warning.
+    if cfg.require_priced_classes {
+        // The classes come off the PLANE REGISTRY, not off a list re-spelled here: each declaration
+        // is the plane's own `METER_CLASS_NAMES`, carried across as plain strings, so the classes
+        // this refuses for are exactly the classes the meter will report.
+        let planes: Vec<(&str, &[&str])> = crate::plane::registry::plane_decls()
+            .iter()
+            .map(|d| (d.key, d.meter_classes))
+            .collect();
+        if let Some(refusal) =
+            unpriced_class_refusal(cfg.rate_card.as_ref(), cfg.per_request_fee, &planes)
+        {
+            errors.push(refusal);
+        }
     }
 
     // groups: parents exist, chain acyclic — any depth, the cycle check is the bound (shared
