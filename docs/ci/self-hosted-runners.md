@@ -103,12 +103,13 @@ the EBS volume goes with it. `ci-runners-up.sh` brings the fleet back.
 * Ubuntu 24.04, x86-64 (the `x64` label and the release artefacts both mean x86-64)
 * Rust at the channel `rust-toolchain.toml` pins (1.98.0), with clippy and rustfmt
 * Docker, for the oracle's postgres / mysql / valkey service containers
-* `sccache` at **`/var/cache/sccache`, local disk, 60 G**. The S3 bucket, its 14-day lifecycle and
-  the instance-profile policy that reads and writes it are provisioned anyway, so a fleet-shared
-  cache is `CI_RUNNER_SCCACHE=s3 ./scripts/ci-runners-up.sh` and a relaunch. No workflow names a
-  backend.
+* `sccache` **per agent**: `/opt/runner-N/sccache`, 20 G, on its own server port `4226+N`. Not
+  shared, and that is not an oversight — see the table below. The S3 bucket, its 14-day lifecycle
+  and the instance-profile policy that reads and writes it are provisioned anyway, so a genuinely
+  fleet-shared cache (with no local server contention at all) is
+  `CI_RUNNER_SCCACHE=s3 ./scripts/ci-runners-up.sh` and a relaunch. No workflow names a backend.
 * Four unpacked runner agents under `/opt/runner-N`, each a systemd service, each with its own
-  `_work` tree and `.env`
+  `_work` tree, `.env`, `CARGO_HOME` and `RUSTUP_HOME`
 * **A clean-workspace hook, not `--ephemeral`.** An ephemeral runner deregisters after one job and
   needs a *fresh* token to come back — precisely the credential this design refuses to keep. The
   `ACTIONS_RUNNER_HOOK_JOB_STARTED` hook is stronger than `--ephemeral` for the thing that actually
@@ -118,6 +119,26 @@ the EBS volume goes with it. `ci-runners-up.sh` brings the fleet back.
   step must never be able to fail a job it was only meant to tidy up for.
 * **No inbound ports.** The security group's ingress list is empty. A runner dials out and holds the
   connection; nothing ever dials in. Admin and ssh both travel over SSM.
+
+### What the hosted image had that a bare Ubuntu box does not
+
+Every one of these was found by a real run failing, and every one is now in the bootstrap so a
+replacement spot box is born with it:
+
+| missing | how it failed |
+|---|---|
+| `gh` | `gh: command not found`, exit 127 — on the *last* step of a six-minute oracle job that had already produced `18 owed, 0 diverging` |
+| `python3-venv` | `bin/oracle` builds a venv; Ubuntu 24.04's `python3` has no ensurepip, so the pinned tool never installed and surfaced four steps later as `ModuleNotFoundError: No module named 'busbar_oracle'` |
+| one sccache server per agent | four agents share port 4226 by default; one job's `sccache --stop-server` killed a neighbour mid-compile with `Connection reset by peer (os error 104)` **inside rustc** |
+| one `CARGO_HOME` per agent | rustup is not concurrency-safe; two `dtolnay/rust-toolchain` steps racing left `~/.cargo/bin/rustup` missing and every `cargo` on the box "command not found" |
+| an `-e`-safe job hook | the runner invokes the hook as `bash -e`, so a `find` returning 1 failed `Set up runner` and killed a shard in three seconds |
+
+`node` is still absent from the box; `actions/setup-node` provides it for the one job that needs it,
+and the runner bundles its own for actions. A `run:` step that calls `node` directly would fail.
+
+**Do not restart the runner services while jobs are in flight.** `svc.sh stop` kills the job, and the
+run reports `failure` with *no failed step*, which is indistinguishable at a glance from a real red.
+Six jobs were lost this way while the fleet was being tuned. Drain first, or accept the re-run.
 
 ### Service containers are addressed by container IP
 
