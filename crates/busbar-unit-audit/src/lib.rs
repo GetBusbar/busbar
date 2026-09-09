@@ -27,6 +27,16 @@
 //! the same whichever door the request came in through. An audit whose shape varies by protocol is
 //! an audit nobody can compare two rows of.
 //!
+//! ## And the way it lands on a disk somebody audits
+//!
+//! [`export`] holds the append-only sink writer. An `export:` instance pointed at a compliance mount
+//! writes a file that IS evidence, so one rule governs it: a size threshold may ROLL a file over and
+//! may never DESTROY what the file already holds. The current file is opened for append and never
+//! truncated, a rollover is a rename of bytes already fully on disk, and the archive series is
+//! bounded by retention rather than by discarding a live file. It sits here rather than beside the
+//! telemetry fan-out because that is a claim about recorded history, and this is the crate that
+//! answers for recorded history.
+//!
 //! ## And the amendments
 //!
 //! [`amend`] holds the two classes of thing that happen after the fact: an ACCESS, written every
@@ -53,6 +63,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod amend;
+pub mod export;
 pub mod legacy;
 pub mod record;
 pub mod unit;
