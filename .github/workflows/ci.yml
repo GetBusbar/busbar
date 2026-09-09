@@ -2521,6 +2521,56 @@ jobs:
       - name: Design bindings (existence; unmapped bindings listed as named gaps; regen-clean)
         run: cargo xtask gate design-bindings
 
+  ship-ready:
+    name: ship-ready
+    # THE SHIP CRITERION, AS A CHECK RATHER THAN A CHECKLIST. The criterion used to be prose in a
+    # design document — the ship twin is zero everywhere, no ceiling carries slack, no ceiling rose,
+    # nothing is standing red, the mutation job caught everything — and nothing in the repository
+    # could tell whether any line of it was true. `cargo xtask gate ship-ready` is those five lines
+    # as five rows that can each go red on their own.
+    #
+    # IT IS RED ON THIS LINE, ON PURPOSE, AND THAT IS WHY IT IS NOT IN THE UMBRELLA'S `needs`. The
+    # integration line is not the ship SHA: the twin is red on HEAD by design and the standing-red
+    # list is not empty. A criterion that is only interesting at promotion time belongs to the
+    # promotion, so this job is a REQUIRED CHECK on `qa` and `main` directly — see
+    # scripts/ci-branch-protection.sh, which is what makes it blocking there — and it reports here
+    # so that a branch can see, before it asks to be promoted, exactly what a promotion would refuse.
+    #
+    # `continue-on-error` is deliberately ABSENT. The job's own result is the signal branch
+    # protection reads; softening it here would make the required check unable to fail.
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Fetch the line the branch is measured against
+        # `ceiling-rose` and the mutation verdict are both measured against the merge-base with it.
+        run: |
+          git fetch --no-tags --quiet origin \
+            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+      - name: Ship-ready self-test
+        env:
+          XTASK_GATE_CEILING_SECS_SHIP_READY: "1800"
+        run: cargo xtask gate ship-ready --selftest
+      - name: Ship-ready gate
+        env:
+          # The posture the rows are judged under. On a promotion branch this is the branch itself,
+          # which is what makes the standing-red row bite exactly where a promotion happens.
+          XTASK_SHIP_TARGET: ${{ github.ref_name }}
+          XTASK_GATE_CEILING_SECS_SHIP_READY: "1800"
+          # `ship-ready:gate-mutants` reads the mutation verdict from the checks API, because a
+          # verdict carried in the tree is a verdict the person being gated can write.
+          GH_TOKEN: ${{ github.token }}
+        run: cargo xtask gate ship-ready
+
   ci-umbrella:
     name: ci umbrella
     if: always()
@@ -2555,6 +2605,12 @@ jobs:
     # exclusion is possible, in writing.
     # non-gating: coverage -- a REPORTING job (it uploads to Codecov and asserts no threshold here);
     #   coverage policy is enforced by codecov.yml on the PR, not by this workflow's required check.
+    # non-gating: ship-ready -- the SHIP criterion, and the integration line is not the ship SHA.
+    #   Its rows are claims about a tree that is ready to promote (the kind-isolation ship twin at
+    #   zero, every ceiling equal to its measurement, nothing standing red, the mutation job green)
+    #   and this line is deliberately none of those yet. It is a REQUIRED CHECK on qa and main
+    #   directly -- scripts/ci-branch-protection.sh -- so that it blocks exactly the event it is
+    #   about; putting it in this list would make every dev push red for being dev.
     # non-gating: proof-manifest -- publishes the Build Proof Dashboard on dev/qa/main only. By its
     #   own contract it CHANGES NO GATE, it records verdicts other jobs produced; a manifest refresh
     #   must never be able to gate a promotion.
