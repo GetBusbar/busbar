@@ -1263,3 +1263,13 @@ mod budget_cell_tests;
 #[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
 mod key_expires_at_tests;
+
+// THE ORDERED REQUEST VALIDATOR'S BATTERY, rehomed from core's retiring `trust/` shim (D33 §7.5).
+// Its standing-permission half drives a REAL `GovState` — a real store, a real `create_key`, a real
+// `update_key` — through the `GovResolve` impl that now lives beside the state in `state.rs`, so
+// this is the governance-side proof of that seam and belongs with it. Its `use` lines now name
+// `busbar_substrate::trust::` directly instead of reaching through the shim; the assertions are
+// unchanged.
+#[cfg(test)]
+#[path = "tests/validate_tests.rs"]
+mod validate_tests;

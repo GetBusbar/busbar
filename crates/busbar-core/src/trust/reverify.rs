@@ -2,11 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Re-export shim. THE RE-VERIFICATION CADENCE moved DOWN into `busbar-substrate` in Phase-B B1;
-//! this module re-exports it (glob) so every `crate::trust::reverify::…` name resolves unchanged and
-//! hosts the core-only re-verification tests, which name `busbar_a2a::a2a::pin`.
+//! this module re-exports it (glob) so every `crate::trust::reverify::…` name resolves unchanged.
+//! The core-only re-verification battery it used to host moved to `plane_host/trust.rs`, beside the
+//! one core funnel for the `due` arithmetic it drives (D33 §7.5).
 
 pub use busbar_substrate::trust::reverify::*;
-
-#[cfg(test)]
-#[path = "tests/reverify_tests.rs"]
-mod reverify_tests;

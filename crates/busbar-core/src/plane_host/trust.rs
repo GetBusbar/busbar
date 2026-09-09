@@ -651,3 +651,13 @@ pub(crate) extern "C-unwind" fn trust_evaluate(
 #[cfg(test)]
 #[path = "tests/trust_tests.rs"]
 mod tests;
+
+// THE RE-VERIFICATION CADENCE BATTERY, rehomed from core's retiring `trust/` shim (D33 §7.5). It
+// belongs here because this file is core's ONE funnel for the `reverify::due` arithmetic, and
+// because the battery drives that arithmetic with the concrete pinned artifact the A2A plane uses
+// (`busbar_a2a::a2a::pin::CardPin`) — the same pairing this module wires in production. Its `use`
+// lines now name `busbar_substrate::trust::` directly instead of reaching through the shim; not a
+// line of the assertions changed.
+#[cfg(test)]
+#[path = "tests/reverify_tests.rs"]
+mod reverify_tests;

@@ -15,7 +15,3 @@
 // never reads as an unused import when that consumer is compiled out. The standing-permission types
 // (`Standing`/`Snapshot`/`Lapsed`/`GovResolve`) now arrive through this glob from the substrate.
 pub use busbar_substrate::trust::validate::*;
-
-#[cfg(test)]
-#[path = "tests/validate_tests.rs"]
-mod validate_tests;
