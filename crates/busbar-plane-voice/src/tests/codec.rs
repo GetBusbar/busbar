@@ -494,7 +494,8 @@ fn a_streamed_tool_call_carries_its_arguments_into_its_unit() {
 ///
 /// The close states an empty argument string, so no fragment is ever accumulated and the session's
 /// `take_call_args` answers `None`. That is a tool that takes no arguments — the call still happened
-/// and still has to be dispatched, priced and audited. One unit, stating the empty arguments object.
+/// and still has to be dispatched, counted and audited. One unit, stating the empty arguments
+/// object.
 #[test]
 fn a_zero_argument_tool_call_mints_one_unit_stating_the_empty_arguments_object() {
     let plane = openai_plane();

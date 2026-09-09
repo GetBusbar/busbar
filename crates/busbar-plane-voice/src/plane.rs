@@ -10,23 +10,30 @@
 //!
 //! # Assumptions and simplifications, stated once
 //!
-//! Three of the entries below are no longer this module's own reading. They were raised as findings,
+//! Two of the entries below are no longer this module's own reading. They were raised as findings,
 //! carried to the architecture's inventory row for this plane, and **ratified there** — so what
-//! follows restates a decision rather than declaring one, and a change to any of the three is a
-//! change to that row first and to this file second. They are: only the first decoded IR event per
-//! wire frame is acted on; uplink audio is assumed PCM16 for the `audio_seconds_in` estimate on the
-//! two WS dialects; and model-emitted text in a duplex turn prices under `text_tokens_out`, an
-//! output class, never the input one.
+//! follows restates a decision rather than declaring one, and a change to either is a change to that
+//! row first and to this file second. They are: uplink audio is assumed PCM16 for the
+//! `audio_seconds_in` estimate on the two WS dialects; and model-emitted text in a duplex turn
+//! prices under `text_tokens_out`, an output class, never the input one.
+//!
+//! A THIRD was ratified there and is now RETIRED, in that row and here: acting on only the first
+//! decoded IR event per wire frame. It was ratified as harmless on the reading that the reference
+//! dialects emit at most one event per frame — and they do not. The atomic dialect states every
+//! parallel tool call of a turn in ONE frame, and the streamed dialect's argument-close frame states
+//! the arguments and the close together, so the declaration was losing whole tool calls. Every event
+//! of a frame is acted on now, in order; see `decode_response`.
 //!
 //! - **HTTP/WS path arrives as a transport fact**, under the kernel's own reserved key
 //!   (`busbar_contract::transport::facts::PATH`), used to resolve which one-shot operation or which
 //!   duplex dialect a session's Unit 0 is. This used to be a guess, and both transports now declare
 //!   the key they publish it under.
-//! - **Only the first decoded IR event per wire frame is acted on.** Both `read_up`/`read_down`
-//!   return `Vec<..Event>` (one wire message can map to 0..n IR events); this plane surfaces the
-//!   first and drops the rest. A wire frame that genuinely carries more than one IR event (not
-//!   observed in the reference dialects' own reader, which emit at most one per frame today) would
-//!   lose the extras. Flagged rather than silently accepted.
+//! - **Every decoded IR event of a downlink frame is acted on, in order.** `read_down` returns
+//!   `Vec<..Event>` (one wire message maps to 0..n IR events) and this step answers one thing per
+//!   call, so what a frame still means waits on the session and is drained before another frame is
+//!   read. The uplink half still surfaces the first event only: `read_up`'s reference dialects emit
+//!   at most one event per client frame, and unlike the downlink there is no observed shape that
+//!   does otherwise. Flagged rather than silently accepted.
 //! - **The uplink audio format is assumed PCM16 for the `audio_seconds_in` estimate on the two WS
 //!   dialects.** `DecodeState` only tracks the NEGOTIATED OUTPUT format (for the downlink barge-in
 //!   truncate math); there is no equivalent uplink format tracked anywhere in this plane's closure,
@@ -1132,7 +1139,7 @@ fn progress_from_server_event<'u>(
         // becomes a unit its executor can run: the body is the call as the CLIENT's own dialect
         // states it, framed through that dialect's writer, which is the one place that knows whether
         // this dialect streams a call or delivers it atomically. The counter is NOT touched — it was
-        // located at the announcement, and counting the same call twice would price it twice.
+        // located at the announcement, and counting the same call twice would state one call as two.
         IrServerEvent::Tool(IrDuplexTool::CallClose { call_ref, call_id }) => {
             // Read, not taken: the name is remembered for the RESULT leg as well, and a call whose
             // name was consumed to mint it could not be answered afterwards.
