@@ -1119,9 +1119,11 @@ version = "1.6.0"
 dependencies = [
  "busbar-caps",
  "busbar-contract",
+ "busbar-substrate-values",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tracing",
 ]
 
 [[package]]
