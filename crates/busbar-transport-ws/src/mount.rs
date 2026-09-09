@@ -74,7 +74,7 @@ use busbar_contract_transport::session::{
 };
 use busbar_contract_transport::surface::{Bar, BindingDecl, WireSurface};
 use busbar_contract_transport::wire::{CloseReason, TransportError};
-use busbar_transport_http::mount::{document_bar, Unaddressed};
+use busbar_transport_http::mount::Unaddressed;
 
 // ── what arrived ────────────────────────────────────────────────────────────────────────────────
 
@@ -135,34 +135,41 @@ pub struct Mount<'m> {
 
 /// Address one upgrade against a declared surface.
 ///
-/// Two questions, and the second one is the one a mount that only asked the first would get wrong. A
-/// target has to be one of a binding's declared mounts — and that binding has to be carried by THIS
-/// transport. A surface routinely declares several bindings over several wires at overlapping paths,
-/// and a session opened at a path some other wire's binding declared would be a session nobody
-/// declared, served with that binding's credential bar.
+/// THREE questions, and each of the last two is one a mount that stopped at the previous one would
+/// get wrong. A target has to be one of a binding's declared mounts; that binding has to be carried
+/// by THIS transport, because a surface routinely declares several bindings over several wires at
+/// overlapping paths and a session opened at another wire's path would be a session nobody declared,
+/// served under that binding's bar; and the binding has to declare a
+/// [`busbar_contract_transport::surface::Dispatch::Duplex`] row — it has to be a place the DECLARER
+/// said a session may be opened.
+///
+/// The third question is the one this file could not ask before the contract had a duplex kind. A
+/// mount that asked only the first two upgrades any binding of this transport, an ordinary
+/// posted-envelope endpoint included — a deployment is entitled to declare one over a wire that can
+/// also carry sessions — and the caller is handed a session on a surface whose own declaration says
+/// it answers one document with one answer. Nothing in the declaration was ever consulted about
+/// whether that was allowed, because there was nothing in it that could say.
+///
+/// All three are the single walk in
+/// [`busbar_contract_transport::surface::duplex_binding_at`], so no second duplex wire can grow a
+/// second reading of them, and the bar comes back off the same walk — read from the duplex rows,
+/// which are the only rows that say anything about an upgrade.
 ///
 /// # Errors
 ///
-/// No binding of this transport declares a mount at that target.
+/// No duplex binding of this transport declares a mount at that target.
 pub fn address<'s>(
     surface: &'s WireSurface,
     key: &'static str,
     chain: &'s [&'static str],
     upgrade: &Upgrade<'_>,
 ) -> Result<Mount<'s>, Unaddressed> {
-    let path = upgrade
-        .target
-        .split(['?', '#'])
-        .next()
-        .unwrap_or(upgrade.target);
-    let binding = surface
-        .bindings
-        .iter()
-        .find(|b| b.transport == key && b.mounts.contains(&path))
-        .ok_or(Unaddressed)?;
+    let (binding, bar) =
+        busbar_contract_transport::surface::duplex_binding_at(surface, key, upgrade.target)
+            .ok_or(Unaddressed)?;
     Ok(Mount {
         binding,
-        bar: document_bar(surface, binding.name),
+        bar,
         key,
         chain,
     })
