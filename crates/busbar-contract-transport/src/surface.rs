@@ -127,6 +127,37 @@ pub enum Dispatch {
         /// Whether this surface demands a credential.
         bar: Bar,
     },
+    /// THE BINDING ITSELF names the operation, because after the upgrade nothing else can.
+    ///
+    /// The duplex kind, beside the three request/answer ones, and it is a kind of its own rather
+    /// than a spelling of [`Dispatch::Document`] because the two differ in the one fact a mount
+    /// acts on. A document row promises that a member of an arriving document names the operation,
+    /// and a reader can go and read that member on every request. A session has no such member and
+    /// no such request: there is ONE upgrade, it carries a target and a method, and from the
+    /// protocol switch onwards the wire has neither. What the frames after it mean is the plane's,
+    /// decided from the session's own accumulated state, and no dispatch row could ever match one.
+    ///
+    /// So this row declares exactly the three facts a mount needs BEFORE the upgrade, and nothing
+    /// it could not have afterwards: which binding a session may be opened on — the binding's own
+    /// [`BindingDecl::mounts`] are WHERE — the method the upgrade arrives with, and whether the
+    /// upgrade has to carry a credential. That bar is the last one this wire can demand, which is
+    /// why it is the whole session's rather than one request's.
+    ///
+    /// A plane with no duplex kind available had to declare a session as a document row instead,
+    /// which puts a `member` and a `name` on it that nothing resolves and nothing could resolve. A
+    /// mount reading such a surface cannot tell a session mount from an envelope endpoint that
+    /// happens to be carried by a duplex-capable transport — and would open a session on either.
+    Duplex {
+        /// The binding a session is opened on; its [`BindingDecl::mounts`] are where.
+        binding: &'static str,
+        /// The request method the upgrade arrives with.
+        method: &'static str,
+        /// Whether the upgrade has to carry a credential.
+        ///
+        /// The session's only chance to demand one: a session presents a credential once, on the
+        /// upgrade, and never again.
+        bar: Bar,
+    },
 }
 
 impl Dispatch {
@@ -136,8 +167,18 @@ impl Dispatch {
         match self {
             Dispatch::Target { bar, .. }
             | Dispatch::Document { bar, .. }
-            | Dispatch::Service { bar, .. } => *bar,
+            | Dispatch::Service { bar, .. }
+            | Dispatch::Duplex { bar, .. } => *bar,
         }
+    }
+
+    /// Whether this row opens a SESSION rather than answering a request.
+    ///
+    /// The one question a duplex mount asks of a row, given a name so that no mount has to match on
+    /// the arm itself and quietly grow a fourth reading of what "duplex" means.
+    #[must_use]
+    pub fn is_duplex(&self) -> bool {
+        matches!(self, Dispatch::Duplex { .. })
     }
 }
 
@@ -237,6 +278,28 @@ pub enum SurfaceError {
         /// The binding it named.
         binding: &'static str,
     },
+    /// A duplex row names a binding that declares no mount, so no session could ever be opened.
+    ///
+    /// Distinct from [`SurfaceError::UnknownBinding`] because the binding EXISTS and a published
+    /// document would advertise it. A duplex binding's mounts are the only way a session is
+    /// addressed — there is no template and no descriptor to fall back to — so a mountless one is a
+    /// binding a client can read about and can never reach.
+    NoDuplexMount {
+        /// The operation the dispatch belongs to.
+        op: &'static str,
+        /// The binding it named.
+        binding: &'static str,
+    },
+    /// A duplex row sits on an operation that says it answers once.
+    ///
+    /// A contradiction rather than a slip: [`Answering::Unary`] tells a mount to close the direction
+    /// after the first thing it writes, and a session closed at its first answer is not a session.
+    /// The declaration would type-check and the outage would be silent, which is why it is refused
+    /// at boot instead.
+    DuplexNotStreaming {
+        /// The operation.
+        op: &'static str,
+    },
 }
 
 impl fmt::Display for SurfaceError {
@@ -266,6 +329,18 @@ impl fmt::Display for SurfaceError {
                 "the operation `{op}` is dispatched on the binding `{binding}`, which this surface \
                  does not declare — so it is posted to nowhere and reports as a method that does \
                  not exist"
+            ),
+            Self::NoDuplexMount { op, binding } => write!(
+                f,
+                "the operation `{op}` opens a session on the binding `{binding}`, which declares no \
+                 mount — a session is addressed by its binding's mounts and by nothing else, so \
+                 there is no target any client could open one at"
+            ),
+            Self::DuplexNotStreaming { op } => write!(
+                f,
+                "the operation `{op}` opens a session and answers `Unary`, which tells a mount to \
+                 close the direction after the first frame it writes — a session cut at its first \
+                 answer"
             ),
         }
     }
@@ -376,8 +451,24 @@ fn address_of(d: &Dispatch) -> (&'static str, &'static str, &'static str) {
         Dispatch::Service {
             service, method, ..
         } => (service, method, ""),
+        // A session is addressed by its BINDING, so a binding carries at most one duplex row per
+        // method — a second would be two credential bars for one upgrade, and which one answered
+        // would be whichever row the walk happened to reach first.
+        Dispatch::Duplex {
+            binding, method, ..
+        } => (binding, method, DUPLEX_ADDRESS),
     }
 }
+
+/// The third component of a duplex row's address.
+///
+/// A sentinel rather than the empty string the target and service kinds use, because a duplex row's
+/// first component is a BINDING name and a service row's is a SERVICE name, and those are not one
+/// namespace. Without it, a surface that spelled a service exactly as it spelled a binding would
+/// report a duplicate address between two rows on two different wires — rows no single request could
+/// ever name both of. It is not a name and is never shown to anyone: the NUL makes it unspellable as
+/// a declaration, which is what keeps it from colliding with a real one.
+const DUPLEX_ADDRESS: &str = "\0duplex";
 
 /// The boot check over a declared surface: every operation is reachable, no two are reachable the
 /// same way, and every template is in the grammar.
@@ -421,6 +512,27 @@ pub fn check_surface(surface: &WireSurface) -> Result<(), SurfaceError> {
                         op: operation.op,
                         binding,
                     });
+                }
+            }
+            if let Dispatch::Duplex { binding, .. } = d {
+                // The same declaration rule as a document row, and then the one extra thing a
+                // session needs that a posted document does not: a binding a session is opened on
+                // has to say WHERE. A document row can be posted at a mount the binding shares with
+                // its siblings; a session has no second way to be addressed at all.
+                let Some(decl) = surface.bindings.iter().find(|b| b.name == *binding) else {
+                    return Err(SurfaceError::UnknownBinding {
+                        op: operation.op,
+                        binding,
+                    });
+                };
+                if decl.mounts.is_empty() {
+                    return Err(SurfaceError::NoDuplexMount {
+                        op: operation.op,
+                        binding,
+                    });
+                }
+                if operation.answering != Answering::Stream {
+                    return Err(SurfaceError::DuplexNotStreaming { op: operation.op });
                 }
             }
             let address = address_of(d);
@@ -496,6 +608,69 @@ pub fn resolve_service<'s>(
 pub fn binding_at<'s>(surface: &'s WireSurface, target: &str) -> Option<&'s BindingDecl> {
     let path = target.split(['?', '#']).next().unwrap_or(target);
     surface.bindings.iter().find(|b| b.mounts.contains(&path))
+}
+
+/// The credential bar the DUPLEX rows of one binding declare, or `None` if it declares none.
+///
+/// Two answers in one return, and the `None` is the load-bearing half: it says this binding is not a
+/// session mount at all. A duplex wire asks this before it upgrades anything, and a binding that
+/// only carries request/answer rows has to come back `None` rather than come back a bar — otherwise
+/// a surface's ordinary envelope endpoint, declared on a binding that happens to be carried by a
+/// duplex-capable transport, is a target strangers can open sessions at.
+///
+/// Where it does answer, it answers with the STRICTEST bar any duplex row on the binding declares,
+/// for the reason the document-row reader fails closed: a mount that took the laxest of two
+/// declarations would serve the open reading of a binding somebody wrote a credential onto.
+#[must_use]
+pub fn duplex_bar(surface: &WireSurface, binding: &str) -> Option<Bar> {
+    let mut found: Option<Bar> = None;
+    for operation in surface.operations {
+        for d in operation.dispatch {
+            if let Dispatch::Duplex {
+                binding: b,
+                bar: row,
+                ..
+            } = d
+            {
+                if *b == binding {
+                    if *row == Bar::Credential {
+                        return Some(Bar::Credential);
+                    }
+                    found = Some(Bar::Open);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The DUPLEX binding of one transport that a target opens a session at, and its bar.
+///
+/// The one walk every duplex wire addresses an upgrade with, written here rather than once per
+/// wire, and it asks three questions where a wire that asked only the first would be wrong on the
+/// other two:
+///
+/// * the target is one of the binding's declared mounts;
+/// * the binding is carried by THIS transport — a surface routinely declares several bindings over
+///   several wires at overlapping paths, and a session opened at some other wire's path would be a
+///   session nobody declared, served under that binding's bar;
+/// * the binding declares a duplex row — see [`duplex_bar`] for why the absence of one is a refusal
+///   rather than a default.
+///
+/// It names no plane, no protocol and no transport: `key` is the caller's own registry key and every
+/// string compared is the DECLARER's.
+#[must_use]
+pub fn duplex_binding_at<'s>(
+    surface: &'s WireSurface,
+    key: &str,
+    target: &str,
+) -> Option<(&'s BindingDecl, Bar)> {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    surface.bindings.iter().find_map(|b| {
+        (b.transport == key && b.mounts.contains(&path))
+            .then(|| duplex_bar(surface, b.name).map(|bar| (b, bar)))
+            .flatten()
+    })
 }
 
 /// Find the operation a document member's value addresses on one binding.
