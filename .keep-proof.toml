@@ -5,19 +5,28 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
-#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
-#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
-#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
-#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
-#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
-#              the docs make about the gate, which is the one family this branch edits. `neutrality`
-#              is not in scope on purpose — this branch touches no plane and no transport source, so
-#              replaying that family would be a claim about code it did not change. An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
+#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
+#              better part of half an hour.
+#   tests    — the packages whose test binaries the sharded legs must include by name.
+#
+# THIS BRANCH IS THE DIALECT SPLIT'S FIRST CUT — the `openai` dialect of the LLM plane leaves the
+# plane's own tables and arrives as its own crate, registering by claim. So the scope is the LLM
+# families first of all: every openai golden cell is a cell one of them replays, and a byte that
+# moved would be a wire format changed under every client of it.
+#
+# `billing` is here because the metered quantities are located by the DIALECT — the meter locators
+# move with the crate, and a locator that pointed at the wrong member would meter a request on a
+# number that is not the one the upstream reported. `route.failover` and `neutrality` are here
+# because the split changes which crate ANSWERS for a claim: failover walks lanes whose dialect is
+# resolved off the merged ladder, and neutrality is the property the split exists to establish —
+# a plane that no longer names one of its dialects.
+families = '^(llm|billing|route\.failover|neutrality)([|.]|$)'
+tests = [
+    "busbar-plane-llm-openai",
+    "busbar-plane-llm",
+    "busbar-llm-codec",
+    "busbar-llm",
+    "busbar",
+    "xtask",
+]
