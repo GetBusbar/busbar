@@ -147,9 +147,14 @@ jobs:
     runs-on: [self-hosted, linux, x64, busbar-xl]
     # ci.yml's Test step measures 9.3 min warm for the WHOLE suite; a quarter of the execution plus a
     # full compile lands well inside 20. 30 is that with cold-cache headroom, and it is a ceiling on
-    # a hang, not a target. The `xtask` leg is the one that needs the room: its single binary is a
-    # measured 15 minutes.
-    timeout-minutes: 30
+    # a hang, not a target.
+    #
+    # THE `xtask` LEG GETS 60, and it has to: its per-binary ceiling is 3000s (see the step below
+    # for why), and a job timeout of 30 would kill the leg at half of that — a backstop that fires
+    # BEFORE the instrument it is backing up is not a backstop, it is the real limit wearing a
+    # disguise. On busbar-xl this leg measured 1691s before it was killed, on a box whose other
+    # three agents were compiling.
+    timeout-minutes: ${{ matrix.shard == 'xtask' && 60 || 30 }}
     strategy:
       # A red shard must not cancel the others: the harvester wants the whole picture of the
       # hand-back in one pass, not the first failure and four unknowns.
@@ -272,12 +277,26 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: "4"
-          # PER-BINARY HANG CEILING, the same instrument ci.yml's watchdog is. Sized off the two
-          # measured monoliths, not off a wish: `busbar_core`'s lib-test binary aggregates ~3900
-          # tests to ~330s, and the `xtask` cli binary drives every gate's RED proof for a measured
-          # ~15 minutes. 1500s bounds a genuine hang (unbounded) while leaving the slower of the two
-          # real headroom. When it fires it NAMES the binary.
-          BINARY_TIMEOUT_SECS: "1500"
+          # PER-BINARY HANG CEILING, the same instrument ci.yml's watchdog is. Sized off the measured
+          # monoliths, not off a wish — and PER LANE, because the two lanes hold different animals.
+          #
+          # The numbered legs' slowest binary is `busbar_core`'s lib-test, ~3900 tests in ~330s;
+          # 1500s is four and a half times that, which bounds a genuine hang without ever being
+          # close to a real run.
+          #
+          # The `xtask` leg holds ONE binary, `xtask/tests/cli.rs`, and it is not a test suite in
+          # the usual sense: it drives EVERY registered gate's RED proof over the real tree, plus
+          # `gate --all` and `selftest`. On a GitHub-hosted runner that measured ~15 minutes, so
+          # 1500s looked like headroom. On a busbar-xl agent it is not: the agent holds an eighth
+          # of the box (four agents x 8 vCPU) while its neighbours compile, and the suite spends
+          # its time spawning processes rather than saturating cores. It was killed at 1500s twice
+          # — reported as "that is a hang, not a slow suite", which was confidently wrong both
+          # times.
+          #
+          # 3000s for that lane. A hang is still bounded (the job's own timeout-minutes is the
+          # backstop), and the ceiling now says something true about the binary underneath it. If
+          # this ever fires, the honest next move is fewer agents per box, not a bigger number.
+          BINARY_TIMEOUT_SECS: ${{ matrix.shard == 'xtask' && '3000' || '1500' }}
         run: |
           set -uo pipefail
           log="$RUNNER_TEMP/shard.log"
