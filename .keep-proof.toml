@@ -1,0 +1,51 @@
+# WHAT THIS HAND-BACK CAN MOVE, DECLARED BY THE HAND-BACK.
+#
+# `.github/workflows/keep-proof.yml` reads exactly two keys out of this file and nothing else:
+#
+#   families  the oracle id-filter this branch is recorded and replayed against. It NARROWS the
+#             shadow oracle and nothing else — absent or empty, every family is recorded. It cannot
+#             narrow the test shards or the gates, on purpose: a gate a hand-back gets to scope is a
+#             gate the hand-back can turn off.
+#   tests     the packages this branch names, for a reader. Written down so "what did this prove"
+#             is answerable from the branch rather than from somebody's memory of the brief.
+#
+# THIS BRANCH: the money model's rate half — the rate TABLE, the DECLARED CLASSES, the boot refusal
+# for an unpriced class, and the two config additions (`week`, `on_exhaust: cut`). It does NOT touch
+# the meter's posting path (busbar-llm unit walk/meter/audit) or the ledger row shape; those are
+# other agents'.
+#
+# WHY THESE FOUR FAMILIES:
+#
+#   billing   the rate table is derived from the same `rate_card:`/`per_request_fee:` the billing
+#             cells are priced from. The derivation is asserted equal to the card's, cell for cell,
+#             by a test in busbar-unit-cost — but the oracle is what proves it against the recorded
+#             1.5.5 figures rather than against the card this branch also ships.
+#   ledger    the same derivation feeds the rate-history and currency cells, including
+#             `ledger|currency|minor-unit-rounding`, which the impact report names as a
+#             MUST-NOT-MOVE (a single-entry history, a sub-cent card, one truncation).
+#   boot      one cell is EXPECTED to move here and is registered: `boot.refusal|BOOT-P23|validate`,
+#             whose window list grows by `week` (entry M6-1, kind improvement, text_list_growth,
+#             class effects.stderr). Every other boot.refusal and boot.warning cell must be
+#             byte-identical — that is the check that the new unpriced-class refusal did not start
+#             refusing a config that has always booted.
+#   config    the 138 `config.migrate` cells are the byte-identity gate for the grammar change: a
+#             `week` variant and a `cut` value are additive only if every released config still
+#             round-trips through `--migrate-config` and `--validate` unchanged.
+#
+# `ops.scrape` is deliberately NOT in the filter, and that is a statement rather than an omission.
+# The class rename in this branch is plane-side only; the `/metrics` `tier="input"` label is a
+# hard-coded literal in `busbar-core/src/metrics.rs` paired with the `busbar_api::UNIT_*` STORE
+# keys, neither of which this branch touches. Naming the family would be recording a question this
+# branch does not ask.
+families = '^(billing|ledger|boot|config)([|.]|$)'
+tests = [
+  "busbar-unit-cost",
+  "busbar-unit-admission",
+  "busbar-substrate",
+  "busbar-substrate-values",
+  "busbar-core",
+  "busbar-plane-llm",
+  "busbar-plane-mcp",
+  "busbar-plane-a2a",
+  "busbar-plane-voice",
+]
