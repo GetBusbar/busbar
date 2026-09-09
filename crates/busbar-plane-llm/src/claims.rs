@@ -61,7 +61,13 @@ pub struct LadderClaim {
 }
 
 /// Build one claim over a selector.
-const fn claim(selector: Selector) -> Claim {
+///
+/// PUBLIC because a dialect crate builds its OWN rungs with it. Every claim of this plane — the
+/// plane's own and every dialect's — is built here, so the transport, the scheme and the
+/// alternative set a claim carries are stated once and cannot be restated differently by a crate
+/// that registers into this plane later.
+#[must_use]
+pub const fn claim(selector: Selector) -> Claim {
     Claim {
         transport: TRANSPORT,
         selector,
