@@ -1,0 +1,48 @@
+# WHAT THIS HAND-BACK CAN MOVE, DECLARED BY THE HAND-BACK.
+#
+# `.github/workflows/keep-proof.yml` reads exactly two keys out of this file:
+#
+#   families  the oracle id-filter this branch is recorded and replayed against. It NARROWS the
+#             shadow oracle and nothing else. It cannot narrow the test shards or the gates.
+#   tests     the packages this branch names, for a reader.
+#
+# THIS BRANCH: keep-teller-recut — the 43-commit teller/unit-test batch
+# (keep-batch-teller-rebased d83d889c5, based on eb4e8a744) re-cut onto the tree tip 36fa6f753
+# after the 18:3x reset, plus ONE ruling commit.
+#
+# THE RE-CUT ITSELF IS A NO-OP ON CONTENT. All 43 commits cherry-picked onto 36fa6f753 with ZERO
+# conflicts — the runner's earlier RED at 293d76df9 (`construction gate: five rules the saboteur
+# had never been taught to break`) does not reproduce against this tip. Nothing was dropped in this
+# re-cut; the four drops recorded for the original harvest (three ledger money tests that no longer
+# compile against the tree's recompute — the money STOP honoured — and the superseded pick) were
+# already absorbed into the 43 before this branch's base.
+#
+# THE ONE ADDED COMMIT is the plane-purity ruling from the 22:5x harvest: the strict lint's
+# `KEY` category counted the two `"llm"`/`"mcp"` string literals in `runtime_slot_key_tests` as a
+# neutral crate naming planes (379 against a 377 ceiling). RULING: reword the test to neutral keys,
+# DO NOT RAISE THE CEILING. The keys under test are arbitrary — the contract is the
+# `"<key>:runtime"` shape, the intern identity and the non-collision, none of which needs a real
+# plane key to state — so the two literals became `"alpha"`/`"beta"` and the ceiling stays at 377.
+# The scanner strips comments before matching, so the doc comment's caller list never counted; it
+# was reworded anyway so the file names no plane at all. Exactly two KEY hits removed: 379 -> 377.
+#
+# WHY THESE FAMILIES. The batch is test-additive: it states invariants that were already true
+# rather than changing behaviour, so the honest expectation is that EVERY declared family is
+# byte-identical and declaring them is what makes that an assertion rather than a hope.
+# `teller`, `billing` and `ledger` are the money path the batch's teller/cost/usage/ledger suites
+# read, and money byte-identity is the bar (the original harvest proved money 18/18).
+# `admin` is named because one ORIGIN DEFECT commit corrects an admin split-envelope test that had
+# asserted a frame join the plane does not do — the plane reads one frame per call BY DESIGN, so
+# the adapted test stands and the admin cells must not move.
+# `llm`, `mcp` and `a2a` are named because the batch adds plane and codec suites there, including
+# the reworded `runtime_slot_key` test.
+#
+# NO LOCAL RECORDING IS ATTACHED, and that is the process rather than an omission: local workspace
+# builds and local oracle recordings are off; CI's keep-proof records these families on a quiet
+# host. Locally only the scoped `cargo test -p busbar-substrate runtime_slot_key` was run for the
+# ruling commit (3 passed) — the rest of the batch arrived already proven on its original base.
+#
+# KNOWN-RED, NOT THIS BRANCH'S: the `hygiene` row is red on the base and was struck from `--gate`
+# in the original harvest. `plane-delete-test.sh --all` is red on the base at mcp and a2a.
+families = '^(teller|billing|ledger|admin|llm|mcp|a2a)([|.]|$)'
+tests = ["busbar-unit-egress", "busbar-unit-breaker", "busbar-unit-transport-key", "busbar-unit-egress-auth", "busbar-unit-auth", "busbar-unit-scope", "busbar-unit-admission", "busbar-unit-trust", "busbar-unit-usage", "busbar-unit-cost", "busbar-substrate", "busbar-kernel", "busbar-a2a-codec", "busbar-mcp-codec", "busbar-voice-codec", "busbar-plane-llm", "busbar-plane-admin", "busbar-core", "busbar"]
