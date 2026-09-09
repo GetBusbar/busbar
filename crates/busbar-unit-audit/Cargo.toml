@@ -12,11 +12,6 @@
 #   serde        the previous release's record is serialised onto a wire with eight fields and one
 #                skipped provenance flag. That is part of what "unchanged" means, so the derives
 #                travel with the record rather than being reimplemented at the boundary.
-#   busbar-substrate-values the diagnostic catalog. The append-only sink writer speaks five coded
-#                words about a file it could not open, append to, rotate or retain, and each must be
-#                the SAME code an operator already greps for — a second catalog would be a second
-#                code for the same operational fact.
-#   tracing      what `diag_warn!` expands to, and the one INFO line that says a rollover happened.
 [package]
 name = "busbar-unit-audit"
 version = "1.6.0"
@@ -33,10 +28,8 @@ path = "src/lib.rs"
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
-busbar-substrate-values = { path = "../busbar-substrate-values" }
 sha2 = { workspace = true }
 serde = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 # The wire shape of the previous release's record — eight fields, one of them skipped — is a claim
