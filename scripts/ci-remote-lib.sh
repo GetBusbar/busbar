@@ -154,6 +154,16 @@ remote_push_tree() { # $1 = host  $2 = local repo  $3 = ref name  $4.. = extra c
     [ -n "$h" ] || continue
     specs+=( "+$h:refs/proof/$ref/$h" )
   done
+  # THE AUDIT PINS TRAVEL TOO. qa/audit-ledger.json records the commit each audit round read
+  # (`audited_at`), and the audit-ledger gate re-derives that tree with `git ls-tree`. Those commits
+  # are audit worktree pins, not ancestors of the tree, so a fresh clone cannot resolve them and the
+  # gate is red for a reason that has nothing to do with the landing. The integrator keeps a local
+  # ref per pin under refs/audit-pins/<sha> (mirrored to origin refs/backup/audit-pins/); they ride
+  # along on every push so the box can produce the same trees the laptop can.
+  local pin
+  for pin in $(git -C "$repo" for-each-ref --format='%(refname)' refs/audit-pins/ 2>/dev/null); do
+    specs+=( "+$pin:$pin" )
+  done
   rlog "pushing $(git -C "$repo" rev-parse --short HEAD) and ${#} extra object(s) to $host"
   GIT_SSH_COMMAND="$SSH_WRAP" git -C "$repo" push -q --force \
     "ssh://$REMOTE_USER@$host/~/$REMOTE_BARE" "${specs[@]}" \
