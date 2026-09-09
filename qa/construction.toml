@@ -100,6 +100,33 @@ busbar-mcp = ["busbar-mcp-codec"]
 busbar-a2a = ["busbar-a2a-codec"]
 busbar-voice = ["busbar-voice-codec"]
 
+# ── DECLARED CEILING RAISES ──────────────────────────────────────────────────────────────────────
+#
+# `ceiling-rose` refuses any integer in this file or in qa/kind-isolation.toml that is higher than
+# it is at this branch's base. A ratchet with NO route through it is a ratchet somebody edits the
+# rule to get past, and there is one raise that is legitimate and cannot be avoided: the FIRST
+# gating figure of a row that was not gating before.
+#
+# A declaration is not a waiver. It names the exact dotted path and BOTH numbers, so it describes
+# one edit rather than a direction; it carries a reason long enough to be one; and it EXPIRES BY
+# ITSELF, because the moment its commit lands the base carries the new number, the rise disappears,
+# and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
+# cover the next raise of the same ceiling.
+
+[gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]
+from = 26
+to = 47
+because = """ONE-TIME CALIBRATION of a row that was not gating (integrator ruling, 2026-09-09). \
+`legacy-reach:busbar_substrate` was informational() -- PASS whatever it measured, titled WARN -- \
+and the root's substrate reach grew from 26 to 47 underneath it while its busbar_core figure fell \
+from 49 to 27. That is the retirement working as designed: a core symbol retargeted onto the \
+substrate on its way to the kernel is one fewer `busbar_core::` name and one more \
+`busbar_substrate::` one, and permitting exactly that sideways move is what the WARN posture was \
+for. The commit that makes the row GATE cannot also be the commit that declares a twenty-one \
+symbol regression, because nothing ever held this number. It is calibrated once, to what the tree \
+measures today, and it ratchets down from here like every other figure in this file: this row \
+holds it from above and `ceiling-slack` holds it from below."""
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -973,7 +1000,15 @@ figure = 17
 prefix = "busbar_substrate::"
 exclude = []
 because = "the substrate seams the root installs; each moves onto the ABI as the kernel takes them"
-figure = 26
+# ONE-TIME CALIBRATION, 26 -> 47 (integrator ruling, 2026-09-09). This figure was written when the
+# row was INFORMATIONAL -- PASS whatever it measured -- and the root's substrate reach grew to 47
+# underneath it while core's fell from 49 to 27, which is the retirement working as designed and is
+# exactly the sideways move the WARN posture existed to permit. The commit that makes the row GATE
+# cannot also be the commit that declares a twenty-one-symbol regression, because there was no
+# regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
+# today, and it ratchets down from here like every other figure in this file. It may only go down;
+# `ceiling-slack` holds it from below and this row holds it from above.
+figure = 47
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]

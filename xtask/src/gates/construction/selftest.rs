@@ -552,6 +552,55 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
         ));
     }
 
+    // ── the declared raise, and both ways it is refused ─────────────────────────────────────────
+    //
+    // A DECLARATION THAT DOES NOT DESCRIBE THIS RAISE EXCUSES NOTHING. The committed entry says
+    // 26 -> 47; rewriting its `to` leaves the raise in the file undeclared, and a declaration that
+    // named a direction rather than an edit would be a permanent hole with a reason field.
+    if let Some(mismatched) = ceilings::set_int(
+        &text,
+        "gate.ceiling_raises.\"rules.legacy-reach.prefixes.busbar_substrate.figure\"",
+        "to",
+        30,
+    ) {
+        let mut ov = on(base);
+        ov.set(CEILINGS, mismatched);
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            "a declared raise whose numbers are not this raise excuses nothing",
+            &[ceilings::ROW_ROSE],
+            ov,
+            &["declared as 26->30"],
+        ));
+    } else {
+        r.note_infra_failure(
+            "the committed ceiling-raise declaration could not be rewritten, so the arm that \
+             refuses a declaration describing a different edit is unproven",
+        );
+    }
+
+    // …AND A DECLARATION THAT DESCRIBES NO RAISE AT ALL IS A WAIVER THAT OUTLIVED WHAT IT EXCUSED.
+    // This is the half that makes the mechanism unable to silt up: the entry is struck by the
+    // commit after the one that needed it, or this row says so.
+    let mut ov = on(base);
+    ov.set(
+        CEILINGS,
+        format!(
+            "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 1\nto = 2\n\
+             because = \"planted by the self-test; it describes no raise on this branch and must \
+             therefore be refused as a stale declaration rather than carried\"\n"
+        ),
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a declared raise that is not a raise at the base is a waiver that outlived its commit",
+        &[ceilings::ROW_ROSE],
+        ov,
+        &["is not a raise at the base"],
+    ));
+
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
     // comparison that cannot be made is not a comparison that passed.
     let mut ov = on(base);

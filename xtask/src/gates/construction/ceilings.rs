@@ -28,7 +28,7 @@
 //! a kernel file, a plane or a retiring crate added to the data brings its pin with it, and a pin
 //! for a row that no longer exists is refused by the same reconciliation every other row is.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
 use crate::gates::construction::model::{plain, CRow, Cfg, VACUOUS};
@@ -360,8 +360,11 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             )]
         }
     };
+    let declared = raises(cx);
     let mut risen: Vec<String> = Vec::new();
+    let mut allowed: Vec<String> = Vec::new();
     let mut unreadable: Vec<String> = Vec::new();
+    let mut used: BTreeSet<String> = BTreeSet::new();
     for file in [CEILINGS, KIND_CEILINGS] {
         let now = match cx.read(file) {
             Ok(t) => t,
@@ -388,18 +391,61 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
             }
         };
         for (path, before) in &was {
-            if let Some(after) = now.get(path) {
-                if after > before {
-                    risen.push(format!("{file} {path}: {before} -> {after}"));
+            let Some(after) = now.get(path) else { continue };
+            if after <= before {
+                continue;
+            }
+            // A DECLARED RAISE IS THE ONE WAY THROUGH, and it is a transaction rather than a hole:
+            // the declaration names the exact path and BOTH numbers, carries a reason, and expires
+            // by itself — once the commit lands, the base carries the new number, the rise this
+            // row sees is gone, and the entry describes nothing and is refused as stale. See
+            // [`raises`].
+            match declared.get(&format!("{file}:{path}")) {
+                Some(r) if r.from == *before && r.to == *after && r.because.len() >= MIN_REASON => {
+                    used.insert(format!("{file}:{path}"));
+                    allowed.push(format!(
+                        "{file} {path}: {before} -> {after} ({})",
+                        r.because
+                    ));
                 }
+                Some(r) => {
+                    used.insert(format!("{file}:{path}"));
+                    risen.push(format!(
+                        "{file} {path}: {before} -> {after}, declared as {}->{} with a {}-character reason. A raise is allowed by a declaration that describes THIS raise and gives a reason, or by nothing",
+                        r.from,
+                        r.to,
+                        r.because.len()
+                    ));
+                }
+                None => risen.push(format!("{file} {path}: {before} -> {after}")),
             }
         }
     }
+    // A DECLARATION THAT DESCRIBES NO RAISE ON THIS BRANCH IS A WAIVER THAT OUTLIVED WHAT IT
+    // EXCUSED, and that is how this mechanism cannot silt up: the entry is struck by the commit
+    // after the one that needed it, or the row says so.
+    for (key, r) in &declared {
+        if !used.contains(key) {
+            risen.push(format!(
+                "{key}: a declared raise {} -> {} that is not a raise at the base {}. Either the                  commit that needed it has landed — strike the entry — or it names a ceiling that                  never moved.",
+                r.from,
+                r.to,
+                &base[..8.min(base.len())]
+            ));
+        }
+    }
+
     let short = &base[..8.min(base.len())];
     let ok = risen.is_empty() && unreadable.is_empty();
-    let detail = if ok {
+    let detail = if ok && allowed.is_empty() {
         format!(
             "no ceiling in {CEILINGS} or {KIND_CEILINGS} is higher than it is at the base {short}"
+        )
+    } else if ok {
+        format!(
+            "no undeclared ceiling is higher than it is at the base {short}; {} declared raise(s):              {}",
+            allowed.len(),
+            allowed.join("; ")
         )
     } else if !unreadable.is_empty() {
         format!(
@@ -430,6 +476,64 @@ pub fn ceiling_rose(cx: &Ctx) -> Vec<CRow> {
 }
 
 const ROSE_TITLE: &str = "no ceiling in a qa ceilings file is higher than it is at the base";
+
+/// A declaration shorter than this is a shrug, not a reason.
+const MIN_REASON: usize = 80;
+
+/// ONE DECLARED RAISE: the exact numbers, and why.
+#[derive(Debug, Clone)]
+pub struct Raise {
+    pub from: i64,
+    pub to: i64,
+    pub because: String,
+}
+
+/// The declared raises, keyed `<file>:<dotted path>`.
+///
+/// WHY A RAISE CAN BE DECLARED AT ALL. A ratchet with no route through it is a ratchet somebody
+/// edits the rule to get past, and there is one raise that is legitimate and cannot be avoided:
+/// the FIRST gating figure of a row that was not gating before. `legacy-reach:busbar_substrate`
+/// was `informational()` — PASS whatever it measured — and the tree moved underneath it while it
+/// said nothing. The commit that makes such a row gate cannot also be the commit that reports a
+/// regression, because nothing was ever held.
+///
+/// So the raise is DECLARED, and the declaration is not a waiver: it names the file, the exact
+/// dotted path and BOTH numbers, so it describes one edit and not a direction; it carries a reason
+/// long enough to be one; and it EXPIRES BY ITSELF, because the moment its commit lands the base
+/// carries the new number, the rise disappears, and an entry that describes no rise is refused as
+/// stale. It cannot be left behind, and it cannot cover the next raise of the same ceiling.
+pub fn raises(cx: &Ctx) -> BTreeMap<String, Raise> {
+    let mut out = BTreeMap::new();
+    let Ok(text) = cx.read(CEILINGS) else {
+        return out;
+    };
+    let Ok(doc) = crate::toml_doc::parse_str(&text) else {
+        return out;
+    };
+    // `Document::children` cannot answer this: the entry's key IS a dotted path, so a header like
+    // `[gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]` registers a
+    // table whose remainder contains dots, which `children` filters out as a deeper sub-table.
+    let prefix = "gate.ceiling_raises.";
+    for (key, t) in doc
+        .tables()
+        .into_iter()
+        .filter_map(|(p, t)| p.strip_prefix(prefix).map(|k| (k.to_string(), t)))
+    {
+        let (Some(from), Some(to)) = (t.int_of("from"), t.int_of("to")) else {
+            continue;
+        };
+        let file = t.str_of("file").unwrap_or(CEILINGS).to_string();
+        out.insert(
+            format!("{file}:{key}"),
+            Raise {
+                from,
+                to,
+                because: t.str_of("because").unwrap_or("").trim().to_string(),
+            },
+        );
+    }
+    out
+}
 
 /// Every integer in a TOML document, by dotted path. The reader this crate has refuses a document
 /// it does not understand, which is the behaviour wanted here too: a ceilings file that cannot be
