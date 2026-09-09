@@ -114,7 +114,10 @@ land_parse_args() {
 # tokens: plugins  fmt  gatefiles  tests  clippy  workspace-clippy  kind-isolation  gate  oracle
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 land_floor_plan() {
-  local t="$1" g="$2" f="$3" plan="plugins fmt gatefiles"
+  # $2 (the union's gate rows) is deliberately NOT read any more: it used to decide WHETHER the
+  # construction gate ran, and it is now only the row filter the `gate` leg narrows with. The
+  # argument stays in the signature because every caller passes it and the leg still wants it.
+  local t="$1" f="$3" plan="plugins fmt gatefiles"
   if [ -n "$t" ]; then plan="$plan tests clippy"; fi
   # NOTHING WAS NAMED. The old script skipped the test and clippy legs when `$tests` was empty and
   # went on to print GREEN. A batch makes that worse, not better: one empty line in a union of six
@@ -122,9 +125,77 @@ land_floor_plan() {
   # is the whole workspace — expensive, and exactly what "prove it or do not call it landed" costs.
   if [ -z "$t" ] && [ -z "$f" ]; then plan="$plan workspace-clippy"; fi
   plan="$plan kind-isolation"
-  [ -n "$g" ] && plan="$plan gate"
+  # THE CONSTRUCTION GATE IS FLOOR, NOT OPT-IN. This read `[ -n "$g" ] && plan="$plan gate"`, so the
+  # gate ran only when the caller passed `--gate` — and `--gate` is a caller-chosen regex over row
+  # names, so even then the caller chose how much of it to run. A landing touching only `crates/**`
+  # and naming no `--gate` had ZERO of the construction rows evaluated. The one gate a landing opts
+  # into is the one gate that never runs. It is unconditional now, exactly like kind-isolation, and
+  # the empty `--gate` means EVERY row (the leg substitutes `.`) rather than no rows.
+  plan="$plan gate"
   [ -n "$f" ] && plan="$plan oracle"
   echo "$plan"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE CONSTRUCTION GATE'S STANDING REDS.
+#
+# The construction gate is RED BY DESIGN on HEAD while the work it measures is in flight, so a
+# landing cannot simply require every row green. It can require that the red rows are EXACTLY these
+# and no others — which is the whole value: a NEW red is a landing that broke something, and it is
+# now indistinguishable from nothing.
+#
+# THIS LIST IS A RATCHET AND IT EXPIRES BY ITSELF. A name here that is no longer red is struck by
+# the leg as STALE — red, not tolerated — the same transaction `[gate.ceiling_raises]` forces in
+# qa/construction.toml. Otherwise the list would only ever grow, and a list that only grows is the
+# report-only posture it exists to replace. Keep it in step with `REPORT_ONLY`'s construction entry
+# in xtask/src/gates/mod.rs, which names the same rows for `gate --all`.
+#
+# `ceiling-rose` is deliberately NOT here: it is red only on the stale `[gate.ceiling_raises]`
+# 26 -> 47 entry, which is being struck separately, and naming it would outlive that fix.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE CEILING RATCHET'S VERDICT OVER A CONSTRUCTION --report LOG.  $1 = log path.
+#
+# A function rather than four lines inline, for the same reason land_floor_plan is one: it is the
+# answer to "can this leg report green having measured no ceiling", and the selftest can ask it
+# directly instead of staging a whole landing.
+#
+# THE EMISSION CHECK IS THE POINT. This leg used to be a single grep for
+# `^FAIL  (ceiling-rose|ceiling-slack)`, and a grep is satisfied by ABSENCE: rename the row, delete
+# the rule, or have it throw before it emits, and the grep matches nothing, the result is empty, and
+# the leg reports GREEN having compared no ceiling to anything. The `rows > 0` floor does not help —
+# it counts ANY rows, not these two. Measured: renaming `ROW_ROSE` to `ceiling-rose2` passed the old
+# leg with rows=112 while the gate itself printed `RED construction: ceiling-rose2: FAIL`.
+# A filter that matches nothing is red.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+land_ceiling_verdict() {
+  local clog="$1" missing="" bad
+  grep -qE '^(PASS|FAIL)  ceiling-rose '  "$clog" || missing="$missing ceiling-rose"
+  grep -qE '^(PASS|FAIL)  ceiling-slack ' "$clog" || missing="$missing ceiling-slack"
+  if [ -n "$missing" ]; then
+    echo "land.sh: RED — the construction gate emitted no row for:$missing — the ceiling ratchet was not measured at all (renamed or deleted rule?) (log: $clog)" >&2
+    return 1
+  fi
+  bad="$(grep -E '^FAIL  (ceiling-rose|ceiling-slack) ' "$clog" || true)"
+  if [ -n "$bad" ]; then
+    printf '%s\n' "$bad" >&2
+    echo "land.sh: RED — a ceiling rose, or a ceiling has slack under it (log: $clog)" >&2
+    return 1
+  fi
+  return 0
+}
+
+land_construction_standing_reds() {
+  cat <<'EOF'
+hold-escapes
+kernel-seal-impls
+one-pick-site
+one-pricing-site:fee-fields
+plane-no-money
+ports-only-tests:busbar-llm
+request-path-fn-size
+terminal-doors-in-audit-step
+EOF
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -523,9 +594,7 @@ EOF
         ( cd "$here" && cargo xtask gate construction --report ) >"$clog" 2>&1 || true
         local crows; crows="$(grep -cE '^(PASS|FAIL)  ' "$clog" || true)"
         [ "${crows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $clog)" >&2; return 1; }
-        local cbad; cbad="$(grep -E '^FAIL  (ceiling-rose|ceiling-slack) ' "$clog" || true)"
-        [ -z "$cbad" ] || { printf '%s\n' "$cbad" >&2
-               echo "land.sh: RED — a ceiling rose, or a ceiling has slack under it (log: $clog)" >&2; return 1; }
+        land_ceiling_verdict "$clog" || return 1
         PROVEN="$PROVEN $ndata gate data/source file(s): construction self-test + ceiling ratchets green;"
       fi ;;
 
@@ -585,16 +654,30 @@ EOF
       # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
       # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
       # at all (an unreadable ceilings file, an unbuildable runner) is red, not green.
+      # AN EMPTY --gate IS EVERY ROW, NOT NO ROWS. This leg is floor now (see land_floor_plan), so
+      # the caller who named nothing gets the whole gate measured rather than a silent skip.
+      local grx="${gate:-.}"
       local glog="$here/target/land-gate-$stamp.log"
       ( cd "$here" && cargo xtask gate construction --report ) >"$glog" 2>&1 || true
       local rows; rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
       [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; return 1; }
-      local named; named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
-      [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$gate' (renamed rule?)" >&2; return 1; }
-      local red; red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
-      [ -z "$red" ] || { echo "land.sh: RED — construction gate rows still red: $red" >&2; return 1; }
-      echo "land.sh: gate rows green: $gate"
-      PROVEN="$PROVEN construction rows ($gate);" ;;
+      local named; named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
+      [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$grx' (renamed rule?)" >&2; return 1; }
+      local red; red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
+      # THE STANDING REDS ARE SUBTRACTED, AND THE LIST IS ITSELF RATCHETED. Anything red that the
+      # list does not name is a NEW red — the landing broke it. Anything the list names that is no
+      # longer red is a STALE entry, and a stale entry is red too: that is what stops this list
+      # becoming a permanent, undated waiver that only ever grows.
+      local standing; standing="$(land_construction_standing_reds)"
+      local scoped_standing; scoped_standing="$(printf '%s\n' "$standing" | grep -E "$grx" || true)"
+      local newred; newred="$(comm -23 <(printf '%s\n' "$red" | grep -v '^$' | sort -u) <(printf '%s\n' "$standing" | grep -v '^$' | sort -u))"
+      [ -z "$newred" ] || { printf 'land.sh: new construction red(s): %s\n' "$(echo $newred)" >&2
+             echo "land.sh: RED — construction gate rows red that the standing list does not name (log: $glog)" >&2; return 1; }
+      local stale; stale="$(comm -13 <(printf '%s\n' "$red" | grep -v '^$' | sort -u) <(printf '%s\n' "$scoped_standing" | grep -v '^$' | sort -u))"
+      [ -z "$stale" ] || { printf 'land.sh: standing red(s) no longer red: %s\n' "$(echo $stale)" >&2
+             echo "land.sh: RED — strike them from land_construction_standing_reds (and from REPORT_ONLY in xtask/src/gates/mod.rs)" >&2; return 1; }
+      echo "land.sh: gate rows green apart from the standing reds: $grx"
+      PROVEN="$PROVEN construction rows ($grx, standing reds named);" ;;
 
     oracle)
       prove_oracle "$families" || return 1 ;;
@@ -932,11 +1015,39 @@ land_selftest() {
   _stgrep "plan(empty) has the gate-tree legs"         "$root/plan-empty.txt" 'gatefiles'
   _stgrep "plan(empty) has kind-isolation"             "$root/plan-empty.txt" 'kind-isolation'
   _stgrep "plan(empty) has the plugin cdylib build"    "$root/plan-empty.txt" 'plugins'
+  # THE CONSTRUCTION GATE IS FLOOR. It used to be added only when the caller passed `--gate`, so a
+  # landing that named nothing evaluated none of the 112 construction rows. This case is the one
+  # that goes red if that `[ -n "$g" ]` ever comes back.
+  _stgrep "plan(empty) has the construction gate"      "$root/plan-empty.txt" '(^| )gate( |$)'
   land_floor_plan "busbar" "loc-ceilings" "^x" >"$root/plan-full.txt"
   _stgrep "plan(named) has tests/clippy/gate/oracle"   "$root/plan-full.txt" 'tests clippy'
   _stgrep "plan(named) has the gate row leg"           "$root/plan-full.txt" '(^| )gate( |$)'
   _stgrep "plan(named) has the oracle leg"             "$root/plan-full.txt" 'oracle'
   _stno   "plan(named) does NOT fall back to workspace" "$root/plan-full.txt" 'workspace-clippy'
+
+  echo "land.sh selftest: the ceiling ratchet's verdict (a filter that matches nothing is red)"
+  # Both rows present and passing: the only shape that is green.
+  printf 'PASS  ceiling-rose   x\nPASS  ceiling-slack  x\nPASS  other  x\n' >"$root/cl-ok.txt"
+  _st "ceilings: both rows PASS is green"        0 land_ceiling_verdict "$root/cl-ok.txt"
+  # A row that ran and failed. Must be red — this part always worked.
+  printf 'FAIL  ceiling-rose   x\nPASS  ceiling-slack  x\n' >"$root/cl-fail.txt"
+  _st "ceilings: a risen ceiling is red"         1 land_ceiling_verdict "$root/cl-fail.txt"
+  # THE MISS. The rule was renamed, so neither the old FAIL grep nor the rows>0 floor sees anything
+  # and the leg used to report green. 112 other rows are not a substitute for these two.
+  printf 'FAIL  ceiling-rose2  x\nPASS  ceiling-slack  x\nPASS  other  x\n' >"$root/cl-renamed.txt"
+  _st "ceilings: a RENAMED rose row is red"      1 land_ceiling_verdict "$root/cl-renamed.txt"
+  _stgrep "ceilings: the rename names the row"   "$ST_OUT" 'emitted no row for: ceiling-rose'
+  # The slack row deleted outright, with rose still present and green.
+  printf 'PASS  ceiling-rose   x\nPASS  other  x\n' >"$root/cl-noslack.txt"
+  _st "ceilings: a DELETED slack row is red"     1 land_ceiling_verdict "$root/cl-noslack.txt"
+  _stgrep "ceilings: the deletion names the row" "$ST_OUT" 'emitted no row for: ceiling-slack'
+  # A gate that produced nothing at all.
+  : >"$root/cl-empty.txt"
+  _st "ceilings: an empty report is red"         1 land_ceiling_verdict "$root/cl-empty.txt"
+
+  echo "land.sh selftest: the construction gate's standing reds"
+  _stgrep "standing reds: the list is not empty" <(land_construction_standing_reds) '[^[:space:]]'
+  _stno   "standing reds: ceiling-rose is NOT excused" <(land_construction_standing_reds) '^ceiling-rose$'
 
   echo "land.sh selftest: the gate-file patterns (a ceiling edit is not an unproven landing)"
   land_gate_data "qa/construction.toml" >"$root/gd-ceiling.txt"
