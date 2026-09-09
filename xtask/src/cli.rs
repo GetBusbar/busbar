@@ -192,6 +192,13 @@ fn gate(args: &[String]) -> i32 {
             g = g.require_version(v);
         }
         Box::new(g)
+    } else if cx.env().write && reg.name == "kind-isolation" {
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD, and refuses wholesale if any
+        // would rise. It is a separate CONSTRUCTION rather than a flag the gate reads out of the
+        // context, because `owed` is what the reconciliation is written against and this run emits
+        // one row: the re-pin's own. Built HERE rather than in the write branch below, so
+        // `--write --selftest` proves the arm it is about to run rather than a different one.
+        Box::new(crate::gates::kind_isolation::KindIsolationGate::write())
     } else {
         (reg.build)()
     };
@@ -203,6 +210,15 @@ fn gate(args: &[String]) -> i32 {
     // a check that repairs what it is checking has not checked anything, and a caller that wanted
     // both would be asking a gate to make itself pass.
     if cx.env().write {
+        // `kind-isolation --write` RE-PINS ITS EXACT COUNTS DOWNWARD, and refuses wholesale if any
+        // would rise. It is a separate CONSTRUCTION rather than a flag the gate reads out of the
+        // context, because `owed` is what the reconciliation is written against and this run emits
+        // one row: the re-pin's own.
+        if reg.name == "kind-isolation" {
+            let verdict = gates::execute(gate.as_ref(), &cx);
+            gates::print_verdict(reg.name, &verdict);
+            return i32::from(verdict.red);
+        }
         if reg.name != "design-bindings" {
             eprintln!("xtask gate {name}: this gate has nothing to write");
             return 2;
