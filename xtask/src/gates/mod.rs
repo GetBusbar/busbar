@@ -51,6 +51,7 @@ pub mod workspace_deps;
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::Duration;
 
 use crate::ctx::{Ctx, Overlay};
 use crate::ledger::{Reconcile, Row, Verdict};
@@ -403,6 +404,162 @@ pub fn execute(gate: &dyn Gate, cx: &Ctx) -> Verdict {
     Reconcile::new(gate.owed())
         .allow_skip(gate.skip_allow())
         .verdict(verdict.rows)
+}
+
+// ---------------------------------------------------------------------------------------------
+// the wall-clock ceiling
+// ---------------------------------------------------------------------------------------------
+
+/// How long any one gate may take before the runner stops believing it.
+///
+/// FIVE MINUTES IS A CEILING, NOT A BUDGET. The slowest converted gate reads the whole tree and
+/// finishes in seconds; a gate that has been running for five minutes is not slow, it is stuck,
+/// and every minute after that is a minute the run spends proving nothing.
+pub const DEFAULT_GATE_CEILING: Duration = Duration::from_secs(300);
+
+/// The ceiling for one gate: the default, a global override, then a per-gate override. `None`
+/// means the ceiling is off, which `0` asks for.
+///
+/// It is read from the ENVIRONMENT rather than compiled in per gate, because the box that needs a
+/// bigger number is never the box the number was written on — a cold CI runner building from
+/// scratch is not a warm laptop. `XTASK_GATE_CEILING_SECS` moves them all;
+/// `XTASK_GATE_CEILING_SECS_<GATE>` (the gate's name, uppercased, `-` becoming `_`) moves one.
+///
+/// `env` is a parameter and not a direct `std::env::var` call so the precedence can be PROVEN
+/// without a test mutating the process environment out from under its neighbours.
+pub fn ceiling_for(name: &str, env: impl Fn(&str) -> Option<String>) -> Option<Duration> {
+    let key = format!(
+        "XTASK_GATE_CEILING_SECS_{}",
+        name.to_uppercase().replace(['-', '.', '/'], "_")
+    );
+    let raw = env(&key).or_else(|| env("XTASK_GATE_CEILING_SECS"));
+    match raw {
+        None => Some(DEFAULT_GATE_CEILING),
+        // An unreadable override is the DEFAULT, never "no ceiling": a typo in an environment
+        // variable must not be the thing that lets a hung gate hang forever again.
+        Some(s) => match s.trim().parse::<u64>() {
+            Ok(0) => None,
+            Ok(n) => Some(Duration::from_secs(n)),
+            Err(_) => Some(DEFAULT_GATE_CEILING),
+        },
+    }
+}
+
+/// The ceiling as the runner reads it, from the real process environment.
+pub fn ceiling_from_env(name: &str) -> Option<Duration> {
+    ceiling_for(name, |k| std::env::var(k).ok())
+}
+
+/// [`execute`], UNDER A WALL-CLOCK CEILING. A gate that exceeds it is RED, with `hung` in every
+/// owed row, and the run CONTINUES.
+///
+/// WHY THE RUNNER OWNS THIS. `cargo xtask gate --all` once sat for 43 minutes at 4% CPU: a gate
+/// had deadlocked against a `git cat-file --batch` child, and because the runner simply called the
+/// gate and waited, the whole gate set stopped at that row — not red, not green, not printed.
+/// SILENTLY PENDING IS THE WORST VERDICT A GATE RUNNER CAN GIVE, because it is indistinguishable
+/// from slow work and it is the one verdict nobody can act on. The particular deadlock is fixed in
+/// [`crate::gitp::ask`]; this is the guard that means the NEXT one costs a red row and five
+/// minutes instead of a night.
+///
+/// The gate is built and run on its own thread, so the ceiling is a real wall clock and not a
+/// cooperative check the hung gate would have to reach in order to notice. A gate that blows the
+/// ceiling is LEAKED: it is wedged in a syscall, there is nothing to cancel, and a `join` here
+/// would reintroduce exactly the hang this exists to end. It dies with the process.
+pub fn execute_within(
+    name: &str,
+    build: fn() -> Box<dyn Gate>,
+    cx: &Ctx,
+    ceiling: Duration,
+) -> Verdict {
+    let owed = build().owed();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mine = cx.clone();
+    std::thread::spawn(move || {
+        let gate = build();
+        let _ = tx.send(execute(gate.as_ref(), &mine));
+    });
+    match rx.recv_timeout(ceiling) {
+        Ok(v) => v,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => hung(name, &owed, ceiling),
+        // The sender is gone without a verdict: the gate PANICKED. That is red too, and for the
+        // same reason — nobody may read a missing verdict as a passing one.
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Verdict::of(
+            owed.iter()
+                .map(|id| {
+                    Row::fail(
+                        id.clone(),
+                        format!("{name} panicked"),
+                        "the gate thread died without a verdict".to_string(),
+                    )
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// Every owed row, RED, saying it hung. Not one summary row: a caller grepping the ledger for a
+/// row id must find that row failing rather than find nothing at all.
+fn hung(name: &str, owed: &[String], ceiling: Duration) -> Verdict {
+    let rows = owed
+        .iter()
+        .map(|id| {
+            Row::fail(
+                id.clone(),
+                format!("{name} hung"),
+                format!(
+                    "hung: the gate did not finish within {}s (XTASK_GATE_CEILING_SECS[_{}] \
+                     raises it, 0 disables it)",
+                    ceiling.as_secs(),
+                    name.to_uppercase().replace(['-', '.', '/'], "_")
+                ),
+            )
+        })
+        .collect();
+    Verdict::of(rows)
+}
+
+/// The ceiling for the paths that do not run the gate on a thread of their own — `gate <name>`
+/// and `gate <name> --selftest`, where the gate is built with flags a `fn()` pointer cannot carry.
+///
+/// It cannot return a verdict, because the thread that would print one is the wedged one. So it
+/// PRINTS the red rows and takes the process down with a non-zero status: a hung single-gate run
+/// ends in a refusal a human and a CI step both understand, rather than in a job timeout that
+/// names nothing. Dropping it disarms it.
+pub struct Watchdog {
+    disarm: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Watchdog {
+    pub fn arm(name: &str, owed: Vec<String>, ceiling: Option<Duration>) -> Watchdog {
+        let disarm = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(ceiling) = ceiling {
+            let flag = std::sync::Arc::clone(&disarm);
+            let name = name.to_string();
+            std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + ceiling;
+                while std::time::Instant::now() < deadline {
+                    if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let verdict = hung(&name, &owed, ceiling);
+                print_verdict(&name, &verdict);
+                eprintln!("cargo xtask gate {name}: hung -- killed at its wall-clock ceiling");
+                std::process::exit(1);
+            });
+        }
+        Watchdog { disarm }
+    }
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.disarm.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// The same, with the gate's own skip allowlist REFUSED. `cargo xtask gate <name> --strict` is
