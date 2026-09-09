@@ -7,7 +7,7 @@
 # and the oracle families it can move. Stops at the first red and leaves the picks in place so the
 # integrator can look; never rewrites history, never pushes.
 #
-#   scripts/land.sh [--tests "pkg pkg"] [--families 'regex'] [--gate 'rule|rule'] <hash>...
+#   scripts/land.sh [--tests "pkg pkg"] [--features "f,f"] [--families 'regex'] [--gate 'rule|rule'] <hash>...
 #   scripts/land.sh --batch <file>          # N landing lines, proven ONCE, bisected on red
 #   scripts/land.sh --selftest              # prove this script's own refusals
 #
@@ -78,10 +78,10 @@ LAND_ORACLE_DIFF="${LAND_ORACLE_DIFF:-merged}"
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # ARGUMENT PARSING, as a function so a batch line is parsed by the same code as a command line.
-# Sets P_tests P_families P_gate P_prove P_hashes.
+# Sets P_tests P_features P_families P_gate P_prove P_hashes.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 land_parse_args() {
-  P_tests=""; P_families=""; P_gate=""; P_prove=0; P_hashes=""; P_batch=""; P_selftest=0
+  P_tests=""; P_features=""; P_families=""; P_gate=""; P_prove=0; P_hashes=""; P_batch=""; P_selftest=0
   P_remote="${P_remote:-}"
   # --to is a POSTURE for the whole run, the same way --remote is a HOST for the whole run: a batch
   # LINE cannot pick its own destination any more than it can pick its own box, because the tree is
@@ -92,6 +92,11 @@ land_parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --tests) P_tests="$2"; shift 2 ;;
+      # --features: cargo features the tests and clippy legs compile with. A cell behind a
+      # feature that the proof never enables is a cell the proof never ran: the root mount cells
+      # (root-a2a-serve, root-mcp-serve) were 60 tests that `cargo test -p busbar` never compiled.
+      # Comma-separated; a batch unions them (a feature set is additive).
+      --features) P_features="$2"; shift 2 ;;
       --families) P_families="$2"; shift 2 ;;
       --gate) P_gate="$2"; shift 2 ;;
       --batch) P_batch="$2"; shift 2 ;;
@@ -599,7 +604,7 @@ EOF
 # or "put it back and split" (a batch).
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 prove_tree() {
-  local base="$1" tests="$2" gate="$3" families="$4" label="$5"
+  local base="$1" tests="$2" gate="$3" families="$4" label="$5" features="${6:-}"
   PROVEN=""
 
   # THE SELFTEST'S PROVER. It is a function of the TREE, not of the line number — a poisoned file
@@ -751,6 +756,7 @@ EOF
 
     tests)
       local args=""; for p in $tests; do args="$args -p $p"; done
+      [ -n "$features" ] && args="$args --features $features"
       echo "land.sh: cargo test $args"
       # cargo's own exit status is the verdict; the grep only names the red lines. A pipeline here
       # would let pipefail turn a failing cargo into a skipped check.
@@ -764,6 +770,7 @@ EOF
 
     clippy)
       local args=""; for p in $tests; do args="$args -p $p"; done
+      [ -n "$features" ] && args="$args --features $features"
       local log="$here/target/land-$stamp.log"
       # shellcheck disable=SC2086
       if ! (cd "$here" && cargo clippy $args --all-targets -- -D warnings >"$log" 2>&1); then
@@ -1032,11 +1039,12 @@ land_batch_range() {  # $@ = line indices; the tree is at their base on entry
   [ "$na" -gt 0 ] || return 0   # every line in this range conflicted; nothing to prove
 
   # THE UNION. Packages are a set; gate rows and family regexes are alternations.
-  local u_tests="" u_gate="" u_fams="" lbl=""
+  local u_tests="" u_feats="" u_gate="" u_fams="" lbl=""
   i=0
   while [ "$i" -lt "$na" ]; do
     local j="${applied[$i]}"
     u_tests="$u_tests ${BL_tests[$j]}"
+    [ -n "${BL_feats[$j]}" ] && u_feats="$u_feats,${BL_feats[$j]}"
     [ -n "${BL_gate[$j]}" ] && u_gate="$u_gate|${BL_gate[$j]}"
     [ -n "${BL_fams[$j]}" ] && u_fams="$u_fams|(${BL_fams[$j]})"
     lbl="$lbl,$((j + 1))"
@@ -1044,10 +1052,11 @@ land_batch_range() {  # $@ = line indices; the tree is at their base on entry
   done
   # shellcheck disable=SC2086
   u_tests="$(printf '%s\n' $u_tests | sed '/^$/d' | sort -u | tr '\n' ' ')"
+  u_feats="$(printf '%s\n' "$u_feats" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
   u_gate="${u_gate#|}"; u_fams="${u_fams#|}"; lbl="lines ${lbl#,}"
 
   echo "land.sh: === proving $lbl at $(git -C "$here" rev-parse --short HEAD)"
-  if prove_tree "$base" "$u_tests" "$u_gate" "$u_fams" "$lbl"; then
+  if prove_tree "$base" "$u_tests" "$u_gate" "$u_fams" "$lbl" "$u_feats"; then
     i=0; while [ "$i" -lt "$na" ]; do BL_out[${applied[$i]}]=GREEN; i=$((i + 1)); done
     echo "land.sh: === GREEN $lbl — proven by:$PROVEN"
     return 0
@@ -1077,7 +1086,7 @@ land_run_batch() {  # $1 = batch file
     case "$line" in ''|'#'*) continue ;; esac
     BL_text[$n]="$line"
     eval "land_parse_args $line"
-    BL_tests[$n]="$P_tests"; BL_fams[$n]="$P_families"; BL_gate[$n]="$P_gate"
+    BL_tests[$n]="$P_tests"; BL_feats[$n]="$P_features"; BL_fams[$n]="$P_families"; BL_gate[$n]="$P_gate"
     BL_hashes[$n]="$P_hashes"; BL_prove[$n]="$P_prove"; BL_out[$n]=PENDING
     if [ -z "$P_hashes" ] && [ "$P_prove" != 1 ]; then
       echo "land.sh: --batch line $((n + 1)) has no hashes and no --prove: $line" >&2; exit 2
@@ -1487,7 +1496,7 @@ if [ -z "$P_tests" ] && [ $# -gt 0 ]; then
   P_tests="$(git -C "$here" diff --name-only "$base" HEAD 2>/dev/null | grep -o '^crates/[^/]*' | sort -u \
     | while read -r d; do grep -m1 '^name = ' "$here/$d/Cargo.toml" 2>/dev/null | sed 's/name = "\(.*\)"/\1/'; done | tr '\n' ' ')"
 fi
-prove_tree "$base" "$P_tests" "$P_gate" "$P_families" "landing" || exit 1
+prove_tree "$base" "$P_tests" "$P_gate" "$P_families" "landing" "$P_features" || exit 1
 # ── THE GREEN LINE NAMES ITS SCOPE ────────────────────────────────────────────────────────────────
 # It used to read "GREEN — landed N commit(s)" whatever had run, including nothing. A verdict that
 # does not say what it measured is read as having measured everything.
