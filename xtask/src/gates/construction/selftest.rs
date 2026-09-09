@@ -557,25 +557,39 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
     // A DECLARATION THAT DOES NOT DESCRIBE THIS RAISE EXCUSES NOTHING. The committed entry says
     // 26 -> 47; rewriting its `to` leaves the raise in the file undeclared, and a declaration that
     // named a direction rather than an edit would be a permanent hole with a reason field.
-    if let Some(mismatched) = ceilings::set_int(
-        &text,
-        "gate.ceiling_raises.\"rules.legacy-reach.prefixes.busbar_substrate.figure\"",
-        "to",
-        30,
-    ) {
+    //
+    // THE PLANT IS THIS CASE'S OWN, NEVER THE COMMITTED FILE'S. It used to rewrite whichever
+    // `[gate.ceiling_raises]` entry the tree happened to carry — and that made the case depend on a
+    // table whose entire design is that it EMPTIES ITSELF. A declaration expires the commit after
+    // the one that needed it; the commit that struck the last standing entry turned this case into
+    // an infra failure, which is a self-test held hostage by the mechanism it is proving. So both
+    // halves are planted: the BASE's copy of one real ceiling is lowered, which makes the committed
+    // file a genuine raise, and a declaration is appended whose numbers describe a different edit.
+    // The refusal is then proven against a `[gate.ceiling_raises]` table that is empty in the tree,
+    // which is the state it is supposed to spend most of its life in.
+    if let Some(base_lowered) = ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 0) {
         let mut ov = on(base);
-        ov.set(CEILINGS, mismatched);
+        ov.set_command(format!("git-show:{based}:{CEILINGS}"), base_lowered);
+        ov.set(
+            CEILINGS,
+            format!(
+                "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 999\n\
+                 to = 998\nbecause = \"planted by the self-test: a declaration whose numbers are \
+                 not the raise it sits beside, so the raise is still undeclared and still \
+                 refused\"\n"
+            ),
+        );
         r.push(prove_rows_red(
             cx,
             gate,
             "a declared raise whose numbers are not this raise excuses nothing",
             &[ceilings::ROW_ROSE],
             ov,
-            &["declared as 26->30"],
+            &["declared as 999->998"],
         ));
     } else {
         r.note_infra_failure(
-            "the committed ceiling-raise declaration could not be rewritten, so the arm that \
+            "[rules.legacy-reach] carries no `ceiling` to lower at the base, so the arm that \
              refuses a declaration describing a different edit is unproven",
         );
     }
