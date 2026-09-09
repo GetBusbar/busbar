@@ -52,6 +52,14 @@ busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
+# THE AUDIT UNIT. `export` is the append-only sink writer — what happens to a file the
+# request-log-file exporter has already written. Append-never-truncate, rollover by rename, a
+# retention-bounded archive series: those are claims about recorded history, so they live with the
+# sealed chain rather than beside core's telemetry fan-out. Core keeps the sink's configuration, its
+# admission cap and its counters, and calls the unit for the bytes. The unit depends only on
+# busbar-caps/busbar-contract/busbar-api/busbar-substrate(-values)/sha2/serde/indexmap/tracing and
+# never back on core, so this edge cannot cycle.
+busbar-unit-audit = { path = "../busbar-unit-audit" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 # THE SCOPE MODEL, named once. `Scope`, `Grants` and the method+path authorization matrix used to
