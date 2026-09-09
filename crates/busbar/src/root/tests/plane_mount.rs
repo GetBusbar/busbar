@@ -144,3 +144,103 @@ fn the_two_credential_doors_are_two_statuses() {
         );
     }
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   WHAT THE SEAM CARRIES, AND WHAT IT MAY NOT FLATTEN
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Something a surface attaches to its own response, of a type this file invents for the cell.
+///
+/// A response extension is how everything in this tree that has to say something ABOUT an answer
+/// says it — the thing that reports what a body spent, the thing that has to run when the last byte
+/// leaves. None of that is nameable here and none of it needs to be: what the cell asserts is that
+/// an extension the surface put on SURVIVES, whatever it happens to be, so a marker of a private
+/// type is a stronger instrument than any real one. If this reaches the far side, so does anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SurfaceMark(&'static str);
+
+/// The chunks one surface writes, each a frame of its own.
+///
+/// Three, and of different lengths, so "the boundaries survived" cannot be satisfied by accident: a
+/// seam that buffered and re-emitted would hand back one frame carrying the same bytes, which is not
+/// the same answer to a client reading a stream.
+const CHUNKS: [&[u8]; 3] = [b"one", b"two-two", b"three-three-three"];
+
+/// A surface that answers with a chunked body and an extension of its own.
+fn a_chunking_surface() -> axum::Router {
+    axum::Router::new().fallback(axum::routing::any(|| async {
+        let frames = futures::stream::iter(
+            CHUNKS.map(|chunk| Ok::<_, std::io::Error>(bytes::Bytes::from_static(chunk))),
+        );
+        let mut response = axum::http::Response::new(axum::body::Body::from_stream(frames));
+        response
+            .extensions_mut()
+            .insert(SurfaceMark("the surface's own"));
+        response
+    }))
+}
+
+/// Every data frame of one body, in order, read one at a time rather than collected.
+///
+/// `to_bytes` would answer the question the cell is asking — it flattens, which is the very thing
+/// being measured — so the body is pulled frame by frame instead.
+async fn frames_of(body: axum::body::Body) -> Vec<Vec<u8>> {
+    use http_body_util::BodyExt;
+
+    let mut body = body;
+    let mut frames = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.expect("the probe's own body does not fail mid-stream");
+        if let Ok(data) = frame.into_data() {
+            frames.push(data.to_vec());
+        }
+    }
+    frames
+}
+
+/// **A chunked body and its response extension cross the seam intact.**
+///
+/// RED FIRST: the seam handed back a status, a header list and a `Vec<u8>`. Neither half of this
+/// cell could be written against that shape — a three-field struct has nowhere to put an extension,
+/// so `reply.extensions()` did not compile, and the body had already been read to its end inside the
+/// mount, so there were no boundaries left to ask about. Both assertions were unreachable rather
+/// than merely failing, which is the strongest red a shape change gets.
+///
+/// The mount CHOOSES THE PATH AND NEVER THE BYTES, and this is that sentence made checkable at the
+/// one place it was not true. A plane whose answer is a run of events was handed back as one buffer;
+/// a plane that attached something to its response to be read as the body drained found it gone.
+/// Neither was a decision anyone made — both were consequences of a reply channel typed as three
+/// fields.
+///
+/// Nothing here names a protocol. The surface is an `axum::Router`, the marker is a type this file
+/// declared, and the operation class is a word. Every plane that mounts rides this channel, and a
+/// cell that named one of them would be measuring that plane rather than the seam.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunked_body_and_its_extension_cross_the_seam_intact() {
+    let errands = drive(a_chunking_surface(), &tokio::runtime::Handle::current());
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/anything")
+        .body(axum::body::Body::empty())
+        .expect("the probe always builds");
+    let dispatch = RequestDispatch::new(errands, request);
+
+    // Driven from a BLOCKING context, because that is where the loop that drives it runs: the seam's
+    // whole reason for existing is that a synchronous walk cannot await.
+    let reply = tokio::task::spawn_blocking(move || {
+        dispatch.execute(busbar_contract::ids::OpClassId::new("probe"))
+    })
+    .await
+    .expect("the blocking probe ran");
+
+    assert_eq!(
+        reply.extensions().get::<SurfaceMark>(),
+        Some(&SurfaceMark("the surface's own")),
+        "the extension the surface attached reached the far side of the seam"
+    );
+    assert_eq!(
+        frames_of(reply.into_body()).await,
+        CHUNKS.map(<[u8]>::to_vec),
+        "and so did every chunk boundary it chose, rather than one buffer with the same bytes"
+    );
+}
