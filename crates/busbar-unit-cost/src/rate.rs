@@ -320,11 +320,20 @@ impl RateCard {
             return RateCard::absent_in(currency, per_request_fee);
         };
         let entries = lanes.into_iter().flat_map(|(lane, rates)| {
-            rates
+            // The reserved four first, in their canonical order, then the open classes in the
+            // map's own (sorted) order. Two passes over one lane rather than one over a merged
+            // list, because the two halves are not the same kind of thing: the first is a fixed
+            // shape read positionally, the second is operator data.
+            let tiers = rates
                 .tiers
                 .by_class()
                 .into_iter()
-                .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
+                .map(move |(class, micro)| (LaneClass::new(lane, class), micro));
+            let open = rates
+                .classes
+                .into_iter()
+                .map(move |(class, micro)| (LaneClass::new(lane, class), micro));
+            tiers.chain(open)
         });
         RateCard::from_micro_rates_in(currency, entries, per_request_fee)
     }

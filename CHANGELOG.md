@@ -125,6 +125,21 @@ named next.
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **A rate card can price any class a plane declares, not only the four token tiers.** A rate-card
+  entry gains an optional `rates:` map of per-lane rows keyed by the class's config/wire spelling —
+  `rates: { tool_calls: 250.0, bytes: 0.002, audio_seconds_in: 60.0 }` — priced in the same
+  MICRO-units per unit of quantity the four token tiers use. Before this there was no configuration
+  an operator could write to price `bytes` off the A2A plane or `tool_calls` off MCP: the grammar
+  had four `_utok` fields and nothing else, which made `require_priced_classes: true` unsatisfiable
+  on any build carrying such a plane. The four token tiers keep their 1.5.5 spelling, their
+  defaults and their meaning exactly, and `rates:` is a NAMED key rather than a flattened one
+  precisely so that `deny_unknown_fields` keeps biting: a mistyped `inpt_utok:` is still a loud boot
+  refusal rather than a junk class silently priced at the number beside it. An entry that omits
+  `rates:` derives the same rows, in the same order, at the same integers it always did. A row may
+  not respell a class that is already priced — the four token classes, or the kernel-reserved
+  `requests` class priced by `per_request_fee:` — because a class priced twice is two answers to one
+  question; boot and `--validate` refuse, naming the field that already prices it. See
+  [`rate_card`](docs/configuration.md#rate_card-and-per_request_fee).
 - **A metered class with no price can be made a boot refusal, by asking for it.** A new top-level
   `require_priced_classes: true` widens rate-card completeness one level down: every meter class an
   enabled plane REPORTS must have a rate row on every lane it is served on, or boot and `--validate`

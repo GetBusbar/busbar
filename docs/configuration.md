@@ -627,12 +627,16 @@ with no re-billing and no data migration.
 rate_card:
   sonnet-anthropic: { input_utok: 3.0, output_utok: 15.0, cache_read_utok: 0.3, cache_write_utok: 3.75 }
   sonnet-bedrock:   { input_utok: 2.8, output_utok: 14.0 }
+  # A lane may also price any OTHER class a plane declares, under `rates:`.
+  gateway-mcp:
+    rates: { tool_calls: 250.0, bytes: 0.002 }
 per_request_fee: 0
 ```
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `rate_card` | map | absent (token pricing = 0) | Per-model, per-tier token rates in MICRO-units (1e-6 abstract cost unit) per token; an omitted tier prices 0. ALL-OR-NOTHING: absent = every model's tokens price at 0 (budgets count only the flat fee); present = AUTHORITATIVE and COMPLETE: every configured model must have an entry or boot/`--validate` fail with a paste-ready stub of exactly the missing models. With a card present, a request for an arbitrary passthrough model with no rate is rejected pre-forward. |
+| `rate_card.<model>.rates` | map | `{}` | **1.6.0.** Per-lane rows for ANY class a plane declares, keyed by the class's config/wire spelling and priced in the same MICRO-units per unit of quantity the four token tiers use: `rates: { tool_calls: 250.0, bytes: 0.002, audio_seconds_in: 60.0 }`. The four token tiers keep their own `_utok` fields and are unaffected; omitting `rates:` is exactly the pre-1.6.0 entry. A row may **not** respell a class that is already priced elsewhere — the four token classes (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`, priced by the `_utok` fields) and the kernel-reserved `requests` class (priced by `per_request_fee`) — because a class priced in two places is two answers to one question; boot and `--validate` REFUSE, naming the field that already prices it. Rows are validated finite and >= 0 like the tiers. This is what makes `require_priced_classes: true` satisfiable on a build carrying a plane whose classes no token tier can name. |
 | `per_request_fee` | integer | `0` | Flat charge per request in abstract cents, charged at admission into every chain bucket's request count (refunded on a non-2xx outcome). |
 | `require_priced_classes` | boolean | `false` | OPT-IN, and a config that omits it boots exactly as it did before the key existed. `true` widens the completeness rule one level down: with a `rate_card` present, every meter class an enabled plane REPORTS must have a rate row on every lane it is served on, or boot and `--validate` REFUSE, naming every `(plane, lane, class)` they refused for. **Free is an explicit zero row** — stating that a class costs nothing satisfies the rule; what it refuses is silence, because a class that is metered with no price is billed at nothing and no invoice says so. A deployment with no `rate_card` has not opted into pricing and is never refused. |
 

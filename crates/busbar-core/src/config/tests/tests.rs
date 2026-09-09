@@ -2557,6 +2557,73 @@ fn test_removed_top_level_blocks_rejected() {
     }
 }
 
+/// RULING 1: A RATE ENTRY PRICES PER-LANE ROWS FOR ANY DECLARED CLASS, under `rates:`.
+///
+/// The four token tiers keep their 1.5.5 spelling exactly and the per-class rows arrive beside
+/// them under a NAMED key — not flattened, so `deny_unknown_fields` keeps doing its job.
+#[test]
+fn a_rate_entry_carries_per_class_rows_beside_the_four_tiers() {
+    let yaml = r#"
+providers: {}
+models: {}
+rate_card:
+  claude:
+    input_utok: 3.0
+    output_utok: 15.0
+    rates:
+      tool_calls: 250.0
+      bytes: 0.002
+      audio_seconds_in: 60.0
+"#;
+    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("per-class rows parse");
+    let claude = deploy
+        .rate_card
+        .as_ref()
+        .expect("rate_card")
+        .get("claude")
+        .expect("claude rate entry");
+    // The tiers are untouched.
+    assert_eq!(claude.input_utok, 3.0);
+    assert_eq!(claude.output_utok, 15.0);
+    // And the classes no tier can name are here, at the operator's figures.
+    assert_eq!(claude.rates.get("tool_calls"), Some(&250.0));
+    assert_eq!(claude.rates.get("bytes"), Some(&0.002));
+    assert_eq!(claude.rates.get("audio_seconds_in"), Some(&60.0));
+}
+
+/// THE KEY IS ADDITIVE: a 1.5.5 entry that never writes `rates:` parses to exactly what it parsed
+/// to before — the same four tiers, and an EMPTY class map that derives no rows at all.
+#[test]
+fn an_entry_that_omits_rates_is_the_previous_releases_entry() {
+    let yaml = "providers: {}\nmodels: {}\nrate_card:\n  claude:\n    input_utok: 3.0\n";
+    let deploy: DeployCfg = serde_yaml::from_str(yaml).expect("a 1.5.5 entry parses");
+    let claude = deploy
+        .rate_card
+        .as_ref()
+        .expect("rate_card")
+        .get("claude")
+        .expect("claude rate entry");
+    assert_eq!(claude.input_utok, 3.0);
+    assert!(
+        claude.rates.is_empty(),
+        "an omitted `rates:` is the empty map, which derives no rows"
+    );
+}
+
+/// AND THE DENY STILL BITES. This is the reason `rates:` is a named field rather than a flattened
+/// one: under `#[serde(flatten)]` a mistyped tier would be absorbed as a class row and silently
+/// priced, turning a boot refusal into a bill. It must still be a parse failure.
+#[test]
+fn a_mistyped_tier_is_still_refused_rather_than_read_as_a_class() {
+    let yaml = "providers: {}\nmodels: {}\nrate_card:\n  claude:\n    inpt_utok: 3.0\n";
+    let err = serde_yaml::from_str::<DeployCfg>(yaml)
+        .expect_err("an unknown field on the rate entry must refuse");
+    assert!(
+        err.to_string().contains("inpt_utok"),
+        "the refusal names the key that was not understood: {err}"
+    );
+}
+
 /// The NEW top-level blocks parse: `store:` `{module, settings}` (settings opaque), `rate_card:`
 /// per config-model entries, `per_request_fee:`, `groups:`, and `advanced:`; and `per_request_fee`
 /// defaults to 0 (was price_per_request_cents default 1).

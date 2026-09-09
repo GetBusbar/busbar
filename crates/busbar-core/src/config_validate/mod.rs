@@ -1460,6 +1460,24 @@ pub(crate) fn unpriced_class_refusal(
     busbar_unit_cost::refusal(&unpriced_cells(&table, &declared, &lane_names, CURRENCY))
 }
 
+/// The other place this class is already priced, if a `rates:` row may not name it.
+///
+/// The four token tiers are spelled on the rate entry itself, in the `_utok` grammar; the
+/// kernel-reserved `requests` class is spelled beside it, as the flat `per_request_fee:`. Both
+/// spellings are the config/wire class name the derived row carries, which is why the comparison is
+/// against those names and not against the `_utok` field names: an operator writing `rates:` is
+/// writing CLASS names, and `tokens_input` is the class the `input_utok` field prices.
+fn reserved_class_spelling(class: &str) -> Option<&'static str> {
+    match class {
+        busbar_unit_cost::CLASS_TOKENS_INPUT => Some("input_utok"),
+        busbar_unit_cost::CLASS_TOKENS_OUTPUT => Some("output_utok"),
+        busbar_unit_cost::CLASS_TOKENS_CACHE_READ => Some("cache_read_utok"),
+        busbar_unit_cost::CLASS_TOKENS_CACHE_WRITE => Some("cache_write_utok"),
+        busbar_unit_cost::CLASS_REQUESTS => Some("per_request_fee"),
+        _ => None,
+    }
+}
+
 fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     if let Some(card) = &cfg.rate_card {
         // Well-formed rates: every tier finite and >= 0 (names the exact config path).
@@ -1475,6 +1493,28 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     errors.push(format!(
                         "rate_card['{model}'].{tier} must be a finite, non-negative \
                          number of micro-units per token (got {v})"
+                    ));
+                }
+            }
+            // THE PER-CLASS ROWS, held to the SAME well-formedness rule as the tiers, and to one
+            // more: a row may not respell a class that already has a price of its own. The four
+            // token tiers have their `_utok` fields on this very entry and the kernel-reserved
+            // `requests` class has `per_request_fee:` beside it; a `rates:` row naming either would
+            // be a second price for one cell, and the derivation adds the open rows LAST, so the
+            // second price would silently WIN. Refused rather than resolved: there is no reading of
+            // two prices for one thing that an operator meant.
+            for (class, v) in &r.rates {
+                if !v.is_finite() || *v < 0.0 {
+                    errors.push(format!(
+                        "rate_card['{model}'].rates['{class}'] must be a finite, non-negative \
+                         number of micro-units per unit of that class (got {v})"
+                    ));
+                }
+                if let Some(instead) = reserved_class_spelling(class) {
+                    errors.push(format!(
+                        "rate_card['{model}'].rates['{class}'] names a class that is already \
+                         priced by `{instead}`; a class may be priced in one place only - remove \
+                         the `rates:` row or the other spelling"
                     ));
                 }
             }

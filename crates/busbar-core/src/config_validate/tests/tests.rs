@@ -4056,6 +4056,93 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
     );
 }
 
+/// RULING 1: a `rates:` row is held to the SAME well-formedness rule as a tier, and names its own
+/// config path when it fails.
+#[test]
+fn a_malformed_rates_row_is_rejected_naming_its_class() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            input_utok: 1.0,
+            rates: std::collections::BTreeMap::from([
+                ("tool_calls".to_string(), -1.0),
+                ("bytes".to_string(), f64::NAN),
+                ("audio_seconds_in".to_string(), 60.0),
+            ]),
+            ..config::RateEntryCfg::default()
+        },
+    )]));
+    let errs = validate(&cfg).expect_err("a negative/NaN class rate must fail");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("rate_card['m'].rates['tool_calls']"),
+        "{joined}"
+    );
+    assert!(joined.contains("rate_card['m'].rates['bytes']"), "{joined}");
+    assert!(
+        !joined.contains("rate_card['m'].rates['audio_seconds_in']"),
+        "a well-formed row must not error: {joined}"
+    );
+}
+
+/// RULING 1: A CLASS MAY BE PRICED IN ONE PLACE ONLY.
+///
+/// The four token tiers have their `_utok` fields on the entry itself, and the kernel-reserved
+/// `requests` class has `per_request_fee:` beside it. A `rates:` row naming any of the five would
+/// be a second price for one cell — and because the derivation adds the open rows LAST, the second
+/// price would silently WIN over the one the operator wrote in the documented place. Refused, and
+/// the refusal names the spelling that already prices it.
+#[test]
+fn a_rates_row_may_not_respell_a_class_that_is_already_priced() {
+    for (class, already) in [
+        ("tokens_input", "input_utok"),
+        ("tokens_output", "output_utok"),
+        ("tokens_cache_read", "cache_read_utok"),
+        ("tokens_cache_write", "cache_write_utok"),
+        ("requests", "per_request_fee"),
+    ] {
+        let mut cfg = cost_cfg(&["m"]);
+        cfg.rate_card = Some(std::collections::BTreeMap::from([(
+            "m".to_string(),
+            config::RateEntryCfg {
+                input_utok: 1.0,
+                rates: std::collections::BTreeMap::from([(class.to_string(), 5.0)]),
+                ..config::RateEntryCfg::default()
+            },
+        )]));
+        let errs = validate(&cfg).unwrap_err();
+        let joined = errs.join("\n");
+        assert!(
+            joined.contains(&format!("rate_card['m'].rates['{class}']")),
+            "{class}: {joined}"
+        );
+        assert!(
+            joined.contains(already),
+            "{class}: the refusal must name `{already}`, the place it IS priced: {joined}"
+        );
+    }
+}
+
+/// AND AN OPEN CLASS IS ACCEPTED, so the rule above refuses a collision rather than the grammar.
+#[test]
+fn a_rates_row_naming_a_class_of_its_own_validates() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.rate_card = Some(std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            input_utok: 1.0,
+            rates: std::collections::BTreeMap::from([
+                ("tool_calls".to_string(), 250.0),
+                ("bytes".to_string(), 0.002),
+                ("audio_seconds_in".to_string(), 60.0),
+            ]),
+            ..config::RateEntryCfg::default()
+        },
+    )]));
+    validate(&cfg).expect("a card pricing open classes validates");
+}
+
 /// G2 fail-open-to-underbill guard: a rate_card entry PRESENT but priced at ALL ZERO meters the
 /// model as free (its token usage costs $0, so a group `budget:` limit never accrues against it —
 /// effectively uncapped). The completeness check only enforces presence (and hands out an all-zero
@@ -5646,6 +5733,61 @@ fn a_card_that_prices_every_declared_class_does_not_refuse() {
         crate::config_validate::unpriced_class_refusal(Some(&card), 0, &[("llm", LLM_CLASSES)])
             .is_none(),
         "a card carrying every class the plane declares must boot"
+    );
+}
+
+/// RULING 1: A PER-LANE `rates:` ROW PRICES A CLASS NO TOKEN TIER CAN NAME, and that satisfies the
+/// unpriced-class rule for it.
+///
+/// Before this, a build carrying the MCP plane could not be armed at all: `bytes` and `tool_calls`
+/// are classes the plane genuinely reports and the `_utok` grammar has no field for either, so
+/// there was no config an operator could write that would pass. This is the config that now does.
+#[test]
+fn a_class_priced_by_a_rates_row_is_not_an_unpriced_class() {
+    let card = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            input_utok: 3.0,
+            output_utok: 15.0,
+            rates: std::collections::BTreeMap::from([
+                ("bytes".to_string(), 0.002),
+                ("tool_calls".to_string(), 250.0),
+            ]),
+            ..config::RateEntryCfg::default()
+        },
+    )]);
+    assert!(
+        crate::config_validate::unpriced_class_refusal(
+            Some(&card),
+            0,
+            &[("mcp", &["bytes", "tool_calls"]), ("llm", LLM_CLASSES)],
+        )
+        .is_none(),
+        "a `rates:` row is a rate row like any other; the class it prices is priced"
+    );
+}
+
+/// AND A CLASS THE OPERATOR DID NOT PRICE STILL REFUSES, so the row above is doing the work rather
+/// than the rule having been loosened.
+#[test]
+fn a_rates_row_prices_only_the_class_it_names() {
+    let card = std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            rates: std::collections::BTreeMap::from([("bytes".to_string(), 0.002)]),
+            ..config::RateEntryCfg::default()
+        },
+    )]);
+    let refusal = crate::config_validate::unpriced_class_refusal(
+        Some(&card),
+        0,
+        &[("mcp", &["bytes", "tool_calls"])],
+    )
+    .expect("`tool_calls` is still unpriced");
+    assert!(refusal.contains("tool_calls"), "{refusal}");
+    assert!(
+        !refusal.contains("bytes"),
+        "the class that WAS priced must not be named: {refusal}"
     );
 }
 

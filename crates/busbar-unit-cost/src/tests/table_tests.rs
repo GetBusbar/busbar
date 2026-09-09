@@ -307,3 +307,116 @@ fn a_lane_class_names_the_same_cell_the_table_files_a_row_under() {
     table.add(row(CLASS_TOKENS_INPUT, 3_000, 0));
     assert_eq!(table.rate_at(&cell.lane, &cell.class, USD, 0), Some(3_000));
 }
+
+/// The three open classes a lane might price, at three deliberately different magnitudes so a
+/// derivation that dropped one, or priced them all from one figure, is red rather than green.
+fn open_classes() -> std::collections::BTreeMap<String, f64> {
+    let mut classes = std::collections::BTreeMap::new();
+    classes.insert("tool_calls".to_string(), 250.0);
+    classes.insert("bytes".to_string(), 0.002);
+    classes.insert("audio_seconds_in".to_string(), 60.0);
+    classes
+}
+
+/// RULING 1: A LANE PRICES ANY DECLARED CLASS, not only the four a 1.5.5 card could spell.
+///
+/// The four token tiers keep their own fields, their own spelling and their own canonical order.
+/// The classes a plane declares that no tier can name -- `tool_calls` off the MCP plane, `bytes`
+/// off A2A, `audio_seconds_in` off voice -- arrive as rows beside them, at the price the operator
+/// wrote, through the same micro-to-nano conversion.
+#[test]
+fn a_lane_prices_every_class_the_operator_named_beside_the_four_tiers() {
+    let table = RateTable::from_config(
+        USD,
+        Some(vec![(
+            LANE,
+            crate::rate::ConfiguredLane {
+                tiers: tiers(),
+                classes: open_classes(),
+            },
+        )]),
+        7,
+        0,
+    );
+
+    assert_eq!(
+        table.rate_at(LANE, "tool_calls", USD, 0),
+        Some(crate::nano_rate(250.0)),
+    );
+    assert_eq!(
+        table.rate_at(LANE, "bytes", USD, 0),
+        Some(crate::nano_rate(0.002)),
+    );
+    assert_eq!(
+        table.rate_at(LANE, "audio_seconds_in", USD, 0),
+        Some(crate::nano_rate(60.0)),
+    );
+
+    // And the four tiers and the fee are exactly what they were: the open rows are ADDED, and they
+    // disturb no row the 1.5.5 grammar derived.
+    assert_eq!(
+        table.rate_at(LANE, CLASS_TOKENS_INPUT, USD, 0),
+        Some(crate::nano_rate(3.0)),
+    );
+    assert_eq!(
+        table.rate_at(LANE, CLASS_TOKENS_OUTPUT, USD, 0),
+        Some(crate::nano_rate(15.0)),
+    );
+    assert_eq!(
+        table.rate_at(LANE, CLASS_REQUESTS, USD, 0),
+        Some(70_000_000)
+    );
+    // Five 1.5.5 rows plus the three the operator priced.
+    assert_eq!(table.len(), 8);
+}
+
+/// A LANE THAT NAMES NO OPEN CLASS DERIVES THE 1.5.5 TABLE, ROW FOR ROW.
+///
+/// The guarantee the whole grammar rests on: the per-class map is defaulted, so a configuration
+/// written before it existed derives the same five rows, in the same sequence, at the same
+/// integers.
+#[test]
+fn a_lane_with_no_open_classes_derives_exactly_the_rows_it_always_did() {
+    let with = RateTable::from_config(USD, Some(vec![(LANE, tiers().into())]), 7, 0);
+    let without = RateTable::from_config(
+        USD,
+        Some(vec![(
+            LANE,
+            crate::rate::ConfiguredLane {
+                tiers: tiers(),
+                classes: std::collections::BTreeMap::new(),
+            },
+        )]),
+        7,
+        0,
+    );
+    assert_eq!(with.len(), 5);
+    let a: Vec<_> = with.rows().collect();
+    let b: Vec<_> = without.rows().collect();
+    assert_eq!(a, b);
+}
+
+/// The card and the table agree about an OPEN class too, not only about the four tiers -- the same
+/// identity the tier-by-tier test makes, extended to the rows the new grammar adds.
+#[test]
+fn the_table_and_the_card_price_an_open_class_identically() {
+    let lanes = vec![(
+        LANE,
+        crate::rate::ConfiguredLane {
+            tiers: tiers(),
+            classes: open_classes(),
+        },
+    )];
+    let table = RateTable::from_config(USD, Some(lanes.clone()), 7, 0);
+    let card = RateCard::from_config_in(USD, Some(lanes), 7);
+    let rates = card
+        .lane_rates(LANE, USD)
+        .expect("the card names this lane");
+    for class in ["tool_calls", "bytes", "audio_seconds_in"] {
+        assert_eq!(
+            table.rate_at(LANE, class, USD, 0),
+            Some(rates.nanos_per_unit(class)),
+            "{class}: the table's row and the card's cell are one price"
+        );
+    }
+}

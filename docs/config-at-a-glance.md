@@ -113,6 +113,10 @@ groups:
 rate_card:                      # the ONLY cost source: per-model token rates in abstract MICRO-units.
   claude-sonnet-4-5:            # ALL-OR-NOTHING: present = must cover every configured model.
     { input_utok: 3, output_utok: 15, cache_read_utok: 0, cache_write_utok: 4 }
+  gateway-mcp:
+    rates:                      # 1.6.0: per-lane rows for ANY class a plane declares, same
+      tool_calls: 250           #   MICRO-units. May NOT respell a class already priced by an
+      bytes: 0.002              #   `_utok` field or by `per_request_fee` -- boot REFUSES.
 per_request_fee: 0              # flat abstract charge added per request at admission
 require_priced_classes: false   # OPT-IN. true = every class an enabled plane reports must have a
                                 #   rate row on every lane, or boot REFUSES naming each one.

@@ -322,6 +322,21 @@ impl RateTable {
                 effective_from: 0,
                 author: author.clone(),
             });
+            // THE OPEN CLASSES, in the map's own (sorted) order, and LAST. A lane that priced none
+            // of them derives exactly the rows it derived before -- same rows, same sequence, same
+            // integers -- which is what keeps a 1.5.5 configuration's table byte-identical. The
+            // conversion is the same `nano_rate` the tiers go through, so an open class is priced
+            // by the one decimal-to-money rule in the tree and not by a second copy of it.
+            for (class, micro) in &rates.classes {
+                table.add(RateRow {
+                    lane: lane.to_string(),
+                    class: class.clone(),
+                    currency,
+                    nanos_per_unit: nano_rate(*micro),
+                    effective_from: 0,
+                    author: author.clone(),
+                });
+            }
         }
         table
     }
