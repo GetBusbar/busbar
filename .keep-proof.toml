@@ -1,0 +1,22 @@
+# WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
+#
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
+# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
+# something specific instead of "everything, slowly".
+#
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
+#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
+#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
+#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
+#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
+#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
+#              the docs make about the gate, which is the one family this branch edits. `neutrality`
+#              is dropped from the previous hand-back's scope on purpose — this branch touches no
+#              plane and no transport source, so replaying that family would be a claim about code
+#              it did not change. An unfiltered replay is the better part of half an hour and would
+#              be a claim about twenty-six families this branch does not touch.
+#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
+#              eighty-eight self-test cases live in that package; no other crate's test binary
+#              contains a line this branch changed.
+families = '^documented([|.]|$)'
+tests = ["xtask"]
