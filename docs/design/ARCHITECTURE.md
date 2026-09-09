@@ -9,8 +9,11 @@
 > **Standard.** This is an accounting ledger. Instead of cash it moves company data. Think bank teller:
 > can this principal do these seven things, in order? If so, do it — and post it. Every rule below is
 > judged by "would this pass a bank's audit for money?" Where evidence is missing or contradictory the
-> ledger posts the **lower** amount, flags it, and reports it for a verdict within `dispute_max_age` —
-> never silently in the house's favour. Nothing in 1.6.0 is deferred.
+> ledger posts the **lower** amount and FLAGS it — never silently in the house's favour. It does not
+> then wait for a verdict, and nothing in busbar ever issues one: a flagged line is a flagged line
+> forever, exported as it stands, and the correction (if the operator wants one) is made by the
+> calling app against the exported line. busbar is the meter and the audit trail; the thing being
+> audited may not also be the thing that edits the record. Nothing in 1.6.0 is deferred.
 >
 > **Parity clause (governs every section).** From a user's perspective 1.6.0 is 1.5.5 — config,
 > wire bytes, refusals, statuses, billing figures, the admin API, metrics, operations — with exactly
@@ -320,7 +323,7 @@ decode           plane.decode_ingress → Ingress::{NeedMore | Open | OneShot | 
                  COMPLETE over every configured lane for the card's declared meter-class set (1.5.5's rule:
                  every configured lane has an entry, no entry names an unknown lane — else boot/--validate
                  FAIL with a paste-able stub); `Unpriced` is defined only relative to a PRESENT card — with no card every class prices 0, unflagged, attribution only, and `Count`-sourced kernel lines are never `Unpriced`; a meter class OUTSIDE a present card's declared set (a plane's own
-                 classes) prices at 0, `estimated`, `Unpriced` on the disputes report when the class is in `unpriced_classes`
+                 classes) prices at 0, `estimated`, `Unpriced` on the exceptions report when the class is in `unpriced_classes`
                  (`unpriced_classes` is the Migration-sealed list; `allow_unpriced`, default false in §4.7, is the boolean for classes outside it) and → Refused(Admit, Unpriced) when
                  false. Rate card ABSENT → zero prices, fee posts. The admission unit draws ALL-OR-NOTHING
                  across the principal's BUCKET CHAIN (§4.6): one slice per (bucket, dimension, scope) for
@@ -377,15 +380,15 @@ exit             ONE exit path, taking the Hold from the HoldCell by CAS; the sa
                  duration; then the sweep). Abort-class failures are covered by recovery. No `?`/early exit.
 ```
 
-**Settlement amount — one table, every end** (posts the lower evidence; flagged postings are on the
-open-disputes report until a verdict, bounded by `dispute_max_age`):
+**Settlement amount — one table, every end** (posts the lower evidence; a flagged posting is on the
+exceptions report permanently — there is no verdict to wait for and no verb that clears a flag):
 
 | End | Amount | Flag |
 |---|---|---|
 | `Completed`, locator arrived | located usage | — |
 | **`fee_count`** (every row) | KERNEL-DERIVED: 1 iff (a) the unit is an `Origin::Client` `Open`/`OneShot` unit (a provider push through `SessionUpstream` posts `fee_count = 0` — cell) whose Route selected an `Upstream`/`SessionUpstream` leg ("priced" is the KIND, not a non-zero price — with no card the fee still posts) (1.5.5's proxied request — `KernelVerb`, `Client { Deliver }`, `PlaneRecord`, `NestedPlane` units post 0 unless the card's `KernelVerb` section prices them; admin-plane cell asserts zero fee/requests postings under a non-zero fee), (b) the kernel relayed the FIRST response frame (a status/headers frame with an empty body counts — 1.5.5 bills an empty 2xx), and (c) the transport's per-frame `StatusClass` is `Success` where the transport declares one — at the FIRST response frame for `StatusAt::FirstFrame` transports, at the TERMINAL frame for `StatusAt::Terminal` transports (a stream dying before its trailer posts 0, the lower evidence; a plane `finish = Complete` against a missing trailer is `MeterDisputed`) — else the plane's `finish` at the first frame is not `Error`; the fee is DECIDED at that frame and NEVER reversed by a later abort (1.5.5: "success recorded on the 2xx headers stands" — a 2xx stream dying mid-way is 1) — where "first response frame" means the first frame RELAYED TO THE CLIENT (1.5.5's `finish_inner` reads the client-facing `resp.status()`): a buffered cross-protocol response whose upstream 2xx becomes a client 502/500 posts `fee_count = 0` and zero tokens (PB-27, PB-91); the plane's `finish` is a SECOND source — `finish = Error` against a non-error status class, or vice versa, posts the LOWER `fee_count` and `MeterDisputed` (lying-`finish` plane meta-test, §8.2). 1.5.5 bills the flat fee on 2xx only and refunds upstream 4xx/5xx, router 503 and post-admission 404; a 2xx stream dying mid-way is 1 | — |
 | **`requests` dimension** (every row) | drawn at Admit for `Origin::Client` units whose verified set contains an `Upstream`/`SessionUpstream` candidate (mirrors the fee's origin rule, so a provider push consumes no client slot); settles at the DRAWN quantity for every unit whose `HoldCell` reached `Admitted` — on the scopes the unit routed through; an unselected scope's draw is released at Route (§2.2 step 4) — (every `finish_rejected` exit — governance-guard refusals incl. the pool and reachable-fallback-pool ACL 403s and the no-rate 400, malformed or non-object body, missing/unresolved name 404, unsupported path/action 404 — charges nothing; every exit after `governance_guard` — the priced-but-unrouted 404 via `finish_admitted`, rewrite 500, deadline 503, pool-empty 503, upstream and engine ends — retains the slot, PB-26) and is NEVER released (1.5.5: the admission counter is never refunded, so failures cannot escape the cap; oracle cell: N failed requests consume N slots with `fee_count = 0`); the `requests` and `concurrent` draws, are two different things: `requests` as above; `concurrent` is ONE LEASE PER CAPPED-`concurrent` GROUP (1.5.5's gauges are per group keyed by name and project no bucket — a `concurrent`-only group is enforced, a group with `concurrent` + two windows takes ONE lease; PB-22) for every non-exempt unit that reaches Admit, of any origin except Handshake, Tick (a `SessionAccrual` Tick unit draws nano-units only) and `KernelVerb` units (which draw no dimension unless the card's `KernelVerb` section prices them, in which case nano-units only, against the `kernel:admin` attribution bucket — the config-level admin's bucket, like `kernel:anonymous` and take no lease, so the admin API answers at a saturated `concurrent` cap — the §8.3 cell covers `/audit` and `/usage`) — nested, delivery, record and provider units DO count — always released on the exit path (an admin unit's set is `KernelVerb` only, so the admin cell stays green; a `concurrent` cell covers a non-upstream plane) | — |
-| `Completed`, required locator absent ("required" = declared by a PRESENT card for a class it prices; with no card nothing is required and nothing is flagged) | **ZERO** — 1.5.5 bills zero when the upstream reports no usage, and so does 1.6.0 (`priced_amount = 0`, `/usage` unchanged); the accrued kernel floor is recorded as an INTERNAL `estimated` evidence line that never enters `priced_amount`, `/usage` or any 1.5.5 surface — it appears only on the 1.6.0 disputes report | `estimated`, `MeterDisputed` (internal) |
+| `Completed`, required locator absent ("required" = declared by a PRESENT card for a class it prices; with no card nothing is required and nothing is flagged) | **ZERO** — 1.5.5 bills zero when the upstream reports no usage, and so does 1.6.0 (`priced_amount = 0`, `/usage` unchanged); the accrued kernel floor is recorded as an INTERNAL `estimated` evidence line that never enters `priced_amount`, `/usage` or any 1.5.5 surface — it appears only on the 1.6.0 exceptions report | `estimated`, `MeterDisputed` (internal) |
 | live non-Completed end, locator arrived | located usage — EXCEPT a stream whose end carries a terminal error signal, which bills ZERO tokens as 1.5.5 does (PB-27; the located figure is internal evidence only) | — |
 | live non-Completed end, locator absent | accrued kernel floor | `estimated` |
 | crash-recovered, `Dispatched` present (`Recovery::materialize(&record, &RecoveryToken)`) | last checkpointed accrual (0 if none) | `recovered` |
@@ -428,8 +431,8 @@ Drain | Superseded { by }) | TimedOut(step)`, constructed only by the exit path,
   counter gates its exit) and the unit settles into it; else its own hold sized from
   `max_provider_push`; a refused accrual (parent gone) settles as the child's own posting, `late_accrual`.
   **At the parent's exit** every outstanding `HoldAccrual` is CONVERTED into a child-owned `Hold` sized
-  at `max_provider_push`, drawn synchronously (the overdraft ceiling applies; refusal trips the child's
-  cancellation token) — so the `late_accrual` exposure bound is a mechanism, not an assertion.
+  at `max_provider_push`, drawn synchronously (a refused draw trips the child's cancellation token) —
+  so the `late_accrual` exposure bound is a mechanism, not an assertion.
 - **Turn-level hold**: closes at the **earliest** of (a) client `Close`, (b) a `reply_to`-bearing unit
   ending with `TurnComplete`, (c) `turn_max_duration`; the parent's exit then blocks until the
   outstanding accrual counter is 0 (or the bound), then settles once; anything arriving later is
@@ -448,7 +451,7 @@ Drain | Superseded { by }) | TimedOut(step)`, constructed only by the exit path,
   `accrued_so_far` **only when the counter changed**; elapsed-time usage where priced ACCRUES INTO the session's open unit's hold (a Tick unit posts money only through a `SessionAccrual` destination; otherwise it has no lane and a zero-priced hold); **idle session time between units is unpriced by design** unless the session's bucket declares a `session_seconds` class, in which case the session Tick opens a `SessionAccrual` unit priced at the lane of the session's Unit-0 verified destination (§3.6), holds `tick_interval` × that price and settles each tick; close a bound session with a dry budget (idle, OR busy when its `SessionAccrual` unit refuses `OverBudget` — priced seconds are never accrued unmetered; cell) or a revoked principal; on an UNBOUND session the accrual is charged to the principal of the last unit, and with none the session is closed, and ANY session (bound or unbound) after `session_idle_max` with no NON-TICK unit (a `SessionAccrual` tick never resets the idle clock — cell: `session_seconds` bucket, client idle 400 s → closed at 300 s, ≤ 300 s posted) (pinned 300 s; unbound sessions cache no principal, so budget and revocation apply per unit);
   Node Tick: lease heartbeat; policy/revocation tail;
   sweep (`TaskLost`, `Stalled`); checkpoint one-shot units older than one tick; election;
-  reconciliation; dispute aging; independent recompute (§4.2); peer-drain observation.
+  reconciliation; independent recompute (§4.2); peer-drain observation.
 - **Nested units**: `NestedPlane(plane_key, op)` opens a child — own key, own hold (the parent's
   estimate excludes nested cost), own audit, sharing the parent's cancellation scope; the parent's Route
   blocks on the child's `UnitEnd` (bound: child max duration); separate bounded pool; `max_nest_depth`;
@@ -776,8 +779,10 @@ ChainBreak | StoreRestore | FleetOutage`. `append_batch` idempotent on `(node, n
 Each node seals its own chain at WAL time. A `Checkpoint` — by the winner of `elect_checkpoint` every
 `checkpoint_entries` or `checkpoint_interval` (§4.7) — cross-links every head; seals per `(bucket,
 dimension, scope)` totals (**budget, Σ
-drawn, Σ released, Σ settled, Σ open holds, Σ adjustments, Σ unreconciled, Σ overdraft carried in/out,
-oldest open hold age, open-dispute count, oldest dispute age, Σ disputed**), the `backup_watermark`,
+drawn, Σ released, Σ settled, Σ open holds, Σ unreconciled, Σ cross-window transfers, oldest open hold
+age** — no Σ adjustments, no Σ disputed, no dispute counts and no dispute ages, because nothing can
+put a figure in any of them: there are no adjusting entries and no dispute register), the
+`backup_watermark`,
 and the store `Seq` high-water; is signed via the secret plugin's `sign`; is anchored through an export
 plugin's `ANCHOR`. The anchor sink must lie outside every node's write authority — a trust assumption
 stated, not enforced; the default local-file anchor is self-attestation and the ledger endpoint (PB-16) reports it with an
@@ -786,26 +791,26 @@ journaled.
 `verify(since = last anchored checkpoint)` = node chains verify (body and chain hash), checkpoints
 resolve and validate, `Seq` monotonic per node, anchored head matches, and **the one identity, per
 `(bucket, dimension, scope, window_start)`, as a delta from the last sealed `Checkpoint` totals**:
-**Δ settlements + Δ open holds + Δ open-slice remainders + Δ unreconciled + Δ adjustments − Δ overdraft
-carried ± Δ cross-window transfers == Δ drawn from the store** — **an unreconciled amount is a MOVE out
+**Δ settlements + Δ open holds + Δ open-slice remainders + Δ unreconciled
+± Δ cross-window transfers == Δ drawn from the store** (the Δ adjustments term is gone with the
+adjusting entries: an identity with a term nothing can move is an identity with a hole in it) — **an unreconciled amount is a MOVE out
 of settled, never a parallel tally**: booking it is `unreconciled += A; settled -= A` on the same figure,
 so the identity closes with no special case and nothing is reported as settled that the store has not
 confirmed (for the open window, `Δ drawn` is the
 window cap minus store remaining minus the checkpointed figure; closed windows must show Δ = 0 after
-their last transfer; adjustments release headroom to the store only inside the open window, otherwise
-they are pure ledger reversals; an attribution bucket's identity is Σ settlements == Σ accrued). **Independent recompute** on the node Tick: for every
+their last transfer; an attribution bucket's identity is Σ settlements == Σ accrued). **Independent recompute** on the node Tick: for every
 posting since the RECOMPUTE WATERMARK — the last recomputed `(node, node_seq)`, carried in the `Reconciliation` entry, never "since the last checkpoint" (at the headline rate a checkpoint is 42 ms old and would cover 4 % of postings); the watermark must reach the journal head every tick (cell: a hand-corrupted `priced_amount` older than the last checkpoint still alarms) — `Σ quantity × price` is recomputed from the `Policy` sealed at the
 posting's `policy_epoch` — the card at `rate_card_version`, `per_request_fee` (which prices the fee
 line) and the bucket's `tier_bp` are all sealed there — and compared to `priced_amount`; divergence
 alarms; the recompute applies clause 2 origin rule to the fee line (0 for non-client origins); on a no-card deployment the fee line is what the recompute checks (asserted by the no-card cell).
 `verify` runs every T (default 24 h) writing a `Reconciliation` entry. WAL loss is a `ChainBreak`.
 **Retention** (any store) purges a segment only when **all** hold: older than an anchored checkpoint;
-below the `backup_watermark`; no open dispute or adjustment references it; and either an acked export of
+below the `backup_watermark`; and either an acked export of
 the segment (`Export::receive(Segment)`) or a dual-controlled `retention: discard`. When no backup is
 configured, `backup_watermark := the anchored head`. **Retention posture is sealed at
 `Bootstrap`/`Migration` from the config**: a config that names NO store (1.5.5's `memory`, which
 retained nothing across a restart) is sealed `retention: discard-after-anchored-checkpoint` with NO boot warning and no disk-driven behaviour unless `data_dir` is written (PB-13/15/17; the numbers below apply to a `data_dir` deployment) — segments
-older than an anchored checkpoint are discarded — an entry referenced by an open dispute is first COPIED (≤ 512 B) into the dispute register so the segment can go and admission never stops on unresolved disputes — at the EARLIER of `wal_capacity` and a free-space low-water mark (`wal_free_min` = 2 × segment size = 128 MiB, pinned, sealed in `Policy`; the boot warning quotes the effective capacity; cell: disk smaller than `wal_capacity`, two fills, continuous admission)
+older than an anchored checkpoint are discarded (there is no dispute register to hold a segment open, and therefore nothing that can stop retention: a flag lives on the posting, not in a side table that outlives it) — at the EARLIER of `wal_capacity` and a free-space low-water mark (`wal_free_min` = 2 × segment size = 128 MiB, pinned, sealed in `Policy`; the boot warning quotes the effective capacity; cell: disk smaller than `wal_capacity`, two fills, continuous admission)
 (default 4 GiB, pinned), journaled `Purge`, alarmed, on the ledger endpoint (PB-16), Appendix A — strictly more record than
 1.5.5 kept, and a zero-config node never stops admitting; a config that names an explicit store keeps
 the fail-closed rule ONLY when `data_dir` is written (PB-15: a migrated config has no WAL and never refuses for durability): keep-on-disk under the high-water refusal with an alarm at 80 % naming the two
@@ -836,7 +841,7 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   `replay_put`/`session_put` ≤ 5 ms p99; shipping lag ≤ 1 s p99; emission queue ≤ 200 ms of frames.
 - WAL failure at Admit → `Refused(Admit, DurabilityUnavailable)` (§2.2 exception). At a further leg →
   `Failed(Route, DurabilityUnavailable)`. At Meter → `Terminal` still sent; `posted: Err(DurabilityLost)`;
-  retained in a bounded node buffer; re-appended; `unposted` on the disputes report; the node drains.
+  retained in a bounded node buffer; re-appended; `unposted` on the exceptions report; the node drains.
   Disk full = WAL failure. Store unreachable → §2.3's fleet rule. `claim_key` unreachable → fail closed
   for keyed units.
 
@@ -850,7 +855,7 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   operations (key mint, key rotate) the cache is the 1.5.5 one — PER NODE, in process, TTL 600 s, keyed
   `(actor, header)` for mint and `(actor, "rotate:{id}:{k}")` for rotate, no body hash (parity clause:
   a retry on another node mints twice exactly as 1.5.5 did); the new credential-minting verbs use the
-  store-backed sealed cache at `min(dispute_max_age, max(600 s, longest finite cap window + max_unit_duration))`;
+  store-backed sealed cache at `max(600 s, longest finite cap window + max_unit_duration)`;
   no other legacy operation reads a cached body.
   Liveness = one window. Recovery and lease expiry call `void_claims`.
 - Recovery on boot for every open hold whose `lease_epoch` < current, regardless of age: the recovery
@@ -864,13 +869,16 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   `overdraft_carried_in`. Overdraft applies to every dimension that accrues mid-unit (nano-units and the
   class dimensions; `requests` and `concurrent` are known at Admit). **A `total` window never rolls, so
   it admits no CARRIED overdraft**: a refused `reserve` on a `total` bucket ends a 1.6.0 session-plane unit `Aborted(Kernel {
-  OverBudget })` at the point of exhaustion — never an `http`/`sse` unit, which 1.5.5 admits once and runs to its end (PB-58) — (emitted bytes metered, posted exactly; the excess over the drawn slice is journaled as an `Overdraft` posting with `carried_out = 0` so it enters the §4.2 identity — a §8.3 cell). The **overdraft ceiling** belongs
-  to the **capped `(bucket, dimension, scope)` whose `reserve` was refused** — enforced on every capped
-  bucket in the chain; attribution buckets never refuse and have none — and is a **hard bound**: new
-  units → `Refused(Admit, OverdraftCeiling)` (never on a Migration-sealed bucket, PB-58); a 1.6.0 session-plane unit already in flight whose accrual reaches the ceiling
-  ends `Aborted(Kernel { OverdraftCeiling })` (an `http`/`sse` unit posts `Overdraft` and continues, PB-58) (cancellation token; `encode_end` renders; emitted bytes
-  metered), so the maximum exposure is the ceiling plus one accrual step; released by a dual-controlled
-  `set_overdraft_ceiling`.
+  OverBudget })` at the point of exhaustion — never an `http`/`sse` unit, which 1.5.5 admits once and runs to its end (PB-58) — (emitted bytes metered, posted exactly; the excess over the drawn slice is journaled as an `Overdraft` posting with `carried_out = 0` so it enters the §4.2 identity — a §8.3 cell). **THERE IS NO OVERDRAFT CEILING.** An
+  earlier draft made the ceiling a sealed per-bucket policy with a `set_overdraft_ceiling` verb to
+  arm and release it, and both are gone. What bounds a bucket is its BUDGET, enforced at the door on
+  a window the operator configured (§4.6): a unit is admitted or it is not, and a unit that was
+  admitted runs to its end and posts what it delivered. A second bound behind the first, armed by its
+  own verb, only ever answered the question "how far past the cap may an already-admitted unit go" —
+  and the answer the model gives is "as far as the delivered value went, posted in full, flagged
+  `Overdraft`, reducing the next window". The carry IS the enforcement, and it needs no knob. What an
+  operator who wants a hard stop mid-unit configures instead is `on_exhaust: cut` (§4.6), which is a
+  statement about the STREAM and not a second budget.
 - Failover only before the first byte; accrual per attempt; abandoned attempts explicit.
 
 ### 4.5 Quantities and pricing
@@ -879,7 +887,7 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   `Locator { direction, ptr }` (incremental) · `KernelBytes ÷ divisor` (floor, `estimated`) ·
   `KernelFrames × factor` (exact) · `TransportUnits` (only where `DECODES_PAYLOAD`; a transport that
   decodes a timestamped payload reports units from timestamp deltas ÷ its clock rate) ·
-  `KernelElapsedMono` · `Count` (kernel-derived) · **`PlaneCount { content_fact_key }`** — a cardinality a plane surfaces as a declared `CONTENT_FACT` (calls, objects, rows, queries, messages — never `recipients`, which is the kernel's `Count` through `sessions_for`), priced only against a config-declared class and paired with a kernel-derived companion line in the SAME UNIT where one exists (`KernelFrames` for per-frame cardinalities, `Count`) so the variance rule engages; where no same-unit companion exists (objects, rows, queries) the line posts `estimated` on the disputes report under a ONE-SIDED implausibility bound against a bytes/frames proxy of the `locator_floor_ratio` shape (never an equality check); the under-reporting-plane meta-test is red through the pair, the over-reporting-`objects` meta-test through the bound.
+  `KernelElapsedMono` · `Count` (kernel-derived) · **`PlaneCount { content_fact_key }`** — a cardinality a plane surfaces as a declared `CONTENT_FACT` (calls, objects, rows, queries, messages — never `recipients`, which is the kernel's `Count` through `sessions_for`), priced only against a config-declared class and paired with a kernel-derived companion line in the SAME UNIT where one exists (`KernelFrames` for per-frame cardinalities, `Count`) so the variance rule engages; where no same-unit companion exists (objects, rows, queries) the line posts `estimated` on the exceptions report under a ONE-SIDED implausibility bound against a bytes/frames proxy of the `locator_floor_ratio` shape (never an equality check); the under-reporting-plane meta-test is red through the pair, the over-reporting-`objects` meta-test through the bound.
   **A peer-supplied handshake value (a negotiated frame timing) is never a sole evidence source**: any
   `Count × TransportFacts-key` quantity must carry a second kernel-derived line in the same class family
   (`KernelElapsedMono`, or `TransportUnits` where decoded) so the variance rule engages. **Variance
@@ -953,7 +961,9 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   `reseal_epoch_floor`.
 - Lease expiry: the store waits `release_deadline` = `lease_ttl + 2 × max_unit_duration + skew_max` (1,235 s — so a unit admitted at the last admissible instant of any outage branch, `stale_serve_max` = 630 s, and running the full `max_unit_duration` settles before any slice is released; cell: unit admitted at `stale_serve_max − 1 s` running 600 s, then a second node draws), releases `slice − Σ
   settlements observed`, drops the node's concurrent leases and session-directory entries; replay lands
-  as correcting postings; never-replayed spend is `UnreconciledSpend` until `resolve_slice`. **Grace
+  as correcting postings; never-replayed spend is `UnreconciledSpend` and STAYS so — there is no
+  `resolve_slice` and no verdict: the residual is a permanent, exported property of the window, which
+  is what makes it something an auditor can find rather than something an operator can close. **Grace
   slice**: when the store is unreachable at exhaustion, at most `grace_slices_per_window` journaled grace
   draws are admitted locally before fail-closed — a `peers:` deployment only; a peerless node serves through (PB-14).
 - **Propagation**: policy epoch on every `Policy`/`revoke` entry; node Tick reads the tail; staleness
@@ -963,22 +973,32 @@ secret plugin; rotation and escrow follow §4.7; key loss is treated as erasure 
   binary reads balances written by 1.6.0"; the boot check refuses slices if legacy cells show an
   unleased write in the current window.
 
-### 4.7 Corrections, disputes, admin authorization, config, defaults
+### 4.7 Admin verbs, admin authorization, config, defaults
 
 **Kernel verbs** (executed by `busbar-unit-verbs`, which holds `AdminToken` and builds `SecretOnce`; the
 admin plane is the codec only) are a closed table **derived mechanically from 1.5.5's `openapi.json`
 at the tag — 66 operations over 49 paths (34 `read-only`, 32 `full` — `POST /config/validate` and `POST /plugins/inspect` are read-only; `required_scope(method, path)` pinned, PB-62) — pinned by git object hash — PLUS the named non-admin 1.5.5 surfaces, each pinned by its handler: `POST /auth/token` (the self-serve exchange) and `GET /auth/token` (the browser exchange: unauthenticated exact-path bypass, `200 text/html` or `302` to the IdP, `?logout` / `?code` / `?method` / `?refresh` dispatch — PB-33), `GET /v1/models` and `/v1beta/models` (governance-scoped listings), `/stats`, `/healthz` (unconditional auth bypass on BOTH listeners), `/metrics` (present only when `export.prometheus` is configured; data-plane key auth) and `/metrics/hooks` (present only when `metrics::enabled()`) — PB-43 — with their own §8.1 effects rows; admin mutations are rate-limited exactly as `admin/rate.rs` (PB-32)**, plus
 the 1.6.0 additions: `verify`, `plane_facts`, `plane_record_write`, `chain_break`, `store_restore`,
-`reseal_epoch_floor`, `set_overdraft_ceiling`, `set_dispute_max_age`, `commit_upgrade`,
-`resolve_dispute`, `resolve_slice`, `adjust` — **twelve** — plus `amend_rate_history`, the signed
+`reseal_epoch_floor`, `commit_upgrade` — **seven** — plus `amend_rate_history`, the signed
 history amendment of §4.2 (keyset import and export are off-node CLI on a stopped node, not verbs).
 
-**HTTP binding of the twelve.** Each binds as `<kebab-case-verb>` under the admin prefix: POST for
+**THERE IS NO CORRECTION VERB, AND THAT IS THE MODEL.** An earlier draft of this section named five
+more — `adjust`, `resolve_slice`, `resolve_dispute`, `set_dispute_max_age`, `set_overdraft_ceiling` —
+and every one of them existed to move a figure that had already been posted, or to arm a policy for
+moving one. busbar is a meter and an audit trail: one sealed facts line per unit, written once at the
+end, never edited; price is never stored and is derived at read time. Under that model a correction
+has nothing to correct. It also has nowhere honest to live: the record an auditor checks the calling
+app against cannot be a record the calling app's own metering service can rewrite. So the five verbs
+are gone, and a correction is made where a correction belongs — in the app, against the sealed lines
+this node exported. What busbar keeps is the ability to REPRICE, which needs no correction at all:
+`amend_rate_history` appends a dated row and every subsequent read reflects it, with no posted line
+touched (§4.5).
+
+**HTTP binding of the seven.** Each binds as `<kebab-case-verb>` under the admin prefix: POST for
 every mutating verb, GET for the two read-only verbs (`verify`, `plane_facts`). Bindings: `GET verify` ·
 `GET plane-facts` · `POST plane-record-write` ·
 `POST chain-break` · `POST store-restore` · `POST reseal-epoch-floor` ·
-`POST set-overdraft-ceiling` · `POST set-dispute-max-age` · `POST commit-upgrade` ·
-`POST resolve-dispute` · `POST resolve-slice` · `POST adjust`; and `POST amend-rate-history`.
+`POST commit-upgrade`; and `POST amend-rate-history`.
 **Per-verb contracts** — request and response schema with exact keys and types, every refusal as
 (status, error code, 1.5.5-template message), scope, idempotency and replay semantics, the audit
 record and journal class written, the unit that executes it, and the cells owed — are written out
@@ -1061,7 +1081,6 @@ asserts. A reload that would violate a pinned `max_unposted_accrual` (§4.7 tabl
 | `grace_slices_per_window` | 0 | fail closed by default |
 | `tick_interval` | 1 s | ≤ 1 s: bounds unposted accrual; checkpoints only on change |
 | `interrupt_deadline` | 100 ms | time-to-silence |
-| `dispute_max_age` | 7 d | overdue alarms |
 | `outage_grace` | 60 s | stale-policy exposure during a fleet outage |
 | `drain_quorum` | ⌈N/2⌉, N = the configured `peers:` list length; the test is `N ≥ 2 ∧ stale + draining ≥ max(1, drain_quorum)` | fleet coordination; N ∈ {0, 1} (`peers:` is a 1.6.0 additive key, so a 1.5.5 config has N = 0) → no fleet: the node SERVES THROUGH any store outage exactly as 1.5.5's write-behind metering did and never drains for staleness (PB-14) |
 | `policy_staleness_max` | 30 s | revocation propagation bound |
@@ -1072,7 +1091,6 @@ asserts. A reload that would violate a pinned `max_unposted_accrual` (§4.7 tabl
 | `max_hold` (derived) | `max_fanout_recipients` × ⌈(Σ_{direction = Response} `max_response_c` (as resolved) × max price_c + max over the classes that partition the same bytes among {direction ∈ Input, CacheRead, CacheWrite} of (`request_body_max_bytes` ÷ divisor_c) × max price_c + fee + `session_idle_max` × max `session_seconds` price + `max_provider_push` × max price_c — the `Kernel`-direction classes appear ONLY as these explicit terms, never inside the partition max) × max `tier_bp` over configured buckets ÷ 10^4⌉ + one accrual step, per unit | the largest hold any unit can open — the tier is in it |
 | `max_provider_push` | 1,000 quantity units per class | unsolicited provider hold |
 | decline rate `R` / node-global | 100 /s per source; 10,000 /s | aggregation thresholds |
-| overdraft ceiling | 10 % of the refusing `(bucket, dimension, scope)` window cap; UNBOUNDED (flag-only) on every Migration-sealed bucket, PB-58 | every capped bucket in the chain |
 | `max_fanout_recipients` | 10,000 | `Refused(Approve, FanoutTooLarge)` when `sessions_for` resolves more |
 | `in_flight_reserve` | 10 % of `in_flight_cap` when a claimed transport declares `SESSION = true`, else 0 — so a 1.5.5 config sheds at exactly `max_inbound_concurrent` (8,192), PB-44 | held for provider frames of already-open sessions; drawn only against session Unit 0 arrivals |
 | `on_empty` (per restrict-capable hook) | `reject` (the 1.5.5 default, PB-1; migrated hooks sealed at `Migration`) | `weighted | reject | first` |
@@ -1086,16 +1104,19 @@ asserts. A reload that would violate a pinned `max_unposted_accrual` (§4.7 tabl
 | `spill_budget` | `max_inbound_concurrent` × `request_body_max_bytes` per node; `max_inbound_concurrent: 0` ⇒ unbounded (1.5.5 buffered exactly that much, so no request 1.5.5 accepted is ever refused for spill — parity clause, PB-18) | large-body spooling before `Open`; outside the headline RSS row |
 | `per_request_fee` | 0 cents (1.5.5's deploy-level key, independent of the rate card, clamped as there) | posts even with no card |
 | `wal_capacity` / `unposted_alarm` | 4 GiB / 1 % of the smallest capped window budget, floor 10^9 nano-units | alarm at 80 %; `unposted_alarm` compares the MEASURED node Σ(accrued − checkpointed), never the formula bound |
-| `adjust_threshold` | 1 % of the bucket's window budget, floor 10^9 nano-units (the floor is the whole threshold on an uncapped attribution bucket) | above → the posting is alarmed and named on the ledger endpoint (PB-16); the calling application decides who may cross it |
 | `allow_unpriced` | **false** → `Refused(Admit, Unpriced)`; WITH A RATE CARD PRESENT (1.5.5 `pricing_enabled()`), a client-located NAME resolves to one of three things — a POOL (a candidate-set name, expanded by the trust unit to its member lanes at their own card entries), a by-lane name, or a card lane — and only a name that is NONE of the three for a KEYED principal is `Refused(Verify, UnknownLane)` (1.5.5's guard leg for leg; cell: a keyed request naming a pool with a card present serves and prices at the selected member's entry) rendered byte-identical to 1.5.5's 400, while an anonymous (unkeyed) unit with an unknown lane is served and attributed at 0 exactly as 1.5.5's four-way guard does; with NO card a keyed unknown lane is served at 0 as well (oracle cells: keyed × card × unknown lane; keyed × no card × unknown lane) | 1.5.5 is fail-closed on unknown lanes (its `model_unpriced` rule; it has no meter-class concept); at `Migration` the meter classes 1.5.5 never priced (everything outside its four token classes and the fee) are sealed into an explicit `unpriced_classes` list — journaled, on the ledger endpoint (PB-16), residual risk — so migrated planes keep serving |
 | `on_failure` (hooks at gate seats) | closed for hooks added in 1.6.0; the resolved 1.5.5 `on_error` chain of each MIGRATED hook (default `nothing` = the failing gate does not participate; fallback hooks; terminal `weighted | reject | first`) is sealed at `Migration` — cell: a migrated gate timing out under `nothing` still serves | |
 | reconciliation `T` | 24 h | |
 
 Evidence reads (`read_*`) are pinned at 0 and never refused for budget. Encode failure after posting →
 kernel-default body + reversal, always. Every `recovered`, `estimated`, `Unpriced`, `MeterDisputed`,
-`Overdraft`, `stale_policy`, `late_accrual` and `unposted` posting is on the open-disputes/exceptions
-report until a verdict; overdue beyond `dispute_max_age` alarms; the `Reconciliation` entry carries
-the counts.
+`Overdraft`, `stale_policy`, `late_accrual` and `unposted` posting is FLAGGED on the exceptions
+report, and the `Reconciliation` entry carries the counts. The report has no verdict column and no
+age-out: a flag is a permanent property of the line it is on, exported with it, and there is no verb
+that clears one. That is deliberate — a flag an operator can dismiss is a flag the record cannot be
+trusted to have kept. Where an operator wants a flagged unit treated differently, the treatment
+happens in the calling app, against the exported line, where it is visible as the app's decision
+rather than invisible as this node's.
 
 ### 4.8 Policy, boot, bootstrap, versions, clock
 
@@ -1306,13 +1327,13 @@ forged-source datagram → `Discard` · two principals on one unbound session: B
 unit posts to B · change a fee and restart under both postures · mid-window rate edit leaves history
 byte-identical · overdraft in window N reduces window N+1 by exactly that amount · revoke on A → refused
 on B within the bound · idle session with a dry budget closes within one tick · rotate the signing key;
-rotate the operator key; `verify` · purge refused while a dispute references the segment; purge then
+rotate the operator key; `verify` · purge then
 reconcile · default store disk-full behaviour · anchor sink unreachable N times · rolling restart with
 zero mid-turn aborts · kill a node mid-stream against the unposted-accrual budget · `late_accrual`
 posts once, flagged · cursor and credential budget exhaustion pre-authentication · refusal of request
-*n* on a multiplexed stream leaves *n±1* completing · exhausted budget + overdraft ceiling + saturated `concurrent` cap → `/audit` and `/usage`
+*n* on a multiplexed stream leaves *n±1* completing · exhausted budget + saturated `concurrent` cap → `/audit` and `/usage`
 still returns · a provider `OneShot` refused at Verify leaves the session open (floor line posted); one refused `OverBudget` at Admit posts the floor line and hard-closes · drop one principal's pseudonym
-key: `verify` passes, others resolve · dispute older than `dispute_max_age` alarms · `PlaneRecord` across
+key: `verify` passes, others resolve · `PlaneRecord` across
 restart on every store · the 1.5.5 binary reads legacy cells written by 1.6.0 · `session_put` cleaned on
 lease expiry · the operator-key ceremony · 3-node upgrade keyset import · accrual bound violated on reload is refused.
 
@@ -1471,7 +1492,7 @@ refusals; every 1.5.5 dynamic plugin loads; historical `/usage` figures reproduc
 projection byte for byte, INCLUDING retroactive repricing at read time when the card changes (the immutable figure lives on new endpoints); every metric name, type (the duration SUMMARY), label and help text; every
 log line and span field; every CLI flag, env var and exit code; `/healthz`, `/stats`, `/metrics`
 (key-authed, served by the built-in export plugin) unchanged — each with a §8.1 cell: CLI flags and exit codes, env vars and their precedence, SIGHUP-not-handled, the 25 startup steps, the seven `#[instrument]` spans and the request-log record are oracle cells diffed against the 1.5.5 binary (PB-54). The 1.6.0 verbs, the dual-control
-posture, the operator key, the journal, chains, checkpoints, anchors and the disputes report are
+posture, the operator key, the journal, chains, checkpoints, anchors and the exceptions report are
 NEW SURFACE reachable only through new endpoints and new config keys; nothing 1.5.5 exposes gains or
 loses a byte.
 
@@ -1498,7 +1519,7 @@ plane, content never in the chain · open vocabulary, closed shape · one durabi
 ≥ 120k rps and ≤ 15 MB are gates · zero config changes, admin API a superset, single-admin operating
 model kept · **residual risk accepted under `single`: a single admin can change prices, destination
 allow-lists, hook destination steering, unpriced admission, fail-open hook policy, revocation grace, and
-adjustments below `adjust_threshold`, `set_overdraft_ceiling` and `grace_slices_per_window` (the two knobs that let money move past a cap), `set_dispute_max_age` (which can hide overdue disputes), and `tier_bp` (which moves every posting in its chain, bounded ≤ 10×, a ledger-endpoint line (PB-16)) — journaled, alarmed and shown on the ledger endpoint (PB-16); and on an upgraded
+`grace_slices_per_window` (the one knob left that lets money move past a cap — the two that stood beside it, `adjustments below adjust_threshold` and `set_overdraft_ceiling`, are gone with the correction verbs, and so is `set_dispute_max_age`, which could hide an overdue dispute), and `tier_bp` (which moves every posting in its chain, bounded ≤ 10×, a ledger-endpoint line (PB-16)); a single admin can also `amend_rate_history`, which REPRICES every read of every affected window at once — the risk is real and it is bounded differently from the deleted verbs: an appended rate row is visible, dated, attributed and superseded rather than deleted, so what it did can always be read back, which is not true of an adjustment that moved a figure — journaled, alarmed and shown on the ledger endpoint (PB-16); and on an upgraded
 fleet, until the operator-key ceremony runs, `set_operator_key` is admitted with the admin credential
 alone and the binary-digest set is `any` (the root of trust and the binary attestation are open to
 whoever holds admin during that window, and `export_keyset` seals the keyset to any recipient key that
@@ -1507,7 +1528,9 @@ admin names — journaled, alarmed, on the ledger endpoint (PB-16)); and hooks m
 at 0 until priced; and under BOTH postures ANY token-exchange principal mints `user:*` template
 instances without a second approver, unbounded when `max_auto_provisioned_groups = 0`** ·
 the default anchor is
-self-attestation and says so · the ledger posts the lower evidence and reports within `dispute_max_age` ·
+self-attestation and says so · the ledger posts the lower evidence and FLAGS it, permanently and with
+no verdict to wait for — a correction, if the operator wants one, is the calling app's to make against
+the exported line ·
 **maximum-spec-compliance (owner rule):** where the published 1.5.5 bytes deviate from a provider's
 own published spec, the spec wins and the difference is registered in `accepted-differences.json` as
 `improvement` (owner sign-off, named in the CHANGELOG) rather than reproduced as a bug — first cases:
@@ -1793,4 +1816,4 @@ published 1.5.5 binary.
 | PB-99 | legacy rows, hydrate and erasure | `flush_metering` writes `key_group_at_use: ""`, `pricing_version: ""`, `billable_requests: counts.requests`; hydrate trusts `billable_requests` verbatim (no re-derive); every pre-routing rejection runs `finish_rejected`, so a 401/404/413/429 still increments `busbar_requests_total` and the duration summary at `pool="unresolved"` and fires the request-log webhook; the `logs` record and those two metrics fire ONCE per client request in `finish_inner` — never for Handshake, Tick, nested or `Delivery` units on a 1.5.5 deployment; `delete_key` destroys usage rows and credentials but KEEPS metering rows, `scrub_key` nulls PII on a tombstone, and the legacy `/usage` projection follows those rows (the journal's erasure exemption is a 1.6.0 endpoint matter); reads DEGRADE during a store outage exactly as governance :616-681 (`derived_bucket_usage` errors only for an absent/stale cell, `bucket_model_tokens` empty, the scrape skips affected gauges); the 13 gauges are scrape-time derived under `spawn_blocking`, `idle_timeout` evicts gauges only after 86,400 s, the summary is a rolling `buffer_seconds/3` window, `budget_remaining_cents` only for a capped bucket, `lane_available_permits` only for bounded lanes | governance :559, :616-694; routes-admin :230-233; ops :477-553, :773-798; plugins-stores :976-977, :1175 |
 | PB-100 | admin wire details | `with_config_etag` stamps `ETag: "<config_version>"`; `if_match_version` parses `*` / bare / quoted / weak else 400 `MalformedIfMatch`, stale ⇒ 409 `version_conflict` on the ~20 config-plane mutations; every audit action is written at BOTH `applied` and `rejected` with the resource literals (`KEY_RESOURCE_NONE = "key:-"`, `config:settings`, `"process"`); `durable_write_through` / `rebase_nondurable_suffix` gap backfill and `restore_from_store`'s re-verify, `fetch_max` seq floor and seal-on-digest-failure; `VersionLog` `MAX_VERSIONS = 100`, RAM-only, re-seeded at boot (`GET /config/versions` lists only version 0 after a restart — the journal never feeds it); `POST /auth/token` returns `200 {api_key, key_id, group, exp, base_url}` (`base_url` = `public_url` verbatim) and its five refusals in the flat `{"error":"<msg>"}` envelope, with `resolve_exchange` (pools = union across granting bindings, one-key-per-sub upsert, `first_free_self_epoch`); the `GET /auth/token` flow verbatim (constant-time `state`, `id_token` nonce, `MAX_HOPS = 6`, host allowlist and `ssrf_blocked_host`, `FORBIDDEN_HOP_HEADERS`, the `busbar_login` cookie, the exact 400/401/403/502 pages); the data-plane 405 protocol-native envelope, NO CORS layer ever, `OPTIONS` ⇒ `None`, `HEAD` ⇒ `RouteMethod::Get` on plugin routes, `CONNECT`/`TRACE` ⇒ `None`, the six reserved exact paths with their mount-refusal literals, `authorization` never forwarded to a plugin; `/v1/models` picks its envelope by its OWN fingerprint (`anthropic-version`, else gemini path or `x-goog-api-key`, else openai — no `x-api-key` rung); the gemini path-404 family and path-derived `api_version` | routes-admin :124-141, :167, :198-201, :315-320, :590-595, :606, :627-628, :655-683, :714-726; auth-secrets :874-1144 |
 | PB-101 | inbound auth details | inbound Bedrock SigV4 verbatim (three-way gate, `chain: []` stays open, pre-buffer structural gate, `UNSIGNED-PAYLOAD` refused, constant-time compare, `DUMMY_SECRET`, the six-row admission matrix); mTLS is required-or-none with no `.allow_unauthenticated()`, the client cert is NEVER mapped to a principal, CN, SAN or fingerprint and has no HTTP status for a rejection — `ClientCertSubject` selectors and the `ClientCert` location are 1.6.0-native only; body-read: `MIN_BODY_THROUGHPUT_BYTES_PER_SEC = 1024`, `BODY_THROUGHPUT_GRACE = 10 s`, the total body deadline `translate_body_max_bytes() / 1024`, the read timeout inter-frame and reset on progress, no ingress whole-request deadline | auth-secrets :167-210, :2205-2214, :2261-2270; routes-admin :510-515 |
-| PB-102 | alarms and the disputes report | an alarm and a disputes-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (the ops inventory's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this | ops §5.3, O3 |
+| PB-102 | alarms and the exceptions report | an alarm and a exceptions-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (the ops inventory's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this | ops §5.3, O3 |
