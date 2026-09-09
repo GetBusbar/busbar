@@ -468,6 +468,18 @@
     "retired": false
   },
   {
+    "code": "BUSBAR-3023",
+    "number": 3023,
+    "class": "config",
+    "slug": "config-class-unpriced",
+    "title": "an enabled plane reports a meter class with no rate row (boot refused)",
+    "severity": "fatal",
+    "summary": "A `rate_card` is present -- the deployment has opted into pricing -- but an enabled plane declares a meter class that has no rate row on one of its lanes. Money is a read-time conversion of a quantity against the rate row in force for its (lane, class), so a class with no row prices to nothing: the quantity is metered, the invoice is short by whatever it was worth, and nothing anywhere reports it. This is a REFUSAL rather than a warning because the failure is silent by construction -- an operator reading a total has no way to tell an under-bill from an honest one.",
+    "action": "Price the named (lane, class) under `rate_card` in micro-units per unit. If the class is genuinely free on that lane, say so with an EXPLICIT ZERO rate: free is a stated price, and a stated zero is what tells the next reader it was a decision. A deployment that configures no `rate_card` at all is not affected -- it has not opted into pricing, and boots exactly as before.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
     "code": "BUSBAR-4001",
     "number": 4001,
     "class": "auth",

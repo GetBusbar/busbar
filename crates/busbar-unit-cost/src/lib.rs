@@ -55,6 +55,7 @@
 //! projection still reads that way. A property test asserts the two agree: the lookup over a
 //! single-entry history equals the legacy derivation at that card, exactly.
 
+mod coverage;
 mod currency;
 mod history;
 mod posting;
@@ -62,6 +63,7 @@ mod project;
 mod rate;
 mod table;
 
+pub use coverage::{refusal, unpriced_cells, PlaneClasses, UnpricedCell};
 pub use currency::CurrencyCode;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
 pub use posting::{
