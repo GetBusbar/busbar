@@ -1,0 +1,35 @@
+# WHAT CI's keep-proof JOB MUST PROVE ABOUT THIS BRANCH.
+#
+# Branch: keep-voice-tool-args — finding H3 of `codeaudit-planes-codecs-rB.md` (the voice plane
+# discards every streamed tool-call argument), cut on `keep-planes-rB-fixes` (f58fa8692). Four
+# commits: the codec's wire-fidelity defect, the plane's data loss, the two seams the design rests
+# on, and the retirement of the ratified declaration that was naming the defect.
+#
+# `tests` is the two crates this branch changed, plus the composition root. The root is included
+# deliberately rather than out of habit: this cut MOVES THE SHAPE the plane answers a tool call
+# with. `CallOpen` used to return `Progress::OneShot` and now returns `Progress::Frame`; the unit is
+# minted one event later, at `CallClose`. Anything in the root that drives `decode_response` and
+# reacts to which variant came back is judging a different answer than it was, so the root is in
+# scope even though no file under it changed.
+#
+# `families` is the assigned pair, anchored `([|.]|$)` so a family name is matched whole — at a
+# pipe, at a dot, or at the end. A bare `[|]` matches a literal pipe and therefore selects nothing
+# under `replay --family`.
+#
+# NOT claimed here, and stated rather than left to be discovered: no oracle recording was taken
+# locally for these families. The owner's process change stopped local workspace builds and local
+# oracle recordings mid-run, so the recording this cut would otherwise have carried is CI's to take.
+# The families below are what it must take it over.
+
+families = '^(neutrality|admin\.ops)([|.]|$)'
+
+tests = [
+  "busbar-voice-codec",
+  "busbar-plane-voice",
+  "busbar",
+]
+
+# The construction-gate row the landing line names. `loc-ceilings` is the one this cut can move:
+# it adds a queue field and three arms to `busbar-plane-voice/src/plane.rs` and a queue plus its
+# ceiling to `session.rs`.
+gate = 'loc-ceilings'
