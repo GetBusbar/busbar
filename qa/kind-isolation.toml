@@ -110,3 +110,2949 @@ reason = "the configuration surface being carved out of busbar-core; core kind, 
 crate = "busbar-core-hooks"
 kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
+
+# ------------------------------------------------------------------------------------------------
+# [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
+# ------------------------------------------------------------------------------------------------
+#
+# > "it's not just planes, it's everything. core is core, plugins are plugins, transport,
+# > everything. HAS TO BE PERFECT AND CLEAN." — owner, 2026-09-08
+#
+# The rows above are about the DEPENDENCY graph and the kind of a crate. These three are about its
+# VOCABULARY: `kind-isolation:matrix` counts, for every kind K and every crate C under `crates/`,
+# how many times C names K's derived vocabulary — K's member package names, their kind-qualified
+# ids, and (for the plane and transport families, the two the kind table itself calls instance
+# vocabularies) their bare ids. Every `.rs` and `.toml` under the crate, WHOLE TEXT: identifiers,
+# string literals, doc comments, ordinary comments, `cfg` attributes, Cargo dependency and feature
+# names, and the file's own path. TESTS ARE NOT EXCLUDED, and the COMPOSITION ROOT IS NOT EXEMPT —
+# `crates/busbar/src/root/**` hand-wires one file per plane, and a plane-named accept loop was
+# landed beside it, all of it green because nothing counted it.
+#
+#   [[edge]]         from, to, cite, why, drain — one per kind -> kind CLASS. `cite` is the
+#                    ARCHITECTURE.md clause that grants the edge, or the words that say none does;
+#                    `drain` is the line that deletes it, because a ceiling with no route to zero is
+#                    a ceiling nobody drains. The prose is on the class because that is what a
+#                    reader reads.
+#   [[cell]]         crate, kind, count — TODAY'S MEASURED NUMBER, exactly. Not a budget. The number
+#                    is on the crate because that is what the ratchet moves.
+#   [[disagreement]] crate, kind, note — a cell whose two independent scanners return different
+#                    totals. The scored count is always the HIGHER of the two; the row records which
+#                    spelling they read differently, and it is RED to carry a disagreement without
+#                    one.
+#
+# THE RATCHET IS EXACT IN BOTH DIRECTIONS. A count above its row is the landing that grew the
+# coupling; a count BELOW it is stale slack, and stale slack is how drift hides. A row whose cell
+# measures zero is a dead allowance and must be struck. A cell above zero with no `[[edge]]` class
+# is an UNLISTED EDGE and is refused whatever ARCHITECTURE.md may or may not grant.
+#
+# `cargo xtask gate kind-isolation --report` prints the whole matrix, these classes, and the DRAIN
+# LIST — every hit, file:line — so each file is handed its deleting line rather than re-derived.
+#
+# The SHIP twin owes this row at ZERO everywhere and does not read these tables at all: what is
+# written here is what 1.6.0 still has to delete.
+
+[[edge]]
+from = "api"
+to = "auth"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name auth vocabulary. Every hit is a coupling to delete."
+why = "crates of kind api naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the auth name from the api crate: a api reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "api"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind api naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "api"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind api naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "api"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind api naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the api crate: a api reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "api"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind api naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the api crate: a api reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "api"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
+why = "crates of kind api naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the api crate: a api reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "api"
+to = "store"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
+why = "crates of kind api naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the store name from the api crate: a api reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "api"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind api has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind api naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the api crate: a api reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "auth"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind auth naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW auth -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "auth"
+to = "auth"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind auth has no clause that lets it name auth vocabulary. Every hit is a coupling to delete."
+why = "crates of kind auth naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the auth name from the auth crate: a auth reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "auth"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind auth naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "auth"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind auth has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind auth naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the auth crate: a auth reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "auth"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind auth has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
+why = "crates of kind auth naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the auth crate: a auth reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "caps"
+to = "contract-transport"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind caps naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW caps -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "caps"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind caps naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "caps"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind caps naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "codec"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind codec naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW codec -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "codec"
+to = "codec"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind codec has no clause that lets it name codec vocabulary. Every hit is a coupling to delete."
+why = "crates of kind codec naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the codec name from the codec crate: a codec reaches codec through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "codec"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind codec naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "codec"
+to = "grammar"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind codec naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW codec -> grammar coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "codec"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind codec naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "codec"
+to = "plane"
+cite = "ARCHITECTURE.md 6 — a codec IS a plane other half and is named after it by design. The clause covers the codec naming ITS OWN plane only."
+why = "crates of kind codec naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the codec crate: a codec reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "codec"
+to = "substrate"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — substrate is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind codec naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW codec -> substrate coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "codec"
+to = "timing"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — timing is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind codec naming timing vocabulary: timing package names in any spelling, the kind-qualified id (timing-<id>), and — where timing is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW codec -> timing coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "codec"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind codec has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind codec naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the codec crate: a codec reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind contract naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW contract -> caps coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "contract"
+to = "contract-transport"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind contract naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW contract -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "contract"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind contract naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "contract"
+to = "grammar"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind contract naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW contract -> grammar coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "contract"
+to = "kernel"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind contract naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW contract -> kernel coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "contract"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind contract naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "contract"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind contract has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind contract naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the contract crate: a contract reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind contract has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
+why = "crates of kind contract naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the contract crate: a contract reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind contract has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind contract naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the contract crate: a contract reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract-transport"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind contract-transport naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "contract-transport"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind contract-transport has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind contract-transport naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the contract-transport crate: a contract-transport reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract-transport"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind contract-transport has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind contract-transport naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the contract-transport crate: a contract-transport reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "control"
+to = "contract-transport"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind control naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW control -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "control"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind control naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "control"
+to = "plane"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind control naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "control"
+to = "secret"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind control naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "control"
+to = "transport"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind control naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "control"
+to = "unit"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind control naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "export"
+to = "hooks"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
+why = "crates of kind export naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the hooks name from the export crate: a export reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "export"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind export naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the export crate: a export reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "export"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind export naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the export crate: a export reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "export"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
+why = "crates of kind export naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the export crate: a export reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "export"
+to = "store"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind export has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
+why = "crates of kind export naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the store name from the export crate: a export reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "grammar"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind grammar has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind grammar naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the grammar crate: a grammar reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "hooks"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind hooks naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW hooks -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "hooks"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind hooks has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind hooks naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the hooks crate: a hooks reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "kernel"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind kernel naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW kernel -> caps coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "kernel"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind kernel naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "kernel"
+to = "grammar"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind kernel naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW kernel -> grammar coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "kernel"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind kernel has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind kernel naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the kernel crate: a kernel reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "kernel"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind kernel has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind kernel naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the kernel crate: a kernel reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "legacy"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind legacy naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "auth"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind legacy naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "codec"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "control"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "hooks"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "kernel"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind legacy naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "plane"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "plugin-tooling"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "secret"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "store"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "substrate"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — substrate is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind legacy naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "timing"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — timing is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind legacy naming timing vocabulary: timing package names in any spelling, the kind-qualified id (timing-<id>), and — where timing is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "transport"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "unit"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind legacy naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "plane"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plane naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plane -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plane"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plane naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plane -> caps coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plane"
+to = "codec"
+cite = "ARCHITECTURE.md 3.2 and 6 — a plane and its codec are the two halves of one plane, and the dialect split is what turns the half into busbar-plane-<p>-<d>. The plane may name ITS OWN half and nothing else; a cross-instance hit here is what the :deps row refuses."
+why = "crates of kind plane naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the codec name from the plane crate: a plane reaches codec through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plane"
+to = "contract-transport"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plane naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plane -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plane"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind plane naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "plane"
+to = "kernel"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plane naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plane -> kernel coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plane"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind plane naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "plane"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plane has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind plane naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the plane crate: a plane reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plane"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plane has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind plane naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the plane crate: a plane reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-abi"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plugin-abi naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-abi -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plugin-abi"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind plugin-abi naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "plugin-abi"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind plugin-abi naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "plugin-abi"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind plugin-abi naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the plugin-abi crate: a plugin-abi reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-abi"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind plugin-abi naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the plugin-abi crate: a plugin-abi reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-abi"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind plugin-abi naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the plugin-abi crate: a plugin-abi reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-abi"
+to = "unit"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind plugin-abi has no clause that lets it name unit vocabulary. Every hit is a coupling to delete."
+why = "crates of kind plugin-abi naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the unit name from the plugin-abi crate: a plugin-abi reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plugin-tooling naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-tooling -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plugin-tooling"
+to = "auth"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a auth name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the auth name from the plugin-tooling crate: a plugin-tooling reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plugin-tooling naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-tooling -> caps coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plugin-tooling"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind plugin-tooling naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "plugin-tooling"
+to = "export"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a export name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming export vocabulary: export package names in any spelling, the kind-qualified id (export-<id>), and — where export is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the export name from the plugin-tooling crate: a plugin-tooling reaches export through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "hooks"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a hooks name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the hooks name from the plugin-tooling crate: a plugin-tooling reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "kernel"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind plugin-tooling naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW plugin-tooling -> kernel coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "plugin-tooling"
+to = "plane"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a plane name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the plugin-tooling crate: a plugin-tooling reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "plugin-tooling"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a plugin-tooling name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the plugin-tooling crate: a plugin-tooling reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "secret"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a secret name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the plugin-tooling crate: a plugin-tooling reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "store"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a store name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the store name from the plugin-tooling crate: a plugin-tooling reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "transport"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a transport name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the plugin-tooling crate: a plugin-tooling reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "plugin-tooling"
+to = "unit"
+cite = "none by clause. The loader, packer, signer and SDK are the tools that BUILD plugins, so a unit name in them is a tool naming its subject; ARCHITECTURE.md 7 keeps them a kind of their own for exactly that reason, and the number says how much of the subject leaked into the tool."
+why = "crates of kind plugin-tooling naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the unit name from the plugin-tooling crate: a plugin-tooling reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "root"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind root naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-api wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the api itself."
+
+[[edge]]
+from = "root"
+to = "auth"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A auth name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-auth wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the auth itself."
+
+[[edge]]
+from = "root"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind root naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-caps wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the caps itself."
+
+[[edge]]
+from = "root"
+to = "codec"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A codec name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-codec wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the codec itself."
+
+[[edge]]
+from = "root"
+to = "contract-transport"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind root naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-contract-transport wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the contract-transport itself."
+
+[[edge]]
+from = "root"
+to = "control"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A control name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-control wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the control itself."
+
+[[edge]]
+from = "root"
+to = "hooks"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A hooks name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-hooks wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the hooks itself."
+
+[[edge]]
+from = "root"
+to = "kernel"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind root naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-kernel wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the kernel itself."
+
+[[edge]]
+from = "root"
+to = "legacy"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A legacy name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-legacy wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the legacy itself."
+
+[[edge]]
+from = "root"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A plane name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-plane wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the plane itself."
+
+[[edge]]
+from = "root"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A plugin-tooling name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-plugin-tooling wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the plugin-tooling itself."
+
+[[edge]]
+from = "root"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A secret name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-secret wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the secret itself."
+
+[[edge]]
+from = "root"
+to = "store"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A store name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-store wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the store itself."
+
+[[edge]]
+from = "root"
+to = "substrate"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — substrate is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind root naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-substrate wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the substrate itself."
+
+[[edge]]
+from = "root"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A transport name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-transport wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the transport itself."
+
+[[edge]]
+from = "root"
+to = "unit"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A unit name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-unit wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the unit itself."
+
+[[edge]]
+from = "secret"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind secret naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW secret -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "secret"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind secret naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "secret"
+to = "hooks"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
+why = "crates of kind secret naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the hooks name from the secret crate: a secret reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "secret"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind secret naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "secret"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind secret naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the secret crate: a secret reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "secret"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind secret naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the secret crate: a secret reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "secret"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind secret has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind secret naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the secret crate: a secret reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "store"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind store naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW store -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "store"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind store naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "store"
+to = "kernel"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind store naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW store -> kernel coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "store"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind store naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "store"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind store naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the store crate: a store reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "store"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind store naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the store crate: a store reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "store"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
+why = "crates of kind store naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the store crate: a store reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "store"
+to = "store"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind store has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
+why = "crates of kind store naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the store name from the store crate: a store reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind substrate naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW substrate -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "substrate"
+to = "auth"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name auth vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming auth vocabulary: auth package names in any spelling, the kind-qualified id (auth-<id>), and — where auth is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the auth name from the substrate crate: a substrate reaches auth through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "codec"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name codec vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the codec name from the substrate crate: a substrate reaches codec through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind substrate naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "substrate"
+to = "hooks"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the hooks name from the substrate crate: a substrate reaches hooks through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind substrate naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "substrate"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the substrate crate: a substrate reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "plugin-tooling"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name plugin-tooling vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming plugin-tooling vocabulary: plugin-tooling package names in any spelling, the kind-qualified id (plugin-tooling-<id>), and — where plugin-tooling is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plugin-tooling name from the substrate crate: a substrate reaches plugin-tooling through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the substrate crate: a substrate reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "store"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name store vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming store vocabulary: store package names in any spelling, the kind-qualified id (store-<id>), and — where store is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the store name from the substrate crate: a substrate reaches store through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
+to = "substrate"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — substrate is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind substrate naming substrate vocabulary: substrate package names in any spelling, the kind-qualified id (substrate-<id>), and — where substrate is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW substrate -> substrate coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "substrate"
+to = "timing"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — timing is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind substrate naming timing vocabulary: timing package names in any spelling, the kind-qualified id (timing-<id>), and — where timing is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW substrate -> timing coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "substrate"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind substrate naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the substrate crate: a substrate reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "timing"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind timing naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "timing"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind timing has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind timing naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the timing crate: a timing reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "timing"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind timing has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind timing naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the timing crate: a timing reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "transport"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind transport naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW transport -> caps coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "transport"
+to = "contract-transport"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind transport naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW transport -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "transport"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind transport naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "transport"
+to = "kernel"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind transport naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW transport -> kernel coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "transport"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind transport naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "transport"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind transport has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind transport naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the transport crate: a transport reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "transport"
+to = "secret"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind transport has no clause that lets it name secret vocabulary. Every hit is a coupling to delete."
+why = "crates of kind transport naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the secret name from the transport crate: a transport reaches secret through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "transport"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind transport has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind transport naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the transport crate: a transport reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "transport"
+to = "unit"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind transport has no clause that lets it name unit vocabulary. Every hit is a coupling to delete."
+why = "crates of kind transport naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the unit name from the transport crate: a transport reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "unit"
+to = "api"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind unit naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW unit -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "unit"
+to = "caps"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — caps is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind unit naming caps vocabulary: caps package names in any spelling, the kind-qualified id (caps-<id>), and — where caps is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW unit -> caps coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "unit"
+to = "contract-transport"
+cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — contract-transport is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
+why = "crates of kind unit naming contract-transport vocabulary: contract-transport package names in any spelling, the kind-qualified id (contract-transport-<id>), and — where contract-transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW unit -> contract-transport coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+
+[[edge]]
+from = "unit"
+to = "control"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
+why = "crates of kind unit naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "unit"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind unit naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "unit"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind unit has no clause that lets it name plane vocabulary. Every hit is a coupling to delete."
+why = "crates of kind unit naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the plane name from the unit crate: a unit reaches plane through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "unit"
+to = "transport"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind unit has no clause that lets it name transport vocabulary. Every hit is a coupling to delete."
+why = "crates of kind unit naming transport vocabulary: transport package names in any spelling, the kind-qualified id (transport-<id>), and — where transport is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the transport name from the unit crate: a unit reaches transport through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "unit"
+to = "unit"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind unit has no clause that lets it name unit vocabulary. Every hit is a coupling to delete."
+why = "crates of kind unit naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the unit name from the unit crate: a unit reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[cell]]
+crate = "busbar"
+kind = "api"
+count = "122"
+
+[[cell]]
+crate = "busbar"
+kind = "auth"
+count = "25"
+
+[[cell]]
+crate = "busbar"
+kind = "caps"
+count = "302"
+
+[[cell]]
+crate = "busbar"
+kind = "codec"
+count = "5"
+
+[[cell]]
+crate = "busbar"
+kind = "contract-transport"
+count = "18"
+
+[[cell]]
+crate = "busbar"
+kind = "control"
+count = "1063"
+
+[[cell]]
+crate = "busbar"
+kind = "hooks"
+count = "5"
+
+[[cell]]
+crate = "busbar"
+kind = "kernel"
+count = "158"
+
+[[cell]]
+crate = "busbar"
+kind = "legacy"
+count = "98"
+
+[[cell]]
+crate = "busbar"
+kind = "plane"
+count = "1798"
+
+[[cell]]
+crate = "busbar"
+kind = "plugin-tooling"
+count = "28"
+
+[[cell]]
+crate = "busbar"
+kind = "secret"
+count = "5"
+
+[[cell]]
+crate = "busbar"
+kind = "store"
+count = "6"
+
+[[cell]]
+crate = "busbar"
+kind = "substrate"
+count = "9"
+
+[[cell]]
+crate = "busbar"
+kind = "transport"
+count = "939"
+
+[[cell]]
+crate = "busbar"
+kind = "unit"
+count = "1169"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "api"
+count = "210"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "auth"
+count = "10"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "codec"
+count = "40"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "control"
+count = "172"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "hooks"
+count = "4"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "kernel"
+count = "1"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "legacy"
+count = "60"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "plane"
+count = "2758"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "plugin-tooling"
+count = "7"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "secret"
+count = "35"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "store"
+count = "51"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "transport"
+count = "1270"
+
+[[cell]]
+crate = "busbar-a2a-codec"
+kind = "api"
+count = "7"
+
+[[cell]]
+crate = "busbar-a2a-codec"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-a2a-codec"
+kind = "plane"
+count = "102"
+
+[[cell]]
+crate = "busbar-a2a-codec"
+kind = "transport"
+count = "13"
+
+[[cell]]
+crate = "busbar-api"
+kind = "auth"
+count = "2"
+
+[[cell]]
+crate = "busbar-api"
+kind = "control"
+count = "28"
+
+[[cell]]
+crate = "busbar-api"
+kind = "legacy"
+count = "2"
+
+[[cell]]
+crate = "busbar-api"
+kind = "plane"
+count = "107"
+
+[[cell]]
+crate = "busbar-api"
+kind = "plugin-tooling"
+count = "2"
+
+[[cell]]
+crate = "busbar-api"
+kind = "secret"
+count = "37"
+
+[[cell]]
+crate = "busbar-api"
+kind = "store"
+count = "1"
+
+[[cell]]
+crate = "busbar-api"
+kind = "transport"
+count = "11"
+
+[[cell]]
+crate = "busbar-auth-admin-tokens"
+kind = "api"
+count = "3"
+
+[[cell]]
+crate = "busbar-auth-admin-tokens"
+kind = "control"
+count = "49"
+
+[[cell]]
+crate = "busbar-auth-static-plugin"
+kind = "api"
+count = "5"
+
+[[cell]]
+crate = "busbar-auth-static-plugin"
+kind = "auth"
+count = "2"
+
+[[cell]]
+crate = "busbar-auth-static-plugin"
+kind = "control"
+count = "2"
+
+[[cell]]
+crate = "busbar-auth-static-plugin"
+kind = "plugin-tooling"
+count = "2"
+
+[[cell]]
+crate = "busbar-auth-static-plugin"
+kind = "secret"
+count = "4"
+
+[[cell]]
+crate = "busbar-caps"
+kind = "contract-transport"
+count = "1"
+
+[[cell]]
+crate = "busbar-caps"
+kind = "control"
+count = "11"
+
+[[cell]]
+crate = "busbar-caps"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "caps"
+count = "2"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "contract-transport"
+count = "16"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "control"
+count = "20"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "grammar"
+count = "7"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "kernel"
+count = "1"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "plane"
+count = "42"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "secret"
+count = "6"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "transport"
+count = "41"
+
+[[cell]]
+crate = "busbar-contract-transport"
+kind = "control"
+count = "5"
+
+[[cell]]
+crate = "busbar-contract-transport"
+kind = "plane"
+count = "8"
+
+[[cell]]
+crate = "busbar-contract-transport"
+kind = "transport"
+count = "183"
+
+[[cell]]
+crate = "busbar-core"
+kind = "api"
+count = "603"
+
+[[cell]]
+crate = "busbar-core"
+kind = "auth"
+count = "94"
+
+[[cell]]
+crate = "busbar-core"
+kind = "codec"
+count = "4"
+
+[[cell]]
+crate = "busbar-core"
+kind = "control"
+count = "5200"
+
+[[cell]]
+crate = "busbar-core"
+kind = "hooks"
+count = "46"
+
+[[cell]]
+crate = "busbar-core"
+kind = "plane"
+count = "3033"
+
+[[cell]]
+crate = "busbar-core"
+kind = "plugin-tooling"
+count = "265"
+
+[[cell]]
+crate = "busbar-core"
+kind = "secret"
+count = "319"
+
+[[cell]]
+crate = "busbar-core"
+kind = "store"
+count = "104"
+
+[[cell]]
+crate = "busbar-core"
+kind = "substrate"
+count = "1"
+
+[[cell]]
+crate = "busbar-core"
+kind = "timing"
+count = "9"
+
+[[cell]]
+crate = "busbar-core"
+kind = "transport"
+count = "2117"
+
+[[cell]]
+crate = "busbar-core"
+kind = "unit"
+count = "10"
+
+[[cell]]
+crate = "busbar-export-example-plugin"
+kind = "hooks"
+count = "1"
+
+[[cell]]
+crate = "busbar-export-example-plugin"
+kind = "plane"
+count = "3"
+
+[[cell]]
+crate = "busbar-export-example-plugin"
+kind = "plugin-tooling"
+count = "3"
+
+[[cell]]
+crate = "busbar-export-example-plugin"
+kind = "secret"
+count = "2"
+
+[[cell]]
+crate = "busbar-export-example-plugin"
+kind = "store"
+count = "1"
+
+[[cell]]
+crate = "busbar-grammar"
+kind = "transport"
+count = "12"
+
+[[cell]]
+crate = "busbar-hook-test-plugin"
+kind = "plugin-tooling"
+count = "4"
+
+[[cell]]
+crate = "busbar-hooks-ranking"
+kind = "api"
+count = "4"
+
+[[cell]]
+crate = "busbar-kernel"
+kind = "caps"
+count = "68"
+
+[[cell]]
+crate = "busbar-kernel"
+kind = "control"
+count = "24"
+
+[[cell]]
+crate = "busbar-kernel"
+kind = "grammar"
+count = "5"
+
+[[cell]]
+crate = "busbar-kernel"
+kind = "plane"
+count = "1"
+
+[[cell]]
+crate = "busbar-kernel"
+kind = "transport"
+count = "4"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "api"
+count = "301"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "auth"
+count = "3"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "caps"
+count = "47"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "codec"
+count = "25"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "control"
+count = "88"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "hooks"
+count = "2"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "kernel"
+count = "3"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "legacy"
+count = "79"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "plane"
+count = "300"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "secret"
+count = "4"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "store"
+count = "119"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "timing"
+count = "12"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "transport"
+count = "1206"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "unit"
+count = "14"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "api"
+count = "78"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "legacy"
+count = "60"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "plane"
+count = "284"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "substrate"
+count = "904"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "timing"
+count = "13"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "transport"
+count = "596"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "api"
+count = "135"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "auth"
+count = "9"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "codec"
+count = "42"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "control"
+count = "153"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "hooks"
+count = "7"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "legacy"
+count = "57"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "plane"
+count = "3345"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "plugin-tooling"
+count = "7"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "secret"
+count = "13"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "store"
+count = "57"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "transport"
+count = "1111"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "api"
+count = "12"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "codec"
+count = "1"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "control"
+count = "3"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "grammar"
+count = "4"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "legacy"
+count = "8"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "plane"
+count = "241"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "substrate"
+count = "38"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "transport"
+count = "16"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "caps"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "codec"
+count = "45"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "contract-transport"
+count = "7"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "control"
+count = "13"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "kernel"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "legacy"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "plane"
+count = "17"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "transport"
+count = "103"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "contract-transport"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "legacy"
+count = "8"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "plane"
+count = "3"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "secret"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "transport"
+count = "24"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "unit"
+count = "16"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "caps"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "codec"
+count = "18"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "contract-transport"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "control"
+count = "12"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "kernel"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "plane"
+count = "5"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "transport"
+count = "35"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "caps"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "codec"
+count = "33"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "control"
+count = "10"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "kernel"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "legacy"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "plane"
+count = "15"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "transport"
+count = "82"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "api"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "codec"
+count = "24"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "contract-transport"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "control"
+count = "13"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "plane"
+count = "43"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "transport"
+count = "102"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "api"
+count = "58"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "control"
+count = "34"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "legacy"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "plane"
+count = "81"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "plugin-tooling"
+count = "4"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "transport"
+count = "137"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "unit"
+count = "12"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "api"
+count = "72"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "auth"
+count = "1"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "caps"
+count = "6"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "control"
+count = "50"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "export"
+count = "29"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "hooks"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "kernel"
+count = "8"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "plane"
+count = "55"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "plugin-tooling"
+count = "19"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "secret"
+count = "19"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "store"
+count = "66"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "transport"
+count = "41"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "unit"
+count = "42"
+
+[[cell]]
+crate = "busbar-plugin-pack"
+kind = "control"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-pack"
+kind = "plugin-tooling"
+count = "31"
+
+[[cell]]
+crate = "busbar-plugin-pack"
+kind = "secret"
+count = "13"
+
+[[cell]]
+crate = "busbar-plugin-pack"
+kind = "transport"
+count = "14"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "api"
+count = "61"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "control"
+count = "1"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "plane"
+count = "20"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "store"
+count = "7"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "transport"
+count = "44"
+
+[[cell]]
+crate = "busbar-plugin-sign"
+kind = "control"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-sign"
+kind = "plugin-tooling"
+count = "4"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "api"
+count = "10"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "plane"
+count = "5"
+
+[[cell]]
+crate = "busbar-secret-example-plugin"
+kind = "api"
+count = "4"
+
+[[cell]]
+crate = "busbar-secret-example-plugin"
+kind = "hooks"
+count = "1"
+
+[[cell]]
+crate = "busbar-secret-example-plugin"
+kind = "plugin-tooling"
+count = "3"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "control"
+count = "3"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "plane"
+count = "1"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "plugin-tooling"
+count = "2"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "transport"
+count = "2"
+
+[[cell]]
+crate = "busbar-store-example-plugin"
+kind = "api"
+count = "6"
+
+[[cell]]
+crate = "busbar-store-example-plugin"
+kind = "control"
+count = "1"
+
+[[cell]]
+crate = "busbar-store-example-plugin"
+kind = "plane"
+count = "26"
+
+[[cell]]
+crate = "busbar-store-example-plugin"
+kind = "plugin-tooling"
+count = "11"
+
+[[cell]]
+crate = "busbar-store-example-plugin"
+kind = "secret"
+count = "3"
+
+[[cell]]
+crate = "busbar-store-example-plugin"
+kind = "store"
+count = "8"
+
+[[cell]]
+crate = "busbar-store-memory"
+kind = "api"
+count = "15"
+
+[[cell]]
+crate = "busbar-store-memory"
+kind = "control"
+count = "5"
+
+[[cell]]
+crate = "busbar-store-memory"
+kind = "kernel"
+count = "2"
+
+[[cell]]
+crate = "busbar-store-memory"
+kind = "legacy"
+count = "2"
+
+[[cell]]
+crate = "busbar-store-memory"
+kind = "plugin-tooling"
+count = "3"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "api"
+count = "134"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "auth"
+count = "3"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "control"
+count = "352"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "hooks"
+count = "2"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "legacy"
+count = "298"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "plane"
+count = "768"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "plugin-tooling"
+count = "1"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "secret"
+count = "35"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "store"
+count = "5"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "substrate"
+count = "26"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "timing"
+count = "3"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "transport"
+count = "1140"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "api"
+count = "31"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "codec"
+count = "1"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "control"
+count = "121"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "legacy"
+count = "134"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "plane"
+count = "162"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "secret"
+count = "5"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "timing"
+count = "4"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "transport"
+count = "367"
+
+[[cell]]
+crate = "busbar-timing"
+kind = "legacy"
+count = "5"
+
+[[cell]]
+crate = "busbar-timing"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-timing"
+kind = "transport"
+count = "1"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "caps"
+count = "3"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "contract-transport"
+count = "63"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "kernel"
+count = "6"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "plane"
+count = "47"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "transport"
+count = "132"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "caps"
+count = "3"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "contract-transport"
+count = "46"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "kernel"
+count = "6"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "legacy"
+count = "2"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "plane"
+count = "35"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "transport"
+count = "93"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "unit"
+count = "1"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "caps"
+count = "5"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "contract-transport"
+count = "31"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "plane"
+count = "3"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "transport"
+count = "126"
+
+[[cell]]
+crate = "busbar-transport-stdio"
+kind = "contract-transport"
+count = "46"
+
+[[cell]]
+crate = "busbar-transport-stdio"
+kind = "control"
+count = "3"
+
+[[cell]]
+crate = "busbar-transport-stdio"
+kind = "plane"
+count = "1"
+
+[[cell]]
+crate = "busbar-transport-stdio"
+kind = "transport"
+count = "6"
+
+[[cell]]
+crate = "busbar-transport-tcp"
+kind = "contract-transport"
+count = "34"
+
+[[cell]]
+crate = "busbar-transport-tcp"
+kind = "transport"
+count = "12"
+
+[[cell]]
+crate = "busbar-transport-tls"
+kind = "caps"
+count = "7"
+
+[[cell]]
+crate = "busbar-transport-tls"
+kind = "contract-transport"
+count = "33"
+
+[[cell]]
+crate = "busbar-transport-tls"
+kind = "control"
+count = "1"
+
+[[cell]]
+crate = "busbar-transport-tls"
+kind = "secret"
+count = "1"
+
+[[cell]]
+crate = "busbar-transport-tls"
+kind = "transport"
+count = "63"
+
+[[cell]]
+crate = "busbar-transport-tls"
+kind = "unit"
+count = "34"
+
+[[cell]]
+crate = "busbar-transport-ws"
+kind = "contract-transport"
+count = "70"
+
+[[cell]]
+crate = "busbar-transport-ws"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-transport-ws"
+kind = "transport"
+count = "165"
+
+[[cell]]
+crate = "busbar-unit-admission"
+kind = "caps"
+count = "48"
+
+[[cell]]
+crate = "busbar-unit-admission"
+kind = "control"
+count = "3"
+
+[[cell]]
+crate = "busbar-unit-admission"
+kind = "transport"
+count = "2"
+
+[[cell]]
+crate = "busbar-unit-admission"
+kind = "unit"
+count = "17"
+
+[[cell]]
+crate = "busbar-unit-audit"
+kind = "caps"
+count = "23"
+
+[[cell]]
+crate = "busbar-unit-audit"
+kind = "control"
+count = "87"
+
+[[cell]]
+crate = "busbar-unit-audit"
+kind = "plane"
+count = "6"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "api"
+count = "6"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "caps"
+count = "6"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "control"
+count = "24"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "transport"
+count = "2"
+
+[[cell]]
+crate = "busbar-unit-auth"
+kind = "unit"
+count = "4"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "caps"
+count = "11"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "legacy"
+count = "5"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "plane"
+count = "5"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "transport"
+count = "232"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "unit"
+count = "4"
+
+[[cell]]
+crate = "busbar-unit-cost"
+kind = "caps"
+count = "12"
+
+[[cell]]
+crate = "busbar-unit-cost"
+kind = "unit"
+count = "6"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "caps"
+count = "34"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "contract-transport"
+count = "55"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "control"
+count = "1"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "plane"
+count = "1"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "transport"
+count = "59"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "unit"
+count = "51"
+
+[[cell]]
+crate = "busbar-unit-egress-auth"
+kind = "caps"
+count = "7"
+
+[[cell]]
+crate = "busbar-unit-egress-auth"
+kind = "transport"
+count = "3"
+
+[[cell]]
+crate = "busbar-unit-egress-auth"
+kind = "unit"
+count = "4"
+
+[[cell]]
+crate = "busbar-unit-ledger"
+kind = "caps"
+count = "17"
+
+[[cell]]
+crate = "busbar-unit-ledger"
+kind = "unit"
+count = "20"
+
+[[cell]]
+crate = "busbar-unit-scope"
+kind = "caps"
+count = "3"
+
+[[cell]]
+crate = "busbar-unit-scope"
+kind = "control"
+count = "139"
+
+[[cell]]
+crate = "busbar-unit-scope"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-unit-scope"
+kind = "transport"
+count = "6"
+
+[[cell]]
+crate = "busbar-unit-transport-key"
+kind = "caps"
+count = "10"
+
+[[cell]]
+crate = "busbar-unit-transport-key"
+kind = "contract-transport"
+count = "3"
+
+[[cell]]
+crate = "busbar-unit-transport-key"
+kind = "legacy"
+count = "6"
+
+[[cell]]
+crate = "busbar-unit-transport-key"
+kind = "transport"
+count = "106"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "caps"
+count = "14"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "contract-transport"
+count = "8"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "plane"
+count = "20"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "transport"
+count = "45"
+
+[[cell]]
+crate = "busbar-unit-usage"
+kind = "caps"
+count = "19"
+
+[[cell]]
+crate = "busbar-unit-verbs"
+kind = "caps"
+count = "16"
+
+[[cell]]
+crate = "busbar-unit-verbs"
+kind = "control"
+count = "486"
+
+[[cell]]
+crate = "busbar-unit-verbs"
+kind = "legacy"
+count = "25"
+
+[[cell]]
+crate = "busbar-unit-verbs"
+kind = "transport"
+count = "6"
+
+[[cell]]
+crate = "busbar-unit-wal"
+kind = "caps"
+count = "37"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "api"
+count = "65"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "codec"
+count = "10"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "control"
+count = "17"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "legacy"
+count = "11"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "plane"
+count = "811"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "secret"
+count = "13"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "store"
+count = "1"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "transport"
+count = "290"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "api"
+count = "9"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "plane"
+count = "117"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "substrate"
+count = "15"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "transport"
+count = "19"
+
+[[disagreement]]
+crate = "busbar"
+kind = "plane"
+note = "segment scanner 1798, window scanner 1797. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar"
+kind = "transport"
+note = "segment scanner 930, window scanner 939. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-a2a"
+kind = "plane"
+note = "segment scanner 2758, window scanner 2738. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-a2a"
+kind = "transport"
+note = "segment scanner 1102, window scanner 1270. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-a2a-codec"
+kind = "plane"
+note = "segment scanner 102, window scanner 100. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-a2a-codec"
+kind = "transport"
+note = "segment scanner 7, window scanner 13. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-contract"
+kind = "transport"
+note = "segment scanner 39, window scanner 41. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-contract-transport"
+kind = "transport"
+note = "segment scanner 173, window scanner 183. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-core"
+kind = "plane"
+note = "segment scanner 3033, window scanner 3025. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-core"
+kind = "transport"
+note = "segment scanner 2089, window scanner 2116. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-llm"
+kind = "transport"
+note = "segment scanner 1205, window scanner 1206. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-llm-codec"
+kind = "transport"
+note = "segment scanner 591, window scanner 596. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-mcp-codec"
+kind = "plane"
+note = "segment scanner 241, window scanner 239. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-plane-a2a"
+kind = "transport"
+note = "segment scanner 100, window scanner 103. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-substrate"
+kind = "plane"
+note = "segment scanner 768, window scanner 767. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-substrate-values"
+kind = "plane"
+note = "segment scanner 162, window scanner 160. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-substrate-values"
+kind = "transport"
+note = "segment scanner 360, window scanner 367. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-unit-breaker"
+kind = "transport"
+note = "segment scanner 218, window scanner 232. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-unit-egress"
+kind = "transport"
+note = "segment scanner 54, window scanner 59. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+[[disagreement]]
+crate = "busbar-unit-transport-key"
+kind = "transport"
+note = "segment scanner 105, window scanner 106. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+

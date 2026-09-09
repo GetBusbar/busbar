@@ -522,13 +522,19 @@ jobs:
       # the measured edge classes, so a new one is refused and a dead allowance has to be struck),
       # the source VOCABULARY (a transport never says `a2a`, a plane never says `axum`), and the
       # kind REGISTRY (a crate of no kind is refused with the owner's own instruction: make a new
-      # plugin kind, do not fuse two). Self-test runs FIRST — every one of the four rows is planted
+      # plugin kind, do not fuse two) — and the MATRIX: for every kind and every crate, how many
+      # times that crate names that kind's vocabulary, whole text, comments and tests and Cargo
+      # features and filenames and the COMPOSITION ROOT included, against per-cell ceilings in
+      # `qa/kind-isolation.toml` that are exact in both directions. That row exists because the
+      # others measured the wires and never the place the wires are joined, and
+      # `crates/busbar/src/root/**` hand-wires one file per plane in plain sight.
+      # Self-test runs FIRST — every one of the rows is planted
       # and proven RED before the verdict is trusted, including the `busbar-transport-a2a` the
       # owner refused. The SHIP-criterion twin (`kind-isolation-ship`, one surface and one shared
       # conformance battery per kind) is red on HEAD by design and runs at release time.
       - name: Kind-isolation self-test (the refused busbar-transport-a2a, planted and proven RED)
         run: cargo xtask gate kind-isolation --selftest
-      - name: Kind-isolation gate (BLOCKING — no name, edge or word fuses two plugin kinds)
+      - name: Kind-isolation gate (BLOCKING — no name, edge, word or root wiring fuses two kinds)
         run: cargo xtask gate kind-isolation
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all

@@ -1645,7 +1645,12 @@ about a kind boundary, this register and that spec win.)*
   plugin kinds — plane, dialect, transport, auth, egress-auth, store, secret, hook, export — plus
   the core `unit` row, which is never loadable. `loader` and `abi` are TCB crates, not kinds; "rate
   card" is config, not a kind. Enforced by `cargo xtask gate kind-isolation` (`PLUGIN-TREE.md`
-  Appendix G) with six rows: `:name :deps :vocab :registry :shape :testkit`.
+  Appendix G) with ten rows: `:name :deps :vocab :registry :plane-steps
+  :transport-registration :matrix` on every push, and `:shape :testkit :control-path` on the ship
+  twin. **The composition root is measured too**: `:matrix` counts, for every kind and every crate,
+  how many times that crate names that kind's vocabulary — `crates/busbar/src/root/**` and `main.rs`
+  included, comments and tests included — against per-cell ceilings in `qa/kind-isolation.toml` that
+  ratchet down only.
 - **Naming is `busbar-<kind>-<name>`,** kind first, always. A dialect's kind segment is
   `plane-<plane>` — `busbar-plane-<plane>-<dialect>` (`busbar-plane-llm-openai`,
   `busbar-plane-mcp-mcpv2`, `busbar-plane-streams-voice`) — which is the "dialect → own plane only"

@@ -420,6 +420,10 @@ jobs:
   # with the rest of the layout, plane-purity, changelog and audit-ledger rows. `selftest` is the
   # other half and the one agents skip: a gate that cannot be made to fail is not a gate, and a
   # hand-back that adds a gate without a RED proof has added a green light with no bulb.
+  #
+  # `kind-isolation` is in that registry and therefore in this job, and it is named here because its
+  # `:matrix` row is the one that measures the COMPOSITION ROOT — the per-cell ceilings in
+  # `qa/kind-isolation.toml`, exact in both directions. A branch that raises one is red here.
   gates:
     name: cargo xtask gate --all · selftest
     runs-on: [self-hosted, linux, x64, busbar-xl]

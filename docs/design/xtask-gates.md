@@ -991,3 +991,116 @@ reconstructed from what it printed:
 
 **`STRUCTURE_LINT_CANDIDATE_FLOOR` is gone.** Floors are `const`s and there is no environment
 override: the only way to lower one is a reviewable source edit.
+
+## 8. `kind-isolation:matrix` — the composition root is measured too
+
+The `kind-isolation` gate landed with six rows and all six measured the WIRES. `:vocab` proves a
+transport never says `a2a` and a plane never says `hyper`; `:deps` proves the kind-to-kind edges in
+the manifests are the ones already measured; `:name` proves no crate name fuses a kind with another
+kind's instance. Not one of them looked at `crates/busbar` — the composition root — where the tree
+hand-wires one file per plane (`root/units_llm.rs`, `units_mcp.rs`, `units_a2a.rs`,
+`units_voice.rs`, `units_admin/admin_mount.rs`) and where a plane-named accept loop
+(`root/voice_serve.rs`, behind a `root-voice-serve` feature) was landed on a sibling branch. All of
+it was green, because nothing counted it. **A gate that measures the wires and not the place the
+wires are joined reports the tidy half of the tree.**
+
+`:matrix` measures the whole matrix: for every kind `K` in the kind table and every crate `C` under
+`crates/`, how many times `C` names `K`'s vocabulary.
+
+**The vocabulary is derived, on every run.** It comes off the same census the other five rows use —
+`K`'s member package names, their kind-qualified ids (`store-memory`, `plane-llm`), and, for the
+plane and transport families, their bare instance ids (`llm`, `mcp`, `voice`/`streams`, `http`,
+`ws`). Registering a plane teaches this row a new word in every other crate on the same commit,
+which is the only way a vocabulary rule survives a growing tree. **Bare ids are limited to the two
+families that HAVE an instance vocabulary, and that is the kind table's own word for it**:
+`Family::Neutral` is defined in `kind_isolation.rs` as "a kind with no instance vocabulary of its
+own", and it is already load-bearing in `:name` and `:vocab`. A neutral kind's members are named for
+the step of the loop they run — `cost`, `wal`, `ledger`, `memory`, `usage` — which are words the
+whole tree shares; counting them would report the Teller loop talking about money as the cost unit
+leaking into the ledger unit.
+
+**Nothing is stripped.** Every `.rs` and every `.toml` under the crate, whole text: identifiers,
+string literals, doc comments, ordinary comments, `#[cfg(feature = …)]` attributes, Cargo dependency
+names, Cargo feature names — plus the file's own path, so `root/voice_serve.rs` is a hit before a
+byte of it is read. Tests are not excluded; a transport's own fixture that names a plane is that
+transport naming a plane.
+
+**Two independent scanners, and the higher number wins.** One reduces a line to a stream of
+lowercase alphanumeric segments (splitting at every non-alphanumeric byte and at both camel-case
+transitions) and matches a needle's segment run. The other walks the raw characters, compares
+case-insensitively, and accepts a window only between boundaries. They share the needles and nothing
+else. The scored count is the HIGHER of the two, never the lower, and a cell where they disagree is
+RED unless the cell records the disagreement and why — a spelling one scanner cannot see is exactly
+the leak that must not pass at the lower number. Twenty cells record one today, all of them the same
+two shapes: `gRPC`, which splits at its own camel joint for the segment scanner and reads whole for
+the window scanner, and `A2AService`, which is the mirror case.
+
+**Why a boundary rule and not a raw byte substring.** The owner's ruling is "I'd rather have it
+false-fail than not", and the boundary rule is the stricter reading of it, not the weaker one. `sse`
+is a transport instance and also the middle of `assert`; `ws` is a transport instance and also the
+middle of `rows`. A raw substring scan of this tree answers 35 306 for `sse` and 5 671 for `ws`,
+numbers made almost entirely of English, and a ceiling pinned to them moves whenever somebody writes
+an assertion. That is not a stricter gate, it is a line counter wearing one — and a gate that reds
+for a reason unrelated to its rule is how a runner earns a `|| true`. The boundary rule keeps every
+spelling a human would recognise as the name (`a2a_session`, `mcpFrame`, `root-voice-serve`,
+`busbar_transport_http`, `VoiceServe`, the filename, the feature, the comment) and refuses the ones
+that are not names at all.
+
+**`qa/kind-isolation.toml` is the whole allowance, and it is read by ONE reader.** There is no
+allow-list in the source, and no second parser either: these rows go through the same hand reader
+`parse_registry` already runs over `[[transitional]]`, `[[registered]]` and `[[announced]]`, on the
+same terms — a missing, empty or unknown field is REFUSED AT LOAD rather than skipped, and two rows
+naming one cell are reported as two answers rather than resolved by file order. Three tables, and
+the split is the same one `:deps` already makes: the SENTENCES belong to the kind-to-kind class,
+because that is what a reader is reading, and the NUMBER belongs to the crate, because that is what
+the ratchet moves.
+
+```toml
+[[edge]]
+from = "root"
+to = "plane"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from …"
+why = "crates of kind root naming plane vocabulary: …"
+drain = "delete the per-plane wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs …"
+
+[[cell]]
+crate = "busbar"
+kind = "plane"
+count = "1798"
+
+[[disagreement]]                                       # only when the two scanners differ
+crate = "busbar"
+kind = "plane"
+note = "segment scanner 1798, window scanner 1797. …"
+```
+
+**The ratchet is exact in both directions.** A count above its row is the landing that grew the
+coupling. A count BELOW its row is stale slack, and stale slack is how drift hides: the number comes
+down on the commit that drained it, or the gate is red. A row whose cell measures zero is a dead
+allowance and must be struck; a class no crate exercises any more is struck likewise. A cell above
+zero with no row at all is an UNLISTED EDGE, refused whatever `ARCHITECTURE.md` may or may not
+grant, because an edge nobody wrote down is an edge nobody reviewed.
+
+**The ship twin owes zero everywhere and does not read the file.** What is written in
+`qa/kind-isolation.toml` is what 1.6.0 still has to delete, not a shape the tag is allowed to keep.
+
+`--report` prints the whole matrix (crate × kind → count, with both scanners' totals) and then the
+DRAIN LIST: every hit, `file:line`, grouped by cell. The integrator hands each file its deleting
+line rather than re-deriving it.
+
+**The self-test opens with the incident.** The head of the real `crates/busbar/src/root/voice_serve.rs`
+(from `keep-streams-3` `dd96a04f3`) is planted back into the root — the plane named in the path, in
+the `#![cfg(feature = "root-voice-serve")]`, in the module header's prose and in the
+`use busbar_plane_voice::…` — and the row goes RED; its green twin is the same tree with the file
+absent. Then: the root held to the zero a registry-driven root would measure (the finding names
+`root/units_voice.rs` and the other heaviest files by hit count), a ceiling left with slack, a plane
+named in a transport, the same name in that transport's own TESTS, a transport named in a plane, a
+store named in the kernel, a plane named in nothing but a comment in the kernel, the two scanners
+disagreeing, an edge class with no row, a second `[[cell]]` row for one cell, and the ledger absent.
+A class whose citation is emptied needs no case of its own: it is refused by the shared reader's
+`take_row`, which the registry row already self-tests, and the class then reads as unlisted.
+
+**Where it runs.** `land.sh`'s `kind-isolation` token is unconditional and runs the gate whole,
+without a row filter, so a landing that raises a ceiling is red on the runner. `qa/full-gate.toml`
+and `full_gate.rs` invoke `cargo xtask gate kind-isolation`, which owes the row. `keep-proof.yml`'s
+gate job runs `cargo xtask gate --all`, which walks the registry and therefore includes it.

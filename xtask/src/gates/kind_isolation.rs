@@ -38,6 +38,14 @@
 //!   that does not is refused with the owner's own instruction: **make a new plugin kind, do not
 //!   fuse two.** The row also holds the census floor, the dead-kind rule, the
 //!   `qa/construction.toml [gate.plugin_kinds]` cross-check and the LEGACY RATCHET.
+//! * `kind-isolation:matrix` — the rows above hold the line for the WIRES, and none of them looked
+//!   at `crates/busbar`, the COMPOSITION ROOT, where the tree hand-wires one file per plane and
+//!   where a plane-named accept loop was landed on a sibling branch, all of it green because
+//!   nothing counted it. This row counts, for EVERY kind and EVERY crate, how many times that crate
+//!   names that kind's derived vocabulary — every `.rs` and `.toml` under it, WHOLE TEXT, comments
+//!   and tests and Cargo features and filenames included — against per-cell ceilings in
+//!   [`REGISTRY_FILE`]'s `[[edge]]`, `[[cell]]` and `[[disagreement]]` tables, exact in both
+//!   directions. See [`matrix`].
 //!
 //! ## THE TARGET NAMING SCHEME IS `busbar-<kind>-<name>`, AND THE GATE ACCEPTS BOTH
 //!
@@ -111,6 +119,10 @@ use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::{prove_green, prove_rows_green, prove_rows_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::scan;
+
+mod matrix;
+
+pub use matrix::ROW_MATRIX;
 
 pub const ROW_NAME: &str = "kind-isolation:name";
 pub const ROW_DEPS: &str = "kind-isolation:deps";
@@ -660,12 +672,51 @@ struct Registered {
     reason: String,
 }
 
+/// One `[[edge]]` row: a KIND-TO-KIND vocabulary class the `:matrix` row measures, and the sentences
+/// a reader needs to judge it. The prose belongs to the CLASS because that is what is being read —
+/// the same split `[[transitional]]` already makes between the rule and the week.
+#[derive(Debug, Clone)]
+struct MatrixEdge {
+    from: String,
+    to: String,
+    cite: String,
+    why: String,
+    drain: String,
+}
+
+/// One `[[cell]]` row: what one crate's naming of one kind MEASURES TODAY, exactly.
+#[derive(Debug, Clone)]
+struct MatrixCell {
+    krate: String,
+    kind: String,
+    count: i64,
+}
+
+/// One `[[disagreement]]` row: a cell whose two scanners return different totals, and why.
+///
+/// Its own table rather than an optional field on `[[cell]]`, because every other row in this file
+/// is a fixed set of required fields and an optional one would be the first thing a reader has to
+/// remember. A disagreement is also its own fact: it says a spelling exists that one scanner cannot
+/// see, which is a finding about the MEASUREMENT and not about the count.
+#[derive(Debug, Clone)]
+struct MatrixDisagreement {
+    krate: String,
+    kind: String,
+    note: String,
+}
+
 /// [`REGISTRY_FILE`], read.
 #[derive(Debug, Default)]
 struct KindRegistry {
     transitional: Vec<Transitional>,
     announced: Vec<Announced>,
     registered: Vec<Registered>,
+    /// The `:matrix` row's three tables. They live in this reader rather than in a second one
+    /// because there is ONE registry file and a file read twice is a file two rules can disagree
+    /// about.
+    matrix_edges: Vec<MatrixEdge>,
+    matrix_cells: Vec<MatrixCell>,
+    matrix_disagreements: Vec<MatrixDisagreement>,
     /// Rows REFUSED AT LOAD. A malformed or over-broad row is not skipped and it is not tolerated:
     /// it is reported, because a table that quietly drops what it cannot understand is a table that
     /// says yes to it.
@@ -825,10 +876,61 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             }
             reg.registered.push(Registered { name, kind, reason });
         }
+        // THE `:matrix` ROW'S THREE TABLES. Same reader, same refusals: an unknown field is
+        // refused, an empty one is refused, and a missing one is refused, because a ceiling with
+        // half a sentence is a budget.
+        "edge" => {
+            let Some(v) = take_row(
+                fields,
+                &["from", "to", "cite", "why", "drain"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            reg.matrix_edges.push(MatrixEdge {
+                from: v[0].clone(),
+                to: v[1].clone(),
+                cite: v[2].clone(),
+                why: v[3].clone(),
+                drain: v[4].clone(),
+            });
+        }
+        "cell" => {
+            let Some(v) = take_row(fields, &["crate", "kind", "count"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            let Ok(count) = v[2].parse::<i64>() else {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[cell]] count = \"{}\"` is not a number. A \
+                     ceiling that cannot be compared to a measurement is not a ceiling",
+                    v[2]
+                ));
+                return;
+            };
+            reg.matrix_cells.push(MatrixCell {
+                krate: v[0].clone(),
+                kind: v[1].clone(),
+                count,
+            });
+        }
+        "disagreement" => {
+            let Some(v) = take_row(fields, &["crate", "kind", "note"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            reg.matrix_disagreements.push(MatrixDisagreement {
+                krate: v[0].clone(),
+                kind: v[1].clone(),
+                note: v[2].clone(),
+            });
+        }
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
-             file holds `[[transitional]]`, `[[registered]]` and `[[announced]]` rows and nothing \
-             else"
+             file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[edge]]`, \
+             `[[cell]]` and `[[disagreement]]` rows and nothing else"
         )),
     }
 }
@@ -862,7 +964,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             fields.clear();
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
-                 `[[registered]]` and `[[announced]]` rows and nothing else",
+                 `[[registered]]`, `[[announced]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` \
+                 rows and nothing else",
                 i + 1
             ));
             continue;
@@ -1631,7 +1734,12 @@ fn banned_for(kind: &str, planes: &BTreeSet<String>) -> Vec<(String, &'static st
                 out.push((p.clone(), "a PLANE instance named inside a transport"));
             }
         }
-        "plane" => {
+        // A DIALECT IS A PLANE'S OTHER HALF AND IS BOUND BY THE PLANE'S OWN BAN. It had no arm at
+        // all, so on the day D36 lands and the first `busbar-plane-<p>-<d>` crate exists, that
+        // crate could `use axum` and name `busbar_transport_http` with this row silent — the ban is
+        // written against the kind word, and `dialect` was not one of the four spelled here. The
+        // hole opens on the rename rather than today, which is exactly when nobody is looking.
+        "plane" | "dialect" => {
             for lib in TRANSPORT_LIBS {
                 out.push((
                     (*lib).to_string(),
@@ -3076,6 +3184,7 @@ impl Gate for KindIsolationGate {
             ROW_REGISTRY.to_string(),
             ROW_STEPS.to_string(),
             ROW_WIRES.to_string(),
+            ROW_MATRIX.to_string(),
         ];
         if self.ship {
             owed.push(ROW_SHAPE.to_string());
@@ -3116,7 +3225,7 @@ impl Gate for KindIsolationGate {
                      announced landings, and a table that did not read is not a table that \
                      exempted nothing."
                 );
-                let mut rows: Vec<Row> = [ROW_NAME, ROW_DEPS, ROW_REGISTRY]
+                let mut rows: Vec<Row> = [ROW_NAME, ROW_DEPS, ROW_REGISTRY, ROW_MATRIX]
                     .into_iter()
                     .map(|id| Row::fail(id, "the kind registry file did not read", why.clone()))
                     .collect();
@@ -3147,6 +3256,7 @@ impl Gate for KindIsolationGate {
             rule_registry(cx, &crates, &reg, self.ship),
             rule_steps(cx, &crates),
             rule_wires(cx, &crates),
+            matrix::rule_matrix(cx, &crates, &reg, self.ship),
         ];
         if self.ship {
             rows.push(rule_control(cx, &crates));
@@ -3486,6 +3596,29 @@ impl Gate for KindIsolationGate {
             &["axum", "tokio::net"],
         ));
 
+        // THE HOLE THAT OPENS ON THE RENAME. `banned_for` is written against kind words and
+        // `dialect` was not one of them, so the first `busbar-plane-<plane>-<dialect>` crate could
+        // have named a transport library and a transport crate with this row silent — on the day
+        // D36 lands, which is exactly when nobody is looking. The plant is a whole dialect crate,
+        // manifest and source, because a dialect that does not exist is scanned zero files of.
+        let mut ov = manifest_plant(
+            "crates/busbar-plane-llm-openai",
+            "busbar-plane-llm-openai",
+            &["busbar-contract", "busbar-plane-llm"],
+        );
+        ov.set(
+            "crates/busbar-plane-llm-openai/src/planted_transport.rs",
+            "use axum::Router;\nuse busbar_transport_http::Client;\npub fn go(_: Router) {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a DIALECT naming a transport library and a transport crate — the plane's own ban",
+            &[ROW_VOCAB],
+            ov,
+            &["axum", "busbar_transport_http", "busbar-plane-llm-openai"],
+        ));
+
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-llm-codec/src/planted_transport.rs",
@@ -3503,6 +3636,14 @@ impl Gate for KindIsolationGate {
         // THE CONTROL. A gate its own prose fails is a gate people learn to skip — and without
         // this case the three reds above would equally be produced by a scanner that flags every
         // line it reads.
+        //
+        // IT IS A CLAIM ABOUT `:vocab` AND ABOUT NOTHING ELSE, and the distinction is the whole of
+        // the owner's 2026-09-08 ruling. `:vocab` blanks literals and reads only production lines
+        // because its findings are IDENTIFIERS — a ban that would equally match its own explanation
+        // in a `format!` is a ban that reds on documentation. What that scoping is NOT is a
+        // statement that a plane named in a comment of a wire is fine: the exact plant below is
+        // COUNTED by `:matrix`, which strips nothing, excludes no tests, and holds the number at an
+        // exact ceiling. Two rows, two questions; this case answers the narrower one.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-transport-tcp/src/planted_prose.rs",
@@ -3514,7 +3655,7 @@ impl Gate for KindIsolationGate {
         report.push(prove_rows_green(
             cx,
             self,
-            "comments, string literals and cfg(test) scope name nothing",
+            "comments, literals and cfg(test) scope name nothing TO `:vocab` (`:matrix` counts them)",
             &[ROW_VOCAB],
             ov,
         ));
@@ -3719,6 +3860,10 @@ impl Gate for KindIsolationGate {
             ov,
             &["second-registration", "busbar-transport-http"],
         ));
+
+        // THE MATRIX ROW'S OWN CASES, owed by BOTH registrations: the per-push gate holds the
+        // ceilings and the ship twin holds zero, and neither is a claim the other proves.
+        matrix::selftest(cx, self, self.ship, &mut report);
 
         if !self.ship {
             // A LISTED DRAIN EDGE IS GREEN. The owner's ruling, as the per-push gate reads it:
