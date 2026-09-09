@@ -64,18 +64,27 @@ impl MountedLeg for A2aLeg {
         A2aLeg::recognises(self, arrival)
     }
 
-    fn serve(
-        &self,
-        arrival: &busbar_contract::transport::Arrival<'_>,
-        kernel: &busbar_kernel::teller::Kernel,
-        ctx: &busbar_kernel::teller::UnitCtx,
-        run: busbar_kernel::teller::Run<'_>,
-        dispatch: Option<&dyn crate::root::transports::MountDispatch>,
-    ) -> (
-        busbar_kernel::teller::Ended,
-        Option<crate::root::transports::PlaneAnswer>,
-    ) {
-        A2aLeg::serve(self, arrival, kernel, ctx, run, dispatch)
+    fn serve<'a>(
+        &'a self,
+        arrival: &'a busbar_contract::transport::Arrival<'a>,
+        kernel: &'a busbar_kernel::teller::Kernel,
+        ctx: &'a busbar_kernel::teller::UnitCtx,
+        run: busbar_kernel::teller::Run<'a>,
+        dispatch: Option<&'a dyn crate::root::transports::MountDispatch>,
+    ) -> plane_mount::Walked<'a> {
+        Box::pin(async move {
+            // THIS LEG'S WALK IS SYNCHRONOUS — it steps through the kernel's teller and never awaits
+            // — so it says so, and `sync_leg` takes it off the reactor. That used to be the mount's
+            // assumption about every plane; it is now this plane's own statement about itself, made
+            // in the one place where the answer is actually known.
+            let (ended, answer) =
+                plane_mount::sync_leg(|| A2aLeg::serve(self, arrival, kernel, ctx, run, dispatch));
+            // AND THE FRAME IS BUILT HERE, BY THE PLANE THAT ASKED FOR BYTES. This plane's exit path
+            // carries a buffered answer, so turning that answer back into a response is the cost of
+            // its own choice and is paid in its own file. A plane that carried its surface's
+            // response through untouched hands it straight back and pays nothing.
+            (ended, answer.map(plane_mount::http_response))
+        })
     }
 
     fn render_refusal(
