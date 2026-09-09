@@ -4,14 +4,13 @@
 # scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
 # something specific instead of "everything, slowly".
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
-#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
-#              small, load-bearing slice rather than a claim about all twenty-six families: billing
-#              and ledger are the money path — if a CI change could somehow perturb a recorded
-#              behaviour, it is these cells that must say so.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
-families = '^(billing|ledger)([|.]|$)'
-tests = ["busbar-unit-cost"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch boots the mcp plane
+#              from configuration through the units chain and deletes the legacy in-core boot path,
+#              so the cells that judge it are the mcp conformance rig, the neutrality cells that say
+#              a plane's presence changes nothing for anyone else, the admin.ops families that read
+#              the node the boot assembled, and boot itself.
+#   tests    — the packages whose test binaries the sharded legs must include by name: the root that
+#              composes the leg, the mcp protocol crate and its plane, and the substrate ABI the
+#              plane is written against.
+families = '^(mcp|neutrality|admin\.ops|boot)([|.]|$)'
+tests = ["busbar", "busbar-mcp", "busbar-plane-mcp", "busbar-substrate"]
