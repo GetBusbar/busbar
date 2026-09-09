@@ -1,0 +1,823 @@
+name: keep-proof
+
+# JUDGE THE HAND-BACK REMOTELY, NOT ON SOMEBODY'S LAPTOP.
+#
+# Work arrives here as a `keep-*` branch: an agent's hand-back, offered as done. Today the proof
+# that it IS done is produced LOCALLY — every agent re-runs the workspace build, clippy, the tests
+# and the gates on the same machine, thirty to sixty minutes each, several agents at once, on a
+# tree whose CI is red for reasons that have nothing to do with the hand-back. That is the wrong
+# machine doing the wrong work: a laptop's green is a claim about a laptop, the runner's green is
+# the fact everyone else can read, and the runners are sitting idle while the laptop thermally
+# throttles.
+#
+# So a push of any `keep-*` branch runs the SAME required set CI runs, on GitHub's runners, and
+# writes a ONE-LINE VERDICT back onto the commit as a status named `keep-proof`. The harvest
+# question -- "is this hand-back green?" -- becomes a lookup on the sha instead of an hour of
+# somebody's afternoon.
+#
+# WHAT IS AND IS NOT HERE, AND WHY.
+#   HERE:     fmt, clippy -D warnings, workspace build, the workspace test suite SHARDED across five
+#             runners (four index legs plus the 15-minute xtask monolith on its own),
+#             `cargo xtask gate --all`, `cargo xtask selftest`, the structure gate, the
+#             design-bindings gate (existence + regen-clean), the SHADOW ORACLE against the published
+#             1.5.5 binary scoped to the families the branch names, and the construction gate
+#             (report-only, exactly as in ci.yml).
+#   THE ORACLE IS THE POINT. It is the most expensive thing an agent runs locally -- a release build
+#             plus `record --plane all` is the better part of half an hour of a laptop, several
+#             laptops at once, producing a claim nobody else can check. Here it runs on a runner
+#             against the same published 1.5.5 binary by digest, the same release public key and the
+#             same three service containers ci.yml's shadow-oracle job uses, scoped by the branch's
+#             own `.keep-proof.toml`, and it publishes its report as an artifact plus a one-line
+#             commit status of its own. ci.yml's shadow-oracle is unchanged and still runs on
+#             integration pushes, unscoped: this one answers "did THIS hand-back move its families",
+#             that one answers "did the tree move at all".
+#   NOT HERE: the full tier's platform matrix (windows, no-default-features, timing, migration
+#             corpus, deletion matrix). Those are promotion-gate questions and they run on the
+#             integration branch this work lands on. This workflow answers "does the hand-back
+#             stand up", not "may this ship".
+#
+# THIS IS NOT A PROMOTION GATE. Green here means the hand-back builds, lints, tests and gates on a
+# runner. `ci-umbrella` on the integration branch is still the required check, and nothing in this
+# file can make a promotion decision.
+
+on:
+  push:
+    branches: ['keep-*']
+
+# One verdict per branch tip. An agent that pushes three fixups in five minutes should pay for the
+# last one, not for all three -- these are five-runner test shards plus an oracle recording, and
+# the wasted capacity comes straight out of the queue every other agent is waiting in.
+concurrency:
+  group: keep-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+# `statuses: write` is the whole point of the last job: the verdict is written onto the COMMIT, so
+# a harvester reads it from the sha without opening the Actions tab. Nothing here needs write access
+# to contents, packages or id-token, and it does not get any.
+permissions:
+  contents: read
+  statuses: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # THE SAME FLAGS CI ENFORCES. A local green under different flags is not a CI green, and a
+  # keep-proof green under different flags would be worse: it would be a REMOTE green that still
+  # did not mean what the required check means. `cargo xtask full-gate --selftest` asserts this
+  # string against ci.yml's; it is spelled identically here on purpose.
+  RUSTFLAGS: "-D warnings"
+  # See ci.yml's "COMPILER CACHE (sccache)" note. The five test shards compile the same workspace at
+  # the same moment; without a content-addressed cache under them, sharding buys wall-clock by
+  # paying for the same rustc invocations four times.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ── FMT · CLIPPY · BUILD ────────────────────────────────────────────────────────────────────────
+  # The three questions that are cheap to ask and pointless to ask twice. Deliberately NOT fused with
+  # the tests: in ci.yml they share one job, and the consequence is that a formatting diff in one
+  # file stops the entire test suite from running -- which is exactly what the tree did on
+  # 2026-09-08, where `cargo fmt --check` failed at 60 seconds and the workspace suite reported
+  # nothing at all. A layout debt and a broken test are independent facts about a commit.
+  build-clippy:
+    name: fmt · clippy · build
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # Measured against ci.yml's `check`, whose fmt+clippy+build steps total ~1.6 min warm and whose
+    # whole job is bounded at 75 for cold-cache headroom. 40 is that headroom without the test step.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+        with:
+          components: rustfmt, clippy
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build
+        run: cargo build --workspace --locked
+
+  # ── THE WORKSPACE SUITE, SHARDED ACROSS FIVE RUNNERS ────────────────────────────────────────────
+  # THE SHARD AXIS IS THE TEST BINARY, NOT THE PACKAGE, AND THAT CHOICE IS LOAD-BEARING.
+  #
+  # The obvious shard is `cargo test -p <group>` per runner. It is wrong here, and ci.yml's own
+  # `check` job says why in its header: `cargo test --workspace` activates the plane crates'
+  # `test-support` suites THROUGH FEATURE UNIFICATION, and excluding two plane crates from the
+  # invocation drops ~1123 tests. A per-package shard set is therefore a DIFFERENT feature
+  # resolution from the one CI runs: the shards would sum to a smaller suite than the workspace run,
+  # while every shard printed `ok`. A sharding scheme that quietly tests less is worse than no
+  # sharding, because it reports faster AND weaker.
+  #
+  # So each shard compiles the WHOLE workspace exactly as CI does -- `cargo build --workspace` then
+  # `cargo test --workspace --locked --no-run`, one feature resolution, identical to the unsharded
+  # run -- and then EXECUTES a deterministic slice of the test binaries that compile produced. The
+  # compile is what sccache deduplicates across the runners; the execution is what parallelises.
+  # Membership is DERIVED (sorted binary list, index modulo four), never a hand-maintained list, so a
+  # new test target joins a shard the day it exists and cannot fall out of all of them.
+  #
+  # `cargo build --workspace` FIRST, AND IT IS NOT REDUNDANT. `--no-run` compiles the test targets
+  # and what they depend on AT COMPILE TIME; it does not build the plugin cdylibs the tests dlopen at
+  # RUN time. The first run of this workflow proved it: sixteen busbar-core tests and four
+  # mcp_stdio_serve tests failed with "SKIP REFUSED UNDER CI: ... static-auth plugin cdylib not
+  # built", which is the tests' own refusal to skip a prerequisite in CI doing exactly its job. The
+  # unsharded `cargo test --workspace` never showed this because it builds every workspace target
+  # before it runs anything. ci.yml's `check` has a Build step ahead of its Test step for the same
+  # reason; this is that step.
+  #
+  # THE xtask BINARY GETS ITS OWN RUNNER. `cargo xtask`'s cli suite drives every registered gate's
+  # RED proof in-process and takes 15-20 minutes ON ITS OWN — measured here at 15 minutes of a
+  # 22-minute shard, i.e. one binary setting the ceiling for a quarter of the workspace. An index
+  # partition cannot split a single binary, so it is lifted out onto its own leg and the other four
+  # legs share what is left. This is the honest form of "shard the slow job": name the monolith.
+  #
+  # DOCTESTS RIDE SHARD 1. `--no-run` produces no doctest binary, so a pure binary partition would
+  # silently drop every doctest from the summed total. Shard 1 runs `--doc` and counts it.
+  tests:
+    name: tests (shard ${{ matrix.shard }})
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # ci.yml's Test step measures 9.3 min warm for the WHOLE suite; a quarter of the execution plus a
+    # full compile lands well inside 20. 30 is that with cold-cache headroom, and it is a ceiling on
+    # a hang, not a target. The `xtask` leg is the one that needs the room: its single binary is a
+    # measured 15 minutes.
+    timeout-minutes: 30
+    strategy:
+      # A red shard must not cancel the others: the harvester wants the whole picture of the
+      # hand-back in one pass, not the first failure and four unknowns.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, xtask]
+    # The live-DB roundtrip tests read these URLs and HARD-FAIL rather than skip when `CI` is set, so
+    # every shard carries the services: the store tests are in whichever binary the partition put
+    # them in, and a shard without a database would fail for the wrong reason. Digests pinned for the
+    # same reason ci.yml pins them -- what a moving tag resolved to must be a fact about the commit.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      # `json-render-diagnostics`, not plain `json`: the machine-readable stream goes to the file the
+      # enumerator reads, and compiler errors are still RENDERED to the log. A compile failure whose
+      # only trace is a JSON blob in a temp file is a red nobody can read.
+      # NOT REDUNDANT with the `--no-run` below — see the job header. `--no-run` does not build the
+      # plugin cdylibs the tests dlopen at RUN time, and those tests refuse to skip a missing
+      # prerequisite under CI (correctly). This is ci.yml's `check` Build step, in the same place.
+      - name: Build the workspace (the cdylibs the tests dlopen are not test targets)
+        run: cargo build --workspace --locked
+
+      - name: Compile every test binary (one workspace feature resolution, same as CI)
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked --no-run \
+            --message-format=json-render-diagnostics > "$RUNNER_TEMP/compile.json"
+
+      # `profile.test` is CARGO'S OWN flag for "this artifact is a test binary", so the shard list is
+      # cargo's answer about the compile that just happened, not a guess from a path pattern that
+      # goes stale the first time a target is renamed. `sort -u` because the partition below is by
+      # INDEX: an unstable order would reshuffle which shard runs what between two runs of the same
+      # commit, and a flaky partition is indistinguishable from a flaky test.
+      - name: Enumerate the test binaries this compile produced
+        run: |
+          set -euo pipefail
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.profile.test == true)
+                 | .executable // empty' "$RUNNER_TEMP/compile.json" | sort -u > "$RUNNER_TEMP/all-bins.txt"
+          # THE MONOLITH, SPLIT OUT BY NAME. Cargo names a test binary `<target>-<hash>`, so every
+          # xtask test binary basename starts `xtask-`. It goes to the `xtask` leg and NOWHERE else;
+          # the four index legs partition the remainder. Both lists are written, and the two together
+          # are asserted to be the whole list below — a binary that matched neither would be a
+          # silently untested target, which is the failure mode this whole file is against.
+          grep -E '/deps/xtask-[^/]*$' "$RUNNER_TEMP/all-bins.txt" > "$RUNNER_TEMP/xtask-bins.txt" || true
+          grep -vE '/deps/xtask-[^/]*$' "$RUNNER_TEMP/all-bins.txt" > "$RUNNER_TEMP/other-bins.txt" || true
+          all=$(wc -l < "$RUNNER_TEMP/all-bins.txt")
+          xt=$(wc -l < "$RUNNER_TEMP/xtask-bins.txt")
+          ot=$(wc -l < "$RUNNER_TEMP/other-bins.txt")
+          echo "compiled test binaries: ${all} (xtask leg ${xt}, index legs ${ot})"
+          if [ "$(( xt + ot ))" -ne "$all" ]; then
+            echo "::error::the xtask/other split lost binaries (${xt} + ${ot} != ${all})."
+            exit 1
+          fi
+          if [ "$xt" -eq 0 ]; then
+            echo "::error::no xtask test binary was found. The xtask leg would run nothing, and the"
+            echo "::error::15-minute cli suite would be silently absent from the run."
+            exit 1
+          fi
+          count="$all"
+          # THE FLOOR. A partition of an empty list runs nothing and prints a clean pass on every
+          # shard -- the exact vacuous-green this whole file exists to stop. The workspace has well
+          # over sixty test targets; forty is a floor that a real regression in the enumerator trips
+          # long before a legitimate shrink reaches it.
+          if [ "$count" -lt 40 ]; then
+            echo "::error::only ${count} test binaries were enumerated (floor 40). The message-format=json"
+            echo "::error::reader found nothing to shard, so a green here would mean nothing. Refusing."
+            exit 1
+          fi
+
+      - name: Run this shard's binaries
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: "4"
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          VALKEY_URL: redis://localhost:6379
+          # PER-BINARY HANG CEILING, the same instrument ci.yml's watchdog is. Sized off the two
+          # measured monoliths, not off a wish: `busbar_core`'s lib-test binary aggregates ~3900
+          # tests to ~330s, and the `xtask` cli binary drives every gate's RED proof for a measured
+          # ~15 minutes. 1500s bounds a genuine hang (unbounded) while leaving the slower of the two
+          # real headroom. When it fires it NAMES the binary.
+          BINARY_TIMEOUT_SECS: "1500"
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/shard.log"
+          : > "$log"
+          # The `xtask` leg runs its one monolith; the numbered legs partition everything else.
+          if [ "$SHARD" = "xtask" ]; then
+            list="$RUNNER_TEMP/xtask-bins.txt"
+          else
+            list="$RUNNER_TEMP/other-bins.txt"
+          fi
+          i=0
+          ran=0
+          rc_all=0
+          while IFS= read -r bin; do
+            mine=0
+            if [ "$SHARD" = "xtask" ]; then
+              mine=1
+            elif [ "$(( i % SHARDS ))" -eq "$(( SHARD - 1 ))" ]; then
+              mine=1
+            fi
+            if [ "$mine" -eq 1 ]; then
+              echo "=== shard ${SHARD}: ${bin}"
+              timeout --signal=KILL "$BINARY_TIMEOUT_SECS" "$bin" 2>&1 | tee -a "$log"
+              rc=${PIPESTATUS[0]}
+              if [ "$rc" -eq 137 ]; then
+                echo "::error::${bin} was killed after ${BINARY_TIMEOUT_SECS}s — that is a hang, not a slow suite."
+                rc_all=1
+              elif [ "$rc" -ne 0 ]; then
+                echo "::error::${bin} FAILED (exit ${rc})."
+                rc_all=1
+              fi
+              ran=$(( ran + 1 ))
+            fi
+            i=$(( i + 1 ))
+          done < "$list"
+
+          # DOCTESTS RIDE SHARD 1: `--no-run` never produced a doctest binary, so without this the
+          # summed total silently loses every doctest in the workspace.
+          if [ "$SHARD" = "1" ]; then
+            echo "=== shard 1 also runs the doctests"
+            cargo test --workspace --locked --doc 2>&1 | tee -a "$log"
+            rc=${PIPESTATUS[0]}
+            [ "$rc" -eq 0 ] || { echo "::error::the doctests FAILED (exit ${rc})."; rc_all=1; }
+          fi
+
+          # SUM ACROSS BINARIES, never a single line: `test result: ok. N passed` prints once per
+          # binary, and one binary compiling to nothing still prints `ok` and exits 0.
+          passed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$log" \
+                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                   | awk '{s+=$1} END {print s+0}')
+          echo "shard ${SHARD}: ${ran} binaries, ${passed} tests passed"
+          mkdir -p "$RUNNER_TEMP/counts"
+          echo "$passed" > "$RUNNER_TEMP/counts/shard-${SHARD}.count"
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::shard ${SHARD} ran ZERO binaries. A shard that runs nothing is not a pass."
+            rc_all=1
+          fi
+          exit "$rc_all"
+
+      # `if: always()` so a RED shard still publishes its count: the verdict job's arithmetic is how
+      # "the shards covered the suite" is proven, and a failing shard that also stopped counting
+      # would make the total look like a coverage hole instead of a test failure.
+      - name: Publish this shard's count
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: keep-proof-count-${{ matrix.shard }}
+          path: ${{ runner.temp }}/counts/
+          if-no-files-found: warn
+
+  # ── THE SHARDS SUMMED ──────────────────────────────────────────────────────────────────────────
+  # Sharding's real risk is not a slow shard, it is a shard that quietly stopped running things.
+  # Five green shards that between them ran 900 tests look identical, in the Actions UI, to five
+  # green shards that ran 5700. So the counts are summed and floored, exactly as ci.yml floors its
+  # unsharded workspace run -- the floor is the same number, because it is the same suite.
+  tests-total:
+    name: tests total (the five shards summed against the suite floor)
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 10
+    needs: tests
+    if: always()
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: keep-proof-count-*
+          merge-multiple: true
+          path: counts
+      - name: Sum the shards and floor the total
+        env:
+          # ci.yml's UNIX_MIN_TESTS at the time this file was written. Same suite, same floor; raise
+          # both together or the two gates start disagreeing about what the suite is.
+          KEEP_MIN_TESTS: "5650"
+          SHARDS_RESULT: ${{ needs.tests.result }}
+        run: |
+          set -euo pipefail
+          total=0
+          files=0
+          for f in counts/shard-*.count; do
+            [ -e "$f" ] || continue
+            n=$(cat "$f")
+            echo "  $(basename "$f"): ${n}"
+            total=$(( total + n ))
+            files=$(( files + 1 ))
+          done
+          # `shard-xtask.count` matches this glob as readily as `shard-3.count`; the leg names are the
+          # matrix's, and the sum does not care which is which.
+          echo "shards reporting: ${files}/5; tests passed across the workspace: ${total}"
+          if [ "$files" -ne 5 ]; then
+            echo "::error::${files} of 5 shards reported a count. A missing shard is a missing slice"
+            echo "::error::of the suite, not a pass."
+            exit 1
+          fi
+          if [ "$total" -lt "$KEEP_MIN_TESTS" ]; then
+            echo "::error::the four shards ran ${total} tests, below the suite floor ${KEEP_MIN_TESTS}."
+            echo "::error::Either tests stopped being collected, or the floor is stale — decide which."
+            exit 1
+          fi
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::the shards summed to ${total} but at least one shard was ${SHARDS_RESULT}."
+            exit 1
+          fi
+          echo "tests total: ${total} passed across four shards (floor ${KEEP_MIN_TESTS})"
+
+  # ── EVERY REGISTERED GATE, PLUS THE PROOF EACH ONE CAN STILL GO RED ─────────────────────────────
+  # `gate --all` runs the registry, which is where the structure gate lives (`structure-lint`) along
+  # with the rest of the layout, plane-purity, changelog and audit-ledger rows. `selftest` is the
+  # other half and the one agents skip: a gate that cannot be made to fail is not a gate, and a
+  # hand-back that adds a gate without a RED proof has added a green light with no bulb.
+  gates:
+    name: cargo xtask gate --all · selftest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # MEASURED, AND RAISED ONCE ALREADY. ci.yml's structure-lint (the same registry, one gate per
+    # step) measures p95 14.5 min, so 25 looked generous — and this job was CANCELLED at 25 on its
+    # first run, because `cargo xtask selftest` drives EVERY registered gate's RED proof rather than
+    # just running the gates, which ci.yml splits across its own steps. 45 is the raise, made
+    # deliberately against that observation rather than by nudging the number until it stopped
+    # firing. The real fix is to shard this job by gate; that needs the full-gate registry-vs-ci.yml
+    # set-equality rule to learn about a second workflow, which is Rust, not workflow data.
+    timeout-minutes: 45
+    steps:
+      # FULL HISTORY: the audit-ledger gate resolves the COMMIT each register row stamps, and a
+      # depth-1 clone cannot. It is red on a stamp it cannot check rather than passing over it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain (the gate runner)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+      # SELF-TEST BEFORE VERDICT, as everywhere else in this repository: never believe a gate's
+      # green before proving the gate still works.
+      - name: Every registered gate is provably RED-able
+        run: cargo xtask selftest
+      - name: Every registered gate, run against this tree
+        run: cargo xtask gate --all --format=tsv
+
+  # ── DESIGN BINDINGS ────────────────────────────────────────────────────────────────────────────
+  # The same two assertions ci.yml's design-bindings job makes, for the same reason, on a job that
+  # needs no toolchain: EXISTENCE (every check an Appendix B binding names still exists) and
+  # REGEN-CLEAN (the committed ledger is what the deriver produces from Appendix B today). A
+  # hand-back that edits ARCHITECTURE.md and skips the regen lands a stale generated artifact.
+  design-bindings:
+    name: design bindings (existence · regen-clean)
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Design bindings self-test
+        run: scripts/design-bindings.sh --selftest
+      - name: Design bindings check (existence)
+        run: scripts/design-bindings.sh --check
+      - name: Design bindings regen-clean
+        run: |
+          set -euo pipefail
+          mkdir -p target/design-bindings
+          python3 scripts/design-bindings.py --write \
+            --out-json target/design-bindings/fresh.json \
+            --out-md target/design-bindings/fresh.md
+          stale=0
+          diff -u qa/design-bindings.json target/design-bindings/fresh.json || stale=1
+          diff -u qa/DESIGN-BINDINGS.md target/design-bindings/fresh.md || stale=1
+          if [ "$stale" -ne 0 ]; then
+            echo "::error::the committed design-bindings artifacts are not what the deriver produces"
+            echo "::error::from Appendix B today. Re-run the deriver and commit the result."
+            exit 1
+          fi
+
+  # ── THE SHADOW ORACLE, SCOPED BY THE BRANCH ────────────────────────────────────────────────────
+  # THE POINT OF THE WHOLE FILE, restated: the oracle is the single most expensive thing an agent
+  # runs locally -- a release build plus a full `record --plane all` is the better part of half an
+  # hour of somebody's laptop, several laptops at once, and the result is a claim nobody else can
+  # check. Here it runs on a runner, against the SAME published 1.5.5 binary by digest, the SAME
+  # release public key and the SAME service containers ci.yml's shadow-oracle job uses, and the
+  # report is an artifact anyone can download.
+  #
+  # SCOPED PER HAND-BACK, BY A FILE THE BRANCH COMMITS. `.keep-proof.toml` at the repository root
+  # carries the same two things `scripts/land.sh` takes on the command line:
+  #
+  #     families = '^(llm|teller)([|.]|$)'   # the oracle id-filter this hand-back can move
+  #     tests    = ["busbar-llm"]            # the packages it names
+  #
+  # and the recording is `record --plane all` with that filter, diffed with the same `--id-filter`,
+  # against the committed golden -- byte for byte the land.sh recipe, so a local green and a CI green
+  # are the same claim. THE FILE CAN ONLY NARROW THE ORACLE, NOTHING ELSE: absent or empty, the
+  # filter is `.` and every family is recorded. A branch cannot shrink its own test suite or its own
+  # gates by editing it -- the four shards and `gate --all` never read it -- because a gate a
+  # hand-back gets to scope is a gate the hand-back can turn off.
+  #
+  # WHY A THREE-LINE READER AND NOT A TOML PARSER: two keys, one line each, in a file this repository
+  # writes and reads. Installing a parser to read it would be a dependency in the proof path, and the
+  # proof path is the one place a dependency is least welcome.
+  oracle:
+    name: shadow oracle (this build vs the published 1.5.5, families the branch names)
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # ci.yml's shadow-oracle measures 23-24 min unfiltered (release build ~4-7 min, recording ~15).
+    # Same ceiling as ci.yml's, for the same job.
+    timeout-minutes: 60
+    env:
+      BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+      GH_TOKEN: ${{ github.token }}
+    # The same three backends ci.yml's shadow-oracle boots, at the same digests: the store families'
+    # cells boot a real backend, spend, restart and read back, and a gap on both sides is not
+    # agreement. Digests are NOT re-pinned here — testing/fleet-fixtures/service-images.tsv is the
+    # single pinned list the `service image pins` gate enforces against every workflow.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+        env:
+          MYSQL_ROOT_PASSWORD: busbar
+          MYSQL_USER: busbar
+          MYSQL_PASSWORD: busbar
+          MYSQL_DATABASE: busbar_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+
+      # The scope, read once and PRINTED. A run whose filter nobody can see is a run whose verdict
+      # nobody can size: "0 divergences" over one family and over twenty-six look identical.
+      - name: The scope this hand-back declares
+        id: scope
+        run: |
+          set -euo pipefail
+          fam='.'
+          tests=''
+          if [ -f .keep-proof.toml ]; then
+            got=$(sed -n "s/^[[:space:]]*families[[:space:]]*=[[:space:]]*['\"]\(.*\)['\"][[:space:]]*\$/\1/p" .keep-proof.toml | head -1)
+            [ -n "$got" ] && fam="$got"
+            tests=$(sed -n 's/^[[:space:]]*tests[[:space:]]*=[[:space:]]*\[\(.*\)\].*/\1/p' .keep-proof.toml \
+                    | head -1 | tr -d '"'"'" | tr ',' ' ')
+          else
+            echo "::notice::no .keep-proof.toml at the branch root — recording EVERY family (filter '.')."
+          fi
+          echo "oracle id-filter: ${fam}"
+          echo "packages named:   ${tests:-<none>}"
+          echo "families=${fam}" >> "$GITHUB_OUTPUT"
+          echo "tests=${tests}" >> "$GITHUB_OUTPUT"
+
+      # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. Identical to ci.yml's step and for the
+      # identical reason: the oracle binds 487xx/488xx, Linux's default ephemeral range covers it, and
+      # an outbound socket that takes 48812 as its SOURCE port makes the next bind fail. Reserved,
+      # then read back — a silently-failed sysctl leaves the flake in place under a quiet step.
+      - name: Reserve the oracle port band from the kernel's ephemeral pool
+        run: |
+          set -euo pipefail
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=48700-48900
+          got="$(sysctl -n net.ipv4.ip_local_reserved_ports)"
+          echo "ip_local_reserved_ports=${got}"
+          case "$got" in
+            *48700-48900*) ;;
+            *) echo "::error::the oracle port band was not reserved (got '${got}')"; exit 1 ;;
+          esac
+
+      - name: Oracle revision (keys the 1.5.5 artifact cache)
+        id: rev
+        run: |
+          set -euo pipefail
+          digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' \
+                   testing/shadow-oracle/golden-digests.tsv)
+          echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
+      - name: Cache the pinned 1.5.5 artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cache/busbar-oracle
+          key: ${{ steps.rev.outputs.key }}
+      - name: The differ can see a diff (replay selftest)
+        run: ./bin/oracle replay-selftest
+      - name: Fetch the published 1.5.5 binary and plugins by digest
+        run: |
+          set -euo pipefail
+          ./bin/oracle fetch-golden
+          plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
+          [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
+          for pl in $plugins; do
+            ./bin/oracle fetch-plugin "$pl" >/dev/null
+          done
+      - name: Build the candidate (release, with the release public key)
+        run: |
+          set -euo pipefail
+          if [ -z "${BUSBAR_RELEASE_PUBKEY:-}" ]; then
+            echo "::error::BUSBAR_RELEASE_PUBKEY is not set; the plugins family would be red for the wrong reason"
+            exit 1
+          fi
+          cargo build -p busbar --release --locked
+      - name: Both binaries accept the oracle config
+        run: ./bin/oracle selftest target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
+
+      - name: Record the candidate (--plane all, filtered to the declared families)
+        env:
+          FAMILIES: ${{ steps.scope.outputs.families }}
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
+          VALKEY_URL: redis://localhost:6379
+        run: |
+          set -euo pipefail
+          rm -rf target/oracle/recordings/candidate
+          mkdir -p target/oracle/recordings/candidate
+          ./bin/oracle record --plane all --bin target/release/busbar \
+            --filter "$FAMILIES" --out target/oracle/recordings/candidate
+
+      # THE GOLDEN IS THE COMMITTED 1.5.5 RECORDING, never re-derived here, and `--strict` makes the
+      # differ's exit status carry the verdict for this subset: zero owed cells, an unaccepted
+      # divergence, or an owed cell missing from the candidate is red. `continue-on-error` so the
+      # SUMMARY below still runs and still publishes the report — a divergence must arrive as numbers
+      # and a diverging.txt, not as a job that died before it could say what diverged.
+      - name: Replay — candidate vs the committed golden (strict, same id-filter)
+        id: replay
+        continue-on-error: true
+        env:
+          FAMILIES: ${{ steps.scope.outputs.families }}
+        run: |
+          set -uo pipefail
+          ./bin/oracle diff \
+            --golden testing/shadow-oracle/golden/1.5.5 \
+            --candidate target/oracle/recordings/candidate \
+            --out target/oracle/reports/keep \
+            --cells testing/shadow-oracle/cells.json \
+            --accepted testing/shadow-oracle/accepted-differences.json \
+            --id-filter "$FAMILIES" --strict
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      # OWED / DIVERGING / ACCEPTED, PER FAMILY, IN ONE PLACE. The report directory is the tool's
+      # answer; this only groups it by the id prefix so a reader sees WHICH family moved instead of a
+      # single total. A family with owed 0 is called out: an id-filter that matches nothing produces
+      # a green with no content, which is the one way this job could lie.
+      - name: Summarise the oracle by family
+        id: oraclesum
+        if: always()
+        env:
+          FAMILIES: ${{ steps.scope.outputs.families }}
+          REPLAY_RC: ${{ steps.replay.outcome }}
+        run: |
+          set -uo pipefail
+          rep=target/oracle/reports/keep
+          owed=0; div=0; acc=0
+          [ -f "$rep/owed.txt" ]      && owed=$(grep -c . "$rep/owed.txt" || true)
+          [ -f "$rep/diverging.txt" ] && div=$(grep -c . "$rep/diverging.txt" || true)
+          [ -f "$rep/accepted.txt" ]  && acc=$(grep -c . "$rep/accepted.txt" || true)
+          {
+            echo "### shadow oracle — filter \`${FAMILIES}\`"
+            echo ""
+            echo "| family | owed | diverging |"
+            echo "| --- | ---: | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$rep/owed.txt" ]; then
+            cut -d'|' -f1 "$rep/owed.txt" | sort | uniq -c | while read -r n f; do
+              d=0
+              [ -f "$rep/diverging.txt" ] && d=$(cut -d'|' -f1 "$rep/diverging.txt" | grep -c "^${f}\$" || true)
+              echo "| ${f} | ${n} | ${d} |" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+          line="oracle ${FAMILIES}: ${owed} owed, ${div} diverging, ${acc} accepted"
+          echo "$line"
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+          if [ "$owed" -eq 0 ]; then
+            echo "::error::the id-filter '${FAMILIES}' owes ZERO cells — a filter that matches nothing"
+            echo "::error::reports a green about an empty set. Fix the regex in .keep-proof.toml."
+            exit 1
+          fi
+          if [ -s "$rep/diverging.txt" ]; then
+            echo "::error::${div} diverging cell(s):"
+            head -40 "$rep/diverging.txt" | sed 's/^/::error::    /'
+          fi
+          [ "$REPLAY_RC" = "success" ] || exit 1
+
+      - name: Publish the oracle report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: keep-proof-oracle-report
+          path: |
+            target/oracle/reports/keep/report.md
+            target/oracle/reports/keep/report.json
+            target/oracle/reports/keep/diverging.txt
+            target/oracle/reports/keep/owed.txt
+            target/oracle/reports/keep/owed-gaps.txt
+            target/oracle/reports/keep/ledger.tsv
+          if-no-files-found: warn
+
+      # ITS OWN COMMIT STATUS, not just a line in the verdict's. The oracle is the expensive half of
+      # the proof and the half an owner reads on its own; a harvester should be able to ask "did the
+      # oracle move?" without waiting for the test shards.
+      - name: One-line oracle summary as a commit status
+        if: always()
+        run: |
+          set -u
+          line="${{ steps.oraclesum.outputs.line }}"
+          [ -n "$line" ] || line="oracle: did not produce a report (see the run)"
+          state=failure
+          [ "${{ steps.oraclesum.outcome }}" = "success" ] && state=success
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state="$state" \
+            -f context="keep-proof/oracle" \
+            -f description="$(printf '%.140s' "$line")" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+  # ── CONSTRUCTION GATE (REPORT-ONLY, EXACTLY AS IN ci.yml) ──────────────────────────────────────
+  # Red by design on HEAD while the construction work it measures is in flight. It is run and
+  # PRINTED so a hand-back can be read against it, and deliberately NOT scored: a report-only gate
+  # that silently becomes blocking in a second workflow is the same drift ci.yml's umbrella refuses.
+  # Flip `continue-on-error` here on the same day ci.yml's job is flipped, not before.
+  construction-gate:
+    name: construction gate (report-only)
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # Measured: this gate is CANCELLED at ci.yml's 15-minute ceiling on every recent run, and it was
+    # cancelled again at 25 here, so its true runtime is still unknown and >25. 40 is a ceiling meant
+    # to let it FINISH ONCE so its real duration becomes a measurement instead of a cancellation.
+    # The gate's runtime is itself an owner item; this only stops the runner burning 25 minutes to
+    # learn nothing.
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Construction gate self-test
+        run: scripts/construction-gate.sh --selftest
+      - name: Construction gate (report-only)
+        run: scripts/construction-gate.sh || true
+
+  # ── THE ONE LINE THE HARVESTER READS ───────────────────────────────────────────────────────────
+  # The whole point of the file. A harvester asking "is keep-foo green?" should get an answer from
+  # the SHA, not from reading five job logs, so the verdict is written back as a commit status named
+  # `keep-proof` with a target_url pointing at this run.
+  #
+  # `if: always()` and every dependency's result read explicitly: a job that was SKIPPED or
+  # CANCELLED is not a pass, and the classic version of this job -- one that only runs on success --
+  # writes no status at all on the runs where the answer matters most.
+  verdict:
+    name: keep-proof verdict
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 10
+    if: always()
+    needs:
+      - build-clippy
+      - tests
+      - tests-total
+      - gates
+      - design-bindings
+      - oracle
+      # In `needs` so the verdict waits for it and prints it, NOT in RESULTS below: report-only,
+      # exactly as ci.yml's umbrella treats the same gate.
+      - construction-gate
+    env:
+      # jobkey|result, one per scored job. Same shape as ci.yml's umbrella ledger, and for the same
+      # reason: a hand-maintained prose summary drifts from the jobs it claims to describe.
+      RESULTS: |
+        build-clippy|${{ needs.build-clippy.result }}
+        tests|${{ needs.tests.result }}
+        tests-total|${{ needs.tests-total.result }}
+        gates|${{ needs.gates.result }}
+        design-bindings|${{ needs.design-bindings.result }}
+        oracle|${{ needs.oracle.result }}
+      CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Score the run and publish the one-line verdict on the commit
+        run: |
+          set -u
+          fails=0
+          reds=""
+          while IFS='|' read -r job result; do
+            [ -n "$job" ] || continue
+            if [ "$result" = "success" ]; then
+              printf '  %-16s OK\n' "$job"
+            else
+              printf '  %-16s RED (%s)\n' "$job" "$result"
+              fails=$(( fails + 1 ))
+              reds="${reds}${reds:+, }${job}"
+            fi
+          done <<< "$RESULTS"
+          printf '  %-16s REPORT-ONLY (%s)\n' "construction-gate" "${CONSTRUCTION_RESULT:-unset}"
+
+          if [ "$fails" -eq 0 ]; then
+            state="success"
+            desc="keep-proof GREEN: fmt/clippy/build, 5 test shards, gate --all + selftest, design bindings, shadow oracle"
+          else
+            state="failure"
+            desc="keep-proof RED (${fails}): ${reds}"
+          fi
+          # The status API refuses a description over 140 characters, and a refused status is a
+          # hand-back with NO verdict on it — the one outcome this job exists to prevent.
+          desc=$(printf '%.140s' "$desc")
+          {
+            echo "### keep-proof: ${state}"
+            echo ""
+            echo "\`${desc}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state="$state" \
+            -f context="keep-proof" \
+            -f description="$desc" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          [ "$fails" -eq 0 ] || exit 1

@@ -36,9 +36,19 @@ name: CI
 #   gh workflow run ci.yml -R GetBusbar/busbar --ref feat/my-branch
 #
 # `branches:` never matches tag pushes, so the release tag (v1.5.3 et al) still does not run CI here.
+#
+# `keep-**` IS EXCLUDED, AND IT IS NOT AN UNGATING. A `keep-*` branch is an agent's hand-back, and
+# `.github/workflows/keep-proof.yml` is its judge: fmt, clippy -D warnings, the workspace build, the
+# workspace suite across five runners, `cargo xtask gate --all`, `cargo xtask selftest`, the design
+# bindings, the construction gate and the shadow oracle. Before this exclusion a single keep push
+# queued keep-proof's ten jobs AND this workflow's ten AND the three conformance workflows' twenty-
+# nine — fifty jobs for one hand-back, of which ten were a verbatim second opinion. The queue is a
+# shared resource and every agent waits in it, so the duplicate is the one to cut. Nothing that gets
+# PROMOTED skips this workflow: a keep branch is harvested by cherry-pick onto an integration branch,
+# and the integration branch runs the full thing.
 on:
   push:
-    branches: ['**']
+    branches: ['integration/**', 'dev', 'qa', 'main']
   pull_request:
   workflow_dispatch:
 
@@ -50,9 +60,55 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# ── COMPILER CACHE (sccache) ───────────────────────────────────────────────────────────────────────
+# Swatinem/rust-cache already restores `target/` and the registry PER JOB: it makes the SECOND run of
+# the SAME job on the SAME lockfile cheap. It does nothing for the first run of a new branch, and
+# nothing for the fifteen OTHER jobs in this run that are compiling the same crates from the same
+# sources at the same moment — each one starts from its own key and rebuilds the world.
+#
+# sccache is the layer under that: a CONTENT-addressed cache of individual rustc invocations, shared
+# across every job and every branch through the GitHub Actions cache. Two jobs compiling identical
+# `syn` produce the same cache entry; the second one downloads an object file instead of running
+# rustc. The two caches are complements, not alternatives, and both are wired here.
+#
+# `RUSTC_WRAPPER` IS SET FOR THE WHOLE WORKFLOW, DELIBERATELY. A per-job env would be one more list
+# to keep in sync with reality, and reality has already moved twice: `scripts/construction-gate.sh`
+# shells out to `cargo xtask` from a job whose own steps contain no `cargo` line at all, and
+# `service-image-pins` runs `cargo xtask gate` with no toolchain step. A wrapper named workflow-wide
+# but installed job-by-job is a red waiting for whichever job grows a cargo line next — so EVERY job
+# in this file installs sccache, including the four that compile nothing today. The install is a
+# few seconds of a cached binary download; the alternative is a broken job nobody predicted.
+#
+# `CARGO_INCREMENTAL: 0` because sccache cannot cache incremental compilation and silently falls
+# through to plain rustc when it is on. rust-cache already sets it in the jobs it runs in; naming it
+# here makes it true in the jobs it does not.
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  CARGO_INCREMENTAL: "0"
+
+# ── EVERY JOB IS BOUNDED ───────────────────────────────────────────────────────────────────────────
+# A job without `timeout-minutes` inherits the runner's SIX-HOUR default. That is not a ceiling, it
+# is the absence of one: `structure lint` hung for six hours on 2026-09-07 and the only signal was a
+# spinner. Seventeen of this file's jobs were unbounded; every one of them is bounded now, and a new
+# job without a bound should not pass review.
+#
+# THE NUMBER IS MEASURED, NOT GUESSED. Each ceiling is `p95 x 1.5`, floored at 10 minutes, over the
+# green runs of that job in the last ten CI runs (`gh run list --workflow=ci.yml` then
+# `gh run view --json jobs`). p95 rather than max so one cold-cache outlier does not set the ceiling
+# for everyone; x1.5 so a cold cache, a slow runner and normal growth all still fit; floor 10 so a
+# job that takes eight seconds today is not strangled by a 15-second ceiling the first time GitHub is
+# slow. Each job carries its measured p95 in a comment above its ceiling, so raising one is an
+# argument about a number somebody wrote down and not a shrug.
+#
+# A ceiling is a HANG guard, not a flake knob. When one fires, read the job: either the work grew
+# (re-measure, raise deliberately, update the comment) or something is stuck (fix the something).
+# Jobs already bounded before this pass keep their own reasoned ceilings, documented at each job:
+# `check` 75 (cold-cache headroom on the primary suite), `shadow-oracle` 60, `proof-manifest` 30,
+# `teller-steps` 30, `llm-conformance` 20, `construction-gate` 15, `design-bindings` 10,
+# `ci-umbrella` 5.
 
 jobs:
   # WHICH TIER RAN, SAID OUT LOUD. A green check mark is read as "the gate passed", and after this
@@ -63,8 +119,16 @@ jobs:
   # verdict being self-describing instead of needing someone to remember the rule.
   gate-tier:
     name: gate tier (what this run actually proved)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.1 min
+    # over the last 18 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Declare the tier
         # Ref and event come in as ENV, not as `${{ }}` spliced into the script text. A branch name
         # is attacker-influenced data (anyone who can open a PR picks it) and GitHub allows plenty of
@@ -115,9 +179,17 @@ jobs:
   # is paid off. Both jobs are required checks, and neither can now hide the other.
   structure-lint:
     name: structure lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 14.5 min
+    # over the last 20 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 22
     steps:
+      # FULL HISTORY, for the `audit-ledger` step at the end of this job: every record in
+      # qa/audit-ledger.json stamps the COMMIT it read, and the gate resolves each one. A depth-1
+      # clone cannot, and the gate is red on a stamp it cannot check rather than passing over it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
       # THIS JOB NOW NEEDS A TOOLCHAIN, and that is the one real cost of the conversion: the
       # cheapest job in CI used to install nothing. It is declared rather than assumed. A Rust
@@ -137,6 +209,11 @@ jobs:
         with:
           workspaces: ". -> target"
           key: xtask
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
 
@@ -247,6 +324,18 @@ jobs:
       # nothing, so it costs a second.
       - name: Gate registry vs this workflow
         run: cargo xtask full-gate --selftest
+      # THE AUDIT REGISTER. `audit-ledger` judges the instrument that judges everything else — scope
+      # coverage, open HIGH/MEDIUM findings, a `fixed` stamped with nobody confirming it, and a
+      # record's hash against the commit it claims to have read. Until now its only caller was
+      # scripts/verify-1.6.0-done.sh, at release time; per push the register was unguarded and its
+      # own excuse entry said so. It reads a JSON file and asks git for hashes, so it costs a second.
+      # It needs the HISTORY, which is why this job's checkout is unshallow: a record naming a commit
+      # a depth-1 clone cannot resolve is RED, and correctly so — an unresolvable stamp is a stamp
+      # nobody can check.
+      - name: Audit-ledger self-test (the register's judge cannot be lied to)
+        run: cargo xtask gate audit-ledger --selftest
+      - name: Audit-ledger gate (BLOCKING — the audit register is sound)
+        run: cargo xtask gate audit-ledger
       # QA-GATE DISPATCHER DRIFT. `workflow_run` ALWAYS loads the workflow file from the DEFAULT
       # branch, so the gate that actually fires after a push to `qa` is `main`'s copy, never the
       # promoted commit's. That has already cost a silent green: measured on qa c736177 the
@@ -420,12 +509,29 @@ jobs:
         run: cargo xtask gate plane-abi-neutrality --selftest
       - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
         run: cargo xtask gate plane-abi-neutrality
+      # KIND-ISOLATION gate: busbar is core + plugins, and the ~10 plugin kinds can never
+      # cross-contaminate (owner ruling, 2026-09-07). A proposal to create `busbar-transport-a2a`
+      # was ruled catastrophic — it fuses a KIND with another kind's INSTANCE and merges back what
+      # the plane/transport split is tearing apart. This is the ruling as a machine fact, in four
+      # rows: the crate NAME (`busbar-transport-a2a`, `busbar-plane-http`, `busbar-unit-mcp`,
+      # `busbar-plane-transport` are all refused), the kind-to-kind DEPENDENCY graph (a ratchet over
+      # the measured edge classes, so a new one is refused and a dead allowance has to be struck),
+      # the source VOCABULARY (a transport never says `a2a`, a plane never says `axum`), and the
+      # kind REGISTRY (a crate of no kind is refused with the owner's own instruction: make a new
+      # plugin kind, do not fuse two). Self-test runs FIRST — every one of the four rows is planted
+      # and proven RED before the verdict is trusted, including the `busbar-transport-a2a` the
+      # owner refused. The SHIP-criterion twin (`kind-isolation-ship`, one surface and one shared
+      # conformance battery per kind) is red on HEAD by design and runs at release time.
+      - name: Kind-isolation self-test (the refused busbar-transport-a2a, planted and proven RED)
+        run: cargo xtask gate kind-isolation --selftest
+      - name: Kind-isolation gate (BLOCKING — no name, edge or word fuses two plugin kinds)
+        run: cargo xtask gate kind-isolation
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
 
   check:
     name: fmt · clippy · build · test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     # A hung test burns the runner's 6-HOUR default in silence without this: one never-finishing
     # test leaves the job printing nothing until someone notices and cancels by hand. A green run
     # takes ~13 minutes warm, ~40 cold; 75 bounds the damage while leaving cold-cache headroom.
@@ -484,6 +590,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
@@ -756,12 +867,20 @@ jobs:
   #   UPDATE_OPENAPI=1 cargo test -p busbar -p busbar-core --features openapi-schema openapi_json_matches_committed_file
   openapi-schema:
     name: openapi-schema clippy · drift · coverage
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 3.9 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
@@ -805,7 +924,10 @@ jobs:
   # would make a regenerated corpus silently smaller rather than failing loudly.
   migration-corpus:
     name: migration corpus (every shipped config still migrates)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -813,6 +935,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
@@ -835,7 +962,10 @@ jobs:
 
   config-stability:
     name: config-stability gate (frozen grammar · additive-only)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.0 min
+    # over the last 19 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -846,6 +976,11 @@ jobs:
       # declared here rather than assumed. It is bounded the same way every other converted gate's
       # is: the segregation gate holds the runner's dependency count at one, and the cache is keyed
       # on `xtask` so this job does not pay for the workspace's build.
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
@@ -891,9 +1026,17 @@ jobs:
   # over tracked files — no toolchain, no build — so it is FAST TIER and runs on every push.
   generated-artifact-drift:
     name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.7 min
+    # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
@@ -952,9 +1095,17 @@ jobs:
   # read as "clean". The same script runs over every PLUGIN repo via the plugin-ci reusable workflow.
   public-hygiene:
     name: docs hygiene (public prose describes the software, not the process)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.2 min
+    # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Public-hygiene self-test (every rule proven RED, every twin proven GREEN)
         run: python3 scripts/public-hygiene-lint.py --selftest
       - name: Public-hygiene gate
@@ -1005,9 +1156,26 @@ jobs:
   # testing/fleet-fixtures/verdict.sh.
   service-image-pins:
     name: service image pins (one pinned list, every workflow reads it)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 0.6 min
+    # over the last 10 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # THE REGISTRY/TARGET CACHE, which this job never had: it builds the gate runner from source on
+      # every run with nothing restored, on the image's ambient toolchain. Keyed `xtask`, the same key
+      # `structure-lint` uses, so the two jobs that build only the runner share one entry instead of
+      # each paying for it.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
       - name: Service-image lint self-test (every rule proven RED)
         run: cargo xtask gate service-images --selftest
       - name: Service-image pin gate
@@ -1039,12 +1207,20 @@ jobs:
   # inherits it with no per-repo work.
   executable-config-lint:
     name: executable-config gate (heredocs · test literals · shipped yaml)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.7 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
@@ -1083,12 +1259,20 @@ jobs:
   # which boots it and drives real HTTP through it.
   no-default-features:
     name: no-default-features build · clippy · test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 22.0 min
+    # over the last 13 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 33
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
@@ -1158,7 +1342,10 @@ jobs:
   # three planes; this weak form is the per-plane compile-level complement, asserted on every matrix leg.
   deletion-test-matrix:
     name: deletion-test (neutral crates compile with a plane removed)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 1.6 min
+    # over the last 15 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY (same axis + cost profile as no-default-features). Skipped on pushes to
     # non-promotion branches; runs on every pull request, on dev/qa/main, and on workflow_dispatch.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1174,6 +1361,11 @@ jobs:
             features: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build neutral crates — ${{ matrix.name }}
@@ -1213,12 +1405,20 @@ jobs:
   # here instead of manufacturing false confidence.
   no-plugins-gate:
     name: no-plugins gate (compiled out · not installed)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 2.9 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
@@ -1233,12 +1433,20 @@ jobs:
   # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
   txn-guards:
     name: txn compile fence · loom model
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 12.1 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 18
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Transaction compile fence (must fail to compile)
@@ -1252,12 +1460,20 @@ jobs:
   # sleeps) the instant they land. Fine-grained overhead numbers are bench/latency/'s job.
   timing:
     name: timing gate (release)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.1 min
+    # over the last 14 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 27
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Hot-path timing gate
@@ -1290,6 +1506,9 @@ jobs:
   windows:
     name: windows build · clippy · test
     runs-on: windows-latest
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 18.3 min
+    # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 27
     # FULL TIER ONLY. Skipped on pushes to non-promotion branches; runs on every pull
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
@@ -1315,6 +1534,11 @@ jobs:
       WINDOWS_EXPECTED_TESTS: "5686"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
@@ -1421,7 +1645,10 @@ jobs:
   # so the store-postgres / store-valkey roundtrip tests are covered here too rather than skipped.
   coverage:
     name: coverage (llvm-cov · codecov)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 6.4 min
+    # over the last 9 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 10
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     services:
       postgres:
@@ -1448,6 +1675,11 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
@@ -1510,10 +1742,18 @@ jobs:
   # FULL TIER: runs on every PR, on dev/qa/main, and on dispatch — same guard as the other gate jobs.
   perf-build-gate:
     name: perf + build-parity gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    # BOUNDED — see "EVERY JOB IS BOUNDED" at the top of this file. Measured p95 9.9 min
+    # over the last 7 green runs of this job; ceiling is p95 x1.5, floor 10.
+    timeout-minutes: 15
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           # llvm-tools supplies llvm-profdata, which pgo-drift-check.sh's self-test needs to build
@@ -1641,7 +1881,7 @@ jobs:
       - check
       - no-plugins-gate
       - no-default-features
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 30
     permissions:
       contents: write
@@ -1649,6 +1889,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -1775,7 +2020,7 @@ jobs:
   # plugin signature is unverifiable and the plugins family reads red for the wrong reason.
   shadow-oracle:
     name: shadow oracle (this build vs the published 1.5.5, 0 divergences)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 60
     env:
       BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
@@ -1833,6 +2078,11 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
@@ -2000,7 +2250,7 @@ jobs:
   # below collects.
   llm-conformance:
     name: llm spec conformance (HEAD recording vs the published provider specs)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 20
     needs: shadow-oracle
     # Runs whether the shadow oracle passed or FAILED (a replay divergence must not hide a spec
@@ -2009,6 +2259,11 @@ jobs:
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Download the candidate recording (made by shadow-oracle on this commit)
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -2030,6 +2285,13 @@ jobs:
       # "conformant" cannot move because a parser release did.
       - name: PyYAML (pinned) for the first parse of the YAML specs
         run: python3 -c "import yaml" 2>/dev/null || pip install --quiet 'pyyaml==6.0.2'
+      # THE PINNED TOOL, INSTALLED THE SAME WAY THE SHADOW ORACLE INSTALLS IT. validate.py rebuilds a
+      # request body from the tool's build-request.py for any cell whose recording lacks
+      # raw/<cell>/request.body. The tool is a separate product now, so it is fetched through
+      # testing/shadow-oracle/oracle.pin (tag + sha256, refused on a mismatch) rather than read from
+      # this tree. Python-only — no Rust toolchain, so this job stays in the fast tier.
+      - name: Install the pinned oracle tool (build-request.py, for cells with no recorded request)
+        run: ./bin/oracle tool-dir
       - name: LLM spec conformance self-test (the rig cannot pass vacuously)
         run: bash testing/llm-conformance/selftest.sh
       - name: LLM spec conformance — HEAD recording vs the published specs
@@ -2081,7 +2343,7 @@ jobs:
   # default path, so a mistyped arm ran a check nobody asked for and reported green for it.)
   teller-steps:
     name: teller steps (one cell per Teller step per plane, and the cells RUN)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 30
     # FULL TIER. --root-legs compiles the binary crate under a feature combination no other job
     # builds, so it cannot ride a warm cache from the `check` job; it runs on every pull request, on
@@ -2089,6 +2351,11 @@ jobs:
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
@@ -2110,13 +2377,18 @@ jobs:
 
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 15
     continue-on-error: true
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Construction gate self-test (every rule proves it sees its planted violation)
         run: scripts/construction-gate.sh --selftest
       - name: Construction gate (RED by design today; see the job comment for the flip)
@@ -2161,10 +2433,15 @@ jobs:
   # Self-test FIRST, as everywhere else in this file.
   design-bindings:
     name: design bindings (every Appendix B binding proven by a check that exists · regen-clean)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Design bindings self-test (the gate proves itself before it judges the tree)
         run: scripts/design-bindings.sh --selftest
       - name: Design bindings check (existence; unmapped bindings listed as named gaps)
@@ -2228,7 +2505,7 @@ jobs:
     # non-gating: proof-manifest -- publishes the Build Proof Dashboard on dev/qa/main only. By its
     #   own contract it CHANGES NO GATE, it records verdicts other jobs produced; a manifest refresh
     #   must never be able to gate a promotion.
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 5
     env:
       # Report-only: printed, never counted. Flip condition is on the construction-gate job.
@@ -2262,6 +2539,11 @@ jobs:
         perf-build-gate|full|${{ needs.perf-build-gate.result }}
         teller-steps|full|${{ needs.teller-steps.result }}
     steps:
+      # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
+      # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
+      # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
+      - name: Compiler cache (sccache, GitHub Actions cache backend)
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |
           set -u
