@@ -2,16 +2,43 @@
 #
 # .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
 # scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
-# something specific instead of "everything, slowly".
+# something specific instead of "everything, slowly". It narrows the shadow oracle and names the
+# test packages; it cannot narrow the gates, on purpose — a gate a hand-back gets to scope is a
+# gate the hand-back can turn off.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
-#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
-#              small, load-bearing slice rather than a claim about all twenty-six families: billing
-#              and ledger are the money path — if a CI change could somehow perturb a recorded
-#              behaviour, it is these cells that must say so.
+# THIS BRANCH (R5-trust): busbar-core's `trust/` module is DELETED. D33 §1 says the residue of the
+# legacy crates is removed rather than relocated — the union ceiling has 33.6 k lines of headroom
+# against a ~107 k legacy body, so most of it cannot be moved anywhere the gate would accept — and
+# §2 says a path core merely `pub use`s is a SPELLING, not a module. All 91 lines of core's `trust/`
+# were that spelling: four files of glob re-exports over `busbar_substrate::trust`, with no
+# behaviour in any of them. The engines themselves went down into the substrate in Phase-B B1 and D3.
+#
+# Four commits:
+#   1. The `GovResolve` seam moves beside the governance state it resolves against (pre-existing on
+#      the branch point).
+#   2. The two batteries `trust/` still HOSTED move to the modules whose code they drive — the
+#      ordered validator's to `governance/` (it drives a real `GovState`), the re-verification
+#      cadence's to `plane_host/trust.rs` (core's one funnel for the `reverify::due` arithmetic).
+#      A module that owns tests cannot be deleted without first deciding where they go.
+#   3. Every in-core caller is repointed off the shim onto `busbar_substrate::trust::` — 45
+#      occurrences across 9 files, the same names resolving to the same items by their real path.
+#   4. [SEAM] `pub mod trust;` leaves lib.rs and the four files are deleted. Nothing replaces the
+#      path: keeping `pub use busbar_substrate::trust;` alive for one line would preserve exactly
+#      the residue the ratchet is counting down, and no caller anywhere in the workspace needs it.
+#
+#   families — a regex handed to the shadow oracle's `--id-filter`. `auth.lifecycle` is the arc the
+#              trust engines gate — a key's mint, rotate, expiry and revoke all run through the
+#              ordered validator whose call sites this branch rewrites, and the revocation cells are
+#              where a mis-resolved `validate_request` would show. `admin.ops` is where an operator
+#              drives approval, quarantine and re-verification, which is the `reverify::due` path
+#              that moved home here. `boot` is included because the deletion takes a `pub mod` line
+#              out of the crate root: the composition root resolves its trust names at build time,
+#              and boot is the family that would notice if one of them had stopped resolving to the
+#              same item.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
-families = '^(billing|ledger)([|.]|$)'
-tests = ["busbar-unit-cost"]
+#              `busbar-core` holds every rewritten call site and both rehomed batteries;
+#              `busbar-substrate` is where the names now resolve and carries the engines' own
+#              proofs; `busbar-unit-trust` is the unit crate on the trust concern; `busbar` is the
+#              composition root, which is what actually links after a crate-root module disappears.
+families = '^(auth\.lifecycle|admin\.ops|boot)([|.]|$)'
+tests = ["busbar-unit-trust", "busbar-core", "busbar-substrate", "busbar"]
