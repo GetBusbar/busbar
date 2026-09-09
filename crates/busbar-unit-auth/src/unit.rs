@@ -6,7 +6,7 @@
 use busbar_caps::{Authenticate, Authenticated, Decision, ReasonCode, Refusal, UnitToken};
 
 use crate::cache::CredentialCache;
-use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, RevocationView};
+use crate::chain::{AuthChain, ChainVerdict, KeyVerifier, ResolvedKey, RevocationView};
 use crate::challenge::Challenge;
 use crate::principal::Principal;
 
@@ -73,6 +73,47 @@ impl Auth {
         pending: Option<Challenge>,
         token: &UnitToken<Authenticate>,
     ) -> Decision<Authenticate> {
+        self.resolve_recording_key(req, cache, keys, revocations, pending, token, &mut None)
+    }
+
+    /// The same resolution, with the ENFORCED KEY handed back to the caller.
+    ///
+    /// ## Why an out-parameter rather than a richer return
+    ///
+    /// A [`Decision`] is SEALED: the loop opens one with the kernel's seal and nothing else reads
+    /// it, which is what stops a step reading another step's answer. That seal is the reason the
+    /// principal is handed to the next step by the kernel rather than pulled off this decision, and
+    /// it is not being weakened here. What a step downstream needs is not the decision — it is the
+    /// key's own GRANTS, which the chain resolved and then dropped on the floor, because until now
+    /// nothing above the chain could read them.
+    ///
+    /// So the key travels beside the decision, to the ONE caller that asked for it, and the sealed
+    /// answer is unchanged. `resolve` above is this function with the sink thrown away, which is
+    /// what every caller that does not enforce a per-resource grant wants and is why their
+    /// signatures did not move.
+    ///
+    /// ## What lands in the sink, and what deliberately does not
+    ///
+    /// `Some` only when an ENGINE arm resolved a key — the built-in signed-key arm, the one that
+    /// has a grant list to read. A boxed module's answer type cannot carry one
+    /// ([`ChainVerdict::Identified::resolved`]), and the open door resolved nobody at all. Both
+    /// leave the sink `None`, and a caller enforcing a grant must read that as "no grants to
+    /// enforce against" rather than as "unrestricted": the two are the same value here and the
+    /// fail-closed reading of it is the caller's to take.
+    ///
+    /// The sink is written ONLY on the arm that admits. A refusal leaves whatever was there
+    /// untouched, so a caller cannot end up holding a key off a walk that was denied.
+    #[allow(clippy::too_many_arguments)]
+    pub fn resolve_recording_key(
+        &self,
+        req: &AuthRequest<'_>,
+        cache: Option<&CredentialCache>,
+        keys: Option<&dyn KeyVerifier>,
+        revocations: Option<&dyn RevocationView>,
+        pending: Option<Challenge>,
+        token: &UnitToken<Authenticate>,
+        key: &mut Option<ResolvedKey>,
+    ) -> Decision<Authenticate> {
         // 1. The plane may only narrow within what the claim declared.
         if let Some(scheme) = req.scheme {
             if !req.declared_schemes.contains(&scheme) {
@@ -129,15 +170,29 @@ impl Auth {
             } if Principal::id_is_reserved(&principal.id) => {
                 Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            ChainVerdict::Identified { principal, .. } => {
+            ChainVerdict::Identified {
+                principal,
+                resolved,
+                ..
+            } => {
+                // MOVED out of the verdict, never cloned: the verdict is consumed by this match and
+                // the box's contents go straight to the sink. A clone here would be a per-request
+                // allocation for a value nobody else is going to read.
+                *key = resolved.map(|resolved| *resolved);
                 Decision::proceed(token, Authenticated::Principal((&principal).into()))
             }
             // The open front door admits with the anonymous principal: no bucket, and an actor id
             // that reads as the plain word everywhere it is written.
-            ChainVerdict::Open => Decision::proceed(
-                token,
-                Authenticated::Principal((&Principal::anonymous()).into()),
-            ),
+            ChainVerdict::Open => {
+                // The open door resolved NOBODY, so it resolved no key either — and it says so
+                // rather than leaving the sink as it found it. Every admitting arm defines the
+                // sink; only the refusals leave it alone.
+                *key = None;
+                Decision::proceed(
+                    token,
+                    Authenticated::Principal((&Principal::anonymous()).into()),
+                )
+            }
             ChainVerdict::Denied => {
                 Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
