@@ -322,6 +322,30 @@ queue, loudly.
    hand-back, `./scripts/prove-remote.sh` needs only ONE box and no runner registration at all — it
    is ssh and a git push. A fleet with a broken Actions registration can still prove work.
 
+### "The fleet is slow" is usually not the fleet
+
+Before adding boxes or widening a timeout, look at CPU. A job that has burned 25 minutes at ~4% CPU
+is not starved, it is blocked. The one that cost the most time here:
+
+```
+pid ...  xtask gate --all           wchan=anon_pipe_write  state=S  etime=43:25
+pid ...  git ... cat-file --batch   wchan=anon_pipe_write  state=S  etime=41:22
+```
+
+Both ends blocked *writing*. `git cat-file --batch` is a request/response coprocess: the parent must
+drain its stdout while feeding its stdin. Nobody drained, both pipe buffers filled, both sides
+blocked forever — on an **idle** box, load average 0.02. `cargo xtask gate --all` deadlocks this way
+on the current tree, which is why the `xtask` test leg cannot pass at any per-binary ceiling.
+
+The per-binary watchdog (`BINARY_TIMEOUT_SECS=1500`) caught it correctly and said so. It was raised
+to 3000s once, on the assumption that a shared box had merely made a 15-minute suite slower. That
+was wrong and has been reverted. **A watchdog you widen every time it fires is a watchdog you have
+turned off slowly.** Read `wchan` first:
+
+```sh
+~/.busbar-fleet-ssh ubuntu@i-0abc... 'ps -eo pid,etime,pcpu,wchan:20,args --sort=-etime | head -20'
+```
+
 ### Known sharp edges
 
 * **`~/.cargo` is shared between the Actions agents and the remote-prove checkout.** They are the
