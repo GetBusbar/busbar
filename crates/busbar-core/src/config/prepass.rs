@@ -175,6 +175,15 @@ struct KeySeed<'a, S> {
     /// Set to the matched entry of `watch` when a FORWARDED key is one whose value needs a
     /// nested pass of its own.
     watched: &'a mut Option<&'static str>,
+    /// Every top-level key this document actually WROTE, banked as it goes past.
+    ///
+    /// This visitor is the one place in the parse that sees a top-level key as a STRING. Once it
+    /// hands the key on, a lifted section becomes a carrier at its `Default` and a forwarded one
+    /// becomes a struct field at its `#[serde(default)]` — and in both cases "the operator omitted
+    /// this" and "the operator wrote it empty" become the same value, indistinguishable forever
+    /// after. Writing the names down here costs one string per top-level key and is the only
+    /// honest way to answer "which sections does this document have?" later.
+    witnessed: &'a mut Vec<String>,
 }
 
 impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for KeySeed<'_, S> {
@@ -195,6 +204,9 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for KeySeed<'_, S> {
     }
 
     fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        // Banked BEFORE the key is dispatched, so a lifted section and a forwarded one are both
+        // recorded and neither branch below has to remember to.
+        self.witnessed.push(v.to_string());
         if let Some(k) = self.lift.iter().find(|k| **k == v) {
             *self.lifted = Some(k);
             return Ok(KeyOutcome::Lift(self.inner));
@@ -223,6 +235,8 @@ struct LiftingMap<'a, M> {
     /// Set when the key just forwarded is the `nested` one, so the value read can be wrapped.
     pending_nested: bool,
     lifted: &'a mut Lifted,
+    /// Every top-level key the document wrote. See [`KeySeed::witnessed`].
+    witnessed: &'a mut Vec<String>,
 }
 
 impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
@@ -246,6 +260,7 @@ impl<'de, M: MapAccess<'de>> MapAccess<'de> for LiftingMap<'_, M> {
                 watch,
                 lifted: &mut lifted,
                 watched: &mut watched,
+                witnessed: self.witnessed,
             })?;
             match outcome {
                 None => return Ok(None),
@@ -307,12 +322,17 @@ impl<'de, S: DeserializeSeed<'de>> Visitor<'de> for NestedSeed<'_, S> {
     }
 
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+        // DISCARDED ON PURPOSE. This pass runs over the keys INSIDE `auth:`, and the presence list
+        // is about TOP-LEVEL sections; banking `policy` beside `pools` would put two different
+        // kinds of name in one list and let a nested key answer a question about a section.
+        let mut nested_keys: Vec<String> = Vec::new();
         self.inner.deserialize(OptionalMap(LiftingMap {
             inner: map,
             lift: self.lift,
             nested: None,
             pending_nested: false,
             lifted: self.lifted,
+            witnessed: &mut nested_keys,
         }))
     }
 
@@ -382,14 +402,19 @@ impl<'de> Visitor<'de> for DocumentVisitor {
 
     fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
         let mut lifted = Lifted::default();
+        let mut witnessed: Vec<String> = Vec::new();
         let mut deploy = DeployCfg::deserialize(MapAccessDeserializer::new(LiftingMap {
             inner: map,
             lift: LIFTED_TOP_LEVEL_KEYS,
             nested: Some((NESTED_TOP_LEVEL_KEY, LIFTED_AUTH_KEYS)),
             pending_nested: false,
             lifted: &mut lifted,
+            witnessed: &mut witnessed,
         }))?;
         lifted.install(&mut deploy);
+        witnessed.sort();
+        witnessed.dedup();
+        deploy.present_sections = Some(witnessed);
         Ok(SplitDocument(deploy))
     }
 }

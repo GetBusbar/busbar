@@ -451,6 +451,10 @@ pub struct RootCfg {
     /// The resolved `require_priced_classes:` flag — see [`DeployCfg::require_priced_classes`].
     /// `false` (the absent-key value) is the previous release's boot, byte for byte.
     pub require_priced_classes: bool,
+    /// Which top-level sections this deployment's document actually wrote — see
+    /// [`DeployCfg::present_sections`]. `None` = this config was not parsed from a document, so
+    /// section presence was never witnessed and no reader may infer absence from it.
+    pub present_sections: Option<Vec<String>>,
     /// The `store:` block as configured; `None` = the block was ABSENT (ephemeral RAM store,
     /// presence-driven governance stays off unless another governance signal is present).
     pub store: Option<StoreCfg>,
@@ -1292,6 +1296,23 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is.
     #[serde(skip)]
     pub(crate) streams: StreamsSection,
+    /// EVERY TOP-LEVEL KEY THIS DOCUMENT ACTUALLY WROTE, sorted, or `None` when the config did not
+    /// come through the document parser at all.
+    ///
+    /// Nothing else on this struct can answer "did the operator write this section?". A lifted
+    /// section (`mcp:`, `tools:`, `agents:`, `streams:`) installs at its `Default` when absent, and
+    /// a forwarded one (`pools:`, `models:`) reads at its `#[serde(default)]` — so by the time this
+    /// struct exists, "omitted" and "written empty" are the same value and the distinction is gone
+    /// for good. [`prepass::SplitDocument`] is the one place in the parse that sees the keys as
+    /// strings, and this is that list, banked there.
+    ///
+    /// `None`, NOT AN EMPTY LIST, for a config assembled in memory rather than parsed — a test
+    /// fixture, a hand-built `DeployCfg`. The two are genuinely different answers: an empty list
+    /// says "this document wrote no sections", and `None` says "nobody watched, so do not pretend
+    /// to know". A reader that filters on this list must treat `None` as "presence unknown" and
+    /// fall back to whatever it did before, which is what keeps a fixture's behaviour unchanged.
+    #[serde(skip)]
+    pub(crate) present_sections: Option<Vec<String>>,
     // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
     // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and MCP/A2A
     // pools are projected to their plane carriers in `resolve`. A 1.5.4/1.6.0-dev config still
@@ -2677,6 +2698,7 @@ pub fn resolve(
             rate_card: deploy.rate_card.clone(),
             per_request_fee: deploy.per_request_fee,
             require_priced_classes: deploy.require_priced_classes,
+            present_sections: deploy.present_sections.clone(),
             store: deploy.store.clone(),
             secrets: deploy.secrets.clone(),
             global_hooks: global_hook_names,

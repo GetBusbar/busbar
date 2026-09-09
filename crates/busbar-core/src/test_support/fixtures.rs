@@ -64,6 +64,7 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         // previous release's validation, which is what every fixture built before the key existed
         // was written against.
         require_priced_classes: false,
+        present_sections: None,
         store: None,
         secrets: std::collections::BTreeMap::new(),
         global_hooks: Vec::new(),

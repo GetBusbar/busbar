@@ -115,6 +115,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         rate_card: _,
         per_request_fee: _,
         require_priced_classes: _,
+        present_sections: _,
         limits: _,
         blocked_metadata_hosts: _,
         allow_metadata_hosts: _,

@@ -42,6 +42,7 @@ fn provider_deploy(env_var: &str) -> ProviderDeploy {
 pub(crate) fn base_deploy() -> DeployCfg {
     DeployCfg {
         tools: Default::default(),
+        present_sections: None,
         agents: Default::default(),
         streams: Default::default(),
         listen: DEFAULT_LISTEN_ADDR.into(),
@@ -2555,6 +2556,47 @@ fn test_removed_top_level_blocks_rejected() {
             "expected unknown-field naming `{key}`; got: {msg}"
         );
     }
+}
+
+/// RULING 3: THE PARSE WRITES DOWN WHICH TOP-LEVEL SECTIONS THE DOCUMENT ACTUALLY WROTE.
+///
+/// Nothing downstream can recover this. A lifted section installs at its `Default` when absent and
+/// a forwarded one reads at its `#[serde(default)]`, so by the time a `DeployCfg` exists "omitted"
+/// and "written empty" are one value. The list is banked in the one pass that sees the keys as
+/// strings.
+#[test]
+fn the_parse_records_which_top_level_sections_the_document_wrote() {
+    let yaml = "providers: {}\nmodels: {}\npools: {}\nper_request_fee: 2\n";
+    let deploy = crate::config::deploy_from_yaml_str(yaml).expect("document parses");
+    let present = deploy
+        .present_sections
+        .as_ref()
+        .expect("a parsed document witnessed its keys");
+    for wrote in ["providers", "models", "pools", "per_request_fee"] {
+        assert!(present.iter().any(|s| s == wrote), "{wrote}: {present:?}");
+    }
+    // And a section the document did NOT write is absent, which is the whole point. All three of
+    // these are LIFTED keys, which is the route that used to lose the distinction entirely: an
+    // absent lifted section installs at its `Default` and looks exactly like an empty one.
+    for omitted in ["tools", "agents", "streams", "mcp"] {
+        assert!(
+            !present.iter().any(|s| s == omitted),
+            "an unwritten section must not appear: {omitted}: {present:?}"
+        );
+    }
+}
+
+/// A CONFIG THAT DID NOT COME THROUGH THE DOCUMENT PARSER WITNESSED NOTHING, and says so with
+/// `None` rather than with an empty list. The two are different answers: an empty list says "this
+/// document wrote no sections", `None` says "nobody watched".
+#[test]
+fn a_config_not_parsed_from_a_document_witnesses_no_sections() {
+    let bare: DeployCfg =
+        serde_yaml::from_str("providers: {}\nmodels: {}\n").expect("bare deploy parses");
+    assert!(
+        bare.present_sections.is_none(),
+        "a bare serde parse skips the pass that witnesses keys"
+    );
 }
 
 /// RULING 1: A RATE ENTRY PRICES PER-LANE ROWS FOR ANY DECLARED CLASS, under `rates:`.

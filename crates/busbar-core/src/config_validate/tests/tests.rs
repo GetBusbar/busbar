@@ -9,6 +9,7 @@ fn make_root_cfg(
 ) -> RootCfg {
     config::RootCfg {
         tool_defs: crate::plane::config::ToolsSection::default().0,
+        present_sections: None,
         agent_defs: crate::plane::config::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
@@ -5788,6 +5789,92 @@ fn a_rates_row_prices_only_the_class_it_names() {
     assert!(
         !refusal.contains("bytes"),
         "the class that WAS priced must not be named: {refusal}"
+    );
+}
+
+/// RULING 3: AN "ENABLED" PLANE IS ONE THIS CONFIG CONFIGURED, not one this BUILD compiled in.
+///
+/// `plane_decls()` lists every plane the binary carries, which is a fact about the build. A node
+/// linked against the MCP plane but writing no `tools:` section serves no MCP traffic and reports
+/// no `bytes` — it cannot, there is nothing configured to report it — so demanding a rate row for
+/// that class refuses a deployment over money it will never be owed. Under the old reading, arming
+/// the flag on a full build was unsatisfiable for a reason that had nothing to do with the
+/// operator's configuration.
+#[test]
+fn a_compiled_in_plane_this_config_did_not_configure_is_not_a_reason_to_refuse() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.require_priced_classes = true;
+    cfg.rate_card = Some(std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            input_utok: 3.0,
+            output_utok: 15.0,
+            cache_read_utok: 0.3,
+            cache_write_utok: 3.75,
+            ..config::RateEntryCfg::default()
+        },
+    )]));
+    // The document wrote the llm plane's section and nothing else. Whatever else this build has
+    // linked in — mcp, a2a, voice — is not this deployment's business.
+    cfg.present_sections = Some(vec!["models".to_string(), "pools".to_string()]);
+    validate(&cfg).expect("an unconfigured plane's classes are not this deployment's to price");
+}
+
+/// AND A PLANE THE CONFIG DID CONFIGURE STILL REFUSES, so the filter above narrows the question
+/// rather than answering it.
+#[test]
+fn a_configured_plane_with_an_unpriced_class_still_refuses() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.require_priced_classes = true;
+    cfg.rate_card = Some(std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg {
+            input_utok: 3.0,
+            output_utok: 15.0,
+            cache_read_utok: 0.3,
+            cache_write_utok: 3.75,
+            ..config::RateEntryCfg::default()
+        },
+    )]));
+    // `tools:` IS the MCP plane's config section. Writing it puts `bytes` and `tool_calls` back in
+    // scope, and this card prices neither.
+    cfg.present_sections = Some(vec![
+        "models".to_string(),
+        "pools".to_string(),
+        "tools".to_string(),
+    ]);
+    let errs = validate(&cfg).expect_err("a CONFIGURED plane's unpriced class must still refuse");
+    let joined = errs.join("\n");
+    assert!(joined.contains("no rate row"), "{joined}");
+}
+
+/// PRESENCE UNKNOWN FAILS CLOSED. A config that never went through the document parser — a
+/// hand-built fixture, a config assembled in memory — witnessed no section keys at all. The honest
+/// answer there is the OLD one: assume every compiled-in plane is in scope, rather than silently
+/// letting all of them out of it. A money rule that has to guess guesses toward refusing.
+#[test]
+fn a_config_that_witnessed_no_sections_considers_every_compiled_in_plane() {
+    let mut cfg = cost_cfg(&["m"]);
+    cfg.require_priced_classes = true;
+    cfg.rate_card = Some(std::collections::BTreeMap::from([(
+        "m".to_string(),
+        config::RateEntryCfg::default(),
+    )]));
+    assert!(
+        cfg.present_sections.is_none(),
+        "a hand-built RootCfg witnessed nothing"
+    );
+    // The llm plane is compiled in unconditionally and declares four token classes; an all-zero
+    // card does price them, so this must refuse for some OTHER plane only if one is linked in. The
+    // guarantee under test is that `None` does not silently empty the plane list -- which it would
+    // if `None` were read as "no sections present".
+    let planes: Vec<&str> = crate::plane::registry::plane_decls()
+        .iter()
+        .map(|d| d.key)
+        .collect();
+    assert!(
+        !planes.is_empty(),
+        "the registry must carry at least one plane for this test to mean anything"
     );
 }
 

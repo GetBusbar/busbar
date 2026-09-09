@@ -1602,8 +1602,28 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
         // The classes come off the PLANE REGISTRY, not off a list re-spelled here: each declaration
         // is the plane's own `METER_CLASS_NAMES`, carried across as plain strings, so the classes
         // this refuses for are exactly the classes the meter will report.
+        //
+        // AN "ENABLED" PLANE IS A CONFIGURED PLANE, NOT A COMPILED-IN ONE. `plane_decls()` lists
+        // every plane the BUILD carries, which is a fact about how the binary was compiled and not
+        // about what this deployment does. A node built with the MCP plane linked in but no `tools:`
+        // section serves no MCP traffic and reports no `bytes` or `tool_calls` — it cannot, there is
+        // nothing configured to report them — so demanding a rate row for those classes refuses a
+        // deployment over money it will never be owed. The old reading made the flag unarmable on
+        // any full build for a reason that had nothing to do with the operator's configuration.
+        //
+        // So a plane is in scope when this document WROTE its config section. The list of written
+        // sections is banked at parse time (`DeployCfg::present_sections`) because nothing later
+        // can recover it. `None` means the config never went through the document parser — a
+        // hand-built fixture — and there the honest answer is the old one: presence was never
+        // witnessed, so assume every compiled-in plane is in scope rather than silently letting
+        // them all out of it. Fail-closed on the unknown, which is the direction a money rule has
+        // to fail in.
         let planes: Vec<(&str, &[&str])> = crate::plane::registry::plane_decls()
             .iter()
+            .filter(|d| match &cfg.present_sections {
+                None => true,
+                Some(sections) => sections.iter().any(|s| s == d.config_section),
+            })
             .map(|d| (d.key, d.meter_classes))
             .collect();
         if let Some(refusal) =
