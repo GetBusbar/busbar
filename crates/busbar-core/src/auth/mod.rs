@@ -117,6 +117,15 @@ pub struct AuthMiddleware {
     /// chain position referenced, and is what a successful `Identify` reports as
     /// [`ChainVerdict::Identified::module`].
     chain: Vec<(String, Box<dyn AuthModule>)>,
+    /// The configured chain's arms IN ORDER, for REPORTING only — `chain` above holds the boxed
+    /// modules, and the built-in `keys` verifier is not one of them (it sets [`Self::keys_in_chain`]
+    /// and is run by the engine). Walking `chain` therefore told an operator who wrote
+    /// `auth.chain: [keys]` that their chain was empty. This is what `GET /api/v1/admin/auth`
+    /// answers with, so the report names every arm the operator configured, in the order they
+    /// configured it — order is the chain's meaning, since the first arm to identify admits.
+    ///
+    /// Never consulted on the request path. Admission reads `chain` and `keys_in_chain` directly.
+    reported_chain: Vec<&'static str>,
     /// Whether ANY chain module is a loaded PLUGIN — i.e. whether running this chain can perform
     /// blocking work (an FFI/IPC `transport_call`, and behind it whatever the module does: an HTTPS
     /// JWKS fetch, a token-introspection round-trip, a directory lookup). Decided once at build
@@ -278,10 +287,16 @@ impl AuthMiddleware {
         let mut keys_in_chain = false;
         let mut has_plugin_module = false;
         let mut chain: Vec<(String, Box<dyn AuthModule>)> = Vec::new();
+        // Built in the same pass and in the same order, so the reported chain cannot drift from the
+        // configured one: every arm is appended exactly where the operator wrote it, whether or not
+        // it becomes a boxed module.
+        let mut reported_chain: Vec<&'static str> = Vec::new();
         for entry in &cfg.chain {
+            let boxed_before = chain.len();
             match entry.module.as_str() {
                 crate::config::KEYS_MODULE => {
                     keys_in_chain = true;
+                    reported_chain.push(crate::config::KEYS_MODULE);
                 }
                 // TEST-ONLY external-module stand-in for the DATA-PLANE chain (the admin chain has
                 // its own): `grp:<role>` identifies as a principal carrying that role, so the
@@ -322,6 +337,19 @@ impl AuthMiddleware {
                     has_plugin_module = true;
                 }
             }
+            // Whatever this entry produced, the report records it HERE — one place, at the end of
+            // the entry's own iteration — rather than at each arm that pushes. Recording it per arm
+            // is how the two lists drift: a future arm that forgets the second push reports a chain
+            // shorter than the door it built, which is the defect this whole change is about.
+            if chain.len() > boxed_before {
+                reported_chain.push(
+                    chain
+                        .last()
+                        .expect("the chain just grew, so it has a last entry")
+                        .1
+                        .name(),
+                );
+            }
         }
 
         if chain.is_empty() && !keys_in_chain {
@@ -334,6 +362,7 @@ impl AuthMiddleware {
         Ok(Self {
             keys_in_chain,
             chain,
+            reported_chain,
             has_plugin_module,
         })
     }
@@ -352,17 +381,29 @@ impl AuthMiddleware {
         .expect("builtin-only auth chain never fails to construct")
     }
 
-    /// The ordered names of the auth chain's modules (`module.name()` for each). For the Admin API
-    /// v1 plugin catalog — reporting which compiled-in/external auth modules are ACTIVE (in the
-    /// chain). Never a secret: a module name is a plugin identifier, not a credential.
+    /// The ordered names of the auth chain's ARMS, including the built-in `keys` verifier. For the
+    /// Admin API v1 plugin catalog and `GET /api/v1/admin/auth` — reporting which auth arms are
+    /// ACTIVE. Never a secret: an arm's name is an identifier, not a credential.
+    ///
+    /// `keys` is included even though it is not a boxed module. It authenticates callers, the
+    /// operator configured it by name, and leaving it out reported an empty chain to a node whose
+    /// door is shut.
     pub(crate) fn chain_names(&self) -> Vec<&'static str> {
-        self.chain.iter().map(|(_, m)| m.name()).collect()
+        self.reported_chain.clone()
     }
 
-    /// Whether the front door is OPEN — an empty auth chain admits every request unconditionally
+    /// Whether the front door is OPEN — no arm at all, so every request is admitted anonymously
     /// (the old `none`/`passthrough`). Governance, when enabled, supersedes this.
+    ///
+    /// The test is `chain.is_empty() && !keys_in_chain`, which is the SAME test the admission path
+    /// makes (see [`AuthMiddleware::run_chain_cached`]) and the same one the open-relay boot warning
+    /// makes. It used to be `chain.is_empty()` alone, which reported `open: true` — the front door
+    /// admits everything — about a node configured `auth.chain: [keys]`, whose door is closed and
+    /// which runs the keys arm on every request. `open` is the field an operator greps to answer
+    /// "is this node exposed", so it answering yes about a closed node was the worse half of the
+    /// same defect.
     pub(crate) fn is_open(&self) -> bool {
-        self.chain.is_empty()
+        self.chain.is_empty() && !self.keys_in_chain
     }
 
     /// Run the auth chain over the presented candidate credential. Empty chain -> admit with NO
@@ -2056,6 +2097,10 @@ impl AuthMiddleware {
     ) -> Self {
         Self {
             keys_in_chain: false,
+            // This constructor is handed already-boxed modules rather than a config, so the
+            // reported chain is exactly those modules' own names: there is no `keys` arm to fold in
+            // (`keys_in_chain` is false above) and no configured order to preserve beyond theirs.
+            reported_chain: chain.iter().map(|(_, m)| m.name()).collect(),
             chain,
             has_plugin_module,
         }
@@ -2094,3 +2139,7 @@ mod tests;
 #[cfg(test)]
 #[path = "tests/plugin_chain_tests.rs"]
 mod plugin_chain_tests;
+
+#[cfg(test)]
+#[path = "tests/keys_arm_view_tests.rs"]
+mod keys_arm_view_tests;
