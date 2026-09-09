@@ -830,7 +830,13 @@ jobs:
       - construction-gate
     env:
       # jobkey|result, one per scored job. Same shape as ci.yml's umbrella ledger, and for the same
-      # reason: a hand-maintained prose summary drifts from the jobs it claims to describe.
+      # reason: a hand-maintained prose summary drifts from the jobs it claims to describe. Every
+      # line in the block is DATA — a comment inside it is a row the reader cannot split.
+      #
+      # `construction-gate` is COUNTED as of 2026-09-09. It was in `needs` and out of this list, so a
+      # FAIL — or a timeout-cancellation — never reddened this verdict, and keep-proof is the ONLY
+      # judge of an agent hand-back (ci.yml does not run on `keep-**` at all). The job runs
+      # `--posture`, so it is green while the gate is red on exactly its named standing rows.
       RESULTS: |
         build-clippy|${{ needs.build-clippy.result }}
         tests|${{ needs.tests.result }}
@@ -838,10 +844,6 @@ jobs:
         gates|${{ needs.gates.result }}
         design-bindings|${{ needs.design-bindings.result }}
         oracle|${{ needs.oracle.result }}
-        # COUNTED. It was in `needs` and out of RESULTS, so a FAIL -- or a timeout-cancellation --
-        # never reddened this verdict, and keep-proof is the ONLY judge of an agent hand-back
-        # (ci.yml does not run on `keep-**` at all). The job runs `--posture`, so it is green while
-        # the gate is red on exactly its named standing rows.
         construction-gate|${{ needs.construction-gate.result }}
       CONSTRUCTION_RESULT: ${{ needs.construction-gate.result }}
       GH_TOKEN: ${{ github.token }}

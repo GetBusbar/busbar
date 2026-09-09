@@ -2569,6 +2569,15 @@ jobs:
       # so "expected to run" and "required to have run" cannot drift apart.
       FULL_TIER: ${{ (github.event_name != 'push') || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref) }}
       # jobkey|tier|result — tier is 'fast' (always runs) or 'full' (skips on a fast-tier push).
+      # EVERY LINE IN THIS BLOCK IS DATA. `ci-umbrella:results-row-shape` parses each one and a row
+      # it cannot split scores nothing, so a comment belongs here and not inside the block.
+      #
+      # `construction-gate` is COUNTED as of 2026-09-09. It was in `needs` and out of this list,
+      # which meant a FAIL — or a timeout-cancellation — could never redden the umbrella; together
+      # with the job's `continue-on-error` that was two of the four independent downgrades sitting on
+      # that one gate. The job runs `--posture`, so it is green while the gate is red on exactly its
+      # named standing rows and red the moment a NEW row goes red. Scoring it here is what makes
+      # that distinction mean anything.
       RESULTS: |
         gate-tier|fast|${{ needs.gate-tier.result }}
         structure-lint|fast|${{ needs.structure-lint.result }}
@@ -2591,12 +2600,6 @@ jobs:
         windows|full|${{ needs.windows.result }}
         perf-build-gate|full|${{ needs.perf-build-gate.result }}
         teller-steps|full|${{ needs.teller-steps.result }}
-        # COUNTED NOW. It was in `needs` and out of RESULTS, which meant a FAIL — or a
-        # timeout-cancellation — could never redden the umbrella. Together with the job's
-        # `continue-on-error` that was two of the four independent downgrades on this one gate. The
-        # job runs `--posture`, so it is green while the gate is red on exactly its named standing
-        # rows and red the moment a NEW row goes red; scoring it here is what makes that mean
-        # anything.
         construction-gate|fast|${{ needs.construction-gate.result }}
     steps:
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
