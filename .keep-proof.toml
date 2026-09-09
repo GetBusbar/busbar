@@ -4,14 +4,15 @@
 # scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
 # something specific instead of "everything, slowly".
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
-#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
-#              small, load-bearing slice rather than a claim about all twenty-six families: billing
-#              and ledger are the money path — if a CI change could somehow perturb a recorded
-#              behaviour, it is these cells that must say so.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
-families = '^(billing|ledger)([|.]|$)'
-tests = ["busbar-unit-cost"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch changes the generic
+#              HTTP mount's reply channel: instead of a buffered status/headers/bytes triple, the
+#              mount now carries the plane's own response through untouched. Every mounted plane
+#              rides that channel, so the honest scope is every plane that can be mounted (a2a,
+#              mcp, llm) plus the neutrality, admin-ops and billing cells that assert on what a
+#              mounted answer looks like on the wire — headers, media type, and the moment a body
+#              is accounted for.
+#   tests    — the packages whose test binaries the sharded legs must include by name: the root
+#              (`busbar`, where the mount and its cells live), the three planes, the llm plane
+#              crate, and the substrate the mount's contract types come from.
+families = '^(a2a|mcp|llm|neutrality|admin\.ops|billing)([|.]|$)'
+tests = ["busbar", "busbar-a2a", "busbar-mcp", "busbar-llm", "busbar-plane-llm", "busbar-substrate"]
