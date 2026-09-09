@@ -525,13 +525,28 @@ fn hung(name: &str, owed: &[String], ceiling: Duration) -> Verdict {
 /// PRINTS the red rows and takes the process down with a non-zero status: a hung single-gate run
 /// ends in a refusal a human and a CI step both understand, rather than in a job timeout that
 /// names nothing. Dropping it disarms it.
+///
+/// IT IS OFF UNTIL THE BINARY TURNS IT ON, and that is not timidity. `cargo test -p xtask` calls
+/// [`crate::cli::main`] in-process, so an armed watchdog in a library caller would answer a slow
+/// gate by killing the TEST HARNESS — every other case in the binary lost, no report, exit 1 with
+/// nothing to read. A test process must report its own failures. `xtask`'s `main` calls
+/// [`enable_process_watchdog`]; nothing else does.
 pub struct Watchdog {
     disarm: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+static PROCESS_WATCHDOG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Let [`Watchdog::arm`] do anything at all. Called by the `xtask` BINARY and by nothing else.
+pub fn enable_process_watchdog() {
+    PROCESS_WATCHDOG.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 impl Watchdog {
     pub fn arm(name: &str, owed: Vec<String>, ceiling: Option<Duration>) -> Watchdog {
         let disarm = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ceiling =
+            ceiling.filter(|_| PROCESS_WATCHDOG.load(std::sync::atomic::Ordering::SeqCst));
         if let Some(ceiling) = ceiling {
             let flag = std::sync::Arc::clone(&disarm);
             let name = name.to_string();
