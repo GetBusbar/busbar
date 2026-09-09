@@ -1,27 +1,17 @@
-# WHAT CI MUST PROVE ABOUT THIS BRANCH.
+# WHAT THIS HAND-BACK ASKS keep-proof TO PROVE.
 #
-# The cut is r31h: the composition root gains ONE data-plane chain, and the A2A plane is composed
-# through it and WIRED AT BOOT behind `root-a2a-serve` (which is NOT in `default`, so the shipped
-# binary is unchanged).
+# .keep-proof.toml is read by .github/workflows/keep-proof.yml at the root of a `keep-*` branch. It
+# scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
+# something specific instead of "everything, slowly".
 #
-# `tests` is the package set whose files this branch touched — one package, because every source
-# change is in the composition root's own crate. `families` is the oracle cell-id regex the
-# neutrality claim rests on: `neutrality` and `admin.ops` are the two families with recorded cells,
-# and `a2a` is named because this branch is the one that puts that plane on the loop (its cells are
-# SKIP on the golden by design — a2a is judged by its own conformance rig, and that rig's number is
-# in the hand-back).
-
-families = '^(neutrality|admin\.ops|a2a)([|.]|$)'
-tests = ["busbar"]
-
-# The construction rows this cut moves, or must be seen not to move. Every one of them is GREEN on
-# the base and must stay green; the tree's other FAIL rows are pre-existing and are not this
-# branch's to clear.
-gate = '^(legacy-reach|no-test-doubles-in-production|no-test-doubles-in-production:doubles|one-pricing-site)$'
-
-# The feature this branch adds a serving path behind. It is default-OFF, so a build without it is
-# the shipped one; CI should build the package BOTH ways, because the cells above are recorded off
-# the default build and the new serving path only exists in the other.
-features = ["root-a2a-serve"]
-
-base = "6ec297f92ee742dec5b66fe955efbb9d926465d1"
+#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
+#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
+#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
+#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
+#              small, load-bearing slice rather than a claim about all twenty-six families: billing
+#              and ledger are the money path — if a CI change could somehow perturb a recorded
+#              behaviour, it is these cells that must say so.
+#   tests    — the packages whose test binaries the sharded legs must include by name.
+#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
+families = '^(billing|ledger)([|.]|$)'
+tests = ["busbar-unit-cost"]
