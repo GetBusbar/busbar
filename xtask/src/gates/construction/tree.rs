@@ -26,6 +26,7 @@ use std::path::Path;
 use crate::ctx::Ctx;
 use crate::rx::Regex;
 
+#[derive(Clone)]
 pub struct Line {
     /// 1-based.
     pub no: usize,
@@ -343,11 +344,63 @@ pub fn find_fns(lx: &Lexer, path: &str, lines: &[Line]) -> Vec<Fnc> {
     out
 }
 
+/// THE PER-FILE SCAN MEMO, and the reason it exists is the SELF-TEST.
+///
+/// Every planted case re-runs the whole gate, and a plant edits one file. [`Tree::load`] lexes
+/// every `.rs` file under the scan roots — a 660k-line tree through a backtracking string-literal
+/// matcher — so forty plants paid for forty full lexes of a tree that differed from itself by one
+/// file. That is where the xtask test shard's wall clock went.
+///
+/// The key is a hash of everything the answer depends on: the file's absolute path (the
+/// test-classification reads it), its workspace-relative path (the function index records it), the
+/// test path fragments in force, and the file's bytes. `scan_text` and `find_fns` are pure
+/// functions of exactly those, so a hit is a memo and never a stale reading — a plant that changes
+/// a byte changes the key.
+type Scanned = (std::sync::Arc<Vec<Line>>, std::sync::Arc<Vec<Fnc>>);
+
+static SCAN_MEMO: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, Scanned>>> =
+    std::sync::OnceLock::new();
+
+fn scan_file(
+    lexer: &Lexer,
+    abs: &str,
+    rel: &str,
+    text: &str,
+    test_fragments: &[String],
+) -> Scanned {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    abs.hash(&mut h);
+    rel.hash(&mut h);
+    test_fragments.hash(&mut h);
+    text.hash(&mut h);
+    let key = h.finish();
+    let memo = SCAN_MEMO.get_or_init(Default::default);
+    if let Some(found) = memo
+        .lock()
+        .expect("the scan memo mutex is never poisoned")
+        .get(&key)
+    {
+        return found.clone();
+    }
+    let lines = scan_text(lexer, abs, text, test_fragments);
+    let fns = find_fns(lexer, rel, &lines);
+    let entry = (std::sync::Arc::new(lines), std::sync::Arc::new(fns));
+    memo.lock()
+        .expect("the scan memo mutex is never poisoned")
+        .insert(key, entry.clone());
+    entry
+}
+
 pub struct Tree {
     pub root: std::path::PathBuf,
     /// rel path (`/`-separated) -> lines, in sorted path order.
-    pub files: BTreeMap<String, Vec<Line>>,
-    pub fns: BTreeMap<String, Vec<Fnc>>,
+    ///
+    /// SHARED WITH THE SCAN MEMO rather than copied out of it: a plant edits one file, and deep
+    /// copying 660k `Line`s (two `String`s each) per case to hand a rule a `Vec` it only ever
+    /// reads was most of what the memo saved.
+    pub files: BTreeMap<String, std::sync::Arc<Vec<Line>>>,
+    pub fns: BTreeMap<String, std::sync::Arc<Vec<Fnc>>>,
     pub lexer: Lexer,
 }
 
@@ -390,8 +443,8 @@ impl Tree {
             }
             let text = cx.read(&rel)?;
             let abs = cx.abs(&rel).to_string_lossy().into_owned();
-            let lines = scan_text(&lexer, &abs, &text, test_fragments);
-            fns.insert(rel.clone(), find_fns(&lexer, &rel, &lines));
+            let (lines, fns_of) = scan_file(&lexer, &abs, &rel, &text, test_fragments);
+            fns.insert(rel.clone(), fns_of);
             files.insert(rel, lines);
         }
         Ok(Tree {
@@ -414,7 +467,7 @@ impl Tree {
     /// The innermost function containing the line, or `None`.
     pub fn enclosing_fn(&self, rel: &str, lineno: usize) -> Option<&Fnc> {
         let mut best: Option<&Fnc> = None;
-        for f in self.fns.get(rel).into_iter().flatten() {
+        for f in self.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
             if f.start <= lineno
                 && lineno <= f.end
                 && best.is_none_or(|b: &Fnc| f.lines() < b.lines())
@@ -428,7 +481,7 @@ impl Tree {
     pub fn find_fn_by_name(&self, name: &str) -> Vec<&Fnc> {
         self.fns
             .values()
-            .flatten()
+            .flat_map(|v| v.iter())
             .filter(|f| f.name == name && !f.intest)
             .collect()
     }
@@ -449,7 +502,7 @@ impl Tree {
             let Some((key, lines)) = self.files.get_key_value(&rel) else {
                 continue;
             };
-            for l in lines {
+            for l in lines.iter() {
                 if production_only && l.intest {
                     continue;
                 }

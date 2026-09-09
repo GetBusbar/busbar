@@ -92,13 +92,13 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
         .collect();
     let local_kernel_fns: BTreeSet<&str> = kernel_files_all
         .iter()
-        .flat_map(|rel| tree.fns.get(rel).into_iter().flatten())
+        .flat_map(|rel| tree.fns.get(rel).into_iter().flat_map(|v| v.iter()))
         .map(|f| f.name.as_str())
         .collect();
     let call_rx = Regex::new(r"(?<![A-Za-z0-9_.:])([a-z_][A-Za-z0-9_]*)\s*\(")?;
     let mut called_names: BTreeSet<String> = BTreeSet::new();
     for rel in &teller_files {
-        for l in &tree.files[rel.as_str()] {
+        for l in tree.files[rel.as_str()].iter() {
             if l.intest {
                 continue;
             }
@@ -115,7 +115,7 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
     let mut extra_hits: BTreeSet<String> = BTreeSet::new();
     for cr in &unit_crates {
         for rel in tree.crate_files(cr) {
-            for f in tree.fns.get(&rel).into_iter().flatten() {
+            for f in tree.fns.get(&rel).into_iter().flat_map(|v| v.iter()) {
                 if !f.intest && called_names.contains(&f.name) {
                     extra_files.insert(rel.clone());
                     extra_hits.insert(f.name.clone());
@@ -136,7 +136,7 @@ pub fn loc_ceilings(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Strin
                 .fns
                 .get(rel)
                 .into_iter()
-                .flatten()
+                .flat_map(|v| v.iter())
                 .map(|f| f.name.as_str())
                 .collect();
             let shared: Vec<&str> = extra_hits
@@ -439,7 +439,7 @@ pub fn source_denylist(
         let allowed_here = allow.list_of(&crate_name);
         let mut offenders = Vec::new();
         for rel in tree.crate_files(&crate_name) {
-            for l in &tree.files[&rel] {
+            for l in tree.files[&rel].iter() {
                 if l.intest {
                     continue;
                 }
@@ -514,7 +514,7 @@ pub fn lean_core(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
     let mut offenders = Vec::new();
     for crate_name in &crates {
         for rel in tree.crate_files(crate_name) {
-            for l in &tree.files[&rel] {
+            for l in tree.files[&rel].iter() {
                 if l.intest {
                     continue;
                 }
@@ -571,7 +571,7 @@ fn trait_span(tree: &Tree, rel: &str, name: &str) -> Result<Option<(usize, usize
     };
     let mut starts = Vec::with_capacity(lines.len());
     let mut off = 0usize;
-    for l in lines {
+    for l in lines.iter() {
         starts.push(off);
         off += l.blank.len() + 1;
     }
@@ -629,7 +629,7 @@ pub fn no_default_bodies(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             missing.push(name);
             continue;
         };
-        for f in tree.fns.get(home).into_iter().flatten() {
+        for f in tree.fns.get(home).into_iter().flat_map(|v| v.iter()) {
             if start <= f.start && f.start <= end && !f.intest {
                 offenders.push(format!(
                     "{name}::{} has a default body at {home}:{}",
@@ -734,7 +734,7 @@ pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
     // (a) no `?` / early `return` between a take and its settle, in the same function.
     let mut early_exit = Vec::new();
     for rel in &files {
-        for f in tree.fns.get(rel).into_iter().flatten() {
+        for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
             if f.intest {
                 continue;
             }
@@ -861,7 +861,7 @@ pub fn hold_discipline(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
     let mut uncancellable = Vec::new();
     let mut any_route_await = false;
     for rel in &files {
-        for f in tree.fns.get(rel).into_iter().flatten() {
+        for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
             if f.intest || !route_fns.contains(&f.name) {
                 continue;
             }
@@ -1378,7 +1378,7 @@ pub fn plane_no_money(cx: &Ctx, tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, Str
     let mut offenders = Vec::new();
     for rel in &files {
         let here = allowlist.list_of(rel);
-        for l in &tree.files[rel] {
+        for l in tree.files[rel].iter() {
             if l.intest {
                 continue;
             }
@@ -1609,7 +1609,7 @@ fn named_symbols(
     let path_rx = Regex::new(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")?;
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for rel in files {
-        for l in tree.files.get(rel).into_iter().flatten() {
+        for l in tree.files.get(rel).into_iter().flat_map(|v| v.iter()) {
             if l.intest {
                 continue;
             }
@@ -1776,7 +1776,7 @@ pub fn no_test_doubles_in_production(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>
 
     let (mut unlisted, mut doubles) = (Vec::new(), Vec::new());
     for rel in &files {
-        for l in &tree.files[rel] {
+        for l in tree.files[rel].iter() {
             if l.intest {
                 continue;
             }

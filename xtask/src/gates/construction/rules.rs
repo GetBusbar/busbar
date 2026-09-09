@@ -136,7 +136,7 @@ pub fn request_path_fn_size(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String>
 
     let mut sized: Vec<&Fnc> = Vec::new();
     for rel in &files {
-        for f in tree.fns.get(rel).into_iter().flatten() {
+        for f in tree.fns.get(rel).into_iter().flat_map(|v| v.iter()) {
             if !f.intest {
                 sized.push(f);
             }
@@ -239,7 +239,7 @@ pub fn ports_only(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
                 continue;
             }
             let (mut np, mut nt) = (0usize, 0usize);
-            for l in lines {
+            for l in lines.iter() {
                 if needle.is_match(l.code_bytes()) {
                     if l.intest {
                         nt += 1;
@@ -328,7 +328,7 @@ pub fn no_uninstalled_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
         }
         let lines = &tree.files[rel];
         let mut statics: Vec<String> = Vec::new();
-        for l in lines {
+        for l in lines.iter() {
             for m in static_rx.find_iter(l.blank.as_bytes()) {
                 if let Some(s) = m.str_of(l.blank.as_bytes(), 1) {
                     if !statics.contains(&s) {
@@ -349,7 +349,7 @@ pub fn no_uninstalled_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> 
                 ))
             })
             .collect::<Result<_, _>>()?;
-        for f in fns {
+        for f in fns.iter() {
             if f.intest || name_rx.match_at(f.name.as_bytes(), 0).is_none() {
                 continue;
             }
@@ -853,7 +853,7 @@ fn expanded_calls(
         .fns
         .get(rel)
         .into_iter()
-        .flatten()
+        .flat_map(|v| v.iter())
         .filter(|f| !f.intest)
         .map(|f| (f.name.as_str(), f))
         .collect();
@@ -1127,7 +1127,7 @@ pub fn no_response_escapes_audit(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
         if allowed.iter().any(|a| a == basename(rel)) {
             continue;
         }
-        for f in &tree.fns[*rel] {
+        for f in tree.fns[*rel].iter() {
             if f.intest {
                 continue;
             }
