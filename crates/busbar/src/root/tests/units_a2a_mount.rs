@@ -251,9 +251,9 @@ const THIS_NODES_AUDIENCE: &str = "http://127.0.0.1:8080/a2a";
 
 /// Every source the leg needs, with the auth chain the caller asks for.
 /// The node's parts over THIS plane's own declared surface, which is what a mount is composed on.
-fn a_chain() -> Arc<PlaneChain> {
+fn a_chain() -> Arc<crate::root::data_plane::PlaneChain> {
     Arc::new(
-        PlaneChain::over(&busbar_plane_a2a::surface::SURFACE)
+        crate::root::data_plane::PlaneChain::over(&busbar_plane_a2a::surface::SURFACE)
             .expect("this plane's declared surface passes the contract's own check"),
     )
 }
