@@ -42,7 +42,12 @@ name: keep-proof
 
 on:
   push:
-    branches: ['keep-*']
+    # `!wip/**` is redundant against `keep-*` TODAY and is here anyway, because the thing that
+    # actually burned the queue was not this pattern: fifteen `wip/` checkpoint branches were pushed
+    # and each spawned a CI run, from the OLDER ci.yml those branches carry, back when every branch
+    # push triggered one. A branch filter only ever binds the copy of the workflow ON that branch —
+    # so the exclusion is stated in both files, where a future widening of either pattern will see it.
+    branches: ['keep-*', '!wip/**']
 
 # One verdict per branch tip. An agent that pushes three fixups in five minutes should pay for the
 # last one, not for all three -- these are five-runner test shards plus an oracle recording, and

@@ -48,7 +48,11 @@ name: CI
 # and the integration branch runs the full thing.
 on:
   push:
-    branches: ['integration/**', 'dev', 'qa', 'main']
+    # `!wip/**`: agents push `wip/<name>-<sha>` checkpoint branches by the dozen, and every one of
+    # them that lands on a tree carrying an older, unfiltered ci.yml spawns a full CI run that
+    # competes for the fleet with the hand-backs people are actually waiting on. Fifteen of them at
+    # once is what made this explicit. Redundant against the four patterns above, and stated anyway.
+    branches: ['integration/**', 'dev', 'qa', 'main', '!wip/**']
   pull_request:
   workflow_dispatch:
 

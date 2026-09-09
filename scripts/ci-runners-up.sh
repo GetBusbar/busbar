@@ -105,7 +105,20 @@ sed -e "s|__AGENTS__|$AGENTS|g" \
     -e "s|__RUST_CHANNEL__|$RUST_CHANNEL|g" \
     -e "s|__VCPU_PER_AGENT__|$VCPU_PER_AGENT|g" \
     "$HERE/ci-runner-bootstrap.sh" > "$UD"
-UD_B64="$(base64 < "$UD" | tr -d '\n')"
+# GZIPPED, BECAUSE USER-DATA IS CAPPED AT 16384 BYTES AND THIS SCRIPT SAYS WHY IT DOES THINGS.
+# EC2 refuses `CreateLaunchTemplateVersion` outright with `InvalidUserData.Malformed: User data is
+# limited to 16384 bytes` — and it refuses the NEW VERSION while happily leaving the OLD one as
+# default, so a scale-up "succeeds" and quietly launches boxes from a stale template. That happened
+# once: four new instances came up without the GitHub CLI, without python3-venv and without the
+# per-agent cargo homes, because the version carrying them had been rejected minutes earlier.
+#
+# cloud-init sniffs the gzip magic number and decompresses before executing, so compressing costs
+# nothing and buys roughly 4x the room. The comments in ci-runner-bootstrap.sh are the reason the
+# fleet is intelligible; they should not be the reason a scale-up silently regresses.
+UD_B64="$(gzip -9 -c < "$UD" | base64 | tr -d '\n')"
+ud_bytes=$(( ${#UD_B64} * 3 / 4 ))
+log "user-data: $(wc -c <"$UD") bytes raw, ${ud_bytes} gzipped (EC2 cap 16384)"
+[ "$ud_bytes" -lt 16384 ] || die "user-data is ${ud_bytes} bytes gzipped, over EC2's 16384 cap"
 LT_DATA="$(mktemp)"
 cat > "$LT_DATA" <<JSON
 {
@@ -130,9 +143,13 @@ cat > "$LT_DATA" <<JSON
 JSON
 if aws ec2 describe-launch-templates --launch-template-names "$LT_NAME" >/dev/null 2>&1; then
   log "new launch template version for $LT_NAME"
+  # A REFUSED VERSION MUST STOP THE SCALE-UP. Without this the command prints its error, the script
+  # carries on, and `run-instances --version $Latest` launches from the previous default — boxes
+  # that look right in `describe-instances` and are missing whatever the new version was adding.
   aws ec2 create-launch-template-version --launch-template-name "$LT_NAME" \
     --source-version '$Latest' --launch-template-data "file://$LT_DATA" \
-    --query 'LaunchTemplateVersion.VersionNumber' --output text
+    --query 'LaunchTemplateVersion.VersionNumber' --output text \
+    || die "the launch template version was REFUSED; not launching from a stale one"
   aws ec2 modify-launch-template --launch-template-name "$LT_NAME" \
     --default-version '$Latest' >/dev/null
 else
