@@ -345,6 +345,19 @@ jobs:
       # It needs the HISTORY, which is why this job's checkout is unshallow: a record naming a commit
       # a depth-1 clone cannot resolve is RED, and correctly so — an unresolvable stamp is a stamp
       # nobody can check.
+      # THE AUDIT PINS, WHICH NO CHECKOUT CARRIES.
+      # `audit-ledger` accepts a record whose `audited_at` commit is reachable from HEAD OR from an
+      # audit pin. Pins are written locally under `refs/audit-pins/*` and MIRRORED to
+      # `refs/backup/audit-pins/*`, and neither `git clone` nor `actions/checkout` carries anything
+      # outside `refs/heads/*` and `refs/tags/*` — `git ls-remote origin 'refs/audit-pins/*'`
+      # returns nothing. So on this runner the pin set was EMPTY and the gate degenerated to "an
+      # ancestor of HEAD": measured on this base, 13 of the 23 records name a commit that is not an
+      # ancestor, and every one would be RED in the blocking step below. `fetch-depth: 0` does not
+      # help — that is depth, not namespace. This fetch is what makes the pins exist here at all.
+      # `|| true`: a repository with no pins yet is not a broken job, and the gate is what decides
+      # whether a missing pin matters.
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
       - name: Audit-ledger self-test (the register's judge cannot be lied to)
         run: cargo xtask gate audit-ledger --selftest
       - name: Audit-ledger gate (BLOCKING — the audit register is sound)

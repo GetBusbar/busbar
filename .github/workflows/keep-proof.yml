@@ -441,6 +441,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+      # THE AUDIT PINS, WHICH NO CHECKOUT CARRIES. See the identical step in ci.yml for the
+      # measurement: pins live under `refs/audit-pins/*` locally and are mirrored to
+      # `refs/backup/audit-pins/*`, and `actions/checkout` carries neither — so without this fetch
+      # `audit-ledger` here degenerates to "an ancestor of HEAD" and 13 of the 23 records are red
+      # for a reason that is about this runner rather than about the register. `fetch-depth: 0` is
+      # depth, not namespace.
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
       - name: Install Rust toolchain (the gate runner)
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo

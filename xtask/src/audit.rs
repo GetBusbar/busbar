@@ -253,22 +253,47 @@ impl Git {
         Ok(table)
     }
 
-    /// THE AUDIT PINS. A round may legitimately name a commit that is not on the current line —
-    /// a reading taken on a branch, a reading taken before a rebase — and the way to keep such a
-    /// reading honest is to PIN the commit under `refs/audit-pins/<something>` so it survives, is
-    /// visible in `git for-each-ref`, and is fetched with the repository. A commit reachable from
+    /// THE TWO PIN NAMESPACES.
+    ///
+    /// `refs/audit-pins/*` is where a pin is written locally. `refs/backup/audit-pins/*` is where
+    /// the mirror is PUSHED, and it is therefore the only one of the two that exists on a runner.
+    pub const PIN_NAMESPACES: [&'static str; 2] = ["refs/audit-pins/", "refs/backup/audit-pins/"];
+
+    /// THE AUDIT PINS, from BOTH namespaces.
+    ///
+    /// A round may legitimately name a commit that is not on the current line — a reading taken on
+    /// a branch, a reading taken before a rebase — and the way to keep such a reading honest is to
+    /// PIN the commit so it survives and is visible in `git for-each-ref`. A commit reachable from
     /// nowhere at all is a commit that will be garbage-collected, and a record whose tree can be
     /// collected is a record whose claim cannot be re-checked by anybody.
+    ///
+    /// THIS USED TO READ `refs/audit-pins/*` ONLY, AND THAT NAMESPACE IS LOCAL-ONLY. Neither
+    /// `git clone` nor `actions/checkout` carries anything outside `refs/heads/*` and `refs/tags/*`
+    /// — `git ls-remote origin 'refs/audit-pins/*'` returns nothing — so on the runner the pin set
+    /// was EMPTY and `reachable()` degenerated to "an ancestor of HEAD". Measured on this base: 13
+    /// of the 23 `audited_at` commits are not ancestors of HEAD and were green only because of pin
+    /// refs that exist in one working copy on one laptop. In `ci.yml`'s blocking audit-ledger job
+    /// all 13 would have been RED. The mirror was being pushed to `refs/backup/audit-pins/*`, a
+    /// namespace this function never read.
+    ///
+    /// Reading both is half the fix; the other half is the workflows fetching the backup namespace
+    /// before the job runs, which is why `ci.yml` and `keep-proof.yml` now carry
+    /// `git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'`.
     pub fn audit_pins(&self) -> Vec<String> {
-        self.run(&["for-each-ref", "--format=%(refname)", "refs/audit-pins/"])
-            .map(|out| {
-                out.lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default()
+        let mut out: Vec<String> = Vec::new();
+        for ns in Self::PIN_NAMESPACES {
+            if let Ok(text) = self.run(&["for-each-ref", "--format=%(refname)", ns]) {
+                out.extend(
+                    text.lines()
+                        .map(str::trim)
+                        .filter(|l| !l.is_empty())
+                        .map(str::to_string),
+                );
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Is `commit` an ancestor of `of` (or the same commit)?
