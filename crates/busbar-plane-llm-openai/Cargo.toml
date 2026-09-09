@@ -50,9 +50,18 @@ busbar-contract = { path = "../busbar-contract" }
 # the registry entry and the four dialect-parameterised codec bodies all come from here.
 busbar-plane-llm = { path = "../busbar-plane-llm" }
 
-[dev-dependencies]
-# THE PLANE, AND THE CODEC'S SELF-REGISTERING TEST SEAM. A test binary runs no composition root, so
-# the dialect declarations the translation resolves against are registered by the codec crate's own
-# test seam instead — exactly as `busbar-plane-llm`'s test binary does it. Test targets only.
-busbar-llm-codec = { path = "../busbar-llm-codec", features = ["test-support"] }
-serde_json = { workspace = true }
+# NO `[dev-dependencies]`, AND THAT IS THE KIND'S RULE HOLDING UNDER ITS OWN TESTS.
+#
+# There WAS one: `busbar-llm-codec` with `test-support`, carried over from the plane's own test
+# binary, which needs the codec's self-registering seam because a test process runs no composition
+# root. This crate does not: its battery asserts what it DECLARES — the ladder ascends, the rungs
+# name this dialect, the locators and the row point at the same places, the entry is a constant —
+# and a declaration needs nothing registered to be read. Not one line of
+# `tests/dialect_conformance.rs` names the codec, and `serde_json` beside it was never named either.
+#
+# It is not merely unused, it is FORBIDDEN: `dialect -> codec` is an edge no clause grants, and
+# `kind-isolation:test-deps` refused it as an edge this branch would have INTRODUCED. A dev edge is
+# still a manifest edge, and a kind whose first crate reaches sideways in its test manifest has
+# established the coupling it was created to remove — in the one file every later dialect crate will
+# be copied from. So the whole table goes, and the shape the next dialect copies is: two
+# dependencies, no dev-dependencies, and a battery that reads its own constants.
