@@ -403,6 +403,35 @@ gates and the proof-manifest collator key off step names, and a rename is a chan
 `SECRET_GATE_REPORT_ONLY=1` env switches become `--report`, and the env vars keep working for one
 release so `qa/segments.toml` rows can migrate independently.
 
+### `--posture`: the third answer, for a gate that is red by design
+
+A gate whose tree is legitimately red today has only two useful exit codes and neither is true.
+"Green" is a lie; "red" is true and carries no information, so it gets a `continue-on-error` and
+stops meaning anything. That is how the construction gate ended up with **four** independent
+downgrades on it — `Excused::Whole` in `REPORT_ONLY`, `continue-on-error` in `ci.yml`,
+`continue-on-error` plus `|| true` in `keep-proof.yml`, and exclusion from both umbrellas' scored
+`RESULTS` — and between them a NEW red could not redden anything.
+
+`cargo xtask gate <name> --posture` scores the gate against its `REPORT_ONLY` entry instead of
+against zero reds:
+
+* **exit 0** while the gate is red on exactly the rows the entry names, and nothing else;
+* **exit 1** the moment a row appears that the list does not name — a regression;
+* **exit 1** when a NAMED row goes green — the list is stale and must be struck in the commit that
+  drained the row. Without this half a standing-red list only ever grows, which is the blanket
+  excuse it replaces.
+
+It runs the same `gates::excused_from_all` that `gate --all` prints, so the posture CI enforces and
+the posture `--all` reports cannot drift, and the standing reds are written down in exactly one
+place (`gates::CONSTRUCTION_STANDING_REDS`) rather than pasted into two workflows. A gate with no
+`REPORT_ONLY` entry has nothing to score against and `--posture` is an argument error there, not a
+free green.
+
+`--selftest` is refused in combination with `--all` and `--list`: both of those branches return
+before the flag is read, so `gate --all --selftest` used to print ordinary verdicts while the caller
+believed the whole registry had just self-tested. The only every-gate self-test is
+`cargo xtask selftest`.
+
 The `structure-lint` job needs one new setup step ahead of the gates:
 
 ```yaml
