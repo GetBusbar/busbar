@@ -706,3 +706,81 @@ fn every_planes_claims_name_a_registered_transport() {
         );
     }
 }
+
+// ── THE REGISTERED DIALECTS ───────────────────────────────────────────────────────────────────
+
+/// A BOOT SERVES ITS REGISTERED DIALECTS' RUNGS, at the numbers those dialects declared.
+///
+/// This is the assertion the gap between the carve-out and the seam was measured by. Cutting the
+/// vendor rows out of the plane left the plane honest — it no longer names a vendor — and left the
+/// BOOT short: the claims those rows carried belonged to a crate the root had not yet sealed, so a
+/// real node would have refused `/v1/chat/completions` as claimed by nothing while the crate that
+/// speaks it sat in the same binary.
+///
+/// It is written on the RUNG NUMBERS rather than on a count, because a count is satisfied by any
+/// five claims and what has to be true is that these two rungs — the tight chat rung and the loose
+/// non-chat rung — are the ones being served, under the PLANE's key. A dialect's claims are claims
+/// on its plane: the rung scale is the plane's, and so is the key a request is routed by.
+#[test]
+fn the_boot_serves_the_registered_dialects_rungs() {
+    let entries = super::super::dialects::LLM;
+    assert!(
+        !entries.is_empty(),
+        "the root registered no dialect at all, so this test would pass vacuously"
+    );
+
+    let served = plane_claims();
+    for entry in entries {
+        for rung in entry.ladder {
+            assert!(
+                served
+                    .iter()
+                    .any(|c| c.plane == <LlmPlane as PlaneMeta>::KEY && c.claim == rung.claim),
+                "rung {} of dialect `{}` is registered and not served",
+                rung.rung,
+                rung.dialect
+            );
+        }
+    }
+
+    // The two rungs by number, so the test says WHICH contests are being answered rather than only
+    // that the loop ran. Rung 7 is the tight chat surface; rung 14 is the loosest rung the plane
+    // has, and the one four separate non-chat paths sit on.
+    let rungs: Vec<u16> = entries
+        .iter()
+        .flat_map(|e| e.ladder.iter())
+        .map(|c| c.rung)
+        .collect();
+    assert!(rungs.contains(&7), "rung 7 is not registered");
+    assert!(rungs.contains(&14), "rung 14 is not registered");
+}
+
+/// And the merged ladder resolves those two rungs to the dialect that declared them.
+///
+/// The claim being SERVED and the request being ROUTED to the right vocabulary are two facts, and
+/// the second is the one a client notices: a boot that sealed the claims but handed the plane an
+/// empty registry would answer the path and then decode it against a table that has no row for it.
+#[test]
+fn the_merged_ladder_answers_for_the_registered_dialect() {
+    let plane = llm_plane();
+    let no_headers = |_: &str| None;
+
+    let chat = plane
+        .dialect_for("/v1/chat/completions", &no_headers)
+        .expect("the tight chat rung answers");
+    let embeddings = plane
+        .dialect_for("/v1/embeddings", &no_headers)
+        .expect("the loose non-chat rung answers");
+
+    // The name is read off the registered entry rather than written here, so this file names no
+    // dialect either — the same rule the boot itself is held to.
+    let registered = super::super::dialects::LLM[0].locations.name;
+    assert_eq!(chat, registered);
+    assert_eq!(embeddings, registered);
+
+    // And the row the plane will decode those bytes with is the registered one, not a neighbour's.
+    assert!(
+        plane.locations(registered).is_some(),
+        "the dialect answers for a path and the plane has no location row for it"
+    );
+}
