@@ -7,7 +7,7 @@
 //! paths, 34 read-only and 32 full) plus the 13 additional 1.6.0 operator verbs the design
 //! names by name (`verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`,
 //! `chain_break`, `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `commit_upgrade`,
-//! `export_keyset`, `approve`), and the 5 1.6.0 ledger views (the read-only
+//! `export_keyset`, `approve`, `amend_rate_history`), and the 5 1.6.0 ledger views (the read-only
 //! `/api/v1/admin/ledger/*` surface). Every one of those operations is a `KernelVerb` destination this
 //! plane names; none of them is EXECUTED here. `busbar-unit-verbs`, on the far side of the kernel
 //! from this plane, holds the admin credential and mints every one-time secret this surface ever
