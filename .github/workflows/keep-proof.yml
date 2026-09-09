@@ -218,13 +218,27 @@ jobs:
           jq -r 'select(.reason == "compiler-artifact")
                  | select(.profile.test == true)
                  | .executable // empty' "$RUNNER_TEMP/compile.json" | sort -u > "$RUNNER_TEMP/all-bins.txt"
-          # THE MONOLITH, SPLIT OUT BY NAME. Cargo names a test binary `<target>-<hash>`, so every
-          # xtask test binary basename starts `xtask-`. It goes to the `xtask` leg and NOWHERE else;
-          # the four index legs partition the remainder. Both lists are written, and the two together
-          # are asserted to be the whole list below — a binary that matched neither would be a
-          # silently untested target, which is the failure mode this whole file is against.
-          grep -E '/deps/xtask-[^/]*$' "$RUNNER_TEMP/all-bins.txt" > "$RUNNER_TEMP/xtask-bins.txt" || true
-          grep -vE '/deps/xtask-[^/]*$' "$RUNNER_TEMP/all-bins.txt" > "$RUNNER_TEMP/other-bins.txt" || true
+          # THE MONOLITH, SPLIT OUT BY PACKAGE — NOT BY BASENAME.
+          #
+          # This used to say `grep '/deps/xtask-'`, on the premise that "every xtask test binary
+          # basename starts `xtask-`". Cargo names a test binary after its TARGET, not its package,
+          # so `xtask/tests/cli.rs` compiles to `deps/cli-<hash>` — and that binary is precisely the
+          # one this leg exists for. Its `selftest_runs_every_registered_gates_red_proof` and
+          # `list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree` drive every
+          # registered gate's RED proof over the real tree. The name filter sent it to a numbered
+          # shard, where it ran against the 1500s per-binary hang ceiling sized for ordinary suites
+          # and was KILLED at exit 137 — a "hang" that was really the workflow's own monolith in the
+          # wrong lane, while the `xtask` leg it was meant to own ran the package's small unit tests.
+          #
+          # `package_id` is cargo's own answer to "which crate is this", and it survives a target
+          # being renamed, which is the exact drift the enumerator above already refuses to guess at.
+          # Both cargo package-id spellings are matched: `path+file:///…/xtask#0.1.0` and the older
+          # `xtask 0.1.0 (path+file:///…)`.
+          jq -r 'select(.reason == "compiler-artifact")
+                 | select(.profile.test == true)
+                 | select(.package_id | test("(^xtask )|(/xtask#)"))
+                 | .executable // empty' "$RUNNER_TEMP/compile.json" | sort -u > "$RUNNER_TEMP/xtask-bins.txt"
+          comm -23 "$RUNNER_TEMP/all-bins.txt" "$RUNNER_TEMP/xtask-bins.txt" > "$RUNNER_TEMP/other-bins.txt"
           all=$(wc -l < "$RUNNER_TEMP/all-bins.txt")
           xt=$(wc -l < "$RUNNER_TEMP/xtask-bins.txt")
           ot=$(wc -l < "$RUNNER_TEMP/other-bins.txt")
