@@ -6,12 +6,11 @@
 #
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
 #              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
-#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
-#              small, load-bearing slice rather than a claim about all twenty-six families: billing
-#              and ledger are the money path — if a CI change could somehow perturb a recorded
-#              behaviour, it is these cells that must say so.
-#   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
-families = '^(billing|ledger)([|.]|$)'
-tests = ["busbar-unit-cost"]
+#              better part of half an hour. This branch changes the GATE RUNNER and its two git
+#              readers -- xtask, which no shipped binary links -- so busbar's behaviour is not in
+#              scope at all. `^documented` is the slice that says so: the documented cells, and
+#              nothing wider, because a wider claim here would be a claim this diff cannot make.
+#   tests    — the packages whose test binaries the sharded legs must include by name. `xtask` is
+#              the only crate this branch touches, and it is where the red-before-green cases live.
+families = '^documented'
+tests = ["xtask"]
