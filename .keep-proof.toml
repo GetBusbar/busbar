@@ -1,0 +1,30 @@
+# WHAT THIS HAND-BACK CAN MOVE, DECLARED BY THE HAND-BACK.
+#
+# `.github/workflows/keep-proof.yml` reads exactly two keys out of this file and nothing else:
+#
+#   families  the oracle id-filter this branch is recorded and replayed against. It NARROWS the
+#             shadow oracle and nothing else — absent or empty, every family is recorded. It cannot
+#             narrow the test shards or the gates, on purpose: a gate a hand-back gets to scope is a
+#             gate the hand-back can turn off.
+#   tests     the packages this branch names, for a reader. Written down so "what did this prove"
+#             is answerable from the branch rather than from somebody's memory of the brief.
+#
+# THIS BRANCH: the round-3 instrument audit's fifteen confirmed defects in `xtask` — the gate runner
+# itself. Every change is to the INSTRUMENT: the argument dispatcher, the tree walk, the two hand
+# written readers, the audit register's commands, three gates' scan-root resolution, four gates'
+# refusal shapes, and the proof contract's own check that a red case named what it planted.
+#
+# NO ORACLE FAMILIES, and that is a statement rather than an omission. The shadow oracle records the
+# PRODUCT's behaviour cell by cell; nothing on this branch is reachable from a request. `xtask` is
+# not linked into `busbar`, no crate under `crates/` depends on it, and no file under `crates/` is
+# touched. A recording would be base-identical in every family by construction, so declaring one
+# would manufacture evidence about a question this branch does not ask. `^$` matches no family and
+# says so out loud.
+#
+# The single non-`xtask` source edit is one comment line in `.github/workflows/ci.yml`: the
+# `# report-only: construction-gate` declaration gains the `[retires: I4]` tag that the new
+# `ci-umbrella:declaration-expiry` row requires. It changes no job, no step and no `needs` edge —
+# `cargo xtask gate ci-umbrella` and `gate qa-gate-dispatch`, the two gates that read that file,
+# are both green on it.
+families = '^$'
+tests = ["xtask"]
