@@ -20,8 +20,7 @@ pub(crate) mod admission;
 
 use crate::config::{
     LimitsResolved, DEFAULT_KEY_GAUGE_LIMIT, DEFAULT_PROBE_INTERVAL_SECS,
-    DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL,
-    DEFAULT_USAGE_FLUSH_INTERVAL_MS,
+    DEFAULT_PROBE_TIMEOUT_SECS, DEFAULT_RATE_SWEEP_INTERVAL, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
 // The body-cap default is no longer read by any accessor on this page (the translate cap moved to
 // its own home); the tests below still assert the uninstalled fallback against it.
