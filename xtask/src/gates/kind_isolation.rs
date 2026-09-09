@@ -6013,6 +6013,106 @@ impl Gate for KindIsolationGate {
             &["floor", &MIN_SOURCES.to_string()],
         ));
 
+        // …AND THE REST OF THE FLOORS, one case each. EVERY ONE OF THESE IS A RULE WHOSE SUBJECT IS
+        // THE SIZE OF ITS OWN INPUT, and a mutation campaign found that not one of them was proven:
+        // `if false && scanned == 0`, `.min_files(0)` and `if false && planes.is_empty()` all left
+        // the battery green. A floor nothing proves is a floor somebody deletes as dead code, and
+        // the tree it then reads as clean is the tree that has nothing in it.
+
+        // NO FILE REACHED THE VOCABULARY RULE. The walk is over its floor and every file it found
+        // belongs to no crate the census knows, so the rule looked at nothing and found nothing.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a :vocab scan that reached zero kind-bearing files is refused, not read as clean",
+            &[ROW_VOCAB],
+            all_but(cx, "toml", 0),
+            &["0 file(s) reached the vocabulary rule"],
+        ));
+
+        // THE MONEY LIST IS THE CONTROL SURFACE'S BAN, and a ban over no words bans nothing.
+        let mut ov = Overlay::new();
+        ov.remove(MONEY_LIST_FILE);
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the money vocabulary unreadable is a refusal, never a surface that names no price",
+            &[ROW_VOCAB],
+            ov,
+            &["A ban over no words bans nothing"],
+        ));
+
+        // A STEP LIST THAT READ TWO STEPS IS NOT A PLANE THAT RUNS EVERY STEP.
+        let mut ov = Overlay::new();
+        ov.set(
+            STEP_TABLE_FILE,
+            "pub const ALL: [StepName; 2] = [\n    StepName::Route,\n    StepName::Meter,\n];\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a step list that read fewer than five plane-owned steps is refused",
+            &[ROW_STEPS],
+            ov,
+            &["floor", &MIN_PLANE_STEPS.to_string()],
+        ));
+
+        // A TREE WITH NO PLANE IN IT. Zero planes skip every step.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a tree with no plane crate at all is refused by the step rule",
+            &[ROW_STEPS],
+            kind_gone(cx, "busbar-plane-"),
+            &["0 plane crate(s)"],
+        ));
+
+        // A TREE WITH NO WIRE IN IT. Zero wires are registered twice.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a tree with no transport crate at all is refused by the registration rule",
+            &[ROW_WIRES],
+            kind_gone(cx, "busbar-transport-"),
+            &["0 wire(s)"],
+        ));
+
+        // THE REGISTRATION RULE'S OWN WALK HAS A FLOOR TOO, and it is a different walk from
+        // `:vocab`'s: the wires are read off the census, so the manifests survive and the rule
+        // reaches its source scan with nothing to scan.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the registration rule's source walk below its floor is refused",
+            &[ROW_WIRES],
+            all_but(cx, "rs", 4),
+            &["a scan of no files finds no second registration"],
+        ));
+
+        // THE CENSUS ITSELF FAILING IS OWED BY EVERY ROW. Not "absent" — UNREADABLE: a manifest the
+        // walk lists and cannot read is the one input state that is neither a crate nor no crate,
+        // and a gate that reads it as no crate is a gate that goes green on a corrupt tree.
+        let mut ov = Overlay::new();
+        ov.unreadable(
+            "crates/busbar-caps/Cargo.toml",
+            "Input/output error (os error 5)",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the crate census failing is refused on every row this gate owes, not on one",
+            &[
+                ROW_NAME,
+                ROW_VOCAB,
+                ROW_REGISTRY,
+                ROW_STEPS,
+                ROW_WIRES,
+                ROW_MATRIX,
+            ],
+            ov,
+            &["the census did not run"],
+        ));
+
         // ── THE ENTRY FACES ──────────────────────────────────────────────────────────────────────
         //
         // `:shape` counts a crate's implementations of ITS OWN kind's face, so a red team's
@@ -7367,6 +7467,25 @@ fn all_but(cx: &Ctx, ext: &str, keep: usize) -> Overlay {
     };
     for f in files.iter().skip(keep) {
         ov.remove(f.rel_str());
+    }
+    ov
+}
+
+/// THE TREE WITH EVERY MANIFEST UNDER `crates/<marker>*` REMOVED — a whole KIND deleted.
+///
+/// A rule whose subject is "this tree has no crate of kind K at all" cannot be proven by a plant
+/// that adds one; the only honest fixture is a census that really has none, and a crate leaves the
+/// census when its manifest does.
+fn kind_gone(cx: &Ctx, marker: &str) -> Overlay {
+    let mut ov = Overlay::new();
+    let Ok(files) = cx.walk(&WalkSpec::new(["crates"]).ext("toml")) else {
+        return ov;
+    };
+    for f in files.iter() {
+        let rel = f.rel_str();
+        if rel.starts_with(&format!("crates/{marker}")) && rel.ends_with("/Cargo.toml") {
+            ov.remove(rel);
+        }
     }
     ov
 }

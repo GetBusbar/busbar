@@ -35,6 +35,14 @@ pub enum Change {
     Content(String),
     /// The file is absent, whatever the real tree says.
     Absent,
+    /// The path IS there — a walk lists it — and reading it FAILS.
+    ///
+    /// It is a third state because "absent" and "unreadable" are two different claims and the gates
+    /// answer them differently: an absent input is often a tree that legitimately has not got one,
+    /// while an input that is listed and will not read is an input the rule cannot measure and must
+    /// refuse. Every gate that treats a read error as "found nothing" is a gate that goes green on
+    /// a corrupt tree, and there was no fixture in the harness that could plant one.
+    Unreadable(String),
 }
 
 /// A per-plant view of the tree: path overrides plus canned outputs for the few derived inputs
@@ -58,6 +66,12 @@ impl Overlay {
     pub fn remove(&mut self, rel: impl AsRef<Path>) {
         self.files
             .insert(rel.as_ref().to_path_buf(), Change::Absent);
+    }
+
+    /// The path stays in every walk and every read of it fails with `why`.
+    pub fn unreadable(&mut self, rel: impl AsRef<Path>, why: impl Into<String>) {
+        self.files
+            .insert(rel.as_ref().to_path_buf(), Change::Unreadable(why.into()));
     }
 
     /// Override a derived input keyed by a stable string (e.g. `cargo-metadata:xtask/Cargo.toml`).
@@ -374,6 +388,9 @@ impl Ctx {
                 Some(Change::Absent) => {
                     return Err(format!("{}: absent (overlay)", rel.display()));
                 }
+                Some(Change::Unreadable(why)) => {
+                    return Err(format!("{}: {why} (overlay)", rel.display()));
+                }
                 None => {}
             }
         }
@@ -385,6 +402,8 @@ impl Ctx {
         if let Some(ov) = self.overlay() {
             match ov.files.get(rel) {
                 Some(Change::Content(_)) => return true,
+                // An unreadable file IS on disk; it is the READ that fails, not the stat.
+                Some(Change::Unreadable(_)) => return true,
                 Some(Change::Absent) => return false,
                 None => {}
             }
@@ -458,7 +477,7 @@ impl Ctx {
                     .any(|r| r == "." || s.starts_with(&format!("{r}/")) || &s == r);
                 match change {
                     Change::Absent => rels.retain(|p| p != path),
-                    Change::Content(_) => {
+                    Change::Unreadable(_) | Change::Content(_) => {
                         if under_a_root && !rels.contains(path) {
                             rels.push(path.clone());
                         }
