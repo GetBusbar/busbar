@@ -28,6 +28,18 @@ const OP_CLASSES: &[OpClassId] = &[OP_READ, OP_WRITE];
 /// and never refused for budget" — the admin surface's own reads included.
 const METER_CLASSES: &[MeterClassDecl] = &[];
 
+/// EVERY CLASS THIS PLANE REPORTS, AS DATA: none, and that is a real answer rather than a plane
+/// that forgot.
+///
+/// Every plane exports this list so a reader OUTSIDE the plane — boot validation, asking whether
+/// every class an enabled plane reports has a rate row on its lanes — can read the class strings
+/// without naming a plane's type or the contract shapes its declaration is written in. This plane's
+/// is empty for the reason [`METER_CLASSES`] is empty: the admin surface is priced under a
+/// kernel-reserved flat class the registry refuses from any plane, so there is nothing of this
+/// plane's own for an operator to price. A plane declaring no classes can never be the reason a
+/// boot fails, which is the honest consequence of having nothing to declare.
+pub const METER_CLASS_NAMES: &[&str] = &[];
+
 /// The session fact keys this plane writes: none. The admin claim is plain HTTP request/response,
 /// never a session transport (see the module doc comment below for why `SessionPlane` is not
 /// implemented), so there is no session for a fact to attach to.

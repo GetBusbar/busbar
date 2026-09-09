@@ -2,7 +2,7 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-use super::{CONFIG_SCHEMA, INTROSPECTION_VERBS, METER_CLASSES};
+use super::{CONFIG_SCHEMA, INTROSPECTION_VERBS, METER_CLASSES, METER_CLASS_NAMES};
 use crate::McpPlane;
 use busbar_contract::ids::MeterClassId;
 use busbar_contract::plane::PlaneMeta;
@@ -18,6 +18,19 @@ fn the_key_is_the_codecs_own() {
 fn the_declared_classes_are_the_two() {
     let keys: Vec<&str> = METER_CLASSES.iter().map(|c| c.key.as_str()).collect();
     assert_eq!(keys, vec!["tool_calls", "bytes"]);
+}
+
+/// THE NAMES LIST IS THE DECLARATION, REDUCED — not a second list beside it.
+///
+/// `METER_CLASS_NAMES` is what leaves this crate: the plane registry carries it across so boot
+/// validation can ask whether every class this plane reports has a rate row, without naming this
+/// plane's type. A class present in one list and absent from the other would be a class metered
+/// under a name nothing prices (silently free) or a name priced that nothing reports (a rate row
+/// that can never apply), and both failures are invisible from either side alone.
+#[test]
+fn the_names_list_is_exactly_the_declarations_keys_in_order() {
+    let keys: Vec<&str> = METER_CLASSES.iter().map(|c| c.key.as_str()).collect();
+    assert_eq!(METER_CLASS_NAMES, keys.as_slice());
 }
 
 /// No kernel-reserved class is declared here.
