@@ -134,8 +134,10 @@ busbar_contract::claims_from_ladder! {
     6 => "gemini", Selector::PathPattern(V1_MODELS),
     6 => "gemini", Selector::PathPattern(V1BETA_MODELS),
 
-    // Rung 7: the widely-copied chat surface.
-    7 => "openai", Selector::PathSuffix("/v1/chat/completions"),
+    // RUNG 7 IS NOT HERE. It is the widely-copied chat surface, and it belongs to the dialect crate
+    // that claims it — `busbar-plane-llm-openai` declares it and the registry's merged walk
+    // interleaves it back at seven, so a request that reached rung 7 before reaches it still. A gap
+    // in this table is what a carved-out dialect looks like from the plane's side.
 
     // Rung 8: another vendor's chat surface, on either of its two versions.
     8 => "cohere", Selector::PathSuffix("/v2/chat"),
@@ -157,19 +159,15 @@ busbar_contract::claims_from_ladder! {
     // Rung 13: the same vendor's model-scoped invoke path.
     13 => "bedrock", Selector::PathPattern(MODEL_INVOKE),
 
-    // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect.
+    // RUNG 14 IS NOT HERE EITHER, and it left with rung 7 because both are the same dialect's. It
+    // was the loosest rung this table had — the non-chat surfaces of the widely-copied vocabulary —
+    // and the reasoning that shaped it went with it to the crate that owns it: the audio surface is
+    // named one path at a time rather than as a `/v1/audio/` prefix, because two of that prefix's
+    // three paths are the voice plane's by the architecture's own plane inventory.
     //
-    // The audio surface is named one path at a time rather than as the whole `/v1/audio/` prefix.
-    // Two of that prefix's three paths — `transcriptions` and `speech` — are the one-shot operations
-    // the architecture's plane inventory gives to the voice plane, and the voice plane claims them
-    // by name. A prefix claim here claimed them too, so the two planes' claims overlapped on the
-    // request rather than dividing it, and which one answered rested on the boot ordering agreeing
-    // with the inventory rather than on either plane saying what it owns. What is left is the path
-    // no other plane claims.
-    14 => "openai", Selector::PathSuffix("/v1/embeddings"),
-    14 => "openai", Selector::PathSuffix("/v1/moderations"),
-    14 => "openai", Selector::PathContains("/v1/images/"),
-    14 => "openai", Selector::PathSuffix("/v1/audio/translations"),
+    // Rung 13 is therefore the last rung this crate declares. That is not a ceiling: the merged
+    // walk is over every source, so a registered dialect's rung fifteen would be walked after this
+    // one without a line changing here.
 }
 
 /// Which dialect a request's path and headers name, by walking the ladder in order.

@@ -131,7 +131,7 @@ struct Pass {
 /// Drive the plane once, end to end, and collect everything it said.
 #[allow(clippy::too_many_lines)]
 fn run_once() -> Pass {
-    let plane = LlmPlane::new(UPSTREAMS);
+    let plane = harness::plane(UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);
