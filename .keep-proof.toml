@@ -4,14 +4,17 @@
 # scopes the two expensive legs of the run to what the branch actually touched, so a verdict says
 # something specific instead of "everything, slowly".
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
-#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
-#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
-#              small, load-bearing slice rather than a claim about all twenty-six families: billing
-#              and ledger are the money path — if a CI change could somehow perturb a recorded
-#              behaviour, it is these cells that must say so.
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch moves the
+#              append-only sink WRITER — the bytes-to-disk half of the request-log-file exporter —
+#              out of busbar-core and into the unit that answers for recorded history. Three
+#              families can see that move. `hooks` and `admin.ops` are the served surfaces whose
+#              recorded lines this sink is the disk end of; `ledger` is the money path, and the
+#              rule under test (a size threshold may roll a file over, never destroy what it
+#              already holds) is exactly the rule a sealed ledger line depends on once it has been
+#              exported. If the writer's bytes moved, these cells say so.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
-families = '^(billing|ledger)([|.]|$)'
-tests = ["busbar-unit-cost"]
+#              `busbar-unit-audit` is the writer's new home and carries its battery,
+#              `busbar-core` still owns the sink's configuration and fan-out, and `busbar` is the
+#              root that assembles both.
+families = '^(hooks|admin\.ops|ledger)([|.]|$)'
+tests = ["busbar-unit-audit", "busbar-core", "busbar"]
