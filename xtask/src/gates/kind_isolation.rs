@@ -6076,18 +6076,25 @@ impl Gate for KindIsolationGate {
         // …AND A BOUND IS NOT AN IMPLEMENTATION. `impl<T: Plane> Local for T` implements `Local`
         // and names `Plane` only to say which types it is written over. The green arm is what stops
         // the token reader above from being a rule that reds on the word.
-        let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-transport-ws/src/planted_bound.rs",
-            "pub trait Local {}\nimpl<T: busbar_contract::plane::Plane> Local for T {}\n",
-        );
-        report.push(prove_rows_green(
-            cx,
-            self,
-            "a trait named only in an `impl<T: Trait>` bound is not an implementation of it",
-            &[ROW_FACES],
-            ov,
-        ));
+        //
+        // NOT ON THE SHIP TWIN, for the reason the two ratchet cases below are not: `:faces` is RED
+        // on the real tree at ship time BY DESIGN — the twin owes zero foreign faces and four are
+        // still standing — so a green assertion there would be asserting that the debt is drained,
+        // which is the opposite of what the criterion is for.
+        if !self.ship {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-transport-ws/src/planted_bound.rs",
+                "pub trait Local {}\nimpl<T: busbar_contract::plane::Plane> Local for T {}\n",
+            );
+            report.push(prove_rows_green(
+                cx,
+                self,
+                "a trait named only in an `impl<T: Trait>` bound is not an implementation of it",
+                &[ROW_FACES],
+                ov,
+            ));
+        }
 
         // THE RATCHET, BOTH WAYS. The four faces that exist today are held at their exact count:
         // a SECOND one in the same crate is a landing that grew the coupling.
