@@ -58,15 +58,18 @@
 //! posts its fee, because the caller got the value that was on the wire when the status was
 //! settled. The fee is a lookahead at the door and a posting here, and this step reports which.
 //!
-//! **The refund rule is one counter, not two.** A non-2xx end refunds the fee base
-//! (`billable_requests`) and never the admission count (`requests`). That asymmetry is the whole
-//! design: the caller is not billed a flat fee for a failure outside its control, and a thousand
-//! failed requests still consume a thousand slots, so a cap cannot be escaped by hammering
-//! failures. A refund is only ever issued for a request whose charge LANDED — the admit step's
-//! `charged` — because the refund is a blind decrement of a shared window counter, and issuing one
-//! for a request that never charged erodes some other request's spend in the same window. It lands
-//! in the window the pinned arrival epoch names, which is the window the charge landed in, so a
-//! request that straddles a boundary refunds where it charged.
+//! **THERE IS NO REFUND, because there is no earlier charge to take back.** A unit posts ONE line
+//! when it ends, carrying what it actually delivered, and the flat fee is a line of that posting
+//! rather than a lookahead the door made and something later had to undo. So a failure is not a
+//! charge that gets reversed — it is a line whose fee count is zero, written once, never edited.
+//!
+//! The asymmetry the refund rule existed to protect is kept, and kept more simply. The admission
+//! count (`requests`) is drawn at the door and never released, so a thousand failed requests still
+//! consume a thousand slots and a cap cannot be escaped by hammering failures. The fee base is
+//! decided HERE, from the leg and the client-facing status, and a failure simply never earns it.
+//! One counter is drawn at the door, the other is earned at the end, and neither is ever walked
+//! back — which is what makes a blind decrement of a shared window counter impossible rather than
+//! merely guarded.
 //!
 //! **A stream that ends in an error bills ZERO tokens.** Not the tokens observed before the error,
 //! and not a floor: the accrual is skipped entirely, exactly as the live taps skip it when the
@@ -182,7 +185,6 @@ pub struct MeterCtx<'a> {
     lane: Option<&'a crate::engine::Lane>,
     usage: Option<&'a busbar_substrate::billing::TokenUsage>,
     status: u16,
-    charged: bool,
     upstream_leg: bool,
     billing_failed: bool,
     accrued: bool,
@@ -192,11 +194,13 @@ impl<'a> MeterCtx<'a> {
     /// Bind the step to one response.
     ///
     /// `status` is the status the CLIENT saw, never the upstream's — the fee is decided from the
-    /// client-facing frame. `charged` is the admit step's: whether the admission charge landed, and
-    /// therefore whether there is anything a non-2xx could refund. `upstream_leg` says the unit
-    /// routed to an upstream, which is what makes it a fee-bearing client request rather than a
-    /// kernel verb or a delivery. `billing_failed` is the terminal-error/abort fact the stream taps
-    /// read off the translator.
+    /// client-facing frame. `upstream_leg` says the unit routed to an upstream, which is what makes
+    /// it a fee-bearing client request rather than a kernel verb or a delivery. `billing_failed` is
+    /// the terminal-error/abort fact the stream taps read off the translator.
+    ///
+    /// The door's `charged` used to be here too, because the end of a unit had to know whether
+    /// there was a landed charge for it to reverse. Nothing reverses anything now, so whether the
+    /// door charged is a fact about the DOOR and no longer one about the end.
     ///
     /// `allow(dead_code)` while the module is dark: the Route step is what builds one of these on
     /// the request path, and it does not exist yet.
@@ -207,7 +211,6 @@ impl<'a> MeterCtx<'a> {
         lane: Option<&'a crate::engine::Lane>,
         usage: Option<&'a busbar_substrate::billing::TokenUsage>,
         status: u16,
-        charged: bool,
         upstream_leg: bool,
         billing_failed: bool,
     ) -> Self {
@@ -217,7 +220,6 @@ impl<'a> MeterCtx<'a> {
             lane,
             usage,
             status,
-            charged,
             upstream_leg,
             billing_failed,
             // The step is the posting unless something before it says otherwise; `bind` is what
@@ -229,15 +231,13 @@ impl<'a> MeterCtx<'a> {
     /// Bind the step to what the ROUTE step observed.
     ///
     /// The expression that did not exist: a [`MeterFacts`] plus the two things the facts cannot
-    /// own — the host seam and the borrowed lane the index names — is a context. `charged` is still
-    /// the admit step's, because whether the admission charge landed is not a fact about the walk.
+    /// own — the host seam and the borrowed lane the index names — is a context.
     #[allow(dead_code)]
     pub(crate) fn bind(
         host: &'a Arc<dyn EngineHost>,
         sink: Option<&'a crate::engine::UsageSink>,
         lane: Option<&'a crate::engine::Lane>,
         facts: &'a MeterFacts,
-        charged: bool,
     ) -> Self {
         MeterCtx {
             host,
@@ -245,7 +245,6 @@ impl<'a> MeterCtx<'a> {
             lane,
             usage: facts.usage.as_ref(),
             status: facts.status,
-            charged,
             upstream_leg: facts.upstream_leg,
             billing_failed: facts.billing_failed,
             accrued: facts.accrued,
@@ -277,9 +276,6 @@ pub struct Metered {
     /// Whether the flat per-request fee posts: 1 on a delivered 2xx from an upstream leg, 0
     /// otherwise. Decided here, from the client-facing status, and never reversed later.
     pub fee_count: u32,
-    /// Whether the Audit step must refund the fee base. True exactly when the admission charge
-    /// landed and the client did not see a 2xx.
-    pub refund: bool,
     /// WHETHER THIS STEP MADE THE ACCRUAL, as opposed to sealing one the walk's tap already made.
     ///
     /// Set inside the accrual arm and nowhere else, so it is the arm's own report of itself rather
@@ -314,6 +310,18 @@ impl Metered {
     /// The step's answer on its own, which is what the loop takes.
     pub fn into_decision(self) -> Decision<Meter> {
         self.decision
+    }
+
+    /// WHETHER THIS ENDED UNIT ASKS FOR A COMPENSATING POSTING — a second act against the books
+    /// that exists only to correct a first one.
+    ///
+    /// Money model ruling 2: a unit posts ONE line when it ends, carrying what it actually
+    /// delivered, and that line is never edited, reversed or compensated. So the honest answer here
+    /// is a constant, and it is written as a method rather than left implicit so the invariant has
+    /// somewhere to be asserted and cannot quietly regrow a field behind it.
+    #[must_use]
+    pub fn compensating(&self) -> bool {
+        false
     }
 }
 
@@ -494,9 +502,6 @@ pub fn meter(
         hold,
         row,
         fee_count,
-        // The refund is owed only where a charge landed and the client did not see a 2xx — and it
-        // is owed against the fee base alone.
-        refund: ctx.charged && !delivered,
         posted,
         report,
         priced,

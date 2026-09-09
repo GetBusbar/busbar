@@ -25,6 +25,14 @@
 #              the unit chain that must end a unit at the cap; `busbar-unit-admission` is the door
 #              that carries the budget in; `busbar` is the composition root and the integration
 #              surface where a boot actually refuses.
+#
+# NOTE FOR THE SHARDER: `busbar-llm`'s money step files live under `src/unit/` behind the
+# `teller-waist` feature, which is DEFAULT OFF — `src/unit/mod.rs` carries an inner
+# `#![cfg(feature = "teller-waist")]`, so with the flag down the whole directory compiles to
+# nothing and this branch's tests do not exist. The default leg is 584 tests; the `teller-waist`
+# leg is the one that judges this work. `qa/segments.toml` already declares that leg as its own
+# segment (id `teller-waist`); if the shard runner takes only default features here, this branch
+# reports green against tests it never compiled.
 families = '^(billing|ledger|boot|config|llm|route\.failover|ops\.scrape)([|.]|$)'
 tests = [
   "busbar-unit-cost",

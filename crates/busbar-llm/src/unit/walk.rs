@@ -115,9 +115,9 @@ struct Carry {
     /// WHAT THE HOLDER OF THE CARD ANSWERED over that report, in nano-units. Zero where there was
     /// nothing to price, which is the honest figure for a unit that reached no lane.
     priced: u64,
-    /// What the Meter step said about the fee and the refund.
+    /// What the Meter step said the fee was. There is no second figure beside it: a unit posts one
+    /// line when it ends and nothing later reverses any part of it.
     fee_count: u32,
-    refund: bool,
     /// The bytes the terminal posted, which are the bytes the client is given.
     terminal: Option<Served>,
 }
@@ -416,12 +416,6 @@ impl Walk {
         self.lock().priced
     }
 
-    /// Whether the Audit step owes a refund of the fee base.
-    #[must_use]
-    pub fn refund(&self) -> bool {
-        self.lock().refund
-    }
-
     /// The status the CLIENT saw, once the walk has produced one.
     #[must_use]
     pub fn served_status(&self) -> Option<u16> {
@@ -688,7 +682,6 @@ impl Walk {
         worth: crate::unit::meter::Worth<'_>,
     ) -> Decision<Meter> {
         let mut carry = self.lock();
-        let charged = carry.charged;
         let Some(facts) = carry.facts.as_ref() else {
             // Route never ran, so there is nothing the walk reported to seal. Unreachable from the
             // loop's order and answered rather than unwrapped.
@@ -727,7 +720,7 @@ impl Walk {
         }
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
-        let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts, charged);
+        let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts);
         let metered =
             crate::unit::meter::meter(token, usage, &ctx, None, &Outcome::Completed, worth);
         // What the ACCRUAL ARM reported about itself. `row` is filled whether this step posted or
@@ -735,7 +728,6 @@ impl Walk {
         // what the rehearsal asserts one-posting-per-unit on.
         carry.posted_here = metered.posted;
         carry.fee_count = metered.fee_count;
-        carry.refund = metered.refund;
         // WHAT THE STEP REPORTED AND WHAT IT WAS TOLD IT WAS WORTH, kept rather than dropped. Both
         // used to fall on the floor here, which is what made the whole seam unobservable: a report
         // the step assembles and the carry discards cannot be told apart from one it never built.

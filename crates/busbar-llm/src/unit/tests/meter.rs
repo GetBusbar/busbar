@@ -204,7 +204,6 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
         Some(&reported),
         200,
         true,
-        true,
         false,
     );
     let (seal, unit_token, usage_token) = tokens();
@@ -262,6 +261,11 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     assert_eq!(step.ledger_tokens, live.ledger_tokens);
     assert_eq!(step.ledger_spend_cents, live.ledger_spend_cents);
 
+    // Read BEFORE the decision is taken out of the answer: `into_result` moves that field, and a
+    // partially moved value cannot be asked a question about itself afterwards.
+    let compensating = metered.compensating();
+    let fee_count = metered.fee_count;
+
     // The usage report the posting is made against: one line per non-zero tier, summing to
     // exactly what was metered.
     let usage = metered
@@ -272,71 +276,56 @@ async fn the_step_accrues_the_same_metering_row_as_the_live_tap() {
     assert_eq!(usage.lines().len(), 2, "two tiers reported, two lines");
     assert!(!usage.is_estimated(), "the destination reported this");
     assert_eq!(
-        metered.fee_count, 1,
+        fee_count, 1,
         "a delivered 2xx from an upstream posts the flat fee"
     );
-    assert!(!metered.refund, "a 2xx refunds nothing");
+    assert!(
+        !compensating,
+        "a delivered unit posts its one line and asks for nothing to be undone"
+    );
     server2.shutdown().await;
 }
 
-/// THE FAILED-TRANSFER IDENTITY. A charged request that did not deliver a 2xx refunds the fee
-/// base and NEVER the admission count, and it refunds only where the charge landed.
+/// THE FAILED-TRANSFER IDENTITY. The fee is decided by the LEG and the client-facing status, and
+/// by nothing else — and a unit that did not earn it simply never earns it.
 ///
-/// Read the four rows together: they are the whole refund rule. A 502 on a charged request owes
-/// a refund; the same 502 on a request admitted without charging owes none, because the refund
-/// is a blind decrement that would erode another request's spend in the same window; and a 2xx
-/// owes none either way. The fee is the mirror image, and it is the LEG plus the client-facing
-/// status that decides it, never the refund.
+/// Read the rows together: they are the whole fee rule, and it is now the whole money rule for an
+/// ended unit. A 2xx from an upstream leg earns the flat fee; a 502 does not; a 404 raised after
+/// the door does not; and a 2xx that never dialled an upstream does not, because a kernel verb is
+/// not a proxied request. The admission count the door drew is untouched by all of it, so a cap
+/// still cannot be escaped by failing.
+///
+/// The door's `charged` used to be a column here, because a failure had to reverse a fee the door
+/// had already taken. It is not an input any more: the fee is a line of the unit's own end-of-unit
+/// posting, so there is nothing standing for a failure to take back and no shape of an ending that
+/// asks for one.
 #[test]
-fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
+fn the_fee_is_decided_by_the_status_and_the_leg() {
     let host: Arc<dyn EngineHost> =
         busbar_substrate::testkit::engine_host(&crate::test_support::TestApp::new().build());
     let (_seal, unit_token, usage_token) = tokens();
-    for (status, charged, upstream_leg, fee, refund, why) in [
-        (200u16, true, true, 1u32, false, "delivered and charged"),
+    for (status, upstream_leg, fee, why) in [
         (
-            502,
+            200u16,
             true,
-            true,
-            0,
-            true,
-            "a failed transfer refunds the fee base",
+            1u32,
+            "delivered over an upstream leg earns the fee",
         ),
-        (
-            502,
-            false,
-            true,
-            0,
-            false,
-            "admitted without charging, so there is nothing to refund",
-        ),
+        (502, true, 0, "a failed transfer never earns it"),
         (
             200,
-            true,
             false,
             0,
-            false,
             "no upstream leg, so no flat fee: a kernel verb is not a proxied request",
         ),
         (
             404,
             true,
-            true,
             0,
-            true,
-            "a post-admission 404 is charged, unbilled and refunded",
+            "a post-admission 404 delivered nothing, so it earns nothing",
         ),
     ] {
-        let ctx = MeterCtx::new(
-            &host,
-            None,
-            None,
-            None,
-            status,
-            charged,
-            upstream_leg,
-            false,
-        );
+        let ctx = MeterCtx::new(&host, None, None, None, status, upstream_leg, false);
         let metered = meter(
             &unit_token,
             &usage_token,
@@ -346,7 +335,7 @@ fn the_fee_and_the_refund_are_decided_by_the_status_and_the_charge() {
             &worth_of,
         );
         assert_eq!(metered.fee_count, fee, "{why}: fee_count");
-        assert_eq!(metered.refund, refund, "{why}: refund");
+        assert!(!metered.compensating(), "{why}: nothing is ever taken back");
         assert!(
             metered.row.is_none(),
             "{why}: nothing to attribute, so nothing metered"
@@ -370,7 +359,7 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         output: OUTPUT,
         ..Default::default()
     };
-    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true, true, true);
+    let ctx = MeterCtx::new(&host, None, None, Some(&reported), 200, true, true);
     let metered = meter(
         &unit_token,
         &usage_token,
@@ -386,7 +375,10 @@ fn a_stream_that_died_bills_zero_tokens_and_keeps_the_fee_it_earned() {
         metered.fee_count, 1,
         "the 2xx that went out is not reversed"
     );
-    assert!(!metered.refund, "the client saw a success");
+    assert!(
+        !metered.compensating(),
+        "the client saw a success, and nothing about this end is a correction"
+    );
     assert!(metered.row.is_none(), "nothing was accrued");
     let usage = metered.decision.into_result(&seal).expect("still a report");
     assert_eq!(
@@ -535,7 +527,6 @@ fn the_accrual_against_the_reservation_is_the_priced_total_not_the_token_count()
         Some(&reported),
         200,
         true,
-        true,
         false,
     );
 
@@ -619,7 +610,6 @@ fn a_spend_past_the_reservation_is_carried_out_as_an_overdraft() {
         Some(&reported),
         200,
         true,
-        true,
         false,
     );
 
@@ -702,7 +692,6 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
             Some(&reported),
             200,
             true,
-            true,
             false,
         ),
         None,
@@ -731,13 +720,7 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
     let sealing = meter(
         &unit_token,
         &usage_token,
-        &MeterCtx::bind(
-            &host2,
-            Some(&sink2),
-            Some(&tables2.lanes()[0]),
-            &facts,
-            true,
-        ),
+        &MeterCtx::bind(&host2, Some(&sink2), Some(&tables2.lanes()[0]), &facts),
         None,
         &Outcome::Completed,
         &worth_of,
@@ -766,4 +749,68 @@ fn the_step_says_whether_it_posted_or_only_sealed() {
         (true, false),
         "the step that made the accrual says so; the step that only sealed one says it did not"
     );
+}
+
+/// A UNIT ASKS FOR NO COMPENSATING POSTING - the money model's ruling 2, as a property of the step.
+///
+/// "You hand me the item, I pay the exact amount": a unit posts ONE line when it ends, carrying
+/// what it actually delivered. There is no earlier charge for that line to correct, so there is
+/// nothing for the end of a unit to take back.
+///
+/// The property is stated over EVERY ending this step can produce rather than over one of them,
+/// because "nothing is ever reversed" is a claim about the whole surface and a single row cannot
+/// carry it. Delivered, failed, refused-after-the-door, and never-dialled: none of them asks for a
+/// second act against the books.
+///
+/// WHAT IT CAUGHT. Before this commit the step answered a `refund` beside its fee, and the answer
+/// depended on the door's `charged`: two units that ended the same way - a 502 that delivered
+/// nothing over an upstream leg - were distinguishable, and the charged one was carrying a
+/// compensating posting for a fee the door had taken as a lookahead. Run against that code this
+/// test failed on the charged 502, `left: (0, false, true)` against `right: (0, false, false)`.
+/// The door's answer is not an input to this step any more, so the difference cannot be spelled.
+#[test]
+fn no_ended_unit_asks_for_a_compensating_posting() {
+    let host: Arc<dyn EngineHost> =
+        busbar_substrate::testkit::engine_host(&crate::test_support::TestApp::new().build());
+    let (_seal, unit_token, usage_token) = tokens();
+
+    for (status, upstream_leg, billing_failed, why) in [
+        (200u16, true, false, "delivered over an upstream leg"),
+        (502, true, false, "a failed transfer that delivered nothing"),
+        (
+            404,
+            true,
+            false,
+            "refused after the door, so charged but undelivered",
+        ),
+        (200, false, false, "a 2xx that never dialled an upstream"),
+        (
+            200,
+            true,
+            true,
+            "a stream whose end carried a terminal error",
+        ),
+    ] {
+        let ctx = MeterCtx::new(
+            &host,
+            None,
+            None,
+            None,
+            status,
+            upstream_leg,
+            billing_failed,
+        );
+        let metered = meter(
+            &unit_token,
+            &usage_token,
+            &ctx,
+            None,
+            &Outcome::Completed,
+            &worth_of,
+        );
+        assert!(
+            !metered.compensating(),
+            "{why}: the unit posts one line at its end and asks for nothing to be undone"
+        );
+    }
 }

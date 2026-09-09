@@ -608,9 +608,9 @@ struct Metering {
     /// Whether the Meter step made the accrual itself, as opposed to sealing the one the walk's tap
     /// had already made.
     posted_here: bool,
-    /// The fee the step says posts, and the refund it says is owed.
+    /// The fee the step says posts. There is no second figure beside it: a unit posts one line
+    /// when it ends and nothing later reverses any part of it.
     fee_count: u32,
-    refund: bool,
     /// What the METER step was bound to, as the Route step handed it over: the serving lane, the
     /// reported split, and whether those figures are evidence rather than a charge. Empty while
     /// the answer was still in flight when the step ran, which is every stream.
@@ -629,7 +629,6 @@ impl Metering {
             reached: false,
             posted_here: false,
             fee_count: 0,
-            refund: false,
             bound: (None, None, false),
             finish: None,
             tap: None,
@@ -898,7 +897,7 @@ async fn drive(
     let lane = facts.lane.and_then(|i| tables.lanes().get(i));
     // The half the walk handed BACK where it never dispatched, and the reader's copy where it did.
     let meter_sink = meter_sink.or(meter_half);
-    let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
+    let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts);
     // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
     // question it cannot answer: it holds no card, and inventing one here would be this crate
     // deciding what a lane's rates are. It answers nothing, and the hold below reaches no exit
@@ -917,7 +916,6 @@ async fn drive(
     // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
     metering.posted_here = metered.posted;
     metering.fee_count = metered.fee_count;
-    metering.refund = metered.refund;
     // What the step was actually BOUND to, read off the facts rather than off the response: the
     // three figures Route folds out of the tap where the tap had already finished.
     metering.bound = (
@@ -1315,16 +1313,17 @@ async fn the_meter_step_is_fed_from_the_route_steps_output() {
         );
     }
 
-    // The fee and the refund are the step's own answer over those facts, and they are read back
-    // here rather than assumed: a delivered 2xx from an upstream leg posts the flat fee and refunds
-    // nothing; a charged non-2xx posts none and refunds the fee base; and a candidate miss is a
-    // charged non-2xx that never dialled, so it posts no fee either.
+    // THE FEE IS THE WHOLE ANSWER, and it is read back here rather than assumed. A delivered 2xx
+    // from an upstream leg earns the flat fee; a non-2xx never earns it; and a candidate miss is a
+    // non-2xx that never dialled, so it earns none either. There is no second figure to read: a
+    // unit posts ONE line when it ends, so a failure is a line whose fee is zero rather than a
+    // charge that something later takes back.
     let (_, delivered) = leg_chain_metered(Fixture::BufferedOk).await;
-    assert_eq!((delivered.fee_count, delivered.refund), (1, false));
+    assert_eq!(delivered.fee_count, 1);
     let (_, failed) = leg_chain_metered(Fixture::UpstreamFailure).await;
-    assert_eq!((failed.fee_count, failed.refund), (0, true));
+    assert_eq!(failed.fee_count, 0);
     let (_, missed) = leg_chain_metered(Fixture::UnknownModel).await;
-    assert_eq!((missed.fee_count, missed.refund), (0, true));
+    assert_eq!(missed.fee_count, 0);
 }
 
 /// GAP 2, CLOSED — the walk's tap IS the METER step's body, and it fires once.
