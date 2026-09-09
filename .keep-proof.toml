@@ -17,7 +17,7 @@
 #              replay is the better part of half an hour and would be a claim about twenty-six
 #              families this branch does not touch.
 #   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              eighty-eight self-test cases live in that package; no other crate's test binary
+#              ninety-five self-test cases live in that package; no other crate's test binary
 #              contains a line this branch changed.
 families = '^documented([|.]|$)'
 tests = ["xtask"]

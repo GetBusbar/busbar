@@ -292,13 +292,13 @@ const SELFTEST_BUDGETS: &[(&str, f64, &str)] = &[
     ),
     (
         "kind-isolation",
-        65000.0,
-        "about 19 500 units, down from 52 000 once the registration scan stopped re-lexing the tree once per wire. Eight rows over every crate under crates/, three of them whole-tree scans, fifty-eight cases. The residue is the rule's own design: a plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo.",
+        240000.0,
+        "79 594 units measured, up from 19 500 when the dependency side of the gate landed: eleven rows rather than eight (the instance-level dependency ledger and its test twin, the build-input rule, the entry-face rule) and eighty-eight cases rather than fifty-eight. The growth is the residue the previous entry already named, arriving in bulk -- a plant that ADDS OR REMOVES A CRATE changes the derived vocabulary and invalidates the matrix memo, and thirty of the new cases do exactly that, because a census that walks the whole repository is proven by planting crates in it.",
     ),
     (
         "kind-isolation-ship",
-        80000.0,
-        "the same, plus the ship rows -- the source index, the shape check, the control-path scan and the conformance battery walk -- which are not on the per-push twin.",
+        240000.0,
+        "79 940 units measured over eighty cases: the same eleven rows, plus the ship ones -- the source index, the shape check, the control-path scan and the conformance battery walk -- which are not on the per-push twin. It sat at 79 940 against a budget of 80 000, which is a budget that flaps rather than one that catches anything.",
     ),
 ];
 
