@@ -155,7 +155,7 @@ impl IncrementalScan<'_> {
             principal_id.len(),
             sid.len()
         );
-        crate::session::SessionKey(busbar_substrate::store::fnv1a_u64(&material))
+        crate::session::SessionKey(crate::store::fnv1a_u64(&material))
     }
 
     /// Get-or-create this session's cleared-sets slot. The get-then-put is not atomic, but a lost race

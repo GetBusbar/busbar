@@ -156,7 +156,7 @@ async fn refresh(
         // not re-hammered every scrape until the TTL elapses (fail-open).
         None => Vec::new(),
     };
-    store(&name, metrics, busbar_substrate::store::now());
+    store(&name, metrics, crate::store::now());
 }
 
 /// `GET /metrics/hooks` — render every hook's cached metrics as Prometheus text.
