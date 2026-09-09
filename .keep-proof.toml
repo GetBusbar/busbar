@@ -15,5 +15,66 @@
 #   tests    — the packages whose test binaries the sharded legs must include by name: the root
 #              (`busbar`, where the mount and its cells live), the three planes, the llm plane
 #              crate, and the substrate the mount's contract types come from.
-families = '^(a2a|mcp|llm|neutrality|admin\.ops|billing)([|.]|$)'
-tests = ["busbar", "busbar-a2a", "busbar-mcp", "busbar-llm", "busbar-plane-llm", "busbar-substrate"]
+
+# WHAT THIS HAND-BACK CAN MOVE, DECLARED BY THE HAND-BACK.
+#
+# `.github/workflows/keep-proof.yml` reads exactly two keys out of this file and nothing else:
+#
+#   families  the oracle id-filter this branch is recorded and replayed against. It NARROWS the
+#             shadow oracle and nothing else — absent or empty, every family is recorded. It cannot
+#             narrow the test shards or the gates, on purpose: a gate a hand-back gets to scope is a
+#             gate the hand-back can turn off.
+#   tests     the packages this branch names, for a reader. Written down so "what did this prove"
+#             is answerable from the branch rather than from somebody's memory of the brief.
+#
+# THIS BRANCH: owner ruling 13:0x (6) — the enforced key's ONE shape for 1.6.0 is `ResolvedKey` in
+# `busbar-unit-auth`; the legacy `busbar_api::VirtualKey` (re-exported as
+# `busbar_core::governance::VirtualKey`) dies with core; the money-carrying fields it holds move to
+# the cost and ledger views.
+#
+# Five commits:
+#   1. MEASURE — the census of every VirtualKey reader across the workspace, grouped by what it
+#      reads (identity, scope, budget, rate card, expiry, revocation). No code.
+#   2. `ResolvedKey` grows scope, expiry and revocation, each with the production reader that
+#      proves it; the root's `KeyFacts` port becomes the same shape with `From` both ways.
+#   3. `KeyBudgetView` in `busbar-unit-cost` and the key's ledger row identity in
+#      `busbar-unit-ledger`, the latter wired into the root's group projection byte-identically.
+#   4. `KeyBudgetView` made a READ-TIME view under the owner's final money model — price is never
+#      stored; spend is derived from the ledger's lines times the rate table in force.
+#   5. The residue of `VirtualKey` inside `busbar-core` counted (96 production / 173 test
+#      occurrences) and ratcheted so it can only fall.
+#
+# WHY THESE FAMILIES. `auth.lifecycle` is the key's own arc — mint, rotate, expiry, revoke — and it
+# is the family the shape change is most directly about. `admin.ops` is where a key is displayed and
+# administered, and where this branch's base already carries registered A-1 breaking cells
+# (GetAuth/GetConfig/PostConfigReload, from the `is_open()` fix at 71a842144). `billing` and
+# `ledger` are named because commits 3 and 4 touch the money path: the ledger's row identity is now
+# composed in one place instead of two, and MONEY BYTE-IDENTITY is the bar. The change there is a
+# move of a format string, not of an arithmetic operator, so those families are expected identical —
+# declaring them is what makes that an assertion rather than a hope.
+#
+# NO LOCAL RECORDING IS ATTACHED, and that is the process rather than an omission: local workspace
+# builds and local oracle recordings are off, and CI's keep-proof records these families on a quiet
+# host. For the integrator's comparison, a base recording of exactly these families against this
+# branch's base (71a842144) diverged on 13 admin.ops cells — 7 unaccepted, 6 accepted — with
+# `auth.lifecycle`, `billing` and `ledger` ALL identical. That is the set to compare against, and
+# nothing outside `admin.ops` should appear.
+
+# THIS BRANCH IS THE MOUNT CHAIN WITH THE a2a CHAIN RE-PICKED ONTO IT, so the declaration is the
+# UNION of the two: the mount's own scope (every plane that can be mounted, plus the cells that
+# assert on what a mounted answer looks like) and the enforced key's arc.
+families = '^(a2a|mcp|llm|neutrality|admin\.ops|billing|auth\.lifecycle|ledger)([|.]|$)'
+tests = [
+  "busbar",
+  "busbar-a2a",
+  "busbar-mcp",
+  "busbar-llm",
+  "busbar-plane-llm",
+  "busbar-substrate",
+  "busbar-unit-auth",
+  "busbar-unit-admission",
+  "busbar-unit-cost",
+  "busbar-unit-ledger",
+  "busbar-unit-verbs",
+  "busbar-core",
+]
