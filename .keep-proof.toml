@@ -6,12 +6,18 @@
 #
 #   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
 #              against the published 1.5.5 binary and reports divergences; unfiltered that is the
-#              better part of half an hour. This branch changes CI plumbing (the runner fleet, the
-#              `runs-on` of keep-proof and ci), not busbar's behaviour, so the honest scope is a
-#              small, load-bearing slice rather than a claim about all twenty-six families: billing
-#              and ledger are the money path — if a CI change could somehow perturb a recorded
-#              behaviour, it is these cells that must say so.
+#              better part of half an hour. This branch is the money model's rates-and-classes cut:
+#              the declared meter classes, the add-only dated rate table, and the unpriced-class boot
+#              refusal wired into config validation behind an opt-in key. The four families are the
+#              ones that could possibly answer differently if any of that leaked: `billing` and
+#              `ledger` are the money path itself; `boot` and `config` are where the new refusal and
+#              the new `require_priced_classes:` key live, and where the whole 1.5.5 guarantee is
+#              made — a config that omits the key must validate, boot and refuse byte-identically to
+#              the release before it.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
-#              `busbar-unit-cost` is the unit-cost crate the billing/ledger families sit on.
-families = '^(billing|ledger)([|.]|$)'
-tests = ["busbar-unit-cost"]
+#              `busbar-unit-cost` holds the rate table, the pricing arithmetic and the unpriced-class
+#              rule; `busbar-unit-ledger` is the quantities that rule is asked about; `busbar-substrate`
+#              carries the plane registry the declared classes are handed across on; `busbar` is the
+#              composition root and the integration surface where a boot actually refuses.
+families = '^(billing|ledger|boot|config)([|.]|$)'
+tests = ["busbar-unit-cost", "busbar-unit-ledger", "busbar-substrate", "busbar"]
