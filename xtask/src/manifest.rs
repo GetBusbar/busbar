@@ -231,11 +231,25 @@ pub fn unreadable(text: &str) -> Vec<String> {
             continue;
         };
         let key = key.trim();
-        if !key.contains('.') {
+        let segs = header_segments(key);
+        if !segs.iter().any(|s| DepTable::of_word(s).is_some()) {
             continue;
         }
-        let segs = header_segments(key);
-        if segs.len() < 2 || !segs.iter().any(|s| DepTable::of_word(s).is_some()) {
+        // THE INLINE TABLE IS NOW READ (see [`dep_decls`]) AND STILL REPORTED. Reading it is what
+        // stops the edge being invisible; reporting it is what stops the FORM spreading, because
+        // every reader of this repository's manifests — this one, the next one, and the human — has
+        // to agree about where a dependency lives, and one spelling per fact is how that is kept
+        // true. A form that only one reader in three understands is the next silent edge.
+        if segs.len() < 2 && !key.contains('.') {
+            out.push(format!(
+                "`{}` is an INLINE dependency table at the top level of the file. It is a real \
+                 edge Cargo links, in a spelling no `[section]` announces: write it as a \
+                 `[…dependencies]` table",
+                raw.trim()
+            ));
+            continue;
+        }
+        if segs.len() < 2 {
             continue;
         }
         out.push(format!(
@@ -246,6 +260,49 @@ pub fn unreadable(text: &str) -> Vec<String> {
         ));
     }
     out
+}
+
+/// THE ENTRIES OF ONE INLINE TABLE — `{ a = "1", b = { path = "…" } }` -> `[(a, "1"), (b, …)]`.
+///
+/// Split at the commas that are at BRACE DEPTH ONE and outside a string, because a nested inline
+/// table carries commas of its own and a splitter that does not count braces reads
+/// `b = { package = "c", version = "1" }` as two entries, the second of which is not a dependency
+/// and the first of which has lost its rename.
+fn inline_entries(value: &str) -> Vec<(String, String)> {
+    let t = value.trim();
+    let inner = t
+        .strip_prefix('{')
+        .map(|r| r.strip_suffix('}').unwrap_or(r))
+        .unwrap_or(t);
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0usize;
+    let mut in_str = false;
+    for c in inner.chars() {
+        match c {
+            '"' => {
+                in_str = !in_str;
+                cur.push(c);
+            }
+            '{' | '[' if !in_str => {
+                depth += 1;
+                cur.push(c);
+            }
+            '}' | ']' if !in_str => {
+                depth = depth.saturating_sub(1);
+                cur.push(c);
+            }
+            ',' if !in_str && depth == 0 => {
+                parts.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    parts.push(cur);
+    parts
+        .into_iter()
+        .filter_map(|p| split_kv(p.trim()).map(|(k, v)| (k, v.trim().to_string())))
+        .collect()
 }
 
 /// EVERY DEPENDENCY DECLARATION IN ONE MANIFEST, in every table and every spelling.
@@ -307,6 +364,52 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                 out[i].path = Some(p);
             }
             continue;
+        }
+        // THE INLINE TABLE FORM. `dependencies = { serde = "1", wire = { path = "…" } }` is a
+        // dependency table Cargo links exactly as it links a `[dependencies]` header, and it sits
+        // under NO section — so the `section.clone()` below saw `None` and dropped every edge in
+        // it. Nothing else in this reader had a route to the value: the whole file's dependency
+        // answer was keyed on a `[header]` somebody had to write.
+        if let Some((key, value)) = split_kv(t) {
+            let segs = header_segments(&key);
+            if value.trim().starts_with('{')
+                && segs.first().map(String::as_str) != Some("workspace")
+            {
+                if let Some(at) = segs.iter().position(|s| DepTable::of_word(s).is_some()) {
+                    let table = DepTable::of_word(&segs[at]).expect("position found it");
+                    let head = segs[..=at].join(".");
+                    if at + 1 == segs.len() {
+                        // `…dependencies = { a = "1", b = { package = "c" } }`
+                        for (k, v) in inline_entries(value) {
+                            let renamed = inline_package(&v);
+                            out.push(DepDecl {
+                                pkg: renamed.clone().unwrap_or_else(|| k.clone()),
+                                key: k,
+                                table,
+                                section: head.clone(),
+                                renamed_here: renamed.is_some(),
+                                inherits: scalar_true(&v, "workspace"),
+                                path: scalar_string(&v, "path"),
+                            });
+                        }
+                        continue;
+                    }
+                    if at + 2 == segs.len() {
+                        // `…dependencies.wire = { package = "busbar-plane-llm" }`
+                        let renamed = inline_package(value);
+                        out.push(DepDecl {
+                            pkg: renamed.clone().unwrap_or_else(|| segs[at + 1].clone()),
+                            key: segs[at + 1].clone(),
+                            table,
+                            section: head,
+                            renamed_here: renamed.is_some(),
+                            inherits: scalar_true(value, "workspace"),
+                            path: scalar_string(value, "path"),
+                        });
+                        continue;
+                    }
+                }
+            }
         }
         let Some((section_name, table)) = section.clone() else {
             continue;
@@ -549,6 +652,29 @@ llm-serve = []
     }
 
     /// The workspace's own pin table is not an edge OF the workspace root.
+    #[test]
+    fn an_inline_dependency_table_is_a_dependency_table() {
+        let decls = dep_decls(
+            "[package]\nname = \"x\"\ndependencies = { serde = \"1\", wire = { package = \"busbar-plane-llm\", path = \"../p\" } }\n",
+        );
+        let names: Vec<&str> = decls.iter().map(|d| d.pkg.as_str()).collect();
+        assert_eq!(names, vec!["serde", "busbar-plane-llm"]);
+        assert_eq!(decls[1].path.as_deref(), Some("../p"));
+        assert!(decls[1].renamed_here);
+        // …and the FORM is still reported, so it does not spread.
+        assert_eq!(unreadable("dependencies = { serde = \"1\" }\n").len(), 1);
+    }
+
+    #[test]
+    fn a_dotted_inline_dependency_is_one_declaration() {
+        let decls =
+            dep_decls("[package]\nname = \"x\"\nbuild-dependencies.wire = { workspace = true }\n");
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].pkg, "wire");
+        assert!(decls[0].inherits);
+        assert!(matches!(decls[0].table, DepTable::Build));
+    }
+
     #[test]
     fn the_workspace_pin_table_is_not_a_dependency_section() {
         let d = dep_decls("[workspace.dependencies]\nserde = \"1\"\n");
