@@ -1310,6 +1310,24 @@ async fn run(data_workers: usize) {
     // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
     mount_root_voice(&cfg.limits);
+    // WHAT THIS DEPLOYMENT SAID ABOUT THE A2A PLANE, read HERE because this is the last slot where
+    // the resolved configuration is still in scope — it moves into the app build a few lines down,
+    // and the routers this composes onto do not exist until long after. Every binding is resolved
+    // from a key this deployment already has, and a source it does not have refuses boot by name;
+    // `None` is the deployment with no `public_url:`, which fronts no inbound A2A surface and which
+    // the legacy plugin likewise mounts no route for. Behind the serving switch, which the shipped
+    // binary does NOT carry: with it off the line is not compiled and the binary is what it was.
+    #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
+    let a2a_configured = root::units_a2a_boot::read(&cfg).unwrap_or_else(|e| die(e));
+    // AND WHAT IT SAID ABOUT THE MCP PLANE, read in the same slot and for the same reason: this is
+    // the last place the resolved configuration is still in scope. Every binding is resolved from a
+    // key this deployment already has, and a source it does not have refuses boot by name; `None` is
+    // the deployment that wrote no `mcp:` block, which carries no MCP surface at all and which the
+    // legacy plugin likewise adds nothing to the route table for. Behind the serving switch, which
+    // the shipped binary does NOT carry: with it off the line is not compiled and the binary is what
+    // it was.
+    #[cfg(all(feature = "root-mcp", feature = "root-mcp-serve"))]
+    let mcp_configured = root::units_mcp_boot::read(&cfg).unwrap_or_else(|e| die(e));
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
     // the one already serving the model that section targets: `streams.session.model` names a model,
@@ -1335,7 +1353,11 @@ async fn run(data_workers: usize) {
     // happened where it was booked. Each unit resolves against the snapshot it pinned at admission,
     // at its own arrival instant. Off, no holder is installed and the seam is silent, which is the
     // honest answer for a binary with no root ledger in it.
-    #[cfg(feature = "root-llm")]
+    #[cfg(any(
+        feature = "root-llm",
+        feature = "root-a2a-serve",
+        feature = "root-mcp-serve"
+    ))]
     root::kernel::install_card_repricer();
 
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
@@ -1464,7 +1486,12 @@ async fn run(data_workers: usize) {
     // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
     // directory, so nothing appears beside a configuration that asked for none, and it is built
     // before either listener binds because the first accepted connection can settle.
-    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    #[cfg(any(
+        feature = "root-admin",
+        feature = "root-llm",
+        feature = "root-a2a-serve",
+        feature = "root-mcp-serve"
+    ))]
     let book = root::durability::node_book();
 
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
@@ -1472,6 +1499,44 @@ async fn run(data_workers: usize) {
     // arm settles nothing, which is the honest answer for a build with no root ledger in it.
     #[cfg(feature = "root-llm")]
     root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
+
+    // THE ROOT-DRIVEN A2A PLANE, wrapped around the data router so every unit of that protocol on it
+    // travels through the kernel's loop before reaching the surface that already answers it. The
+    // router below the wrap is unchanged and every byte it writes reaches the wire unchanged; what
+    // this line adds is the path a request takes to get there. A deployment with no `public_url:`
+    // fronts no inbound A2A surface, and the wrap hands the router straight back. Off, this line
+    // does not exist and the surface is the one it was.
+    #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
+    let data_router = root::units_a2a_boot::mount(
+        data_router,
+        a2a_configured,
+        root::kernel::new_kernel(),
+        app_handle.load().governance.clone(),
+        std::sync::Arc::clone(&book.durability),
+        req_body_max,
+    )
+    .unwrap_or_else(|e| die(e));
+
+    // THE ROOT-DRIVEN MCP PLANE, wrapped around the same data router and for the same reason. The
+    // router below the wrap is unchanged and every byte it writes reaches the wire unchanged; what
+    // this line adds is the path a request takes to get there. A deployment that wrote no `mcp:`
+    // block fronts no MCP surface, and the wrap hands the router straight back. Off, this line does
+    // not exist and the surface is the one it was.
+    //
+    // AFTER the A2A wrap, deliberately: each wrap claims only the addresses its own plane's claim
+    // table declares and hands everything else to the surface below it, so the two compose in either
+    // order — and composing this one outermost keeps the order the same as the order the legs were
+    // switched over in, which is the order a reader following the cuts will expect.
+    #[cfg(all(feature = "root-mcp", feature = "root-mcp-serve"))]
+    let data_router = root::units_mcp_boot::mount(
+        data_router,
+        mcp_configured,
+        root::kernel::new_kernel(),
+        app_handle.load().governance.clone(),
+        std::sync::Arc::clone(&book.durability),
+        req_body_max,
+    )
+    .unwrap_or_else(|e| die(e));
 
     // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
     // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
