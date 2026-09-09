@@ -3056,3 +3056,2324 @@ crate = "busbar-unit-transport-key"
 kind = "transport"
 note = "segment scanner 105, window scanner 106. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
+
+# ------------------------------------------------------------------------------------------------
+# [[dep]] / [[question]] — THE DEPENDENCY LEDGER, ONE ROW PER EDGE INSTANCE
+# ------------------------------------------------------------------------------------------------
+#
+# `kind-isolation:deps` held the manifests to a table of kind-to-kind CLASSES in Rust source, and a
+# class ratchet has unlimited slack INSIDE a class: `transport -> unit` was one measured line, so a
+# SECOND transport growing a dependency on a unit was green, and so was a third. An audit of all 220
+# workspace-internal edges found 105 the architecture grants, 87 it does not, 15 in the loader/ABI
+# trusted base and 13 it never rules on at all — every one held by 38 lines that recorded only which
+# pairs of kind WORDS had ever appeared together.
+#
+# So the row is the INSTANCE, and the ratchet moves one edge at a time, exactly in both directions,
+# on the same terms `[[cell]]` above already lives under. A count above its row is the landing that
+# grew the coupling. A count BELOW it is stale slack that was not drained on the commit that drained
+# the edge. A row whose edge is gone is a dead allowance and must be struck. An edge with NO row is
+# refused, whatever the architecture may or may not grant, because an edge nobody wrote down is an
+# edge nobody reviewed.
+#
+#   from    — the crate that declares the dependency.
+#   to      — the crate it reaches. The PACKAGE, not the manifest key: a `package = "…"` rename and
+#             a `[workspace.dependencies]` rename both resolve here before the row is looked up.
+#   half    — `shipped` ([dependencies], [build-dependencies] and their per-target forms) or `test`
+#             ([dev-dependencies]). Two halves and not one, because they are two claims: what the
+#             artifact links, and what the test binary links.
+#   count   — TODAY'S MEASURED NUMBER OF DECLARATIONS, exactly. Not a budget.
+#   verdict — allowed | tcb | not-allowed | owner-ruling-pending. `allowed` and `tcb` are READINGS
+#             of ARCHITECTURE_ALLOWED / ARCHITECTURE_TCB in
+#             xtask/src/gates/kind_isolation.rs, not opinions this file is entitled to hold: a row
+#             claiming an edge the architecture withholds is refused as an unsupported verdict.
+#   cite    — the clause that grants the edge, or the words that say none does.
+#   why     — what the number is made of.
+#   drain   — the line that deletes it, or the words that say the architecture asks for it.
+#
+# `[[question]]` carries the question an `owner-ruling-pending` edge is asking — its own table, on
+# exactly the terms `[[disagreement]]` is: every row in this file is a fixed set of required fields,
+# and an optional one would be the first thing a reader has to remember. A pending row with no
+# question has stopped asking; a question about an edge that is no longer pending is struck.
+#
+# THE SHIP TWIN (`cargo xtask gate kind-isolation-ship`) does not read these rows. It owes the
+# ARCHITECTURE'S OWN GRAPH: only the classes ARCHITECTURE_ALLOWED names, with `tcb`, `not-allowed`
+# and `owner-ruling-pending` all refused, because the criterion for a tag is not "no worse than
+# yesterday". What is written here is what 1.6.0 still has to delete or get a ruling on.
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-a2a"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-a2a: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-core"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-core: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-kernel"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-llm"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-llm: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-mcp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-mcp: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-a2a"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-plane-a2a: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-admin"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-plane-admin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-llm"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-mcp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-voice"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-plane-voice: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plugin-loader"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-substrate-values"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-transport-grpc"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-grpc: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-transport-http"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-http: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-transport-sse"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-sse: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-transport-stdio"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-stdio: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-transport-tcp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-tcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-transport-tls"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-tls: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-transport-ws"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-transport-ws: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-admission"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-admission: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-audit"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-audit: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-auth"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-auth: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-breaker"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-breaker: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-cost"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-cost: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-egress"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-egress: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-egress-auth"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-egress-auth: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-ledger"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-ledger: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-scope"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-scope: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-transport-key"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-transport-key: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-trust"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-trust: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-usage"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-usage: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-verbs"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-verbs: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-unit-wal"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-unit-wal: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-voice"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-voice: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-a2a-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-a2a-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-a2a-codec dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-core"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-core: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-core dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-plugin-loader"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-loader dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-store-memory"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-store-memory: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-store-memory dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a-codec"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-a2a-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-a2a-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-api"
+to      = "busbar-secret-ref"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row: busbar-api is a legacy contract crate outside the ARCHITECTURE.md 3.1 graph."
+why     = "busbar-api names busbar-secret-ref: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-secret-ref dependency from busbar-api."
+
+[[dep]]
+from    = "busbar-auth-admin-tokens"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-auth-admin-tokens names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-auth-admin-tokens's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-auth-static-plugin"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-auth-static-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-auth-static-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-auth-static-plugin"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-auth-static-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sdk dependency from busbar-auth-static-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-caps"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-caps names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-contract"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — the contract re-exports the closed grammar and the transport face."
+why     = "busbar-contract names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-contract"
+to      = "busbar-grammar"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — the contract re-exports the closed grammar and the transport face."
+why     = "busbar-contract names busbar-grammar: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-auth-admin-tokens"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-auth-admin-tokens: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-auth-admin-tokens dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-hooks-ranking"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-hooks-ranking: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-hooks-ranking dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-plugin-loader"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-loader dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-plugin-sign"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-plugin-sign: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sign dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-secret-ref"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-secret-ref: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-secret-ref dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-store-memory"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-store-memory: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-store-memory dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-timing"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-timing dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-export-example-plugin"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-export-example-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sdk dependency from busbar-export-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-hook-test-plugin"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-hook-test-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sdk dependency from busbar-hook-test-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-hooks-ranking"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-hooks-ranking names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-hooks-ranking's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-kernel"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 crate graph — kernel = registry + Teller over caps/contract/grammar."
+why     = "busbar-kernel names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-kernel"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-kernel names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-kernel"
+to      = "busbar-grammar"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 crate graph — kernel = registry + Teller over caps/contract/grammar."
+why     = "busbar-kernel names busbar-grammar: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-caps: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-caps dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-llm names busbar-contract: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-llm-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-llm-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-llm-codec dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-plugin: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-timing"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-timing dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm-codec"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-llm-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm-codec"
+to      = "busbar-substrate-values"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-llm-codec names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate-values dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm-codec"
+to      = "busbar-timing"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-llm-codec names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-timing dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-core"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-core: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-core dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-mcp-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-mcp-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-mcp-codec dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-plugin-loader"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-loader dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-store-memory"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-store-memory: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-store-memory dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp-codec"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-mcp-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-mcp-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp-codec"
+to      = "busbar-grammar"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list names busbar-grammar explicitly."
+why     = "busbar-mcp-codec names busbar-grammar: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-mcp-codec"
+to      = "busbar-substrate-values"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-mcp-codec names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate-values dependency from busbar-mcp-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-plane-a2a"
+to      = "busbar-a2a-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane; a plane naming a dialect inverts it. `busbar-plane-<p>-<d>` deps are exactly contract + its plane."
+why     = "busbar-plane-a2a names busbar-a2a-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-a2a-codec dependency from busbar-plane-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-plane-a2a"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-a2a names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-admin"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-admin names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-llm names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm"
+to      = "busbar-llm-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane; a plane naming a dialect inverts it. `busbar-plane-<p>-<d>` deps are exactly contract + its plane."
+why     = "busbar-plane-llm names busbar-llm-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-llm-codec dependency from busbar-plane-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-plane-mcp"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-mcp names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-mcp"
+to      = "busbar-mcp-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane; a plane naming a dialect inverts it. `busbar-plane-<p>-<d>` deps are exactly contract + its plane."
+why     = "busbar-plane-mcp names busbar-mcp-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-mcp-codec dependency from busbar-plane-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-plane-voice"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-voice names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-voice"
+to      = "busbar-voice-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane; a plane naming a dialect inverts it. `busbar-plane-<p>-<d>` deps are exactly contract + its plane."
+why     = "busbar-plane-voice names busbar-voice-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-voice-codec dependency from busbar-plane-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-plugin"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
+why     = "busbar-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-plugin."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-kernel"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-plugin-sign"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-plugin-sign: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-unit-ledger"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-unit-ledger: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-unit-verbs"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-unit-verbs: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-loader"
+to      = "busbar-unit-wal"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-unit-wal: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-pack"
+to      = "busbar-plugin-loader"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-pack names busbar-plugin-loader: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-pack"
+to      = "busbar-plugin-sign"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-pack names busbar-plugin-sign: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-pack"
+to      = "busbar-secret-ref"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-pack names busbar-secret-ref: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-sdk names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-sdk names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-testkit"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-testkit names busbar-api: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-secret-example-plugin"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-secret-example-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-secret-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-secret-example-plugin"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-secret-example-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sdk dependency from busbar-secret-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-store-example-plugin"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-store-example-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-store-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-store-example-plugin"
+to      = "busbar-plugin-sdk"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-store-example-plugin names busbar-plugin-sdk: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sdk dependency from busbar-store-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-store-memory"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-store-memory names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-store-memory's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-store-memory"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-store-memory names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-substrate"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-substrate."
+
+[[dep]]
+from    = "busbar-substrate"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-substrate names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-substrate"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-plugin dependency from busbar-substrate."
+
+[[dep]]
+from    = "busbar-substrate"
+to      = "busbar-substrate-values"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-substrate-values dependency from busbar-substrate."
+
+[[dep]]
+from    = "busbar-substrate"
+to      = "busbar-timing"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-timing dependency from busbar-substrate."
+
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate-values names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-api dependency from busbar-substrate-values."
+
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate-values names busbar-plugin: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-plugin dependency from busbar-substrate-values."
+
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-timing"
+half    = "shipped"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate-values names busbar-timing: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-timing dependency from busbar-substrate-values."
+
+[[dep]]
+from    = "busbar-transport-grpc"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-transport-grpc names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-grpc"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — busbar-contract-transport is the transport kind's contract face."
+why     = "busbar-transport-grpc names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-grpc"
+to      = "busbar-transport-http"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-grpc names busbar-transport-http: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-grpc"
+to      = "busbar-transport-tcp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-grpc names busbar-transport-tcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-http"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-transport-http names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-http"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — busbar-contract-transport is the transport kind's contract face."
+why     = "busbar-transport-http names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-http"
+to      = "busbar-transport-tcp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-http names busbar-transport-tcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-http"
+to      = "busbar-transport-tls"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-http names busbar-transport-tls: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-sse"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-transport-sse names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-sse"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — busbar-contract-transport is the transport kind's contract face."
+why     = "busbar-transport-sse names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-sse"
+to      = "busbar-transport-http"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-sse names busbar-transport-http: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-stdio"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-transport-stdio names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-stdio"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — busbar-contract-transport is the transport kind's contract face."
+why     = "busbar-transport-stdio names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-tcp"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-transport-tcp names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-tcp"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — busbar-contract-transport is the transport kind's contract face."
+why     = "busbar-transport-tcp names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-tls"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-transport-tls names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-tls"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — busbar-contract-transport is the transport kind's contract face."
+why     = "busbar-transport-tls names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-tls"
+to      = "busbar-transport-tcp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-tls names busbar-transport-tcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-tls"
+to      = "busbar-unit-transport-key"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 \"A transport cannot name a plane or a unit.\" Also ARCHITECTURE.md 1.2: a dependency on a busbar-unit-* is a CI failure."
+why     = "busbar-transport-tls names busbar-unit-transport-key: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-unit-transport-key dependency from busbar-transport-tls's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-transport-ws"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-transport-ws names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-ws"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — busbar-contract-transport is the transport kind's contract face."
+why     = "busbar-transport-ws names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-ws"
+to      = "busbar-transport-http"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-ws names busbar-transport-http: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-transport-ws"
+to      = "busbar-transport-tcp"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.4/ARCHITECTURE.md 1.4 `COMPOSES_OVER` — a wire composed over a lower wire; the root supplies the layer."
+why     = "busbar-transport-ws names busbar-transport-tcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-admission"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-admission names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-admission"
+to      = "busbar-unit-cost"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-admission names busbar-unit-cost: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-audit"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-audit names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-audit"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-audit names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-auth"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-auth names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-auth"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-auth names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-breaker"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-breaker names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-breaker"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-breaker names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-cost"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-cost names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-egress"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-egress names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-egress"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-egress names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-egress"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 \"a unit ... names no plane and no transport.\""
+why     = "busbar-unit-egress names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-contract-transport dependency from busbar-unit-egress's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-unit-egress-auth"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-egress-auth names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-ledger"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-ledger names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-ledger"
+to      = "busbar-unit-cost"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-ledger names busbar-unit-cost: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-scope"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-scope names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-scope"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-scope names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-transport-key"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-transport-key names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-transport-key"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-transport-key names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-transport-key"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 \"a unit ... names no plane and no transport.\""
+why     = "busbar-unit-transport-key names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-contract-transport dependency from busbar-unit-transport-key's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-unit-trust"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-trust names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-trust"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-trust names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-trust"
+to      = "busbar-contract-transport"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.1 \"a unit ... names no plane and no transport.\""
+why     = "busbar-unit-trust names busbar-contract-transport: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-contract-transport dependency from busbar-unit-trust's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-unit-usage"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-usage names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-usage"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-unit-usage names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-verbs"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-verbs names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-wal"
+to      = "busbar-caps"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-wal names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-voice"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-voice names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-voice"
+to      = "busbar-plane-voice"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-voice names busbar-plane-voice: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plane-voice dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-voice"
+to      = "busbar-plugin"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-voice names busbar-plugin: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-voice"
+to      = "busbar-substrate"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-voice names busbar-substrate: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-voice"
+to      = "busbar-voice-codec"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-voice names busbar-voice-codec: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-voice-codec dependency from busbar-voice's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-voice-codec"
+to      = "busbar-api"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-voice-codec names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-voice-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-voice-codec"
+to      = "busbar-substrate-values"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-voice-codec names busbar-substrate-values: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate-values dependency from busbar-voice-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-core"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-core: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-llm"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plugin-sign"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-plugin-sign: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-store-example-plugin"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-store-example-plugin: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-plugin-sign"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-plugin-sign: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sign dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-secret-ref"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-secret-ref: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-secret-ref dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-a2a"
+to      = "busbar-store-memory"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-a2a names busbar-store-memory: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-store-memory dependency from busbar-a2a's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-a2a"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-a2a: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-a2a dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-a2a-codec"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-a2a-codec: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-a2a-codec dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-llm"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-llm dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-mcp"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-mcp: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-mcp dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-store-example-plugin"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-store-example-plugin: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-store-example-plugin dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-substrate"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-core names busbar-substrate: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-core's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-core"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-core: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-core dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-llm-codec"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-llm-codec: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-llm-codec dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-mcp"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-mcp: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-mcp dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-store-memory"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-store-memory: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-store-memory dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm"
+to      = "busbar-substrate"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm names busbar-substrate: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm-codec"
+to      = "busbar-core"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm-codec names busbar-core: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-core dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm-codec"
+to      = "busbar-mcp"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-llm-codec names busbar-mcp: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-mcp dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-llm-codec"
+to      = "busbar-substrate-values"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list is busbar-contract + busbar-grammar + reviewed third-party only."
+why     = "busbar-llm-codec names busbar-substrate-values: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-substrate-values dependency from busbar-llm-codec's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-llm"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-llm dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-plugin-sign"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-plugin-sign: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-sign dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-secret-ref"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-secret-ref: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-secret-ref dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-mcp"
+to      = "busbar-store-memory"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name."
+why     = "busbar-mcp names busbar-store-memory: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-store-memory dependency from busbar-mcp's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-plane-llm"
+to      = "busbar-llm-codec"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane; a plane naming a dialect inverts it. `busbar-plane-<p>-<d>` deps are exactly contract + its plane."
+why     = "busbar-plane-llm names busbar-llm-codec: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-llm-codec dependency from busbar-plane-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
+to      = "busbar-plugin"
+half    = "test"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-sdk names busbar-plugin: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
+to      = "busbar-store-memory"
+half    = "test"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
+why     = "busbar-plugin-sdk names busbar-store-memory: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-store-memory dependency from busbar-plugin-sdk."
+
+[[dep]]
+from    = "busbar-store-example-plugin"
+to      = "busbar-plugin-testkit"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-store-example-plugin names busbar-plugin-testkit: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-testkit dependency from busbar-store-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-store-memory"
+to      = "busbar-plugin-testkit"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
+why     = "busbar-store-memory names busbar-plugin-testkit: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-plugin-testkit dependency from busbar-store-memory's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-substrate"
+to      = "busbar-substrate-values"
+half    = "test"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 name no `substrate` kind edges; busbar-substrate is one of the four crates ARCHITECTURE.md 1.1 ruled in 2026-09-08 without a stated edge set."
+why     = "busbar-substrate names busbar-substrate-values: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-substrate-values dependency from busbar-substrate."
+
+[[dep]]
+from    = "busbar-transport-sse"
+to      = "busbar-caps"
+half    = "test"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
+why     = "busbar-transport-sse names busbar-caps: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-caps dependency from busbar-transport-sse."
+
+[[dep]]
+from    = "busbar-transport-tls"
+to      = "busbar-caps"
+half    = "test"
+count   = "1"
+verdict = "owner-ruling-pending"
+cite    = "no ARCHITECTURE.md 1.1/ARCHITECTURE.md 3.1 row covers this pair."
+why     = "busbar-transport-tls names busbar-caps: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "unknown until the ruling. If the edge is granted, this row becomes `allowed` and its class joins ARCHITECTURE_ALLOWED in xtask/src/gates/kind_isolation.rs; if it is not, the drain is deleting the busbar-caps dependency from busbar-transport-tls."
+
+[[dep]]
+from    = "busbar-unit-auth"
+to      = "busbar-api"
+half    = "test"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 3.1 — a unit's trusted base is busbar-caps + busbar-contract; busbar-api is the legacy plugin-contract crate of another kind."
+why     = "busbar-unit-auth names busbar-api: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "delete the busbar-api dependency from busbar-unit-auth's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-unit-cost"
+to      = "busbar-unit-admission"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-cost names busbar-unit-admission: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-egress"
+to      = "busbar-unit-breaker"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-egress names busbar-unit-breaker: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[question]]
+from     = "busbar-api"
+to       = "busbar-secret-ref"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind api no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-api. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-plugin"
+to       = "busbar-api"
+half     = "shipped"
+question = "OWNER RULING WANTED. busbar-plugin -> busbar-api matches no clause the audit of all 220 workspace-internal edges could find, in either direction. Is it granted? If it is, name the clause and this row becomes `allowed`; if it is not, name the landing that deletes it."
+
+[[question]]
+from     = "busbar-substrate"
+to       = "busbar-api"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-substrate"
+to       = "busbar-plugin"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-substrate"
+to       = "busbar-substrate-values"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-substrate"
+to       = "busbar-timing"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-substrate-values"
+to       = "busbar-api"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate-values. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-substrate-values"
+to       = "busbar-plugin"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate-values. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-substrate-values"
+to       = "busbar-timing"
+half     = "shipped"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate-values. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-plugin-sdk"
+to       = "busbar-store-memory"
+half     = "test"
+question = "OWNER RULING WANTED. busbar-plugin-sdk -> busbar-store-memory matches no clause the audit of all 220 workspace-internal edges could find, in either direction. Is it granted? If it is, name the clause and this row becomes `allowed`; if it is not, name the landing that deletes it."
+
+[[question]]
+from     = "busbar-substrate"
+to       = "busbar-substrate-values"
+half     = "test"
+question = "OWNER RULING WANTED. The architecture gives kind substrate no edge set at all: 1.1's ruling added crates with ceilings and not with an edge set, and 3.1's crate graph does not list busbar-substrate. Is this edge granted, and under which clause? A kind the architecture does not name cannot be checked against it, so the edge is neither allowed nor refused today — and it is written down as unruled rather than passing in silence."
+
+[[question]]
+from     = "busbar-transport-sse"
+to       = "busbar-caps"
+half     = "test"
+question = "OWNER RULING WANTED. busbar-transport-sse -> busbar-caps matches no clause the audit of all 220 workspace-internal edges could find, in either direction. Is it granted? If it is, name the clause and this row becomes `allowed`; if it is not, name the landing that deletes it."
+
+[[question]]
+from     = "busbar-transport-tls"
+to       = "busbar-caps"
+half     = "test"
+question = "OWNER RULING WANTED. busbar-transport-tls -> busbar-caps matches no clause the audit of all 220 workspace-internal edges could find, in either direction. Is it granted? If it is, name the clause and this row becomes `allowed`; if it is not, name the landing that deletes it."
