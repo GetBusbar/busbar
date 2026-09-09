@@ -201,3 +201,50 @@ fn check_ignore_over_more_paths_than_a_pipe_buffer_holds_does_not_deadlock() {
     assert_eq!(ignored.len(), n, "every *.junk path is reported ignored");
     let _ = std::fs::remove_dir_all(&repo);
 }
+
+/// ONE PLACE MAY PIPE A CHILD'S STDIN, and it is [`xtask::gitp::ask`].
+///
+/// The deadlock above is not a bug in a helper, it is a bug in a SHAPE: any `Command` that pipes
+/// stdin and then reads the child afterwards has it. Fixing two call sites does nothing about the
+/// third somebody writes next month, so the shape itself is what is pinned here — a new
+/// `.stdin(Stdio::piped())` anywhere else in `xtask/src` fails this case by name, and the fix is
+/// to route it through `ask` rather than to add an exception.
+#[test]
+fn nothing_outside_the_one_helper_pipes_a_child_stdin() {
+    let src = repo_root().join("xtask").join("src");
+    let mut offenders = Vec::new();
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("xtask/src is readable") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            // gitp.rs is the helper itself: it is the one file allowed to hold a pipe.
+            if path.file_name().and_then(|f| f.to_str()) == Some("gitp.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            for (n, line) in text.lines().enumerate() {
+                if line.contains(".stdin(") && line.contains("piped") {
+                    offenders.push(format!(
+                        "{}:{}: {}",
+                        path.strip_prefix(&src).unwrap_or(&path).display(),
+                        n + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a piped child stdin outside gitp::ask -- route it through `ask`, which cannot \
+         deadlock, instead of writing the shape that did:\n  {}",
+        offenders.join("\n  ")
+    );
+}
