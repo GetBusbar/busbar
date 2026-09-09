@@ -3,7 +3,7 @@
 
 //! Direct unit tests for [`super::runtime_slot_key`].
 //!
-//! Every real caller (busbar-llm, busbar-mcp, busbar-core's `appbuild`/`state`/`test_support`) uses
+//! Every real caller (the plane crates, and busbar-core's `appbuild`/`state`/`test_support`) uses
 //! the returned `&'static str` as a `HashMap`/`BTreeMap` KEY into `App::plane_slots`, so its whole
 //! contract rests on three properties none of those call sites individually proves in THIS crate:
 //! the composed string is the documented `"<key>:runtime"` shape, repeated calls for the SAME plane
@@ -15,8 +15,8 @@ use crate::plane_host::runtime_slot_key;
 
 #[test]
 fn composes_the_documented_key_colon_runtime_shape() {
-    assert_eq!(runtime_slot_key("llm"), "llm:runtime");
-    assert_eq!(runtime_slot_key("mcp"), "mcp:runtime");
+    assert_eq!(runtime_slot_key("alpha"), "alpha:runtime");
+    assert_eq!(runtime_slot_key("beta"), "beta:runtime");
 }
 
 #[test]
