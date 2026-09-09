@@ -534,6 +534,27 @@ pub struct PlaneDecl {
     /// boot where two planes claim the same section OR a plane claims a section core still owns
     /// concretely — the invariant that makes the later section moves safe.
     pub owned_config_sections: &'static [&'static str],
+
+    /// EVERY METER CLASS THIS PLANE REPORTS, in the config/wire spelling, as plain strings.
+    ///
+    /// The plane's own `PlaneMeta::METER_CLASSES` declaration carries a family, a direction and a
+    /// divisor beside each key, all of which are the plane's business and none of which a reader
+    /// outside the plane has any use for. This is that declaration reduced to the ONE thing the
+    /// registry has to carry across: the class strings. It is filled from the plane crate's own
+    /// `meta::METER_CLASS_NAMES`, so the registry and the declaration are one list rather than two
+    /// spellings free to drift.
+    ///
+    /// WHY THE REGISTRY CARRIES IT AT ALL. Boot validation has to ask "does every class an enabled
+    /// plane reports have a rate row on the lanes it is served on?" — the unpriced-class refusal.
+    /// The question is about a plane, and the answer lives in the pricing crate, and the two may not
+    /// name each other: a plane crate cannot see a rate table and the cost unit knows no class by
+    /// name. Plain strings on the decl are the whole of the seam between them, which is why this is
+    /// `&[&str]` and not the plane's own declaration type.
+    ///
+    /// EMPTY IS A REAL ANSWER, not a plane that forgot. A plane that meters nothing of its own —
+    /// the admin plane, whose surface is priced under the kernel-reserved flat class — declares the
+    /// empty slice, and a plane declaring nothing can never be the reason a boot fails.
+    pub meter_classes: &'static [&'static str],
 }
 
 /// THE DUP-CLAIM GUARD for the plane-owned-config seam (1.6.0 config-seam, stage 1). Judges the

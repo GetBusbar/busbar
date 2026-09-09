@@ -174,6 +174,9 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         default_section: Some(a2a_default_section),
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
+        // EVERY CLASS THIS PLANE REPORTS, read off the plane's own declaration rather than
+        // re-spelled here: the registry's list and the meter's list are one constant.
+        meter_classes: busbar_plane_a2a::meta::METER_CLASS_NAMES,
         // NOTHING TO CARRY ACROSS A SWAP. The A2A plane's runtime object (`A2aPlane`) is rebuilt from
         // `agents:`/`public_url` on every apply, and its durable task table is restored at boot
         // through `hydrate`, not reconciled here — so there is no engine-owned live object that

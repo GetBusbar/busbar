@@ -108,6 +108,11 @@ busbar-api = { path = "../api" }
 # this crate's HTTP stack and async runtime into a pure kind's closure. Every module that moved is
 # re-exported from this crate's `lib.rs` under its old name.
 busbar-llm-codec = { path = "../busbar-llm-codec" }
+# THE PLANE'S OWN SELF-DESCRIPTION. This adapter's `PLANE_DECL` fills `meter_classes` from
+# `busbar_plane_llm::meta::METER_CLASS_NAMES`, so the classes the registry hands boot validation and
+# the classes the plane declares are ONE list rather than two spellings free to drift. No cycle:
+# `busbar-plane-llm` names `busbar-contract` + `busbar-llm-codec` and never this crate.
+busbar-plane-llm = { path = "../busbar-plane-llm" }
 # Debug-only per-method micro-timing (DEFAULT OFF, zero cost). Instruments the per-dialect
 # reader/writer translate entry points (bedrock/cohere — the heavy cells). Enable the registry via
 # `--features busbar-timing/timing`.

@@ -281,6 +281,9 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         // `CORE_OWNED_CONCRETE_SECTIONS` (providers/models/pools/rate_card/limits), so the dup-claim
         // guard admits this claim; a second claimant of `streams` is refused by construction.
         owned_config_sections: &["streams"],
+        // EVERY CLASS THIS PLANE REPORTS, read off the plane's own declaration rather than
+        // re-spelled here: the registry's list and the meter's list are one constant.
+        meter_classes: busbar_plane_voice::meta::METER_CLASS_NAMES,
     };
 
 /// THE VOICE PLANE'S PROTOCOL DECLARATION — a `ProtocolDecl` with `codec: None`, re-exported at the

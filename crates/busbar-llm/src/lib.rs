@@ -270,6 +270,10 @@ pub const PLANE_DECL: busbar_substrate::plane::registry::PlaneDecl =
         default_section: None,
         // config-seam stage 1: the registry starts EMPTY — nothing has moved out of core yet.
         owned_config_sections: &[],
+        // EVERY CLASS THIS PLANE REPORTS, read off the plane's own declaration rather than
+        // re-spelled here: the registry's list and the meter's list are one constant, so a class
+        // cannot be declared under one name and handed to boot validation under another.
+        meter_classes: busbar_plane_llm::meta::METER_CLASS_NAMES,
     };
 
 /// SPAWN THE ACTIVE HEALTH PROBERS for a freshly-built/-swapped snapshot — the relocated

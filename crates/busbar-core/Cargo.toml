@@ -47,6 +47,13 @@ busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-secret-ref = { path = "../secret-ref" }
+# THE MONEY ARITHMETIC, for ONE question and no other: does every class an enabled plane reports
+# have a rate row on the lanes it is served on? The unpriced-class boot refusal is a question about
+# a config, so it is asked where configs are validated; the answer is about prices, so the rate table
+# and the rule that reads it stay in the crate where price knowledge lives, and core calls across
+# rather than deriving a second table of its own. Nothing else in core prices anything: the card the
+# runtime bills against is still built at the composition root, not here.
+busbar-unit-cost = { path = "../busbar-unit-cost" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 axum = { workspace = true }

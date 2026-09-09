@@ -49,6 +49,10 @@ busbar-api = { path = "../api" }
 # leg and socket-capable tokio into a pure kind's closure. Every module that moved is re-exported
 # from this crate under its old name.
 busbar-a2a-codec = { path = "../busbar-a2a-codec" }
+# THE PLANE'S OWN SELF-DESCRIPTION -- the source of this adapter's `meter_classes`, for the reason
+# spelled out in `busbar-llm/Cargo.toml`. No cycle: `busbar-plane-a2a` names `busbar-contract` +
+# `busbar-a2a-codec` and never this crate.
+busbar-plane-a2a = { path = "../busbar-plane-a2a" }
 # The plane's own runtime surface — the same workspace pins core takes, for the plane code that moved
 # here whole: the transports (tokio, reqwest, futures, tonic/tonic-types/prost + a2a-pb for the gRPC
 # binding, tower), the config codecs (serde, serde_yaml, indexmap), the trust crypto (sha2, hex,
