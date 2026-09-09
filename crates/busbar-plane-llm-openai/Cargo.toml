@@ -52,7 +52,7 @@ busbar-plane-llm = { path = "../busbar-plane-llm" }
 
 # NO `[dev-dependencies]`, AND THAT IS THE KIND'S RULE HOLDING UNDER ITS OWN TESTS.
 #
-# There WAS one: `busbar-llm-codec` with `test-support`, carried over from the plane's own test
+# There WAS one: the LLM codec crate, with `test-support`, carried over from the plane's own test
 # binary, which needs the codec's self-registering seam because a test process runs no composition
 # root. This crate does not: its battery asserts what it DECLARES — the ladder ascends, the rungs
 # name this dialect, the locators and the row point at the same places, the entry is a constant —
