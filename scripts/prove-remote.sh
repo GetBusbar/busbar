@@ -82,6 +82,11 @@ REF="$1"; FAMILIES="$2"; TESTS="$3"
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TERM_COLOR=always CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
+# A SERVER PORT OF ITS OWN. sccache's server is addressed by a TCP port that defaults to
+# 4226 for every process on the box; the four runner agents each hold one of their own, and
+# joining theirs would mean a neighbour's `sccache --stop-server` killing this proof
+# mid-compile — seen once, as `Connection reset by peer` inside rustc.
+export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4300}"
 export RUSTFLAGS="-D warnings"
 # EIGHT, not nproc. A box runs up to four proofs at once (it also carries four runner agents); a
 # cargo that takes all 32 cores makes every neighbour slower and itself no faster.

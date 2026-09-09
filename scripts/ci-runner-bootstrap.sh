@@ -65,8 +65,7 @@ if [ "${SCCACHE_BACKEND}" = "s3" ]; then
 SCCACHE_REGION=${SCCACHE_REGION}
 SCCACHE_S3_KEY_PREFIX=busbar"
 else
-  SCCACHE_ENV="SCCACHE_DIR=/var/cache/sccache
-SCCACHE_CACHE_SIZE=60G"
+  SCCACHE_ENV=""   # decided per agent in the loop below — see the comment there
 fi
 
 # ── Rust, pinned to rust-toolchain.toml's channel ───────────────────────────────────────────────
@@ -115,13 +114,41 @@ while [ "$i" -le "$AGENTS" ]; do
   cp -a /home/ubuntu/.rustup/. "$d/.rustup/" 2>/dev/null || true
   cp -a /home/ubuntu/.cargo/.  "$d/.cargo/"  2>/dev/null || true
   chown -R ubuntu:ubuntu "$d/.cargo" "$d/.rustup"
+  # SCCACHE IS PER-AGENT ON LOCAL DISK, AND THAT IS NOT AN OVERSIGHT.
+  #
+  # sccache is a client plus a long-lived SERVER, and the server is addressed by a TCP port that
+  # defaults to 4226 for every process on the box. Four agents therefore share one server by
+  # accident: `mozilla-actions/sccache-action` runs `sccache --start-server` in each of them, and
+  # between jobs a `--stop-server` from one agent kills the server two neighbours are mid-compile
+  # against. The symptom is not a cache miss, it is a BUILD FAILURE that reads like a flaky
+  # compiler:
+  #
+  #     sccache: error: failed to execute compile
+  #     sccache: caused by: Connection reset by peer (os error 104)
+  #     error: could not compile `busbar` (test "plane_transport_neutrality")
+  #
+  # So each agent gets its own server port AND its own cache directory — two servers sharing one
+  # on-disk LRU is the same class of bug one level down. The cost is that an entry is warmed four
+  # times instead of once, on a disk sized for it.
+  #
+  # This is exactly what `CI_RUNNER_SCCACHE=s3` fixes properly: an S3 backend has no local server
+  # contention and IS shared across the whole fleet. That is why the bucket and its IAM policy are
+  # provisioned either way.
+  if [ -n "$SCCACHE_ENV" ]; then
+    AGENT_SCCACHE="$SCCACHE_ENV"
+  else
+    install -d -o ubuntu -g ubuntu "$d/sccache"
+    AGENT_SCCACHE="SCCACHE_DIR=$d/sccache
+SCCACHE_CACHE_SIZE=20G"
+  fi
   cat > "$d/.env" <<ENVEOF
 PATH=$d/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 HOME=/home/ubuntu
 CARGO_HOME=$d/.cargo
 RUSTUP_HOME=$d/.rustup
 RUSTC_WRAPPER=sccache
-${SCCACHE_ENV}
+${AGENT_SCCACHE}
+SCCACHE_SERVER_PORT=$(( 4226 + i ))
 SCCACHE_IDLE_TIMEOUT=0
 CARGO_INCREMENTAL=0
 CARGO_BUILD_JOBS=${VCPU_PER_AGENT}
@@ -226,7 +253,8 @@ systemctl enable --now busbar-runner-nightly-stop.timer
 # in /var/log/busbar-runner-bootstrap.log instead of failing somebody's hand-back.
 su - ubuntu -c "git clone -q --depth 50 https://github.com/${ORG}/busbar.git /home/ubuntu/prewarm" || true
 su - ubuntu -c "cd /home/ubuntu/prewarm && \
-  RUSTC_WRAPPER=sccache $(printf '%s ' ${SCCACHE_ENV}) CARGO_INCREMENTAL=0 \
+  RUSTC_WRAPPER=sccache $(printf '%s ' ${SCCACHE_ENV:-SCCACHE_DIR=/var/cache/sccache}) \
+  SCCACHE_SERVER_PORT=4300 CARGO_INCREMENTAL=0 \
   cargo build --workspace --locked" || true
 
 touch /var/run/busbar-runner-ready

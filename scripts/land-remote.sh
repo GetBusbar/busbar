@@ -87,6 +87,11 @@ REF="$1"; shift
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TERM_COLOR=always CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
+# A SERVER PORT OF ITS OWN. sccache's server is addressed by a TCP port that defaults to
+# 4226 for every process on the box; the four runner agents each hold one of their own, and
+# joining theirs would mean a neighbour's `sccache --stop-server` killing this proof
+# mid-compile — seen once, as `Connection reset by peer` inside rustc.
+export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4300}"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
 # LAND_REMOTE_INNER is the loop-breaker: this copy of land.sh must run the engine, not delegate.
 export LAND_REMOTE_INNER=1
