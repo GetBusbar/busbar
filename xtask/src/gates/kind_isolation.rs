@@ -159,6 +159,9 @@ pub const ROW_REGISTRY: &str = "kind-isolation:registry";
 /// note in [`KindIsolationGate`].
 pub const ROW_SHAPE: &str = "kind-isolation:shape";
 pub const ROW_TESTKIT: &str = "kind-isolation:testkit";
+/// NO CRATE IMPLEMENTS ANOTHER KIND'S ENTRY FACE. Per-push, because a wire that implements `Plane`
+/// is a wire that IS a plane at the type level, whatever its manifest says.
+pub const ROW_FACES: &str = "kind-isolation:faces";
 /// THE LEGACY DRAIN'S EXPIRY. Ship-only: a `[[transitional]]` row exists because a 1.5.x crate is
 /// retiring, and the tag is where "it retired" is checked.
 pub const ROW_DRAIN: &str = "kind-isolation:legacy-drain";
@@ -640,6 +643,30 @@ fn kind_skeleton(kind: &str) -> BTreeSet<String> {
     want
 }
 
+/// THE KINDS WHOSE ENTRY TRAIT IS A FACE A PLUGIN IMPLEMENTS.
+///
+/// `entry_trait` turns a kind word into its trait — `plane` into `Plane`, `transport` into
+/// `Transport` — and this is the set that has one. It is deliberately not every kind in the table:
+/// `Api`, `Caps`, `Grammar` and `Timing` are not faces anything implements, and reading a crate's
+/// `impl Caps for …` as a kind claim would report a type name rather than a kind.
+///
+/// The `:faces` rule reads it in the direction `:shape` never did. `:shape` asks "does this crate
+/// implement ITS OWN kind's trait exactly once", so a red team's `impl Plane for Wire` inside a
+/// transport, and `impl Transport for P` inside a plane, produced a byte-identical row in both
+/// directions: the rule never asked whether a crate implements SOMEBODY ELSE'S face.
+const ENTRY_TRAIT_KINDS: &[&str] = &[
+    "plane",
+    "dialect",
+    "transport",
+    "unit",
+    "control",
+    "store",
+    "auth",
+    "secret",
+    "hooks",
+    "export",
+];
+
 /// The kinds that declare CLAIMS (`PLUGIN-TREE.md` §3): what the crate answers for.
 /// A CONTROL surface and an AUTH plugin are here for the reason the planes are: both declare what
 /// they answer for as DATA — the same claim-table shape — rather than deciding it inside a handler.
@@ -805,6 +832,24 @@ struct DepQuestion {
     question: String,
 }
 
+/// One `[[face]]` row: a crate that implements ANOTHER kind's entry face today, at the exact number
+/// of implementations, with the sentence that says why it is still here.
+///
+/// Four exist. `busbar-plane-admin` implements `Plane` and is kind `control` — the R7 rename is
+/// what ends that; `busbar-a2a` implements `Transport` and is a retiring 1.5.x crate; the loader
+/// implements `Store` because bridging the ABI is what a loader does; and the composition root
+/// implements `Store` twice for its own assembly. Every one is DEBT with a number on it, and the
+/// ship twin owes zero of them.
+#[derive(Debug, Clone)]
+struct FaceDebt {
+    krate: String,
+    face: String,
+    count: i64,
+    cite: String,
+    why: String,
+    drain: String,
+}
+
 /// [`REGISTRY_FILE`], read.
 #[derive(Debug, Default)]
 struct KindRegistry {
@@ -815,6 +860,8 @@ struct KindRegistry {
     /// unruled one.
     dep_edges: Vec<DepEdge>,
     dep_questions: Vec<DepQuestion>,
+    /// The `:faces` row's table — one row per crate that implements another kind's entry face.
+    faces: Vec<FaceDebt>,
     /// The `:matrix` row's three tables. They live in this reader rather than in a second one
     /// because there is ONE registry file and a file read twice is a file two rules can disagree
     /// about.
@@ -1083,6 +1130,33 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 drain: v[7].clone(),
             });
         }
+        "face" => {
+            let Some(v) = take_row(
+                fields,
+                &["crate", "face", "count", "cite", "why", "drain"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            let Ok(count) = v[2].parse::<i64>() else {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[face]] count = \"{}\"` is not a number. A \
+                     ratchet that cannot be compared to a measurement is not a ratchet",
+                    v[2]
+                ));
+                return;
+            };
+            reg.faces.push(FaceDebt {
+                krate: v[0].clone(),
+                face: v[1].clone(),
+                count,
+                cite: v[3].clone(),
+                why: v[4].clone(),
+                drain: v[5].clone(),
+            });
+        }
         "question" => {
             let Some(v) = take_row(
                 fields,
@@ -1111,7 +1185,8 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
-             `[[question]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else"
+             `[[question]]`, `[[face]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and \
+             nothing else"
         )),
     }
 }
@@ -1145,8 +1220,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             fields.clear();
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
-                 `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[edge]]`, \
-                 `[[cell]]` and `[[disagreement]]` rows and nothing else",
+                 `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
+                 `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else",
                 i + 1
             ));
             continue;
@@ -3097,7 +3172,15 @@ fn impl_trait_on(code: &str) -> Option<String> {
     };
     let (head, _) = rest.split_once(" for ")?;
     let head = head.trim();
-    if head.is_empty() || head.contains('<') || head.contains(':') || head.contains('&') {
+    if head.is_empty() || head.contains('<') || head.contains('&') {
+        return None;
+    }
+    // THE QUALIFIED SPELLING IS THE SAME IMPLEMENTATION. `impl busbar_contract::Plane for Wire`
+    // begins with a lowercase crate segment, so a head-first check answered `None` and the trait
+    // was implemented in plain sight — which is a bypass of any rule written on this function, in
+    // one keystroke. The trait is the LAST path segment; the qualification says where it lives.
+    let head = head.rsplit("::").next().unwrap_or(head).trim();
+    if head.is_empty() || head.contains(':') {
         return None;
     }
     head.chars()
@@ -3267,6 +3350,122 @@ fn rule_shape(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
 // ------------------------------------------------------------------------------------------------
 // rule 6 — the shared battery (ship criterion)
 // ------------------------------------------------------------------------------------------------
+
+/// NO CRATE IMPLEMENTS ANOTHER KIND'S ENTRY FACE.
+///
+/// A crate's KIND is a claim about what it is, and a trait implementation is the same claim made to
+/// the compiler. When the two disagree, the compiler's is the one that runs: `impl Plane for Wire`
+/// inside `busbar-transport-sse` is a plane, registered as a plane, reached as a plane, whatever
+/// the manifest and the name say. `:shape` counts a crate's implementations of its OWN kind's
+/// trait, so both directions of that swap left its row byte-identical — the rule never asked the
+/// question this one asks.
+///
+/// A DIALECT MAY IMPLEMENT ITS PLANE'S FACE, and nothing else may. That is what a dialect IS: the
+/// plane's other half, written against the plane's own face; the split is about where the code
+/// lives, not about which trait it satisfies.
+fn rule_faces(crates: &[CrateInfo], idx: &SourceIndex, reg: &KindRegistry, ship: bool) -> Row {
+    let faces: BTreeMap<String, &'static str> = ENTRY_TRAIT_KINDS
+        .iter()
+        .filter_map(|k| KINDS.iter().find(|d| d.kind == *k).map(|d| d.kind))
+        .map(|k| (entry_trait(k), k))
+        .collect();
+    let mut offenders: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+
+    for c in crates {
+        let Some(mine) = c.kind else { continue };
+        let Some(impls) = idx.impls.get(&c.dir) else {
+            continue;
+        };
+        checked += 1;
+        for (trait_name, n) in impls {
+            let Some(owner) = faces.get(trait_name) else {
+                continue;
+            };
+            if *owner == mine {
+                continue;
+            }
+            // The dialect and its plane are one face by design.
+            if mine == "dialect" && *owner == "plane" {
+                continue;
+            }
+            seen.insert((c.name.clone(), trait_name.clone()));
+            // THE SHIP TWIN OWES ZERO. Per-push the four that exist are held at their exact count
+            // by a `[[face]]` row; at the tag there is no such thing as a reviewed one.
+            let listed = (!ship)
+                .then(|| {
+                    reg.faces
+                        .iter()
+                        .find(|f| f.krate == c.name && f.face == *trait_name)
+                })
+                .flatten();
+            match listed {
+                Some(f) if f.count == *n as i64 => {}
+                Some(f) => offenders.push(format!(
+                    "face-ratchet\t{}\t{} implements `{trait_name}` {n} time(s) and its `[[face]]` \
+                     row says {}. The row is TODAY'S MEASUREMENT, exact in both directions: above \
+                     it is the landing that grew the coupling, below it is stale slack. What the \
+                     number is made of: {} — and the line that deletes it: {}",
+                    c.dir, c.name, f.count, f.why, f.drain
+                )),
+                None => offenders.push(format!(
+                    "foreign-entry\t{}\t{} is kind `{mine}` and implements `{trait_name}` {n} \
+                     time(s) in shipped source — the entry face of kind `{owner}`. A trait \
+                     implementation is a claim made to the COMPILER, and when it disagrees with \
+                     the crate's kind the compiler's claim is the one that runs; {MAKE_A_NEW_KIND}",
+                    c.dir, c.name
+                )),
+            }
+        }
+    }
+
+    // A ROW WHOSE IMPLEMENTATION IS GONE IS A DEAD ALLOWANCE, on the same terms every other
+    // ratchet here lives under: the landing that deletes the impl is the landing that deletes the
+    // row, and the gate is red until it does.
+    if !ship {
+        for f in &reg.faces {
+            if !seen.contains(&(f.krate.clone(), f.face.clone())) {
+                offenders.push(format!(
+                    "dead-face\t{REGISTRY_FILE}\t`[[face]] {} / {}` covers nothing: that crate \
+                     implements that face nowhere in shipped source any more ({}). Strike the row.",
+                    f.krate, f.face, f.cite
+                ));
+            }
+        }
+    }
+
+    if checked == 0 {
+        return Row::fail(
+            ROW_FACES,
+            "no crate reached the entry-face rule",
+            "0 crate(s) were indexed, and zero crates implement zero foreign faces.".to_string(),
+        );
+    }
+    offenders.sort();
+    if offenders.is_empty() {
+        return Row::pass(
+            ROW_FACES,
+            "no crate implements another kind's entry face",
+            format!(
+                "{checked} crate(s) indexed against {} entry face(s): {}; {} reviewed [[face]] \
+                 row(s)",
+                faces.len(),
+                faces.keys().cloned().collect::<Vec<_>>().join(", "),
+                reg.faces.len()
+            ),
+        );
+    }
+    Row::fail(
+        ROW_FACES,
+        "a crate implements another kind's entry face",
+        format!(
+            "{} finding(s) over {checked} crate(s): {}",
+            offenders.len(),
+            offenders.join(" | ")
+        ),
+    )
+}
 
 fn rule_testkit(crates: &[CrateInfo], idx: &SourceIndex) -> Row {
     let batteries: Vec<&str> = crates
@@ -3980,6 +4179,7 @@ impl Gate for KindIsolationGate {
             ROW_DEPS.to_string(),
             ROW_TEST_DEPS.to_string(),
             ROW_INPUTS.to_string(),
+            ROW_FACES.to_string(),
             ROW_VOCAB.to_string(),
             ROW_REGISTRY.to_string(),
             ROW_STEPS.to_string(),
@@ -4063,19 +4263,29 @@ impl Gate for KindIsolationGate {
             truths::rule_truths(cx, &kind_names(), &crates),
             matrix::rule_matrix(cx, &crates, &reg, self.ship),
         ];
-        if self.ship {
-            rows.push(rule_drain(&crates, &reg));
-            rows.push(rule_control(cx, &crates));
-            match index_sources(cx) {
-                Ok(idx) => {
+        // THE SOURCE INDEX IS BUILT FOR BOTH REGISTRATIONS NOW. It was the ship twin's private
+        // input, because the two rows that read it are ship criteria — but `:faces` is not a ship
+        // criterion. A wire that implements `Plane` is a plane at the type level on the commit that
+        // lands it, and a rule that only says so at release time is a rule that says so too late.
+        match index_sources(cx) {
+            Ok(idx) => {
+                rows.push(rule_faces(&crates, &idx, &reg, self.ship));
+                if self.ship {
                     rows.push(rule_shape(&crates, &idx));
                     rows.push(rule_testkit(&crates, &idx));
                 }
-                Err(e) => {
-                    let why = format!(
-                        "{e} — the source index is the ship rows' own input, and an index that did \
-                         not read is not an index that found nothing wrong."
-                    );
+            }
+            Err(e) => {
+                let why = format!(
+                    "{e} — the source index is these rows' own input, and an index that did not \
+                     read is not an index that found nothing wrong."
+                );
+                rows.push(Row::fail(
+                    ROW_FACES,
+                    "the source index did not run",
+                    why.clone(),
+                ));
+                if self.ship {
                     rows.push(Row::fail(
                         ROW_SHAPE,
                         "the source index did not run",
@@ -4084,6 +4294,10 @@ impl Gate for KindIsolationGate {
                     rows.push(Row::fail(ROW_TESTKIT, "the source index did not run", why));
                 }
             }
+        }
+        if self.ship {
+            rows.push(rule_drain(&crates, &reg));
+            rows.push(rule_control(cx, &crates));
         }
         Verdict::of(rows)
     }
@@ -4662,6 +4876,92 @@ impl Gate for KindIsolationGate {
                     "transport -> plane",
                     "dev-dependencies",
                 ],
+            ));
+        }
+
+        // ── THE ENTRY FACES ──────────────────────────────────────────────────────────────────────
+        //
+        // `:shape` counts a crate's implementations of ITS OWN kind's face, so a red team's
+        // `impl Plane for Wire` in a transport and `impl Transport for P` in a plane produced a
+        // BYTE-IDENTICAL row in both directions. The rule never asked whether a crate implements
+        // somebody else's face. `:faces` is that question, in both directions and in both
+        // spellings.
+
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-sse/src/planted_plane_impl.rs",
+            "pub struct Wire;\nimpl Plane for Wire {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a wire implementing a plane face",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-transport-sse", "Plane"],
+        ));
+
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_wire_impl.rs",
+            "pub struct P;\nimpl Transport for P {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plane implementing a wire face",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-plane-llm", "Transport"],
+        ));
+
+        // THE QUALIFIED SPELLING IS THE SAME IMPLEMENTATION, and without this case the rule above
+        // is bypassed in one keystroke: `impl_trait_on` read the head of the line and refused
+        // anything that did not start with a capital, so `impl busbar_contract::Plane for Wire`
+        // answered `None` and the trait was implemented in plain sight.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_qualified.rs",
+            "pub struct Wire;\nimpl busbar_contract::Plane for Wire {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a wire implementing a plane face in the QUALIFIED spelling",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-transport-ws", "Plane"],
+        ));
+
+        // THE RATCHET, BOTH WAYS. The four faces that exist today are held at their exact count:
+        // a SECOND one in the same crate is a landing that grew the coupling.
+        if !self.ship {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-plane-admin/src/planted_second_plane.rs",
+                "pub struct Second;\nimpl Plane for Second {}\n",
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a second implementation of a reviewed foreign face is a landing that grew it",
+                &[ROW_FACES],
+                ov,
+                &["face-ratchet", "busbar-plane-admin", "Plane"],
+            ));
+
+            // AND A ROW WHOSE IMPLEMENTATION IS GONE IS A DEAD ALLOWANCE.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a reviewed face row that covers no implementation any more is struck",
+                &[ROW_FACES],
+                registry_with(
+                    cx,
+                    "crate = \"busbar-a2a\"\nface = \"Transport\"",
+                    "crate = \"busbar-a2a-planted\"\nface = \"Transport\"",
+                ),
+                &["dead-face", "busbar-a2a-planted", "Strike the row"],
             ));
         }
 

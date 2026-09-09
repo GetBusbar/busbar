@@ -5377,3 +5377,56 @@ from     = "busbar-transport-tls"
 to       = "busbar-caps"
 half     = "test"
 question = "OWNER RULING WANTED. busbar-transport-tls -> busbar-caps matches no clause the audit of all 220 workspace-internal edges could find, in either direction. Is it granted? If it is, name the clause and this row becomes `allowed`; if it is not, name the landing that deletes it."
+
+# ------------------------------------------------------------------------------------------------
+# [[face]] — A CRATE THAT IMPLEMENTS ANOTHER KIND'S ENTRY FACE, AT ITS EXACT COUNT
+# ------------------------------------------------------------------------------------------------
+#
+# A crate's KIND is a claim about what it is; a trait implementation is the same claim made to the
+# COMPILER. When the two disagree the compiler's is the one that runs — `impl Plane for Wire` inside
+# a transport is a plane, registered as a plane, reached as a plane, whatever the manifest says.
+# `kind-isolation:shape` counts a crate's implementations of its OWN kind's face, so a red team's
+# `impl Plane for Wire` in a transport and `impl Transport for P` in a plane left that row
+# byte-identical in both directions: it never asked whether a crate implements SOMEBODY ELSE'S face.
+#
+# Four crates do today. Each row is the exact number, exact in both directions, with the line that
+# deletes it. The SHIP twin owes zero: at the tag there is no such thing as a reviewed one.
+#
+#   crate — the package that implements it.
+#   face  — the entry trait of a kind that is not its own.
+#   count — TODAY'S MEASURED NUMBER of implementations in shipped source, exactly.
+#   cite  — the clause, or the words that say none does.
+#   why   — what the number is made of.
+#   drain — the line that deletes it.
+
+[[face]]
+crate = "busbar-plane-admin"
+face = "Plane"
+count = "1"
+cite = "none. ARCHITECTURE.md 1.4 makes `control` a kind of its own, and a control surface is not a metered plane; this crate is registered `control` by the [[registered]] row above and still carries the plane face."
+why = "the admin surface predates the control kind: it was written as a plane, it is registered as control, and the trait it implements has not moved yet. One implementation, in shipped source."
+drain = "R7: rename busbar-plane-admin to busbar-control-admin and move it off the Plane face onto the control face. kind-isolation:control-path is the ship criterion that refuses the tag until it lands."
+
+[[face]]
+crate = "busbar-a2a"
+face = "Transport"
+count = "1"
+cite = "none. ARCHITECTURE.md 1.1 — a legacy 1.5.x crate is not a transport; the retirement is what ends this."
+why = "the retiring a2a engine carries its own transport implementation, from before the plane/transport split existed. One implementation, in shipped source."
+drain = "finish the a2a drain and delete busbar-a2a; the row goes with the crate."
+
+[[face]]
+crate = "busbar-plugin-loader"
+face = "Store"
+count = "1"
+cite = "ARCHITECTURE.md 1.4 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
+why = "the loader implements the store face to hand a dynamically loaded store plugin to the kernel. One implementation, in shipped source."
+drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
+
+[[face]]
+crate = "busbar"
+face = "Store"
+count = "2"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from; assembling a store is not implementing one."
+why = "the root implements the store face twice in its own assembly rather than composing a store plugin that does. Two implementations, in shipped source."
+drain = "move both implementations into a store-kind crate and have the root REGISTER it. The root names every kind by design and implements none of them."
