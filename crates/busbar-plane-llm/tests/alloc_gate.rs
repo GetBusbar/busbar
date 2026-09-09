@@ -19,7 +19,7 @@ use busbar_contract::bounded::Labels;
 use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Ingress, Plane};
 use busbar_contract::wire::FrameCursor;
-use busbar_plane_llm::{LlmPlane, Upstream};
+use busbar_plane_llm::Upstream;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -93,7 +93,7 @@ const PASSTHROUGH_ALLOCS: u64 = 5;
 
 #[test]
 fn same_dialect_relay_does_not_reparse_the_request() {
-    let plane = LlmPlane::new(UPSTREAMS);
+    let plane = harness::plane(UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("openai"), &[]);

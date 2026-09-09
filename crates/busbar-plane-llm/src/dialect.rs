@@ -77,22 +77,11 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
     },
-    Dialect {
-        name: "openai",
-        model_location: MODEL,
-        // This dialect accepts a newer spelling as well, and both are declared. The reasoning
-        // models of this vendor refuse the older key outright, so a client of one of them sends
-        // only the newer; naming just the older was a hold sized off a key that never arrived.
-        max_response_pointers: &["/max_tokens", "/max_completion_tokens"],
-        input_pointer: "/messages",
-        tokens_in_pointer: "/usage/prompt_tokens",
-        tokens_out_pointer: "/usage/completion_tokens",
-        cache_read_pointer: Some("/usage/prompt_tokens_details/cached_tokens"),
-        // This dialect reports no separate written-to-cache quantity.
-        cache_write_pointer: None,
-        scheme_alt: "bearer",
-        egress_scheme: "bearer",
-    },
+    // THE `openai` ROW IS NOT HERE, and its absence is the split. It lives in
+    // `busbar-plane-llm-openai`, which registers it into this plane by claim; this crate no longer
+    // spells that vendor's name anywhere, and `tests/neutrality.rs` is what says so on the source
+    // rather than in this comment. The five rows below are the dialects that have not been carved
+    // out yet, each of which leaves on its own line.
     Dialect {
         name: "gemini",
         // The model is in the request target, not the body.

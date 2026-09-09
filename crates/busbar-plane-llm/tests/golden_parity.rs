@@ -26,7 +26,7 @@ use busbar_contract::bounded::Labels;
 use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Ingress, Plane};
 use busbar_contract::wire::FrameCursor;
-use busbar_plane_llm::{LlmPlane, Upstream};
+use busbar_plane_llm::Upstream;
 
 /// The model the lane rewrites every outbound request to name.
 const LANE_MODEL: &str = "gpt-4o-mini";
@@ -97,7 +97,7 @@ fn golden_dir() -> std::path::PathBuf {
 
 /// One request, taken in through the plane's decode step and back out through its egress step.
 fn translate_request(ingress: &str, egress: &str, body: &str) -> Vec<u8> {
-    let plane = LlmPlane::new(UPSTREAMS);
+    let plane = harness::plane(UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(ingress), &[]);
@@ -464,7 +464,7 @@ fn comparable(ingress: &str, frozen_bytes: &[u8], produced: &[u8]) -> (String, S
 /// One answer, taken in through the plane's response decoder and back out through its encoder.
 fn translate_response(egress: &str, ingress: &str, body: &str) -> Vec<u8> {
     use busbar_contract::plane::Progress;
-    let plane = LlmPlane::new(UPSTREAMS);
+    let plane = harness::plane(UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     // The elapsed figure the frozen output stamps, published the way a real transport publishes
