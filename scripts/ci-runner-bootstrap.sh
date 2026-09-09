@@ -33,7 +33,7 @@ apt-get update -qq
 # schema/dispatcher lints, gdb for the crash-artefact step, docker for the postgres/valkey service
 # containers, the usual native build chain for ring/openssl).
 apt-get install -y -qq build-essential pkg-config libssl-dev git curl jq unzip zstd cmake clang \
-  gdb python3 python3-pip python3-yaml docker.io ca-certificates rsync
+  gdb python3 python3-pip python3-venv python3-yaml docker.io ca-certificates rsync
 
 systemctl enable --now docker
 usermod -aG docker ubuntu
@@ -153,13 +153,25 @@ chmod 0755 /usr/local/bin/busbar-runner-register
 # under _work are exactly what this catches.
 cat > /opt/job-started-hook.sh <<'HOOKEOF'
 #!/usr/bin/env bash
+# THE RUNNER INVOKES THIS AS `bash -e <hook>`, NOT via its shebang. That is the whole reason this
+# file is written the way it is: under -e the first command with a non-zero status ends the hook,
+# the runner reports `Set up runner` as FAILED, and the job dies before checkout with no error
+# anywhere that names a cleanup step. It happened — `find ... -exec rm -rf {} +` returning 1 on a
+# workspace another job had already emptied took a whole test shard down. So every line here is
+# forgiven explicitly and the file ends in an unconditional `exit 0`: a workspace cleaner must
+# never be able to fail a job it was only meant to tidy up for.
 set -uo pipefail
 if [ -n "${RUNNER_WORKSPACE:-}" ] && [ -d "${RUNNER_WORKSPACE}" ]; then
-  find "${RUNNER_WORKSPACE}" -maxdepth 1 -mindepth 1 -name '_temp*' -exec rm -rf {} + 2>/dev/null
+  find "${RUNNER_WORKSPACE}" -maxdepth 1 -mindepth 1 -name '_temp*' -exec rm -rf {} + 2>/dev/null || true
 fi
-docker container prune -f  >/dev/null 2>&1
-docker volume    prune -f  >/dev/null 2>&1
-df -h / | tail -1
+# `until=1h` because the neighbours matter: three other agents on this box may be mid-job, and an
+# unfiltered prune is a cleanup step reaching into somebody else's run. An hour is longer than any
+# job's container lives and shorter than the leak this is here to stop.
+docker container prune -f --filter until=1h >/dev/null 2>&1 || true
+docker network   prune -f --filter until=1h >/dev/null 2>&1 || true
+docker volume    prune -f                   >/dev/null 2>&1 || true
+df -h / | tail -1 || true
+exit 0
 HOOKEOF
 chmod 0755 /opt/job-started-hook.sh
 for d in /opt/runner-*; do
