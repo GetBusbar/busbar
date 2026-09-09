@@ -2311,7 +2311,7 @@ async fn validate_config_pins_the_scan_to_the_running_plugins_dir() {
 listen: "0.0.0.0:8080"
 providers:
   anthropic:
-    api_key: {{ env: ANTHROPIC_API_KEY }}
+    api_key: none
 models:
   claude:
     provider: anthropic
@@ -2356,7 +2356,7 @@ fn minimal_validate_fixture() -> (
     std::collections::HashMap<String, crate::config::ProviderDef>,
 ) {
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(
-        "listen: \"0.0.0.0:8080\"\nproviders:\n  anthropic:\n    api_key: { env: ANTHROPIC_API_KEY }\nmodels:\n  claude:\n    provider: anthropic\n",
+        "listen: \"0.0.0.0:8080\"\nproviders:\n  anthropic:\n    api_key: none\nmodels:\n  claude:\n    provider: anthropic\n",
     )
     .expect("the fixture parses through the document entry point");
     let def: crate::config::ProviderDef = serde_yaml::from_str(
@@ -2390,7 +2390,7 @@ async fn validate_config_layers_the_persisted_overlay_under_the_submitted_docume
 
     let (_, defs) = minimal_validate_fixture();
     let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(
-        "listen: \"0.0.0.0:8080\"\nproviders:\n  anthropic:\n    api_key: { env: ANTHROPIC_API_KEY }\nmodels:\n  claude:\n    provider: anthropic\n  claude2:\n    provider: anthropic\npools:\n  main:\n    members: [claude, claude2]\n    hooks: [nowhere]\n",
+        "listen: \"0.0.0.0:8080\"\nproviders:\n  anthropic:\n    api_key: none\nmodels:\n  claude:\n    provider: anthropic\n  claude2:\n    provider: anthropic\npools:\n  main:\n    members: [claude, claude2]\n    hooks: [nowhere]\n",
     )
     .expect("the pooled fixture parses");
 
