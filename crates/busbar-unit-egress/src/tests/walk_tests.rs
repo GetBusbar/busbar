@@ -184,6 +184,82 @@ fn the_plane_reads_every_response_frame_with_the_units_state_in_hand() {
     );
 }
 
+/// MONEY. An ordinary answer to a unit whose answer is ONE document ends CLEAN, and nothing is
+/// recorded against the member but the success it earned.
+///
+/// This is the a2a shape, and before the state seam it cost real money on every call. A
+/// `message/send` is answered with one task snapshot and nothing further; the plane could not tell
+/// that snapshot from the first event of a `message/stream` run — the same bytes — so it answered
+/// `Frame`, this loop read no further frame, the answer never reached its ending, and the attempt
+/// posted a COMPENSATING TRANSIENT against a breaker cell whose member had answered perfectly
+/// well. Every ordinary answer, on every hop, walking a healthy destination towards a trip it had
+/// no cause for.
+///
+/// The claim is the breaker's ledger and the finish the answer carries, not the accounting that
+/// sits beside them: a unit ends with one line, and this one ends completed.
+#[test]
+fn a_unary_answer_ends_clean_with_no_compensating_transient() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    *node.plane.unary.lock().unwrap() = true;
+    // ONE frame, and it is not the streamed shape's terminator. This is the whole answer.
+    node.transport.script(
+        "a",
+        Script::Frames(vec![frame(Some(StatusClass::Success), "head")]),
+    );
+
+    match node.route("primary") {
+        RouteOutcome::Delivered(delivered) => {
+            assert_eq!(delivered.frames, 1, "the whole answer was one frame");
+            assert_eq!(
+                delivered.finish,
+                Some(busbar_contract::FinishClass::Complete),
+                "and it ends the unit as a completed one"
+            );
+        }
+        other => panic!("expected the answer to be delivered, got {other:?}"),
+    }
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Success],
+        "nothing compensating is posted against a member that answered"
+    );
+}
+
+/// The other side of it: a run that really was cut short is still read as cut short.
+///
+/// The seam is not an excuse to stop noticing truncation. A unit whose answer is a RUN of events
+/// ends on the event that says it is the last one, and a stream that dies before that one has not
+/// ended — the answer carries the partial finish it earned, and the compensating record against
+/// the member is the one this loop has always made for a body that did not arrive.
+#[test]
+fn a_truncated_streamed_run_is_still_read_as_cut_short() {
+    let mut node = two_lane_pool();
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    *node.plane.unary.lock().unwrap() = false;
+    node.transport.script(
+        "a",
+        Script::Truncated(frame(Some(StatusClass::Success), "head")),
+    );
+
+    match node.route("primary") {
+        RouteOutcome::Delivered(delivered) => {
+            assert_eq!(delivered.frames, 1);
+            assert_eq!(
+                delivered.finish,
+                Some(busbar_contract::FinishClass::Partial),
+                "a run that never reached its last event did not complete"
+            );
+        }
+        other => panic!("expected the truncated run to be delivered, got {other:?}"),
+    }
+    assert_eq!(
+        node.breaker.outcomes("primary", DestinationId::new(0)),
+        vec![Outcome::Success, Outcome::Transient { retry_after: None }],
+        "and the transfer that failed is still recorded against the member"
+    );
+}
+
 #[test]
 fn a_whole_answer_keeps_the_request_budget_unit() {
     let mut node = two_lane_pool();

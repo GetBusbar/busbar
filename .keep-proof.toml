@@ -1,0 +1,28 @@
+# WHAT THIS HAND-BACK CAN MOVE, DECLARED BY THE HAND-BACK.
+#
+# `.github/workflows/keep-proof.yml` reads exactly two keys out of this file and nothing else:
+#
+#   families  the oracle id-filter this branch is recorded and replayed against. It NARROWS the
+#             shadow oracle and nothing else — absent or empty, every family is recorded. It cannot
+#             narrow the test shards or the gates, on purpose: a gate a hand-back gets to scope is a
+#             gate the hand-back can turn off.
+#   tests     the packages this branch names, for a reader. Written down so "what did this prove"
+#             is answerable from the branch rather than from somebody's memory of the brief.
+#
+# THIS BRANCH: the H1 terminal seam. `Plane::decode_response` is handed frames, a destination and a
+# context and never the unit, so the a2a plane could not tell a `message/send` answer from the
+# first event of a `message/stream` run — byte-identical documents — and answered `Frame` to both.
+# Every ordinary a2a answer therefore never reached its ending, and the egress attempt read a
+# finished exchange as a body that never arrived and posted a compensating transient against a
+# member that had answered perfectly well.
+#
+# The fix is a seam, not a cleverer predicate: the contract gains one defaulted state opener
+# (`open_unit_state`), the egress attempt opens one state per hop from the unit it is about to
+# send, and the a2a plane reads `row.streaming` back out of it. Three commits, red-first.
+#
+# The families are the ones a termination decision on the egress path can reach: `a2a` (whose
+# recorded rows are SKIP on this tree), `billing` and `route.failover` (which must be
+# byte-identical — nothing here changes what is metered or which member is picked) and
+# `neutrality`.
+families = '^(a2a|billing|route\.failover|neutrality)([|.]|$)'
+tests = ["busbar-plane-a2a", "busbar-unit-egress", "busbar-unit-breaker", "busbar-contract", "busbar"]
