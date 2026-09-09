@@ -14,9 +14,10 @@
 //!
 //! So there is ONE append ([`Chain::append`]/[`seal`]), ONE digest ([`digest`]) and ONE verifier
 //! ([`verify_chain`]/[`verify_window`]), and they live here. A plane supplies the RECORD; it never
-//! supplies the mechanism. [`crate::trust`] is the precedent this copies rather than a new idea: it
-//! owns the trust lifecycle while a plane supplies only the artifact, and `a2a/pin.rs` says so in
-//! its own header — *"A2A supplies an artifact; it does not supply a second state machine."*
+//! supplies the mechanism. [`busbar_substrate::trust`] is the precedent this copies rather than a
+//! new idea: it owns the trust lifecycle while a plane supplies only the artifact, and
+//! `a2a/pin.rs` says so in its own header — *"A2A supplies an artifact; it does not supply a second
+//! state machine."*
 //!
 //! ## ONE MECHANISM IS NOT ONE STREAM, and conflating them would be a different defect
 //!
