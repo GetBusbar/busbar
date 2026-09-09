@@ -19,8 +19,8 @@
 //! So both are proved here, against the thing they have to agree with: the field-for-field
 //! declaration the retired view carried, serialized by the serializer that carried it.
 
-use super::super::crossed::{json_optional_float, render_plugins};
-use busbar_substrate_values::facts::PluginFacts;
+use super::super::crossed::{json_optional_float, render_plugins, render_pools_detail};
+use busbar_substrate_values::facts::{LaneHealth, PluginFacts};
 
 /// One `f64`, rendered by this file's renderer and by the serializer it replaced, must be the same
 /// bytes.
@@ -272,6 +272,124 @@ fn the_plugin_row_renderer_writes_what_the_retired_view_serialized() {
         assert_eq!(
             ours, theirs,
             "the crossed catalog's renderer must write what the retired view serialized"
+        );
+    }
+}
+
+/// ONE POOL MEMBER'S LIVE STATUS, declared exactly as the retired view declared it — field for
+/// field, in its order, with the same two nullable readings and nothing skipped.
+///
+/// A mirror, for the reason [`RetiredPluginView`] is one, and here it closes a different gap: the
+/// composition-level cell beside this file serves a fixture whose lanes have taken no dispatch, so
+/// every reading in it is a zero and the latency is `null`. That pins the shape and says nothing
+/// about the one field on this surface that can carry a fraction. This does.
+#[derive(serde::Serialize)]
+struct RetiredPoolMemberStatusView<'a> {
+    model: &'a str,
+    weight: u32,
+    usable: bool,
+    cooldown_remaining_seconds: u64,
+    available_concurrency: usize,
+    inflight: i64,
+    latency_ms: Option<f64>,
+    ok: u64,
+    err: u64,
+    dead: bool,
+    trip_count: u64,
+    last_trip_at: Option<u64>,
+}
+
+/// One pool's detail row, as the retired view declared it.
+#[derive(serde::Serialize)]
+struct RetiredPoolDetailView<'a> {
+    name: &'a str,
+    members: Vec<RetiredPoolMemberStatusView<'a>>,
+}
+
+/// The page envelope every list read answers in, around the pool rows above.
+#[derive(serde::Serialize)]
+struct RetiredPoolPage<'a> {
+    items: Vec<RetiredPoolDetailView<'a>>,
+    next_cursor: Option<String>,
+}
+
+/// The pool-detail renderer writes what the retired view serialized, LATENCY INCLUDED.
+///
+/// The corpus is small on purpose: the float's own spelling is proved exhaustively above, and what
+/// is left for this to prove is that the renderer puts it in the right PLACE — that the field order,
+/// the two `null`s and the page around them are the retired view's. A pool with no members and a
+/// page with no pools are in it because a node really can answer either, and a renderer that got a
+/// separator wrong would be correct on every row and wrong on the page.
+#[test]
+fn the_pool_detail_renderer_writes_what_the_retired_view_serialized() {
+    let member = |model: &str, latency: Option<f64>, last_trip: Option<u64>| LaneHealth {
+        model: model.to_string(),
+        weight: 7,
+        usable: false,
+        cooldown_remaining_seconds: 42,
+        available_concurrency: 3,
+        inflight: -1,
+        latency_ms: latency,
+        ok: 1_234,
+        err: 5,
+        dead: true,
+        trip_count: 9,
+        last_trip_at: last_trip,
+    };
+    let cases: Vec<Vec<(String, Vec<LaneHealth>)>> = vec![
+        Vec::new(),
+        vec![("empty-pool".to_string(), Vec::new())],
+        vec![(
+            // A quote, a backslash and a character outside the BMP: a pool name is the operator's
+            // string, and the escape set is JSON's rather than this file's.
+            "a\"pool\\\u{1F512}".to_string(),
+            vec![
+                member("never-dispatched", None, None),
+                member("whole", Some(12.0), Some(1)),
+                member("fractional", Some(0.1 + 0.2), Some(u64::MAX)),
+                member("tiny", Some(f64::MIN_POSITIVE), Some(0)),
+                member("huge", Some(1e100), None),
+                member("not-a-number", Some(f64::NAN), None),
+            ],
+        )],
+        vec![
+            ("first".to_string(), vec![member("m", Some(1.5), None)]),
+            ("second".to_string(), vec![member("m", Some(2.5), Some(7))]),
+        ],
+    ];
+
+    for pools in &cases {
+        let ours = render_pools_detail(pools);
+        let theirs = serde_json::to_string(&RetiredPoolPage {
+            items: pools
+                .iter()
+                .map(|(name, members)| RetiredPoolDetailView {
+                    name,
+                    members: members
+                        .iter()
+                        .map(|m| RetiredPoolMemberStatusView {
+                            model: &m.model,
+                            weight: m.weight,
+                            usable: m.usable,
+                            cooldown_remaining_seconds: m.cooldown_remaining_seconds,
+                            available_concurrency: m.available_concurrency,
+                            inflight: m.inflight,
+                            latency_ms: m.latency_ms,
+                            ok: m.ok,
+                            err: m.err,
+                            dead: m.dead,
+                            trip_count: m.trip_count,
+                            last_trip_at: m.last_trip_at,
+                        })
+                        .collect(),
+                })
+                .collect(),
+            next_cursor: None,
+        })
+        .expect("the retired page serializes");
+        assert_eq!(
+            ours, theirs,
+            "the crossed topology-with-health renderer must write what the retired view serialized"
         );
     }
 }

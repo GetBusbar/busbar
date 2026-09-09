@@ -1834,7 +1834,7 @@ impl AdminService {
     /// the reactor — see [`Self::plugin_catalog`] — so the `spawn_blocking` hop that used to be here
     /// is gone; what is NOT gone is the reason the gate exists.
     ///
-    /// Serialized through [`CATALOG_SCAN_GATE`] (see its doc comment for why, and for the
+    /// Serialized through this directory's [`ScanGate`] (see its doc comment for why, and for the
     /// acknowledged hit-path throughput trade-off): N callers that all miss at the same instant —
     /// right after boot or a config reload, before any entry exists — single-flight into exactly one
     /// real scan, and every other caller wakes to find the cache already populated rather than each
