@@ -1,51 +1,211 @@
 #!/usr/bin/env bash
-# Bring every RUNNING fleet box up to what ci-runner-bootstrap.sh says a box should be, without
-# replacing it.
+# THE RECONCILE IS THE TRUTH ABOUT THE FLEET. Run it every fifteen minutes and the fleet is what
+# CI_RUNNER_COUNT + CI_RUNNER_ONDEMAND_FLOOR say it is, with no ghost registrations, no stale host
+# list, and no box that came up an hour ago and never registered.
 #
-#   ./scripts/ci-runners-reconcile.sh              # every box, no service restart
-#   ./scripts/ci-runners-reconcile.sh --restart    # …and restart the agents so .env takes effect
+#   ./scripts/ci-runners-reconcile.sh                  # the 15-minute pass (idempotent, exit 0)
+#   ./scripts/ci-runners-reconcile.sh --converge       # …and re-apply the bootstrap to every box
+#   ./scripts/ci-runners-reconcile.sh --converge --restart   # …and restart the agents (KILLS JOBS)
+#   ./scripts/ci-runners-reconcile.sh --no-remote      # skip the remote-prove checkout refresh
+#   CI_RUNNER_DRY_RUN=1 ./scripts/ci-runners-reconcile.sh     # print the calls, make none
 #
-# WHY A RECONCILER AND NOT "JUST RELAUNCH". Two reasons, both observed.
+# WHY THIS SCRIPT IS THE ANSWER AND `up.sh` IS NOT. On 2026-09-09 the fleet hit zero twice inside
+# one day. The first time was the nightly stop; the second was `instance-terminated-no-capacity`
+# taking all eight c7a.8xlarge in us-east-1a at once. In BOTH cases the recovery required a human to
+# notice — `ci-runners-up.sh` is a command someone runs, not a schedule — and in both cases the
+# fleet left thirty-two offline registrations behind, each one a routing black hole that absorbs a
+# job and holds it `queued` for twenty-four hours with no error anywhere.
 #
-# 1. A LAUNCH TEMPLATE VERSION CAN BE REFUSED WHILE THE FLEET SCALES ANYWAY. EC2 caps user-data at
-#    16384 bytes; the version carrying a fix was rejected, the old version stayed default, and four
-#    new boxes came up without the GitHub CLI, without python3-venv and without per-agent cargo
-#    homes. ci-runners-up.sh now gzips and hard-fails on a refusal — but a fleet that is already in
-#    that state needs a way out that is not "terminate everything mid-run".
-# 2. A FIX FOUND AT 04:00 SHOULD REACH THE BOXES AT 04:01. Every item below was found by a real run
-#    failing; a replacement cycle is ten minutes of bootstrap per box and throws away the warm
-#    target/ and sccache that are the point of a persistent runner.
+# A fleet whose recovery depends on someone noticing is a fleet that is down for as long as nobody
+# is looking. So this is written to be a TIMER: idempotent, a no-op when healthy, and exit 0 no
+# matter which leg had nothing to do, because a cron that pages on a healthy run is a cron that gets
+# muted. Every pass, in this order:
 #
-# IT ALSO REMOVES THE NIGHTLY STOP, unconditionally. That timer terminated the entire fleet at
-# 02:00 PT with nothing scheduled to bring it back, and by morning 32 OFFLINE runner registrations
-# were still absorbing jobs that could never run. A box that was born with the timer must not keep
-# it just because it was born before the default changed; reconcile is where that is corrected.
-# Re-enable it deliberately, per box, only alongside something that starts the fleet again.
+#   1. TOP UP.      Spot to CI_RUNNER_COUNT, on-demand to CI_RUNNER_ONDEMAND_FLOOR, counted
+#                   separately off `InstanceLifecycle`. Diversified across every AZ and instance
+#                   type the region offers (see launch_spot in ci-runners-lib.sh).
+#   2. SWEEP.       Delete every OFFLINE org registration whose instance no longer exists.
+#   3. REGISTER.    …and only then register the boxes that are short of agents.
+#   4. REFRESH.     ~/.busbar-fleet and the remote-prove bare repo + checkout on every box.
 #
-# Everything here is idempotent and safe to run against a box that is already correct. It does NOT
-# restart the runner agents unless asked: `svc.sh stop` kills the job in flight, and the run then
-# reports `failure` with NO failed step, which is indistinguishable at a glance from a real red.
+# THE ORDER OF 2 AND 3 IS LOAD-BEARING. Registering first means the new box's agents join a pool
+# that still contains the dead box's agents, and GitHub keeps routing jobs into the corpse — which
+# is exactly the morning the nightly stop produced. Sweep the dead, then add the living.
+#
+# THE SWEEP CHECKS EXISTENCE, NOT OFFLINE-NESS. A box eight minutes into its bootstrap is offline
+# and alive; deleting its registration on a 15-minute timer would make a real box unreachable and
+# the next pass would "fix" it by registering it again, forever. sweep_ghost_runners maps the runner
+# name back to the instance id the bootstrap minted it from and deletes only what EC2 no longer
+# lists in any state.
+#
+# CONVERGENCE IS NOW OPT-IN (`--converge`). It is the same payload it always was — the way a fix
+# found at 04:00 reaches the boxes at 04:01 without a ten-minute bootstrap per box that also throws
+# away the warm target/ and sccache. But it is an apt install, a rustup check and a 900-second SSM
+# window on every box, which is not a thing to do four times an hour on a healthy fleet.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci-runners-lib.sh
 . "$HERE/ci-runners-lib.sh"
 
+CONVERGE=0
 RESTART=0
-[ "${1:-}" = "--restart" ] && RESTART=1
+REMOTE=1
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --converge)  CONVERGE=1 ;;
+    --restart)   RESTART=1; CONVERGE=1 ;;   # a restart with no convergence is just an outage
+    --no-remote) REMOTE=0 ;;
+    *)           die "unknown argument '$1' (expected --converge, --restart or --no-remote)" ;;
+  esac
+  shift
+done
 
 require_aws
+command -v gh >/dev/null || die "gh is required (the sweep and the registration check both use it)"
+dry && log "DRY RUN: read-only describes still run; nothing will be launched, deleted or registered"
+
+# ── 1. Top up ───────────────────────────────────────────────────────────────────────────────────
+have_od="$(n_of "$(fleet_ondemand_ids)")"
+have_spot="$(n_of "$(fleet_spot_ids)")"
+log "fleet: spot $have_spot/$COUNT, on-demand $have_od/$FLOOR"
+
+launched=""
+want_od=$(( FLOOR - have_od ))
+if [ "$want_od" -gt 0 ]; then
+  log "on-demand floor short by $want_od — launching"
+  launched="$launched $(launch_ondemand "$want_od")"
+fi
+want_spot=$(( COUNT - have_spot ))
+if [ "$want_spot" -gt 0 ]; then
+  log "spot short by $want_spot — launching, diversified"
+  launched="$launched $(launch_spot "$want_spot")"
+fi
+launched="$(printf '%s' "$launched" | tr -s ' ' ' ' | sed -e 's/^ //' -e 's/ $//')"
+[ -n "$launched" ] && log "launched: $launched"
+
+# A launched box is not a usable box for another 8-12 minutes (apt, rustup, the runner tarballs and
+# the pre-warm build). It is deliberately NOT waited for: this pass records that capacity was asked
+# for, and the pass fifteen minutes from now registers it. Blocking here is how a 15-minute timer
+# becomes two overlapping 15-minute timers.
+[ -n "$launched" ] && log "(new boxes bootstrap for ~8-12 min; the next pass registers them)"
+
+# ── 2. Sweep the ghosts, BEFORE registering anything ────────────────────────────────────────────
+sweep_ghost_runners
+[ "$SWEPT_GHOSTS" -gt 0 ] && log "swept $SWEPT_GHOSTS ghost registration(s)"
+
+# ── 3. Register the boxes that are short of agents ──────────────────────────────────────────────
+# CHEAPLY, AND ONLY THE BOXES THAT NEED IT. The bootstrap names every agent `ec2-<id-minus-i->-<n>`,
+# so the org's runner list answers "is this box registered?" without an SSM round-trip and without
+# minting a token for seven boxes that already hold GitHub-issued credentials. Minting one per pass
+# regardless is also how the org's token API limit gets exhausted.
+ONLINE_NAMES="$(gh api --paginate "/orgs/${ORG}/actions/runners?per_page=100" \
+  --jq '.runners[] | select(.status=="online") | .name' 2>/dev/null)"
 IDS="$(fleet_instance_ids)"
-[ -n "$IDS" ] || die "no running instances tagged Name=$FLEET"
-log "reconciling: $IDS"
+NEEDY=""
+# THE AGENTS ARE NUMBERED FROM 1, not from 0. ci-runner-bootstrap.sh's loop is `i=1; while
+# [ "$i" -le "$AGENTS" ]` and the directories are /opt/runner-1 through /opt/runner-$AGENTS, so the
+# names GitHub holds are ec2-<short>-1 … ec2-<short>-4. Counting from 0 made every box look one
+# agent short, and the first dry run of this pass proposed re-registering a healthy eight-box fleet.
+for iid in $IDS; do
+  short="${iid#i-}"
+  n=1
+  while [ "$n" -le "$AGENTS" ]; do
+    printf '%s\n' "$ONLINE_NAMES" | grep -qx "ec2-${short}-${n}" || { NEEDY="$NEEDY $iid"; break; }
+    n=$(( n + 1 ))
+  done
+done
+NEEDY="$(printf '%s' "$NEEDY" | sed -e 's/^ //' -e 's/ $//')"
 
-ONLINE="$(aws ssm describe-instance-information \
-  --filters "Key=InstanceIds,Values=$(echo "$IDS" | tr -s ' \t' ',,' | sed 's/,$//')" \
-  --query 'InstanceInformationList[?PingStatus==`Online`].InstanceId' --output text)"
-[ -n "$ONLINE" ] || die "no fleet instance is reachable over SSM yet"
-log "SSM-online: $ONLINE"
+REGISTERED=""
+if [ -n "$NEEDY" ]; then
+  # Only the ones SSM can reach. The rest are still bootstrapping and are the next pass's problem.
+  REACHABLE="$(ssm_online "$NEEDY")"
+  if [ -n "$REACHABLE" ]; then
+    log "registering: $REACHABLE"
+    # shellcheck disable=SC2086  # a whitespace-separated id list, passed as separate arguments
+    if "$HERE/ci-runners-register.sh" $REACHABLE >/dev/null 2>&1; then
+      REGISTERED="$REACHABLE"
+    else
+      log "  (registration reported a failure; the next pass retries)"
+    fi
+  else
+    log "short of agents but not SSM-reachable yet: $NEEDY"
+  fi
+fi
 
-TMP="$(mktemp)"
-cat > "$TMP" <<'JSON'
+# ── 4. Refresh the host list and the remote-prove checkouts ─────────────────────────────────────
+# ~/.busbar-fleet goes stale the moment a spot box is reclaimed, and a stale entry makes the
+# round-robin allocator in ci-remote-lib.sh hand an agent a host that no longer exists — which
+# surfaces as a `prove-remote.sh` that hangs in the SSM tunnel rather than as "that box is gone".
+write_fleet_file
+log "refreshed ${BUSBAR_FLEET_FILE:-$HOME/.busbar-fleet} ($(n_of "$(fleet_instance_ids)") host(s))"
+
+REMOTE_STATUS="skipped"
+if [ "$REMOTE" = 1 ]; then
+  ALIVE="$(ssm_online "$IDS")"
+  if [ -z "$ALIVE" ]; then
+    log "no SSM-reachable box; skipping the remote-prove refresh"
+  else
+    # OVER SSM, NOT OVER SSH. This runs unattended, and the ssh path needs session-manager-plugin,
+    # the fleet key and an interactive-ish transport; SendCommand needs the instance profile that is
+    # already there. A NEW box therefore gets a warm bare repo without anyone running
+    # `prove-remote.sh --setup` by hand.
+    PUB=""
+    [ -f "${FLEET_SSH_KEY:-$HOME/.ssh/busbar-ci-fleet}.pub" ] \
+      && PUB="$(cat "${FLEET_SSH_KEY:-$HOME/.ssh/busbar-ci-fleet}.pub")"
+    T="$(mktemp)"
+    {
+      printf '{"commands":['
+      if [ -n "$PUB" ]; then
+        # The public half only. The private key never leaves this machine and is never printed.
+        printf '"install -d -m 0700 -o ubuntu -g ubuntu /home/ubuntu/.ssh; touch /home/ubuntu/.ssh/authorized_keys; grep -qF %s%s%s /home/ubuntu/.ssh/authorized_keys || echo %s%s%s >> /home/ubuntu/.ssh/authorized_keys; chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys; chmod 0600 /home/ubuntu/.ssh/authorized_keys",' \
+          "'" "$PUB" "'" "'" "$PUB" "'"
+      fi
+      # Idempotent by construction: clone only when absent, fetch always. `git clean` is NOT done
+      # here — that is prove-remote.sh's job immediately before a proof, and doing it on a timer
+      # would delete a running proof's working tree out from under it.
+      # shellcheck disable=SC2016  # $HOME and $(…) are for the REMOTE shell, not this one
+      printf '"su - ubuntu -c %scd $HOME; test -d busbar.git || git clone --bare -q https://github.com/GetBusbar/busbar.git busbar.git; git -C busbar.git config gc.auto 256; git -C busbar.git fetch -q --prune origin \\"+refs/heads/*:refs/heads/*\\" 2>/dev/null; test -d busbar-prove/.git || git clone -q busbar.git busbar-prove; git -C busbar-prove remote get-url prove >/dev/null 2>&1 || git -C busbar-prove remote add prove $HOME/busbar.git; git -C busbar-prove config user.name \\"busbar remote prove\\"; git -C busbar-prove config user.email ci@busbar.invalid; git -C busbar-prove config advice.detachedHead false%s; echo prove=$(su - ubuntu -c %sgit -C $HOME/busbar-prove rev-parse --short HEAD 2>/dev/null || echo MISSING%s)"' \
+        "'" "'" "'" "'"
+      printf ']}'
+    } > "$T"
+    if dry; then
+      log "[dry-run] aws ssm send-command --instance-ids $ALIVE  # refresh ~/busbar.git + ~/busbar-prove"
+      [ -n "$PUB" ] && log "[dry-run]   …and re-deliver the fleet ssh PUBLIC key"
+      REMOTE_STATUS="dry-run"
+    else
+      # shellcheck disable=SC2086  # $ALIVE is a whitespace-separated id list and must word-split
+      C="$(aws ssm send-command --instance-ids $ALIVE --document-name AWS-RunShellScript \
+        --comment "refresh busbar remote-prove checkouts" --parameters "file://$T" \
+        --timeout-seconds 600 --query 'Command.CommandId' --output text 2>/dev/null)"
+      if [ -n "$C" ]; then
+        REMOTE_STATUS="$(ssm_wait "$C" 12 10)"
+        log "remote-prove refresh: $REMOTE_STATUS"
+      else
+        REMOTE_STATUS="dispatch-failed"
+        log "remote-prove refresh: could not dispatch (not fatal)"
+      fi
+    fi
+    rm -f "$T"
+  fi
+fi
+
+# ── 5. Convergence, opt-in ──────────────────────────────────────────────────────────────────────
+# Every item below was found by a real run failing. It is unchanged from when this script was only
+# a converger; what changed is that it no longer runs on the timer path. IT ALSO REMOVES THE
+# NIGHTLY STOP, unconditionally: that timer terminated the entire fleet at 02:00 PT with nothing
+# scheduled to bring it back, and a box born before the default changed must not keep it by
+# accident. Re-enable it deliberately, per box, only alongside something that starts the fleet.
+if [ "$CONVERGE" = 1 ]; then
+  CONV="$(ssm_online "$IDS")"
+  if [ -z "$CONV" ]; then
+    log "--converge: no SSM-reachable box"
+  elif dry; then
+    log "[dry-run] aws ssm send-command --instance-ids $CONV  # converge on ci-runner-bootstrap.sh"
+  else
+    log "converging: $CONV"
+    TMP="$(mktemp)"
+    cat > "$TMP" <<'JSON'
 {"commands":[
  "DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-venv >/dev/null 2>&1; python3 -m venv /tmp/vp >/dev/null 2>&1 && echo venv=ok || echo venv=BROKEN; rm -rf /tmp/vp",
  "if ! command -v gh >/dev/null; then V=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | jq -r .tag_name | tr -d v); [ -n \"$V\" ] && [ \"$V\" != null ] || V=2.82.1; curl -fsSL \"https://github.com/cli/cli/releases/download/v${V}/gh_${V}_linux_amd64.tar.gz\" | tar -xz -C /tmp && install -m 0755 /tmp/gh_${V}_linux_amd64/bin/gh /usr/local/bin/gh; fi; echo gh=$(gh --version 2>/dev/null | head -1)",
@@ -56,36 +216,55 @@ cat > "$TMP" <<'JSON'
  "echo agents=$(ls -d /opt/runner-* 2>/dev/null | wc -l) ready=$( [ -f /var/run/busbar-runner-ready ] && echo yes || echo NO )"
 ]}
 JSON
-CMD_ID="$(aws ssm send-command --instance-ids $ONLINE --document-name AWS-RunShellScript \
-  --comment "reconcile busbar CI runner boxes" --parameters "file://$TMP" \
-  --timeout-seconds 900 --query 'Command.CommandId' --output text)" || die "send-command failed"
-rm -f "$TMP"
-for _ in $(seq 1 90); do
-  sleep 10
-  st="$(aws ssm list-command-invocations --command-id "$CMD_ID" --query 'CommandInvocations[].Status' --output text)"
-  case "$st" in *Pending*|*InProgress*|*Delayed*) continue ;; *) log "ssm: $st"; break ;; esac
-done
-for i in $ONLINE; do
-  printf '  %s: ' "$i"
-  aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$i" \
-    --query 'StandardOutputContent' --output text 2>/dev/null | tr '\n' ' ' | cut -c1-200
-  echo
-done
+    # shellcheck disable=SC2086  # $CONV is a whitespace-separated id list and must word-split
+    CMD_ID="$(aws ssm send-command --instance-ids $CONV --document-name AWS-RunShellScript \
+      --comment "converge busbar CI runner boxes" --parameters "file://$TMP" \
+      --timeout-seconds 900 --query 'Command.CommandId' --output text)"
+    rm -f "$TMP"
+    if [ -n "$CMD_ID" ]; then
+      log "converge: $(ssm_wait "$CMD_ID" 90 10)"
+      for i in $CONV; do
+        printf '  %s: ' "$i"
+        aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$i" \
+          --query 'StandardOutputContent' --output text 2>/dev/null | tr '\n' ' ' | cut -c1-200
+        echo
+      done
+    else
+      log "converge: send-command failed"
+    fi
 
-if [ "$RESTART" = 1 ]; then
-  log "restarting the runner agents (THIS KILLS ANY JOB IN FLIGHT)"
-  T2="$(mktemp)"
-  cat > "$T2" <<'JSON'
+    if [ "$RESTART" = 1 ]; then
+      # `svc.sh stop` KILLS THE JOB IN FLIGHT, and the run then reports `failure` with NO failed
+      # step, which is indistinguishable at a glance from a real red. Six jobs were lost this way.
+      log "restarting the runner agents (THIS KILLS ANY JOB IN FLIGHT)"
+      T2="$(mktemp)"
+      cat > "$T2" <<'JSON'
 {"commands":["for d in /opt/runner-*; do (cd $d && ./svc.sh stop >/dev/null 2>&1; ./svc.sh start >/dev/null 2>&1); done; sleep 2; systemctl list-units 'actions.runner.*' --no-legend | wc -l"]}
 JSON
-  C2="$(aws ssm send-command --instance-ids $ONLINE --document-name AWS-RunShellScript \
-    --parameters "file://$T2" --query 'Command.CommandId' --output text)"
-  rm -f "$T2"
-  for _ in $(seq 1 30); do
-    sleep 8
-    st="$(aws ssm list-command-invocations --command-id "$C2" --query 'CommandInvocations[].Status' --output text)"
-    case "$st" in *Pending*|*InProgress*|*Delayed*) continue ;; *) log "restart: $st"; break ;; esac
-  done
+      # shellcheck disable=SC2086  # $CONV is a whitespace-separated id list and must word-split
+      C2="$(aws ssm send-command --instance-ids $CONV --document-name AWS-RunShellScript \
+        --parameters "file://$T2" --query 'Command.CommandId' --output text)"
+      rm -f "$T2"
+      [ -n "$C2" ] && log "restart: $(ssm_wait "$C2" 30 8)"
+    fi
+  fi
 fi
 
-log "done. Register any NEW box with: ./scripts/ci-runners-register.sh"
+# ── The one line ────────────────────────────────────────────────────────────────────────────────
+# One line, because this runs on a timer and the thing an operator scrolls a log for is "was the
+# fleet what it should have been". The counts are re-read from EC2 AFTER the pass rather than
+# inferred from what was launched: a RunInstances that returned an id and then failed its capacity
+# check is not a box.
+now_od="$(n_of "$(fleet_ondemand_ids)")"
+now_spot="$(n_of "$(fleet_spot_ids)")"
+now_runners="$(n_of "$(gh api --paginate "/orgs/${ORG}/actions/runners?per_page=100" \
+  --jq '.runners[] | select(.status=="online") | .name' 2>/dev/null)")"
+printf 'reconcile: spot %s/%s, on-demand %s/%s, online runners %s, swept ghosts %s, registered %s, remote-prove %s\n' \
+  "$now_spot" "$COUNT" "$now_od" "$FLOOR" "$now_runners" "$SWEPT_GHOSTS" \
+  "$(n_of "$REGISTERED")" "$REMOTE_STATUS"
+
+# ALWAYS ZERO. A healthy pass, a pass that could not reach a bootstrapping box, and a pass that
+# found nothing to do are all "the fleet is being kept" — and a timer that exits non-zero on any of
+# them is a timer somebody disables by Thursday. Real breakage is visible in the summary line
+# (spot 0/8 is not a healthy fleet) and in the log above it, not in the exit code.
+exit 0

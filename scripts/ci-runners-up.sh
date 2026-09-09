@@ -1,18 +1,32 @@
 #!/usr/bin/env bash
 # Bring the busbar self-hosted GitHub Actions runner fleet UP.
 #
-#   ./scripts/ci-runners-up.sh                 # 4 x c7a.8xlarge spot, 4 agents each = 16 job slots
-#   CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh
+#   ./scripts/ci-runners-up.sh                 # 2 on-demand + 4 spot, 4 agents each
+#   CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh              # 2 on-demand + 8 spot
+#   CI_RUNNER_ONDEMAND_FLOOR=0 ./scripts/ci-runners-up.sh     # spot only (the pre-2026-09-09 shape)
+#   CI_RUNNER_DRY_RUN=1 ./scripts/ci-runners-up.sh            # print the AWS calls, make none
 #   CI_RUNNER_ITYPE=c7a.16xlarge CI_RUNNER_AGENTS=8 ./scripts/ci-runners-up.sh
 #
 # Idempotent: the IAM role, the sccache bucket, the security group and the launch template are
 # created only if absent, so this is also the "scale up" command — it tops the fleet up to
 # CI_RUNNER_COUNT and leaves boxes that are already running alone.
 #
-# SPOT, PER THE OWNER'S CONSTRAINT. CI is interruption-tolerant by construction: a reclaimed box
-# loses at most the jobs in flight on it, and `concurrency: cancel-in-progress` means a re-push
-# would have killed them anyway. Spot is ~60% off on-demand for c7a. If spot capacity is refused
-# outright, this falls back to AT MOST ONE on-demand instance so the fleet is never fully down.
+# TWO KINDS OF CAPACITY, LAUNCHED IN THIS ORDER.
+#
+#   1. CI_RUNNER_ONDEMAND_FLOOR (default 2) ON-DEMAND boxes, launched FIRST and spread across AZs.
+#   2. CI_RUNNER_COUNT SPOT boxes, requested across every (AZ, instance-type) pool the region
+#      offers, so no single pool's reclaim can take the fleet to zero.
+#
+# The floor goes FIRST deliberately: if the account is at an instance limit, or the launch template
+# is wrong, the thing that fails is the spot top-up and the guaranteed capacity is already up. The
+# reverse order gets you eight spot boxes and no floor on exactly the day the floor is the point.
+#
+# Spot is still where the throughput comes from — CI is interruption-tolerant by construction (a
+# reclaimed box loses at most the jobs in flight, and `concurrency: cancel-in-progress` would have
+# killed them on a re-push anyway) and it is ~60% off on-demand. What changed is that "spot" no
+# longer means "one instance type in one AZ": on 2026-09-09 `instance-terminated-no-capacity` took
+# all eight c7a.8xlarge in us-east-1a in one moment and the fleet was at zero with nothing to bring
+# it back. See scripts/ci-runners-reconcile.sh, which is what brings it back now.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci-runners-lib.sh
@@ -29,24 +43,26 @@ if [ -z "$VCPU_PER_AGENT" ]; then
                  --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' --output text)"
   VCPU_PER_AGENT=$(( total_vcpu / AGENTS ))
 fi
-log "fleet=$FLEET type=$ITYPE count=$COUNT agents/box=$AGENTS jobs=$(( COUNT * AGENTS )) rust=$RUST_CHANNEL region=$AWS_REGION"
+log "fleet=$FLEET type=$ITYPE spot=$COUNT on-demand-floor=$FLOOR agents/box=$AGENTS jobs=$(( (COUNT + FLOOR) * AGENTS )) rust=$RUST_CHANNEL region=$AWS_REGION"
+log "spot pools: $ITYPES x every AZ of the default VPC that offers them"
+dry && log "DRY RUN: read-only describes still run; nothing will be created, launched or tagged"
 
 # ── 1. sccache bucket (same region as the fleet, 14-day lifecycle) ──────────────────────────────
 if ! aws s3api head-bucket --bucket "$SCCACHE_BUCKET" >/dev/null 2>&1; then
   log "creating s3://$SCCACHE_BUCKET"
   if [ "$AWS_REGION" = "us-east-1" ]; then
-    aws s3api create-bucket --bucket "$SCCACHE_BUCKET" >/dev/null
+    aws_w s3api create-bucket --bucket "$SCCACHE_BUCKET" >/dev/null
   else
-    aws s3api create-bucket --bucket "$SCCACHE_BUCKET" \
+    aws_w s3api create-bucket --bucket "$SCCACHE_BUCKET" \
       --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
   fi
-  aws s3api put-public-access-block --bucket "$SCCACHE_BUCKET" \
+  aws_w s3api put-public-access-block --bucket "$SCCACHE_BUCKET" \
     --public-access-block-configuration \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true >/dev/null
 fi
 # A compiler cache with no expiry is a bucket that grows forever and is never read past its first
 # fortnight. 14 days spans a toolchain bump plus a long-lived integration branch.
-aws s3api put-bucket-lifecycle-configuration --bucket "$SCCACHE_BUCKET" --lifecycle-configuration '{
+aws_w s3api put-bucket-lifecycle-configuration --bucket "$SCCACHE_BUCKET" --lifecycle-configuration '{
   "Rules": [{"ID":"expire-14d","Status":"Enabled","Filter":{"Prefix":""},
              "Expiration":{"Days":14},
              "AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}' >/dev/null
@@ -54,25 +70,25 @@ aws s3api put-bucket-lifecycle-configuration --bucket "$SCCACHE_BUCKET" --lifecy
 # ── 2. IAM role: SSM (how registration and admin reach the box) + the sccache bucket ────────────
 if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
   log "creating IAM role $ROLE_NAME"
-  aws iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document '{
+  aws_w iam create-role --role-name "$ROLE_NAME" --assume-role-policy-document '{
     "Version":"2012-10-17",
     "Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},
                   "Action":"sts:AssumeRole"}]}' >/dev/null
 fi
 # SSM Session Manager, NOT an inbound SSH rule: the security group below opens nothing at all, so
 # the fleet has no listening attack surface, and there is no private key to distribute or rotate.
-aws iam attach-role-policy --role-name "$ROLE_NAME" \
+aws_w iam attach-role-policy --role-name "$ROLE_NAME" \
   --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore >/dev/null 2>&1
-aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name sccache-s3 --policy-document "{
+aws_w iam put-role-policy --role-name "$ROLE_NAME" --policy-name sccache-s3 --policy-document "{
   \"Version\":\"2012-10-17\",
   \"Statement\":[{\"Effect\":\"Allow\",
     \"Action\":[\"s3:GetObject\",\"s3:PutObject\",\"s3:DeleteObject\",\"s3:ListBucket\",\"s3:GetBucketLocation\"],
     \"Resource\":[\"arn:aws:s3:::$SCCACHE_BUCKET\",\"arn:aws:s3:::$SCCACHE_BUCKET/*\"]}]}" >/dev/null
 if ! aws iam get-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null 2>&1; then
-  aws iam create-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null
-  aws iam add-role-to-instance-profile --instance-profile-name "$PROFILE_NAME" \
+  aws_w iam create-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null
+  aws_w iam add-role-to-instance-profile --instance-profile-name "$PROFILE_NAME" \
     --role-name "$ROLE_NAME" >/dev/null
-  sleep 10   # instance-profile propagation; RunInstances 400s on a profile it cannot see yet
+  dry || sleep 10   # instance-profile propagation; RunInstances 400s on a profile it cannot see yet
 fi
 
 # ── 3. Security group: egress only ─────────────────────────────────────────────────────────────
@@ -84,10 +100,15 @@ SG_ID="$(aws ec2 describe-security-groups --filters "Name=group-name,Values=$SG_
           --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null)"
 if [ -z "$SG_ID" ] || [ "$SG_ID" = "None" ]; then
   log "creating security group $SG_NAME (egress only)"
-  SG_ID="$(aws ec2 create-security-group --group-name "$SG_NAME" --vpc-id "$VPC_ID" \
-    --description "busbar self-hosted CI runners: egress only, admin over SSM" \
-    --query GroupId --output text)"
-  aws ec2 revoke-security-group-ingress --group-id "$SG_ID" --protocol -1 --port -1 \
+  if dry; then
+    printf '[dry-run] aws ec2 create-security-group --group-name %s --vpc-id %s\n' "$SG_NAME" "$VPC_ID" >&2
+    SG_ID="sg-dryrun"
+  else
+    SG_ID="$(aws ec2 create-security-group --group-name "$SG_NAME" --vpc-id "$VPC_ID" \
+      --description "busbar self-hosted CI runners: egress only, admin over SSM" \
+      --query GroupId --output text)"
+  fi
+  aws_w ec2 revoke-security-group-ingress --group-id "$SG_ID" --protocol -1 --port -1 \
     --cidr 0.0.0.0/0 >/dev/null 2>&1
 fi
 log "sg $SG_ID in $VPC_ID"
@@ -147,40 +168,46 @@ if aws ec2 describe-launch-templates --launch-template-names "$LT_NAME" >/dev/nu
   # A REFUSED VERSION MUST STOP THE SCALE-UP. Without this the command prints its error, the script
   # carries on, and `run-instances --version $Latest` launches from the previous default — boxes
   # that look right in `describe-instances` and are missing whatever the new version was adding.
-  aws ec2 create-launch-template-version --launch-template-name "$LT_NAME" \
+  # shellcheck disable=SC2016  # `$Latest` is EC2's literal version alias, not a shell variable
+  aws_w ec2 create-launch-template-version --launch-template-name "$LT_NAME" \
     --source-version '$Latest' --launch-template-data "file://$LT_DATA" \
     --query 'LaunchTemplateVersion.VersionNumber' --output text \
     || die "the launch template version was REFUSED; not launching from a stale one"
-  aws ec2 modify-launch-template --launch-template-name "$LT_NAME" \
+  # shellcheck disable=SC2016  # ditto
+  aws_w ec2 modify-launch-template --launch-template-name "$LT_NAME" \
     --default-version '$Latest' >/dev/null
 else
   log "creating launch template $LT_NAME"
-  aws ec2 create-launch-template --launch-template-name "$LT_NAME" \
+  aws_w ec2 create-launch-template --launch-template-name "$LT_NAME" \
     --launch-template-data "file://$LT_DATA" >/dev/null
 fi
 
-# ── 5. Top the fleet up to COUNT ───────────────────────────────────────────────────────────────
-have="$(fleet_instance_ids | wc -w | tr -d ' ')"
-want=$(( COUNT - have ))
-if [ "$want" -le 0 ]; then
-  log "fleet already at $have instance(s); nothing to launch"
+# ── 5. Top the fleet up: the ON-DEMAND FLOOR first, then the SPOT capacity ──────────────────
+# The two are counted SEPARATELY, off `InstanceLifecycle`, because "the fleet has 8 boxes" is not
+# the fact that matters after a reclaim — "the fleet has 0 boxes that cannot be reclaimed" is.
+have_od="$(n_of "$(fleet_ondemand_ids)")"
+have_spot="$(n_of "$(fleet_spot_ids)")"
+log "have: on-demand $have_od/$FLOOR, spot $have_spot/$COUNT"
+
+want_od=$(( FLOOR - have_od ))
+if [ "$want_od" -gt 0 ]; then
+  log "launching $want_od on-demand floor instance(s)"
+  od_ids="$(launch_ondemand "$want_od")"
+  log "on-demand launched: ${od_ids:-none}"
 else
-  log "launching $want spot instance(s) ($have already up)"
-  ids="$(aws ec2 run-instances --launch-template "LaunchTemplateName=$LT_NAME,Version=\$Latest" \
-    --count "$want" \
-    --instance-market-options 'MarketType=spot,SpotOptions={SpotInstanceType=one-time,InstanceInterruptionBehavior=terminate}' \
-    --query 'Instances[].InstanceId' --output text 2>/tmp/spot.err)"
-  if [ -z "$ids" ]; then
-    # ON-DEMAND FALLBACK, CAPPED AT ONE. The owner's constraint is spot-only with a single
-    # on-demand box as the floor: enough that a capacity refusal degrades throughput instead of
-    # taking CI to zero, not so much that a bad spot day quietly triples the bill.
-    log "spot refused ($(tail -1 /tmp/spot.err)); falling back to ONE on-demand instance"
-    ids="$(aws ec2 run-instances --launch-template "LaunchTemplateName=$LT_NAME,Version=\$Latest" \
-      --count 1 --query 'Instances[].InstanceId' --output text)" || die "on-demand fallback failed"
-  fi
-  log "launched: $ids"
+  log "on-demand floor already satisfied"
 fi
 
-log "instances: $(fleet_instance_ids)"
+want_spot=$(( COUNT - have_spot ))
+if [ "$want_spot" -gt 0 ]; then
+  log "launching $want_spot spot instance(s), diversified over the pool matrix"
+  spot_ids="$(launch_spot "$want_spot")"
+  log "spot launched: ${spot_ids:-none}"
+else
+  log "spot capacity already at $have_spot; nothing to launch"
+fi
+
+log "instances now (id / lifecycle / az / type):"
+fleet_instances_tsv | sed 's/^/  /'
 log "bootstrap takes ~8-12 min (apt, rustup, runner, and a full pre-warm build)."
-log "next: ./scripts/ci-runners-register.sh   # mints a fresh token and registers every agent"
+log "next: ./scripts/ci-runners-reconcile.sh   # sweeps ghosts, registers, refreshes ~/.busbar-fleet"
