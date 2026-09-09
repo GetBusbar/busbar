@@ -98,7 +98,7 @@ export LAND_REMOTE_INNER=1
 # The box may be running four proofs at once; the recorder's fixed port block would collide.
 export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
 cd "$HOME/busbar-prove" || { echo "no ~/busbar-prove — ./scripts/prove-remote.sh --setup $(hostname)"; exit 2; }
-git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/proof/$REF/*:refs/proof/$REF/*" || exit 2
+git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/proof/$REF/*:refs/proof/$REF/*" "+refs/audit-pins/*:refs/audit-pins/*" || exit 2
 git checkout -q -f "$REF" || exit 2
 git clean -qffdx -e target -e .cargo -e node_modules
 echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)"
