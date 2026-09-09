@@ -8,15 +8,8 @@
 //!
 //! This module re-exports the relocated [`VerifyGate`] so every in-core call site — the A2A plane's
 //! `crate::trust::verify::VerifyGate` field, its `ensure_fresh`/`report`/`retain` drivers, and the
-//! carry tests — keeps naming `crate::trust::verify::*` unchanged. The gate's unit batteries stay here
-//! (they were always plane-neutral and drive it through its public surface).
+//! carry tests — keeps naming `crate::trust::verify::*` unchanged. The gate's unit batteries went
+//! DOWN with it (D33 §7.5): they name only `VerifyGate` and the `reverify` arithmetic beside it and
+//! never a core type, so they were always substrate proofs, and they now live beside the gate.
 
 pub use busbar_substrate::trust::VerifyGate;
-
-#[cfg(test)]
-#[path = "tests/verify_tests.rs"]
-mod verify_tests;
-
-#[cfg(test)]
-#[path = "tests/verify_edge_tests.rs"]
-mod verify_edge_tests;

@@ -232,3 +232,16 @@ impl VerifyGate {
             .unwrap_or(false)
     }
 }
+
+// THE GATE'S OWN BATTERIES. They arrived from `busbar-core/src/trust/tests/` when core's `trust/`
+// shim was retired (D33 §7.5): they were always plane-neutral — they name only `VerifyGate` and the
+// `reverify` arithmetic beside it, never a core type — so core was hosting a proof of substrate
+// behaviour. Ported verbatim; both `use` lines resolve unchanged, because the module nesting they
+// spell (`super` = this module, `super::super` = `trust`) is the same on this side of the move.
+#[cfg(test)]
+#[path = "tests/verify_tests.rs"]
+mod verify_tests;
+
+#[cfg(test)]
+#[path = "tests/verify_edge_tests.rs"]
+mod verify_edge_tests;
