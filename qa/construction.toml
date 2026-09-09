@@ -1130,3 +1130,66 @@ file = "crates/busbar/src/root/harness.rs"
 symbol = "RecordingRows"
 verdict = "real"
 because = "a type alias over the rows the loop posted, and a reader of it; the name is spelled, nothing is constructed"
+
+# ------------------------------------------------------------------------------------------------
+# [gate.census] — THE RATCHET ON THE RATCHETS
+# ------------------------------------------------------------------------------------------------
+#
+# `ceiling-rose` stops a ceiling being RAISED. Nothing stopped a ceiling being DELETED TOGETHER WITH
+# THE RULE TABLE THAT HOLDS IT, because the construction gate's owed-row register is derived from
+# this very file: delete `[rules.loc-ceilings.kernel_files.arena]` and the check and the obligation
+# to run it vanish in the same edit. Measured, 2026-09-09: the gate went from 112 rows to 111 and
+# said nothing at all, and the kernel's arena/masking LOC ceiling stopped being measured.
+# `[rules.legacy-reach.prefixes.*]`, `gate.plane_crates` and every `[gate.plugin_kinds]` glob have
+# the same shape.
+#
+# So the COUNTS are pinned here, and `ceiling-census` is owed UNCONDITIONALLY — it is a literal in
+# the gate's id list rather than something derived from this file, which is the property every other
+# derived row lacks.
+#
+# EACH NUMBER IS A FLOOR, NOT AN EQUALITY. Adding a kernel file, a legacy prefix or a plane crate is
+# the ordinary direction of this work and needs no ceremony here; REMOVING one is the manoeuvre, and
+# `actual < pinned` is RED.
+#
+# AND THE FLOOR IS ITSELF PINNED AGAINST THE BASE. Lowering a number here is not something
+# `ceiling-rose` sees — that row watches numbers going UP — so `ceiling-census` compares every
+# number in this table against the base commit's copy, and a floor that WENT DOWN is RED. Without
+# that half, deleting a rule table and dropping its census number in one edit would be exactly as
+# silent as deleting the table alone was.
+[gate.census]
+loc_ceilings_kernel_files = 9
+legacy_reach_prefixes = 3
+plane_crates = 4
+
+# HOW MANY CRATE DIRECTORIES EACH KIND GLOB MATCHES.
+#
+# The failure this closes: `kind-isolation:truths` checks that a `[gate.plugin_kinds]` KEY exists,
+# never that its globs still match the crates that exist. Narrow `crates/busbar-plane-*` to
+# `crates/busbar-plane-llm` and the key is still present, still cross-checked in both directions,
+# and four crates silently stop being scanned by manifest-allowlist, source-denylist and
+# forbid-unsafe.
+#
+# A COUNT, NOT "AT LEAST ONE". The header above this file's `[gate.plugin_kinds]` records that a
+# glob matching no directory today is the intended state for a kind with no crate yet — `dialect`
+# and `control` are both legitimately 0, and `egress_auth` has no crate under its own glob. A
+# blanket "at least one" would red three documented zeros while still saying nothing about `plane`
+# going from five crates to one. The count catches the narrowing and leaves the intended zeros
+# alone; the day the codec split creates the first dialect crate, this number is raised with it.
+#
+# `plane` is 5 because `crates/busbar-plane-admin` matches the plane glob while being the `control`
+# kind — see the note above `[gate.plugin_kinds]`. Pinning the number the glob ACTUALLY matches is
+# the point: this table records what is scanned, not what ought to be.
+[gate.census.plugin_kinds]
+plane = 5
+dialect = 0
+control = 0
+unit = 14
+hook = 2
+pure_auth = 2
+egress_auth = 0
+secret = 2
+store = 2
+export = 1
+transport = 7
+loader = 1
+abi = 1

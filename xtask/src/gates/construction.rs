@@ -38,6 +38,7 @@
 //! path a citation resolves to without a fallback, and four Appendix B bindings cite this gate.
 
 pub mod ceilings;
+pub mod census;
 pub mod external;
 pub mod model;
 pub mod rules;
@@ -206,6 +207,11 @@ impl ConstructionGate {
             "legacy-reach",
             ceilings::ROW_ROSE,
             ceilings::ROW_SLACK,
+            // UNCONDITIONAL, AND THAT IS THE ENTIRE POINT. Every id below this block is derived
+            // from the same `Cfg` the rules read, so deleting a rule table deletes the obligation
+            // to run it in the same edit. This one is a literal: `ceiling-census` is owed whatever
+            // the config says, and it is the row that counts the tables the others come from.
+            census::ROW_CENSUS,
             "no-test-doubles-in-production",
             "no-test-doubles-in-production:doubles",
         ]
@@ -449,6 +455,34 @@ impl ConstructionGate {
         // re-deriving them, so it must see every row this run produced — including the three
         // surface rows above, which are the ones a re-measurement would be most likely to disagree
         // with, since they come from a subprocess.
+        // ── THE SCAN-SET FLOOR ───────────────────────────────────────────────────────────────────
+        // AN ABSENT SUBJECT IS RED, NOT PASS. Around eight rules print `vacuous: <path> does not
+        // exist yet` and return PASS, so every one of them is a rule that reports green precisely
+        // when it has nothing to read. That is the same shape as a glob narrowed to match nothing,
+        // and it is the shape `structure-lint` (CANDIDATE_FLOOR = 200) and `workspace-deps`
+        // (MIN_MEMBERS/MIN_INHERITED) each spend a floor to refuse.
+        //
+        // It is done HERE rather than at the ~18 sites so that a rule added tomorrow inherits it:
+        // the `vacuous: ` prefix is the declaration, and this is the one place that scores it. A
+        // row that legitimately has no subject must say so with a ceiling and a measurement, not by
+        // passing on absence.
+        //
+        // Zero rows on this tree are vacuous, measured 2026-09-09, so this costs nothing today and
+        // is entirely a guard on the direction of travel.
+        // An INFORMATIONAL row is PASS by construction and its title carries `WARN ` — it is a
+        // report, not a claim, so there is nothing for a floor to hold it to.
+        for r in &mut rows {
+            if r.detail.starts_with(model::VACUOUS)
+                && !r.informational
+                && r.status == crate::ledger::Status::Pass
+            {
+                r.status = crate::ledger::Status::Fail;
+            }
+        }
+
+        // THE CENSUS BEFORE THE ROSE. It counts the rule tables the rest of the gate was derived
+        // from, so a run that lost one says so next to the ceilings that went with it.
+        rows.extend(census::ceiling_census(cx, &cfg));
         rows.extend(ceilings::ceiling_rose(cx));
         let slack = ceilings::ceiling_slack(&cfg, &rows);
         rows.extend(slack);

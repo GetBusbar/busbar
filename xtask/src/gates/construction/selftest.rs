@@ -48,7 +48,9 @@
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::construction::model::Cfg;
 use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
-use crate::gates::construction::{ceilings, external, ConstructionGate, CEILINGS, UNSAFE_HALVES};
+use crate::gates::construction::{
+    ceilings, census, external, ConstructionGate, CEILINGS, UNSAFE_HALVES,
+};
 use crate::gates::{
     execute, prove_red, prove_rows_green, prove_rows_red, Case, Expect, Gate, Report,
 };
@@ -635,6 +637,63 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
         gate,
         "against the real base no ceiling on this branch has risen",
         &[ceilings::ROW_ROSE],
+        on(base),
+    ));
+
+    // -- ceiling-census --------------------------------------------------------------------------
+    //
+    // THE ROW THAT COUNTS THE RULE TABLES THE REST OF THE GATE IS DERIVED FROM. `owed()` reads the
+    // same `Cfg` the rules read, so deleting `[rules.loc-ceilings.kernel_files.arena]` deleted the
+    // check AND the obligation in one edit — 112 rows became 111, silently. These cases drive the
+    // shortfall arm from the other side: raising a census floor above what the tree carries is the
+    // same comparison as deleting the table under a floor that stayed put, and it is a one-integer
+    // plant that cannot rot the way a hard-coded table name would.
+    if let Some(planted) = ceilings::set_int(&text, "gate.census", "loc_ceilings_kernel_files", 99)
+    {
+        let mut ov = on(base);
+        ov.set(CEILINGS, planted);
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            "a rule table that went missing under its census floor is refused",
+            &[census::ROW_CENSUS],
+            ov,
+            &["[rules.loc-ceilings.kernel_files] entries:", "99 pinned"],
+        ));
+    } else {
+        r.note_infra_failure(
+            "the [gate.census] loc_ceilings_kernel_files floor could not be rewritten, so the arm \
+             that refuses a deleted rule table is unproven",
+        );
+    }
+
+    // AND THE GLOB HALF. `kind-isolation:truths` checks that a `[gate.plugin_kinds]` KEY exists,
+    // never that its globs still match anything, so narrowing `crates/busbar-plane-*` to one crate
+    // leaves every cross-check green while four crates stop being scanned. The census pins the
+    // MATCH COUNT, and this case is that pin doing its job.
+    if let Some(planted) = ceilings::set_int(&text, "gate.census.plugin_kinds", "plane", 99) {
+        let mut ov = on(base);
+        ov.set(CEILINGS, planted);
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            "a kind glob that stopped matching its crates is refused",
+            &[census::ROW_CENSUS],
+            ov,
+            &["[gate.plugin_kinds] plane =", "99 pinned"],
+        ));
+    } else {
+        r.note_infra_failure(
+            "the [gate.census.plugin_kinds] plane floor could not be rewritten, so the arm that \
+             refuses a narrowed kind glob is unproven",
+        );
+    }
+
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "on this tree every rule table, plane crate and kind glob is still counted",
+        &[census::ROW_CENSUS],
         on(base),
     ));
     r

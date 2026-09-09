@@ -187,6 +187,7 @@ land_ceiling_verdict() {
 
 land_construction_standing_reds() {
   cat <<'EOF'
+hold-discipline:cancellation-before-await
 hold-escapes
 kernel-seal-impls
 one-pick-site

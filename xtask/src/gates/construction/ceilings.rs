@@ -31,7 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
-use crate::gates::construction::model::{plain, CRow, Cfg, VACUOUS};
+use crate::gates::construction::model::{plain, CRow, Cfg};
 use crate::gates::construction::{CEILINGS, SURFACE};
 
 /// The other ceilings file this gate watches. It is not read by any construction rule — it is the
@@ -144,12 +144,16 @@ pub fn pins(cfg: &Cfg) -> Vec<Pin> {
 /// The row is computed from the OTHER ROWS' measurements rather than by re-measuring, so it cannot
 /// disagree with the rule it is about: the number it compares is the number that row printed.
 ///
-/// Two measurements are not slack and are excluded by name, each for a stated reason:
+/// One measurement is not slack and is excluded by name: a row measuring ABOVE its ceiling — that
+/// is the row's own FAIL, not slack, and this rule saying so a second time would be one finding
+/// printed twice.
 ///
-/// * a VACUOUS row — the rule's subject is absent from this tree, so its `current` is the count of
-///   nothing and re-pinning to it would write a ceiling of 0 for a crate that simply is not here;
-/// * a row measuring ABOVE its ceiling — that is the row's own FAIL, not slack, and this rule
-///   saying so a second time would be one finding printed twice.
+/// A VACUOUS row USED TO BE EXCLUDED TOO, on the reasoning that re-pinning to the count of nothing
+/// would write a ceiling of 0 for a crate that is not here. That reasoning had it backwards: it
+/// meant a rule whose subject went missing kept the ceiling it earned when the subject existed,
+/// ready to absorb the subject's return at any size, while the rule itself printed PASS. An absent
+/// subject is now RED where the row is built (see `measure`'s scan-set floor), so there is nothing
+/// left to exempt — and a ceiling over a subject that is not there is slack like any other.
 pub fn ceiling_slack(cfg: &Cfg, rows: &[CRow]) -> Vec<CRow> {
     let (slack, _) = slack_findings(cfg, rows);
     let detail = if slack.is_empty() {
@@ -210,7 +214,12 @@ fn slack_findings(cfg: &Cfg, rows: &[CRow]) -> (Vec<Slack>, Vec<String>) {
             orphan.push(pin.row.clone());
             continue;
         };
-        if row.detail.starts_with(VACUOUS) || row.current < 0 || row.current >= row.threshold {
+        // A VACUOUS ROW IS NO LONGER EXEMPT. It used to be skipped here, which meant a rule whose
+        // subject had gone missing kept its ceiling AND reported no slack under it — the ceiling
+        // stayed at the number it had when the subject existed, ready to absorb the subject coming
+        // back at any size. `measure()` now scores an absent subject RED (see its scan-set floor),
+        // and this row holds its ceiling to what it measures like every other.
+        if row.current < 0 || row.current >= row.threshold {
             continue;
         }
         slack.push(Slack {
