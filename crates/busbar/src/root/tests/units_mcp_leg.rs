@@ -334,7 +334,7 @@ impl CountingSurface {
     }
 }
 
-impl crate::root::transports::PlaneDispatch for CountingSurface {
+impl crate::root::transports::MountDispatch for CountingSurface {
     fn execute(
         &self,
         _op: busbar_contract::ids::OpClassId,
@@ -353,7 +353,7 @@ fn serve(
     leg: &McpLeg,
     kernel: &Kernel,
     body: &[u8],
-    dispatch: Option<&dyn crate::root::transports::PlaneDispatch>,
+    dispatch: Option<&dyn crate::root::transports::MountDispatch>,
 ) -> (Ended, Option<crate::root::transports::PlaneAnswer>) {
     let facts = mounted_facts();
     let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(

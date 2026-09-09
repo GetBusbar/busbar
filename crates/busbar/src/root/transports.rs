@@ -319,6 +319,23 @@ pub struct PlaneAnswer {
 
 /// THE ONE SEAM between a plane's units and the surface that already answers its operations.
 ///
+/// ## Why it is named for the MOUNT and not for the plane
+///
+/// It was written as `PlaneDispatch`, because the first thing it did was let a plane's leg reach its
+/// own surface. That name says whose seam it is; it does not say WHAT it is, and what it is turns out
+/// to be narrower and more particular: it is the MOUNT's channel — the one door a synchronous loop
+/// running on a blocking worker has into the asynchronous runtime the mounted router lives on.
+///
+/// The distinction stopped being cosmetic the moment a second thing in this file also wanted to be
+/// called a plane's dispatch. The generic driver has a seam of its own between a plane's units and
+/// the leg they are walked against; it carries a leg through a walk and hands it back, it has no
+/// runtime on either side of it, and it is `PlaneDispatch` because that is exactly what it is. Two
+/// traits under one name in one module is not an ambiguity a reader resolves — it is a build that
+/// does not compile, and before that it is two authors each certain the name meant their thing.
+///
+/// So the name follows the channel. Everything below is unchanged: the same one seam, the same
+/// argument, the same rule about what may cross it.
+///
 /// ## Why there is exactly one, and why it takes no request
 ///
 /// The units are the GATE and the surface is the ANSWER. Everything the loop decides — who is
@@ -343,7 +360,7 @@ pub struct PlaneAnswer {
 /// second copy of it to specialise. A per-plane dispatch trait would have been one trait per plane
 /// carrying one identical method, and the first thing to differ between two of them would have been
 /// a difference nobody meant.
-pub trait PlaneDispatch: Send + Sync {
+pub trait MountDispatch: Send + Sync {
     /// Hand one operation to the surface it is mounted on, and take back its whole answer.
     fn execute(&self, op: busbar_contract::ids::OpClassId) -> PlaneAnswer;
 }

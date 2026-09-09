@@ -859,7 +859,7 @@ pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::poli
 
 /// THE SEAM IS NOT THIS PLANE'S, and that is why it is not defined here.
 ///
-/// [`PlaneAnswer`] and [`PlaneDispatch`] used to be `A2aAnswer` and `A2aDispatch`, written in this
+/// [`PlaneAnswer`] and [`MountDispatch`] used to be `A2aAnswer` and `A2aDispatch`, written in this
 /// file because this was the first plane whose leg had a mount to reach. Nothing in either of them
 /// was ever about A2A: the argument is an `OpClassId`, which every plane declares, and the answer is
 /// a status, headers and bytes, which every surface writes. So when the MCP leg needed the same seam
@@ -871,7 +871,7 @@ pub fn scope_policy(base: crate::root::policy::ScopePolicy) -> crate::root::poli
 /// Re-exported here rather than merely moved, so this plane's units read as one file.
 ///
 /// [`PlaneLeg`]: crate::root::transports::PlaneLeg
-pub use crate::root::transports::{PlaneAnswer, PlaneDispatch};
+pub use crate::root::transports::{MountDispatch, PlaneAnswer};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE BINDINGS
@@ -984,8 +984,8 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// no dispatch, and the boot assembly must not refuse for the absence of a thing it deliberately
     /// did not build.
     ///
-    /// Bound per arrival, because a unit of this plane is. See [`PlaneDispatch`].
-    pub dispatch: Option<&'r dyn PlaneDispatch>,
+    /// Bound per arrival, because a unit of this plane is. See [`MountDispatch`].
+    pub dispatch: Option<&'r dyn MountDispatch>,
     /// The sealed origin the audit record is written under.
     ///
     /// Sealed by the kernel and carried here for the same reason the trust token is: `Origin::seal`

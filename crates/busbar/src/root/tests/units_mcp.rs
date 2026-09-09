@@ -1775,7 +1775,7 @@ impl CountingSurface {
 /// loop carried the surface's answer out UNCHANGED, so what matters is that it is distinctive.
 const SURFACE_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the surface"}}"#;
 
-impl PlaneDispatch for CountingSurface {
+impl MountDispatch for CountingSurface {
     fn execute(&self, op: OpClassId) -> PlaneAnswer {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.ops.lock().unwrap_or_else(|e| e.into_inner()).push(op);
@@ -1859,7 +1859,7 @@ impl Node {
         draft: McpDraft,
         pools: &'r Pools,
         chain: Option<&'r BucketChain>,
-        dispatch: Option<&'r dyn PlaneDispatch>,
+        dispatch: Option<&'r dyn MountDispatch>,
     ) -> McpUnits<'r> {
         McpUnits::new(
             McpBindings {

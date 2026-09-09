@@ -65,7 +65,7 @@ impl MountedLeg for A2aLeg {
         kernel: &busbar_kernel::teller::Kernel,
         ctx: &busbar_kernel::teller::UnitCtx,
         run: busbar_kernel::teller::Run<'_>,
-        dispatch: Option<&dyn crate::root::transports::PlaneDispatch>,
+        dispatch: Option<&dyn crate::root::transports::MountDispatch>,
     ) -> (
         busbar_kernel::teller::Ended,
         Option<crate::root::transports::PlaneAnswer>,
