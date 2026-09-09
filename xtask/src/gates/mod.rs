@@ -145,7 +145,6 @@ pub const REPORT_ONLY: &[Posture] = &[
 /// COMMIT that strikes that entry — the stale-name check above will red until you do, which is the
 /// point.
 pub const CONSTRUCTION_STANDING_REDS: &[&str] = &[
-    "ceiling-rose",
     // The scan-set floor added 2026-09-09 scores an absent subject RED instead of PASS, and this
     // row is what it caught: a rule claiming "a cancellation-token check precedes every `.await` in
     // the route step" that found no `.await` in scope at all, and passed on that basis.
