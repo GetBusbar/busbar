@@ -487,7 +487,12 @@ impl Gate for PlanePurityGate {
             &[ROW_KEY, ROW_TYPE],
             &plant_at,
             "pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire\n",
-            &[ROW_KEY, ROW_TYPE],
+            // THE PLANTED SITE, not the row ids. Every evidence line begins with its row id, so
+            // requiring the report to name `ROW_KEY`/`ROW_TYPE` is satisfied by construction and
+            // proves only that those rows went red — never that the unreasoned marker on THIS line
+            // is what did it. Naming the site is what makes this case say what it means, and it is
+            // the same token the sibling dialect case above already uses.
+            &["planted_plane_purity.rs:1"],
         ));
 
         report.push(green_with(

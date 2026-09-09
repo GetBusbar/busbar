@@ -1555,6 +1555,22 @@ struct Mutation {
     label: &'static str,
     file: &'static str,
     rule: &'static str,
+    /// A TOKEN FROM THE OFFENDER THIS MUTATION PLANTS, which the red row must name.
+    ///
+    /// This used to be the row id, and that made the check unfalsifiable: `evidence_for` formats
+    /// every evidence line as `"{id} {title} {detail}"` and every reconciler problem as `"{id}: …"`,
+    /// so BOTH begin with the id and `contains(id)` is true whatever the gate reported. Twenty-nine
+    /// cases — the largest battery in the crate — therefore proved only "this row went red", never
+    /// "and it named what I planted", which `Case::failure`'s own message calls not an accepted
+    /// answer.
+    ///
+    /// Each token below is a phrase out of the FINDING, not out of the title: a rule with two
+    /// different violations (R14's tag-instead-of-sha and its missing Dependabot comment; R7's
+    /// `type=semver` and its `latest`) has two mutations, and the token is what tells them apart.
+    /// Where a rule's two mutations are two YAML SPELLINGS of one violation — R1's block and flow
+    /// tag triggers — the finding is legitimately identical and so is the token; the case proves
+    /// the rule saw the offender, not which spelling produced it.
+    names: &'static str,
     apply: fn(&str) -> String,
     /// The mutation CREATES the file rather than editing it. Exactly one rule asserts a file's
     /// ABSENCE, so the only violation that exists for it is the file coming back.
@@ -1577,7 +1593,7 @@ impl Mutation {
             }
             let mut ov = Overlay::new();
             ov.set(&rel, (self.apply)(""));
-            return prove_red(cx, gate, self.label, &[self.rule], ov, &[self.rule]);
+            return prove_red(cx, gate, self.label, &[self.rule], ov, &[self.names]);
         }
         let original = match cx.read(&rel) {
             Ok(t) => t,
@@ -1602,7 +1618,7 @@ impl Mutation {
         }
         let mut ov = Overlay::new();
         ov.set(&rel, mutated);
-        prove_red(cx, gate, self.label, &[self.rule], ov, &[self.rule])
+        prove_red(cx, gate, self.label, &[self.rule], ov, &[self.names])
     }
 }
 
@@ -1636,6 +1652,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R15 the promote's attestation check drops --signer-workflow",
             file: "release.yml",
             rule: "R15",
+            names: "runs without --signer-workflow",
             apply: |t| drop_line_starting(t, "--signer-workflow "),
             creates: false,
         },
@@ -1647,6 +1664,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R15 the signer is named as the CALLER instead of the attesting workflow",
             file: "release.yml",
             rule: "R15",
+            names: "which does not run actions/attest-build-provenance in this tree",
             apply: |t| {
                 replace_once(
                     t,
@@ -1662,6 +1680,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R14 an action reverts from a sha to a force-movable tag",
             file: "docker.yml",
             rule: "R14",
+            names: "which is a ref the action's owner can force-move",
             apply: |t| retag_first_pin(t, false),
             creates: false,
         },
@@ -1671,6 +1690,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R14 a pin loses the trailing tag comment Dependabot reads",
             file: "docker.yml",
             rule: "R14",
+            names: "is a bare sha with no trailing",
             apply: |t| retag_first_pin(t, true),
             creates: false,
         },
@@ -1678,6 +1698,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R1 a v* tag trigger comes back",
             file: "release.yml",
             rule: "R1",
+            names: "is triggered by a `v*` tag push",
             apply: |t| {
                 replace_once(
                     t,
@@ -1693,6 +1714,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R1 a v* tag trigger comes back as a FLOW sequence",
             file: "release.yml",
             rule: "R1",
+            names: "is triggered by a `v*` tag push",
             apply: |t| {
                 replace_once(
                     t,
@@ -1710,6 +1732,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R11 a workflow pushes a refspec straight to main",
             file: "release.yml",
             rule: "R11",
+            names: "git push origin main:main",
             apply: |t| {
                 replace_once(
                     t,
@@ -1723,6 +1746,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R3 the release is created without --draft",
             file: "release-stage.yml",
             rule: "R3",
+            names: "creates a GitHub Release without `--draft`",
             apply: |t| drop_line_starting(t, "--draft"),
             creates: false,
         },
@@ -1730,6 +1754,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R4 promote-image stops depending on the staged-record verification",
             file: "release.yml",
             rule: "R4",
+            names: "`promote-image` job does not depend",
             apply: |t| replace_once(t, "needs: [plan, resolve-staged]", "needs: [plan]"),
             creates: false,
         },
@@ -1737,6 +1762,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R4 the staged record stops being gated on the staged verification",
             file: "release-stage.yml",
             rule: "R4",
+            names: "`record-staged` job does not depend",
             apply: |t| {
                 replace_once(
                     t,
@@ -1750,6 +1776,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R5 the gate stops passing stage: staging",
             file: "release-stage.yml",
             rule: "R5",
+            names: "does not pass `stage: staging`",
             apply: |t| replace_once(t, "      stage: staging\n", ""),
             creates: false,
         },
@@ -1757,6 +1784,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R5 the gate stops passing image_ref",
             file: "release-stage.yml",
             rule: "R5",
+            names: "does not pass `image_ref`",
             apply: |t| drop_line_starting(t, "image_ref:"),
             creates: false,
         },
@@ -1764,6 +1792,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R6 the fan-out is re-hung off the record resolution instead of the promote",
             file: "release.yml",
             rule: "R6",
+            names: "`notify-downstream` job does not depend on `promote-release`",
             apply: |t| {
                 replace_once(
                     t,
@@ -1777,6 +1806,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R7 a semver tag reappears in the image build",
             file: "docker.yml",
             rule: "R7",
+            names: "emits `type=semver`",
             apply: |t| {
                 replace_once(
                     t,
@@ -1791,6 +1821,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R7 the moving pointer reappears in the image build",
             file: "docker.yml",
             rule: "R7",
+            names: "emits `latest`",
             apply: |t| {
                 replace_once(
                     t,
@@ -1804,6 +1835,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R9 the red-branch gate is removed from the promote workflow",
             file: "release.yml",
             rule: "R9",
+            names: "has no `branch-green` job",
             apply: |t| replace_once(t, "  branch-green:\n", "  branch-yellow:\n"),
             creates: false,
         },
@@ -1811,6 +1843,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R9 the record resolution stops depending on the red-branch gate",
             file: "release.yml",
             rule: "R9",
+            names: "`promote-image` job is not downstream of `branch-green`",
             apply: |t| {
                 replace_once(
                     t,
@@ -1824,6 +1857,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R9 the staging build stops depending on the red-branch gate",
             file: "release-stage.yml",
             rule: "R9",
+            names: "`gate` job is not downstream of `branch-green`",
             apply: |t| {
                 replace_once(
                     t,
@@ -1839,6 +1873,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R9 an override input is added to bypass a red branch",
             file: "release.yml",
             rule: "R9",
+            names: "`override_red_ci` input",
             apply: |t| {
                 replace_once(
                     t,
@@ -1852,6 +1887,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R10 a fresh image build sneaks back into the main promote",
             file: "release.yml",
             rule: "R10",
+            names: "passes `staging_tag:` to docker.yml",
             apply: |t| {
                 replace_once(
                     t,
@@ -1866,6 +1902,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R10 a promote sneaks into the qa staging workflow",
             file: "release-stage.yml",
             rule: "R10",
+            names: "passes `promote_to:` to docker.yml",
             apply: |t| {
                 replace_once(
                     t,
@@ -1880,6 +1917,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R12 the first gate goes back to keeping one run per workflow name",
             file: "release.yml",
             rule: "R12",
+            names: "collapses the run list with `unique_by`",
             apply: |t| {
                 replace_once(
                     t,
@@ -1894,6 +1932,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R12 the first gate stops selecting the required runs by the branch they ran on",
             file: "release.yml",
             rule: "R12",
+            names: "PROMOTE_SOURCE_BRANCH",
             apply: |t| drop_line_starting(t, "PROMOTE_SOURCE_BRANCH:"),
             creates: false,
         },
@@ -1901,6 +1940,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R12 the first gate stops requiring SUCCESS for a required workflow",
             file: "release.yml",
             rule: "R12",
+            names: "no longer asserts SUCCESS",
             apply: |t| {
                 replace_once(
                     t,
@@ -1914,6 +1954,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R11 the proof-manifest job commits back to the branch it ran on",
             file: "ci.yml",
             rule: "R11",
+            names: "HEAD:${VERSION}",
             apply: |t| {
                 replace_once(
                     t,
@@ -1927,6 +1968,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R11 a workflow pushes straight to main",
             file: "ci.yml",
             rule: "R11",
+            names: "pushes directly to a release branch (`git push origin main`)",
             apply: |t| {
                 replace_once(
                     t,
@@ -1940,6 +1982,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R8 the verification workflow drops the staging inputs",
             file: "verify-deploy.yml",
             rule: "R8",
+            names: "no longer declares a `image_ref` input",
             apply: |t| replace_once(t, "      image_ref:", "      unrelated_input:"),
             creates: false,
         },
@@ -1949,6 +1992,7 @@ fn mutations() -> Vec<Mutation> {
             label: "R2 the tag-on-main workflow comes back",
             file: "tag-on-main.yml",
             rule: "R2",
+            names: "tag-on-main.yml exists again",
             apply: |_| "name: tag-on-main\n".to_string(),
             creates: true,
         },
@@ -1961,6 +2005,7 @@ fn mutations() -> Vec<Mutation> {
             label: "PROVE the promote stops depending on the record resolution",
             file: "release.yml",
             rule: PROVE_ROW,
+            names: "these public-name jobs still run: promote-image",
             apply: |t| replace_once(t, "needs: [plan, resolve-staged]", "needs: [plan]"),
             creates: false,
         },
