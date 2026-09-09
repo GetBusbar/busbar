@@ -1633,6 +1633,244 @@ fn deployment(groups: busbar_unit_admission::GroupTable) -> Deployment {
     deployment_priced(groups, Pricer::flat(0))
 }
 
+/// A DIRECTORY HOLDING ONE KEY, whose grant list is the cell's own control.
+///
+/// `None` is the wildcard an omitted grant list has always been, `Some(list)` is exhaustive across
+/// every kind, and `Some([])` is the empty set. All three are postures an operator can mint, so all
+/// three are cells.
+struct OneScopedKey(Option<Vec<busbar_unit_auth::KeyScope>>);
+
+impl crate::root::kernel::auth_bindings::VirtualKeyDirectory for OneScopedKey {
+    fn verify(
+        &self,
+        credential: &str,
+        _now: u64,
+        _expected_aud: Option<&str>,
+    ) -> Option<crate::root::kernel::auth_bindings::KeyFacts> {
+        (credential == "tok").then(|| crate::root::kernel::auth_bindings::KeyFacts {
+            scopes: self.0.clone(),
+            ..crate::root::kernel::auth_bindings::KeyFacts::unrestricted("key-a2a-1", "the caller")
+        })
+    }
+
+    fn revoked(&self, _credential: &str) -> bool {
+        false
+    }
+}
+
+/// The same node with the SIGNED-KEY ARM behind it and one key in its directory, carrying exactly
+/// the grants named.
+///
+/// The rest of this file's cells run behind the OPEN DOOR, because what they are about — the
+/// admission gauge, the fee, the audit record — is the same whoever is calling. The grant is the
+/// one question that is about the key ITSELF, so its cells are the ones that have to have a key.
+fn deployment_keyed(
+    groups: busbar_unit_admission::GroupTable,
+    scopes: Option<Vec<busbar_unit_auth::KeyScope>>,
+) -> Deployment {
+    let mut node = deployment(groups);
+    node.auth = Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), true));
+    node.auth_bindings =
+        crate::root::kernel::auth_bindings::AuthBindings::new(Arc::new(OneScopedKey(scopes)));
+    node
+}
+
+/// One grant, written the way an operator writes it.
+fn agent_grant(agent: &str) -> busbar_unit_auth::KeyScope {
+    busbar_unit_auth::KeyScope {
+        kind: SCOPE_KIND_AGENT.to_string(),
+        value: agent.to_string(),
+    }
+}
+
+/// A credentialed draft for the agent these fixtures front, so the approve step has a resource to
+/// judge and the authenticate step has something to resolve.
+fn credentialed(op: OpClassId) -> A2aDraft {
+    A2aDraft {
+        credential: Some("tok".to_string()),
+        ..draft(op)
+    }
+}
+
+/// Drive AUTHENTICATE and then APPROVE over one unit — the order the loop drives them in, and the
+/// only order in which the grant can be read at all: the key is resolved at the first step and
+/// enforced at the second, so a cell that called approve alone would be asserting against a unit
+/// that had never authenticated anybody.
+fn authenticate_then_approve(
+    unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+) -> Result<busbar_contract::ScopeFacts, busbar_caps::Refusal> {
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let admitted = Units::authenticate(unit, &busbar_caps::UnitToken::mint(&seal), &a2a_ctx())
+        .into_result(&seal)
+        .expect("the arm admits the credential this directory minted");
+    let who = match admitted {
+        busbar_caps::Authenticated::Principal(p) => p,
+        other => panic!("the arm answered with a challenge rather than a principal: {other:?}"),
+    };
+    Units::approve(
+        unit,
+        &busbar_caps::UnitToken::mint(&seal),
+        &a2a_ctx(),
+        &who,
+        &[],
+    )
+    .into_result(&seal)
+}
+
+/// **THE AGENT GRANT IS THE UNITS CHAIN'S, AND IT REFUSES BEFORE THE BACKEND RUNS.**
+///
+/// Two keys of identical STANDING — both hold the full scope this operation class requires — and
+/// one of them may reach this agent while the other may not. That difference is the whole of what
+/// an agent grant is, and until the enforced key's grant list could be read at the approve step
+/// there was no step of the loop that could see it: a caller was judged on its operation class
+/// alone, so a key minted for one fronted agent could send a message to every other one this
+/// deployment fronts.
+///
+/// The refusal is at APPROVE, which is before Route and therefore before anything is dialled. A
+/// refusal that arrives after the work is done has already cost the operator the work, and on this
+/// plane the work may be a long-running task that reached down into L2 tools.
+#[test]
+fn a_key_reaches_the_agent_it_was_granted_and_no_other() {
+    let granted = deployment_keyed(
+        busbar_unit_admission::GroupTable::default(),
+        Some(vec![agent_grant("probe")]),
+    );
+    let unit = granted.calling_at_on(
+        None,
+        1_700_000_000,
+        false,
+        credentialed(ops::OP_MESSAGE_SEND),
+    );
+    let facts = authenticate_then_approve(&unit).expect("the granted agent is reached");
+    assert_eq!(
+        facts.resources.as_slice(),
+        &[ResourceLocator {
+            kind: SCOPE_KIND_AGENT,
+            name: "probe",
+        }],
+        "and the approval names the agent, so the record does too"
+    );
+
+    // The SAME standing, the SAME operation class, a grant on somebody else's agent.
+    let elsewhere = deployment_keyed(
+        busbar_unit_admission::GroupTable::default(),
+        Some(vec![agent_grant("someone-elses-agent")]),
+    );
+    let unit = elsewhere.calling_at_on(
+        None,
+        1_700_000_000,
+        false,
+        credentialed(ops::OP_MESSAGE_SEND),
+    );
+    assert_eq!(
+        authenticate_then_approve(&unit)
+            .expect_err("a grant on another agent is no grant on this one")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+}
+
+/// **AN EMPTY GRANT LIST IS THE EMPTY SET, AND AN OMITTED ONE IS THE WILDCARD.**
+///
+/// These are the enforced key's own frozen semantics, and the point of stating them HERE is that
+/// this plane does not get to have its own reading of them. A plane that treated an empty list as
+/// "unset" — the tempting reading of an empty collection — would hand every agent to a key an
+/// operator had deliberately scoped down to none.
+#[test]
+fn an_empty_grant_list_grants_no_agent_and_an_omitted_one_grants_every_agent() {
+    let empty = deployment_keyed(
+        busbar_unit_admission::GroupTable::default(),
+        Some(Vec::new()),
+    );
+    let unit = empty.calling_at_on(
+        None,
+        1_700_000_000,
+        false,
+        credentialed(ops::OP_MESSAGE_SEND),
+    );
+    assert_eq!(
+        authenticate_then_approve(&unit)
+            .expect_err("an empty list is the empty set and never `unset`")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+
+    let omitted = deployment_keyed(busbar_unit_admission::GroupTable::default(), None);
+    let unit = omitted.calling_at_on(
+        None,
+        1_700_000_000,
+        false,
+        credentialed(ops::OP_MESSAGE_SEND),
+    );
+    assert!(
+        authenticate_then_approve(&unit).is_ok(),
+        "an omitted list is the only wildcard"
+    );
+}
+
+/// **A GRANT OF THE RIGHT VALUE UNDER THE WRONG KIND IS NO GRANT.**
+///
+/// The cross-kind rule is fail-closed and frozen: an explicit list is exhaustive across ALL kinds,
+/// so a key granted `pool:probe` holds nothing at all on `agent:probe`. The alternative reading —
+/// an unlisted kind is unconstrained, therefore allowed — would have turned every pool-scoped key
+/// in every existing deployment into a wildcard over agents the day this plane started enforcing.
+#[test]
+fn a_grant_under_another_kind_does_not_reach_this_plane() {
+    let wrong_kind = deployment_keyed(
+        busbar_unit_admission::GroupTable::default(),
+        Some(vec![busbar_unit_auth::KeyScope {
+            kind: "pool".to_string(),
+            value: "probe".to_string(),
+        }]),
+    );
+    let unit = wrong_kind.calling_at_on(
+        None,
+        1_700_000_000,
+        false,
+        credentialed(ops::OP_MESSAGE_SEND),
+    );
+    assert_eq!(
+        authenticate_then_approve(&unit)
+            .expect_err("the same value under another kind is not this plane's grant")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+}
+
+/// **A CALLER NO KEY IDENTIFIED IS REFUSED ON A CREDENTIALED ADDRESS, AND ADMITTED ON A DECLARED
+/// OPEN ONE.**
+///
+/// Both walks resolve NO key — one because the front door is open, the other because it is open on
+/// an address that demands a credential — and the two answers differ, which is the point. "No
+/// grants to read" is not "every grant": the fail-closed reading is the only one that does not hand
+/// an unidentified caller every agent this deployment fronts.
+///
+/// The open arm is not a hole. Only an address the plane's OWN surface declares open reaches it,
+/// this protocol declares three, two of them are read-only discovery, and the third — the push
+/// callback — carries its own token INSIDE the request, which is where the shipped release checks
+/// it. Refusing there would turn every real push delivery into a refusal before the surface ever
+/// saw the token.
+#[test]
+fn an_unkeyed_caller_is_refused_on_a_credentialed_address_and_admitted_on_an_open_one() {
+    // The open front door: no chain, no keys arm, so nothing resolves a key.
+    let node = deployment(busbar_unit_admission::GroupTable::default());
+
+    let closed = node.calling_at_on(None, 1_700_000_000, false, draft(ops::OP_MESSAGE_SEND));
+    assert_eq!(
+        authenticate_then_approve(&closed)
+            .expect_err("a credentialed address with no key resolved on it")
+            .reason(),
+        ReasonCode::ScopeDenied
+    );
+
+    let open = node.calling_at_on(None, 1_700_000_000, true, draft(ops::OP_MESSAGE_SEND));
+    assert!(
+        authenticate_then_approve(&open).is_ok(),
+        "a DECLARED-OPEN address has no identity to narrow, and the operation's authority is the \
+         surface's own"
+    );
+}
+
 fn deployment_priced(groups: busbar_unit_admission::GroupTable, pricer: Pricer) -> Deployment {
     let durability = crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
@@ -1686,6 +1924,18 @@ impl Deployment {
         chain: Option<&'r busbar_unit_admission::BucketChain>,
         now: u64,
     ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+        self.calling_at_on(chain, now, false, draft(ops::OP_MESSAGE_SEND))
+    }
+
+    /// The same unit, on a named ADDRESS POSTURE and over a named draft — the two controls the
+    /// agent-grant cells vary and every other cell here leaves alone.
+    fn calling_at_on<'r>(
+        &'r self,
+        chain: Option<&'r busbar_unit_admission::BucketChain>,
+        now: u64,
+        open_address: bool,
+        draft: A2aDraft,
+    ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
         A2aUnits::new(
             A2aBindings {
                 auth: &self.auth,
@@ -1719,8 +1969,9 @@ impl Deployment {
                 // here would make every one of them also a cell about what a router answered.
                 dispatch: None,
                 origin: self.origin,
+                open_address,
             },
-            draft(ops::OP_MESSAGE_SEND),
+            draft,
             Grants::of(Scope::Full),
         )
     }

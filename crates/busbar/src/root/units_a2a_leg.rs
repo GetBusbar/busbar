@@ -210,6 +210,11 @@ pub const SOURCES: &[(&str, &str)] = &[
         "legacy `crates/busbar-a2a/src/taskstore.rs::ACTIVE_TASK_ABANDON_SECS`, the \
                        bound the abandon sweep already retires a task's token at",
     ),
+    (
+        "open_address",
+        "the plane's OWN declared surface, read through `data_plane::addresses_openly` \
+                      — the one reading that also chooses this unit's door",
+    ),
 ];
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -760,6 +765,10 @@ impl A2aLeg {
             mono,
             dispatch,
             origin: self.origin,
+            // THE SAME READING that chose the door two dozen lines up, handed on rather than taken
+            // again. One address, one answer: a second reading is how a path gets admitted through
+            // one door and judged against another's rule.
+            open_address: open,
         }
     }
 

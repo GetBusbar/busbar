@@ -46,8 +46,8 @@ fn every_binding_of_the_unit_has_a_row_in_the_source_table() {
     let fields = bindings_fields();
     assert_eq!(
         fields.len(),
-        24,
-        "the bindings carry twenty-four halves; the table below is written per field, so a change \
+        25,
+        "the bindings carry twenty-five halves; the table below is written per field, so a change \
          in the count is a change this test has to see"
     );
     for field in &fields {
