@@ -1,7 +1,12 @@
-# What CI's keep-proof job must run for this branch, and what the owner proved locally.
+# What CI's keep-proof job must run for this branch, and what was proved locally.
 #
-# Locally proven: `cargo test -p` for the three crates touched, `cargo clippy
-# --all-targets -- -D warnings` over the same three, and `cargo fmt` on the
-# touched files. No workspace build and no local oracle run -- CI judges the rest.
-families = '^(admin\.ops|ledger|billing|documented)([|.]|$)'
-tests = ["busbar-unit-verbs", "busbar-plane-admin", "busbar"]
+# Locally proven: `cargo test -p` for the crates this branch touches, `cargo
+# clippy -p ... --all-targets -- -D warnings` over the same crates, and
+# `cargo fmt --check`. No workspace build and no local oracle run -- CI judges
+# the rest.
+#
+# `busbar-unit-ledger` is on the list because the totals view reads the book it
+# owns: a change to what that view derives is a change this crate's tests are
+# entitled to fail on, even when no line of it moved.
+families = '^(admin\.ops|ledger|documented)([|.]|$)'
+tests = ["busbar-unit-verbs", "busbar-plane-admin", "busbar-unit-ledger", "busbar"]
