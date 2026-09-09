@@ -1,11 +1,11 @@
-//! The closed 66+12+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
+//! The closed 66+13+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
-//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 12 are the
+//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 13 are the
 //! 1.6.0-additive operator verbs the design names by name only (`verify`, `plane_facts`,
 //! `plane_record_write`, `set_operator_key`, `set_escrow`, `chain_break`, `store_restore`,
-//! `reseal_epoch_floor`, `set_dual_control`, `commit_upgrade`, `export_keyset`, `approve`) with
-//! no HTTP method or path of their own — they are new admin-API surface, not part of the 1.5.5 tag.
+//! `reseal_epoch_floor`, `set_dual_control`, `commit_upgrade`, `export_keyset`, `approve`,
+//! `amend_rate_history`) — new admin-API surface, not part of the 1.5.5 tag.
 //!
 //! There is no correction verb among them, and that is the money model rather than an oversight.
 //! busbar is a meter and an audit trail: one sealed facts line per unit, written at the end and
@@ -14,14 +14,16 @@
 //! one, so all five left with their paths. Corrections belong to the calling app, against the
 //! exported sealed lines.
 //!
-//! **Judgment call, flagged for review**: the design does not state an HTTP binding for the 12. This
-//! module assigns each one a `POST /api/v1/admin/<kebab-case-verb>` binding — the same shape every
-//! other mutating admin operation in the 1.5.5 table uses — purely so this plane has *something*
-//! coherent to decode against in the closed-loop tests below. `verify` and `plane_facts` are marked
-//! read-only (they are checks/introspection, not mutations); every other 1.6.0 verb is marked `full`,
-//! matching the design's statement that the irreducible/dual-controlled set is entirely mutating.
-//! If the real HTTP binding differs, only this table's literals need to change — the codec logic
-//! (`find_verb`, path-pattern matching) does not know these are synthetic.
+//! `amend_rate_history` is the one money verb, and it is not one of them. It ADDS a dated rate row
+//! and never edits one; because price is never stored, every read that follows derives its money
+//! against the rows then in force. That is a reprice, which is visible, dated and superseded rather
+//! than deleted — the opposite of the five, whose whole effect was to move a figure already posted.
+//!
+//! **Binding.** `GET verify` and `GET plane-facts` are the design's own words — the two read-only
+//! verbs bind as `GET`, every mutating verb as `POST`, each under the admin prefix as its own
+//! kebab-cased name. Which side of that split a verb falls on is the design's; the exact spelling of
+//! a path is still this table's, so if a real binding ever differs only these literals change — the
+//! codec logic (`find_verb`, path-pattern matching) reads them as data.
 
 use crate::generated::verb_table_1_5_5::VERB_TABLE_1_5_5;
 use busbar_contract::ids::OpClassId;
@@ -35,10 +37,10 @@ pub(crate) struct VerbEntry {
     pub(crate) read_only: bool,
 }
 
-/// The 12 1.6.0-additive verbs, with their synthetic HTTP binding (see the module doc comment).
+/// The 13 1.6.0-additive verbs, with their synthetic HTTP binding (see the module doc comment).
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     VerbEntry {
-        method: "POST",
+        method: "GET",
         path: "/api/v1/admin/verify",
         verb: "verify",
         read_only: true,
@@ -109,11 +111,17 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         verb: "approve",
         read_only: false,
     },
+    VerbEntry {
+        method: "POST",
+        path: "/api/v1/admin/amend-rate-history",
+        verb: "amend_rate_history",
+        read_only: false,
+    },
 ];
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
 ///
-/// Unlike the 12 above, these paths are NOT a judgment call. `/api/v1/admin/ledger/*` is the prefix
+/// Unlike the 13 above, these paths are NOT a judgment call. `/api/v1/admin/ledger/*` is the prefix
 /// the design names for them, and `/api/v1/admin/ledger/openapi.json` is the path it names for the
 /// document that describes the 1.6.0 operations — a document beside the 1.5.5 one rather than
 /// inside it, because the 1.5.5 document's bytes are pinned and an additive path is not a byte.
@@ -154,9 +162,9 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
     },
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 12 1.6.0
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 13 1.6.0
 /// money-governance verbs, and the 5 1.6.0 ledger views.
-pub(crate) const VERB_COUNT: usize = 66 + 12 + 5;
+pub(crate) const VERB_COUNT: usize = 66 + 13 + 5;
 
 /// The verb the `openapi.json` blob is served under, where `encode_response` applies the one
 /// documented exception (an `info.version` substitution over an otherwise verbatim body).
@@ -291,7 +299,7 @@ pub(crate) fn find_verb<'p>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedVerb {
     /// The operation name — the snake-case `operationId` of the pinned tag for the 66, and the
-    /// design's own spelling for the 12.
+    /// design's own spelling for the 13.
     pub verb: &'static str,
     /// The HTTP method the table row was extracted under.
     pub method: &'static str,
@@ -337,7 +345,7 @@ pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
 /// Every row the closed table declares, in the order the plane holds them.
 ///
 /// The generated 1.5.5 rows first, then the 1.6.0 additions — so a caller counting them sees the
-/// 66, the 12 and the 5 as three runs rather than as one undifferentiated list.
+/// 66, the 13 and the 5 as three runs rather than as one undifferentiated list.
 #[must_use]
 pub fn table() -> Vec<ResolvedVerb> {
     all_verbs()
