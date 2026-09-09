@@ -275,7 +275,42 @@ pub trait LedgerView: Send + Sync {
     ) {
         (self.ledger_rows(), self.legacy_rows())
     }
+
+    /// SEAM `quantities-by-class`: the QUANTITIES the ledger holds for each row, by declared meter
+    /// class.
+    ///
+    /// This is the half of the money model the views are built on. A sealed facts line records
+    /// quantities by class and nothing else; the price is never stored, so a view that wants to
+    /// show money has to be handed the quantities and derive it. Handing the view a stored amount
+    /// instead would make the endpoint incapable of reflecting a rate row added after the fact,
+    /// which is the one thing the append-only rate history exists to allow.
+    ///
+    /// The default is EMPTY, and empty means "this view has no quantities to give", never "these
+    /// rows had no quantity". [`render_totals`] reads it that way: a row with no lines answers
+    /// `null` for its priced sum rather than zero, because nothing here has been priced at nothing
+    /// — nothing here has been priced at all.
+    fn quantities(&self) -> QuantitySnapshot {
+        QuantitySnapshot::new()
+    }
+
+    /// SEAM `rate-table-in-force`: the rates a read prices against, as of the read.
+    ///
+    /// `None` is "no operator has said what any of this costs", which is NOT "all of it is free".
+    /// The distinction is the whole of ruling 5: free is an explicit zero row, and an absent row is
+    /// a question nobody has answered. A view that collapsed the two would quietly invoice a
+    /// deployment at nothing.
+    fn rates_in_force(&self) -> Option<std::sync::Arc<busbar_unit_cost::RateCard>> {
+        None
+    }
 }
+
+/// The quantities a ledger view hands out, by row, in the cost unit's own line shape.
+///
+/// `busbar_caps::UsageLine` rather than a shape declared here, because these lines are fed straight
+/// back to `busbar_unit_cost` to be priced: a second shape would need a conversion, and a
+/// conversion is arithmetic this module is not allowed to do.
+pub type QuantitySnapshot =
+    std::collections::BTreeMap<crate::root::ledger_identity::RowKey, Vec<busbar_caps::UsageLine>>;
 
 /// The view a node has before a ledger is bound behind it.
 ///
@@ -478,6 +513,32 @@ impl LedgerView for NodeLedger {
 
     fn migration_marker(&self) -> Option<busbar_unit_ledger::migration::MigrationMarker> {
         self.lock().migration_marker()
+    }
+
+    /// SEAM `quantities-by-class`, UNFILLED ON THIS NODE, and named rather than faked.
+    ///
+    /// The node's book keeps BALANCES — a budget, a drawn figure, a settled figure per bucket,
+    /// dimension, scope and window — and a balance is not a quantity. There is no `tokens_input`
+    /// in it to hand back. The quantities live on the sealed facts line the metering step writes
+    /// at the end of a unit, and the ledger row that carries them into the book is the landing
+    /// this method is waiting for; until it arrives, this answers with nothing it has.
+    ///
+    /// Answering with nothing is the whole point of the seam being here rather than absent. The
+    /// alternative — passing the book's settled figure off as a priced sum — would put a number in
+    /// front of an operator that no rate row produced and that no rate row added later could ever
+    /// move, which is precisely the stored price the model forbids.
+    fn quantities(&self) -> QuantitySnapshot {
+        QuantitySnapshot::new()
+    }
+
+    /// The card the process is holding, which IS the rate table in force for a read taken now.
+    ///
+    /// A relay and no more: the holder is the root's, the card is the cost unit's, and this method
+    /// adds nothing to either. Pinned rather than borrowed, so a `PUT /config/settings` landing
+    /// between two rows of one response cannot price the first half of the table on one card and
+    /// the second half on another.
+    fn rates_in_force(&self) -> Option<std::sync::Arc<busbar_unit_cost::RateCard>> {
+        crate::root::kernel::ROOT_CARD.pin()
     }
 }
 
@@ -690,7 +751,12 @@ fn ledger_answer(body: Vec<u8>) -> AdminAnswer {
 /// than a body invented for a verb nobody wrote one for.
 fn render_ledger_view(verb: KernelVerb, view: &dyn LedgerView) -> Option<Vec<u8>> {
     Some(match verb {
-        KernelVerb::GetLedgerTotals => render_totals(&view.ledger_rows()).into_bytes(),
+        KernelVerb::GetLedgerTotals => render_totals(
+            &view.ledger_rows(),
+            &view.quantities(),
+            view.rates_in_force().as_deref(),
+        )
+        .into_bytes(),
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(&view.checkpoints()).into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             let (ledger, legacy) = view.identity_snapshot();
@@ -771,12 +837,53 @@ fn hex32(bytes: &[u8; 32]) -> String {
     out
 }
 
-/// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and provider.
+/// `GET /api/v1/admin/ledger/totals` — the QUANTITIES the ledger holds per bucket, day, lane and
+/// provider, and what they come to at the rates in force when the read is taken.
 ///
 /// The row width is the reconciliation's row width, and deliberately so: this view and the
 /// reconciliation view are two readings of one set of rows, so a discrepancy an operator finds in
 /// one can be looked up in the other by the same four-part name.
-fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String {
+///
+/// ## Why the money is derived here and not read
+///
+/// PRICE IS NEVER STORED. What a unit leaves behind is a sealed line of quantities by declared
+/// class; money is a conversion applied when somebody asks, against the rate row in force. So this
+/// view publishes the quantities as the truth and the amount as a DERIVATION, and the difference is
+/// not presentational: a rate row added later — including one back-dated, which the append-only
+/// history allows — changes what this endpoint answers on the next read, with nothing rewritten and
+/// no posted line touched. A view that echoed a stored amount could not do that, and an operator
+/// who had mispriced a lane would have to choose between a wrong figure and a rewritten history.
+///
+/// ## No arithmetic here
+///
+/// Every figure below comes out of `busbar_unit_cost`. This function chooses the rows, hands the
+/// lines and the fee count over, and writes down the answer; it does not add, multiply, divide or
+/// truncate. That is the same rule the reconciliation view keeps by calling
+/// `ledger_identity::reconcile` instead of re-deriving the identity: an endpoint that did its own
+/// arithmetic could disagree with the code that gates the release, and then there would be two
+/// answers and no way to tell which one was the money.
+///
+/// ## `null` is a real answer, and it is not zero
+///
+/// `priced_micros` is `null` where there is nothing to price against — no rate card in force, or no
+/// quantity lines for the row. Neither of those means free. Free is an explicit zero rate row, and
+/// an absent one is a question no operator has answered yet; collapsing them would report a
+/// deployment nobody has priced as a deployment that costs nothing.
+///
+/// ## Two money figures, because there are two questions
+///
+/// `settled_micros` is the BOOK'S BALANCE: what this row drew against its bucket and posted when
+/// its units ended, which is the figure the budget was enforced on. `priced_micros` is what those
+/// same quantities are worth at the rates in force NOW. On a deployment whose rates have not moved
+/// they agree; where a rate row has been added since, they differ, and the difference is the
+/// repricing — visible, attributable to the row that caused it, and achieved without editing a
+/// single posted line. Publishing one number would force a choice between showing the operator a
+/// cap they can reconcile and showing them a price they can invoice.
+fn render_totals(
+    rows: &crate::root::ledger_identity::LedgerSnapshot,
+    quantities: &QuantitySnapshot,
+    rates: Option<&busbar_unit_cost::RateCard>,
+) -> String {
     let mut out = String::from("{\"rows\":[");
     for (i, (row, figures)) in rows.iter().enumerate() {
         if i > 0 {
@@ -790,12 +897,50 @@ fn render_totals(rows: &crate::root::ledger_identity::LedgerSnapshot) -> String 
         json_string(&row.lane, &mut out);
         out.push_str(",\"provider\":");
         json_string(&row.provider, &mut out);
-        out.push_str(",\"priced_nanos\":\"");
-        out.push_str(&figures.priced_nanos.to_string());
-        out.push_str("\",\"priced_micros\":");
-        json_amount(i128::from(figures.micros()), &mut out);
+
+        let lines: &[busbar_caps::UsageLine] =
+            quantities.get(row).map(Vec::as_slice).unwrap_or_default();
+        out.push_str(",\"quantities\":{");
+        for (j, line) in lines.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            json_string(line.class.as_str(), &mut out);
+            out.push(':');
+            out.push_str(&line.quantity.to_string());
+        }
+        out.push('}');
+
         out.push_str(",\"fee_count\":");
         out.push_str(&figures.fee_count.to_string());
+
+        // THE BOOK'S BALANCE, AND IT IS NOT THE PRICE. This is what the node drew against the
+        // bucket and posted when the unit ended — the figure the budget was enforced on, at the
+        // rates in force at that moment. It is served beside the derived amount rather than
+        // instead of it because the two answer different questions and an operator needs both:
+        // "what did this consume of my cap" is settled, "what is this worth today" is priced.
+        // They differ exactly when a rate row has been added since, which is a fact worth being
+        // able to see rather than one to hide by publishing a single number.
+        out.push_str(",\"settled_micros\":");
+        json_amount(i128::from(figures.micros()), &mut out);
+
+        out.push_str(",\"priced_micros\":");
+        match rates {
+            Some(card) if !lines.is_empty() => {
+                // The one call that turns quantities into money, made where the money law lives.
+                // The fee is included because a flat fee is the `requests` class priced per unit,
+                // and a total that showed the metered classes and quietly dropped the fee would be
+                // a figure nobody could reconcile against their bill.
+                let micros = busbar_unit_cost::derive_spend_micros(
+                    card,
+                    std::iter::once((row.lane.as_str(), lines)),
+                    figures.fee_count,
+                    true,
+                );
+                json_amount(i128::from(micros), &mut out);
+            }
+            _ => out.push_str("null"),
+        }
         out.push('}');
     }
     out.push_str("]}");
