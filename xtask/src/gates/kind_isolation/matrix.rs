@@ -399,12 +399,18 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
 /// One cell of the matrix.
 #[derive(Debug, Default, Clone)]
 struct Cell {
-    /// The higher of the two scanners, never the lower.
+    /// The HIGHEST of the scanners, never the lowest.
     count: usize,
     by_segments: usize,
     by_windows: usize,
+    /// The third scanner: the line as the COMPILER sees it, escapes decoded and adjacent literals
+    /// joined. See [`decoded_line`].
+    by_decoded: usize,
     /// `word\tfile:line\tNx` for every hit, in scan order — the drain list.
     hits: Vec<String>,
+    /// Every homoglyph hit, `word\tfile:line`. See [`folded_line`]: the ceiling on this list is
+    /// ZERO and no row raises it.
+    confusables: Vec<String>,
 }
 
 impl Cell {
@@ -510,13 +516,21 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
             let cell = matrix.entry((c.name.clone(), h.kind)).or_default();
             cell.by_segments += h.by_segments;
             cell.by_windows += h.by_windows;
-            let n = h.by_segments.max(h.by_windows);
+            cell.by_decoded += h.by_decoded;
+            let n = h.by_segments.max(h.by_windows).max(h.by_decoded);
             cell.count += n;
-            let mark = if h.by_segments == h.by_windows {
-                ""
-            } else {
-                "\t[scanners disagree]"
-            };
+            let mut mark = String::new();
+            if h.by_segments != h.by_windows {
+                mark.push_str("\t[scanners disagree]");
+            }
+            if h.by_decoded > h.by_segments.max(h.by_windows) {
+                mark.push_str("\t[only the decoded reading sees it]");
+            }
+            if h.confusable {
+                mark.push_str("\t[CONFUSABLE]");
+                cell.confusables
+                    .push(format!("{}\t{rel}:{}", h.word, h.line));
+            }
             cell.hits
                 .push(format!("{}\t{rel}:{}\t{n}x{mark}", h.word, h.line));
         }
@@ -541,7 +555,10 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
 /// `--report`, so a crate that starts shipping its plane names inside a `.png` is a line a reader
 /// sees rather than a hole nobody counted. A file with no extension is TEXT, not binary: the
 /// default is to read it.
-fn scan_set(cx: &Ctx) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+/// The scan set: every readable file as (path, text), and every path the binary list dropped.
+type ScanSet = (Vec<(String, String)>, Vec<String>);
+
+fn scan_set(cx: &Ctx) -> Result<ScanSet, String> {
     let all = cx
         .list(&WalkSpec::new(["crates"]))
         .map_err(|e| e.to_string())?;
@@ -598,6 +615,11 @@ struct Hit {
     line: usize,
     by_segments: usize,
     by_windows: usize,
+    /// The reading of the line with `\u{…}`/`\x..` decoded and adjacent literals joined.
+    by_decoded: usize,
+    /// True when the ASCII FOLD of this line finds the needle and no unfolded scanner does — a
+    /// homoglyph, which is never a spelling anybody meant.
+    confusable: bool,
 }
 
 /// THE PER-FILE MEMO, and the reason it exists is the SELF-TEST.
@@ -640,10 +662,34 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
     let mut out: Vec<Hit> = Vec::new();
     for (line, raw) in subject {
         let chars: Vec<char> = raw.chars().collect();
+        // THE OTHER TWO READINGS OF THE SAME LINE, each computed only when the line carries the
+        // thing it is about — a line with no backslash and no `concat!` has nothing to decode, and
+        // an ASCII line has nothing to fold.
+        let decoded = decoded_line(raw).map(|t| {
+            let c: Vec<char> = t.chars().collect();
+            (line_segments(&t), c)
+        });
+        let folded = folded_line(raw).map(|t| {
+            let c: Vec<char> = t.chars().collect();
+            (line_segments(&t), c)
+        });
+
         let mut candidates: Vec<usize> = Vec::new();
-        for b in line_buckets(&chars) {
-            if let Some(idxs) = plan.by_bucket.get(&b) {
-                candidates.extend(idxs);
+        // THE PREFILTER MUST SEE EVERY READING. A two-letter index built from the raw bytes of
+        // `"\x6dcp"` contains no `mc`, so a prefilter over the raw line alone would discard the
+        // needle before either new scanner ever ran — the decode would be a decode of nothing.
+        for c in [
+            Some(&chars),
+            decoded.as_ref().map(|d| &d.1),
+            folded.as_ref().map(|f| &f.1),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for b in line_buckets(c) {
+                if let Some(idxs) = plan.by_bucket.get(&b) {
+                    candidates.extend(idxs);
+                }
             }
         }
         if candidates.is_empty() {
@@ -656,7 +702,16 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
             let n = &plan.needles[i];
             let by_segments = count_by_segments(&segs, &n.parts);
             let by_windows = count_by_windows(&chars, &n.parts);
-            if by_segments == 0 && by_windows == 0 {
+            let by_decoded = decoded
+                .as_ref()
+                .map(|(s, c)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .unwrap_or(0);
+            let by_folded = folded
+                .as_ref()
+                .map(|(s, c)| count_by_segments(s, &n.parts).max(count_by_windows(c, &n.parts)))
+                .unwrap_or(0);
+            let plain = by_segments.max(by_windows).max(by_decoded);
+            if plain == 0 && by_folded == 0 {
                 continue;
             }
             out.push(Hit {
@@ -665,6 +720,8 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
                 line,
                 by_segments,
                 by_windows,
+                by_decoded: by_decoded.max(by_folded),
+                confusable: by_folded > plain,
             });
         }
     }
@@ -678,6 +735,190 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
 // ------------------------------------------------------------------------------------------------
 // the ledger
 // ------------------------------------------------------------------------------------------------
+
+// ------------------------------------------------------------------------------------------------
+// the third scanner, and the fold
+// ------------------------------------------------------------------------------------------------
+
+/// THE LINE AS THE COMPILER SEES IT — the third scanner's subject.
+///
+/// The two original scanners read the BYTES an author typed. Rust does not: `"\x6dcp"` is `mcp`,
+/// `"\u{6c}\u{6c}m"` is `llm`, and `concat!("m", "cp")` is `mcp` before the first pass of macro
+/// expansion is over. A red team wrote all three into a store plugin and every gate stayed green,
+/// because a scanner that reads source bytes and a compiler that reads source meaning are looking
+/// at two different strings and only one of them is what ships.
+///
+/// So this returns the line with `\u{…}` and `\x..` decoded and every run of ADJACENT string
+/// literals joined — `"a", "b"` and `"a" "b"` both become `"ab"`, whether or not they sit inside a
+/// `concat!`, because a scanner that first has to decide it is inside a `concat!` is a scanner with
+/// a parser in it and a parser is a thing that can be walked around. `None` when the line has
+/// nothing to decode: the common case is every line in the tree, and it costs one `contains`.
+fn decoded_line(raw: &str) -> Option<String> {
+    if !raw.contains('\\') && !raw.contains('"') {
+        return None;
+    }
+    let ch: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0usize;
+    while i < ch.len() {
+        if ch[i] == '\\' && i + 1 < ch.len() {
+            // `\u{H…}` — any number of hex digits, the form rustc itself accepts.
+            if ch[i + 1] == 'u' && i + 2 < ch.len() && ch[i + 2] == '{' {
+                if let Some(close) = (i + 3..ch.len()).find(|&j| ch[j] == '}') {
+                    let hex: String = ch[i + 3..close].iter().collect();
+                    if let Some(c) = u32::from_str_radix(hex.trim(), 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                    {
+                        out.push(c);
+                        i = close + 1;
+                        continue;
+                    }
+                }
+            }
+            // `\xHH` — exactly two hex digits.
+            if ch[i + 1] == 'x' && i + 3 < ch.len() {
+                let hex: String = ch[i + 2..i + 4].iter().collect();
+                if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    out.push(c);
+                    i += 4;
+                    continue;
+                }
+            }
+        }
+        out.push(ch[i]);
+        i += 1;
+    }
+    let joined = join_adjacent_literals(&out);
+    (joined != raw).then_some(joined)
+}
+
+/// `"a", "b"` -> `"ab"`. Two string literals with nothing between them but commas and whitespace
+/// are ONE string to the compiler, in a `concat!`, in a `format!`, and wherever else rustc's own
+/// adjacent-literal rule applies.
+fn join_adjacent_literals(s: &str) -> String {
+    let ch: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < ch.len() {
+        if ch[i] == '"' {
+            let mut j = i + 1;
+            while j < ch.len() && (ch[j] == ',' || ch[j].is_whitespace()) {
+                j += 1;
+            }
+            if j > i + 1 && j < ch.len() && ch[j] == '"' {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(ch[i]);
+        i += 1;
+    }
+    out
+}
+
+/// THE ASCII FOLD — the line with every character that is DRAWN as a Latin letter written as that
+/// letter.
+///
+/// `"vоice"` with a Cyrillic `о` is not `voice` to any byte scanner ever written, and it is `voice`
+/// to every human who reads it and to every log line that prints it. That is the whole attack: the
+/// reviewer's eye and the gate's scanner disagree, and the reviewer is the one being trusted.
+///
+/// The fold does three things, in this order: combining marks (U+0300–U+036F) are DROPPED, which is
+/// the decomposition half of NFKD that matters here; the Cyrillic and Greek homoglyph sets for
+/// `a`–`z` are mapped to the letter they are drawn as; and the fullwidth and mathematical Latin
+/// ranges are mapped arithmetically, because they are contiguous alphabets and a hand list of them
+/// would be 1 000 entries somebody would maintain badly.
+///
+/// `None` for an ASCII line, which is very nearly every line.
+fn folded_line(raw: &str) -> Option<String> {
+    if raw.is_ascii() {
+        return None;
+    }
+    let mut out = String::with_capacity(raw.len());
+    let mut folded_any = false;
+    for c in raw.chars() {
+        let u = c as u32;
+        // Combining marks: `e` + U+0301 is `é` is `e`.
+        if (0x0300..=0x036F).contains(&u) {
+            folded_any = true;
+            continue;
+        }
+        match fold_char(c) {
+            Some(f) => {
+                folded_any = true;
+                out.push(f);
+            }
+            None => out.push(c),
+        }
+    }
+    folded_any.then_some(out)
+}
+
+/// The Cyrillic and Greek letters that are DRAWN as a Latin `a`–`z`, plus the Latin-1 accented
+/// letters, plus the contiguous fullwidth and mathematical alphabets.
+fn fold_char(c: char) -> Option<char> {
+    let u = c as u32;
+    // Fullwidth Latin: `Ａ`–`Ｚ`, `ａ`–`ｚ`.
+    if (0xFF21..=0xFF3A).contains(&u) {
+        return char::from_u32(u - 0xFF21 + u32::from(b'a'));
+    }
+    if (0xFF41..=0xFF5A).contains(&u) {
+        return char::from_u32(u - 0xFF41 + u32::from(b'a'));
+    }
+    // Mathematical Alphanumeric Symbols: blocks of 52, upper then lower. The block has holes
+    // (letter-like symbols live elsewhere); a hole folds to a letter that is not quite the right
+    // one, which is a FALSE POSITIVE in a rule whose finding is "this is not ASCII and it looks
+    // like a name", and a false positive here is the bias the owner asked for.
+    if (0x1D400..=0x1D7A8).contains(&u) {
+        let i = (u - 0x1D400) % 52;
+        let base = if i < 26 { i } else { i - 26 };
+        return char::from_u32(base + u32::from(b'a'));
+    }
+    HOMOGLYPHS
+        .iter()
+        .find(|(from, _)| *from == c)
+        .map(|(_, to)| *to)
+}
+
+/// The hand-written half of the fold. Every entry is a character whose GLYPH is a Latin letter in
+/// the fonts a reviewer reads code in.
+#[rustfmt::skip]
+const HOMOGLYPHS: &[(char, char)] = &[
+    // Cyrillic, lower case.
+    ('\u{0430}', 'a'), ('\u{0432}', 'b'), ('\u{0435}', 'e'), ('\u{0437}', 'z'),
+    ('\u{043A}', 'k'), ('\u{043C}', 'm'), ('\u{043D}', 'h'), ('\u{043E}', 'o'),
+    ('\u{0440}', 'p'), ('\u{0441}', 'c'), ('\u{0442}', 't'), ('\u{0443}', 'y'),
+    ('\u{0445}', 'x'), ('\u{0455}', 's'), ('\u{0456}', 'i'), ('\u{0458}', 'j'),
+    ('\u{04BB}', 'h'), ('\u{04CF}', 'l'), ('\u{0501}', 'd'), ('\u{051B}', 'q'),
+    ('\u{051D}', 'w'), ('\u{04AF}', 'y'), ('\u{04BD}', 'e'), ('\u{0475}', 'v'),
+    // Cyrillic, upper case.
+    ('\u{0410}', 'a'), ('\u{0412}', 'b'), ('\u{0415}', 'e'), ('\u{041A}', 'k'),
+    ('\u{041C}', 'm'), ('\u{041D}', 'h'), ('\u{041E}', 'o'), ('\u{0420}', 'p'),
+    ('\u{0421}', 'c'), ('\u{0422}', 't'), ('\u{0423}', 'y'), ('\u{0425}', 'x'),
+    ('\u{0405}', 's'), ('\u{0406}', 'i'), ('\u{0408}', 'j'), ('\u{0500}', 'd'),
+    // Greek, lower case.
+    ('\u{03B1}', 'a'), ('\u{03B2}', 'b'), ('\u{03B3}', 'y'), ('\u{03B5}', 'e'),
+    ('\u{03B6}', 'z'), ('\u{03B7}', 'n'), ('\u{03B9}', 'i'), ('\u{03BA}', 'k'),
+    ('\u{03BC}', 'u'), ('\u{03BD}', 'v'), ('\u{03BF}', 'o'), ('\u{03C1}', 'p'),
+    ('\u{03C3}', 'o'), ('\u{03C4}', 't'), ('\u{03C5}', 'u'), ('\u{03C7}', 'x'),
+    ('\u{03C9}', 'w'), ('\u{03BF}', 'o'),
+    // Greek, upper case.
+    ('\u{0391}', 'a'), ('\u{0392}', 'b'), ('\u{0395}', 'e'), ('\u{0396}', 'z'),
+    ('\u{0397}', 'h'), ('\u{0399}', 'i'), ('\u{039A}', 'k'), ('\u{039C}', 'm'),
+    ('\u{039D}', 'n'), ('\u{039F}', 'o'), ('\u{03A1}', 'p'), ('\u{03A4}', 't'),
+    ('\u{03A5}', 'y'), ('\u{03A7}', 'x'), ('\u{0392}', 'b'),
+    // Latin, precomposed — the accents an editor writes without being asked.
+    ('\u{00E0}', 'a'), ('\u{00E1}', 'a'), ('\u{00E2}', 'a'), ('\u{00E3}', 'a'),
+    ('\u{00E4}', 'a'), ('\u{00E5}', 'a'), ('\u{00E7}', 'c'), ('\u{00E8}', 'e'),
+    ('\u{00E9}', 'e'), ('\u{00EA}', 'e'), ('\u{00EB}', 'e'), ('\u{00EC}', 'i'),
+    ('\u{00ED}', 'i'), ('\u{00EE}', 'i'), ('\u{00EF}', 'i'), ('\u{00F1}', 'n'),
+    ('\u{00F2}', 'o'), ('\u{00F3}', 'o'), ('\u{00F4}', 'o'), ('\u{00F5}', 'o'),
+    ('\u{00F6}', 'o'), ('\u{00F8}', 'o'), ('\u{00F9}', 'u'), ('\u{00FA}', 'u'),
+    ('\u{00FB}', 'u'), ('\u{00FC}', 'u'), ('\u{00FD}', 'y'), ('\u{00FF}', 'y'),
+    ('\u{0107}', 'c'), ('\u{010D}', 'c'), ('\u{0111}', 'd'), ('\u{0142}', 'l'),
+    ('\u{0144}', 'n'), ('\u{0161}', 's'), ('\u{017E}', 'z'), ('\u{0131}', 'i'),
+];
 
 /// The ledger in its two halves, projected out of the ONE registry reader in the parent module.
 ///
@@ -1033,6 +1274,24 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             offenders.push(format!(
                 "dead-edge\t{src} -> {dst}\tthe `[[edge]]` row covers nothing: no crate of kind \
                  {src} names {dst} vocabulary any more. Strike the class."
+            ));
+        }
+    }
+
+    // A HOMOGLYPH IS NEVER A SPELLING ANYBODY MEANT, AND ITS CEILING IS ZERO.
+    //
+    // Every other number in this row is a ratchet against a `[[cell]]` row, because every other
+    // number counts a word somebody wrote on purpose and the question is whether there are MORE of
+    // them than last week. This one is different in kind: a token whose ASCII fold is a plane's
+    // name and whose raw bytes are not is a token that reads as that name to the reviewer and to
+    // nothing else. There is no count of those that is the right count, so there is no row that
+    // raises it — the ceiling is zero, exactly, and it is measured at zero on this tree today.
+    for ((krate, kind), cell) in &matrix {
+        for c in &cell.confusables {
+            offenders.push(format!(
+                "confusable\t{krate} \u{d7} {kind}\t{c}\ta token whose ASCII fold is this \
+                 kind's vocabulary and whose raw bytes are not — a homoglyph reads as the name to \
+                 every reviewer and to no scanner. The ceiling is 0 and no `[[cell]]` row raises it."
             ));
         }
     }
@@ -1464,6 +1723,61 @@ pub fn selftest(
         &["busbar-transport-tcp", "plane"],
     ));
 
+    // -- THE SPELLING THE COMPILER READS AND THE SCANNER DID NOT --------------------------------
+
+    // `"\x6dcp"` IS `mcp`. Three plants, three green gates, on the afternoon the scanners read
+    // source bytes and the compiler read source meaning. See [`decoded_line`].
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an escape-encoded plane name in a transport -- the compiler reads `\\x6dcp` as `mcp`",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/leak.rs",
+            "pub const HX: &str = \"\\x6dcp\";\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the `\\u{…}` spelling of the same name is the same name",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/leak.rs",
+            "pub const UN: &str = \"\\u{6c}\\u{6c}m\";\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    // A NAME SPLIT ACROSS TWO ADJACENT LITERALS IS ONE NAME.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane name split across a `concat!` of two literals is one name",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/leak.rs",
+            "pub const CS: &str = concat!(\"m\", \"cp\");\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    // A HOMOGLYPH. The `o` below is U+043E, Cyrillic. It reads as `voice` to every human being who
+    // looks at it and to no byte scanner ever written, which is the whole of the attack.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a Cyrillic homoglyph inside a plane name is refused as a confusable, at a ceiling of zero",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/leak.rs",
+            "pub const UC: &str = \"v\u{43e}ice\";\n",
+        ),
+        &["confusable", "busbar-transport-tcp"],
+    ));
+
     // THE LEDGER ITSELF GONE. A row that cannot read its allowance is not a row that found nothing.
     let mut gone = crate::ctx::Overlay::new();
     gone.remove(LEDGER);
@@ -1487,6 +1801,40 @@ mod tests {
             count_by_segments(&line_segments(line), &n),
             count_by_windows(&line.chars().collect::<Vec<char>>(), &n),
         )
+    }
+
+    #[test]
+    fn the_third_scanner_reads_what_the_compiler_reads() {
+        assert_eq!(
+            decoded_line(r#"let s = "\x6dcp";"#).as_deref(),
+            Some(r#"let s = "mcp";"#)
+        );
+        assert_eq!(
+            decoded_line(r#"let s = "\u{6c}\u{6c}m";"#).as_deref(),
+            Some(r#"let s = "llm";"#)
+        );
+        assert_eq!(
+            decoded_line(r#"concat!("m", "cp")"#).as_deref(),
+            Some(r#"concat!("mcp")"#)
+        );
+        // Nothing to decode is `None`, which is the whole tree and must cost one `contains`.
+        assert_eq!(decoded_line("let x = 1;"), None);
+    }
+
+    #[test]
+    fn the_fold_maps_every_homoglyph_and_leaves_ascii_alone() {
+        assert_eq!(
+            folded_line("let s = \"v\u{43e}ice\";").as_deref(),
+            Some("let s = \"voice\";")
+        );
+        assert_eq!(folded_line("\u{3bf}pen\u{430}i").as_deref(), Some("openai"));
+        assert_eq!(
+            folded_line("\u{ff4d}\u{ff43}\u{ff50}").as_deref(),
+            Some("mcp")
+        );
+        // Combining marks are dropped, so `e` + U+0301 folds to `e`.
+        assert_eq!(folded_line("voice\u{301}").as_deref(), Some("voice"));
+        assert_eq!(folded_line("plain ascii"), None);
     }
 
     #[test]
