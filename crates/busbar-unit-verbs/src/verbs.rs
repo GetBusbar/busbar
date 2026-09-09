@@ -9,7 +9,7 @@
 //! What happens before a verb's own effect, for EVERY verb, in this order:
 //!
 //! 1. **Scope.** `granted.allows(required_scope(verb))` — refused `Unauthorized` otherwise. Scope
-//!    is resolved from [`crate::verb::LEGACY_VERBS`] for a legacy verb; the 12 new verbs and the
+//!    is resolved from [`crate::verb::LEGACY_VERBS`] for a legacy verb; the 13 new verbs and the
 //!    named surfaces are `Full`-scoped mutations and reads respectively by construction (a `Get*`
 //!    surface is a read, everything else in that group is a mutation the calling context must
 //!    already be authorized for by the time it reaches this crate — the admin plane's own auth
@@ -426,7 +426,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     }
 
     /// The generic dispatcher for every other verb: every legacy operation but the two above, the
-    /// 12 new verbs (posture-gated), and nothing else — a caller for `PostKeys`/`PostKeysIdRotate`
+    /// 13 new verbs (posture-gated), and nothing else — a caller for `PostKeys`/`PostKeysIdRotate`
     /// or a named surface must use the dedicated method / must not call this crate at all.
     /// `PostKeys` and `PostKeysIdRotate` are refused here rather than served, because this path
     /// carries none of the replay machinery their own methods do.
