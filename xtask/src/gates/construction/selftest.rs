@@ -854,8 +854,39 @@ fn vocabulary_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
 }
 
 /// The plane/price wall and the composition root's stand-ins.
+/// A NEEDLE LIST IS PLANTED NEEDLE BY NEEDLE, AND EVERY ONE IS NAMED.
+///
+/// A rule whose subject is a LIST of spellings is one row over as many independent checks as the
+/// list is long, and a plant that exercises three of five leaves the other two deletable with the
+/// case still red and the self-test still reporting the gate proven. Both lists this helper is used
+/// for had that gap when it was written: the doubles plant named three of five forbidden spellings,
+/// and the fee plant named one of three fee fields — and the ceilings file's own comment beside
+/// `fee_fields` records the rule having already gone blind once, on the other side of that list,
+/// for exactly this reason.
+///
+/// The plant is derived from the list, one file per entry, so a spelling added to the ceilings file
+/// arrives with its own proof and a spelling dropped from the SCAN is a case that stops being red.
+fn plant_each(ov: &mut Overlay, dir: &str, tag: &str, needles: &[String]) -> Vec<String> {
+    let mut named = Vec::new();
+    for (i, needle) in needles.iter().enumerate() {
+        let rel = format!("{dir}/zz_planted_{tag}_{i}.rs");
+        ov.set(
+            &rel,
+            format!("pub fn planted_{tag}_{i}() {{\n    let _ = {needle};\n}}\n"),
+        );
+        named.push(rel);
+    }
+    named
+}
+
 fn money_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
     let mut r = Report::new();
+    let cfg = ConstructionGate::cfg(cx).ok();
+    let listed = |rule: &str, key: &str| -> Vec<String> {
+        cfg.as_ref()
+            .and_then(|c| c.rule(rule).ok().map(|t| t.list_of(key)))
+            .unwrap_or_default()
+    };
 
     let mut ov = on(base);
     ov.set(
@@ -865,28 +896,43 @@ fn money_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
     );
     ov.set(
         "crates/busbar-contract/src/zz_planted_pricing.rs",
-        "pub fn planted_pricing() {\n    let _ = cost_price_usage(usage);\n    let _ = \
-         per_request_fee_cents;\n}\n",
+        "pub fn planted_pricing() {\n    let _ = cost_price_usage(usage);\n}\n",
     );
+    let fee_fields = listed("one-pricing-site", "fee_fields");
+    if fee_fields.is_empty() {
+        r.note_infra_failure(
+            "[rules.one-pricing-site] lists no `fee_fields`, so the fee-reader rule is planted \
+             against nothing",
+        );
+    }
+    let mut naming = plant_each(&mut ov, "crates/busbar-contract/src", "fee", &fee_fields);
+    naming.extend(strings(&[
+        "zz_planted_money.rs",
+        "`cost_price_usage(` at crates/busbar-contract/src/zz_planted_pricing.rs",
+    ]));
     r.push(prove_red(
         cx,
         gate,
-        "a plane codec names a rate card and the cost unit, and a second site prices a unit and \
-         reads the per-request fee",
+        "a plane codec names a rate card and the cost unit, a second site prices a unit, and EVERY \
+         configured fee field is read where the card does not live",
         &[
             "plane-no-money",
             "one-pricing-site",
             "one-pricing-site:fee-fields",
         ],
         ov,
-        &[
-            "zz_planted_money.rs",
-            "`cost_price_usage(` at crates/busbar-contract/src/zz_planted_pricing.rs",
-            "zz_planted_pricing.rs",
-        ],
+        &refs(&naming),
     ));
 
     let mut ov = on(base);
+    let doubles = listed("no-test-doubles-in-production", "forbidden");
+    if doubles.is_empty() {
+        r.note_infra_failure(
+            "[rules.no-test-doubles-in-production] lists no `forbidden` spellings, so the rule is \
+             planted against nothing",
+        );
+    }
+    let mut double_naming = plant_each(&mut ov, "crates/busbar/src", "double", &doubles);
     ov.set(
         "crates/busbar/src/zz_planted_double.rs",
         "pub fn planted_double() {\n    let _ = NullShipper;\n    let _ = RecordingRows;\n    let \
@@ -930,10 +976,13 @@ fn money_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         // be a check that passes whatever the plant did. The plant still exercises the rule's whole
         // path, which is what `covers` claims; the RED transition for that row is not provable
         // while the tree is over its own ratchet, and that is a fact about the tree.
-        &[
-            "zz_planted_double.rs",
-            "the reviewed stand-ins that are doubles rather than real values only shrink",
-        ],
+        &refs(&{
+            double_naming.extend(strings(&[
+                "zz_planted_double.rs",
+                "the reviewed stand-ins that are doubles rather than real values only shrink",
+            ]));
+            double_naming
+        }),
     ));
     r
 }
