@@ -35,8 +35,9 @@
 #                          (default: the ref `ceiling-rose` uses, so one branch has one base)
 #   GATE_MUTANTS_JOBS      cargo-mutants --jobs (default 4)
 #   GATE_MUTANTS_TIMEOUT   per-mutant test timeout in seconds (default 5400)
-#   GATE_MUTANTS_BASELINE  `run` (default) or `skip`; the workflow skips it per-shard because the
-#                          scope job runs the unmutated proof once for the whole commit
+#   GATE_MUTANTS_BASELINE  `run` (default, and what CI uses) or `skip` for hand debugging only —
+#                          see the long comment by the `cargo mutants` invocation for why skipping
+#                          it turns the whole campaign green over nothing
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -203,10 +204,21 @@ gm_run_shard() {
   # --copy-vcs true: `ceiling-rose` and the kind-isolation base comparisons READ GIT (they diff the
   #   branch's ceilings against the merge-base blob). Without `.git` in the scratch copy those rows
   #   cannot run, the baseline goes red, and the shard measures nothing.
-  # --baseline: `run` proves the command is green unmutated before believing any "caught". The
-  #   workflow sets `skip` and runs that proof ONCE, in the scope job, because the baseline is a
-  #   property of the COMMIT and not of the shard — paying for it in all N shards is the single
-  #   biggest term in the wall clock. A hand run gets `run` by default.
+  # --baseline: RUN IT, IN EVERY SHARD, AND DO NOT BE TALKED OUT OF IT.
+  #
+  #   The first version of this script skipped the per-shard baseline and proved the unmutated
+  #   command once, in a separate job, on the grounds that the baseline is a property of the COMMIT
+  #   and paying for it N times is the largest term in the wall clock. That reasoning is wrong, and
+  #   the first real run proved it wrong in the worst direction: `cargo test -p xtask --lib` passes
+  #   on the checkout and FAILS inside cargo-mutants' scratch copy (two `audit_ledger` cases go red
+  #   there). Every mutant therefore "failed the tests" for a reason that had nothing to do with the
+  #   mutation, every mutant was reported CAUGHT, and the job was GREEN over a campaign that had
+  #   measured nothing at all.
+  #
+  #   The baseline is not a property of the commit. It is a property of the commit IN THIS
+  #   ENVIRONMENT, and the environment is the scratch copy, which is exactly what the shard is the
+  #   only thing that can see. cargo-mutants makes it the default for this reason. `skip` is left
+  #   reachable by `GATE_MUTANTS_BASELINE` for hand debugging and is never what CI uses.
   local jobs="${GATE_MUTANTS_JOBS:-4}" tmo="${GATE_MUTANTS_TIMEOUT:-5400}"
   local baseline="${GATE_MUTANTS_BASELINE:-run}"
   ( cd "$here" && XTASK_GATE_MUTATION_PROOF=1 XTASK_GATE_CEILING_SECS=3600 cargo mutants \

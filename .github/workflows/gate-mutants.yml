@@ -105,11 +105,15 @@ jobs:
   # -------------------------------------------------------------------------------------------
   # THE BASELINE. The test command, on the UNMUTATED tree, once for the whole commit.
   #
-  # cargo-mutants can do this per shard (`--baseline run`) and that is its default; paying for it
-  # in all 24 shards is the single largest term in the wall clock, and it measures the same fact 24
-  # times. It runs here instead, in parallel with the shards, and the shards run `--baseline skip`.
-  # If this job is red, `gate-mutants` is red: a shard's "caught" means nothing when the command
-  # was already failing before anything was mutated.
+  # THE SHARDS RUN THEIR OWN BASELINE TOO, and this job does not replace it: a shard's baseline is
+  # about the scratch copy cargo-mutants builds, and this one is about the checkout. They are
+  # different environments and the first run of this workflow found them disagreeing — the lib
+  # suite passes here and fails there, which under a skipped per-shard baseline reported every
+  # mutant CAUGHT over a campaign that measured nothing.
+  #
+  # What this job adds is the plain statement, on the tree as it actually stands, that the four
+  # gates DO hold their own planted faults. If it is red, `gate-mutants` is red, and no shard's
+  # "caught" means anything.
   # -------------------------------------------------------------------------------------------
   baseline:
     name: gate-mutants baseline (the four gates, unmutated)
@@ -179,8 +183,11 @@ jobs:
         run: cargo install cargo-mutants --version "${CARGO_MUTANTS_VERSION}" --locked
       - name: Mutate the changed gate code, shard ${{ matrix.shard }}
         env:
-          # The baseline job proves the unmutated command for the whole commit; see its comment.
-          GATE_MUTANTS_BASELINE: skip
+          # NOT `skip`. The baseline is a property of the commit IN THE SCRATCH COPY, and the
+          # scratch copy is a thing only the shard can see — the first run of this job proved it,
+          # by reporting every mutant CAUGHT because the unmutated test command was already failing
+          # there for an unrelated reason. See scripts/gate-mutants.sh.
+          GATE_MUTANTS_BASELINE: run
           GATE_MUTANTS_JOBS: "4"
           GATE_MUTANTS_TIMEOUT: "5400"
         run: scripts/gate-mutants.sh --shard "${{ matrix.shard }}/${{ needs.scope.outputs.shards }}"
