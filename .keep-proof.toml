@@ -5,19 +5,15 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
-#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
-#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
-#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
-#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
-#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
-#              the docs make about the gate, which is the one family this branch edits. `neutrality`
-#              is not in scope on purpose — this branch touches no plane and no transport source, so
-#              replaying that family would be a claim about code it did not change. An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch changes the generic
+#              HTTP mount's reply channel: instead of a buffered status/headers/bytes triple, the
+#              mount now carries the plane's own response through untouched. Every mounted plane
+#              rides that channel, so the honest scope is every plane that can be mounted (a2a,
+#              mcp, llm) plus the neutrality, admin-ops and billing cells that assert on what a
+#              mounted answer looks like on the wire — headers, media type, and the moment a body
+#              is accounted for.
+#   tests    — the packages whose test binaries the sharded legs must include by name: the root
+#              (`busbar`, where the mount and its cells live), the three planes, the llm plane
+#              crate, and the substrate the mount's contract types come from.
+families = '^(a2a|mcp|llm|neutrality|admin\.ops|billing)([|.]|$)'
+tests = ["busbar", "busbar-a2a", "busbar-mcp", "busbar-llm", "busbar-plane-llm", "busbar-substrate"]
