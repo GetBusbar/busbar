@@ -103,7 +103,8 @@ pub const ROW_MATRIX: &str = "kind-isolation:matrix";
 /// existed, which is why neither invents a second place.
 pub const LEDGER: &str = "qa/kind-isolation.toml";
 
-/// A scan set below this is not a tree this row can be a row over. `.rs` and `.toml` together.
+/// A scan set below this is not a tree this row can be a row over. EVERY file under `crates/`
+/// whose extension is not on [`BINARY_EXTS`], which is 1 707 of them today.
 const MIN_SCANNED: usize = 600;
 
 // ------------------------------------------------------------------------------------------------
@@ -458,7 +459,9 @@ struct Plan {
     fingerprint: String,
 }
 
-fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<(Matrix, usize), String> {
+type Measured = (Matrix, usize, Vec<String>);
+
+fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<Measured, String> {
     let vocab = vocabulary(crates);
     let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
 
@@ -489,23 +492,11 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<(Matrix, usize), String> {
         plan.insert(c.dir.as_str(), p);
     }
 
-    let mut files = cx
-        .walk(&WalkSpec::new(["crates"]).ext("rs"))
-        .map_err(|e| e.to_string())?;
-    files.extend(
-        cx.walk(&WalkSpec::new(["crates"]).ext("toml"))
-            .map_err(|e| e.to_string())?,
-    );
-    if files.len() < MIN_SCANNED {
-        return Err(format!(
-            "{} file(s) under crates/, below the floor of {MIN_SCANNED}",
-            files.len()
-        ));
-    }
+    let (files, skipped) = scan_set(cx)?;
 
     let mut matrix: Matrix = BTreeMap::new();
-    for f in &files {
-        let rel = f.rel_str();
+    for (rel, text) in &files {
+        let rel = rel.clone();
         let Some(dir) = owning_dir(&rel) else {
             continue;
         };
@@ -515,7 +506,7 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<(Matrix, usize), String> {
         let Some(per_kind) = plan.get(dir.as_str()) else {
             continue;
         };
-        for h in scan_file(per_kind, &dir, &rel, &f.text).iter() {
+        for h in scan_file(per_kind, &dir, &rel, text).iter() {
             let cell = matrix.entry((c.name.clone(), h.kind)).or_default();
             cell.by_segments += h.by_segments;
             cell.by_windows += h.by_windows;
@@ -530,7 +521,74 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<(Matrix, usize), String> {
                 .push(format!("{}\t{rel}:{}\t{n}x{mark}", h.word, h.line));
         }
     }
-    Ok((matrix, files.len()))
+    Ok((matrix, files.len(), skipped))
+}
+
+/// EVERY BYTE A CRATE SHIPS, and the ones that are not bytes a reader reads.
+///
+/// The scan set used to be two extensions — `crates/**/*.rs` and `crates/**/*.toml` — and a red
+/// team walked out through the gap five separate ways on one afternoon: a `README.md` that named a
+/// plane and a transport in one sentence, a `.json` routing fixture pulled in with `include_str!`,
+/// a `.yaml` twin of it, a `.inc` of real generated Rust pulled in with `include!`, and a `.txt`.
+/// None of them was reached BY a scanner; every one of them went AROUND the scan set. An extension
+/// list is a promise that the only text a crate ships is text somebody thought of in advance, and
+/// this repository already ships `snap`, `sse`, `golden`, `waivers` and `html` files that no such
+/// list had.
+///
+/// So the set is now EVERYTHING under a crate directory, whatever it is called. The only files left
+/// out are the ones whose extension says they are not text at all — and they are not left out
+/// silently: [`BINARY_EXTS`] is a short, closed list, and every path it drops is NAMED in
+/// `--report`, so a crate that starts shipping its plane names inside a `.png` is a line a reader
+/// sees rather than a hole nobody counted. A file with no extension is TEXT, not binary: the
+/// default is to read it.
+fn scan_set(cx: &Ctx) -> Result<(Vec<(String, String)>, Vec<String>), String> {
+    let all = cx
+        .list(&WalkSpec::new(["crates"]))
+        .map_err(|e| e.to_string())?;
+    let mut files: Vec<(String, String)> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    for rel in all {
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        if let Some(ext) = binary_ext(&rel) {
+            skipped.push(format!("{rel}\t[{ext}: a binary extension, not scanned]"));
+            continue;
+        }
+        // A FILE THIS ROW CANNOT READ IS A REFUSAL, never a file with nothing in it. The only
+        // reason a path under `crates/` that is not on the binary list fails to read as UTF-8 is
+        // that it is binary and unlisted, which is exactly the case a reader must be told about.
+        let text = cx.read(&rel).map_err(|e| {
+            format!(
+                "{rel}: {e} — a file under crates/ that is not on the binary extension list and                  does not read as text is a file this row cannot measure, and an unmeasured file                  is not an empty one. Add its extension to BINARY_EXTS, with a reason."
+            )
+        })?;
+        files.push((rel, text));
+    }
+    if files.len() < MIN_SCANNED {
+        return Err(format!(
+            "{} file(s) under crates/, below the floor of {MIN_SCANNED}",
+            files.len()
+        ));
+    }
+    files.sort();
+    skipped.sort();
+    Ok((files, skipped))
+}
+
+/// The extensions whose contents are not text a scanner can read. SHORT AND CLOSED ON PURPOSE:
+/// every entry here is a hole in the scan set, so the list is the thing a reviewer reads, and
+/// `--report` prints every path each entry dropped.
+const BINARY_EXTS: &[&str] = &[
+    "a", "bin", "bmp", "bz2", "class", "dll", "dylib", "exe", "gif", "gz", "ico", "jar", "jpeg",
+    "jpg", "mov", "mp3", "mp4", "o", "otf", "parquet", "pdf", "png", "rlib", "so", "sqlite", "tar",
+    "tgz", "tiff", "ttf", "wasm", "wav", "webp", "woff", "woff2", "xz", "zip", "zst",
+];
+
+/// The binary extension a path carries, if any — lowercased, and only the final one, so
+/// `wire_map.json.gz` is `gz` and `notes.png.txt` is text.
+fn binary_ext(rel: &str) -> Option<&'static str> {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();
+    BINARY_EXTS.iter().copied().find(|b| *b == ext)
 }
 
 /// One needle found once, on one line.
@@ -742,7 +800,7 @@ pub fn measured_cells(
     cx: &Ctx,
     crates: &[CrateInfo],
 ) -> Result<BTreeMap<(String, String), usize>, String> {
-    let (matrix, _) = measure(cx, crates)?;
+    let (matrix, _, _) = measure(cx, crates)?;
     Ok(matrix
         .into_iter()
         .map(|((krate, kind), cell)| ((krate, kind.to_string()), cell.count))
@@ -818,7 +876,7 @@ fn minted_rows(cx: &Ctx) -> Vec<String> {
 }
 
 pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, ship: bool) -> Row {
-    let (matrix, scanned) = match measure(cx, crates) {
+    let (matrix, scanned, skipped) = match measure(cx, crates) {
         Ok(m) => m,
         Err(e) => {
             return Row::fail(
@@ -1001,6 +1059,13 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
         println!(
             "\nTHE DRAIN LIST (word, file:line, hits):\n{}",
             render_drain(&matrix)
+        );
+        // EVERY HOLE IN THE SCAN SET, BY NAME. A file this row did not read is a file nobody read,
+        // and the only defence against that is that a reader sees the list.
+        println!(
+            "\nNOT SCANNED ({} file(s), binary extensions):\n{}",
+            skipped.len(),
+            skipped.join("\n")
         );
     }
 
@@ -1301,6 +1366,104 @@ pub fn selftest(
         &["duplicate-row", "busbar-kernel × plane"],
     ));
 
+    // -- THE SCAN SET IS EVERYTHING A CRATE SHIPS ------------------------------------------------
+    //
+    // Six plants that went AROUND the two scanners rather than through them, on the afternoon the
+    // scan set was two extensions. None of them is a cleverer spelling; every one of them is a file
+    // the old walk never opened. See [`scan_set`].
+
+    // A README IS THE FIRST THING A READER OF A CRATE READS, and it was the one file under the
+    // crate directory nothing counted.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane named in a transport's own README -- a crate ships its prose too",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/README.md",
+            "# busbar-transport-tcp\n\nUsed by the llm plane over this wire.\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    // A JSON FIXTURE, COMPILED IN. `include_str!` makes it the crate's own bytes; the extension is
+    // the only thing that ever made it invisible.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane routing table in a `.json` fixture under the crate is the crate's text",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/fixtures/leak.json",
+            "{\"planes\": [\"busbar-plane-llm\", \"busbar-plane-mcp\"]}\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    // THE SAME FIXTURE IN THE OTHER SERIALISATION. Two extensions was a list; a list is what the
+    // next fixture format is not on.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the same table in `.yaml` -- the scan set is not an extension list",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/fixtures/leak.yaml",
+            "plane: busbar-plane-voice\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    // AN `include!` OF A NON-`.rs` FILE IS REAL COMPILED CODE. The compiled-set rule resolves the
+    // include; this case proves the SCANNER reads the target whatever it is called.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "generated Rust in a `.inc` file -- compiled code the old scan set never opened",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/gen/names.inc",
+            "pub const GEN: &str = \"busbar-plane-voice\";\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    // A FILE WITH NO EXTENSION AT ALL IS TEXT. The default must be to read, never to skip: a skip
+    // list that grows by accident is the hole this whole section closed.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a file with no extension under a crate is scanned -- the default is text, not skip",
+        &[ROW_MATRIX],
+        plant(
+            "crates/busbar-transport-tcp/src/NOTES",
+            "the a2a plane and the mcp plane both arrive here\n",
+        ),
+        &["busbar-transport-tcp", "plane"],
+    ));
+
+    // THE CARGO PROSE FIELDS. `description`, `keywords` and `readme` are shipped to the registry
+    // under the crate's name, and they are read on exactly the same terms as its source.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a plane named in a transport's Cargo `description`/`keywords` -- shipped prose is scanned",
+        &[ROW_MATRIX],
+        {
+            let rel = "crates/busbar-transport-tcp/Cargo.toml";
+            let text = cx.read(rel).unwrap_or_default();
+            plant(
+                rel,
+                &text.replacen(
+                    "[package]\n",
+                    "[package]\ndescription = \"the wire the llm plane rides\"\nkeywords = [\"mcp\"]\n",
+                    1,
+                ),
+            )
+        },
+        &["busbar-transport-tcp", "plane"],
+    ));
+
     // THE LEDGER ITSELF GONE. A row that cannot read its allowance is not a row that found nothing.
     let mut gone = crate::ctx::Overlay::new();
     gone.remove(LEDGER);
@@ -1324,6 +1487,21 @@ mod tests {
             count_by_segments(&line_segments(line), &n),
             count_by_windows(&line.chars().collect::<Vec<char>>(), &n),
         )
+    }
+
+    #[test]
+    fn the_binary_skip_list_is_the_only_hole_and_it_is_exact() {
+        // Only the FINAL extension counts, the compare is case-insensitive, and no extension at
+        // all is text. A `.md`, a `.json`, a `.yaml`, a `.inc` and a `.snap` are all read.
+        assert_eq!(binary_ext("crates/x/assets/logo.PNG"), Some("png"));
+        assert_eq!(binary_ext("crates/x/tests/wire.json.gz"), Some("gz"));
+        assert_eq!(binary_ext("crates/x/notes.png.txt"), None);
+        assert_eq!(binary_ext("crates/x/src/NOTES"), None);
+        for text in [
+            "a.md", "a.json", "a.yaml", "a.inc", "a.snap", "a.html", "a.golden",
+        ] {
+            assert_eq!(binary_ext(text), None, "{text} must be scanned");
+        }
     }
 
     #[test]
