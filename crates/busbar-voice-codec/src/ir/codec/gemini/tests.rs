@@ -1300,4 +1300,3 @@ fn every_row_of_a_modality_is_counted_not_just_the_first() {
     assert_eq!(u.audio_out, 50, "40 + 10, the case-insensitive rows too");
     assert_eq!(u.text_out, 10);
 }
-
