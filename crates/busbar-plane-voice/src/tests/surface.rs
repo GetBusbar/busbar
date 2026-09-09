@@ -43,6 +43,45 @@ fn the_declared_surface_passes_the_boot_check() {
     assert_eq!(check_surface(&SURFACE), Ok(()));
 }
 
+/// THIS PLANE DECLARES A DUPLEX ROUTE, AND DECLARES NOTHING ELSE.
+///
+/// Two halves, and the second is the one that keeps the declaration from quietly growing a wire
+/// shape nobody chose. Every row here opens a SESSION: this plane's one-shot pair has no wire shape
+/// written down to take a request or a response media type from (`surface.rs` says so at length),
+/// and a row that appeared for one would be a media type invented in a declaration and answered to
+/// conformant clients.
+///
+/// The first half is that the generic walk a duplex wire addresses with — the same
+/// `duplex_binding_at` the mount calls, given this plane's own registry key — reaches every mount
+/// this plane declared. A declaration a wire cannot address is an endpoint that answers nothing.
+#[test]
+fn every_declared_row_opens_a_session_and_every_mount_is_addressable_as_one() {
+    for op in SURFACE.operations {
+        for d in op.dispatch {
+            assert!(
+                d.is_duplex(),
+                "this plane declares its duplex route and nothing else; `{}` carries a row that is \
+                 not a session",
+                op.op
+            );
+        }
+    }
+    for binding in SURFACE.bindings {
+        for mount in binding.mounts {
+            let (addressed, bar) = busbar_contract::transport::surface::duplex_binding_at(
+                &SURFACE,
+                claims::WS_TRANSPORT,
+                mount,
+            )
+            .unwrap_or_else(|| {
+                panic!("`{mount}` is a declared mount and a duplex wire must address it")
+            });
+            assert_eq!(addressed.name, binding.name);
+            assert_eq!(bar, Bar::Credential);
+        }
+    }
+}
+
 /// EVERY DECLARED MOUNT IS ITS OWN DIALECT'S CLAIM, AND NOBODY ELSE'S.
 ///
 /// Both halves, because each on its own is satisfiable by something wrong. A mount no claim matches
@@ -131,7 +170,10 @@ fn both_bindings_demand_a_credential_at_the_upgrade() {
             .iter()
             .flat_map(|op| op.dispatch)
             .filter_map(|d| match d {
-                Dispatch::Document {
+                // The DUPLEX rows and only those. A document row on one of these bindings would be
+                // a request this session will never carry, and reading a bar off one would be
+                // reading the credential rule for an upgrade out of a row about a posted document.
+                Dispatch::Duplex {
                     binding: b, bar, ..
                 } if *b == binding.name => Some(*bar),
                 _ => None,
