@@ -198,20 +198,34 @@ fn gate(args: &[String]) -> i32 {
     // a check that repairs what it is checking has not checked anything, and a caller that wanted
     // both would be asking a gate to make itself pass.
     if cx.env().write {
-        if reg.name != "design-bindings" {
+        // TWO KINDS OF WRITER, and only one of them is this arm's.
+        //
+        // `design-bindings` writes through an associated function of its own, so it is dispatched
+        // here. `config-schema` and `field-inventory` write from INSIDE their `run`, on the same
+        // `cx.env().write` flag — their regeneration is a row of their own report ("Written(n)"),
+        // which is what lets a reader see what was rewritten. Refusing them here made the command
+        // their own error message names (`cargo xtask gate config-schema --write`) unreachable: it
+        // exited 2 saying the gate had nothing to write, while the code that writes sat unread a
+        // few frames down. So they fall through to the normal run, which is where their writing
+        // lives.
+        const RUN_WRITERS: &[&str] = &["config-schema", "field-inventory"];
+        if reg.name != "design-bindings" && !RUN_WRITERS.contains(&reg.name) {
             eprintln!("xtask gate {name}: this gate has nothing to write");
             return 2;
         }
-        return match crate::gates::design_bindings::DesignBindingsGate::write(&cx) {
-            Ok(msg) => {
-                println!("{msg}");
-                0
-            }
-            Err(e) => {
-                eprintln!("xtask gate {name} --write: {e}");
-                3
-            }
-        };
+        // A run-writer falls through to the ordinary run below, which is where its writing lives.
+        if !RUN_WRITERS.contains(&reg.name) {
+            return match crate::gates::design_bindings::DesignBindingsGate::write(&cx) {
+                Ok(msg) => {
+                    println!("{msg}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("xtask gate {name} --write: {e}");
+                    3
+                }
+            };
+        }
     }
 
     // THE PARITY ARM, used by every conversion before its Python or bash is deleted: run the
