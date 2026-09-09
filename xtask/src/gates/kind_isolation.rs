@@ -2201,9 +2201,11 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
         }
     }
 
-    if !scaffolds.is_empty() {
-        // `--report` PRINTS the rows to paste. The whole point of a ledger a human writes is that
-        // the gate hands them the facts and asks only for the sentences.
+    // `--report` PRINTS the rows to paste, and only `--report`. The whole point of a ledger a human
+    // writes is that the gate hands them the facts and asks only for the sentences — but this row
+    // runs once per planted case in the self-test, and printing it there buried the battery's own
+    // verdict under eleven thousand lines of scaffold.
+    if cx.env().report_only && !scaffolds.is_empty() {
         println!(
             "\nTHE {} EDGES WITH NO ROW, ready to paste into {REGISTRY_FILE}:\n{}",
             half.word().to_uppercase(),
@@ -3837,6 +3839,18 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         })
         .collect();
     let mut sites: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // The needle pair each wire is looked for by, derived once: its crate path and its own type.
+    let probes: Vec<(String, String, String)> = wires
+        .iter()
+        .map(|w| {
+            let instance = w.remainder.join("-");
+            (
+                w.name.clone(),
+                format!("busbar_transport_{}::", instance.replace('-', "_")),
+                wire_symbol(&instance).to_lowercase(),
+            )
+        })
+        .collect();
     for f in &files {
         let rel = f.rel_str();
         if !is_shipped_source(&rel) {
@@ -3848,8 +3862,26 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         if kind_of.get(dir.as_str()) == Some(&"transport") {
             continue;
         }
-        for name in wires_named_in(&rel, &f.text, &needles).iter() {
-            sites.entry(name.clone()).or_default().insert(rel.clone());
+        // THE FILE IS LEXED ONCE, NOT ONCE PER WIRE.
+        //
+        // `production_lines` and `blank_literals` are the expensive half of every scan in this
+        // crate, and running them INSIDE the wire loop re-lexed every source file seven times —
+        // once per transport — for an answer that does not depend on which wire is being looked
+        // for. It was 85% of this gate's entire runtime, and through the self-test, which re-runs
+        // the whole gate once per planted case, it was the difference between a battery that
+        // finishes and one that runs past twenty minutes. Nothing about the rule moves; only the
+        // cost does.
+        let lowered: Vec<String> = scan::production_lines(&f.text)
+            .into_iter()
+            .map(|(_, code)| scan::blank_literals(&code).to_lowercase())
+            .collect();
+        for (name, path, sym) in &probes {
+            if lowered
+                .iter()
+                .any(|lower| lower.contains(path) && word_ci(lower, sym))
+            {
+                sites.entry(name.clone()).or_default().insert(rel.clone());
+            }
         }
     }
     for w in &wires {
