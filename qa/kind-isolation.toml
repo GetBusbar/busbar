@@ -2099,7 +2099,7 @@ count = "24"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "contract-transport"
-count = "5"
+count = "6"
 
 [[cell]]
 crate = "busbar-plane-voice"
@@ -2114,7 +2114,7 @@ count = "43"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "transport"
-count = "107"
+count = "108"
 
 [[cell]]
 crate = "busbar-plugin"

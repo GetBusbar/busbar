@@ -27,11 +27,15 @@
 //!
 //! ## Two bindings, one per duplex dialect
 //!
-//! * **[`BINDING_OPENAI_REALTIME`]** — the OpenAI Realtime shape. Its mount is `/v1/realtime`, and
-//!   an event on it names itself in its own `type` member.
+//! * **[`BINDING_OPENAI_REALTIME`]** — the OpenAI Realtime shape. Its mount is `/v1/realtime`.
 //! * **[`BINDING_GEMINI_LIVE`]** — the Gemini Live (`BidiGenerateContent`) shape. Its mount is the
-//!   service path a Gemini-shaped client resolves against a base URL, and an event on it names
-//!   itself by its sole top-level member rather than by a value inside one.
+//!   service path a Gemini-shaped client resolves against a base URL.
+//!
+//! How an event INSIDE either session names itself is not declared here and is not declarable here.
+//! A frame of an open session is not addressed: which operation it is, is what this plane's own
+//! reader makes of it, from the frames before it. The duplex kind carries the three facts a mount
+//! has before the upgrade — the binding, the method, the bar — and stops there, which is the whole
+//! of what a wire is entitled to know.
 //!
 //! ## Every mount is its own claim's, and nobody else's
 //!
@@ -97,40 +101,32 @@ const MOUNT_OPENAI_REALTIME: &str = "/v1/realtime";
 const MOUNT_GEMINI_LIVE: &str =
     "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
-/// The member of an OpenAI Realtime frame that names the event.
-const MEMBER_OPENAI_TYPE: &str = "type";
-
-/// The value of that member on the frame that opens a session's configuration.
-const NAME_OPENAI_SESSION_UPDATE: &str = "session.update";
-
-/// The top-level member of a Gemini Live frame that opens a session.
-///
-/// This dialect names an operation by the frame's SOLE top-level member rather than by a value
-/// inside one, so the member and the name are the same word here — and stating that is what keeps
-/// the row honest. A reader that went looking for a name INSIDE this member would find the setup
-/// object instead, which is why the mount reads the bar and the media type off this row and never
-/// the name.
-const MEMBER_GEMINI_SETUP: &str = "setup";
-
 /// Opening a duplex session: the one addressable operation of this surface.
 ///
-/// Two dispatches, one per dialect, and both behind a credential. A session presents a credential
-/// ONCE, on the upgrade, and never again — [`Dialect::authenticates_from_session`] is the same fact
-/// stated on the plane's side — so a bar declared open here would be a session that could never be
-/// resolved to a principal at any later frame either.
+/// Two rows, one per dialect, and both in the DUPLEX kind. A session is addressed by its binding —
+/// the binding's own mounts are where — because after the upgrade this wire has no target, no method
+/// and no document, and what the frames that follow mean is this plane's to decide from the session's
+/// own state rather than something any dispatch row could match.
+///
+/// Until the contract carried a duplex kind these were document rows, and each had to carry a
+/// `member` and a `name` that nothing resolved and nothing could resolve: the events they named are
+/// frames INSIDE an open session, and a frame is not addressed. They said, in the only vocabulary
+/// available, that a mount could read an operation's name out of an arriving document here — which
+/// left a mount unable to tell this from an ordinary posted-envelope endpoint on the same wire.
+///
+/// Both behind a credential. A session presents one ONCE, on the upgrade, and never again —
+/// [`Dialect::authenticates_from_session`] is the same fact stated on the plane's side — so a bar
+/// declared open here would be a session that could never be resolved to a principal at any later
+/// frame either.
 const D_SESSION_OPEN: &[Dispatch] = &[
-    Dispatch::Document {
+    Dispatch::Duplex {
         binding: BINDING_OPENAI_REALTIME,
         method: UPGRADE,
-        member: MEMBER_OPENAI_TYPE,
-        name: NAME_OPENAI_SESSION_UPDATE,
         bar: Bar::Credential,
     },
-    Dispatch::Document {
+    Dispatch::Duplex {
         binding: BINDING_GEMINI_LIVE,
         method: UPGRADE,
-        member: MEMBER_GEMINI_SETUP,
-        name: MEMBER_GEMINI_SETUP,
         bar: Bar::Credential,
     },
 ];
