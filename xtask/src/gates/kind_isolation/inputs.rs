@@ -45,10 +45,14 @@ const PLUGIN_REGISTRY: &str = "plugins.yaml";
 /// THE REGISTRY'S KIND WORDS, each mapped onto the kind it names in this gate's table.
 ///
 /// `plugins.yaml` says in its own header that a plugin is `store | auth | hook | secret` — the four
-/// kinds the C ABI selects on — and it says `hook` where the table here says `hooks`. That is a
-/// THIRD kind vocabulary beside this gate's and `qa/construction.toml`'s, and the way three
-/// vocabularies stay one is that each is mapped, once, in the file that reads it. A word here that
-/// maps onto nothing is that vocabulary starting to drift.
+/// kinds the C ABI selects on — and it says `hook` where the table here says `hooks`.
+///
+/// `:truths` reconciles THREE places that name the kinds: `ARCHITECTURE.md`, the kind table here,
+/// and `qa/construction.toml`. This is the FOURTH, and it is not one of that row's three because it
+/// is a different KIND of file: the others describe the tree, and this one describes an out-of-tree
+/// population the loader will act on. The way four vocabularies stay one is that each is mapped,
+/// once, in the file that reads it; a word here that maps onto nothing is this one starting to
+/// drift.
 const REGISTRY_KIND_KEYS: &[(&str, &str)] = &[
     ("store", "store"),
     ("auth", "auth"),
