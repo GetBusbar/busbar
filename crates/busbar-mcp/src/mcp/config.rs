@@ -821,6 +821,48 @@ pub struct McpServerDefCfg {
     pub hooks: Vec<String>,
 }
 
+impl McpServerDefCfg {
+    /// **THE ADDRESS THIS REGISTRATION IS REACHED AT**, verbatim as the operator wrote it.
+    ///
+    /// Empty for a registration this node LAUNCHES rather than dials — the grammar's own rule, which
+    /// [`validate_endpoint`] states: a spawning transport takes `command:`/`args:`/`env:`/`cwd:` and
+    /// no `url:` at all. So an empty answer here is "there is no address", not "the operator left it
+    /// out", and a caller that keys a network fact by host gets nothing to key rather than a
+    /// fabricated one.
+    ///
+    /// A reader rather than a public field, for the reason every other key on this struct is
+    /// `pub(crate)`: what a composition outside this crate needs is the three FACTS below, and
+    /// opening the whole registration to reach them would make every unrelated key part of this
+    /// crate's public surface — including the credential ones, which nothing outside should be able
+    /// to name at all.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// **WHETHER THIS REGISTRATION IS REACHED BY SPAWNING A CHILD** rather than by addressing an
+    /// endpoint.
+    ///
+    /// The transport question, asked of the transport: an ABSENT `transport:` is a network
+    /// registration, which is [`validate_endpoint`]'s own reading of the same field and is the one
+    /// that has to stay single — two readings of "what does no transport mean" is a registration
+    /// validated as one kind and reached as another.
+    #[must_use]
+    pub fn spawns_child(&self) -> bool {
+        self.transport.is_some_and(Transport::spawns_child)
+    }
+
+    /// **WHETHER A HOP TO THIS REGISTRATION MAY REACH A PRIVATE ADDRESS.**
+    ///
+    /// Written per registration, which is what makes it a fact worth reading one at a time: a
+    /// composition that binds ONE policy for a whole leg has to fold these, and a fold it cannot see
+    /// the inputs of is a fold nobody can check.
+    #[must_use]
+    pub fn allow_private(&self) -> bool {
+        self.allow_private
+    }
+}
+
 /// `tools.<server>.token_exchange` — the RFC 8693 exchange busbar performs before it calls this
 /// upstream.
 ///
