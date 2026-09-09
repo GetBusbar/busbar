@@ -98,12 +98,12 @@ const CONFIG_MAX_RESPONSE: &str = "default_max_tokens";
 /// This is the ladder, walked in rung order. It is the same ladder the kernel walks over the
 /// declared claims; walking it here as well is what lets the decode step name the dialect it is
 /// about to read without a second, differently-ordered answer existing anywhere.
-fn ingress_dialect<'u>(ctx: &Ctx<'u>) -> Option<&'static Dialect> {
+fn ingress_dialect<'u>(plane: &LlmPlane, ctx: &Ctx<'u>) -> Option<&'static Dialect> {
     let transport = ctx.transport();
     let path = transport.fact(FACT_PATH)?;
     let header = |name: &str| transport.fact(name);
-    let name = crate::claims::dialect_for(path, &header)?;
-    dialect::dialect(name)
+    let name = plane.dialect_for(path, &header)?;
+    plane.locations(name)
 }
 
 /// The dialect the decode step named, read back off the unit's sealed draft facts.
@@ -112,9 +112,9 @@ fn ingress_dialect<'u>(ctx: &Ctx<'u>) -> Option<&'static Dialect> {
 /// draft. Every later step that holds a unit reads the name back and resolves it against the closed
 /// dialect table rather than walking fourteen rungs over the transport facts a second time — the
 /// walk is ordered, and an ordered walk repeated is an ordered walk that can disagree with itself.
-fn unit_dialect(u: &Unit<'_>) -> Option<&'static Dialect> {
+fn unit_dialect(plane: &LlmPlane, u: &Unit<'_>) -> Option<&'static Dialect> {
     match u.draft_facts().get(meta::FACT_DIALECT) {
-        Some(FactValue::Str(name)) => dialect::dialect(name),
+        Some(FactValue::Str(name)) => plane.locations(name),
         _ => None,
     }
 }
@@ -434,7 +434,7 @@ impl Plane for LlmPlane {
         let Some(frame) = frames.next_frame() else {
             return Ok(Ingress::NeedMore);
         };
-        let d = ingress_dialect(ctx).ok_or(Decode::UnsupportedOperation)?;
+        let d = ingress_dialect(self, ctx).ok_or(Decode::UnsupportedOperation)?;
         let path = ctx.transport().fact(FACT_PATH).unwrap_or_default();
         let bytes = frame.bytes.as_slice();
 
@@ -493,8 +493,10 @@ impl Plane for LlmPlane {
         ctx: &Ctx<'u>,
     ) -> Result<EgressBody<'u>, Encode> {
         let upstream = upstream_for(self, dest).ok_or(Encode::Unrepresentable)?;
-        let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
-        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
+        let egress = self
+            .locations(upstream.dialect)
+            .ok_or(Encode::Unrepresentable)?;
+        let ingress = unit_dialect(self, u).ok_or(Encode::Unrepresentable)?;
 
         let bytes = u.body().body();
         // Both quantities the hop needs from the REQUEST document were read once, at decode, and
@@ -617,7 +619,9 @@ impl Plane for LlmPlane {
             return Ok(Progress::NeedMore);
         };
         let upstream = upstream_for(self, dest).ok_or(Decode::UnsupportedOperation)?;
-        let egress = dialect::dialect(upstream.dialect).ok_or(Decode::UnsupportedOperation)?;
+        let egress = self
+            .locations(upstream.dialect)
+            .ok_or(Decode::UnsupportedOperation)?;
         let bytes = frame.bytes.as_slice();
         let body = ctx
             .arena()
@@ -703,7 +707,7 @@ impl Plane for LlmPlane {
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
-        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
+        let ingress = ingress_dialect(self, ctx).ok_or(Encode::Unrepresentable)?;
         let source = match r.facts.get(meta::FACT_SOURCE_DIALECT) {
             Some(FactValue::Str(name)) => name,
             _ => ingress.name,
@@ -794,7 +798,7 @@ impl Plane for LlmPlane {
         _st: Option<&PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<ArenaBytes<'u>, Encode> {
-        let ingress = ingress_dialect(ctx).ok_or(Encode::Unrepresentable)?;
+        let ingress = ingress_dialect(self, ctx).ok_or(Encode::Unrepresentable)?;
         let (status, kind) = refusal_shape(refusal.reason);
         // One dialect puts a minted identifier at the top of its error envelope, because a native
         // envelope carries one. A plane reads no random source, so the entropy for it is an input:
@@ -825,7 +829,7 @@ impl Plane for LlmPlane {
         let UnitEnd::Failed { .. } = end else {
             return Ok(None);
         };
-        let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
+        let ingress = unit_dialect(self, u).ok_or(Encode::Unrepresentable)?;
         let envelope = with_writer(ingress.name, |w| {
             w.write_error(500, KIND_API_ERROR, "The request could not be completed.")
         })
@@ -835,7 +839,7 @@ impl Plane for LlmPlane {
 
     fn authenticate<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> CredentialLocator {
         CredentialLocator {
-            narrowing: unit_dialect(u).map(|d| SchemeAlt::new(d.scheme_alt)),
+            narrowing: unit_dialect(self, u).map(|d| SchemeAlt::new(d.scheme_alt)),
             // Every one of the six dialects presents its credential on the request itself. None of
             // them authenticates once and rides a session.
             from_session: false,
@@ -868,7 +872,7 @@ impl Plane for LlmPlane {
     }
 
     fn admit<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> AdmitFacts {
-        let Some(d) = unit_dialect(u) else {
+        let Some(d) = unit_dialect(self, u) else {
             return AdmitFacts::default();
         };
         let body = u.body().body();
@@ -917,7 +921,7 @@ impl Plane for LlmPlane {
     fn meter<'u>(&self, _u: &Unit<'u>, r: &Response<'u>, _ctx: &Ctx<'u>) -> UsageLocators {
         let mut locators = UsageLocators::default();
         let Some(source) = (match r.facts.get(meta::FACT_SOURCE_DIALECT) {
-            Some(FactValue::Str(name)) => dialect::dialect(name),
+            Some(FactValue::Str(name)) => self.locations(name),
             _ => None,
         }) else {
             return locators;
@@ -984,17 +988,21 @@ impl Plane for LlmPlane {
     ) -> Result<PlaneFacts<'u>, Decode> {
         let mut facts = Facts::new();
         if verb == meta::VERB_DIALECTS {
-            for d in dialect::DIALECTS {
+            // Every dialect this plane speaks, registered or its own — the introspection verb is
+            // what an operator reads to find out which of the two a dialect is not, so answering
+            // from the constant table alone would report a node that speaks fewer dialects than it
+            // serves.
+            self.walk_dialects(|d| {
                 let _ = facts.set(d.name, FactValue::Str(d.name));
-            }
+            });
             return Ok(PlaneFacts { facts });
         }
         if verb == meta::VERB_LADDER {
-            for entry in crate::claims::LADDER {
+            self.walk_ladder(|entry| {
                 if let Some(key) = put_str(ctx, &format!("rung.{}", entry.rung)) {
                     let _ = facts.set(key, FactValue::Str(entry.dialect));
                 }
-            }
+            });
             return Ok(PlaneFacts { facts });
         }
         Err(Decode::UnsupportedOperation)
