@@ -689,12 +689,14 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
         let card = crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
-                    input: 0.0,
-                    output: *output,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
-                },
+                busbar_substrate::billing::RawLaneRates::from(
+                    busbar_substrate::billing::RawTierRates {
+                        input: 0.0,
+                        output: *output,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    },
+                ),
             )],
             0,
             true,
@@ -775,12 +777,14 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
-                    input: 0.0,
-                    output: 1.0,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
-                },
+                busbar_substrate::billing::RawLaneRates::from(
+                    busbar_substrate::billing::RawTierRates {
+                        input: 0.0,
+                        output: 1.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    },
+                ),
             )],
             0,
             true,
@@ -797,12 +801,14 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
         crate::root::kernel::card_from_config(
             [(
                 "lane",
-                busbar_substrate::billing::RawTierRates {
-                    input: 0.0,
-                    output: 100.0,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
-                },
+                busbar_substrate::billing::RawLaneRates::from(
+                    busbar_substrate::billing::RawTierRates {
+                        input: 0.0,
+                        output: 100.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    },
+                ),
             )],
             0,
             true,

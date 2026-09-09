@@ -178,7 +178,7 @@ fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
     let holder = RootHistory::default();
     holder.apply(
         super::card_from_config(
-            std::iter::empty::<(&str, busbar_substrate::billing::RawTierRates)>(),
+            std::iter::empty::<(&str, busbar_substrate::billing::RawLaneRates)>(),
             7,
             true,
             node_currency(),

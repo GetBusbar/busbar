@@ -22,6 +22,7 @@ fn card(entries: &[(&str, f64, f64)]) -> BTreeMap<String, RateEntryCfg> {
                     output_utok: *o,
                     cache_read_utok: 0.0,
                     cache_write_utok: 0.0,
+                    rates: Default::default(),
                 },
             )
         })
@@ -131,6 +132,7 @@ fn nano_scale_keeps_sub_micro_precision() {
             output_utok: 0.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            rates: Default::default(),
         },
     )]);
     let cm = resolve_card_fee(Some(&c), 0);
@@ -371,10 +373,11 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
     let c = BTreeMap::from([(
         "quad".to_string(),
         RateEntryCfg {
-            input_utok: 1.0,       // 1000 nano/token
-            output_utok: 2.0,      // 2000
-            cache_read_utok: 0.5,  // 500
-            cache_write_utok: 4.0, // 4000
+            input_utok: 1.0,      // 1000 nano/token
+            output_utok: 2.0,     // 2000
+            cache_read_utok: 0.5, // 500
+            cache_write_utok: 4.0,
+            rates: Default::default(), // 4000
         },
     )]);
     let cm = resolve_card_fee(Some(&c), 0);
@@ -452,6 +455,7 @@ fn explicit_zero_rate_model_is_known_and_derives_zero() {
             output_utok: 0.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            rates: Default::default(),
         },
     )]);
     let cm = resolve_card_fee(Some(&c), 0);
@@ -581,6 +585,7 @@ fn rate_nanos_from_cfg_rounds_to_nearest_at_the_nano_boundary() {
         output_utok: 0.0014,
         cache_read_utok: 0.0,
         cache_write_utok: 0.0,
+        rates: Default::default(),
     };
     let rn = crate::cost::RateNanos::from_cfg(&half_up);
     assert_eq!(rn.input, 2, "1.5 nano rounds to 2 (half away from zero)");
@@ -600,6 +605,7 @@ fn rate_nanos_from_cfg_clamps_a_non_finite_positive_rate_to_zero_not_max() {
         output_utok: 0.0,
         cache_read_utok: 0.0,
         cache_write_utok: 0.0,
+        rates: Default::default(),
     };
     let rn = crate::cost::RateNanos::from_cfg(&cfg);
     assert_eq!(
@@ -626,6 +632,7 @@ fn rate_2_5() -> crate::cost::RateNanos {
         output_utok: 5.0,
         cache_read_utok: 0.0,
         cache_write_utok: 0.0,
+        rates: Default::default(),
     })
 }
 

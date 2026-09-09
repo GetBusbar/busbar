@@ -4039,6 +4039,7 @@ fn test_validate_rate_card_rejects_nan_and_negative_rates() {
             output_utok: -1.0,
             cache_read_utok: f64::INFINITY,
             cache_write_utok: 0.0,
+            rates: Default::default(),
         },
     )]));
     let errs = validate(&cfg).expect_err("NaN/negative/infinite rates must fail");
@@ -4076,6 +4077,7 @@ fn test_validate_all_zero_rate_card_warns_but_does_not_fail() {
             output_utok: 15.0,
             cache_read_utok: 0.3,
             cache_write_utok: 3.75,
+            rates: Default::default(),
         },
     );
     // All-zero: every tier 0.0 (RateEntryCfg::default()), the exact shape the completeness stub

@@ -82,6 +82,45 @@ pub struct TierRates {
     pub cache_write: f64,
 }
 
+/// ONE LANE'S CONFIGURED RATES AS A WHOLE — the reserved four, plus a row for every OTHER declared
+/// class the operator priced on this lane.
+///
+/// [`TierRates`] said what a 1.5.5 deployment could express and no more: four token tiers, fixed,
+/// ordered, `Copy`. A plane that meters `tool_calls`, `bytes` or `audio_seconds_in` has always been
+/// PRICEABLE by this crate — a card's class map is string-keyed and always was — but there was no
+/// way to say those prices in a configuration, so the constructor could not carry them. This is
+/// that gap closed at the constructor, and only at the constructor: the card's shape is unchanged.
+///
+/// The reserved four are kept as their own field rather than folded into the map because they are
+/// not interchangeable with it. They have a canonical ORDER that the table's row sequence depends
+/// on, they are the only classes with a config grammar of their own, and the map may not name them
+/// (a class spelled in both places would be two prices for one cell — refused at boot).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ConfiguredLane {
+    /// The reserved four token tiers.
+    pub tiers: TierRates,
+    /// Every OTHER declared class this lane prices, keyed by the class's config/wire spelling, in
+    /// micro-units per unit of that class's quantity. EMPTY IS THE 1.5.5 SHAPE EXACTLY.
+    pub classes: std::collections::BTreeMap<String, f64>,
+}
+
+impl ConfiguredLane {
+    /// A lane priced the way 1.5.5 could price it: the four tiers and nothing else.
+    #[must_use]
+    pub fn from_tiers(tiers: TierRates) -> Self {
+        ConfiguredLane {
+            tiers,
+            classes: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+impl From<TierRates> for ConfiguredLane {
+    fn from(tiers: TierRates) -> Self {
+        ConfiguredLane::from_tiers(tiers)
+    }
+}
+
 impl TierRates {
     /// The four rates paired with the class each one prices, in the canonical order.
     fn by_class(self) -> [(&'static str, f64); 4] {
@@ -257,7 +296,7 @@ impl RateCard {
     /// two agreeing is not left to inspection: a card keyed by names a report does not use prices
     /// every line at zero, which the ledger identity reads as a node that delivered value for free.
     pub fn from_config<'a>(
-        lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
+        lanes: Option<impl IntoIterator<Item = (&'a str, ConfiguredLane)>>,
         per_request_fee: i64,
     ) -> Self {
         RateCard::from_config_in(CurrencyCode::USD, lanes, per_request_fee)
@@ -274,14 +313,15 @@ impl RateCard {
     /// constructor is that the mismatch is impossible rather than merely refused.
     pub fn from_config_in<'a>(
         currency: CurrencyCode,
-        lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
+        lanes: Option<impl IntoIterator<Item = (&'a str, ConfiguredLane)>>,
         per_request_fee: i64,
     ) -> Self {
         let Some(lanes) = lanes else {
             return RateCard::absent_in(currency, per_request_fee);
         };
-        let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
-            tiers
+        let entries = lanes.into_iter().flat_map(|(lane, rates)| {
+            rates
+                .tiers
                 .by_class()
                 .into_iter()
                 .map(move |(class, micro)| (LaneClass::new(lane, class), micro))

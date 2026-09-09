@@ -175,6 +175,7 @@ fn one_entry_card(
             output_utok: 0.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            rates: Default::default(),
         },
     )])
 }

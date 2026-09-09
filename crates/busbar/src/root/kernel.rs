@@ -331,22 +331,26 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// node's money in" in a file that has no business deciding, and the two answers would be free to
 /// drift.
 pub(crate) fn card_from_config<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawLaneRates)>,
     per_request_fee: i64,
     present: bool,
     currency: busbar_unit_cost::CurrencyCode,
 ) -> busbar_unit_cost::RateCard {
-    // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
-    // across a crate boundary, in the same canonical order, with nothing computed on the way.
+    // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers and a
+    // map of class rows copied across a crate boundary, in the same canonical order, with nothing
+    // computed on the way.
     let lanes = present.then(|| {
         rates.into_iter().map(|(lane, raw)| {
             (
                 lane,
-                busbar_unit_cost::TierRates {
-                    input: raw.input,
-                    output: raw.output,
-                    cache_read: raw.cache_read,
-                    cache_write: raw.cache_write,
+                busbar_unit_cost::ConfiguredLane {
+                    tiers: busbar_unit_cost::TierRates {
+                        input: raw.tiers.input,
+                        output: raw.tiers.output,
+                        cache_read: raw.tiers.cache_read,
+                        cache_write: raw.tiers.cache_write,
+                    },
+                    classes: raw.classes,
                 },
             )
         })
@@ -371,7 +375,10 @@ impl busbar_substrate::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
         ROOT_CARD.apply(
             card_from_config(
-                rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
+                rates
+                    .lanes
+                    .iter()
+                    .map(|(lane, r)| (lane.as_str(), r.clone())),
                 rates.fee_cents,
                 rates.present,
                 node_currency(),

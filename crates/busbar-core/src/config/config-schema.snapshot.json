@@ -1673,6 +1673,10 @@
         "output_utok": {
           "optional": true,
           "type": "f64"
+        },
+        "rates": {
+          "optional": true,
+          "type": "std::collections::BTreeMap<String, f64>"
         }
       },
       "kind": "struct",

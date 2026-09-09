@@ -319,7 +319,32 @@ pub struct OverlayBackend {
 /// model with no cache pricing simply omits the cache rates). Values must be finite and >= 0
 /// (validated at boot). Floats exist ONLY here at the config boundary: they are converted once at
 /// resolve time to integer nano-units per token, and the hot path does pure integer math.
-#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Default)]
+///
+/// THE PER-CLASS ROWS ARE A NAMED FIELD, NOT A FLATTENED ONE, and the choice is load-bearing.
+///
+/// `#[serde(flatten)]` would let an operator write a class beside the four tiers (`tool_calls:
+/// 0.5`) with no nesting, which reads well. It is nonetheless wrong here, for two reasons that
+/// both cost money:
+///
+/// 1. **Flatten and `deny_unknown_fields` are mutually exclusive in serde.** A flattened map
+///    absorbs every key the named fields did not claim, so the deny stops firing. Today
+///    `inpt_utok: 3.0` is a LOUD BOOT FAILURE — an unknown field on a `deny_unknown_fields`
+///    struct. Under flatten it would parse: `input` would silently price at `0.0` and a junk class
+///    named `inpt_utok` would be priced at 3.0. A typo in a rate card would stop being a refusal
+///    and start being a bill.
+/// 2. **A named, `#[serde(default)]` field keeps every existing config byte-identical.** A
+///    document that omits `rates:` deserializes to the empty map, which derives no rows, which is
+///    the 1.5.5 table exactly. Nothing about the four tiers' spelling, their defaults or their
+///    deny changes, so no document that parsed before parses differently now, and none that was
+///    refused before is accepted now.
+///
+/// It is also the spelling the ruling gives:
+/// `rates: { tool_calls: <price>, bytes: <price>, audio_seconds_in: <price> }`.
+///
+/// NOT `Copy` ANY MORE, because a map cannot be `Copy` and a fixed-size array of classes cannot
+/// express "any declared class". The type stays `Clone`, and the sites that held it either take it
+/// by reference already or clone it.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RateEntryCfg {
     #[serde(default)]
@@ -330,6 +355,16 @@ pub struct RateEntryCfg {
     pub cache_read_utok: f64,
     #[serde(default)]
     pub cache_write_utok: f64,
+    /// PER-LANE ROWS FOR ANY DECLARED CLASS, keyed by the class's config/wire spelling —
+    /// `tool_calls`, `bytes`, `audio_seconds_in` — in the same MICRO-units per unit of quantity the
+    /// four tiers use. Absent or empty is the 1.5.5 card exactly.
+    ///
+    /// The four token tiers may NOT be respelled here, and neither may the kernel-reserved
+    /// `requests` class: each already has a spelling of its own on this entry, or beside it as
+    /// `per_request_fee:`, and a second spelling for one price is two answers to one question.
+    /// Boot validation refuses that rather than picking a winner.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub rates: std::collections::BTreeMap<String, f64>,
 }
 
 impl RateEntryCfg {
@@ -343,6 +378,16 @@ impl RateEntryCfg {
             output: self.output_utok,
             cache_read: self.cache_read_utok,
             cache_write: self.cache_write_utok,
+        }
+    }
+
+    /// This entry's WHOLE neutral view: the reserved four, plus every per-class row the operator
+    /// priced. The same pure field lift as [`RateEntryCfg::raw_tier_rates`], carrying the one thing
+    /// that view cannot hold.
+    pub fn raw_lane_rates(&self) -> crate::billing::RawLaneRates {
+        crate::billing::RawLaneRates {
+            tiers: self.raw_tier_rates(),
+            classes: self.rates.clone(),
         }
     }
 }

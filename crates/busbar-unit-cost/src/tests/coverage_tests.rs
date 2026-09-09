@@ -131,7 +131,7 @@ fn a_1_5_5_config_still_boots_because_its_card_carries_every_class_it_ever_price
         cache_read: 0.0,
         cache_write: 0.0,
     };
-    let table = RateTable::from_config(USD, Some(vec![(LANE, sparse)]), 0, 0);
+    let table = RateTable::from_config(USD, Some(vec![(LANE, sparse.into())]), 0, 0);
     let found = unpriced_cells(&table, &[llm()], &[LANE], USD);
     assert!(
         found.is_empty(),
@@ -139,7 +139,7 @@ fn a_1_5_5_config_still_boots_because_its_card_carries_every_class_it_ever_price
     );
 
     // And so does a fully-written one.
-    let full = RateTable::from_config(USD, Some(vec![(LANE, tiers())]), 3, 0);
+    let full = RateTable::from_config(USD, Some(vec![(LANE, tiers().into())]), 3, 0);
     assert!(unpriced_cells(&full, &[llm()], &[LANE], USD).is_empty());
 }
 
@@ -147,7 +147,7 @@ fn a_1_5_5_config_still_boots_because_its_card_carries_every_class_it_ever_price
 fn a_deployment_that_prices_nothing_is_not_a_deployment_with_unpriced_classes() {
     // No `rate_card:` at all. Every release before this one booted, and this rule does not change
     // that: the operator has not opted into pricing rather than priced half of it.
-    let table = RateTable::from_config(USD, None::<Vec<(&str, TierRates)>>, 0, 0);
+    let table = RateTable::from_config(USD, None::<Vec<(&str, crate::rate::ConfiguredLane)>>, 0, 0);
     let found = unpriced_cells(&table, &[llm()], &[LANE], USD);
     assert!(found.is_empty(), "no card is not a refusal: {found:?}");
 }
@@ -156,7 +156,7 @@ fn a_deployment_that_prices_nothing_is_not_a_deployment_with_unpriced_classes() 
 fn a_class_priced_on_one_lane_and_not_another_refuses_for_the_lane_that_lacks_it() {
     // The rule is per (lane, class): pricing a model and forgetting its sibling is exactly the case
     // where an invoice is quietly short.
-    let table = RateTable::from_config(USD, Some(vec![(LANE, tiers())]), 0, 0);
+    let table = RateTable::from_config(USD, Some(vec![(LANE, tiers().into())]), 0, 0);
     let found = unpriced_cells(&table, &[llm()], &[LANE, "gpt-4o"], USD);
 
     assert_eq!(

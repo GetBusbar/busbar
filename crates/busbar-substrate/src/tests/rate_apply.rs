@@ -10,7 +10,7 @@ use std::sync::Mutex;
 struct Recorder(Mutex<Vec<Seen>>);
 
 /// One apply, as the holder saw it: the lanes with their four tier rates, the fee, the flag.
-type Seen = (Vec<(String, RawTierRates)>, i64, bool);
+type Seen = (Vec<(String, RawLaneRates)>, i64, bool);
 
 impl RateApply for Recorder {
     fn rates_applied(&self, rates: &RawRates<'_>) {
@@ -46,18 +46,18 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     install_rate_apply(recorder);
     // Four DISTINCT tier rates per lane, so a seam that carried the right lane names with the wrong
     // (or a defaulted) card is red rather than green.
-    let fast = RawTierRates {
+    let fast = RawLaneRates::from(crate::billing::RawTierRates {
         input: 1.0,
         output: 2.0,
         cache_read: 3.0,
         cache_write: 4.0,
-    };
-    let slow = RawTierRates {
+    });
+    let slow = RawLaneRates::from(crate::billing::RawTierRates {
         input: 5.0,
         output: 6.0,
         cache_read: 7.0,
         cache_write: 8.0,
-    };
+    });
     let lanes = [("fast".to_string(), fast), ("slow".to_string(), slow)];
     rates_applied(&RawRates {
         lanes: &lanes,

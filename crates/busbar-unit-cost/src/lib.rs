@@ -76,8 +76,8 @@ pub use project::{
     spend_total_cents,
 };
 pub use rate::{
-    nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
-    CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
+    nano_rate, CellPrices, ConfiguredLane, LaneClass, LaneRates, RateCard, TierRates,
+    CLASS_CACHE_READ, CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
 };
 pub use table::{
     RateRow, RateTable, RowAuthor, RowSeq, CLASS_REQUESTS, CLASS_TOKENS_CACHE_READ,

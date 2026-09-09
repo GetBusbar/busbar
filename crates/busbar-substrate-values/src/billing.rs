@@ -130,6 +130,37 @@ pub struct RawTierRates {
     pub cache_write: f64,
 }
 
+/// ONE LANE'S CONFIGURED RATES AS A WHOLE: the reserved four, plus a row for every OTHER declared
+/// meter class the operator priced on this lane.
+///
+/// The reserved four keep their own POD ([`RawTierRates`]) because they are a fixed, ordered, `Copy`
+/// shape a great deal of code reads positionally, and nothing about opening the grammar changes
+/// them. What is genuinely new is that a lane can carry rows the reserved four cannot name —
+/// `tool_calls`, `bytes`, `audio_seconds_in` — and a string-keyed map is the only shape that can
+/// hold "any declared class". So the two live SIDE BY SIDE rather than one being widened into the
+/// other: the fixed part stays fixed and `Copy`, and the open part is open.
+///
+/// The map is a `BTreeMap`, so a card derived twice from one configuration is the same card row for
+/// row. FLOATS still live only at this boundary.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RawLaneRates {
+    /// The reserved four token tiers, in their canonical order.
+    pub tiers: RawTierRates,
+    /// Every OTHER declared class this lane prices, keyed by the class's config/wire spelling, in
+    /// raw micro-units per unit of that class's quantity. EMPTY IS THE 1.5.5 SHAPE EXACTLY.
+    pub classes: std::collections::BTreeMap<String, f64>,
+}
+
+impl From<RawTierRates> for RawLaneRates {
+    /// A lane priced the way 1.5.5 could price it: the four tiers and no open classes.
+    fn from(tiers: RawTierRates) -> Self {
+        RawLaneRates {
+            tiers,
+            classes: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 impl RawTierRates {
     /// The ROUTING cost scalar (abstract units per MILLION tokens) the `cheapest` policy and the hook
     /// `Candidate.cost_per_mtok` signal read: the blended `(input + output) / 2` (1 micro-unit/token

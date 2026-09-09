@@ -597,11 +597,14 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         output_utok: 500.0,
         cache_read_utok: 500.0,
         cache_write_utok: 500.0,
+        rates: Default::default(),
     };
-    let rate_card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> =
-        [("gpt-x".to_string(), rate), ("claude-z".to_string(), rate)]
-            .into_iter()
-            .collect();
+    let rate_card: std::collections::BTreeMap<String, crate::config::RateEntryCfg> = [
+        ("gpt-x".to_string(), rate.clone()),
+        ("claude-z".to_string(), rate),
+    ]
+    .into_iter()
+    .collect();
     let cost = crate::cost::CostModel::resolve_parts(
         Some(&rate_card),
         1,

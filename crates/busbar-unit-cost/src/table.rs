@@ -37,7 +37,7 @@
 use std::collections::BTreeMap;
 
 use crate::currency::CurrencyCode;
-use crate::rate::{nano_rate, TierRates};
+use crate::rate::{nano_rate, ConfiguredLane};
 
 /// The class a flat per-request fee is priced under.
 ///
@@ -280,7 +280,7 @@ impl RateTable {
     #[must_use]
     pub fn from_config<'a>(
         currency: CurrencyCode,
-        lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
+        lanes: Option<impl IntoIterator<Item = (&'a str, ConfiguredLane)>>,
         per_request_fee: i64,
         policy_epoch: u64,
     ) -> Self {
@@ -297,12 +297,12 @@ impl RateTable {
             .saturating_mul(currency.nanos_per_minor());
         let fee_nanos = u64::try_from(fee_nanos).unwrap_or(u64::MAX);
         let author = RowAuthor::Config { policy_epoch };
-        for (lane, tiers) in lanes {
+        for (lane, rates) in lanes {
             let micros = [
-                tiers.input,
-                tiers.output,
-                tiers.cache_read,
-                tiers.cache_write,
+                rates.tiers.input,
+                rates.tiers.output,
+                rates.tiers.cache_read,
+                rates.tiers.cache_write,
             ];
             for (class, micro) in TIER_CLASSES.iter().zip(micros) {
                 table.add(RateRow {

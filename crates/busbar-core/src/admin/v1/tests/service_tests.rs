@@ -1578,6 +1578,7 @@ fn usage_cost(groups: &std::collections::BTreeMap<String, GroupCfg>) -> crate::c
             output_utok: 10.0,
             cache_read_utok: 0.0,
             cache_write_utok: 0.0,
+            rates: Default::default(),
         },
     )]);
     crate::cost::CostModel::resolve_parts(Some(&card), 0, groups)

@@ -16,7 +16,7 @@
 //! line between them. Nothing in a plane reaches it: a plane reports what it consumed and never what
 //! it cost, and this seam carries a price.
 
-use crate::billing::RawTierRates;
+use crate::billing::RawLaneRates;
 
 /// The configured rates, as the neutral view a holder rebuilds its card from.
 ///
@@ -26,8 +26,9 @@ use crate::billing::RawTierRates;
 /// name no lane is a different statement. Collapsing them would silently turn one deployment's
 /// configuration into another's.
 pub struct RawRates<'r> {
-    /// `(lane, its four raw micro-per-token tier rates)`, as configured.
-    pub lanes: &'r [(String, RawTierRates)],
+    /// `(lane, its configured rates)`, as configured — the reserved four tiers plus any per-class
+    /// rows the operator priced on that lane.
+    pub lanes: &'r [(String, RawLaneRates)],
     /// The flat per-request fee, in abstract minor units.
     pub fee_cents: i64,
     /// Whether the deployment configured a rate card at all.

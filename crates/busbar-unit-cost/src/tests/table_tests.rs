@@ -169,7 +169,7 @@ fn a_row_that_starts_in_the_future_is_still_a_price_the_operator_has_stated() {
 
 #[test]
 fn a_config_with_no_rate_card_derives_no_rows_at_all() {
-    let table = RateTable::from_config(USD, None::<Vec<(&str, TierRates)>>, 0, 0);
+    let table = RateTable::from_config(USD, None::<Vec<(&str, crate::rate::ConfiguredLane)>>, 0, 0);
     assert!(table.is_empty());
     assert!(table.lanes().is_empty());
 }
@@ -184,7 +184,7 @@ fn a_configured_lane_derives_every_class_it_has_always_priced_including_the_omit
         cache_read: 0.0,
         cache_write: 0.0,
     };
-    let table = RateTable::from_config(USD, Some(vec![(LANE, sparse)]), 0, 0);
+    let table = RateTable::from_config(USD, Some(vec![(LANE, sparse.into())]), 0, 0);
 
     // Five rows: the four token classes and the flat fee's `requests` class.
     assert_eq!(table.len(), 5);
@@ -213,20 +213,20 @@ fn a_configured_lane_derives_every_class_it_has_always_priced_including_the_omit
 fn the_flat_fee_is_the_requests_class_row_lifted_to_nano_units() {
     // Ruling 4: "a flat fee = the `requests` class with a per-unit price". Three cents a request, in
     // USD, is three times ten million nano-units.
-    let table = RateTable::from_config(USD, Some(vec![(LANE, tiers())]), 3, 0);
+    let table = RateTable::from_config(USD, Some(vec![(LANE, tiers().into())]), 3, 0);
     assert_eq!(
         table.rate_at(LANE, CLASS_REQUESTS, USD, 0),
         Some(30_000_000)
     );
 
     // A negative fee can never credit a budget: it clamps at zero, exactly as the card's fee does.
-    let clamped = RateTable::from_config(USD, Some(vec![(LANE, tiers())]), -500, 0);
+    let clamped = RateTable::from_config(USD, Some(vec![(LANE, tiers().into())]), -500, 0);
     assert_eq!(clamped.rate_at(LANE, CLASS_REQUESTS, USD, 0), Some(0));
 }
 
 #[test]
 fn every_derived_row_is_attributable_to_the_config_that_produced_it() {
-    let table = RateTable::from_config(USD, Some(vec![(LANE, tiers())]), 0, 42);
+    let table = RateTable::from_config(USD, Some(vec![(LANE, tiers().into())]), 0, 42);
     for r in table.rows() {
         assert_eq!(r.author, RowAuthor::Config { policy_epoch: 42 });
         // A config's card has always applied to everything the deployment ever did.
@@ -242,15 +242,15 @@ fn the_table_and_the_card_price_every_token_cell_at_the_same_integer() {
     // config/wire ones. Two spellings, one set of integers. When the meter's posting path adopts the
     // config/wire names the card's keys move onto the table's and this test keeps holding.
     let lanes = vec![
-        (LANE, tiers()),
+        (LANE, tiers().into()),
         (
             "gpt-4o",
-            TierRates {
+            crate::rate::ConfiguredLane::from_tiers(TierRates {
                 input: 2.5,
                 output: 10.0,
                 cache_read: 0.0,
                 cache_write: 0.0,
-            },
+            }),
         ),
     ];
     let fee = 7;
@@ -286,9 +286,9 @@ fn the_lane_list_is_sorted_and_carries_each_lane_once() {
     let table = RateTable::from_config(
         USD,
         Some(vec![
-            ("zeta", tiers()),
-            ("alpha", tiers()),
-            ("mid", tiers()),
+            ("zeta", tiers().into()),
+            ("alpha", tiers().into()),
+            ("mid", tiers().into()),
         ]),
         1,
         0,

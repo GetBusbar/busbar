@@ -1427,19 +1427,24 @@ pub(crate) fn unpriced_class_refusal(
     // multiplies and takes no figure back. Naming the items once in a `use` keeps the rule's grep
     // measuring what it was written to measure (a site that turns usage into money) rather than a
     // site that only asks whether a row exists.
-    use busbar_unit_cost::{unpriced_cells, CurrencyCode, PlaneClasses, RateTable, TierRates};
+    use busbar_unit_cost::{
+        unpriced_cells, ConfiguredLane, CurrencyCode, PlaneClasses, RateTable, TierRates,
+    };
 
     const CURRENCY: CurrencyCode = CurrencyCode::USD;
     let lanes = rate_card.map(|card| {
         card.iter().map(|(model, entry)| {
-            let raw = entry.raw_tier_rates();
+            let raw = entry.raw_lane_rates();
             (
                 model.as_str(),
-                TierRates {
-                    input: raw.input,
-                    output: raw.output,
-                    cache_read: raw.cache_read,
-                    cache_write: raw.cache_write,
+                ConfiguredLane {
+                    tiers: TierRates {
+                        input: raw.tiers.input,
+                        output: raw.tiers.output,
+                        cache_read: raw.tiers.cache_read,
+                        cache_write: raw.tiers.cache_write,
+                    },
+                    classes: raw.classes,
                 },
             )
         })
