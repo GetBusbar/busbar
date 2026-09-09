@@ -5,7 +5,9 @@
 //! forms this plane declares, and the forms it is handed no facts to answer.
 
 use busbar_contract::grammar::{PathSeg, Selector};
-use busbar_plane_llm::claims::{dialect_for, matches_selector};
+mod harness;
+
+use busbar_plane_llm::claims::matches_selector;
 
 fn no_headers(_: &str) -> Option<&'static str> {
     None
@@ -26,7 +28,7 @@ fn the_pattern_form_is_the_contracts_own_answer() {
         &no_headers
     ));
     assert_eq!(
-        dialect_for("/model/a.claude/invoke", &no_headers),
+        harness::plane(&[]).dialect_for("/model/a.claude/invoke", &no_headers),
         Some("bedrock")
     );
 }
@@ -54,19 +56,25 @@ fn a_form_this_plane_is_handed_no_facts_for_never_matches() {
 /// written out: this is the ladder, walked, and the dialect each rung names.
 #[test]
 fn the_declared_ladder_answers_unchanged() {
+    // ASKED OF THE PLANE: the first of these rungs is a carved-out dialect's now, and the point of
+    // the case is that the answer did not change when the declaration moved crates.
+    let plane = harness::plane(&[]);
     assert_eq!(
-        dialect_for("/v1/chat/completions", &no_headers),
+        plane.dialect_for("/v1/chat/completions", &no_headers),
         Some("openai")
     );
-    assert_eq!(dialect_for("/v2/chat", &no_headers), Some("cohere"));
-    assert_eq!(dialect_for("/v1/responses", &no_headers), Some("responses"));
+    assert_eq!(plane.dialect_for("/v2/chat", &no_headers), Some("cohere"));
     assert_eq!(
-        dialect_for("/v1beta/models/gemini:generateContent", &no_headers),
+        plane.dialect_for("/v1/responses", &no_headers),
+        Some("responses")
+    );
+    assert_eq!(
+        plane.dialect_for("/v1beta/models/gemini:generateContent", &no_headers),
         Some("gemini")
     );
     assert_eq!(
-        dialect_for("/anything", &|n: &str| (n == "x-api-key").then_some("k")),
+        plane.dialect_for("/anything", &|n: &str| (n == "x-api-key").then_some("k")),
         Some("anthropic")
     );
-    assert_eq!(dialect_for("/nothing/here", &no_headers), None);
+    assert_eq!(plane.dialect_for("/nothing/here", &no_headers), None);
 }

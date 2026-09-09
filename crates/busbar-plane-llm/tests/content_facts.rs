@@ -20,7 +20,7 @@ use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Ingress, Plane, Progress};
 use busbar_contract::wire::FrameCursor;
 use busbar_plane_llm::meta;
-use busbar_plane_llm::{LlmPlane, Upstream};
+use busbar_plane_llm::Upstream;
 
 const ANTHROPIC_UPSTREAMS: &[Upstream] = &[Upstream {
     lane: LaneId::new("lane-anthropic"),
@@ -43,7 +43,7 @@ fn whole_answer_facts(
     request: &[u8],
     answer: &[u8],
 ) -> Vec<(String, String)> {
-    let plane = LlmPlane::new(upstreams);
+    let plane = harness::plane(upstreams);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for(dialect), &[]);
@@ -268,7 +268,7 @@ fn event(name: &str, data: &str) -> Vec<u8> {
 /// two things a single frame is entitled to claim about the whole answer it opens.
 #[test]
 fn a_stream_opening_frame_names_model_and_identity() {
-    let plane = LlmPlane::new(ANTHROPIC_UPSTREAMS);
+    let plane = harness::plane(ANTHROPIC_UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
@@ -321,7 +321,7 @@ fn a_stream_opening_frame_names_model_and_identity() {
 /// identity — the closing event's own twin of the opening-frame test above.
 #[test]
 fn a_stream_closing_frame_names_the_finish_reason_only() {
-    let plane = LlmPlane::new(ANTHROPIC_UPSTREAMS);
+    let plane = harness::plane(ANTHROPIC_UPSTREAMS);
     let arena = harness::LeakArena;
     let config = harness::EmptyConfig;
     let transport = harness::HttpStack::new(harness::path_for("anthropic"), &[]);
