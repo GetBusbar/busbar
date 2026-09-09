@@ -157,6 +157,9 @@ pub const ROW_REGISTRY: &str = "kind-isolation:registry";
 /// note in [`KindIsolationGate`].
 pub const ROW_SHAPE: &str = "kind-isolation:shape";
 pub const ROW_TESTKIT: &str = "kind-isolation:testkit";
+/// THE LEGACY DRAIN'S EXPIRY. Ship-only: a `[[transitional]]` row exists because a 1.5.x crate is
+/// retiring, and the tag is where "it retired" is checked.
+pub const ROW_DRAIN: &str = "kind-isolation:legacy-drain";
 /// Every data plane runs the WHOLE strict step list.
 pub const ROW_STEPS: &str = "kind-isolation:plane-steps";
 /// One wire, one registration.
@@ -503,51 +506,60 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 // the measured dependency graph
 // ------------------------------------------------------------------------------------------------
 
-/// THE SINK EVERY KIND MAY NAME, BY SPEC AND NOT BY MEASUREMENT (`PLUGIN-TREE.md` §4).
+/// THE EDGE CLASSES THE ARCHITECTURE GRANTS, and the whole of what the SHIP twin permits.
 ///
-/// Every row of the PLUGIN-TREE.md §4 table gives its kind `busbar-core-contract`: the contract IS the thing a
-/// plugin is written against, and a kind that may not name it cannot be a plugin. Keeping those
-/// edges in the measured snapshot below made them look like nine separate observations that
-/// happened to be true, so the day `busbar-store-memory` became the first implementor of the record
-/// contract the gate reported `store -> contract` as a NEW kind-to-kind edge class — a kind
-/// learning about another kind — over a dependency the spec grants outright, and the green baseline
-/// failed on the real tree. An edge to this sink is therefore never a new class and never a dead
-/// allowance. The snapshot keeps what is genuinely a measurement: the non-contract edges.
-const SPEC_SINK: &str = "contract";
-
-/// THE KIND-TO-KIND EDGE CLASSES THIS TREE HAS TODAY, measured and then written down.
+/// This is not a measurement and it is not a ratchet. It is the read of `ARCHITECTURE.md` 1.1 and
+/// 3.1 that an audit of all 220 workspace-internal edges produced: 105 of them land in one of these
+/// classes and 87 land nowhere the architecture speaks. The per-push rows hold the tree to the
+/// EXACT edges it has today, instance by instance, so the debt cannot grow; the ship twin holds it
+/// to THIS, because the criterion for a tag is not "no worse than yesterday".
 ///
-/// This is deliberately a MEASUREMENT rather than the narrower ideal graph the design calls for. The ideal is
-/// narrower — planes reach the contract and their own codec, transports reach the transport
-/// contract, units reach the contract and caps — and the tree is not all the way there. A gate that
-/// asserted the ideal today would be red for reasons nobody can fix this week, and a gate that is
-/// red for unfixable reasons is a gate somebody adds a `|| true` to. So the rule is the RATCHET
-/// instead: THIS IS THE GRAPH, and a NEW edge class is refused. Tightening is deleting a line here
-/// once the last edge in that class is gone — and the gate is red until the line goes, so the
-/// tightening cannot be forgotten.
-///
-/// `root` is not a source: the composition root exists to depend on everything by design, so an edge
-/// out of it is not news. `legacy` is not a source either — see the module header's ratchet.
-///
-/// The one sink it does NOT hold is `contract`: that edge is the spec's, not a measurement — see
-/// [`SPEC_SINK`].
-const MEASURED_EDGES: &[(&str, &str)] = &[
-    ("api", "secret"),
-    ("auth", "api"),
-    ("auth", "plugin-tooling"),
-    ("codec", "api"),
+/// [`PENDING_EDGES`] joins it: those are classes the DESIGN grants ahead of the tree, which is the
+/// same kind of statement made about a crate that does not exist yet.
+const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
+    ("caps", "contract"),
+    // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
-    ("codec", "substrate"),
-    ("codec", "timing"),
     ("contract", "contract-transport"),
     ("contract", "grammar"),
-    ("export", "plugin-tooling"),
-    ("hooks", "api"),
-    ("hooks", "plugin-tooling"),
     ("kernel", "caps"),
+    ("kernel", "contract"),
     ("kernel", "grammar"),
-    ("plane", "codec"),
-    ("plugin-abi", "api"),
+    ("legacy", "contract"),
+    ("plane", "contract"),
+    // The composition root is the one thing that names all three axes — that is what a root IS.
+    ("root", "api"),
+    ("root", "caps"),
+    ("root", "contract"),
+    ("root", "control"),
+    ("root", "kernel"),
+    ("root", "legacy"),
+    ("root", "plane"),
+    ("root", "plugin-tooling"),
+    ("root", "store"),
+    ("root", "substrate"),
+    ("root", "transport"),
+    ("root", "unit"),
+    ("store", "contract"),
+    ("substrate", "contract"),
+    ("transport", "contract"),
+    ("transport", "contract-transport"),
+    ("transport", "transport"),
+    ("unit", "caps"),
+    ("unit", "contract"),
+    ("unit", "unit"),
+    // A CONTROL SURFACE NAMES THE CONTRACT AND NOTHING ELSE — the closed sink set the owner ruled,
+    // already stated in [`CONTROL_SINKS`] and repeated here because this table is what the ship
+    // twin reads.
+    ("control", "contract"),
+];
+
+/// THE TRUSTED COMPUTING BASE: the loader and the plugin tooling, which `ARCHITECTURE.md` 1.4 says
+/// in its own words are NOT kinds. Their edges are neither granted nor refused by the kind rules,
+/// because the kind rules are not about them — so they carry their own verdict, they are still
+/// written down instance by instance, and the ship twin still refuses them: a tag's criterion is
+/// the architecture's own graph, and the TCB is a hole in that graph rather than a clause of it.
+const ARCHITECTURE_TCB: &[(&str, &str)] = &[
     ("plugin-tooling", "api"),
     ("plugin-tooling", "caps"),
     ("plugin-tooling", "kernel"),
@@ -555,46 +567,13 @@ const MEASURED_EDGES: &[(&str, &str)] = &[
     ("plugin-tooling", "plugin-tooling"),
     ("plugin-tooling", "secret"),
     ("plugin-tooling", "unit"),
-    ("secret", "api"),
-    ("secret", "plugin-tooling"),
-    // A store plugin implements the contract's record sink: the spec edge every plugin kind
-    // carries, first taken by store-memory when the kernel record store landed.
-    ("store", "contract"),
-    ("store", "api"),
-    ("store", "plugin-tooling"),
-    ("substrate", "api"),
-    ("substrate", "plugin-abi"),
-    ("substrate", "substrate"),
-    ("substrate", "timing"),
-    ("transport", "contract-transport"),
-    ("transport", "transport"),
-    ("transport", "unit"),
-    ("unit", "caps"),
-    ("unit", "contract-transport"),
-    ("unit", "unit"),
 ];
 
-/// THE KIND-TO-KIND EDGE CLASSES THE `cargo test` BUILD GRAPH HAS, measured and written down.
-///
-/// The same ratchet as [`MEASURED_EDGES`], over the other half of the graph. It is a SEPARATE table
-/// and not a union, because the two are separate claims: a shared fixture reaching a sibling kind
-/// is a fact about the test build, and folding it into the shipped graph would grant the shipped
-/// artifact the same edge.
-const MEASURED_TEST_EDGES: &[(&str, &str)] = &[
-    ("codec", "legacy"),
-    ("codec", "substrate"),
-    ("plane", "codec"),
-    ("plugin-tooling", "plugin-abi"),
-    ("plugin-tooling", "store"),
-    ("store", "plugin-tooling"),
-    ("substrate", "substrate"),
-    ("transport", "caps"),
-    ("unit", "api"),
-    ("unit", "unit"),
-];
+/// The verdict a `[[dep]]` row must carry, and the whole vocabulary of them.
+const DEP_VERDICTS: &[&str] = &["allowed", "tcb", "not-allowed", "owner-ruling-pending"];
 
-/// Kinds whose edges are not scored: the composition root, and the retiring legacy crates.
-const UNSCORED_SOURCES: &[&str] = &["root", "legacy"];
+/// The two halves of the build graph a `[[dep]]` or `[[question]]` row can be about.
+const DEP_HALVES: &[&str] = &["shipped", "test"];
 
 /// THE KINDS THE LEGACY DRAIN TARGETS — the ones a 1.5.x crate reaches only because its contents
 /// are being moved OUT into them.
@@ -783,12 +762,57 @@ struct MatrixDisagreement {
     note: String,
 }
 
+/// One `[[dep]]` row: one crate's dependency on one other crate, in one half of the build graph,
+/// at the EXACT number of declarations that state it today.
+///
+/// The `:deps` row held the manifests to a table of kind-to-kind CLASSES in Rust source, and a
+/// class ratchet has unlimited slack INSIDE a class: `transport -> unit` was one measured line, so a
+/// SECOND transport growing a dependency on a unit was green, and so was a third. An audit of all
+/// 220 workspace-internal edges found 105 the architecture grants, 87 it does not, 15 in the
+/// loader/ABI trusted base and 13 it never rules on at all — every one of them held by 38 lines
+/// recording which pairs of kind WORDS had ever appeared together. So the row is the INSTANCE, and
+/// the ratchet moves one edge at a time, exactly in both directions.
+#[derive(Debug, Clone)]
+struct DepEdge {
+    from: String,
+    to: String,
+    /// `shipped` — `[dependencies]`, `[build-dependencies]` and their per-target forms — or `test`,
+    /// which is `[dev-dependencies]`. Two halves and not one, because they are two claims: what the
+    /// artifact links, and what the test binary links.
+    half: String,
+    count: i64,
+    /// `allowed` | `tcb` | `not-allowed` | `owner-ruling-pending`. The first two are READINGS of
+    /// [`ARCHITECTURE_ALLOWED`] and [`ARCHITECTURE_TCB`], not opinions a row is entitled to hold.
+    verdict: String,
+    cite: String,
+    why: String,
+    drain: String,
+}
+
+/// One `[[question]]` row: the question an `owner-ruling-pending` edge is asking.
+///
+/// Its own table rather than an optional field, on exactly the terms `[[disagreement]]` is: every
+/// row in this file is a fixed set of required fields, and an optional one would be the first thing
+/// a reader has to remember. A question is also its own fact — it says the architecture has not
+/// ruled, which is a statement about the DESIGN and not about the count.
+#[derive(Debug, Clone)]
+struct DepQuestion {
+    from: String,
+    to: String,
+    half: String,
+    question: String,
+}
+
 /// [`REGISTRY_FILE`], read.
 #[derive(Debug, Default)]
 struct KindRegistry {
     transitional: Vec<Transitional>,
     announced: Vec<Announced>,
     registered: Vec<Registered>,
+    /// The `:deps` and `:test-deps` rows' two tables — one row per edge instance, one question per
+    /// unruled one.
+    dep_edges: Vec<DepEdge>,
+    dep_questions: Vec<DepQuestion>,
     /// The `:matrix` row's three tables. They live in this reader rather than in a second one
     /// because there is ONE registry file and a file read twice is a file two rules can disagree
     /// about.
@@ -1005,10 +1029,87 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 note: v[2].clone(),
             });
         }
+        // THE `:deps` AND `:test-deps` ROWS' TWO TABLES. Same reader, same refusals — and two more
+        // of its own, because a row whose `half` or whose `verdict` is a word this gate has no
+        // meaning for is a row that would be silently scored against nothing.
+        "dep" => {
+            let Some(v) = take_row(
+                fields,
+                &["from", "to", "half", "count", "verdict", "cite", "why", "drain"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            if !DEP_HALVES.contains(&v[2].as_str()) {
+                reg.errors.push(format!(
+                    "bad-half\t{REGISTRY_FILE}:{at}\t`[[dep]] half = \"{}\"` is not one of {}. The \
+                     shipped graph is what the artifact links and the test graph is what `cargo \
+                     test` links; a row that names neither is scored against neither",
+                    v[2],
+                    DEP_HALVES.join(", ")
+                ));
+                return;
+            }
+            let Ok(count) = v[3].parse::<i64>() else {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[dep]] count = \"{}\"` is not a number. A \
+                     ratchet that cannot be compared to a measurement is not a ratchet",
+                    v[3]
+                ));
+                return;
+            };
+            if !DEP_VERDICTS.contains(&v[4].as_str()) {
+                reg.errors.push(format!(
+                    "bad-verdict\t{REGISTRY_FILE}:{at}\t`[[dep]] verdict = \"{}\"` is not one of \
+                     {}. A row whose verdict this gate has no meaning for is a row that says \
+                     nothing about the edge it names",
+                    v[4],
+                    DEP_VERDICTS.join(", ")
+                ));
+                return;
+            }
+            reg.dep_edges.push(DepEdge {
+                from: v[0].clone(),
+                to: v[1].clone(),
+                half: v[2].clone(),
+                count,
+                verdict: v[4].clone(),
+                cite: v[5].clone(),
+                why: v[6].clone(),
+                drain: v[7].clone(),
+            });
+        }
+        "question" => {
+            let Some(v) = take_row(
+                fields,
+                &["from", "to", "half", "question"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            if !DEP_HALVES.contains(&v[2].as_str()) {
+                reg.errors.push(format!(
+                    "bad-half\t{REGISTRY_FILE}:{at}\t`[[question]] half = \"{}\"` is not one of {}",
+                    v[2],
+                    DEP_HALVES.join(", ")
+                ));
+                return;
+            }
+            reg.dep_questions.push(DepQuestion {
+                from: v[0].clone(),
+                to: v[1].clone(),
+                half: v[2].clone(),
+                question: v[3].clone(),
+            });
+        }
         other => reg.errors.push(format!(
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
-             file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[edge]]`, \
-             `[[cell]]` and `[[disagreement]]` rows and nothing else"
+             file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
+             `[[question]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else"
         )),
     }
 }
@@ -1042,8 +1143,8 @@ fn parse_registry(text: &str) -> KindRegistry {
             fields.clear();
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
-                 `[[registered]]`, `[[announced]]`, `[[edge]]`, `[[cell]]` and `[[disagreement]]` \
-                 rows and nothing else",
+                 `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[edge]]`, \
+                 `[[cell]]` and `[[disagreement]]` rows and nothing else",
                 i + 1
             ));
             continue;
@@ -1604,25 +1705,16 @@ fn rule_name(
 }
 
 // ------------------------------------------------------------------------------------------------
-// rule 2 — the dependency graph
+// rule 2 — the dependency ledger, instance by instance
 // ------------------------------------------------------------------------------------------------
-
-/// The measured graph, as the report prints it, so tightening is a delete rather than a re-derive.
-fn render_graph(edges: &BTreeSet<(String, String)>) -> String {
-    edges
-        .iter()
-        .map(|(a, b)| format!("{a}->{b}"))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 /// WHICH HALF OF THE BUILD GRAPH a run of the edge rule is reading.
 ///
 /// The split is not an exemption, it is two claims: the SHIPPED graph is what the artifact links,
-/// the TEST graph is what `cargo test` links. Folding the second into the first would make every
-/// shared fixture read as a kind learning about another kind; dropping it — which is what reading
-/// only `[dependencies]` did — leaves a plane wired into a transport with the gate green, and the
-/// red team walked straight through it.
+/// the TEST graph is what `cargo test` links. Folding the second into the first would grant the
+/// shipped artifact every edge a fixture has; dropping it — which is what reading only
+/// `[dependencies]` did — leaves a plane wired into a transport with the gate green, and a red team
+/// walked straight through that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Half {
     Shipped,
@@ -1637,20 +1729,6 @@ impl Half {
         }
     }
 
-    fn table(self) -> &'static [(&'static str, &'static str)] {
-        match self {
-            Half::Shipped => MEASURED_EDGES,
-            Half::Test => MEASURED_TEST_EDGES,
-        }
-    }
-
-    fn table_name(self) -> &'static str {
-        match self {
-            Half::Shipped => "MEASURED_EDGES",
-            Half::Test => "MEASURED_TEST_EDGES",
-        }
-    }
-
     fn decls(self, c: &CrateInfo) -> &[DepDecl] {
         match self {
             Half::Shipped => &c.deps,
@@ -1658,7 +1736,8 @@ impl Half {
         }
     }
 
-    fn noun(self) -> &'static str {
+    /// The word a `[[dep]]` row's `half` field carries.
+    fn word(self) -> &'static str {
         match self {
             Half::Shipped => "shipped",
             Half::Test => "test",
@@ -1666,28 +1745,128 @@ impl Half {
     }
 }
 
-fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -> Row {
+/// One measured edge INSTANCE: one crate naming one other crate, and how many declarations say so.
+struct DepInstance {
+    from: String,
+    to: String,
+    class: (String, String),
+    count: usize,
+    /// The sections those declarations came from, so a finding names the table it read.
+    sections: Vec<String>,
+}
+
+/// The verdict the architecture implies for a class, before anybody writes a sentence about it.
+fn verdict_for(class: &(String, String)) -> &'static str {
+    let pair = (class.0.as_str(), class.1.as_str());
+    if ARCHITECTURE_ALLOWED.contains(&pair) || PENDING_EDGES.contains(&pair) {
+        "allowed"
+    } else if ARCHITECTURE_TCB.contains(&pair) {
+        "tcb"
+    } else {
+        "not-allowed"
+    }
+}
+
+/// Every edge instance one half of the build graph has, measured.
+fn measure_edges(crates: &[CrateInfo], half: Half) -> Vec<DepInstance> {
+    let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut acc: BTreeMap<(String, String), DepInstance> = BTreeMap::new();
+    for c in crates {
+        let Some(from) = c.kind else { continue };
+        for decl in half.decls(c) {
+            let Some(target) = by_name.get(decl.pkg.as_str()) else {
+                continue;
+            };
+            let Some(to) = target.kind else { continue };
+            let e = acc
+                .entry((c.name.clone(), decl.pkg.clone()))
+                .or_insert_with(|| DepInstance {
+                    from: c.name.clone(),
+                    to: decl.pkg.clone(),
+                    class: (from.to_string(), to.to_string()),
+                    count: 0,
+                    sections: Vec::new(),
+                });
+            e.count += 1;
+            e.sections.push(decl.section.clone());
+        }
+    }
+    acc.into_values().collect()
+}
+
+/// The row `--report` prints for an edge nobody wrote down: ready to paste, with the verdict the
+/// architecture already implies filled in, so the reader writes the SENTENCES and not the facts.
+fn dep_row_scaffold(half: Half, e: &DepInstance) -> String {
+    format!(
+        "[[dep]]\nfrom    = \"{}\"\nto      = \"{}\"\nhalf    = \"{}\"\ncount   = \"{}\"\n\
+         verdict = \"{}\"\ncite    = \"\"\nwhy     = \"\"\ndrain   = \"\"\n",
+        e.from,
+        e.to,
+        half.word(),
+        e.count,
+        verdict_for(&e.class)
+    )
+}
+
+/// THE DRAIN'S OWN EXPIRY, on its own row and owed by the ship twin alone.
+///
+/// It sat inside `:deps`, and that stopped being readable the day `:deps` began owing the
+/// ARCHITECTURE'S graph on the ship sha: the row is red there for every edge the design does not
+/// grant, so "the drain finished" and "the graph is the architecture's" became one verdict and
+/// neither could be proven without the other. They are two claims.
+///
+/// This one is: every `[[transitional]]` exemption is for a crate that is RETIRING, and the expiry
+/// is deliberately NOT "the edge went away" — the drain lands edge by edge, branch after branch,
+/// and a row scored dead in the week between two branches would teach everyone to delete the
+/// ratchet instead of the debt. The expiry is the CRATE. If it still exists on the ship sha the
+/// retirement did not happen, and this is where the tag is refused, by name.
+fn rule_drain(crates: &[CrateInfo], reg: &KindRegistry) -> Row {
+    let present: BTreeSet<&str> = crates.iter().map(|c| c.name.as_str()).collect();
+    let mut offenders: Vec<String> = Vec::new();
+    for t in &reg.transitional {
+        if present.contains(t.from.as_str()) {
+            offenders.push(format!(
+                "transitional-live\t{REGISTRY_FILE}\t`{} -> {}` ({}) is a TRANSITIONAL exemption \
+                 for the legacy drain and `{}` still exists at ship time. The exemption's expiry \
+                 rule is that the crate must not exist on the ship sha: finish the drain and \
+                 delete the crate, or the table is a permanent hole under a temporary name",
+                t.from, t.to, t.reason, t.from
+            ));
+        }
+    }
+    offenders.sort();
+    if offenders.is_empty() {
+        return Row::pass(
+            ROW_DRAIN,
+            "the legacy drain is finished: no transitional exemption outlives its crate",
+            format!(
+                "{} transitional row(s) in {REGISTRY_FILE}, 0 whose crate is still in the tree",
+                reg.transitional.len()
+            ),
+        );
+    }
+    Row::fail(
+        ROW_DRAIN,
+        "a transitional exemption's crate is still in the tree at ship time",
+        format!("{} finding(s): {}", offenders.len(), offenders.join(" | ")),
+    )
+}
+
+fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -> Row {
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
     let drain_targets: BTreeSet<&str> = DRAIN_TARGET_KINDS.iter().copied().collect();
-    let measured: BTreeSet<(String, String)> = half
-        .table()
-        .iter()
-        .map(|(a, b)| ((*a).to_string(), (*b).to_string()))
-        .collect();
-    let mut allowed = measured.clone();
-    allowed.extend(
-        PENDING_EDGES
-            .iter()
-            .map(|(a, b)| ((*a).to_string(), (*b).to_string())),
-    );
-    let unscored: BTreeSet<&str> = UNSCORED_SOURCES.iter().copied().collect();
-
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    let measured = measure_edges(crates, half);
     // A ROW REFUSED AT LOAD IS REPORTED, NOT DROPPED. A table that quietly skips what it cannot
     // understand is a table that says yes to it, and the row it skipped is the one somebody wrote
-    // to get an edge past this rule.
-    let mut offenders: Vec<String> = reg.errors.clone();
+    // to get an edge past this rule. Only the shipped row carries them, so one bad row is one
+    // finding rather than two.
+    let mut offenders: Vec<String> = match half {
+        Half::Shipped => reg.errors.clone(),
+        Half::Test => Vec::new(),
+    };
 
+    // THE STRUCTURAL REFUSALS, which no ledger row can waive: they are not about how MANY
+    // declarations a pair has, they are about the pair existing at all.
     for c in crates {
         let Some(from) = c.kind else { continue };
         for decl in half.decls(c) {
@@ -1699,10 +1878,7 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -
 
             // THE PLANE FAMILY IS INSTANCE-SEALED. A plane's own codec is the intended shape; any
             // other instance is one plane reaching into another's vocabulary.
-            if c.family == Family::Plane
-                && target.family == Family::Plane
-                && !unscored.contains(from)
-            {
+            if c.family == Family::Plane && target.family == Family::Plane {
                 if let (Some(mine), Some(theirs)) = (&c.instance, &target.instance) {
                     if mine != theirs {
                         offenders.push(format!(
@@ -1756,12 +1932,11 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -
                 ));
             }
 
-            // THE DRAIN, EDGE BY EDGE. `legacy` is an unscored SOURCE for the edges it always had;
-            // it is not unscored for the edges the retirement CREATES. An edge into a kind the
-            // drain targets is accepted only if a `[[transitional]]` row names it, so
+            // THE DRAIN, EDGE BY EDGE. A `legacy` source is no longer unscored — its edges are rows
+            // like everything else — and this is the refusal that survives that: an edge into a
+            // kind the drain TARGETS is accepted only if a `[[transitional]]` row names it, so
             // `busbar-core -> busbar-unit-audit` reads as the drain and
-            // `busbar-core -> busbar-transport-ws` reads as the fusion — which is the entire
-            // difference the blanket exemption could not express.
+            // `busbar-core -> busbar-transport-ws` reads as the fusion.
             if from == "legacy"
                 && drain_targets.contains(to)
                 && !reg
@@ -1778,60 +1953,277 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -
                     c.dir, c.name
                 ));
             }
-
-            if unscored.contains(from) {
-                continue;
-            }
-            let edge = (from.to_string(), to.to_string());
-            seen.insert(edge.clone());
-            // The one edge the SPEC grants every kind, so it is never a new class and never a dead
-            // allowance: see [`SPEC_SINK`].
-            if to == SPEC_SINK {
-                continue;
-            }
-            if !allowed.contains(&edge) {
-                offenders.push(format!(
-                    "new-edge-class\t{}\t{from} -> {to} ({} -> {dep}) is not in the measured graph \
-                     — a NEW kind-to-kind edge class is a kind learning about another kind",
-                    c.dir, c.name
-                ));
-            }
         }
     }
 
-    // THE TRANSITIONAL TABLE IS EMPTY ON THE SHIP SHA, AND THIS IS WHERE THAT IS MEASURED.
+    // AN ANNOUNCED CRATE IS SCORED AT THE CLASS LEVEL, NOT AGAINST THE INSTANCE LEDGER.
     //
-    // The row's expiry is deliberately NOT "its edge went away": the drain lands edge by edge,
-    // branch after branch, and a row scored dead in the week between two branches would teach
-    // everyone to delete the ratchet instead of the debt. The expiry is the crate. A transitional
-    // row exists because a 1.5.x crate is retiring; if that crate is still in the tree at ship time
-    // then the retirement did not happen, and the row is where the tag is refused, by name.
+    // A `[[announced]]` row exists for the window before a crate is on disk, and its whole purpose
+    // is that the agent who lands the crate does not red a gate they never touched — the rows for
+    // its edges land WITH it. What does not wait is the design's own promise about the class: an
+    // announced crate that reaches a kind the architecture grants it nothing to is refused here and
+    // now, which is the machine form of "a core crate names no plane, dialect, transport or unit".
+    // The window closes on its own: the ship twin collects a spent announcement by name.
+    let announced = reg.announced_names();
+    for e in &measured {
+        if !announced.contains(e.from.as_str()) && !announced.contains(e.to.as_str()) {
+            continue;
+        }
+        if verdict_for(&e.class) == "not-allowed" {
+            offenders.push(format!(
+                "announced-edge-class\t{} -> {}\t{} -> {} names a kind the architecture grants \
+                 {} nothing to. An ANNOUNCED crate is not yet in the instance ledger — its rows \
+                 land with it — but the class it reaches is a design decision that was made \
+                 before the crate was written; {MAKE_A_NEW_KIND}",
+                e.class.0, e.class.1, e.from, e.to, e.class.0
+            ));
+        }
+    }
+
+    // THE SHIP TWIN OWES THE ARCHITECTURE'S OWN GRAPH, and owes it without reading the ledger:
+    // what is written there is what 1.6.0 still has to delete, not a shape the tag may keep.
     if ship {
-        for t in &reg.transitional {
-            if by_name.contains_key(t.from.as_str()) {
+        for e in &measured {
+            let verdict = verdict_for(&e.class);
+            if verdict != "allowed" {
                 offenders.push(format!(
-                    "transitional-live\t{REGISTRY_FILE}\t`{} -> {}` ({}) is a TRANSITIONAL \
-                     exemption for the legacy drain and `{}` still exists at ship time. The \
-                     exemption's expiry rule is that the crate must not exist on the ship sha: \
-                     finish the drain and delete the crate, or the table is a permanent hole under \
-                     a temporary name",
-                    t.from, t.to, t.reason, t.from
+                    "ship-edge\t{} -> {}\t{} -> {} is `{verdict}`: the architecture grants no {} \
+                     -> {} edge, and the ship criterion is the architecture's graph rather than \
+                     yesterday's measurement. {} declaration(s), in {}.",
+                    e.class.0,
+                    e.class.1,
+                    e.from,
+                    e.to,
+                    e.class.0,
+                    e.class.1,
+                    e.count,
+                    e.sections.join(", ")
                 ));
+            }
+        }
+        offenders.sort();
+        offenders.dedup();
+        if offenders.is_empty() {
+            return Row::pass(
+                half.row(),
+                "every dependency in the graph is one the architecture grants",
+                format!("{} {} edge(s), all ALLOWED", measured.len(), half.word()),
+            );
+        }
+        return Row::fail(
+            half.row(),
+            "a dependency the architecture does not grant is still in the graph",
+            format!(
+                "{} finding(s) over {} {} edge(s): {}",
+                offenders.len(),
+                measured.len(),
+                half.word(),
+                offenders.join(" | ")
+            ),
+        );
+    }
+
+    // THE LEDGER, ROW BY ROW. A duplicate row is refused before anything is compared: two rows for
+    // one edge is two numbers for one measurement, and whichever the reader believes is the one
+    // that is not checked.
+    let mut listed: BTreeMap<(&str, &str), &DepEdge> = BTreeMap::new();
+    for row in reg.dep_edges.iter().filter(|d| d.half == half.word()) {
+        if listed
+            .insert((row.from.as_str(), row.to.as_str()), row)
+            .is_some()
+        {
+            offenders.push(format!(
+                "duplicate-dep\t{} -> {}\ttwo `[[dep]]` rows name the same {} edge. Two rows are \
+                 two numbers for one measurement, and the one a reader believes is the one nobody \
+                 checked.",
+                row.from,
+                row.to,
+                half.word()
+            ));
+        }
+    }
+    let mut questions: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for q in reg.dep_questions.iter().filter(|q| q.half == half.word()) {
+        if !questions.insert((q.from.as_str(), q.to.as_str())) {
+            offenders.push(format!(
+                "duplicate-dep\t{} -> {}\ttwo `[[question]]` rows ask about the same {} edge",
+                q.from,
+                q.to,
+                half.word()
+            ));
+        }
+    }
+
+    let mut scaffolds: Vec<String> = Vec::new();
+    for e in &measured {
+        // The announced window, above.
+        if announced.contains(e.from.as_str()) || announced.contains(e.to.as_str()) {
+            continue;
+        }
+        let Some(row) = listed.get(&(e.from.as_str(), e.to.as_str())) else {
+            scaffolds.push(dep_row_scaffold(half, e));
+            offenders.push(format!(
+                "unlisted-dep-edge\t{} -> {}\t{} -> {} is a {} edge with no `[[dep]]` row in \
+                 {REGISTRY_FILE}. An edge nobody wrote down is an edge nobody reviewed: add the \
+                 row with `count = \"{}\"` and its citation, or delete the dependency. {} \
+                 declaration(s), in {}.",
+                e.class.0,
+                e.class.1,
+                e.from,
+                e.to,
+                half.word(),
+                e.count,
+                e.count,
+                e.sections.join(", ")
+            ));
+            continue;
+        };
+        if row.count != e.count as i64 {
+            let verb = if row.count < e.count as i64 {
+                "RAISED — this landing grew the coupling"
+            } else {
+                "STALE SLACK — the count fell and the row did not; slack is how drift hides"
+            };
+            offenders.push(format!(
+                "dep-ratchet\t{} -> {}\trow {} vs measured {} ({verb}). The row must equal the \
+                 count, exactly. Declarations: {}.",
+                e.from,
+                e.to,
+                row.count,
+                e.count,
+                e.sections.join(", ")
+            ));
+        }
+        // A ROW MAY NOT GRANT ITSELF AN EDGE THE ARCHITECTURE DOES NOT. `allowed` and `tcb` are
+        // readings of the architecture, not opinions a row is entitled to hold: the class tables
+        // are in this file precisely so the ledger cannot edit them.
+        let implied = verdict_for(&e.class);
+        match row.verdict.as_str() {
+            "allowed" if implied != "allowed" => offenders.push(format!(
+                "unsupported-verdict\t{} -> {}\tthe row claims `allowed`, and the architecture \
+                 grants no {} -> {} edge (it implies `{implied}`). A ledger row cannot grant an \
+                 edge the architecture withholds.",
+                e.from, e.to, e.class.0, e.class.1
+            )),
+            "tcb" if implied != "tcb" => offenders.push(format!(
+                "unsupported-verdict\t{} -> {}\tthe row claims `tcb`, and {} -> {} is not a \
+                 loader/tooling class (the architecture implies `{implied}`).",
+                e.from, e.to, e.class.0, e.class.1
+            )),
+            "not-allowed" if implied == "allowed" => offenders.push(format!(
+                "unsupported-verdict\t{} -> {}\tthe row calls a granted edge `not-allowed`. The \
+                 architecture grants {} -> {}; a row that refuses it is a row somebody will \
+                 tighten by deleting a dependency the design asks for.",
+                e.from, e.to, e.class.0, e.class.1
+            )),
+            // AN UNRULED EDGE OWES ITS QUESTION, in full, so a ruling can be given by reading this
+            // file and nothing else. A pending row with no question has stopped asking.
+            "owner-ruling-pending" if !questions.contains(&(e.from.as_str(), e.to.as_str())) => {
+                offenders.push(format!(
+                    "unasked-question\t{} -> {}\tthe row is `owner-ruling-pending` and no \
+                     `[[question]]` row asks about it. An edge nobody ruled on and nobody asked \
+                     about is an edge that passes by being unreadable.",
+                    e.from, e.to
+                ))
+            }
+            _ => {}
+        }
+    }
+
+    // A ROW WHOSE EDGE IS GONE IS A DEAD ALLOWANCE, and that is how this ratchet tightens: the
+    // landing that deletes the dependency is the landing that must delete the row.
+    for (from, to) in listed.keys() {
+        if announced.contains(*from) || announced.contains(*to) {
+            continue;
+        }
+        if !measured.iter().any(|e| e.from == *from && e.to == *to) {
+            offenders.push(format!(
+                "dead-dep-edge\t{from} -> {to}\tthe `[[dep]]` row covers nothing: no {} dependency \
+                 from {from} on {to} exists any more. Strike the row.",
+                half.word()
+            ));
+        }
+    }
+    for (from, to) in &questions {
+        let pending = listed
+            .get(&(*from, *to))
+            .is_some_and(|r| r.verdict == "owner-ruling-pending");
+        if !pending {
+            offenders.push(format!(
+                "dead-question\t{from} -> {to}\tthe `[[question]]` row asks about a {} edge that is \
+                 not `owner-ruling-pending` any more. The ruling landed, or the edge did not: \
+                 strike the question.",
+                half.word()
+            ));
+        }
+    }
+
+    if !scaffolds.is_empty() {
+        // `--report` PRINTS the rows to paste. The whole point of a ledger a human writes is that
+        // the gate hands them the facts and asks only for the sentences.
+        println!(
+            "\nTHE {} EDGES WITH NO ROW, ready to paste into {REGISTRY_FILE}:\n{}",
+            half.word().to_uppercase(),
+            scaffolds.join("\n")
+        );
+    }
+
+    // `--report` PRINTS THE OPEN DEBT WHERE A READER IS. A ledger of 220 rows is not something a
+    // FAIL detail can carry — `Row::tsv` flattens every newline in it to one line, and a PASS row's
+    // detail is not printed at all — but the whole reason each row owes a `drain` is that somebody
+    // can be handed the deleting line rather than re-deriving it. So in report mode the not-allowed
+    // rows and the unruled questions go to stdout, grouped, with their sentences.
+    if cx.env().report_only {
+        let mut debt: Vec<&DepEdge> = listed
+            .values()
+            .copied()
+            .filter(|r| r.verdict == "not-allowed" || r.verdict == "owner-ruling-pending")
+            .collect();
+        debt.sort_by(|a, b| (&a.verdict, &a.from, &a.to).cmp(&(&b.verdict, &b.from, &b.to)));
+        println!(
+            "\nTHE {} DEPENDENCY DEBT ({} row(s) of {}):",
+            half.word().to_uppercase(),
+            debt.len(),
+            listed.len()
+        );
+        for r in &debt {
+            println!(
+                "--- {} -> {} ({}, count {})\n    cite : {}\n    why  : {}\n    drain: {}",
+                r.from, r.to, r.verdict, r.count, r.cite, r.why, r.drain
+            );
+        }
+        let mut asked: Vec<&DepQuestion> = reg
+            .dep_questions
+            .iter()
+            .filter(|q| q.half == half.word())
+            .collect();
+        asked.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
+        if !asked.is_empty() {
+            println!(
+                "\nTHE {} EDGES AWAITING AN OWNER RULING ({}):",
+                half.word().to_uppercase(),
+                asked.len()
+            );
+            for q in asked {
+                println!("--- {} -> {}\n    {}", q.from, q.to, q.question);
             }
         }
     }
 
-    // A DEAD ALLOWANCE IS RED, and that is how this ratchet tightens: the last edge in a class
-    // going away makes the gate demand the line be struck.
-    for edge in measured.difference(&seen) {
-        offenders.push(format!(
-            "dead-edge-class\t{}\t{} -> {} no longer exists in the tree; strike the \
-             line so the graph the gate enforces is the graph the tree has",
-            half.table_name(),
-            edge.0,
-            edge.1
-        ));
+    let mut classes: BTreeSet<(String, String)> = BTreeSet::new();
+    for e in &measured {
+        classes.insert(e.class.clone());
     }
+    let headline = format!(
+        "{} {} edge instance(s) over {} class(es), {} declaration(s); {} `[[dep]]` row(s), {} \
+         question(s)",
+        measured.len(),
+        half.word(),
+        classes.len(),
+        measured.iter().map(|e| e.count).sum::<usize>(),
+        listed.len(),
+        questions.len()
+    );
 
     offenders.sort();
     offenders.dedup();
@@ -1840,44 +2232,25 @@ fn rule_deps(crates: &[CrateInfo], reg: &KindRegistry, half: Half, ship: bool) -
             half.row(),
             match half {
                 Half::Shipped => {
-                    "every kind-to-kind dependency edge is one the measured graph already has"
+                    "every dependency edge is at the exact count its ledger row states"
                 }
-                Half::Test => "every kind-to-kind TEST edge is one the measured test graph has",
+                Half::Test => {
+                    "every TEST dependency edge is at the exact count its ledger row states"
+                }
             },
-            format!(
-                "{} edge class(es): {} || {} transitional drain row(s) in {REGISTRY_FILE}",
-                seen.len(),
-                render_graph(&seen),
-                reg.transitional.len()
-            ),
+            headline,
         );
     }
-    // THE MESSAGE AND THE TABLE AGREE. The failure detail used to print `seen` — the graph OBSERVED
-    // in the tree — under the label "measured graph", so a finding could read `store -> contract is
-    // not in the measured graph` directly above a "measured graph" listing `store->contract`. The
-    // ratchet a reader has to edit is `MEASURED_EDGES`, so that is what is printed under its own
-    // name; the observed set is printed beside it, labelled as what it is.
     Row::fail(
         half.row(),
         match half {
-            Half::Shipped => {
-                "a dependency crosses a kind boundary the measured graph does not have"
-            }
-            Half::Test => {
-                "a TEST dependency crosses a kind boundary the measured test graph does \
-                           not have"
-            }
+            Half::Shipped => "a dependency edge is not the edge the ledger has written down",
+            Half::Test => "a TEST dependency edge is not the edge the ledger has written down",
         },
         format!(
-            "{} finding(s) in the {} graph: {} || {} ({}): {} || observed in the tree ({}): {}",
+            "{} finding(s), {headline}: {}",
             offenders.len(),
-            half.noun(),
-            offenders.join(" | "),
-            half.table_name(),
-            measured.len(),
-            render_graph(&measured),
-            seen.len(),
-            render_graph(&seen)
+            offenders.join(" | ")
         ),
     )
 }
@@ -3537,6 +3910,7 @@ impl Gate for KindIsolationGate {
             ROW_MATRIX.to_string(),
         ];
         if self.ship {
+            owed.push(ROW_DRAIN.to_string());
             owed.push(ROW_SHAPE.to_string());
             owed.push(ROW_TESTKIT.to_string());
             owed.push(ROW_CONTROL.to_string());
@@ -3601,8 +3975,8 @@ impl Gate for KindIsolationGate {
 
         let mut rows = vec![
             rule_name(&crates, &planes, &ports, &reg),
-            rule_deps(&crates, &reg, Half::Shipped, self.ship),
-            rule_deps(&crates, &reg, Half::Test, self.ship),
+            rule_deps(cx, &crates, &reg, Half::Shipped, self.ship),
+            rule_deps(cx, &crates, &reg, Half::Test, self.ship),
             rule_vocab(cx, &crates, &planes),
             rule_registry(cx, &crates, &reg, self.ship),
             rule_steps(cx, &crates),
@@ -3611,6 +3985,7 @@ impl Gate for KindIsolationGate {
             matrix::rule_matrix(cx, &crates, &reg, self.ship),
         ];
         if self.ship {
+            rows.push(rule_drain(&crates, &reg));
             rows.push(rule_control(cx, &crates));
             match index_sources(cx) {
                 Ok(idx) => {
@@ -3741,20 +4116,30 @@ impl Gate for KindIsolationGate {
             &["dead-waiver", "busbar-auth-admin-tokens"],
         ));
 
-        // A NEW EDGE CLASS. A plane reaching a transport is the fusion done through Cargo instead
-        // of through a name.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a plane growing a dependency on a transport is a new edge class",
-            &[ROW_DEPS],
-            manifest_plant(
-                "crates/busbar-plane-mcp",
-                "busbar-plane-mcp",
-                &["busbar-contract", "busbar-transport-http"],
-            ),
-            &["new-edge-class", "plane -> transport"],
-        ));
+        // AN EDGE NOBODY WROTE DOWN. A plane reaching a transport is the fusion done through
+        // Cargo instead of through a name — and the row it needs is the INSTANCE, so the finding
+        // names both crates and not only the pair of kind words.
+        //
+        // The case is asked of the PER-PUSH gate only: the ship twin does not read the ledger, and
+        // `:deps` is red there whatever this plant does.
+        if !self.ship {
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a plane growing a dependency on a transport is an edge nobody wrote down",
+                &[ROW_DEPS],
+                manifest_plant(
+                    "crates/busbar-plane-mcp",
+                    "busbar-plane-mcp",
+                    &["busbar-contract", "busbar-transport-http"],
+                ),
+                &[
+                    "unlisted-dep-edge",
+                    "plane -> transport",
+                    "busbar-plane-mcp -> busbar-transport-http",
+                ],
+            ));
+        }
 
         // THE SAME REACH OUT OF A CONTROL SURFACE, refused by its own closed sink set rather than
         // by the measured graph — a control crate names the contract and nothing else, whether or
@@ -3883,18 +4268,117 @@ impl Gate for KindIsolationGate {
             &["cross-instance", "busbar-plane-llm"],
         ));
 
-        // A DEAD EDGE CLASS: strip the only crate that carries `contract -> grammar` and the
-        // allowance must be reported as the line it has become. (It read `caps -> contract` until
-        // the contract sink stopped being a measured line — see `SPEC_SINK`; an edge the spec
-        // grants can never be a dead allowance, so it can no longer prove this rule.)
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "an edge class no crate has any more is reported as a dead allowance",
-            &[ROW_DEPS],
-            manifest_plant("crates/busbar-contract", "busbar-contract", &[]),
-            &["dead-edge-class", "contract -> grammar"],
-        ));
+        // THE LEDGER CASES BELONG TO THE PER-PUSH GATE ALONE. Every one is about the `[[dep]]`
+        // rows in the registry file, and the SHIP twin does not read them: it owes the
+        // ARCHITECTURE'S graph, so planting a raised row against it would produce the same red it
+        // already produces, and "the gate went red" is the answer this battery exists to refuse.
+        // The twin owes its own two cases, which make NAMED, NEW deviations — see below.
+        if !self.ship {
+            // A DEAD ROW. Strip the edges `busbar-contract` declares and every row that covered one
+            // is reported as the line it has become. This is the half of the ratchet that TIGHTENS:
+            // the landing that deletes the dependency is the landing that deletes the row, and the
+            // gate is red until it does.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "an edge instance no crate has any more is reported as a dead allowance",
+                &[ROW_DEPS],
+                manifest_plant("crates/busbar-contract", "busbar-contract", &[]),
+                &[
+                    "dead-dep-edge",
+                    "busbar-contract -> busbar-grammar",
+                    "Strike the row",
+                ],
+            ));
+
+            // A ROW THAT LEFT SLACK. The other half of the ratchet, and the one a class table could
+            // never hold: a count BELOW the measurement is drift nobody drained on the commit that
+            // drained the edge.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a dependency row left above the count it measures — stale slack is how drift hides",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"",
+                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"9\"",
+                ),
+                &[
+                    "dep-ratchet",
+                    "busbar-kernel -> busbar-caps",
+                    "STALE SLACK",
+                ],
+            ));
+
+            // A ROW THAT GRANTED ITSELF AN EDGE THE ARCHITECTURE WITHHOLDS. `allowed` is a READING
+            // of ARCHITECTURE.md, not an opinion a ledger row is entitled to hold — otherwise the
+            // ledger IS the architecture and the ratchet loosens by editing one word.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a ledger row cannot grant itself an edge the architecture withholds",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"not-allowed\"",
+                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"",
+                ),
+                &[
+                    "unsupported-verdict",
+                    "busbar-transport-tls -> busbar-unit-transport-key",
+                    "cannot grant an edge the architecture withholds",
+                ],
+            ));
+
+            // AN UNRULED EDGE OWES ITS QUESTION. Thirteen edges match no clause in either
+            // direction; they are neither granted nor refused today, and the whole point of writing
+            // them down is that the owner can rule by reading this file. A pending row whose
+            // question is gone has stopped asking, and an unruled edge that has stopped asking is
+            // an edge that passes by being unreadable.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "an unruled edge whose question was struck out has stopped asking",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "[[question]]\nfrom     = \"busbar-substrate\"\nto       = \"busbar-api\"",
+                    "[[question]]\nfrom     = \"busbar-substrate-values\"\nto       = \"busbar-api\"",
+                ),
+                &["unasked-question", "busbar-substrate -> busbar-api"],
+            ));
+
+            // TWO ROWS FOR ONE EDGE. Two numbers for one measurement, and the one a reader believes
+            // is the one nobody checked.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "two rows for one edge is two numbers for one measurement",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-caps\"",
+                    "[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"\ncite    = \"x\"\nwhy     = \"x\"\ndrain   = \"x\"\n\n[[dep]]\nfrom    = \"busbar-kernel\"\nto      = \"busbar-caps\"",
+                ),
+                &["duplicate-dep", "busbar-kernel -> busbar-caps"],
+            ));
+
+            // A ROW WITH A NUMBER AND NO SENTENCE IS A BUDGET — refused at LOAD, by the same reader
+            // that refuses a `[[cell]]` with half a sentence.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a dependency row whose citation was emptied is refused at load",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"\ncite    = \"",
+                    "from    = \"busbar-kernel\"\nto      = \"busbar-caps\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"\ncite    = \"\"\nunused  = \"",
+                ),
+                &["empty-field", "cite"],
+            ));
+        }
 
         // THE CONTRACT SINK IS THE SPEC'S, NOT A MEASUREMENT. `hooks -> contract` is in no snapshot
         // and never was; PLUGIN-TREE.md §4 grants it, as it grants every kind the contract. This case plants that
@@ -3907,143 +4391,160 @@ impl Gate for KindIsolationGate {
         // narrowed: on the ship sha `:deps` also carries the transitional ratchet, and every legacy
         // crate is still here, so the row is red there whatever this plant does.
         if !self.ship {
-            report.push(prove_rows_green(
+            report.push(prove_rows_red(
                 cx,
                 self,
-                "a kind naming the contract is the spec's edge, not a new class",
+                "an edge the architecture grants is still an edge that must be written down",
                 &[ROW_DEPS],
                 manifest_plant(
                     "crates/busbar-export-planted",
                     "busbar-export-planted",
                     &["busbar-contract"],
                 ),
+                &[
+                    "unlisted-dep-edge",
+                    "busbar-export-planted -> busbar-contract",
+                    "export -> contract",
+                ],
             ));
         }
 
-        // THE FIVE SPELLINGS THE ONE-SECTION READER COULD NOT SEE. Every one of these was planted
-        // in the real tree by a red-team pass and left every gate GREEN; every one is a plane
-        // linked into a transport. See [`crate::manifest`] for the reading that closes them.
+        // THE MANIFEST-SPELLING CASES READ THE LEDGER TOO — every one asks for the finding a
+        // MISSING `[[dep]]` row produces — so they belong to the per-push gate, on the same
+        // terms as the rest of the ledger battery.
+        if !self.ship {
+            // THE FIVE SPELLINGS THE ONE-SECTION READER COULD NOT SEE. Every one of these was planted
+            // in the real tree by a red-team pass and left every gate GREEN; every one is a plane
+            // linked into a transport. See [`crate::manifest`] for the reading that closes them.
 
-        // A BUILD-DEPENDENCY IS A SHIPPED EDGE: the build script runs, and what it links is
-        // compiled into the making of the artifact.
-        let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-transport-tls/Cargo.toml",
-            manifest_plus(
-                cx,
+            // A BUILD-DEPENDENCY IS A SHIPPED EDGE: the build script runs, and what it links is
+            // compiled into the making of the artifact.
+            let mut ov = Overlay::new();
+            ov.set(
                 "crates/busbar-transport-tls/Cargo.toml",
-                "\n[build-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
-            ),
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a build-dependency is a shipped edge",
-            &[ROW_DEPS],
-            ov,
-            &[
-                "new-edge-class",
-                "transport -> plane",
-                "[build-dependencies]",
-            ],
-        ));
+                manifest_plus(
+                    cx,
+                    "crates/busbar-transport-tls/Cargo.toml",
+                    "\n[build-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a build-dependency is a shipped edge",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "unlisted-dep-edge",
+                    "transport -> plane",
+                    "build-dependencies",
+                ],
+            ));
 
-        // A PER-TARGET DEPENDENCY IS A DEPENDENCY, and `cfg(unix)` is true on every runner this
-        // tree builds on, so the edge is not even conditional.
-        let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-transport-tls/Cargo.toml",
-            manifest_plus(
-                cx,
+            // A PER-TARGET DEPENDENCY IS A DEPENDENCY, and `cfg(unix)` is true on every runner this
+            // tree builds on, so the edge is not even conditional.
+            let mut ov = Overlay::new();
+            ov.set(
                 "crates/busbar-transport-tls/Cargo.toml",
-                "\n[target.'cfg(unix)'.dependencies]\nbusbar-plane-mcp = { workspace = true }\n",
-            ),
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a per-target dependency is a dependency",
-            &[ROW_DEPS],
-            ov,
-            &["new-edge-class", "transport -> plane", "target."],
-        ));
+                manifest_plus(
+                    cx,
+                    "crates/busbar-transport-tls/Cargo.toml",
+                    "\n[target.'cfg(unix)'.dependencies]\nbusbar-plane-mcp = { workspace = true }\n",
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a per-target dependency is a dependency",
+                &[ROW_DEPS],
+                ov,
+                &["unlisted-dep-edge", "transport -> plane", "target."],
+            ));
 
-        // A RENAMED PACKAGE IS THE PACKAGE IT RENAMES. The needle list names the PLANE, because the
-        // finding that says only `wire` is a finding about a crate that resolves to no kind at all.
-        let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-transport-tls/Cargo.toml",
-            manifest_plus(
-                cx,
+            // A RENAMED PACKAGE IS THE PACKAGE IT RENAMES. The needle list names the PLANE, because the
+            // finding that says only `wire` is a finding about a crate that resolves to no kind at all.
+            let mut ov = Overlay::new();
+            ov.set(
                 "crates/busbar-transport-tls/Cargo.toml",
-                "\n[dependencies.wire]\npackage = \"busbar-plane-llm\"\npath = \"../busbar-plane-llm\"\n",
-            ),
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a renamed package is the package it renames",
-            &[ROW_DEPS],
-            ov,
-            &[
-                "new-edge-class",
-                "transport -> plane",
-                "busbar-plane-llm",
-                "as `wire`",
-            ],
-        ));
+                manifest_plus(
+                    cx,
+                    "crates/busbar-transport-tls/Cargo.toml",
+                    "\n[dependencies.wire]\npackage = \"busbar-plane-llm\"\npath = \"../busbar-plane-llm\"\n",
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a renamed package is the package it renames",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "unlisted-dep-edge",
+                    "transport -> plane",
+                    "busbar-transport-tls -> busbar-plane-llm",
+                ],
+            ));
 
-        // THE SAME RENAME, STATED ONE FILE AWAY. `[workspace.dependencies]` renames it and the
-        // member says only `workspace = true`, so neither the member's manifest nor its source ever
-        // spells a plane word.
-        let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-transport-tls/Cargo.toml",
-            manifest_plus(
-                cx,
+            // THE SAME RENAME, STATED ONE FILE AWAY. `[workspace.dependencies]` renames it and the
+            // member says only `workspace = true`, so neither the member's manifest nor its source ever
+            // spells a plane word.
+            let mut ov = Overlay::new();
+            ov.set(
                 "crates/busbar-transport-tls/Cargo.toml",
-                "\n[dependencies]\nwire-shim = { workspace = true }\n",
-            ),
-        );
-        ov.set(
-            "Cargo.toml",
-            cx.read("Cargo.toml").unwrap_or_default().replacen(
-                "[workspace.dependencies]\n",
-                "[workspace.dependencies]\nwire-shim = { package = \"busbar-plane-llm\", path = \
-                 \"crates/busbar-plane-llm\" }\n",
-                1,
-            ),
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a workspace-inherited rename reaches the package the workspace named",
-            &[ROW_DEPS],
-            ov,
-            &["new-edge-class", "transport -> plane", "busbar-plane-llm"],
-        ));
+                manifest_plus(
+                    cx,
+                    "crates/busbar-transport-tls/Cargo.toml",
+                    "\n[dependencies]\nwire-shim = { workspace = true }\n",
+                ),
+            );
+            ov.set(
+                "Cargo.toml",
+                cx.read("Cargo.toml").unwrap_or_default().replacen(
+                    "[workspace.dependencies]\n",
+                    "[workspace.dependencies]\nwire-shim = { package = \"busbar-plane-llm\", path = \
+                     \"crates/busbar-plane-llm\" }\n",
+                    1,
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a workspace-inherited rename reaches the package the workspace named",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "unlisted-dep-edge",
+                    "transport -> plane",
+                    "busbar-plane-llm",
+                ],
+            ));
 
-        // A DEV-DEPENDENCY IS A REAL EDGE OF THE `cargo test` BUILD GRAPH. It is not a SHIPPED
-        // edge, which is why it is on its own row and why THIS case requires `:deps` to stay green
-        // in the same breath — a rule that folded the two together would make every shared fixture
-        // read as a kind learning about another kind.
-        let mut ov = Overlay::new();
-        ov.set(
-            "crates/busbar-transport-tls/Cargo.toml",
-            manifest_plus(
-                cx,
+            // A DEV-DEPENDENCY IS A REAL EDGE OF THE `cargo test` BUILD GRAPH. It is not a SHIPPED
+            // edge, which is why it is on its own row and why THIS case requires `:deps` to stay green
+            // in the same breath — a rule that folded the two together would make every shared fixture
+            // read as a kind learning about another kind.
+            let mut ov = Overlay::new();
+            ov.set(
                 "crates/busbar-transport-tls/Cargo.toml",
-                "\n[dev-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
-            ),
-        );
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "a dev-dependency crossing a kind is named on the test graph's own row",
-            &[ROW_TEST_DEPS],
-            ov,
-            &["new-edge-class", "transport -> plane", "[dev-dependencies]"],
-        ));
+                manifest_plus(
+                    cx,
+                    "crates/busbar-transport-tls/Cargo.toml",
+                    "\n[dev-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a dev-dependency crossing a kind is named on the test graph's own row",
+                &[ROW_TEST_DEPS],
+                ov,
+                &[
+                    "unlisted-dep-edge",
+                    "transport -> plane",
+                    "dev-dependencies",
+                ],
+            ));
+        }
 
         // THE VOCABULARY, BOTH DIRECTIONS.
         let mut ov = Overlay::new();
@@ -4308,14 +4809,14 @@ impl Gate for KindIsolationGate {
         report.push(prove_rows_red(
             cx,
             self,
-            "a core crate reaching a unit is a new edge class",
+            "a core crate reaching a unit is a class the architecture grants nothing to",
             &[ROW_DEPS],
             manifest_plant(
                 "crates/busbar-core-config",
                 "busbar-core-config",
                 &["busbar-substrate", "busbar-unit-audit"],
             ),
-            &["new-edge-class", "core -> unit"],
+            &["announced-edge-class", "core -> unit"],
         ));
 
         // THE ANNOUNCEMENT IS WHAT HOLDS THE KIND ROW OPEN, not silence. Strike the rows while the
@@ -4428,13 +4929,43 @@ impl Gate for KindIsolationGate {
 
         if !self.ship {
             // A LISTED DRAIN EDGE IS GREEN. The owner's ruling, as the per-push gate reads it:
-            // while busbar-core drains it MAY name a unit, because a row names the edge.
+            // while busbar-core drains it MAY name a unit, because a `[[transitional]]` row names
+            // the edge.
+            //
+            // IT OWES ITS `[[dep]]` ROW TOO, and both halves of that are the point. The
+            // transitional row says the EDGE CLASS is the drain rather than the fusion; the `[[dep]]`
+            // row says how many declarations there are, exactly, so the drain cannot quietly grow a
+            // second one. The plant APPENDS to the real manifest rather than rewriting it, because
+            // a rewrite would strike busbar-core's real edges and the dead-row findings that
+            // produced are the ones a reader would mistake for this case's own.
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-core/Cargo.toml",
+                manifest_plus(
+                    cx,
+                    "crates/busbar-core/Cargo.toml",
+                    "\n[dependencies]\nbusbar-unit-audit = { workspace = true }\n",
+                ),
+            );
+            ov.set(
+                REGISTRY_FILE,
+                format!(
+                    "{}\n\n[[dep]]\nfrom    = \"busbar-core\"\nto      = \"busbar-unit-audit\"\n\
+                     half    = \"shipped\"\ncount   = \"1\"\nverdict = \"not-allowed\"\n\
+                     cite    = \"the legacy drain: ARCHITECTURE.md 1.1 grants a legacy crate no unit \
+                     edge, and the [[transitional]] row above names this one as the retirement in \
+                     flight.\"\nwhy     = \"busbar-core is moving the audit step out into \
+                     busbar-unit-audit; one shipped declaration states it.\"\ndrain   = \"finish \
+                     the move and delete busbar-core.\"\n",
+                    cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+                ),
+            );
             report.push(prove_rows_green(
                 cx,
                 self,
-                "a legacy crate reaching a unit through a named transitional row",
+                "a legacy crate reaching a unit through a named transitional row and its own count",
                 &[ROW_DEPS],
-                manifest_plant("crates/busbar-core", "busbar-core", &["busbar-unit-audit"]),
+                ov,
             ));
 
             // THE TWO CORE CRATES LANDING IS GREEN — no unknown kind, no dead kind, no dead waiver,
@@ -4511,7 +5042,7 @@ impl Gate for KindIsolationGate {
             cx,
             self,
             "a transitional row is red at ship time while its legacy crate still exists",
-            &[ROW_DEPS],
+            &[ROW_DRAIN],
             Overlay::new(),
             &["transitional-live", "busbar-core", "ship"],
         ));
@@ -4526,7 +5057,7 @@ impl Gate for KindIsolationGate {
             cx,
             self,
             "an empty transitional table over a tree whose legacy crates are gone",
-            &[ROW_DEPS],
+            &[ROW_DRAIN],
             ov,
         ));
 
@@ -4554,6 +5085,52 @@ impl Gate for KindIsolationGate {
         // THE SHIP ROWS. Each plant makes a NAMED, NEW deviation, because both rows are already
         // red on this tree: "the gate went red" would be satisfied by the debt the criterion is
         // about, and would prove nothing about the rule.
+        // THE SHIP TWIN'S OWN DEPENDENCY PROOF, both halves. It does not read the ledger, so every
+        // ledger case above would produce the red it already produces; these two make a NAMED, NEW
+        // deviation instead — a class the architecture grants nowhere, between two crates that have
+        // no edge at all today.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "at the architecture's own graph, a transport reaching a plane is a NEW refusal",
+            &[ROW_DEPS],
+            manifest_plant(
+                "crates/busbar-transport-stdio",
+                "busbar-transport-stdio",
+                &["busbar-contract-transport", "busbar-plane-llm"],
+            ),
+            &[
+                "ship-edge",
+                "busbar-transport-stdio -> busbar-plane-llm",
+                "the architecture grants no transport -> plane edge",
+            ],
+        ));
+
+        // AND THE SAME IN THE TEST GRAPH. The two halves are two claims and each owes its own
+        // proof: a `test-deps` row nothing plants against is a row that could be deleted with this
+        // battery still green.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-stdio/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-stdio/Cargo.toml",
+                "\n[dev-dependencies]\nbusbar-plane-llm = { workspace = true }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "at the architecture's own graph, a transport TEST-reaching a plane is refused too",
+            &[ROW_TEST_DEPS],
+            ov,
+            &[
+                "ship-edge",
+                "busbar-transport-stdio -> busbar-plane-llm",
+                "dev-dependencies",
+            ],
+        ));
+
         report.push(prove_rows_red(
             cx,
             self,
@@ -4695,6 +5272,17 @@ impl Gate for KindIsolationGate {
 fn registry_plant(rows: &str) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(REGISTRY_FILE, rows.to_string());
+    ov
+}
+
+/// The REAL registry file with one run of text rewritten, so a case can leave slack in a row, grant
+/// it an edge the architecture withholds, strike a question or double a row — against the whole
+/// file rather than a synthetic one, because a ledger of 220 rows is exactly the thing a plant of
+/// three rows cannot stand in for.
+fn registry_with(cx: &Ctx, from: &str, to: &str) -> Overlay {
+    let text = cx.read(REGISTRY_FILE).unwrap_or_default();
+    let mut ov = Overlay::new();
+    ov.set(REGISTRY_FILE, text.replacen(from, to, 1));
     ov
 }
 
