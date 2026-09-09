@@ -5,19 +5,20 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
-#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
-#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
-#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
-#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
-#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
-#              the docs make about the gate, which is the one family this branch edits. `neutrality`
-#              is not in scope on purpose — this branch touches no plane and no transport source, so
-#              replaying that family would be a claim about code it did not change. An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. The oracle replays this build
+#              against the published 1.5.5 binary and reports divergences; unfiltered that is the
+#              better part of half an hour. This branch is the pre-existing-reds branch: it works
+#              on the tree's frozen PARSE SURFACE (a limit's three refusal sentences) and on the
+#              gates that read the tree as data, so the honest scope is the boot / config /
+#              documented families — the cells that read what the binary PRINTS when it refuses a
+#              document, which is exactly what the first item here moved back to 1.5.5's words.
+#              boot.refusal|BOOT-P20|validate, BOOT-P29 and BOOT-P30 are the three cells that must
+#              turn byte-identical; the rest of the boot/config families are the blast radius of
+#              touching a deserializer every section's parse runs through.
+#   tests    — the packages whose test binaries the sharded legs must include by name.
+#              `busbar-substrate` holds the limit grammar itself; `busbar-core` re-exports it at
+#              the historical config path and owns the pre-pass that sets the frozen-list rule;
+#              `busbar` is the binary whose --validate the boot cells drive; `xtask` is the gate
+#              runner whose own selftests are on this branch's list.
+families = '^(boot|config|documented)([|.]|$)'
+tests = ["busbar-core", "busbar-substrate", "xtask", "busbar"]
