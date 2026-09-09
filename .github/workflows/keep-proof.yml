@@ -81,7 +81,7 @@ jobs:
   # nothing at all. A layout debt and a broken test are independent facts about a commit.
   build-clippy:
     name: fmt · clippy · build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     # Measured against ci.yml's `check`, whose fmt+clippy+build steps total ~1.6 min warm and whose
     # whole job is bounded at 75 for cold-cache headroom. 40 is that headroom without the test step.
     timeout-minutes: 40
@@ -139,7 +139,7 @@ jobs:
   # silently drop every doctest from the summed total. Shard 1 runs `--doc` and counts it.
   tests:
     name: tests (shard ${{ matrix.shard }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     # ci.yml's Test step measures 9.3 min warm for the WHOLE suite; a quarter of the execution plus a
     # full compile lands well inside 20. 30 is that with cold-cache headroom, and it is a ceiling on
     # a hang, not a target. The `xtask` leg is the one that needs the room: its single binary is a
@@ -333,7 +333,7 @@ jobs:
   # unsharded workspace run -- the floor is the same number, because it is the same suite.
   tests-total:
     name: tests total (the five shards summed against the suite floor)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 10
     needs: tests
     if: always()
@@ -386,7 +386,7 @@ jobs:
   # hand-back that adds a gate without a RED proof has added a green light with no bulb.
   gates:
     name: cargo xtask gate --all · selftest
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     # MEASURED, AND RAISED ONCE ALREADY. ci.yml's structure-lint (the same registry, one gate per
     # step) measures p95 14.5 min, so 25 looked generous — and this job was CANCELLED at 25 on its
     # first run, because `cargo xtask selftest` drives EVERY registered gate's RED proof rather than
@@ -426,7 +426,7 @@ jobs:
   # hand-back that edits ARCHITECTURE.md and skips the regen lands a stale generated artifact.
   design-bindings:
     name: design bindings (existence · regen-clean)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -476,7 +476,7 @@ jobs:
   # proof path is the one place a dependency is least welcome.
   oracle:
     name: shadow oracle (this build vs the published 1.5.5, families the branch names)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     # ci.yml's shadow-oracle measures 23-24 min unfiltered (release build ~4-7 min, recording ~15).
     # Same ceiling as ci.yml's, for the same job.
     timeout-minutes: 60
@@ -719,7 +719,7 @@ jobs:
   # Flip `continue-on-error` here on the same day ci.yml's job is flipped, not before.
   construction-gate:
     name: construction gate (report-only)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     # Measured: this gate is CANCELLED at ci.yml's 15-minute ceiling on every recent run, and it was
     # cancelled again at 25 here, so its true runtime is still unknown and >25. 40 is a ceiling meant
     # to let it FINISH ONCE so its real duration becomes a measurement instead of a cancellation.
@@ -755,7 +755,7 @@ jobs:
   # writes no status at all on the runs where the answer matters most.
   verdict:
     name: keep-proof verdict
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, busbar-xl]
     timeout-minutes: 10
     if: always()
     needs:
