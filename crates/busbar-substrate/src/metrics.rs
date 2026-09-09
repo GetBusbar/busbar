@@ -319,7 +319,9 @@ pub const KEY_TOKENS_TOTAL: &str = "busbar_key_tokens_total";
 /// Per-(bucket, model, tier) token counters for the bucket's CURRENT budget window. Scrape-time
 /// gauge, derived from the token ledger. `bucket` is a virtual-key id or `group:<name>` (both
 /// operator-bounded); `model` is bounded by the configured fleet (an ad-hoc passthrough model is
-/// only possible with pricing off); `tier` is one of the four fixed pricing tiers. Key-bucket
+/// only possible with pricing off); `tier` is one of the four fixed pricing tiers, spelled the way
+/// the rate card prices them and a usage line answers them — `tokens_input`, `tokens_output`,
+/// `tokens_cache_read`, `tokens_cache_write`. Key-bucket
 /// series additionally echo the key's mint-time labels, so external dashboards can
 /// `sum by (team)` without busbar knowing what "team" means.
 pub const BUCKET_TOKENS: &str = "busbar_bucket_tokens";

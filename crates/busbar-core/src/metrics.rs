@@ -333,6 +333,34 @@ pub(crate) fn record_plane_request_duration(
 /// No-op when governance is disabled (the governance arc is `None`). Pool and lane label spaces
 /// are bounded by the operator's configuration; virtual-key ids are bounded by the set of
 /// keys the admin has created. No client-supplied label values are ever emitted.
+/// THE `tier` LABEL, PAIRED WITH THE LEDGER KEY IT READS.
+///
+/// Two scrape sites emit `busbar_bucket_tokens` — one per virtual key, one per group bucket — and
+/// until now each spelled the four labels out for itself. Two hand-written copies of one
+/// vocabulary is how a scrape comes to answer `tier="cache_read"` on one series and something else
+/// on its sibling, so the vocabulary is stated ONCE and both sites read it.
+///
+/// The left value is the LEDGER's unit key (`busbar_api::UNIT_*`), which is what the accrual map is
+/// keyed by and is unchanged. The right value is the label the scrape puts on the wire, and it is
+/// the CONFIG/WIRE class spelling — the same string the rate card prices under
+/// (`busbar_unit_cost::CLASS_TOKENS_*`), the same string a usage line answers with. One class, one
+/// name, wherever a reader meets it.
+const TIER_LABELS: [(&str, &str); 4] = [
+    (busbar_api::UNIT_INPUT, busbar_unit_cost::CLASS_TOKENS_INPUT),
+    (
+        busbar_api::UNIT_OUTPUT,
+        busbar_unit_cost::CLASS_TOKENS_OUTPUT,
+    ),
+    (
+        busbar_api::UNIT_CACHE_READ,
+        busbar_unit_cost::CLASS_TOKENS_CACHE_READ,
+    ),
+    (
+        busbar_api::UNIT_CACHE_WRITE,
+        busbar_unit_cost::CLASS_TOKENS_CACHE_WRITE,
+    ),
+];
+
 pub fn refresh_scrape_gauges(app: &App) {
     let now = busbar_substrate::store::now();
 
@@ -428,12 +456,8 @@ pub fn refresh_scrape_gauges(app: &App) {
                 gov.bucket_model_tokens(&key.id, crate::governance::WINDOW_TOTAL, now)
             {
                 let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
-                for (tier, v) in [
-                    ("input", tier_v(busbar_api::UNIT_INPUT)),
-                    ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                    ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                    ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
-                ] {
+                for (unit, tier) in TIER_LABELS {
+                    let v = tier_v(unit);
                     let mut labels: Vec<metrics::Label> =
                         vec![metrics::Label::new("bucket", key.id.clone())];
                     for (k, val) in &key.labels {
@@ -488,12 +512,8 @@ pub fn refresh_scrape_gauges(app: &App) {
                     gov.bucket_model_tokens(&bucket.bucket_id, bucket.window, now)
                 {
                     let tier_v = |u: &str| tokens.get(u).copied().unwrap_or(0);
-                    for (tier, v) in [
-                        ("input", tier_v(busbar_api::UNIT_INPUT)),
-                        ("output", tier_v(busbar_api::UNIT_OUTPUT)),
-                        ("cache_read", tier_v(busbar_api::UNIT_CACHE_READ)),
-                        ("cache_write", tier_v(busbar_api::UNIT_CACHE_WRITE)),
-                    ] {
+                    for (unit, tier) in TIER_LABELS {
+                        let v = tier_v(unit);
                         metrics::gauge!(
                             BUCKET_TOKENS,
                             dims(&[("model", model.clone()), ("tier", tier.to_string())])

@@ -371,13 +371,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`:
+The accepted-differences register for this release has exactly nine entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
 from the hook view, one key-rotate endpoint that now refuses an overlong id like its siblings, one
 where a rate-card edit stops repricing history it should not touch, one provider credential that no
-longer degrades to an empty key, and one upstream failure that stops being billed for a delivery
-that never happened.
+longer degrades to an empty key, one upstream failure that stops being billed for a delivery
+that never happened, and one metric label renamed onto the spelling the rest of the money surface
+already uses.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -471,6 +472,21 @@ is now a `400` naming the field; and the always-`null` `at` field on the hook vi
   reported `spend_cents` and `tokens` fall for any period in which its requests failed upstream;
   `requests` is unchanged. If you reconciled 1.5.5 invoices against those figures, the difference is
   the amount 1.5.5 billed for responses it never delivered.
+
+- 1.6.0 Breaking: the `tier` label on `busbar_bucket_tokens` is renamed to the wire spelling
+  (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`). A token tier is
+  spelled `tokens_input` everywhere money is decided — it is the class a rate row prices, the class
+  a `rate_card:` entry's `rates:` row may name, and the class a usage line answers with. The
+  Prometheus scrape alone spelled it `input`, so an operator reading a dashboard beside an invoice
+  had to know that `tier="cache_read"` and the `tokens_cache_read` row were one thing, and nothing
+  in either surface said so. They are now one string. Nothing else about the metric moves: the
+  metric name, the label name `tier`, every other label (`bucket`, `group`, `window`, `model` and
+  the echoed mint labels) and every value are unchanged. **Migration:** a Prometheus query,
+  recording rule, alert or dashboard panel that matches the label VALUE — `tier="input"` and its
+  three siblings — silently matches nothing after upgrading; rewrite it to the new spelling
+  (`tier="tokens_input"`). Queries that only group by `tier` (`sum by (tier)`) keep working and
+  simply report the new names.
+
 ### Deprecated env vars still honoured
 
 `BUSBAR_PROVIDERS`, `BUSBAR_CONFIG_OVERLAY`, `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_HTTP1_ONLY`

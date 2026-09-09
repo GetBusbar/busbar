@@ -303,7 +303,7 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
             l.starts_with("busbar_bucket_tokens")
                 && l.contains("bucket=\"vk_bucket_test1\"")
                 && l.contains("model=\"gpt-5\"")
-                && l.contains("tier=\"input\"")
+                && l.contains("tier=\"tokens_input\"")
         })
         .unwrap_or_else(|| panic!("key-bucket input-tier series missing: {out}"));
     assert!(
@@ -322,7 +322,7 @@ fn test_scrape_gauges_bucket_model_tier_and_key_labels() {
             && l.contains("bucket=\"group:growth@total\"")
             && l.contains("group=\"growth\"")
             && l.contains("window=\"total\"")
-            && l.contains("tier=\"output\"")),
+            && l.contains("tier=\"tokens_output\"")),
         "group-bucket token series missing: {out}"
     );
     // Derived group spend (0 without a rate card and no admitted request) + remaining
