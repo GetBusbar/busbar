@@ -570,7 +570,11 @@ struct Compiled {
 /// reported whatever the reason. A `git check-ignore` hit on a compiled path is reported as well
 /// and in its own words, because that is the same hole reachable from a file nobody has to name:
 /// one line in a `.gitignore` retires a source file from every scanner in this gate at once.
-fn hidden_sources(cx: &Ctx, scanned: &BTreeSet<String>, files: &[crate::ctx::SourceFile]) -> Vec<String> {
+fn hidden_sources(
+    cx: &Ctx,
+    scanned: &BTreeSet<String>,
+    files: &[crate::ctx::SourceFile],
+) -> Vec<String> {
     let mut compiled: Vec<Compiled> = Vec::new();
     for f in files {
         compiled.extend(compiled_in(&f.rel_str(), &f.text).iter().cloned());
@@ -695,7 +699,11 @@ fn read_compiled(rel: &str, text: &str) -> Vec<Compiled> {
                         at: at.clone(),
                         how: format!("#[path = \"{p}\"] mod {name};"),
                         candidates: vec![resolve(
-                            if open_mods.is_empty() { &file_dir } else { &here },
+                            if open_mods.is_empty() {
+                                &file_dir
+                            } else {
+                                &here
+                            },
                             p,
                         )],
                     }),
