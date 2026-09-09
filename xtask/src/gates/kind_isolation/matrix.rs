@@ -749,6 +749,74 @@ pub fn measured_cells(
         .collect())
 }
 
+/// THE ROWS THIS BRANCH MINTED — a `[[cell]]`, `[[edge]]` or `[[disagreement]]` that is in no
+/// merge-base copy of the ledger at all.
+///
+/// `ceiling-rose` cannot see one, and that is not an oversight in it: it walks the numbers the BASE
+/// carries and asks whether they went up, so a key the base does not have has no `before` to be
+/// higher than and is skipped in silence. A red team walked straight through the gap — a
+/// `pub struct WSFrame;` planted in a store plugin went red twice (`unlisted-cell` and
+/// `unlisted-edge`), and three hand-written rows, one of them a `[[disagreement]]` note the author
+/// composed themselves, made the whole gate green.
+///
+/// A new row is a `0 -> N` raise wearing the clothes of a first measurement. It is refused here,
+/// and the refusal is the transaction the ceiling machinery is built on everywhere else: the number
+/// moves in a commit that says so, and a reviewer reads the sentence rather than the diff's
+/// arithmetic.
+fn minted_rows(cx: &Ctx) -> Vec<String> {
+    let base = match super::base::read(cx) {
+        Ok(b) => b,
+        Err(why) => {
+            return vec![format!(
+                "no-base\t{LEDGER}\tno merge-base could be read, so no row could be shown to \
+                 pre-date this branch ({why}). A ratchet that cannot read its own history reports \
+                 nothing, and reporting nothing is not passing."
+            )]
+        }
+    };
+    // A BRANCH THAT ADDS THE LEDGER ADDS EVERY ROW IN IT, and that landing is the file's own
+    // review. Refusing 515 rows there would be refusing the commit that created the instrument.
+    if !base.registry_present {
+        return Vec::new();
+    }
+    let now = cx.read(LEDGER).unwrap_or_default();
+    let mut out = Vec::new();
+    for (table, ids, what) in [
+        (
+            "cell",
+            &["crate", "kind"][..],
+            "a ceiling for one crate's naming of one kind",
+        ),
+        (
+            "edge",
+            &["from", "to"][..],
+            "an allowance for one kind naming another",
+        ),
+        (
+            "disagreement",
+            &["crate", "kind"][..],
+            "an excuse for the two scanners reading one cell differently",
+        ),
+    ] {
+        let was = super::base::row_keys(&base.registry, table, ids);
+        for key in super::base::row_keys(&now, table, ids) {
+            if was.contains(&key) {
+                continue;
+            }
+            out.push(format!(
+                "minted-row\t[[{table}]] {key}\tthis row is in no copy of {LEDGER} at the \
+                 merge-base {}: this branch MINTED it. It is {what}, and a row that did not exist \
+                 is a 0 -> N raise wearing the clothes of a first measurement — the one raise \
+                 `ceiling-rose` cannot see, because a key with no `before` has nothing to be higher \
+                 than. Delete the coupling instead, or land the row in a commit whose message says \
+                 why the tree now needs it.",
+                &base.commit[..8.min(base.commit.len())]
+            ));
+        }
+    }
+    out
+}
+
 pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, ship: bool) -> Row {
     let (matrix, scanned) = match measure(cx, crates) {
         Ok(m) => m,
@@ -793,6 +861,7 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
     let listed = read_ledger(reg);
 
     let mut offenders: Vec<String> = duplicates(reg);
+    offenders.extend(minted_rows(cx));
     let kind_of: BTreeMap<&str, &'static str> = crates
         .iter()
         .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
@@ -821,7 +890,13 @@ pub fn rule_matrix(cx: &Ctx, crates: &[CrateInfo], reg: &super::KindRegistry, sh
             ));
             continue;
         };
-        if listed_count >= 0 && listed_count as usize != cell.count {
+        // NO `listed_count >= 0` GUARD. It was here, and it was the hole: a `count = "-1"` row
+        // parsed, reached this line, failed the guard and skipped the comparison — a per-cell off
+        // switch nothing reported. A negative count is now refused at LOAD (`bad-count`), so a
+        // count that arrives here is a number a measurement can equal, and the comparison is
+        // unconditional. Two rules, one claim: the reader refuses what it cannot compare, and the
+        // comparison compares everything it is handed.
+        if listed_count as usize != cell.count {
             let verb = if (listed_count as usize) < cell.count {
                 "RAISED — this landing grew the coupling"
             } else {
@@ -1032,6 +1107,36 @@ pub fn selftest(
         ));
         return;
     }
+
+    // A ROW THIS BRANCH MINTED IS A `0 -> N` RAISE, and it is the raise `ceiling-rose` cannot see:
+    // that rule walks the numbers the BASE carries and asks whether they went up, so a key with no
+    // `before` has nothing to be higher than and is skipped in silence. A red team walked straight
+    // through the gap — `pub struct WSFrame;` planted in a store plugin went red twice, and three
+    // hand-written rows (a `[[cell]]`, an `[[edge]]` and a `[[disagreement]]` whose note the author
+    // composed themselves) made the whole gate green.
+    //
+    // The plant is a `[[cell]]` for a crate × kind that measures zero, so `dead-cell` fires too and
+    // the naming assertion is what separates the two claims: the row is refused for being NEW,
+    // before anything asks what it covers.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[cell]]` row this branch minted is a 0 -> N raise, not a first measurement",
+        &[ROW_MATRIX],
+        plant(
+            LEDGER,
+            &format!(
+                "{}\n\n[[cell]]\n{}\n",
+                cx.read(LEDGER).unwrap_or_default().trim_end(),
+                cell_row("busbar-store-memory", "transport", "1")
+            ),
+        ),
+        &[
+            "minted-row",
+            "busbar-store-memory \u{d7} transport",
+            "this branch MINTED it",
+        ],
+    ));
 
     // THE INCIDENT, PLANTED — and its green twin, which is the same tree with the file absent.
     report.push(prove_rows_red(
