@@ -366,9 +366,14 @@ impl crate::root::kernel::auth_bindings::VirtualKeyDirectory for TheNodesOwnBoun
             (Some(expected), Some(aud)) => expected == aud,
             _ => false,
         };
-        admissible.then(|| crate::root::kernel::auth_bindings::KeyFacts {
-            id: "key-a2a-1".to_string(),
-            name: "an approved key".to_string(),
+        // UNRESTRICTED, deliberately: these cells are about the AUDIENCE, and a key carrying a
+        // grant list would make every one of them also a cell about the agent grant. The grant's
+        // own cells state their key's list explicitly.
+        admissible.then(|| {
+            crate::root::kernel::auth_bindings::KeyFacts::unrestricted(
+                "key-a2a-1",
+                "an approved key",
+            )
         })
     }
 
