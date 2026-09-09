@@ -1,0 +1,12 @@
+# actionlint's runner-label check works off a built-in list of GitHub-HOSTED labels. `busbar-xl` is
+# ours — the label scripts/ci-runners-register.sh gives every agent on the EC2 fleet — so without
+# this file actionlint reports every `runs-on: [self-hosted, linux, x64, busbar-xl]` in the repo as
+# an unknown label, and a lint that cries wolf on 32 correct lines is a lint nobody reads.
+#
+# Declaring it here is not a way of silencing the check; it is the check working as designed. The
+# list below is the ONLY custom label the fleet issues, so a typo (`busbar-x1`, a label no runner
+# actually carries) is still caught — the job would otherwise sit queued forever, and actionlint
+# says so before it is pushed.
+self-hosted-runner:
+  labels:
+    - busbar-xl
