@@ -4,6 +4,7 @@
 //! The batteries.
 
 mod amend_tests;
+mod export_sink_tests;
 mod journal_tests;
 mod legacy_chain_tests;
 mod legacy_cleave_tests;
