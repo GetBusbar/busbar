@@ -3503,7 +3503,9 @@ fn use_alias(code: &str) -> Option<(String, String)> {
     let rest = t.strip_prefix("use ")?;
     let rest = rest.trim_end().strip_suffix(';')?;
     let (path, alias) = rest.rsplit_once(" as ")?;
-    let alias = alias.trim().trim_matches(|c| c == '}' || c == ',' || c == ' ');
+    let alias = alias
+        .trim()
+        .trim_matches(|c| c == '}' || c == ',' || c == ' ');
     let last = path
         .trim()
         .rsplit("::")
@@ -6227,11 +6229,7 @@ impl Gate for KindIsolationGate {
             "an `include!` of another kind's source is a dual compile",
             &[ROW_INPUTS],
             ov,
-            &[
-                "path-include",
-                "busbar-plane-llm",
-                "busbar-transport-tcp",
-            ],
+            &["path-include", "busbar-plane-llm", "busbar-transport-tcp"],
         ));
 
         // …AND A `CARGO_MANIFEST_DIR` SPLICE IS RESOLVED, NOT GUESSED AT. `quoted_after` took the
