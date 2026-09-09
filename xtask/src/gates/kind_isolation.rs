@@ -869,6 +869,8 @@ struct KindRegistry {
     matrix_edges: Vec<MatrixEdge>,
     matrix_cells: Vec<MatrixCell>,
     matrix_disagreements: Vec<MatrixDisagreement>,
+    /// Every named `[patch]`/`[replace]`/`[source]` allowance. See [`PatchAllow`].
+    patch_allows: Vec<PatchAllow>,
     /// Rows REFUSED AT LOAD. A malformed or over-broad row is not skipped and it is not tolerated:
     /// it is reported, because a table that quietly drops what it cannot understand is a table that
     /// says yes to it.
@@ -982,6 +984,16 @@ fn bad_transitional_prefix(to: &str) -> Option<String> {
         ));
     }
     None
+}
+
+/// ONE NAMED ALLOWANCE for a `[patch]`, `[replace]` or `[source]` redirect: the exact file, the
+/// exact entry, and the sentence that says why the tree compiles something other than what its
+/// manifests declare.
+#[derive(Debug, Clone)]
+pub struct PatchAllow {
+    pub file: String,
+    pub entry: String,
+    pub reason: String,
 }
 
 fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at: usize) {
@@ -1140,6 +1152,24 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 count,
             });
         }
+        // `[patch]` AND `[replace]` REDIRECT WHAT CARGO COMPILES, AND NOTHING IN THIS GATE READ
+        // THEM. A `[patch.crates-io] busbar-plane-llm = { path = "…" }`, or a
+        // `[source] replace-with` in `.cargo/config.toml`, substitutes one crate for another after
+        // every manifest in the tree has been read and agreed with — the census, the edge ledger,
+        // the matrix and the lock cross-check are all downstream of a decision none of them see.
+        // So every one of them is REFUSED unless a row here names the exact file and the exact
+        // entry and says why.
+        "patch" => {
+            let Some(v) = take_row(fields, &["file", "entry", "reason"], table, at, &mut reg.errors)
+            else {
+                return;
+            };
+            reg.patch_allows.push(PatchAllow {
+                file: v[0].clone(),
+                entry: v[1].clone(),
+                reason: v[2].clone(),
+            });
+        }
         "disagreement" => {
             let Some(v) = take_row(fields, &["crate", "kind", "note"], table, at, &mut reg.errors)
             else {
@@ -1294,7 +1324,7 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[edge]]`, `[[cell]]` and `[[disagreement]]` rows and nothing else",
+                 `[[edge]]`, `[[cell]]`, `[[disagreement]]` and `[[patch]]` rows and nothing else",
                 i + 1
             ));
             continue;
@@ -4944,7 +4974,7 @@ impl Gate for KindIsolationGate {
             rule_name(&crates, &planes, &ports, &reg),
             rule_deps(cx, &crates, &reg, Half::Shipped, self.ship),
             rule_deps(cx, &crates, &reg, Half::Test, self.ship),
-            inputs::rule_inputs(cx, &crates, &planes),
+            inputs::rule_inputs(cx, &crates, &planes, &reg),
             rule_vocab(cx, &crates, &planes),
             rule_registry(cx, &crates, &reg, self.ship),
             rule_steps(cx, &crates),
@@ -6148,6 +6178,66 @@ impl Gate for KindIsolationGate {
             &[ROW_INPUTS],
             ov,
             &["path-include", "busbar-plane-llm", "busbar-transport-http"],
+        ));
+
+        // NOTHING REDIRECTS WHAT CARGO COMPILES. `[patch]` substitutes one crate for another
+        // AFTER every manifest in this tree has been read and agreed with, so the census, the edge
+        // ledger, the matrix and the lock cross-check are all downstream of a decision none of them
+        // can see. Nothing in this gate read the table at all until today.
+        let mut ov = Overlay::new();
+        ov.set(
+            "Cargo.toml",
+            manifest_plus(
+                cx,
+                "Cargo.toml",
+                "\n[patch.crates-io]\nbusbar-plane-llm = { path = \"crates/busbar-plane-mcp\" }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[patch]` table redirects what cargo compiles and is refused unless a row names it",
+            &[ROW_INPUTS],
+            ov,
+            &["redirect", "patch.crates-io", "Cargo.toml"],
+        ));
+
+        // THE SAME CLAIM IN `.cargo/config.toml`, which is not a manifest at all and which no rule
+        // in this gate had ever opened.
+        let mut ov = Overlay::new();
+        ov.set(
+            ".cargo/config.toml",
+            format!(
+                "{}\n[source.crates-io]\nreplace-with = \"vendored\"\n",
+                cx.read(".cargo/config.toml").unwrap_or_default().trim_end()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[source] replace-with` in .cargo/config.toml is the same redirect, in a file no \
+             rule opened",
+            &[ROW_INPUTS],
+            ov,
+            &["redirect", "source.crates-io", ".cargo/config.toml"],
+        ));
+
+        // A NAMED ROW IS THE ONE WAY THROUGH, AND IT EXPIRES WITH THE TABLE IT NAMES.
+        let mut ov = Overlay::new();
+        ov.set(
+            REGISTRY_FILE,
+            format!(
+                "{}\n\n[[patch]]\nfile = \"Cargo.toml\"\nentry = \"patch.crates-io\"\nreason = \"planted\"\n",
+                cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a `[[patch]]` row whose table is not in the tree is a standing hole, and is struck",
+            &[ROW_INPUTS],
+            ov,
+            &["dead-patch-row", "patch.crates-io"],
         ));
 
         // A LIB TARGET POINTING INTO ANOTHER KIND. The transport IS the plane at link time, with
