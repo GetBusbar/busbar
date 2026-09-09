@@ -1459,6 +1459,24 @@ fn ledger_with(cx: &Ctx, from: &str, to: &str) -> crate::ctx::Overlay {
     plant(LEDGER, &text.replacen(from, to, 1))
 }
 
+/// THE TREE WITH ALMOST EVERY FILE UNDER `crates/` GONE, for this row's own floor.
+///
+/// `:matrix` does not walk one extension: it LISTS `crates/` whole, because a plane's name in a
+/// `.json` fixture or a `README.md` is the crate's text just as much as its `.rs` is. So the only
+/// honest fixture for "this scan collapsed" is a tree that really has almost nothing under
+/// `crates/` at all — `keep` files survive, and a scan of four files finds no coupling, which is
+/// indistinguishable from a tree that has none.
+fn all_but_scanned(cx: &Ctx, keep: usize) -> crate::ctx::Overlay {
+    let mut ov = crate::ctx::Overlay::new();
+    let Ok(rels) = cx.list(&WalkSpec::new(["crates"])) else {
+        return ov;
+    };
+    for rel in rels.iter().skip(keep) {
+        ov.remove(rel.to_string_lossy().replace('\\', "/"));
+    }
+    ov
+}
+
 /// The three lines of one `[[cell]]` row.
 fn cell_row(krate: &str, kind: &str, count: &str) -> String {
     format!("crate = \"{krate}\"\nkind = \"{kind}\"\ncount = \"{count}\"")
@@ -1492,6 +1510,21 @@ pub fn selftest(
         ));
         return;
     }
+
+    // THIS ROW'S SCAN HAS A FLOOR, AND NOTHING PROVED IT. A mutation campaign turned
+    // `files.len() < MIN_SCANNED` into `false && …` and the whole battery stayed green: every other
+    // case here plants a coupling and asserts the ledger's answer to it, and a scan that reached
+    // four files still answers every one of them the same way. A floor nobody proves is a floor a
+    // later reader deletes as dead code — and the tree it then reads as "every cell of the matrix
+    // is 0" is the tree that has nothing under `crates/` at all.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a :matrix scan below its floor is refused, not read as a matrix of zeroes",
+        &[ROW_MATRIX],
+        all_but_scanned(cx, 4),
+        &["below the floor of", &MIN_SCANNED.to_string()],
+    ));
 
     // A ROW THIS BRANCH MINTED IS A `0 -> N` RAISE, and it is the raise `ceiling-rose` cannot see:
     // that rule walks the numbers the BASE carries and asks whether they went up, so a key with no
