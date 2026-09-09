@@ -696,6 +696,41 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
         &[census::ROW_CENSUS],
         on(base),
     ));
+
+    // -- one-attempt-seam: THE SCAN SET GOING EMPTY ----------------------------------------------
+    //
+    // `one-attempt-seam` counts send-verb sites OUTSIDE `allowed_function`, and its `inside == 0`
+    // arm is the one that notices the seam MOVED — the send verb matched nothing inside the allowed
+    // function, i.e. the scan set went empty. A blind-stub audit found that arm was driven by NO
+    // selftest case: stub it and `construction --selftest` gained ZERO failures. It is the only
+    // thing standing between an empty scan set and a vacuous green on this row, which is exactly
+    // the shape the gate-wide scan-set floor exists to refuse.
+    //
+    // The plant makes the verb match nothing ANYWHERE, so `extra` is empty too and the row's single
+    // offender is the arm under test — nothing else can be what turned it red.
+    let verbless = text.replace(
+        r#"send_verb = '\.client\(\)\.get\(\)\.request\('"#,
+        r#"send_verb = '\.zz_planted_verb_that_matches_nothing\('"#,
+    );
+    if verbless != text {
+        let mut ov = on(base);
+        ov.set(CEILINGS, verbless);
+        r.push(prove_rows_red(
+            cx,
+            gate,
+            "a send verb that matches nothing inside the allowed function is the seam having \
+             moved, not a clean tree",
+            &["one-attempt-seam"],
+            ov,
+            &["performs no attempt at all"],
+        ));
+    } else {
+        r.note_infra_failure(
+            "[rules.one-attempt-seam] send_verb could not be rewritten, so the arm that refuses an \
+             empty scan set is unproven rather than passing",
+        );
+    }
+
     r
 }
 
