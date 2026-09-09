@@ -44,6 +44,7 @@ pub mod response_header;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
+pub mod ship_ready;
 pub mod structure_lint;
 pub mod teller_steps;
 pub mod tracing;
@@ -110,6 +111,16 @@ pub const REPORT_ONLY: &[Posture] = &[
               under `kind-isolation`; the ones it adds are a claim about the SHIP SHA and are RED \
               on HEAD by design. It is a release-time gate, and full_gate's own excuse table is \
               where that claim is written down and checked.",
+        excuse: Excused::ReleaseTime,
+    },
+    Posture {
+        name: "ship-ready",
+        why: "THE SHIP CRITERION, and the integration line is not the ship SHA. Every one of its \
+              rows is a claim about a tree that is ready to promote — the twin at zero, the \
+              ceilings tight, nothing standing red, the mutants caught — and this tree is \
+              deliberately none of those things yet. It is a REQUIRED CHECK on `qa` and `main`, \
+              which is where the claim is meant to bite and where branch protection scores it; \
+              `--all` on the dev line is not. Same standing as the ship twin it reads.",
         excuse: Excused::ReleaseTime,
     },
     Posture {
@@ -1424,6 +1435,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(no_self_filed_issues::NoSelfFiledIssuesGate),
         summary: "the repository does not open issues against itself, nor ask for the scope to",
+    },
+    Registration {
+        name: "ship-ready",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(ship_ready::ShipReadyGate),
+        summary: "the ship criterion as a row: twin zero, ceilings tight, nothing standing red, \
+                  mutants caught",
     },
     Registration {
         name: "settings-leak",

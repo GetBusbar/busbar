@@ -83,6 +83,12 @@ LAND_ORACLE_DIFF="${LAND_ORACLE_DIFF:-merged}"
 land_parse_args() {
   P_tests=""; P_families=""; P_gate=""; P_prove=0; P_hashes=""; P_batch=""; P_selftest=0
   P_remote="${P_remote:-}"
+  # --to is a POSTURE for the whole run, the same way --remote is a HOST for the whole run: a batch
+  # LINE cannot pick its own destination any more than it can pick its own box, because the tree is
+  # proven once and either promoted whole or not at all. So --to is preserved across the per-line
+  # re-parse in land_run_batch exactly the way --remote is, by reading its own prior value as the
+  # default instead of the flat "" every other P_ variable resets to.
+  P_to="${P_to:-}"
   while [ $# -gt 0 ]; do
     case "$1" in
       --tests) P_tests="$2"; shift 2 ;;
@@ -96,6 +102,13 @@ land_parse_args() {
       # --prove: pick nothing; prove the tip as it stands (a landing whose picks are already on
       # the tree but whose legs were never run to green).
       --prove) P_prove=1; shift ;;
+      # --to: which line this run is landing TOWARD — dev (default), qa or main. It does not choose
+      # what gets run; every posture runs the identical legs. What it changes is documented next to
+      # land_construction_standing_reds and land_refuse_red_overrides: qa/main refuse the standing-red
+      # allowance and refuse every environment override that could turn a red into a land. Validated
+      # in MAIN, not here, so land_parse_args stays a pure "read the flags" function and the refusal
+      # (with its exit code and its message) lives in one place the selftest can call directly.
+      --to) P_to="$2"; shift 2 ;;
       *) break ;;
     esac
   done
@@ -185,8 +198,21 @@ land_ceiling_verdict() {
   return 0
 }
 
+# THE LIST BELOW IS A DEV-LINE CONVENIENCE, NOT A GRANT. It exists so that a landing on the
+# integration branch is not held hostage by a red the team already knows about and has not gotten
+# around to fixing — the dev line moves fast, and a fixed cost re-litigated on every single landing
+# is a tax nobody would pay, so a handful of NAMED, DATED rows are allowed to stay red there. That
+# reasoning does not survive contact with qa or main. A promotion is the one moment the tree is
+# claimed clean enough to ship, and "clean enough to ship, except for the rows we have gotten used
+# to ignoring" is not clean — it is the dev line's backlog laundered through a gate that was
+# supposed to stop exactly that. So under `--to qa` or `--to main` this function hands back NOTHING:
+# every construction FAIL row, including every row on the list below, aborts the gate leg. The
+# operator is not left to guess what the dev line was carrying — the refusal message NAMES every
+# row on the list, because a promotion that silently drops a waiver without saying so reads, from
+# the log, exactly like a landing that never had one.
 land_construction_standing_reds() {
-  cat <<'EOF'
+  local reds
+  reds="$(cat <<'EOF'
 hold-discipline:cancellation-before-await
 hold-escapes
 kernel-seal-impls
@@ -197,6 +223,130 @@ ports-only-tests:busbar-llm
 request-path-fn-size
 terminal-doors-in-audit-step
 EOF
+)"
+  case "${P_to:-}" in
+    qa|main)
+      echo "land.sh: the standing-red allowance is a DEV-LINE CONVENIENCE, not a grant this run" >&2
+      echo "land.sh: inherits — a promotion to $P_to carries NONE of it, so every construction row" >&2
+      echo "land.sh: must be green here, full stop. Rows that are standing red on the dev line (and" >&2
+      echo "land.sh: therefore now BLOCK this $P_to promotion unless they have since gone green):" >&2
+      printf '%s\n' "$reds" | sed 's/^/land.sh:   /' >&2
+      return 0
+      ;;
+  esac
+  printf '%s\n' "$reds"
+}
+
+# THE GATE LEG'S VERDICT, PULLED OUT OF THE prove_tree CASE ARM SO IT IS A FUNCTION THE SELFTEST CAN
+# CALL ON A FIXTURE LOG. This is exactly the land_ceiling_verdict move above, for the same reason: a
+# case arm buried inside prove_tree can only be exercised by staging a whole landing, and the one
+# fact that matters here — does a standing-red row under `--to qa` still abort the leg — has to be
+# provable without building the real xtask gate binary. The behaviour is byte-identical to what used
+# to live inline; only the seam moved.
+#   $1 = construction gate --report log     $2 = row regex (default: every row)
+land_gate_verdict() {
+  local glog="$1" grx="${2:-.}"
+  # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
+  # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows at
+  # all (an unreadable ceilings file, an unbuildable runner) is red, not green.
+  local rows; rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
+  [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; return 1; }
+  local named; named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
+  [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$grx' (renamed rule?)" >&2; return 1; }
+  local red; red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
+  # THE STANDING REDS ARE SUBTRACTED, AND THE LIST IS ITSELF RATCHETED. Anything red that the list
+  # does not name is a NEW red — the landing broke it. Anything the list names that is no longer red
+  # is a STALE entry, and a stale entry is red too: that is what stops this list becoming a
+  # permanent, undated waiver that only ever grows. Under `--to qa`/`--to main`,
+  # land_construction_standing_reds hands back nothing at all, so every row it would otherwise have
+  # excused falls straight into "new red" here and aborts the leg — there is no second allowance to
+  # thread past this check.
+  local standing; standing="$(land_construction_standing_reds)"
+  local scoped_standing; scoped_standing="$(printf '%s\n' "$standing" | grep -E "$grx" || true)"
+  local newred; newred="$(comm -23 <(printf '%s\n' "$red" | grep -v '^$' | sort -u) <(printf '%s\n' "$standing" | grep -v '^$' | sort -u))"
+  [ -z "$newred" ] || { printf 'land.sh: new construction red(s): %s\n' "$(echo $newred)" >&2
+         echo "land.sh: RED — construction gate rows red that the standing list does not name (log: $glog)" >&2; return 1; }
+  local stale; stale="$(comm -13 <(printf '%s\n' "$red" | grep -v '^$' | sort -u) <(printf '%s\n' "$scoped_standing" | grep -v '^$' | sort -u))"
+  [ -z "$stale" ] || { printf 'land.sh: standing red(s) no longer red: %s\n' "$(echo $stale)" >&2
+         echo "land.sh: RED — strike them from land_construction_standing_reds (and from REPORT_ONLY in xtask/src/gates/mod.rs)" >&2; return 1; }
+  echo "land.sh: gate rows green apart from the standing reds: $grx"
+  return 0
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --to: THE POSTURE, AND THE LAW THAT A RED CANNOT SURVIVE IT TO qa OR main.
+#
+# Everything above this comment already does the load-bearing work of PROVING green: build, tests,
+# clippy, the construction gate, the oracle. What was missing was a way to say, from the runner
+# itself, "this proof is for a promotion" — and to have that statement mean something stronger than
+# a label. The three functions below are that meaning. `land_validate_to` refuses a `--to` value
+# this script does not recognise. `land_refuse_red_overrides` refuses, before a single cherry-pick
+# or a single leg runs, any environment variable that exists to let a red through, whenever the
+# posture is qa or main. `land_print_posture` puts both facts in the run's own output, because a
+# safety property nobody can see in the log is a safety property nobody can audit after the fact.
+#
+# THE REASONING, WRITTEN OUT, BECAUSE IT IS THE WHOLE POINT OF THIS SECTION: an override flag that
+# still works in qa/main posture is not a smaller version of the gate — it is the ABSENCE of the
+# gate wearing the gate's clothes. A gate that can be turned off by an environment variable set
+# somewhere upstream (a CI job template, a shell profile on a landing box, a stale `export` from an
+# earlier debugging session) protects nothing, because the property it is meant to guarantee —
+# "nothing red reaches qa or main" — now depends on an operator remembering NOT to have set
+# something, which is exactly the class of failure a gate exists to remove. So in this posture the
+# checks below are not "an extra confirmation step"; refusing the override IS the gate.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+# The full set of `--to` values this runner understands. `dev` and the empty string (no `--to` at
+# all) are the SAME posture — today's unposture behaviour, byte-for-byte — named explicitly so an
+# operator can write `--to dev` and mean it, without that spelling being treated as unrecognised.
+land_validate_to() {  # $1 = the raw --to value (may be "")
+  case "$1" in
+    ""|dev|qa|main) return 0 ;;
+    *)
+      echo "land.sh: refused — '--to $1' is not a posture this runner knows. Accepted values are:" >&2
+      echo "land.sh:   dev   (default; today's behaviour, standing reds allowed, overrides honoured)" >&2
+      echo "land.sh:   qa    (promotion posture; standing-red allowance refused, overrides refused)" >&2
+      echo "land.sh:   main  (promotion posture; standing-red allowance refused, overrides refused)" >&2
+      return 1 ;;
+  esac
+}
+
+# THE FIVE NAMES BELOW ARE EVERY ENVIRONMENT VARIABLE IN THIS SCRIPT WHOSE JOB IS TO LET SOMETHING
+# RED THROUGH. A grep of the rest of land.sh at the time this was written turns up none of them
+# already wired to anything — there is no pre-existing `LAND_PUSH_ANYWAY`, `LAND_CI_RED_OK`,
+# `LAND_FORCE`, `LAND_SKIP_GATES` or `LAND_ALLOW_RED` reader in this file today. That is exactly WHY
+# they are refused unconditionally here rather than "refused if set to override something": the law
+# this function exists to enforce is that qa/main posture cannot be talked out of a red BY ANY NAME,
+# including names nobody has gotten around to wiring an override to yet. Refusing the variable up
+# front, before it has a job, is cheaper than discovering after the fact that someone gave it one.
+land_refuse_red_overrides() {
+  case "${P_to:-}" in
+    qa|main) ;;
+    *) return 0 ;;
+  esac
+  local v
+  for v in LAND_PUSH_ANYWAY LAND_CI_RED_OK LAND_FORCE LAND_SKIP_GATES LAND_ALLOW_RED; do
+    if [ -n "${!v:-}" ]; then
+      echo "land.sh: REFUSED (posture-refuses-override) — $v is set and --to ${P_to} forbids any" >&2
+      echo "land.sh: override that could let a red through. An override that still works in" >&2
+      echo "land.sh: qa/main posture is not a smaller gate, it is no gate at all. Unset $v and" >&2
+      echo "land.sh: re-run, or drop --to $P_to if this really is a dev-line landing." >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+# THE POSTURE HEADER. Printed on every run, not only qa/main, because "this is a dev-line landing
+# and standing reds are allowed" is exactly as much a fact about the run as "this is a qa promotion
+# and none are" — an operator scrolling a log should never have to infer which posture ran from the
+# absence of a line.
+land_print_posture() {
+  local to="${1:-dev}"; [ -n "$to" ] || to=dev
+  echo "land.sh: posture: --to $to"
+  case "$to" in
+    qa|main)
+      echo "land.sh: qa/main posture — no standing-red allowance and no environment override can turn a red into a land here." ;;
+  esac
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -652,32 +802,12 @@ EOF
       PROVEN="$PROVEN kind-isolation green;" ;;
 
     gate)
-      # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
-      # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
-      # at all (an unreadable ceilings file, an unbuildable runner) is red, not green.
       # AN EMPTY --gate IS EVERY ROW, NOT NO ROWS. This leg is floor now (see land_floor_plan), so
       # the caller who named nothing gets the whole gate measured rather than a silent skip.
       local grx="${gate:-.}"
       local glog="$here/target/land-gate-$stamp.log"
       ( cd "$here" && cargo xtask gate construction --report ) >"$glog" 2>&1 || true
-      local rows; rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
-      [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; return 1; }
-      local named; named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
-      [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$grx' (renamed rule?)" >&2; return 1; }
-      local red; red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$grx" || true)"
-      # THE STANDING REDS ARE SUBTRACTED, AND THE LIST IS ITSELF RATCHETED. Anything red that the
-      # list does not name is a NEW red — the landing broke it. Anything the list names that is no
-      # longer red is a STALE entry, and a stale entry is red too: that is what stops this list
-      # becoming a permanent, undated waiver that only ever grows.
-      local standing; standing="$(land_construction_standing_reds)"
-      local scoped_standing; scoped_standing="$(printf '%s\n' "$standing" | grep -E "$grx" || true)"
-      local newred; newred="$(comm -23 <(printf '%s\n' "$red" | grep -v '^$' | sort -u) <(printf '%s\n' "$standing" | grep -v '^$' | sort -u))"
-      [ -z "$newred" ] || { printf 'land.sh: new construction red(s): %s\n' "$(echo $newred)" >&2
-             echo "land.sh: RED — construction gate rows red that the standing list does not name (log: $glog)" >&2; return 1; }
-      local stale; stale="$(comm -13 <(printf '%s\n' "$red" | grep -v '^$' | sort -u) <(printf '%s\n' "$scoped_standing" | grep -v '^$' | sort -u))"
-      [ -z "$stale" ] || { printf 'land.sh: standing red(s) no longer red: %s\n' "$(echo $stale)" >&2
-             echo "land.sh: RED — strike them from land_construction_standing_reds (and from REPORT_ONLY in xtask/src/gates/mod.rs)" >&2; return 1; }
-      echo "land.sh: gate rows green apart from the standing reds: $grx"
+      land_gate_verdict "$glog" "$grx" || return 1
       PROVEN="$PROVEN construction rows ($grx, standing reds named);" ;;
 
     oracle)
@@ -1050,6 +1180,74 @@ land_selftest() {
   _stgrep "standing reds: the list is not empty" <(land_construction_standing_reds) '[^[:space:]]'
   _stno   "standing reds: ceiling-rose is NOT excused" <(land_construction_standing_reds) '^ceiling-rose$'
 
+  echo "land.sh selftest: --to posture and the standing-red allowance"
+  # `P_to=X land_construction_standing_reds` is a plain simple command: a one-word variable
+  # assignment sitting in front of a function call. Bash applies a temporary-environment assignment
+  # to a shell function exactly as it does to an external command, so this drives the SAME function
+  # the gate leg calls, under the SAME posture switch, rather than a copy or a description of it.
+  _land_reds_at() { P_to="$1" land_construction_standing_reds; }
+  # Each of these three is its OWN case: proving "qa empties the list" says nothing about "main"
+  # or "dev leaves it alone", and a single combined assertion here would pass even if two of the
+  # three postures were wired wrong.
+  _stno   "--to qa empties the standing-red list"                 <(_land_reds_at qa)   '[^[:space:]]'
+  _stno   "--to main empties the standing-red list"                <(_land_reds_at main) '[^[:space:]]'
+  _stgrep "--to dev leaves the standing-red list intact"           <(_land_reds_at dev)  '^plane-no-money$'
+  _stgrep "no --to at all leaves the list intact (default is dev)" <(_land_reds_at "")   '^plane-no-money$'
+  # And the refusal is not silent: it says WHY (a dev-line convenience, not inherited) and it NAMES
+  # the rows an operator would otherwise not know were blocking the promotion.
+  _land_reds_at qa >/dev/null 2>"$root/reds-to-qa.err"
+  _stgrep "--to qa's message explains the standing-red list is a dev-line convenience" \
+    "$root/reds-to-qa.err" 'DEV-LINE CONVENIENCE'
+  _stgrep "--to qa's message names a standing-red row (plane-no-money)" \
+    "$root/reds-to-qa.err" 'plane-no-money'
+
+  echo "land.sh selftest: --to qa/main refuses every red-through override, one variable at a time"
+  # FIVE separate cases, not a loop with one shared assertion: proving "some override got refused"
+  # would still pass with four of the five silently unwired to the check. Each spawns the real
+  # script — not an in-process call of land_refuse_red_overrides — so what is proven is the exit
+  # code a live invocation actually gives an operator.
+  _st "--to qa refuses LAND_PUSH_ANYWAY (rc 2)" 2 env LAND_PUSH_ANYWAY=1 bash "$0" --to qa
+  _stgrep "...and NAMES LAND_PUSH_ANYWAY"       "$ST_OUT" 'LAND_PUSH_ANYWAY'
+  _st "--to qa refuses LAND_CI_RED_OK (rc 2)"   2 env LAND_CI_RED_OK=1 bash "$0" --to qa
+  _stgrep "...and NAMES LAND_CI_RED_OK"         "$ST_OUT" 'LAND_CI_RED_OK'
+  _st "--to qa refuses LAND_FORCE (rc 2)"       2 env LAND_FORCE=1 bash "$0" --to qa
+  _stgrep "...and NAMES LAND_FORCE"             "$ST_OUT" 'LAND_FORCE'
+  _st "--to qa refuses LAND_SKIP_GATES (rc 2)"  2 env LAND_SKIP_GATES=1 bash "$0" --to qa
+  _stgrep "...and NAMES LAND_SKIP_GATES"        "$ST_OUT" 'LAND_SKIP_GATES'
+  _st "--to qa refuses LAND_ALLOW_RED (rc 2)"   2 env LAND_ALLOW_RED=1 bash "$0" --to qa
+  _stgrep "...and NAMES LAND_ALLOW_RED"         "$ST_OUT" 'LAND_ALLOW_RED'
+  _st "--to main also refuses LAND_FORCE (rc 2)" 2 env LAND_FORCE=1 bash "$0" --to main
+  _stgrep "...and NAMES LAND_FORCE under --to main" "$ST_OUT" 'LAND_FORCE'
+
+  echo "land.sh selftest: with NO --to, the override variables keep today's behaviour"
+  # Same variable, no posture: the run still exits 2 (there are no hashes and no --prove), but for
+  # the ORDINARY reason, not the posture refusal — the posture check must not fire at all here.
+  _st "no --to: LAND_FORCE set still exits 2, but not from the posture check" 2 \
+    env LAND_FORCE=1 bash "$0"
+  _stno "no --to: the exit is NOT the posture refusal" "$ST_OUT" 'posture-refuses-override'
+
+  echo "land.sh selftest: an unrecognised --to is refused and names itself plus the three it accepts"
+  _st "an unrecognised --to zz is refused (rc 2)" 2 bash "$0" --to zz
+  _stgrep "...names the bad value 'zz'" "$ST_OUT" "\\-\\-to zz"
+  _stgrep "...names dev as accepted"    "$ST_OUT" '\bdev\b'
+  _stgrep "...names qa as accepted"     "$ST_OUT" '\bqa\b'
+  _stgrep "...names main as accepted"   "$ST_OUT" '\bmain\b'
+
+  echo "land.sh selftest: a standing-red construction row still aborts the gate leg under --to qa"
+  # Drives land_gate_verdict directly on a fixture report — the exact code path prove_tree's `gate)`
+  # arm calls — rather than building and running the real xtask construction gate.
+  # Row-filtered to `plane-no-money` alone (rather than the default "every row"): the standing-red
+  # list names EIGHT other rows land_gate_verdict has never seen a PASS or FAIL for in this fixture,
+  # and the leg treats a standing entry with no matching row in the log as STALE — a different red,
+  # for a different reason, that this case is not testing. Scoping the regex is what isolates the
+  # one fact under test: this ONE standing-red row, present and still FAIL, is excused on dev and
+  # not excused under --to qa.
+  printf 'FAIL  plane-no-money  x\nPASS  other  x\n' >"$root/gate-standing.txt"
+  _land_gate_verdict_to() { P_to="$1" land_gate_verdict "$2" 'plane-no-money'; }
+  _st "gate leg: a standing red is excused on the dev line"  0 _land_gate_verdict_to dev "$root/gate-standing.txt"
+  _st "gate leg: the SAME standing red aborts under --to qa" 1 _land_gate_verdict_to qa  "$root/gate-standing.txt"
+  _stgrep "gate leg: the abort names the row that is blocking" "$ST_OUT" 'plane-no-money'
+
   echo "land.sh selftest: the gate-file patterns (a ceiling edit is not an unproven landing)"
   land_gate_data "qa/construction.toml" >"$root/gd-ceiling.txt"
   _stgrep "a qa ceilings edit is a gate file"      "$root/gd-ceiling.txt" '^qa/construction\.toml$'
@@ -1236,6 +1434,17 @@ EOF
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 land_parse_args "$@"
+export P_to
+
+# ── --to: VALIDATE AND REFUSE, BEFORE ANY WORK ────────────────────────────────────────────────────
+# This runs before the --remote delegation below (which would otherwise hand the whole job to
+# another box before an unrecognised posture or a live override was ever noticed), before --batch,
+# before --selftest, before a single cherry-pick. "Before any work" is not a nicety here — it is the
+# difference between an override refusal and an override refusal that happened to arrive after the
+# tree was already dirtied.
+land_validate_to "$P_to" || exit 2
+land_refuse_red_overrides || exit 2
+land_print_posture "$P_to"
 
 # ── --remote: THE SAME LANDING, ON A FLEET BOX ────────────────────────────────────────────────────
 # The owner's ruling during dev churn is that GitHub Actions judges integration/qa/main and nothing
