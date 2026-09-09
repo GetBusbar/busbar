@@ -137,6 +137,7 @@ use crate::ledger::{Row, Verdict};
 use crate::manifest::{self, DepDecl};
 use crate::scan;
 
+mod base;
 mod inputs;
 mod matrix;
 mod truths;
@@ -952,6 +953,37 @@ fn take_row(
 }
 
 /// Validate one accumulated row into the registry.
+/// Why a `[[transitional]] to = "…*"` glob is not one kind's prefix, or `None` when it is.
+///
+/// The kind word is resolved through [`kind_head_words`], which is derived from the kind table's
+/// own matchers — so a kind added tomorrow is a legal prefix tomorrow, and a word that is no kind
+/// at all is refused today.
+fn bad_transitional_prefix(to: &str) -> Option<String> {
+    let prefix = to.strip_suffix('*').unwrap_or(to);
+    if prefix.is_empty() {
+        return Some(
+            "covers EVERY crate in the tree — `dep.starts_with(\"\")` is true of all of them"
+                .to_string(),
+        );
+    }
+    let segs: Vec<&str> = prefix.split('-').collect();
+    if segs.len() != 3 || segs[0] != "busbar" || !segs[2].is_empty() {
+        return Some(format!(
+            "is not of the form `busbar-<kind>-*` (it reads as {} segment(s) before the star)",
+            segs.len()
+        ));
+    }
+    let heads = kind_head_words();
+    if !heads.contains_key(segs[1]) {
+        return Some(format!(
+            "names `{}`, which is no kind in the table ({})",
+            segs[1],
+            heads.keys().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    None
+}
+
 fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at: usize) {
     match table {
         "transitional" => {
@@ -979,6 +1011,29 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                     reg.errors.push(format!(
                         "bad-glob\t{REGISTRY_FILE}:{at}\t`to = \"{to}\"` — the only glob a row may \
                          carry is a trailing `*`, so what a row covers can be read off it"
+                    ));
+                    return;
+                }
+                // A TRAILING `*` IS NOT ENOUGH: WHAT IT COVERS MUST BE ONE KIND'S PREFIX.
+                //
+                // `to = "*"` passes the test above — the star IS trailing — and `covers` then does
+                // `dep.starts_with("")`, which is true of every crate in the tree. One character
+                // turns the drain's exemption into a blanket amnesty for every legacy -> unit,
+                // legacy -> plane, legacy -> dialect and legacy -> transport edge there will ever
+                // be, and nothing downstream says a word, because the row that granted it is a row
+                // the reader accepted. `busbar-*` is the same hole one character longer.
+                //
+                // So the prefix must be `busbar-<kind>-`: the crate scheme's own first two
+                // segments, with the kind word read off the KIND TABLE rather than a list beside
+                // it. That is a glob a reader can price — every crate it covers is one kind — and
+                // it is the only glob the real file uses.
+                if let Some(reason) = bad_transitional_prefix(&to) {
+                    reg.errors.push(format!(
+                        "bad-glob\t{REGISTRY_FILE}:{at}\t`to = \"{to}\"` {reason}. A \
+                         `[[transitional]]` glob must be `busbar-<kind>-*` — one kind's prefix, so \
+                         a reader can price what the exemption covers by reading it. An exemption \
+                         that spans more than one kind is the ruling being deleted rather than \
+                         drained; {MAKE_A_NEW_KIND}"
                     ));
                     return;
                 }
@@ -1061,6 +1116,24 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 ));
                 return;
             };
+            // A NEGATIVE CEILING IS A PER-CELL OFF SWITCH, and it is refused HERE rather than
+            // tolerated downstream. `count = "-1"` parses, so every load-time refusal let it
+            // through; the exact-both-directions comparison then skipped the cell entirely,
+            // `dead-cell` keys on the MEASURED count so it never fired, and one character turned
+            // the ratchet off for one crate × kind with nothing anywhere saying so. A number no
+            // measurement can ever equal is not a ceiling — it is the absence of one, spelled to
+            // look like a reviewed figure.
+            if count < 0 {
+                reg.errors.push(format!(
+                    "bad-count\t{REGISTRY_FILE}:{at}\t`[[cell]] count = \"{}\"` is negative. No \
+                     measurement is ever below zero, so a negative ceiling is not a ceiling this \
+                     rule can compare against — it is this cell's ratchet switched off in a value \
+                     that reads like a reviewed figure. Write the count the tree measures, or \
+                     strike the row",
+                    v[2]
+                ));
+                return;
+            }
             reg.matrix_cells.push(MatrixCell {
                 krate: v[0].clone(),
                 kind: v[1].clone(),
@@ -1408,7 +1481,7 @@ fn family_of(kind: Option<&str>) -> Family {
 fn package_name(text: &str) -> Option<String> {
     let mut in_package = false;
     for raw in text.lines() {
-        let t = raw.trim();
+        let t = normalise_header_line(raw);
         if t.starts_with('[') {
             in_package = t == "[package]";
             continue;
@@ -1424,6 +1497,27 @@ fn package_name(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// ONE MANIFEST LINE, NORMALISED, so a header is judged on what Cargo reads and not on its bytes.
+///
+/// `in_package = t == "[package]"` was a five-byte equality, and a red team took the whole census
+/// with it twice: `[package] # internal` and a UTF-8 BOM in front of `[package]` each deleted a
+/// crate from this gate's world entirely — no kind, no needles, no cells, and, worst, no entry in
+/// `by_name`, which is the filter the `Cargo.lock` cross-check is itself keyed on. A planted
+/// `crates/busbar-plane-shadow`, listed in `[workspace.members]`, path-depended by
+/// `busbar-transport-tcp` and confirmed by `cargo metadata` to be in the wire's shipped graph,
+/// produced `kind-isolation: 11 row(s), green`. Twice, once per spelling. An editor can write the
+/// BOM without being asked.
+///
+/// So: the BOM is stripped, a trailing `#` comment is cut, and CRLF's carriage return goes with the
+/// trim. Cargo ignores all three; this reader now ignores them on exactly the same terms.
+fn normalise_header_line(raw: &str) -> &str {
+    let t = raw.trim_start_matches('\u{feff}').trim();
+    match t.find('#') {
+        Some(at) => t[..at].trim(),
+        None => t,
+    }
 }
 
 /// EVERY DEPENDENCY DECLARATION OF ONE MANIFEST, split into the shipped half and the test half.
@@ -1502,6 +1596,27 @@ fn manifests(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
         .map(|f| (f.rel_str(), f.text.clone()))
         .filter(|(rel, _)| rel == "Cargo.toml" || rel.ends_with("/Cargo.toml"))
         .collect())
+}
+
+/// A relative path DECLARED BY a manifest, resolved against the directory that manifest governs and
+/// normalised — `crates/busbar-transport-tcp` + `../../xtask/fixtures/wire-bridge` reads as
+/// `xtask/fixtures/wire-bridge`, which is the spelling every other path in this gate is in.
+fn join_rel(dir: &str, rel: &str) -> String {
+    let mut parts: Vec<&str> = if dir.is_empty() {
+        Vec::new()
+    } else {
+        dir.split('/').collect()
+    };
+    for seg in rel.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
 }
 
 /// The directory a manifest governs. The workspace root's is the empty string.
@@ -2141,6 +2256,56 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
                 offenders.join(" | ")
             ),
         );
+    }
+
+    // THE LEDGER IS THE EVIDENCE, NEVER THE JUDGE — and this is the rule that makes that true.
+    //
+    // Everything BELOW this point reads `qa/kind-isolation.toml` and compares a measurement against
+    // a number a human wrote. A red team proved what that is worth on its own: a real
+    // `busbar-transport-tcp -> busbar-plane-llm` path dependency — a plane compiled into a wire,
+    // the fusion this whole gate exists to make impossible — went GREEN by appending nine lines
+    // that say out loud `verdict = "not-allowed"`, because every rule below is satisfied by a row
+    // that MATCHES. The row was honest. The gate agreed with it. Nothing asked where it came from.
+    //
+    // So the subject here is the EDGE and not the row: an edge the architecture does not grant may
+    // exist only if it ALREADY EXISTED at the merge-base with the integration line. A row records
+    // a pre-existing debt; it does not authorise a new one, and no verdict word, count or citation
+    // changes the answer, because none of them are read. It runs on the per-push half alone — the
+    // ship twin already reds every edge the architecture withholds, whatever its history.
+    //
+    // See [`base`] for why a base that cannot be established is RED rather than green.
+    match base::read(cx) {
+        Ok(base) => {
+            for e in &measured {
+                let implied = verdict_for(&e.class);
+                if implied == "allowed" || implied == "tcb" {
+                    continue;
+                }
+                if base.has_edge(&e.from, &e.to, half.word()) {
+                    continue;
+                }
+                offenders.push(format!(
+                    "new-forbidden-edge\t{} -> {}\t{} -> {} is `{implied}` and it is NOT in the \
+                     merge-base {}'s manifests: this branch INTRODUCED it. A `[[dep]]` row may \
+                     record a PRE-EXISTING not-allowed edge, never introduce one — the row is the \
+                     evidence and not the judge, so no verdict, count or citation makes this edge \
+                     admissible. Delete the dependency, or {MAKE_A_NEW_KIND}. {} declaration(s), \
+                     in {}.",
+                    e.class.0,
+                    e.class.1,
+                    e.from,
+                    e.to,
+                    &base.commit[..8.min(base.commit.len())],
+                    e.count,
+                    e.sections.join(", ")
+                ));
+            }
+        }
+        Err(why) => offenders.push(format!(
+            "no-base\t{REGISTRY_FILE}\tno merge-base could be read, so no `not-allowed` edge could \
+             be shown to pre-date this branch ({why}). A ratchet that cannot read its own history \
+             reports nothing, and reporting nothing is not passing."
+        )),
     }
 
     // THE LEDGER, ROW BY ROW. A duplicate row is refused before anything is compared: two rows for
@@ -2837,7 +3002,87 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
     }
 
     // A REVIEWED OFF-TREE ENTRY THAT COVERS NOTHING IS A DEAD ALLOWANCE.
-    let seen_manifests: Vec<String> = match manifests(cx) {
+    let all_manifests = manifests(cx);
+
+    // A MANIFEST THE CENSUS COULD NOT NAME IS A FINDING, NEVER A `continue`.
+    //
+    // The census skipped any `Cargo.toml` it could not read a `[package] name` out of, and that
+    // skip was the whole door: everything downstream keys off the census, so a manifest that is not
+    // in it has no kind, contributes no needles, moves no cell, and is not in `by_name` — which is
+    // the filter the `Cargo.lock` cross-check is itself keyed on. Two spellings of a non-byte-exact
+    // header are now normalised away (see [`normalise_header_line`]), but normalising is a fix for
+    // the spellings somebody has already thought of. This is the fix for the ones they have not: a
+    // file that DECLARES DEPENDENCIES and yields no package name is a crate this gate cannot score,
+    // and a crate this gate cannot score is reported rather than dropped.
+    //
+    // The condition is the dependency tables and not merely the file, because `Cargo.toml` files
+    // with no `[package]` are ordinary — the workspace root is one — and a virtual manifest that
+    // declares no edges is nothing this rule is about.
+    if let Ok(seen) = &all_manifests {
+        for (rel, text) in seen {
+            if off_tree_entry(rel).is_some() || package_name(text).is_some() {
+                continue;
+            }
+            let decls = manifest::dep_decls(text);
+            if decls.is_empty() {
+                continue;
+            }
+            offenders.push(format!(
+                "nameless-manifest\t{rel}\tthis manifest declares {} dependency(ies) and no \
+                 `[package] name` this reader can find, so the census cannot score it — no kind, \
+                 no vocabulary, no cell, and no entry in the name index the `Cargo.lock` \
+                 cross-check is keyed on. A crate that cannot be named is not a crate that was \
+                 found clean. Give it a `[package] name`, or delete the dependency tables.",
+                decls.len()
+            ));
+        }
+    }
+
+    // AN OFF-TREE MANIFEST IS OFF THE TREE, AND A PRODUCT CRATE MAY NOT REACH ONE.
+    //
+    // [`OFF_TREE_MANIFESTS`] excuses fixtures from the census — one entry is the whole
+    // `xtask/fixtures/` DIRECTORY — and "excused from the census" was read by every rule as
+    // "invisible". A red team put a live crate there (`xtask/fixtures/wire-bridge`, whose `lib.rs`
+    // is `pub use busbar_plane_llm::*;`), path-depended it from a transport, and six gates stayed
+    // green: the bridge is not in the census, so it has no kind, so the edge it carries has no
+    // class, so no `[[dep]]` row is owed for it and no cell moves. A fixture directory became a
+    // place to keep a plane.
+    //
+    // The exemption is therefore one-directional from here on. A manifest may be off the tree; what
+    // it may NOT be is in a product crate's build graph.
+    if let Ok(seen) = &all_manifests {
+        // KEYED ON THE DIRECTORY, NOT THE PACKAGE NAME. A fixture is reachable through its PATH,
+        // and a fixture whose package name collides with a real crates.io crate is ordinary:
+        // `xtask/fixtures/dirty-dep-hyphenated/hyper-util` declares `hyper-util`, which is also the
+        // registry crate five product crates legitimately depend on. Name-matching reported all
+        // five; path-matching reports the one thing this rule is about.
+        let off_tree_dirs: BTreeMap<String, &str> = seen
+            .iter()
+            .filter(|(rel, _)| off_tree_entry(rel).is_some())
+            .map(|(rel, _)| (manifest_dir(rel), rel.as_str()))
+            .collect();
+        for c in crates {
+            for decl in c.deps.iter().chain(c.dev_deps.iter()) {
+                let Some(p) = &decl.path else { continue };
+                let Some(at) = off_tree_dirs.get(&join_rel(&c.dir, p)) else {
+                    continue;
+                };
+                offenders.push(format!(
+                    "off-tree-reached\t{at}\t{} path-depends on `{}`, whose manifest is covered by \
+                     a reviewed OFF-TREE entry ({}). An off-tree manifest is excused from the \
+                     CENSUS — it has no kind, so its edges have no class, no `[[dep]]` row is owed \
+                     for them and no cell moves — and that exemption is one-directional: a product \
+                     crate may not reach one. Move the crate under crates/<dir> and let it be \
+                     scored, or delete the dependency.",
+                    c.name,
+                    decl.cite(),
+                    off_tree_manifest_reason(at).unwrap_or("reviewed")
+                ));
+            }
+        }
+    }
+
+    let seen_manifests: Vec<String> = match all_manifests {
         Ok(m) => m.into_iter().map(|(rel, _)| rel).collect(),
         Err(e) => {
             offenders.push(format!(
@@ -3939,11 +4184,21 @@ fn rule_control(cx: &Ctx, crates: &[CrateInfo]) -> Row {
 // rule 9 — one wire, one registration
 // ------------------------------------------------------------------------------------------------
 
-/// The kinds that may never name a transport crate. A transport naming a transport is that kind's
-/// own layering (`ws` over `http` over `tcp`), which the measured graph already carries and the
-/// instance rules already govern; the composition root names them by definition. Everything else on
-/// this list is a plugin that would be choosing its own wire.
-const WIRE_FORBIDDEN_KINDS: &[&str] = &["plane", "dialect", "control", "unit", "codec"];
+/// The two kinds that MAY name a transport crate. Everything else may not, and the rule is spelled
+/// as the exception rather than the list for the reason every list in this file is spelled that way.
+///
+/// It WAS a list — `["plane", "dialect", "control", "unit", "codec"]` — and a red team walked
+/// through the gap in one line: `store-memory`, a store plugin, took a `[dependencies]` edge on
+/// `busbar-transport-tcp` and this row PASSED, reporting "no plugin links one", because `store` was
+/// not on the list. Nor were `auth`, `secret`, `hooks` or `export` — four more plugin kinds, and
+/// every kind added after the list was written. A list is the thing the next kind forgets to join.
+///
+/// A transport naming a transport is that kind's own layering (`ws` over `http` over `tcp`), which
+/// the measured graph already carries and the instance rules already govern; the composition root
+/// names them by definition. Every other kind in the table — plugin, library, contract or legacy —
+/// is something that would be choosing its own wire, and if one of them legitimately must, that is
+/// an entry HERE, in a commit that says why.
+const WIRE_PERMITTED_KINDS: &[&str] = &["root", "transport"];
 
 /// The registration symbol a wire is composed under: `busbar-transport-http` -> `HttpTransport`.
 fn wire_symbol(instance: &str) -> String {
@@ -4022,7 +4277,7 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
         );
     }
     let by_name: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.name.as_str(), c)).collect();
-    let forbidden: BTreeSet<&str> = WIRE_FORBIDDEN_KINDS.iter().copied().collect();
+    let permitted: BTreeSet<&str> = WIRE_PERMITTED_KINDS.iter().copied().collect();
     let mut offenders: Vec<String> = Vec::new();
 
     // A PLUGIN NEVER CHOOSES ITS WIRE. The manifest edge is the same reach spelled where no source
@@ -4031,16 +4286,21 @@ fn rule_wires(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     // added its allowance.
     for c in crates {
         let Some(kind) = c.kind else { continue };
-        if !forbidden.contains(kind) {
+        if permitted.contains(kind) {
             continue;
         }
-        for dep in &c.deps {
+        // THE TEST HALF IS READ TOO. `cargo test` links a dev-dependency, and a plugin whose test
+        // binary picks a wire is a plugin whose author has already decided which wire it is for —
+        // the shape reaches production one refactor later, and the row that would have said so was
+        // reading one of the two dependency tables.
+        for dep in c.deps.iter().chain(c.dev_deps.iter()) {
             if by_name.get(dep.pkg.as_str()).and_then(|t| t.kind) == Some("transport") {
                 let dep = dep.cite();
                 offenders.push(format!(
                     "wire-dependency\t{}\t{} is kind `{kind}` and depends on the wire crate {dep}. \
-                     A plugin declares WHICH transport it claims, as data; it never links the crate \
-                     that moves the bytes — {MAKE_A_NEW_KIND}",
+                     Only a `root` or another `transport` names one: a plugin declares WHICH \
+                     transport it claims, as data, and never links the crate that moves the bytes \
+                     — {MAKE_A_NEW_KIND}",
                     c.dir, c.name
                 ));
             }
@@ -4334,6 +4594,43 @@ fn rule_write(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Row {
             ),
         );
     }
+    // …AND IT MEASURES THE WHOLE GATE BEFORE IT WRITES ANYTHING.
+    //
+    // It did not, and that was a bypass sitting in the binary: `owed()` returns one row in write
+    // mode and `run` returned one row, so `gate kind-isolation --write` ran the re-pin and NOTHING
+    // ELSE. A red team put plane words into a transport's `lib.rs` — a tree the ordinary run reds
+    // three ways — and got `PASS kind-isolation:write … 1 row(s), green` and `EXIT=0` out of the
+    // same binary in the same tree. Every rule this gate has, one flag away. The reason the rise
+    // refusal above did not save it is exact: `repins` only visits rows that ALREADY EXIST, and the
+    // cell the plant grew had no row, so there was nothing to rise.
+    //
+    // The check sits AFTER the rise refusal and BEFORE the write, in that order for a reason. A
+    // count that would rise is the more specific finding and the one a reader can act on, so it
+    // keeps its own message; everything else that is red is reported here, wholesale, and nothing
+    // is written. The twin is `check()` rather than the write build, which would ask this branch
+    // again.
+    let ordinary = KindIsolationGate::check().run(cx);
+    let red: Vec<String> = ordinary
+        .rows
+        .iter()
+        .filter(|r| r.status != crate::ledger::Status::Pass)
+        .map(|r| format!("{} ({})", r.id, r.title))
+        .collect();
+    if !red.is_empty() {
+        return Row::fail(
+            ROW_WRITE,
+            "--write refuses: the gate is RED, and this flag does not re-pin a red tree",
+            format!(
+                "{} row(s) of the ordinary run are red; NOTHING was written. A count re-pinned \
+                 while another rule is failing is a ledger that LOOKS reviewed and is not — and \
+                 the row that would be lowered is not necessarily the row that is wrong. Fix the \
+                 tree, then re-pin. Red: {}. Run `cargo xtask gate kind-isolation` for the \
+                 findings themselves.",
+                red.len(),
+                red.join(", ")
+            ),
+        );
+    }
     if down.is_empty() {
         return Row::pass(
             ROW_WRITE,
@@ -4605,6 +4902,28 @@ impl Gate for KindIsolationGate {
                     "would RISE",
                     "NOTHING was written",
                     "busbar-kernel × plane 0 -> 1",
+                ],
+            ));
+            // …AND THE WRITE ARM MEASURES THE WHOLE GATE BEFORE IT WRITES ANYTHING. It did not:
+            // `owed()` returned one row in write mode and `run` returned one row, so
+            // `gate kind-isolation --write` ran the re-pin and NOTHING ELSE. A red team put plane
+            // words in a transport's `lib.rs` — a tree the ordinary run reds three ways — and got
+            // `PASS kind-isolation:write … 1 row(s), green` and `EXIT=0` out of the same binary.
+            // Every rule this gate has, one flag away. The plant is that tree.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "--write refuses on a tree the ordinary run reds, whatever the counts would do",
+                &[ROW_WRITE],
+                registry_with(
+                    cx,
+                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"not-allowed\"",
+                    "from    = \"busbar-transport-tls\"\nto      = \"busbar-unit-transport-key\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \"allowed\"",
+                ),
+                &[
+                    "the gate is RED",
+                    "NOTHING was written",
+                    "kind-isolation:deps",
                 ],
             ));
             return report;
@@ -4880,6 +5199,90 @@ impl Gate for KindIsolationGate {
             &["redundant-registration", "busbar-control-admin"],
         ));
 
+        // A MANIFEST WHOSE `[package]` HEADER IS NOT BYTE-EXACT IS STILL A CRATE.
+        //
+        // `in_package = t == "[package]"` was a five-byte equality, and a red team took the whole
+        // census with it TWICE. `crates/busbar-plane-shadow` with `[package] # internal`, listed in
+        // `[workspace.members]`, path-depended by `busbar-transport-tcp` and confirmed by
+        // `cargo metadata` to be in the wire's shipped graph, produced `kind-isolation: 11 row(s),
+        // green`. Then the same crate again with a UTF-8 BOM instead of the comment — a byte an
+        // editor writes without being asked. Nothing downstream saw either: no kind, no needles, no
+        // cell, and no entry in `by_name`, which is the filter the `Cargo.lock` cross-check is
+        // itself keyed on. Both spellings are now normalised, and both are proven here.
+        for (label, header) in [
+            ("a trailing comment", "[package] # internal"),
+            ("a UTF-8 BOM", "\u{feff}[package]"),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-plane-shadow/Cargo.toml",
+                format!("{header}\nname = \"busbar-plane-shadow\"\nversion = \"0.0.0\"\n"),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                format!("a `[package]` header carrying {label} is still a crate of the census"),
+                &[ROW_REGISTRY],
+                ov,
+                &["busbar-plane-shadow", "unmembered"],
+            ));
+        }
+
+        // …AND A MANIFEST THE CENSUS CANNOT NAME IS A FINDING, NEVER A `continue`. Normalising the
+        // two spellings above fixes the spellings somebody has already thought of; this is the
+        // refusal for the ones they have not. A file that declares dependencies and yields no
+        // package name is a crate this gate cannot score, and a crate it cannot score is reported.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/zz-planted-nameless/Cargo.toml",
+            "[pack age]\nname = \"busbar-plane-nameless\"\n\n[dependencies]\nbusbar-plane-llm = \
+             { path = \"../busbar-plane-llm\" }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a manifest with dependency tables and no readable package name is a FINDING",
+            &[ROW_REGISTRY],
+            ov,
+            &[
+                "nameless-manifest",
+                "crates/zz-planted-nameless/Cargo.toml",
+                "cannot be named is not a crate that was found clean",
+            ],
+        ));
+
+        // A FIXTURE DIRECTORY IS NOT A PLACE TO KEEP A LIVE CRATE. `OFF_TREE_MANIFESTS` carries a
+        // whole-directory entry for `xtask/fixtures/`, and "excused from the census" was read by
+        // every rule as "invisible": a red team put `xtask/fixtures/wire-bridge`, whose `lib.rs` is
+        // `pub use busbar_plane_llm::*;`, into a transport's `[dependencies]` and SIX gates stayed
+        // green. The exemption is one-directional from here on.
+        let mut ov = Overlay::new();
+        ov.set(
+            "xtask/fixtures/wire-bridge/Cargo.toml",
+            "[package]\nname = \"wire-bridge\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
+             busbar-plane-llm = { path = \"../../../crates/busbar-plane-llm\" }\n",
+        );
+        ov.set(
+            "crates/busbar-transport-tcp/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-tcp/Cargo.toml",
+                "[dependencies]\nwire-bridge = { path = \"../../xtask/fixtures/wire-bridge\" }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a product crate path-depending on an OFF-TREE manifest is refused",
+            &[ROW_REGISTRY],
+            ov,
+            &[
+                "off-tree-reached",
+                "xtask/fixtures/wire-bridge",
+                "busbar-transport-tcp",
+            ],
+        ));
+
         // …AND A REGISTRATION FOR A CRATE THAT IS NOT THERE IS A KIND ASSIGNMENT FOR NOTHING.
         report.push(prove_rows_red(
             cx,
@@ -4927,6 +5330,89 @@ impl Gate for KindIsolationGate {
                     "dead-dep-edge",
                     "busbar-contract -> busbar-grammar",
                     "Strike the row",
+                ],
+            ));
+
+            // THE LEDGER IS THE EVIDENCE, NEVER THE JUDGE — the case the red team landed.
+            //
+            // A real `busbar-transport-tcp -> busbar-plane-llm` path dependency, which is a plane
+            // compiled into a wire and the exact fusion this gate exists to make impossible, plus
+            // nine ledger lines that say out loud `verdict = "not-allowed"` and one `[[cell]]`
+            // count, produced `kind-isolation: 10 row(s), green`. Every rule was satisfied, because
+            // every rule's question was "does a row match?" and a row did. The row was honest and
+            // it was still the bypass.
+            //
+            // The plant here is exactly that: the edge AND the row that describes it perfectly.
+            // What it must not buy is admissibility.
+            let mut ov = Overlay::new();
+            ov.set(
+                "crates/busbar-transport-tcp/Cargo.toml",
+                manifest_plus(
+                    cx,
+                    "crates/busbar-transport-tcp/Cargo.toml",
+                    "[dependencies]\nbusbar-plane-llm = { path = \"../busbar-plane-llm\" }\n",
+                ),
+            );
+            ov.set(
+                REGISTRY_FILE,
+                format!(
+                    "{}\n\n[[dep]]\nfrom    = \"busbar-transport-tcp\"\nto      = \
+                     \"busbar-plane-llm\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \
+                     \"not-allowed\"\ncite    = \"planted by the self-test\"\nwhy     = \"the wire \
+                     needs the plane's frame type\"\ndrain   = \"move the frame type into the \
+                     contract\"\n",
+                    cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a `[[dep]]` row may RECORD a not-allowed edge, never INTRODUCE one",
+                &[ROW_DEPS],
+                ov,
+                &[
+                    "new-forbidden-edge",
+                    "busbar-transport-tcp -> busbar-plane-llm",
+                    "never introduce one",
+                ],
+            ));
+
+            // A NEGATIVE COUNT IS A PER-CELL OFF SWITCH, and it is refused where every other
+            // unreadable value is: at load. `-1` parses as a number, so `bad-count` let it through,
+            // and the exact-both-directions comparison then SKIPPED the cell — one character
+            // turning off one crate × kind's ratchet, with nothing anywhere saying so.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a negative `[[cell]]` count is refused at load — it is not a ceiling, it is the \
+                 absence of one",
+                &[ROW_DEPS],
+                registry_with(
+                    cx,
+                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"122\"",
+                    "crate = \"busbar\"\nkind = \"api\"\ncount = \"-1\"",
+                ),
+                &[
+                    "bad-count",
+                    "is negative",
+                    "No measurement is ever below zero",
+                ],
+            ));
+
+            // `to = "*"` IS A LEGAL TRAILING GLOB AND A BLANKET AMNESTY. `covers` does
+            // `dep.starts_with("")`, which is true of every crate in the tree: one character turns
+            // the drain's exemption into permission for every legacy -> unit, legacy -> plane,
+            // legacy -> dialect and legacy -> transport edge there will ever be.
+            report.push(prove_rows_red(
+                cx,
+                self,
+                "a `[[transitional]]` glob that covers more than one kind's prefix is refused",
+                &[ROW_DEPS],
+                registry_with(cx, "to = \"busbar-unit-*\"", "to = \"*\""),
+                &[
+                    "bad-glob",
+                    "covers EVERY crate in the tree",
+                    "busbar-<kind>-*",
                 ],
             ));
 
@@ -5915,6 +6401,46 @@ impl Gate for KindIsolationGate {
                 "busbar-plane-voice",
                 "busbar-transport-ws",
             ],
+        ));
+
+        // …AND EVERY KIND IS A KIND THAT DOES NOT LINK A WIRE. The rule read a LIST of five kinds,
+        // and `store` was not on it — nor `auth`, `secret`, `hooks` or `export`. A red team gave
+        // `store-memory` a `[dependencies]` edge on `busbar-transport-tcp` and this row PASSED,
+        // reporting "no plugin links one". The list is now the exception (`root`, `transport`), so
+        // a kind added tomorrow is covered tomorrow.
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a STORE plugin depending on a wire crate — every kind but root and transport",
+            &[ROW_WIRES],
+            manifest_plant(
+                "crates/store-memory",
+                "busbar-store-memory",
+                &["busbar-contract", "busbar-transport-tcp"],
+            ),
+            &[
+                "wire-dependency",
+                "busbar-store-memory",
+                "busbar-transport-tcp",
+            ],
+        ));
+
+        // …AND THE TEST HALF IS READ TOO. `cargo test` links a dev-dependency, and a plugin whose
+        // test binary picks a wire has already decided which wire it is for.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/store-memory/Cargo.toml",
+            "[package]\nname = \"busbar-store-memory\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
+             busbar-contract = { workspace = true }\n\n[dev-dependencies]\n\
+             busbar-transport-tcp = { path = \"../busbar-transport-tcp\" }\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a plugin whose TEST binary links a wire has chosen one just the same",
+            &[ROW_WIRES],
+            ov,
+            &["wire-dependency", "busbar-store-memory", "dev-dependencies"],
         ));
 
         // A SECOND REGISTRY. Two places compose the same wire, and nothing says which one ran.

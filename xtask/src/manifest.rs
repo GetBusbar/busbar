@@ -76,6 +76,14 @@ pub struct DepDecl {
     pub renamed_here: bool,
     /// The declaration inherits from `[workspace.dependencies]`.
     pub inherits: bool,
+    /// The `path = "…"` this declaration states, verbatim and unresolved, when it states one.
+    ///
+    /// A PATH DEPENDENCY IS A DIFFERENT FACT FROM A REGISTRY ONE, and the rule that needed this
+    /// found out the hard way: `xtask/fixtures/dirty-dep-hyphenated/hyper-util/Cargo.toml` declares
+    /// a package called `hyper-util`, which is also the name of a real crates.io crate five product
+    /// crates depend on. Matching an off-tree manifest by PACKAGE NAME reported all five. What
+    /// makes a fixture reachable is the path, so the path is what a rule about reaching one reads.
+    pub path: Option<String>,
 }
 
 impl DepDecl {
@@ -212,6 +220,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
                     section: head,
                     renamed_here: false,
                     inherits: false,
+                    path: None,
                 });
                 subtable = Some(out.len() - 1);
             }
@@ -227,6 +236,9 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
             }
             if scalar_true(t, "workspace") {
                 out[i].inherits = true;
+            }
+            if let Some(p) = scalar_string(t, "path") {
+                out[i].path = Some(p);
             }
             continue;
         }
@@ -244,6 +256,7 @@ pub fn dep_decls(text: &str) -> Vec<DepDecl> {
             section: section_name,
             renamed_here: renamed.is_some(),
             inherits: scalar_true(value, "workspace"),
+            path: scalar_string(value, "path"),
         });
     }
     out
