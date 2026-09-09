@@ -50,6 +50,13 @@ mod transport;
 pub use conn::StaticConfig;
 pub use transport::{WsTransport, MESSAGE_MAX_BYTES_KEY};
 
+/// One session that is open and has not been pumped — the value an acceptor's drain reads.
+///
+/// Exported only where the serving path is compiled, because it is the serving path's own vocabulary
+/// and a build without it has no acceptor to hold one.
+#[cfg(feature = "serve-sessions")]
+pub use transport::OpenSession;
+
 #[cfg(test)]
 #[path = "tests/battery.rs"]
 mod battery;

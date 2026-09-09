@@ -505,3 +505,200 @@ async fn an_unaddressed_target_never_upgrades() {
     );
     let _ = served.await;
 }
+
+// ── the split, and the drain it is there for ────────────────────────────────────────────────────
+//
+// An acceptor that has to answer a stop needs to know which of two situations it is in: WAITING, in
+// which nothing has been accepted and nobody has been told yes, or MID-SESSION, in which a caller is
+// being served and is owed the session they were promised. The cells below prove the transport
+// reports the boundary between the two — and it reports it by RETURNING, which is a thing an acceptor
+// can hold rather than a flag it has to remember to read.
+//
+// None of them names a plane. What drains is a session, and every plane's sessions drain the same
+// way for the same reason.
+
+/// THE OPEN IS REPORTED BEFORE ONE FRAME IS PUMPED.
+///
+/// The cell the split exists for. The client has upgraded AND has already sent a frame, and
+/// `serve_upgrade` still comes back with the session open and the driver's `drive` never called. An
+/// acceptor therefore learns "a session is open" at a moment when nothing about that session has yet
+/// happened, which is the only moment at which taking responsibility for finishing it is a promise
+/// it can still keep.
+#[tokio::test]
+async fn the_upgrade_reports_an_open_session_before_the_pump_starts() {
+    let (ws, listener) = listening().await;
+    let addr = listener.local_addr();
+    let driver = Arc::new(FakeDriver::new(vec![reply(
+        &[r#"{"kind":"turn"}"#],
+        "application/json",
+    )]));
+
+    let client = tokio::spawn(async move {
+        let mut client = dial(&addr, "/session", Some("Bearer sk-44401"))
+            .await
+            .expect("the upgrade is accepted");
+        client
+            .send(Message::Text(r#"{"kind":"start"}"#.into()))
+            .await
+            .expect("the client speaks");
+        client
+    });
+
+    let open = ws
+        .serve_upgrade(&listener, driver.as_ref(), &SURFACE)
+        .await
+        .expect("the declared mount opens a session");
+
+    assert_eq!(
+        driver.opened.lock().expect("the log").as_slice(),
+        [("/session".to_string(), Some("Bearer sk-44401".to_string()))],
+        "the session is open by the time the waiting half returns"
+    );
+    assert!(
+        driver.seen.lock().expect("the log").is_empty(),
+        "and not one frame has been driven — the pump has not started"
+    );
+    assert!(
+        driver.closed.lock().expect("the log").is_empty(),
+        "nor has anything ended"
+    );
+
+    // The handle is readable without consuming the value, because an acceptor recording what it has
+    // open has to name it before it hands it to the pump — and after the pump has been handed the
+    // value there is nothing left to ask.
+    assert_eq!(
+        open.session(),
+        SessionHandle(7),
+        "the acceptor can name the session it is now responsible for"
+    );
+
+    let mut client = client.await.expect("the client task finished");
+    let pumped = {
+        let (ws, driver) = (ws.clone(), driver.clone());
+        tokio::spawn(async move {
+            ws.pump_session(open, driver.as_ref(), SessionBudgets::default())
+                .await
+        })
+    };
+    let answered = client.next().await.expect("an answer").expect("no failure");
+    assert_eq!(answered, Message::Text(r#"{"kind":"turn"}"#.into()));
+    client.close(None).await.expect("the client closes");
+    let end = pumped.await.expect("the pump finished");
+
+    assert_eq!(
+        driver.seen.lock().expect("the log").as_slice(),
+        [br#"{"kind":"start"}"#.to_vec()],
+        "the frame the client sent before the pump started is not lost by the split"
+    );
+    assert_eq!(end.cut, Cut::Client);
+    assert_eq!(
+        driver.closed.lock().expect("the log").len(),
+        1,
+        "one ending, one close"
+    );
+}
+
+/// A STOP WHILE WAITING OPENS NOTHING, AND OWES NOBODY ANYTHING.
+///
+/// The first half of a drain. The acceptor is racing a stop against the waiting half, no connection
+/// arrives, and the stop wins: the `serve_upgrade` future is DROPPED. Everything it held is this
+/// node's own — a pending accept, no caller answered — so the drop is a connection not taken rather
+/// than a session cut, and the driver is never asked to open anything.
+///
+/// This is exactly why the cut is where it is. An acceptor holding one accept-upgrade-open-and-pump
+/// future would have to cancel a future that MIGHT be mid-session, and could not tell which.
+#[tokio::test]
+async fn a_stop_while_waiting_drops_the_wait_and_opens_nothing() {
+    let (ws, listener) = listening().await;
+    let driver = Arc::new(FakeDriver::new(Vec::new()));
+    let stop = tokio::sync::Notify::new();
+
+    let raced = tokio::select! {
+        // Biased so the cell tests the stop arm rather than the scheduler's mood: nothing is going
+        // to connect to this listener, so the other arm would never be ready anyway, and pinning the
+        // order is what keeps this from being a race that passes for the wrong reason.
+        biased;
+        () = async { stop.notify_one(); stop.notified().await } => None,
+        opened = ws.serve_upgrade(&listener, driver.as_ref(), &SURFACE) => Some(opened.is_ok()),
+    };
+
+    assert!(raced.is_none(), "the stop won, and the wait was dropped");
+    assert!(
+        driver.opened.lock().expect("the log").is_empty(),
+        "no caller was answered, so no session was opened and none is draining"
+    );
+    assert!(driver.closed.lock().expect("the log").is_empty());
+}
+
+/// A STOP MID-SESSION FINISHES THE SESSION IT ALREADY OPENED.
+///
+/// The other half. The acceptor is holding an [`crate::OpenSession`] — a caller has been told yes —
+/// and the stop arrives. Draining means the acceptor refuses to wait for a NEW upgrade and still
+/// runs this one to its own ending: the frames the peer sends are answered, the peer's own close
+/// ends it, and the driver's `close` is called exactly once.
+///
+/// The ownership is the whole mechanism. The stop cannot cut this session because the session is a
+/// value the acceptor is holding, and there is no way to abandon it that is not visible as a value
+/// nobody moved into the pump.
+#[tokio::test]
+async fn a_stop_mid_session_still_finishes_the_open_session() {
+    let (ws, listener) = listening().await;
+    let addr = listener.local_addr();
+    let driver = Arc::new(FakeDriver::new(vec![reply(
+        &[r#"{"kind":"turn"}"#],
+        "application/json",
+    )]));
+    let stop = tokio::sync::Notify::new();
+
+    let client = tokio::spawn(async move {
+        dial(&addr, "/session", Some("Bearer sk-44401"))
+            .await
+            .expect("the upgrade is accepted")
+    });
+    let open = ws
+        .serve_upgrade(&listener, driver.as_ref(), &SURFACE)
+        .await
+        .expect("the declared mount opens a session");
+    let mut client = client.await.expect("the client task finished");
+
+    // THE STOP, arriving with a session already open. An acceptor holding one goes no further round
+    // its loop; what it does NOT do is drop what it is holding.
+    stop.notify_one();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(0), stop.notified())
+            .await
+            .is_ok(),
+        "the stop is standing before the session is pumped"
+    );
+
+    let pumped = {
+        let (ws, driver) = (ws.clone(), driver.clone());
+        tokio::spawn(async move {
+            ws.pump_session(open, driver.as_ref(), SessionBudgets::default())
+                .await
+        })
+    };
+
+    client
+        .send(Message::Text(r#"{"kind":"start"}"#.into()))
+        .await
+        .expect("a draining node still serves the session it opened");
+    let answered = client.next().await.expect("an answer").expect("no failure");
+    assert_eq!(answered, Message::Text(r#"{"kind":"turn"}"#.into()));
+    client.close(None).await.expect("the client closes");
+
+    let end = pumped.await.expect("the pump finished");
+    assert_eq!(
+        end,
+        SessionEnd {
+            cut: Cut::Client,
+            reason: CloseReason::PeerClosed
+        },
+        "the session ended on its own terms and not on the stop's"
+    );
+    assert_eq!(
+        driver.closed.lock().expect("the log").len(),
+        1,
+        "one ending, one close, drain or no drain"
+    );
+}
