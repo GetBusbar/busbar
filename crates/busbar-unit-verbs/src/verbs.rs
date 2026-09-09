@@ -9,7 +9,7 @@
 //! What happens before a verb's own effect, for EVERY verb, in this order:
 //!
 //! 1. **Scope.** `granted.allows(required_scope(verb))` — refused `Unauthorized` otherwise. Scope
-//!    is resolved from [`crate::verb::LEGACY_VERBS`] for a legacy verb; the 17 new verbs and the
+//!    is resolved from [`crate::verb::LEGACY_VERBS`] for a legacy verb; the 12 new verbs and the
 //!    named surfaces are `Full`-scoped mutations and reads respectively by construction (a `Get*`
 //!    surface is a read, everything else in that group is a mutation the calling context must
 //!    already be authorized for by the time it reaches this crate — the admin plane's own auth
@@ -155,7 +155,7 @@ impl MintOutcome {
 }
 
 /// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; fifteen of the
-/// 17 money-governance verbs are `Full` (they mutate state or read privileged material) and the two
+/// 12 money-governance verbs are `Full` (they mutate state or read privileged material) and the two
 /// the document binds as `GET` ([`READ_ONLY_NEW_VERBS`]) are `ReadOnly`, by exactly 1.5.5's own
 /// method rule; the five ledger views are `ReadOnly` (the one group of 1.6.0 additions that only
 /// looks); the named surfaces split by their own nature (`Get*` reads, the two
@@ -426,7 +426,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     }
 
     /// The generic dispatcher for every other verb: every legacy operation but the two above, the
-    /// 17 new verbs (posture-gated), and nothing else — a caller for `PostKeys`/`PostKeysIdRotate`
+    /// 12 new verbs (posture-gated), and nothing else — a caller for `PostKeys`/`PostKeysIdRotate`
     /// or a named surface must use the dedicated method / must not call this crate at all.
     /// `PostKeys` and `PostKeysIdRotate` are refused here rather than served, because this path
     /// carries none of the replay machinery their own methods do.

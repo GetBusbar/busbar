@@ -258,7 +258,7 @@ fn generated_table_has_the_pinned_read_only_full_split() {
     assert_eq!(rows.len() - read_only, 32);
 }
 
-/// The combined table (66 generated + 17 money-governance + 5 ledger views) has exactly the rows
+/// The combined table (66 generated + 12 operator verbs + 5 ledger views) has exactly the rows
 /// its count declares, and no duplicate verb name.
 #[test]
 fn combined_table_has_unique_verb_names() {
