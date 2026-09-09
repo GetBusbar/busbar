@@ -1762,6 +1762,44 @@ impl SeededLedger {
     /// The row whose two sides disagree, and by how much in micro-units.
     const SHORT_ROW: (&'static str, &'static str, &'static str) = ("key-1", "lane-b", "prov-y");
     const SHORT_BY_MICROS: i64 = 250;
+
+    /// The rates the fixture prices against, as a card the cost unit built.
+    ///
+    /// Two lanes at two different prices, because the point of a read-time derivation is that the
+    /// LANE decides the rate: a fixture that priced both lanes the same could not tell a correct
+    /// per-lane lookup from a single rate applied everywhere.
+    fn card(input_micros: f64, fee_cents: i64) -> busbar_unit_cost::RateCard {
+        busbar_unit_cost::RateCard::from_config(
+            busbar_unit_cost::RateCardVersion::new("seeded"),
+            Some([
+                (
+                    "lane-a",
+                    busbar_unit_cost::TierRates {
+                        input: input_micros,
+                        ..busbar_unit_cost::TierRates::default()
+                    },
+                ),
+                (
+                    "lane-b",
+                    busbar_unit_cost::TierRates {
+                        input: input_micros * 2.0,
+                        ..busbar_unit_cost::TierRates::default()
+                    },
+                ),
+            ]),
+            fee_cents,
+        )
+    }
+
+    /// One quantity line, in the class spelling the card on this tree is keyed by.
+    fn line(class: &'static str, quantity: u64) -> busbar_caps::UsageLine {
+        busbar_caps::UsageLine {
+            class: busbar_caps::MeterClassId::new(class),
+            quantity,
+            source: busbar_caps::QuantitySource::Count,
+            estimated: false,
+        }
+    }
 }
 
 impl LedgerView for SeededLedger {
@@ -1790,6 +1828,33 @@ impl LedgerView for SeededLedger {
         ]
         .into_iter()
         .collect()
+    }
+
+    /// The quantities behind the two rows, which are what the totals view prices.
+    fn quantities(&self) -> crate::root::units_admin::QuantitySnapshot {
+        use crate::root::ledger_identity::RowKey;
+        [
+            (
+                RowKey::new("key-1", A_DAY, "lane-a", "prov-x"),
+                vec![SeededLedger::line("input", 10)],
+            ),
+            (
+                RowKey::new(
+                    SeededLedger::SHORT_ROW.0,
+                    A_DAY,
+                    SeededLedger::SHORT_ROW.1,
+                    SeededLedger::SHORT_ROW.2,
+                ),
+                vec![SeededLedger::line("input", 5)],
+            ),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// A card in force, so the view has rates to derive against.
+    fn rates_in_force(&self) -> Option<Arc<busbar_unit_cost::RateCard>> {
+        Some(Arc::new(SeededLedger::card(1.0, 0)))
     }
 
     fn legacy_rows(&self) -> crate::root::ledger_identity::LegacySnapshot {
@@ -1950,10 +2015,16 @@ fn each_view_serves_the_figures_the_ledger_holds() {
     assert_eq!(rows[0]["day"], A_DAY);
     assert_eq!(rows[0]["lane"], "lane-a");
     assert_eq!(rows[0]["provider"], "prov-x");
-    // Money is text and a count is a number — the rule the served document states.
-    assert_eq!(rows[0]["priced_nanos"], "7000000");
-    assert_eq!(rows[0]["priced_micros"], "7000");
+    // Quantities are the stored truth and a quantity is a number.
+    assert_eq!(rows[0]["quantities"]["input"], 10);
     assert_eq!(rows[0]["fee_count"], 2);
+    // Money is text and DERIVED: ten input units at one micro-unit each on `lane-a`, at the card
+    // this view was handed. Nothing on the row carries this figure; the view computed it.
+    assert_eq!(rows[0]["priced_micros"], "10");
+    // And the book's balance is the row's own stored figure, unchanged and clearly not the price:
+    // 7,000,000 nano-units is 7,000 micro-units, which is nothing like the ten above. Asserting
+    // both is what stops a rendering that quietly served one figure under both names.
+    assert_eq!(rows[0]["settled_micros"], "7000");
 
     let checkpoints = body("/api/v1/admin/ledger/checkpoints");
     let sealed = checkpoints["checkpoints"].as_array().expect("checkpoints");
@@ -2386,8 +2457,24 @@ fn a_settled_posting_is_in_the_figures_this_node_serves() {
         .find(|r| r["bucket"] == KEPT.0)
         .expect("the settled bucket is named");
     assert_eq!(row["day"], A_DAY);
-    assert_eq!(row["priced_nanos"], KEPT.1.to_string());
-    assert_eq!(row["priced_micros"], (KEPT.1 / 1_000).to_string());
+    // THE `quantities-by-class` SEAM, PINNED AT ITS CURRENT ANSWER. The node's book keeps
+    // balances, not quantities by class, so `NodeLedger::quantities` has nothing to hand this view
+    // yet; the row is present (the settlement DID reach the books, which is what this test is
+    // about) and its money is `null` rather than a number. `null` is the honest answer: there is
+    // nothing to price, and reporting a zero would say this traffic was free.
+    //
+    // This assertion is the tripwire for the landing that fills the seam. The day the ledger row
+    // carries the sealed line's quantities, this row starts answering with them and a derived
+    // figure, and this test fails and says so rather than the change going in unnoticed.
+    assert_eq!(row["quantities"], serde_json::json!({}));
+    assert!(
+        row["priced_micros"].is_null(),
+        "a row with no quantities was priced anyway: {row}"
+    );
+    // The book's balance IS served, and it is what says the settlement landed. The two figures are
+    // asserted together on purpose: a view that answered `null` for both would look the same as a
+    // view bound to no ledger at all, which is the failure this whole test exists to catch.
+    assert_eq!(row["settled_micros"], (KEPT.1 / 1_000).to_string());
 
     // The dual write kept both, so the identity holds — over two rows rather than over nothing,
     // which the totals beside it just established.
@@ -2850,19 +2937,97 @@ fn a_configured_name_cannot_break_out_of_the_document() {
     use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
 
     let hostile = "a\"b\\c\nd\te\u{1}";
+    let key = RowKey::new(hostile, A_DAY, hostile, hostile);
     let mut rows = LedgerSnapshot::new();
     rows.insert(
-        RowKey::new(hostile, A_DAY, hostile, hostile),
+        key.clone(),
         LedgerRow {
             priced_nanos: 1,
             fee_count: 0,
         },
     );
-    let parsed: serde_json::Value =
-        serde_json::from_str(&render_totals(&rows)).expect("a hostile name still renders JSON");
+    // A CLASS NAME IS A CONFIGURED STRING TOO. Classes are declared by the plane as data, so a
+    // hostile one reaches this renderer as a JSON OBJECT KEY rather than as a value — a position
+    // an unescaped quote breaks out of just as completely, and one the row's four names never
+    // occupy. Pinning it here is what keeps the class fan-out from being the hole the four
+    // escaped names left closed.
+    let quantities: crate::root::units_admin::QuantitySnapshot = [(
+        key,
+        vec![busbar_caps::UsageLine {
+            class: busbar_caps::MeterClassId::new(hostile),
+            quantity: 3,
+            source: busbar_caps::QuantitySource::Count,
+            estimated: false,
+        }],
+    )]
+    .into_iter()
+    .collect();
+
+    let parsed: serde_json::Value = serde_json::from_str(&render_totals(&rows, &quantities, None))
+        .expect("a hostile name still renders JSON");
     assert_eq!(parsed["rows"][0]["bucket"], hostile);
     assert_eq!(parsed["rows"][0]["lane"], hostile);
     assert_eq!(parsed["rows"][0]["provider"], hostile);
+    assert_eq!(parsed["rows"][0]["quantities"][hostile], 3);
+    // No card in force, so there is nothing to price against and the view says so.
+    assert!(parsed["rows"][0]["priced_micros"].is_null());
+}
+
+/// A RATE ROW ADDED AFTER THE FACT REPRICES A READ, AND MOVES NOTHING THAT WAS POSTED.
+///
+/// This is ruling 3 stated as the behaviour an operator can observe, and it is the whole reason
+/// the money on this endpoint is derived rather than read. The same rows, the same quantities, the
+/// same fee counts — read twice against two different cards — answer with two different figures,
+/// and the second read did not require anything to be edited, reversed or adjusted. A view that
+/// echoed a stored amount would answer the same number both times and the operator's only remedy
+/// would be a correction verb, which is exactly the verb 1.6.0 deleted.
+///
+/// The fee is in the assertion on purpose: a flat fee is the `requests` class priced per unit, so
+/// it reprices with everything else. A derivation that repriced the metered classes and left the
+/// fee at its old figure would be half a repricing, which is worse than none — the total would be
+/// internally inconsistent and nothing would say so.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_later_rate_row_reprices_the_read_and_rewrites_no_posting() {
+    use crate::root::ledger_identity::{LedgerRow, LedgerSnapshot, RowKey};
+
+    let key = RowKey::new("key-1", A_DAY, "lane-a", "prov-x");
+    let mut rows = LedgerSnapshot::new();
+    rows.insert(
+        key.clone(),
+        LedgerRow {
+            // The stored figure is deliberately absurd. Nothing below reads it, and a rendering
+            // that leaked it would be visible immediately rather than plausible.
+            priced_nanos: 999_999_999,
+            fee_count: 2,
+        },
+    );
+    let quantities: crate::root::units_admin::QuantitySnapshot =
+        [(key, vec![SeededLedger::line("input", 10)])]
+            .into_iter()
+            .collect();
+
+    let at = |card: &busbar_unit_cost::RateCard| -> serde_json::Value {
+        serde_json::from_str(&render_totals(&rows, &quantities, Some(card))).expect("valid JSON")
+    };
+
+    // Ten input units at one micro-unit each, and no fee.
+    let cheap = SeededLedger::card(1.0, 0);
+    assert_eq!(at(&cheap)["rows"][0]["priced_micros"], "10");
+
+    // The operator adds a row at ten times the rate, and a flat fee of one cent per request. The
+    // SAME two postings, unchanged and unrewritten, now read at a hundred micro-units of metered
+    // quantity plus two cents of fee.
+    let dear = SeededLedger::card(10.0, 1);
+    assert_eq!(
+        at(&dear)["rows"][0]["priced_micros"],
+        (100 + 2 * busbar_unit_cost::MICROS_PER_CENT).to_string()
+    );
+
+    // And the quantities did not move, in either read. They are the record; the money is a view of
+    // it. If the quantities had moved, the repricing above would have been a rewrite.
+    assert_eq!(at(&cheap)["rows"][0]["quantities"]["input"], 10);
+    assert_eq!(at(&dear)["rows"][0]["quantities"]["input"], 10);
 }
 
 /// `answered_by` is the same fifteen the integration pin measures against a running surface.

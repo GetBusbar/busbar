@@ -26,8 +26,8 @@
       "get": {
         "operationId": "GetLedgerTotals",
         "tags": ["ledger"],
-        "summary": "What the ledger posted, per bucket, day, lane and provider.",
-        "description": "The row width is the reconciliation's row width, so a discrepancy found on one endpoint can be looked up on the other by the same four-part name.",
+        "summary": "The quantities the ledger holds, per bucket, day, lane and provider, and what they come to at the rates in force.",
+        "description": "The row width is the reconciliation's row width, so a discrepancy found on one endpoint can be looked up on the other by the same four-part name.\n\nQuantities are the stored truth; the money is derived when this read is taken. A rate row added later — including a back-dated one, which the append-only history allows — changes what `priced_micros` answers on the next read, with no posted line rewritten and no correction verb involved.",
         "x-busbar-required-scope": "read-only",
         "x-busbar-since": "1.6.0",
         "security": [{ "adminToken": [] }],
@@ -201,15 +201,23 @@
       },
       "LedgerTotalsRow": {
         "type": "object",
-        "required": ["bucket", "day", "lane", "provider", "priced_nanos", "priced_micros", "fee_count"],
+        "required": ["bucket", "day", "lane", "provider", "quantities", "fee_count", "settled_micros", "priced_micros"],
         "properties": {
           "bucket": { "type": "string", "description": "Whose budget the usage was attributed to." },
           "day": { "type": "integer", "format": "int64", "description": "The UTC-day bucket, as the unix second it opens at." },
           "lane": { "type": "string", "description": "The serving lane's configured model name." },
           "provider": { "type": "string", "description": "The serving lane's provider." },
-          "priced_nanos": { "$ref": "#/components/schemas/Amount", "description": "The summed post-tier priced amount of every posting on this row, in nano-units." },
-          "priced_micros": { "$ref": "#/components/schemas/Amount", "description": "The same figure in micro-units: ONE truncating divide over the summed nano-units, never a sum of per-posting divides." },
-          "fee_count": { "type": "integer", "format": "int64", "description": "One per billable client request on this row." }
+          "quantities": {
+            "type": "object",
+            "description": "How much of each declared meter class this row recorded, keyed by the class's config/wire name (`tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_write`, `requests`, or whatever else the serving plane declares). These are the stored truth: a sealed line records quantities and never a price.",
+            "additionalProperties": { "type": "integer", "format": "int64" }
+          },
+          "fee_count": { "type": "integer", "format": "int64", "description": "One per billable client request on this row — the base a flat per-request fee is charged on." },
+          "settled_micros": { "$ref": "#/components/schemas/Amount", "description": "The BOOK'S BALANCE for this row in micro-units: what the node drew against the bucket and posted when its units ended, at the rates in force then. This is the figure the budget was enforced on, and it is not a price. It is served beside `priced_micros` rather than instead of it because the two answer different questions — what this consumed of a cap, and what it is worth today — and they differ exactly when a rate row has been added since." },
+          "priced_micros": {
+            "oneOf": [{ "$ref": "#/components/schemas/Amount" }, { "type": "null" }],
+            "description": "What the quantities above come to in micro-units at the rates in force WHEN THIS READ WAS TAKEN. Derived, never stored: adding a rate row later — including a back-dated one — changes what this field answers on the next read, with no posted line rewritten. `null` means there is nothing to price against: no rate card is in force, or the row carries no quantity lines. `null` is NOT zero. Free is an explicit zero rate row; an absent row is a question no operator has answered."
+          }
         }
       },
       "LedgerCheckpoints": {

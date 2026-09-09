@@ -432,22 +432,30 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
     // plane reported. The legacy projection derives the same two components from the same configured
     // card at read time. So the identity is an equality and not a difference:
     //
-    //     Σ /ledger/totals priced_micros  ==  /usage total spend_micros
+    //     Σ /ledger/totals settled_micros  ==  /usage total spend_micros
     //
     // Both halves are pinned as absolutes below as well, so a change that moved the two sides
     // identically still fails here rather than being absorbed by the comparison.
     //
-    // `priced_micros` is served as a STRING, which is the view's own decision about a money figure
-    // wider than a JSON number holds. Parsed rather than read as one, so a change to that decision
-    // fails here rather than being absorbed.
+    // `settled_micros` and not `priced_micros`, and the distinction is the money model rather than
+    // a rename. `settled_micros` is the BOOK'S BALANCE — what this node drew and posted when the
+    // units ended, at the rates in force then — and that is what the legacy `/usage` projection is
+    // a second reading of, which is why the two are an equality. `priced_micros` beside it is what
+    // the same quantities are worth at the rates in force NOW; nothing on this rig adds a rate row
+    // mid-run, so the two do not disagree here, but they are not the same claim and asserting the
+    // identity on the derived one would make this test pass or fail on whether anyone repriced.
+    //
+    // Served as a STRING, which is the view's own decision about a money figure wider than a JSON
+    // number holds. Parsed rather than read as one, so a change to that decision fails here rather
+    // than being absorbed.
     let served_micros: i64 = rows
         .iter()
         .map(|r| {
-            r["priced_micros"]
+            r["settled_micros"]
                 .as_str()
-                .expect("priced_micros is a string")
+                .expect("settled_micros is a string")
                 .parse::<i64>()
-                .expect("priced_micros is a number")
+                .expect("settled_micros is a number")
         })
         .sum();
     let fee_micros = FEE_CENTS * MICROS_PER_CENT * i64::try_from(delivered).expect("small");
