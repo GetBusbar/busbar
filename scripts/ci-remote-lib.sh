@@ -84,8 +84,14 @@ fleet_pick_host() {
   printf '%s\n' "$hosts" | sed -n "$(( cur % n + 1 ))p"
 }
 
-rsh()        { local h="$1"; shift; "$SSH_WRAP" "$REMOTE_USER@$h" "$@"; }
-rsh_script() { local h="$1"; shift; "$SSH_WRAP" -T "$REMOTE_USER@$h" bash -s -- "$@"; }
+# EVERY ARGUMENT IS QUOTED FOR THE REMOTE SHELL. ssh does not exec an argv; it concatenates what it
+# is given and hands the STRING to the login shell, which then re-splits and re-globs it. An oracle
+# id-filter is a regex — `^(billing|ledger)([|.]|$)` — and unquoted that is a subshell, a pipeline
+# and a glob before it ever reaches the proof. Observed, first run: `syntax error near unexpected
+# token ('`. `printf %q` is the quoting the remote bash will undo exactly.
+_rq() { local out="" a; for a in "$@"; do out="$out $(printf '%q' "$a")"; done; printf '%s' "${out# }"; }
+rsh()        { local h="$1"; shift; "$SSH_WRAP" "$REMOTE_USER@$h" "$(_rq "$@")"; }
+rsh_script() { local h="$1"; shift; "$SSH_WRAP" -T "$REMOTE_USER@$h" "bash -s -- $(_rq "$@")"; }
 rcp_back()   { scp -q -S "$SSH_WRAP" "$REMOTE_USER@$1:$2" "$3"; }
 rcp_to()     { scp -q -S "$SSH_WRAP" "$2" "$REMOTE_USER@$1:$3"; }
 
@@ -104,15 +110,22 @@ export PATH="$HOME/.cargo/bin:$PATH"
 BARE="$HOME/busbar.git"
 WORK="$HOME/busbar-prove"
 if [ ! -d "$BARE" ]; then
-  git init --bare -q "$BARE"
+  # SEEDED FROM GITHUB, NOT `git init --bare`. An empty bare repo means the operator's first
+  # `push HEAD` carries the ENTIRE history over the SSM tunnel: measured at many minutes of
+  # nothing-happening, ending in `unexpected disconnect while reading sideband packet` — which
+  # reads exactly like a hung transport and is really a cold repository. The box has a fast,
+  # direct link to github.com; let it fetch its own objects, and every push after is a delta.
+  git clone --bare -q https://github.com/GetBusbar/busbar.git "$BARE" || exit 1
   git -C "$BARE" config gc.auto 256
 fi
+# Kept current for the same reason: a bare repo a week behind makes the next push a week of objects.
+git -C "$BARE" fetch -q --prune origin "+refs/heads/*:refs/heads/*" 2>/dev/null || true
 if [ ! -d "$WORK/.git" ]; then
-  # Seeded from GitHub, not from the (empty) bare repo: otherwise the first proof is also the first
-  # full clone AND the first cold build. The objects and the warm target/ are the two things that
-  # make a persistent box worth having over a fresh container.
-  git clone -q https://github.com/GetBusbar/busbar.git "$WORK" || exit 1
-  git -C "$WORK" remote add prove "$BARE"
+  # Cloned from the bare repo (which the block above has just seeded), so the box downloads the
+  # history once and the checkout is a local hardlink copy. The objects and the warm target/ are the
+  # two things that make a persistent box worth having over a fresh container.
+  git clone -q "$BARE" "$WORK" || exit 1
+  git -C "$WORK" remote rename origin prove 2>/dev/null || git -C "$WORK" remote add prove "$BARE"
 fi
 git -C "$WORK" remote get-url prove >/dev/null 2>&1 || git -C "$WORK" remote add prove "$BARE"
 git -C "$WORK" config user.name  "busbar remote prove"

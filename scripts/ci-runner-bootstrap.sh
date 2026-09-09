@@ -101,9 +101,25 @@ while [ "$i" -le "$AGENTS" ]; do
   # box would each spawn 32 rustc threads: 4x oversubscription, every job slower than if it had
   # run alone. Pinning each agent to its fair share (32/AGENTS) is what makes several agents per
   # box a throughput win instead of a wash.
+  #
+  # EACH AGENT GETS ITS OWN CARGO_HOME AND RUSTUP_HOME. All four agents run as `ubuntu`, so without
+  # this they share ~/.cargo and ~/.rustup — and rustup is not concurrency-safe. Two agents whose
+  # jobs both reach `dtolnay/rust-toolchain` at the same moment race on the same directory, and the
+  # observed result is ~/.cargo/bin/rustup MISSING while its fourteen shims still point at it: every
+  # `cargo` on the box, including a remote proof that had nothing to do with either job, becomes
+  # "command not found". Twice, before it was diagnosed. Per-agent homes cost ~1.5 GB of toolchain
+  # and a private registry cache each — on a 300 GB disk that is the cheapest bug fix available.
+  # sccache stays SHARED, deliberately: it is content-addressed and safe to share, and sharing it is
+  # the entire point.
+  install -d -o ubuntu -g ubuntu "$d/.cargo" "$d/.rustup"
+  cp -a /home/ubuntu/.rustup/. "$d/.rustup/" 2>/dev/null || true
+  cp -a /home/ubuntu/.cargo/.  "$d/.cargo/"  2>/dev/null || true
+  chown -R ubuntu:ubuntu "$d/.cargo" "$d/.rustup"
   cat > "$d/.env" <<ENVEOF
-PATH=/home/ubuntu/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+PATH=$d/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 HOME=/home/ubuntu
+CARGO_HOME=$d/.cargo
+RUSTUP_HOME=$d/.rustup
 RUSTC_WRAPPER=sccache
 ${SCCACHE_ENV}
 SCCACHE_IDLE_TIMEOUT=0
