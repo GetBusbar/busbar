@@ -60,6 +60,7 @@ mod history;
 mod posting;
 mod project;
 mod rate;
+mod table;
 
 pub use currency::CurrencyCode;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
@@ -74,6 +75,10 @@ pub use project::{
 pub use rate::{
     nano_rate, CellPrices, LaneClass, LaneRates, RateCard, TierRates, CLASS_CACHE_READ,
     CLASS_CACHE_WRITE, CLASS_INPUT, CLASS_OUTPUT,
+};
+pub use table::{
+    RateRow, RateTable, RowAuthor, RowSeq, CLASS_REQUESTS, CLASS_TOKENS_CACHE_READ,
+    CLASS_TOKENS_CACHE_WRITE, CLASS_TOKENS_INPUT, CLASS_TOKENS_OUTPUT,
 };
 
 /// Nano-units in one cent. A cent is a hundredth of one United States dollar, and a nano-unit is a
