@@ -565,8 +565,6 @@ jobs:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
           POSTGRES_DB: busbar_test
-        ports:
-          - 5432:5432
         # Wait until the DB accepts connections before the job's steps run.
         options: >-
           --health-cmd "pg_isready -U busbar"
@@ -575,8 +573,6 @@ jobs:
           --health-retries 5
       valkey:
         image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "valkey-cli ping"
           --health-interval 10s
@@ -590,6 +586,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
+      # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
+      # fact. On busbar-xl FOUR agents share a box and the host's 5432 is one resource: the second
+      # job to publish it dies in `Initialize containers` with "port is already allocated", before a
+      # line of the job has run. So nothing is published; the services keep the per-job
+      # `github_network_*` bridge the runner already builds for them, and this step reads each
+      # container's address off it. Two jobs, two networks, two addresses, nothing to collide on.
+      - name: Service endpoints (container IP, not a published host port)
+        run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} valkey=${{ job.services.valkey.id }}
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
       # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
       # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
@@ -616,8 +621,6 @@ jobs:
         # Point the store-postgres / store-valkey roundtrip tests at the service containers above so
         # they RUN (not skip) in CI. The services publish on localhost via the mapped ports.
         env:
-          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
-          VALKEY_URL: redis://localhost:6379
           # Same two-number floor as the windows job. This is the PRIMARY unix suite; with the
           # service containers wired it runs a SUPERSET of the windows workspace (it adds the
           # cfg(unix) tests and the postgres/valkey roundtrip tests windows can't run). MIN carries
@@ -1657,8 +1660,6 @@ jobs:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
           POSTGRES_DB: busbar_test
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U busbar"
           --health-interval 10s
@@ -1666,8 +1667,6 @@ jobs:
           --health-retries 5
       valkey:
         image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "valkey-cli ping"
           --health-interval 10s
@@ -1675,6 +1674,15 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
+      # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
+      # fact. On busbar-xl FOUR agents share a box and the host's 5432 is one resource: the second
+      # job to publish it dies in `Initialize containers` with "port is already allocated", before a
+      # line of the job has run. So nothing is published; the services keep the per-job
+      # `github_network_*` bridge the runner already builds for them, and this step reads each
+      # container's address off it. Two jobs, two networks, two addresses, nothing to collide on.
+      - name: Service endpoints (container IP, not a published host port)
+        run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} valkey=${{ job.services.valkey.id }}
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
       # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
       # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
@@ -1689,9 +1697,6 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
       - name: Collect coverage (workspace, live-DB tests wired)
-        env:
-          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
-          VALKEY_URL: redis://localhost:6379
         # `--ignore-run-fail`: this job REPORTS coverage, it does not RE-GATE tests — the `check`
         # job is the real test gate and passes the full suite. A few subprocess/stdio integration
         # tests (crates/busbar/tests/mcp_stdio_serve.rs) are timing/behaviour-sensitive and flake
@@ -2044,8 +2049,6 @@ jobs:
           POSTGRES_USER: busbar
           POSTGRES_PASSWORD: busbar
           POSTGRES_DB: busbar_test
-        ports:
-          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U busbar"
           --health-interval 10s
@@ -2060,8 +2063,6 @@ jobs:
           MYSQL_USER: busbar
           MYSQL_PASSWORD: busbar
           MYSQL_DATABASE: busbar_test
-        ports:
-          - 3306:3306
         options: >-
           --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
           --health-interval 10s
@@ -2069,8 +2070,6 @@ jobs:
           --health-retries 12
       valkey:
         image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
-        ports:
-          - 6379:6379
         options: >-
           --health-cmd "valkey-cli ping"
           --health-interval 10s
@@ -2078,6 +2077,15 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
+      # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
+      # fact. On busbar-xl FOUR agents share a box and the host's 5432 is one resource: the second
+      # job to publish it dies in `Initialize containers` with "port is already allocated", before a
+      # line of the job has run. So nothing is published; the services keep the per-job
+      # `github_network_*` bridge the runner already builds for them, and this step reads each
+      # container's address off it. Two jobs, two networks, two addresses, nothing to collide on.
+      - name: Service endpoints (container IP, not a published host port)
+        run: ./scripts/ci-service-endpoints.sh postgres=${{ job.services.postgres.id }} mysql=${{ job.services.mysql.id }} valkey=${{ job.services.valkey.id }}
       # THE COMPILER CACHE — see "COMPILER CACHE (sccache)" at the top of this file. Installed in
       # EVERY job, including the ones that run no cargo today, because `RUSTC_WRAPPER` is set for
       # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
@@ -2173,10 +2181,6 @@ jobs:
           [ "$pass" -gt 0 ] || { echo "::error::the committed golden carries no PASS rows — the replay below would be vacuously green"; exit 1; }
           [ "$pass" = "$want" ] || { echo "::error::the committed golden's ledger has ${pass} PASS rows but meta.json records ${want}; the checked-in recording is not whole"; exit 1; }
       - name: Record the candidate
-        env:
-          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
-          BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
-          VALKEY_URL: redis://localhost:6379
         run: |
           set -euo pipefail
           rm -rf target/oracle/recordings/candidate; mkdir -p target/oracle/recordings/candidate
