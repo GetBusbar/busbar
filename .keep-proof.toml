@@ -59,21 +59,41 @@
 # `auth.lifecycle`, `billing` and `ledger` ALL identical. That is the set to compare against, and
 # nothing outside `admin.ops` should appear.
 
+# AND THE r31h CUT, on the same branch: the composition root gains ONE data-plane chain and the A2A
+# plane is composed through it, behind `root-a2a-serve` — which is NOT in `default` on this cut, so
+# the shipped binary is unchanged. `a2a` is named because this is the branch that puts that plane on
+# the loop; its oracle cells are SKIP on the golden by design, because a2a is judged by its own
+# conformance rig.
+#
 # THIS BRANCH IS THE MOUNT CHAIN WITH THE a2a CHAIN RE-PICKED ONTO IT, so the declaration is the
-# UNION of the two: the mount's own scope (every plane that can be mounted, plus the cells that
-# assert on what a mounted answer looks like) and the enforced key's arc.
-families = '^(a2a|mcp|llm|neutrality|admin\.ops|billing|auth\.lifecycle|ledger)([|.]|$)'
+# UNION of all three: the mount's own scope (every plane that can be mounted, plus the cells that
+# assert on what a mounted answer looks like), the enforced key's arc, and the boot composition the
+# data-plane chain is read by.
+families = '^(a2a|mcp|llm|neutrality|admin\.ops|billing|auth\.lifecycle|ledger|boot)([|.]|$)'
 tests = [
   "busbar",
   "busbar-a2a",
+  "busbar-plane-a2a",
   "busbar-mcp",
   "busbar-llm",
   "busbar-plane-llm",
   "busbar-substrate",
   "busbar-unit-auth",
+  "busbar-unit-scope",
+  "busbar-unit-trust",
   "busbar-unit-admission",
   "busbar-unit-cost",
   "busbar-unit-ledger",
   "busbar-unit-verbs",
   "busbar-core",
 ]
+
+# The construction rows this cut moves, or must be seen not to move. Every one of them is GREEN on
+# the base and must stay green; the tree's other FAIL rows are pre-existing and are not this
+# branch's to clear.
+gate = '^(legacy-reach|no-test-doubles-in-production|no-test-doubles-in-production:doubles|one-pricing-site)$'
+
+# The feature this branch adds a serving path behind. It is default-OFF on this cut, so a build
+# without it is the shipped one; CI should build the package BOTH ways, because the cells above are
+# recorded off the default build and the new serving path only exists in the other.
+features = ["root-a2a-serve"]
