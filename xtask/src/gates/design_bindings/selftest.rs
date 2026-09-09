@@ -252,6 +252,30 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
         &["nothing under .github/workflows invokes it"],
     ));
 
+    // (b6) THE FAMILY ARMS, both of them. `oracle-family` is the looser citation — it claims a
+    //      whole family of cells rather than one — and it has two ways to settle nothing: a family
+    //      the cell table does not carry, and a family whose cells the pinned golden never
+    //      recorded. Only the second is interesting, and it is the one an existence-only reading
+    //      would have called proof; neither was planted.
+    let mut ov = Overlay::new();
+    ov.set(
+        build::OUT_JSON_REL,
+        ledger(vec![binding(
+            "PB-9",
+            "a family the cell table does not carry",
+            "mapped",
+            vec![check("oracle-family", "no-such-family-at-all-selftest")],
+        )]),
+    );
+    r.push(prove_red(
+        cx,
+        gate,
+        "an oracle-family citation naming a family with no cells",
+        &all,
+        ov,
+        &["oracle-family:no-such-family-at-all-selftest"],
+    ));
+
     // (l) A BARE NAME TWO FILES BOTH DECLARE NAMES NO TEST. Delete the one the curation read and
     //     the citation stays green on its namesake, which is the failure this ledger is for.
     if let Some(ambiguous) = DesignBindingsGate::inputs(cx).ok().and_then(|i| {

@@ -254,21 +254,20 @@ pub fn arch_kinds(text: &str) -> Result<Vec<String>, String> {
         .rsplit(|c: char| !c.is_ascii_alphabetic())
         .find(|w| !w.is_empty())
         .unwrap_or("");
-    match NUMBER_WORDS.iter().find(|(w, _)| *w == word) {
-        Some((w, n)) if *n != kinds.len() => {
-            return Err(format!(
-                "the sentence says `{w}` and lists {} — a list somebody added to without re-reading \
-                 the sentence in front of it",
-                kinds.len()
-            ))
-        }
-        Some(_) => {}
-        None => {
-            return Err(format!(
-                "`{word}` is not a number word this row can count in; the sentence must state how \
-                 many kinds it is about, or the list has no stated size to check against"
-            ))
-        }
+    // A LIST WITH NO STATED SIZE HAS NOTHING TO CHECK AGAINST, so a sentence that does not count
+    // is refused before the list it introduces is read as agreement.
+    let Some((word_read, stated)) = NUMBER_WORDS.iter().find(|(w, _)| *w == word) else {
+        return Err(format!(
+            "`{word}` is not a number word this row can count in; the sentence must state how many \
+             kinds it is about, or the list has no stated size to check against"
+        ));
+    };
+    if *stated != kinds.len() {
+        return Err(format!(
+            "the sentence says `{word_read}` and lists {} — a list somebody added to without \
+             re-reading the sentence in front of it",
+            kinds.len()
+        ));
     }
 
     // The core row is named after the list and is a kind for every purpose this gate has.
