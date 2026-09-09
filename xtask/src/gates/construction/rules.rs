@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use crate::ctx::Ctx;
 use crate::gates::construction::model::{
-    need_int, need_str, plain, py_dict, py_list, row, sorted_unique, use_line_rx, word, CRow, Cfg,
+    self, need_int, need_str, plain, py_dict, py_list, sorted_unique, use_line_rx, word, CRow, Cfg,
     VACUOUS,
 };
 use crate::gates::construction::tree::{fnmatch, Fnc, Line, Tree};
@@ -739,16 +739,32 @@ pub fn duplicate_dispatch(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             .map(|o| format!(": {o}"))
             .unwrap_or_default()
     );
-    Ok(vec![row(
-        "duplicate-dispatch",
-        true,
-        "near-duplicate blocks between the attempt twins",
-        detail,
-        total,
-        max_dup,
-        offenders,
-        informational,
-    )])
+    // The two postures are two CONSTRUCTORS now, not one constructor and a flag. While this rule is
+    // informational it reports and does not judge; the day `informational = false` is written in
+    // the ceilings file it starts comparing what it measured against `max_duplicated_lines`, which
+    // is what the key has always claimed it does. Under the old shared constructor that second arm
+    // was handed `true` and gated on nothing whatever the file said.
+    let title = "near-duplicate blocks between the attempt twins";
+    Ok(vec![if informational {
+        model::informational(
+            "duplicate-dispatch",
+            title,
+            detail,
+            total,
+            max_dup,
+            offenders,
+        )
+    } else {
+        plain(
+            "duplicate-dispatch",
+            total <= max_dup,
+            title,
+            detail,
+            total,
+            max_dup,
+            offenders,
+        )
+    }])
 }
 
 // ── 8. token-sealed ──────────────────────────────────────────────────────────────────────────────
