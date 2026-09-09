@@ -77,5 +77,10 @@ test-support = []
 busbar-plugin-testkit = { path = "../plugin-testkit", features = ["loader-fixtures"] }
 busbar-plugin-sign = { path = "../plugin-sign" }
 busbar-substrate-values = { path = "../busbar-substrate-values", features = ["test-support"] }
+# The relocated limits assertion takes `busbar_substrate::config::limits::LIMITS_TEST_LOCK`, which
+# the substrate gates behind `cfg(any(test, feature = "test-support"))`. Declared HERE rather than
+# leaned on: without this edge the crate's own `cargo test -p busbar-core-hooks` does not compile,
+# and it only ever passed because a workspace-wide run unified the feature in from another crate.
+busbar-substrate = { path = "../busbar-substrate", features = ["test-support"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
 tracing-subscriber = { workspace = true }
