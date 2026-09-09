@@ -907,3 +907,89 @@ fn a_provider_push_and_a_unit_with_no_upstream_draw_no_slot() {
     assert_eq!(requests_drawn(OriginKind::Client, false), 0);
     assert_eq!(requests_drawn(OriginKind::Tick, true), 0);
 }
+
+// THE FEE IS DECIDED BY AN OUTCOME, NEVER BY THE ABSENCE OF ONE.
+//
+// Money model, ruling 2: a unit posts one line at its end carrying what happened, and the flat
+// per-request fee is a line of that posting. The end is the single source. These cases pin the
+// half of `fee_count` that used to have a second source — the arm that billed 1 for a unit with
+// no status leg AND no plane verdict, which is a unit whose end nobody stated.
+/// An eligible unit with every fee precondition met and nothing else said about it.
+fn eligible() -> FeeEvidence {
+    FeeEvidence {
+        client_open_or_one_shot: true,
+        selected_upstream: true,
+        relayed_first_response_frame: true,
+        status_at: None,
+        status: None,
+        finish: None,
+    }
+}
+
+/// NO STATUS LEG AND NO VERDICT POSTS NOTHING.
+///
+/// The transport contributes no status leg (`status_at: None`) and the plane stated no finish.
+/// There is no evidence the unit ended well, and a fee is a charge for an ending that was
+/// stated. This is the arm that let an `Err` mapped onto a `Normal` answer bill a failure.
+#[test]
+fn no_status_and_no_finish_bills_zero() {
+    assert_eq!(fee_count(&eligible()), (0, PostingFlags::NONE));
+}
+
+/// AN ERROR VERDICT BILLS ZERO — the rule the outcome now carries alone.
+#[test]
+fn error_finish_bills_zero() {
+    let evidence = FeeEvidence {
+        finish: Some(FinishClass::Error),
+        ..eligible()
+    };
+    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+}
+
+/// A STATED CLEAN END STILL BILLS ONE. The single source is the outcome, not silence.
+#[test]
+fn complete_finish_bills_one() {
+    let evidence = FeeEvidence {
+        finish: Some(FinishClass::Complete),
+        ..eligible()
+    };
+    assert_eq!(fee_count(&evidence), (1, PostingFlags::NONE));
+    let partial = FeeEvidence {
+        finish: Some(FinishClass::Partial),
+        ..eligible()
+    };
+    assert_eq!(fee_count(&partial), (1, PostingFlags::NONE));
+}
+
+/// THE STATUS LEG IS UNTOUCHED. Where a transport reports a status, it still decides, and the
+/// disagreement and missing-status arms above it still answer first.
+#[test]
+fn status_leg_unchanged() {
+    let ok = FeeEvidence {
+        status: Some(StatusClass::Success),
+        ..eligible()
+    };
+    assert_eq!(fee_count(&ok), (1, PostingFlags::NONE));
+    let bad = FeeEvidence {
+        status: Some(StatusClass::ClientError),
+        ..eligible()
+    };
+    assert_eq!(fee_count(&bad), (0, PostingFlags::NONE));
+    let lost = FeeEvidence {
+        status_at: Some(StatusAt::Terminal),
+        finish: Some(FinishClass::Complete),
+        ..eligible()
+    };
+    assert_eq!(fee_count(&lost), (0, PostingFlags::METER_DISPUTED));
+}
+
+/// AN INELIGIBLE UNIT STILL BILLS NOTHING, whatever it says about its end.
+#[test]
+fn ineligible_bills_zero() {
+    let evidence = FeeEvidence {
+        relayed_first_response_frame: false,
+        finish: Some(FinishClass::Complete),
+        ..eligible()
+    };
+    assert_eq!(fee_count(&evidence), (0, PostingFlags::NONE));
+}
