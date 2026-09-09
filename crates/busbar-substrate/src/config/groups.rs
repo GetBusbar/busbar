@@ -139,18 +139,22 @@ pub enum LimitWindow {
     Minute,
     Hour,
     Day,
+    /// The calendar week, aligned to MONDAY 00:00 UTC (the ISO-8601 week start). Placed between
+    /// `Day` and `Month` so the variant order is the vocabulary's own order, shortest to longest.
+    Week,
     Month,
     Total,
 }
 
 impl LimitWindow {
     /// Every window, so a consumer that has to recognize a window WORD (e.g. `cost::
-    /// is_bucket_of_group`, parsing a bucket id back) enumerates the same five spellings the
+    /// is_bucket_of_group`, parsing a bucket id back) enumerates the same six spellings the
     /// projector writes rather than hard-coding its own list.
-    pub const ALL: [LimitWindow; 5] = [
+    pub const ALL: [LimitWindow; 6] = [
         LimitWindow::Minute,
         LimitWindow::Hour,
         LimitWindow::Day,
+        LimitWindow::Week,
         LimitWindow::Month,
         LimitWindow::Total,
     ];
@@ -162,6 +166,7 @@ impl LimitWindow {
             LimitWindow::Minute => "minute",
             LimitWindow::Hour => "hour",
             LimitWindow::Day => "day",
+            LimitWindow::Week => "week",
             LimitWindow::Month => "month",
             LimitWindow::Total => "total",
         }

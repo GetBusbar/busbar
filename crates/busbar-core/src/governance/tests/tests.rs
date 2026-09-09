@@ -872,6 +872,20 @@ fn test_budget_window_periods() {
     assert_eq!(budget_window(WINDOW_DAY, 1_700_000_000), 1_699_920_000);
     // 1700000000 = 2023-11-14 → 2023-11-01 00:00Z = 1698796800.
     assert_eq!(budget_window(WINDOW_MONTH, 1_700_000_000), 1_698_796_800);
+    // WINDOW_WEEK: MONDAY 00:00 UTC, the ISO-8601 week start. 1_700_000_000 is Tuesday
+    // 2023-11-14, so its week opened on Monday 2023-11-13 = 1_699_833_600 and rolls at Monday
+    // 2023-11-20 = 1_700_438_400. The Unix epoch is a THURSDAY, so a week taken straight off the
+    // day count would put both boundaries three days out, on a Thursday.
+    assert_eq!(budget_window(WINDOW_WEEK, 1_700_000_000), 1_699_833_600);
+    assert_eq!(
+        window_end(WINDOW_WEEK, 1_700_000_000),
+        Some(1_700_438_400),
+        "a weekly refusal points at the next Monday"
+    );
+    // The epoch's own week opens on 1969-12-29, which has no `u64`: the first four days share a
+    // TRUNCATED week rolling at the first Monday (1970-01-05), rather than underflowing.
+    assert_eq!(budget_window(WINDOW_WEEK, 0), 0);
+    assert_eq!(window_end(WINDOW_WEEK, 0), Some(4 * SECS_PER_DAY));
     // WINDOW_HOUR: floor to the containing hour, `now / 3600 * 3600` (integer-division floor, NOT
     // `now * 3600 * 3600` nor `now / 3600 + 3600` - a non-hour-aligned timestamp catches either).
     // 1_700_000_000 = 2023-11-14 22:13:20 UTC → hour start 2023-11-14 22:00:00 UTC = 1_699_999_200.

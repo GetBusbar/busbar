@@ -867,7 +867,8 @@
         "hour",
         "minute",
         "month",
-        "total"
+        "total",
+        "week"
       ]
     },
     "LimitsCfg": {

@@ -29,12 +29,14 @@ use crate::diagnostics::{
 pub(crate) use busbar_substrate::governance::SECS_PER_DAY;
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
-// `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
+// `groups:` config vocabulary (`per: minute|hour|day|week|month|total`), the ledger-bucket window
 // suffix, and the metrics/error dimension - one vocabulary everywhere. ─────────────────────────────
 /// The "all-time" window sentinel: a single window from epoch 0.
 pub(crate) const WINDOW_TOTAL: &str = "total";
 /// The "day" window sentinel: resets at UTC midnight.
 pub(crate) const WINDOW_DAY: &str = "day";
+/// The "week" window sentinel: resets at MONDAY 00:00 UTC (the ISO-8601 week start).
+pub(crate) const WINDOW_WEEK: &str = "week";
 /// The "month" window sentinel: resets at UTC first-of-month.
 pub(crate) const WINDOW_MONTH: &str = "month";
 /// The "minute" window sentinel: resets each UTC minute.
@@ -894,12 +896,14 @@ pub(crate) fn pool_allowed(key: &VirtualKey, pool: &str) -> bool {
 }
 
 /// The epoch start of the window containing `now` for a given window word (nouns): `total` = a
-/// single all-time window (0); `day` = UTC midnight; `month` = UTC first-of-month.
+/// single all-time window (0); `day` = UTC midnight; `week` = UTC Monday midnight; `month` = UTC
+/// first-of-month.
 pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
     match period {
         WINDOW_MINUTE => now / 60 * 60,
         WINDOW_HOUR => now / 3600 * 3600,
         WINDOW_DAY => now / SECS_PER_DAY * SECS_PER_DAY,
+        WINDOW_WEEK => week_bounds_days(now).0 * SECS_PER_DAY,
         WINDOW_MONTH => {
             let days = (now / SECS_PER_DAY) as i64;
             let (y, m, _) = civil_from_days(days);
@@ -928,6 +932,7 @@ pub(crate) fn window_end(period: &str, now: u64) -> Option<u64> {
         WINDOW_MINUTE => Some(now / 60 * 60 + 60),
         WINDOW_HOUR => Some(now / 3600 * 3600 + 3600),
         WINDOW_DAY => Some(now / SECS_PER_DAY * SECS_PER_DAY + SECS_PER_DAY),
+        WINDOW_WEEK => Some(week_bounds_days(now).1 * SECS_PER_DAY),
         WINDOW_MONTH => {
             let days = (now / SECS_PER_DAY) as i64;
             let (y, m, _) = civil_from_days(days);
@@ -936,6 +941,21 @@ pub(crate) fn window_end(period: &str, now: u64) -> Option<u64> {
         }
         _ => None,
     }
+}
+
+/// The day numbers of the MONDAY that opens the week containing `now` and of the Monday it rolls
+/// at, as one answer - the same computation `busbar_unit_admission::window` runs, because the two
+/// halves of the vocabulary must agree about where a week begins.
+///
+/// The Unix epoch is a THURSDAY, so a week taken straight off the day count would roll mid-week;
+/// the three-day offset is that correction. The start SATURATES because the Monday opening the
+/// epoch's own week is 1969-12-29 and has no `u64`, so the first four days share a TRUNCATED week
+/// that rolls after four days rather than seven - the tighter reading, never the wider one, and the
+/// same fall-safe rule the unrecognized-word arm above applies.
+fn week_bounds_days(now: u64) -> (u64, u64) {
+    let days = now / SECS_PER_DAY;
+    let back = (days + 3) % 7;
+    (days.saturating_sub(back), days + (7 - back))
 }
 
 // Public-domain civil-date algorithms (same approach as sigv4); self-contained, no date crate.

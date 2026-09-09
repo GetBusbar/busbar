@@ -532,7 +532,7 @@ groups:
 |---|---|---|---|
 | `parent` | string | none | The parent group; must exist; the chain must be acyclic (validated with paste-ready fixes). Any depth. |
 | `enabled` | bool | `true` | `false` FREEZES the group: every request charging through it (its own keys and every descendant's) is rejected with a 403 naming the group, while its usage history is kept. |
-| `limits` | list | `[]` | Each entry has exactly ONE metric key: `requests`, `tokens`, or `budget` with a required `per:` window (`minute` \| `hour` \| `day` \| `month` \| `total`), or `concurrent` with NO `per:` (instantaneous). An optional `pool: <name>` on a windowed metric scopes the limit to that pool's traffic (see below); the pool must exist. A metric repeated for the same window + pool scope keeps the most restrictive amount. |
+| `limits` | list | `[]` | Each entry has exactly ONE metric key: `requests`, `tokens`, or `budget` with a required `per:` window (`minute` \| `hour` \| `day` \| `week` \| `month` \| `total`), or `concurrent` with NO `per:` (instantaneous). An optional `pool: <name>` on a windowed metric scopes the limit to that pool's traffic (see below); the pool must exist. A metric repeated for the same window + pool scope keeps the most restrictive amount. |
 | `child_default` | `{ limits: [...] }` | none | The limit template stamped onto any CHILD group auto-provisioned under this one (see below). Provisioning-time only: it never affects THIS group's own enforcement. |
 
 **Metric semantics:**
@@ -547,6 +547,11 @@ groups:
   quota status (429 for most protocols; Bedrock's quota shape is 400-class), naming the bucket.
 - **`concurrent`** is an in-flight gauge: incremented at admission, released when the response
   stream completes. Rejection: 429, no `Retry-After`. Takes no `pool:` (the gauge is per group).
+
+**Window alignment.** Windows are aligned to the calendar in UTC, not to the time the first request
+arrived: `minute` and `hour` to the wall clock, `day` to midnight, `week` to **Monday 00:00**
+(ISO-8601), and `month` to the first of the month. `total` is a single all-time window that never
+rolls, which is why a refusal against it carries no `Retry-After`.
 
 **Pool-scoped limits (`pool:`).** A windowed limit may carry `pool: <name>`, making it account and
 enforce per `(group, pool)` instead of group-wide, the per-tier budget split:
