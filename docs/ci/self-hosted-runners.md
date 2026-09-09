@@ -1,8 +1,12 @@
 # The busbar-xl runner fleet
 
-Eight EC2 spot boxes in `us-east-1`, **thirty-two** GitHub Actions runner agents registered at the
-**GetBusbar org** level with the labels `self-hosted, linux, x64, busbar-xl`, and two ways to reach
-them: as Actions runners, and directly over ssh.
+Ten EC2 boxes in `us-east-1` — **eight spot** plus an **on-demand floor of two** — with four
+GitHub Actions runner agents each, registered at the **GetBusbar org** level with the labels
+`self-hosted, linux, x64, busbar-xl`, and two ways to reach them: as Actions runners, and directly
+over ssh.
+
+The fleet is kept at that shape by `scripts/ci-runners-reconcile.sh` on a fifteen-minute timer, not
+by someone noticing it is gone. See §7.
 
 Everything below is reproducible from `scripts/`; nothing here is a one-off that lives only in a
 console.
@@ -45,14 +49,20 @@ finish together.
 had run alone. Each agent's `.env` pins `CARGO_BUILD_JOBS=32/AGENTS`. That single pin is what makes
 four agents per box a throughput win rather than a wash.
 
+Those 32 slots are the **spot** capacity. The on-demand floor adds `CI_RUNNER_ONDEMAND_FLOOR × 4`
+on top of it (§3, §4) — currently 8 more slots, and the only 8 that cannot be reclaimed.
+
 To scale, move either number:
 
-    CI_RUNNER_COUNT=12 ./scripts/ci-runners-up.sh           # more boxes
+    CI_RUNNER_COUNT=12 ./scripts/ci-runners-up.sh           # more spot boxes
+    CI_RUNNER_ONDEMAND_FLOOR=4 ./scripts/ci-runners-up.sh   # a deeper guaranteed floor
     CI_RUNNER_ITYPE=c7a.16xlarge CI_RUNNER_AGENTS=8 ./scripts/ci-runners-up.sh
 
-Autoscaling is deliberately **not** here yet. A fixed fleet with a nightly stop is a cost you can
-read off a calendar; an autoscaler is a second system that fails in its own ways, and it should be
-added when the fixed fleet is demonstrably the constraint.
+Autoscaling is deliberately **not** here yet. A fixed fleet reconciled on a timer is a cost you can
+read off a calendar and a shape you can read off one summary line; an autoscaler is a second system
+that fails in its own ways, and it should be added when the fixed fleet is demonstrably the
+constraint. Note what the floor is *not*: it is not a minimum an autoscaler scales up from, it is a
+floor a **reclaim** cannot scale below.
 
 ## 3. What it costs
 
@@ -62,33 +72,89 @@ added when the fixed fleet is demonstrably the constraint.
 | c7a.8xlarge **spot**, us-east-1a (2026-09-08) | **$0.667 /hr** — 59% off |
 | EBS: 300 GB gp3 + 6000 IOPS + 500 MB/s, per box | ≈ $54 /month ≈ $0.074 /hr |
 | fleet of 4, all-in while running | ≈ $2.97 /hr |
-| **fleet of 8 (current), all-in while running** | **≈ $5.93 /hr** — $5.34 spot + $0.59 EBS |
+| 8 spot boxes, all-in while running | ≈ $5.93 /hr — $5.34 spot + $0.59 EBS |
+| **on-demand floor of 2 (`CI_RUNNER_ONDEMAND_FLOOR`)** | **≈ $3.28 /hr extra** — 2 × $1.6422 |
+| the floor's EBS, 2 × 300 GB gp3 | ≈ $0.15 /hr |
+| **current fleet: 8 spot + 2 on-demand, all-in** | **≈ $9.36 /hr** |
 
-With the nightly stop (below) and roughly ten working hours a day, twenty-two days a month, eight
-boxes are **≈ $1,300/month**. The comparison is not "$650 versus $0": it is $650 versus twenty-five agents each
-burning a laptop for thirty to sixty minutes per hand-back, on trees whose CI is red for reasons
-that have nothing to do with the hand-back.
+The floor is the single largest line here and it is bought deliberately. On 2026-09-09 the fleet hit
+zero **twice in one day** — once from the nightly stop, once from `instance-terminated-no-capacity`
+taking all eight `c7a.8xlarge` in `us-east-1a` at the same instant — and both times agents went on
+pushing into a queue with nothing behind it. $3.28/hr is what it costs for that number to be two
+instead of zero. The owner's ruling: *keep those EC2 boxes up, I don't want us pushing builds and
+them not landing.*
 
-**Spot, with at most one on-demand box.** CI is interruption-tolerant by construction: a reclaimed
-box loses at most the jobs in flight on it, and `concurrency: cancel-in-progress` means a re-push
-would have killed them anyway. If spot capacity is refused outright, `ci-runners-up.sh` falls back
-to **exactly one** on-demand instance — enough that a capacity refusal degrades throughput instead
-of taking CI to zero, not so much that a bad spot day quietly triples the bill.
+Set `CI_RUNNER_ONDEMAND_FLOOR=0` to go back to spot-only. Nothing else needs to change.
+
+**Spot is still where the throughput comes from,** and it is now spread rather than concentrated.
+CI is interruption-tolerant by construction: a reclaimed box loses at most the jobs in flight on it,
+and `concurrency: cancel-in-progress` means a re-push would have killed them anyway. What changed is
+that "spot" no longer means one instance type in one AZ — see §4.
 
 ## 4. Start, stop, scale
 
 ```sh
-CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh   # create/scale. Idempotent: tops the fleet up
-./scripts/ci-runners-reconcile.sh   # converge RUNNING boxes on the current bootstrap (no replace)
+./scripts/ci-runners-reconcile.sh   # THE ONE TO RUN. Top up, sweep ghosts, register, refresh
+CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh   # create/scale from nothing. Idempotent
 ./scripts/ci-runners-register.sh    # mint an org registration token and register every agent
 ./scripts/ci-runners-ssh.sh         # ssh key + session-manager-plugin + ~/.busbar-fleet
-./scripts/prove-remote.sh --setup   # bare repo + warm checkout on every box
-./scripts/ci-runners-down.sh        # deregister, terminate, sweep offline runners
+./scripts/ci-runners-down.sh        # deregister + terminate the SPOT boxes; the floor SURVIVES
+./scripts/ci-runners-down.sh --all  # …everything, floor included
+./scripts/ci-runners-lint.sh        # bash -n + shellcheck -x over all eight scripts
+CI_RUNNER_DRY_RUN=1 ./scripts/ci-runners-<anything>.sh   # print the AWS calls, make none
 ```
+
+**`ci-runners-reconcile.sh` is the entry point, and `up.sh` is what it calls into.** Reconcile is
+the only one of these that is safe on a timer, and §7 is written around it.
+
+**`down` leaves the floor standing.** `down` is what you run to stop paying for a burst, to get a
+clean slate after a disk-full box, or at the end of a long session — and every one of those is a
+moment when the next agent's push must still land. Only `--all` takes the fleet to zero, and it says
+so in its name.
 
 `ci-runners-up.sh` is also the scale-up command: it leaves running boxes alone and launches the
 difference. Bootstrap takes 8–12 minutes (apt, rustup, the runner tarballs, and a full pre-warm
 build so the first real job is a warm job).
+
+### Two kinds of capacity
+
+`up.sh` launches the **on-demand floor first**, then the spot capacity. The floor goes first
+deliberately: if the account is at an instance limit or the launch template is wrong, the thing that
+fails is the spot top-up and the guaranteed capacity is already up. The reverse order gets you eight
+spot boxes and no floor on exactly the day the floor is the point.
+
+The two are counted **separately**, off EC2's own `InstanceLifecycle` field rather than a tag we
+might have failed to write — because "the fleet has 8 boxes" is not the fact that matters after a
+reclaim. "The fleet has 0 boxes that cannot be reclaimed" is.
+
+Floor boxes are otherwise **identical**: same AMI, same bootstrap, same labels, same four agents.
+A job cannot tell which kind it landed on, and nothing in any workflow names one.
+
+### Spot goes across every pool, not into one
+
+One instance type in one AZ is **one capacity pool**, and `instance-terminated-no-capacity` is a
+statement about one pool. Eight boxes in it is not eight machines, it is one machine with eight
+names — which is precisely how the fleet went to zero on 2026-09-09.
+
+So `up.sh` asks EC2 which `(AZ, instance-type)` pairs actually exist and requests spot against all
+of them at once:
+
+    c7a.8xlarge  m7a.8xlarge  c6a.8xlarge  c7i.8xlarge     (CI_RUNNER_ITYPES)
+    × every AZ of the default VPC that offers them          → 20 pools in us-east-1
+
+All four types are **32 vCPU and x86-64**, so `CARGO_BUILD_JOBS=32/AGENTS` — the load-bearing pin
+above — holds unchanged whichever one a box turns out to be.
+
+The request is a single `create-fleet --type instant` with `AllocationStrategy=price-capacity-optimized`,
+which picks the pools with the deepest capacity at the best price rather than the cheapest pool
+outright. `instant` because this is a script a human or a timer runs: the instance ids come back
+synchronously and **no durable fleet object is left behind** to drift, double-provision, or need
+deleting. Whatever the fleet request cannot fill is then retried as per-AZ `RunInstances` against
+the same pool list — a different *mechanism*, not a retry of the one that has just declined.
+
+**The offerings lookup is not decoration.** `us-east-1e` offers none of these four types, so a naive
+cross product would spend a fifth of its overrides on guaranteed `Unsupported` errors and produce a
+request that only *looks* diversified. Ask EC2 which pools exist before asking it for capacity.
 
 **User-data is capped at 16384 bytes, so it is gzipped.** The bootstrap outgrew the cap;
 `CreateLaunchTemplateVersion` refused it — and refusing a *new* version leaves the OLD one as
@@ -99,9 +165,13 @@ that were fixed hours earlier. cloud-init decompresses gzipped user-data before 
 (16734 bytes raw → 6588 encoded), the encoded size is asserted against the cap before EC2 is asked,
 and a refused version now **stops** the scale-up instead of being logged and ignored.
 
-**`ci-runners-reconcile.sh` is the way out of that state**, and the way a fix reaches the boxes in a
-minute rather than a bootstrap cycle per box that also discards the warm `target/` and sccache. It
-is idempotent, and it does not restart the agents unless given `--restart`.
+**`ci-runners-reconcile.sh --converge` is the way out of that state**, and the way a fix reaches the
+boxes in a minute rather than a bootstrap cycle per box that also discards the warm `target/` and
+sccache. It is idempotent, and it does not restart the agents unless given `--restart`.
+
+Convergence is behind a flag because it is an apt install, a rustup check and a 900-second SSM
+window on **every** box — not a thing to do four times an hour on a healthy fleet. The default
+reconcile pass does not touch the insides of a box at all.
 
 **The registration token is never stored.** `POST /orgs/GetBusbar/actions/runners/registration-token`
 is called at registration time, travels to the boxes over SSM SendCommand, and is used within
@@ -127,8 +197,13 @@ zero and needs a human to notice is not a cost control.
 CI_RUNNER_NIGHTLY_STOP=1 ./scripts/ci-runners-up.sh   # only alongside something that restarts it
 ```
 
-`ci-runners-reconcile.sh` removes the timer from any box that still carries one, so a box born
-before this default changed cannot keep it by accident.
+`ci-runners-reconcile.sh --converge` removes the timer from any box that still carries one, so a box
+born before this default changed cannot keep it by accident. (It is on the `--converge` path, not
+the timer path, because it is an SSM round-trip into every box — and a box launched today never had
+the timer to begin with.)
+
+Even so, the nightly stop is now the *second*-worst way this fleet has reached zero. See §7 for the
+first, and for the loop that means neither one needs a human to notice.
 
 ## 5. What is on a box
 
@@ -293,53 +368,113 @@ nothing but the filesystem. A named host always wins.
 
 ---
 
-## 7. When the fleet is down
+## 7. The fleet is at zero
 
 Symptom: jobs sit in `queued` forever with no error. `runs-on` has **no hosted fallback** on purpose
 — a fallback is a fleet outage nobody notices until the bill arrives — so a dead fleet is a stopped
 queue, loudly.
 
-1. **Are the runners there and online?**
+### Run reconcile. That is the whole first step.
+
+```sh
+export AWS_REGION=us-east-1
+export PATH="$HOME/.local/bin:$PATH"
+./scripts/ci-runners-reconcile.sh
+```
+
+It is idempotent, it is a no-op when the fleet is healthy, and it **exits 0 whatever happened** — so
+it is also the right thing to run when you are not sure there is a problem. One pass, in this order:
+
+1. **Top up.** Spot to `CI_RUNNER_COUNT`, on-demand to `CI_RUNNER_ONDEMAND_FLOOR`, counted
+   separately off `InstanceLifecycle` and launched across every pool (§4).
+2. **Sweep the ghosts.** Every `offline` org registration whose instance no longer exists.
+3. **Register** the boxes that are short of agents — and *only* those.
+4. **Refresh** `~/.busbar-fleet` and the remote-prove bare repo + checkout on every box.
+
+It ends in one line:
+
+```
+reconcile: spot 8/8, on-demand 2/2, online runners 32, swept ghosts 0, registered 0, remote-prove 10/10
+```
+
+`spot 0/8` is a fleet that is down. `online runners 0` alongside `spot 8/8` is a registration
+problem, not a capacity problem. That line is the whole status report.
+
+### Why the order of 2 and 3 is load-bearing
+
+Register first and the new box's agents join a pool that **still contains the dead box's agents**,
+and GitHub goes on routing jobs into the corpse. An `offline` org runner is a routing black hole:
+GitHub hands it a job, the job never runs, and it sits `queued` until the 24h timeout with no error
+anywhere. That is not hypothetical — it is exactly what the nightly stop left behind, **32 of them**,
+absorbing work all night. Sweep the dead, then add the living.
+
+### Why the sweep checks existence, not offline-ness
+
+`ci-runners-down.sh --all` deletes every `offline` runner, and that is correct when the fleet is
+being torn down: there is nothing left, so "offline" and "dead" are the same word.
+
+On a fifteen-minute timer it is **wrong**. A box eight minutes into its bootstrap is offline and very
+much alive, and deleting its registration would make a real box unreachable — after which the next
+pass would "fix" it by registering it again, forever. So reconcile maps the runner name back to the
+instance id the bootstrap minted it from (`ec2-<id-minus-i->-<agent>`) and removes only the
+registrations whose instance EC2 no longer lists **in any state**. Names that do not match the
+fleet's pattern belong to something else and are left strictly alone.
+
+### Put it on a timer
+
+The fleet went to zero twice on 2026-09-09 and both recoveries needed a human to notice.
+`ci-runners-up.sh` is a command someone runs; this is the one that can be a schedule:
+
+```sh
+*/15 * * * * cd /path/to/busbar && AWS_REGION=us-east-1 PATH="$HOME/.local/bin:$PATH" \
+  ./scripts/ci-runners-reconcile.sh >> /tmp/busbar-reconcile.log 2>&1
+```
+
+It exits 0 on a healthy pass, on a pass that could not reach a bootstrapping box, and on a pass that
+found nothing to do — because a cron that pages on a healthy run is a cron that gets muted by
+Thursday. Real breakage is visible in the summary line, not in the exit code.
+
+### If reconcile is not enough
+
+1. **See what it saw.**
    ```sh
    gh api /orgs/GetBusbar/actions/runners --jq '.runners[]|"\(.name) \(.status) busy=\(.busy)"'
-   ```
-   *All offline* → the boxes are gone (spot reclaim, or the nightly stop). Go to 3.
-   *Nothing listed* → registration was lost. Go to 4.
-
-2. **Are the boxes alive?**
-   ```sh
    aws ec2 describe-instances --filters Name=tag:Name,Values=busbar-ci-runner \
-     Name=instance-state-name,Values=running --query 'Reservations[].Instances[].InstanceId' --output text
+     Name=instance-state-name,Values=running \
+     --query 'Reservations[].Instances[].[InstanceId,InstanceLifecycle,Placement.AvailabilityZone]' \
+     --output text
    ```
+   A `None` in the lifecycle column is an on-demand floor box. If that column is all `spot`, the
+   floor is missing and the next reconcile rebuilds it.
 
-3. **Bring the fleet back.** `./scripts/ci-runners-up.sh` then `./scripts/ci-runners-register.sh`.
-   Boxes are ready in 8–12 minutes; the pre-warm build means the first job is not also the first
-   cold compile. If spot is refused, the script says so and falls back to one on-demand box.
+2. **Nothing exists at all** — the launch template, IAM role, security group or sccache bucket are
+   gone. That is `up.sh`'s job, not reconcile's: `CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh`.
+   Reconcile launches capacity; it does not provision the account.
 
-4. **Ghost runners — sweep them BEFORE you re-register.** An `offline` org runner is a routing
-   black hole: GitHub hands it a job that never runs, and the job sits queued until the 24h timeout
-   with no error anywhere. This is not hypothetical; it is exactly what the nightly stop left
-   behind, 32 of them. `./scripts/ci-runners-down.sh` sweeps every offline entry, and does so even
-   when there are no instances left to terminate:
+3. **See what it would do without doing it.** Every script honours it:
    ```sh
-   gh api "/orgs/GetBusbar/actions/runners?per_page=100" \
-     --jq '.runners[] | select(.status=="offline") | .id' \
-   | while read -r id; do gh api -X DELETE "/orgs/GetBusbar/actions/runners/$id"; done
+   CI_RUNNER_DRY_RUN=1 ./scripts/ci-runners-reconcile.sh
    ```
+   Read-only describes still run, so this is a real report about the real fleet. It never mints a
+   credential — a dry run of `down` used to print a live org remove-token, which is why it now
+   refuses to request one at all.
 
-5. **A box is up but jobs fail immediately.** Look at `Set up runner` — that is the job hook. Then:
+4. **A box is up but jobs fail immediately.** Look at `Set up runner` — that is the job hook. Then:
    ```sh
    ~/.busbar-fleet-ssh ubuntu@i-0abc… 'tail -50 /var/log/busbar-runner-bootstrap.log'
    ~/.busbar-fleet-ssh ubuntu@i-0abc… 'systemctl list-units "actions.runner.*"'
    ```
+   If several boxes are wrong the same way, the bootstrap changed under them:
+   `./scripts/ci-runners-reconcile.sh --converge`.
 
-6. **Disk.** Four agents × their own `target/` on 300 GB. The hook prints `df -h /` at the top of
-   every job; if it is tight, `./scripts/ci-runners-down.sh && ./scripts/ci-runners-up.sh` is a
-   clean slate in ten minutes, or raise `CI_RUNNER_DISK_GB`.
+5. **Disk.** Four agents × their own `target/` on 300 GB. The hook prints `df -h /` at the top of
+   every job; if it is tight, `./scripts/ci-runners-down.sh` (which leaves the floor up) followed by
+   a reconcile is a clean slate in ten minutes, or raise `CI_RUNNER_DISK_GB`.
 
-7. **The escape hatch.** Actions is the judge for `integration/*`, `qa` and `main` regardless; for a
+6. **The escape hatch.** Actions is the judge for `integration/*`, `qa` and `main` regardless; for a
    hand-back, `./scripts/prove-remote.sh` needs only ONE box and no runner registration at all — it
-   is ssh and a git push. A fleet with a broken Actions registration can still prove work.
+   is ssh and a push. A fleet with a broken Actions registration can still prove work, and the
+   on-demand floor means there is always a box for it to use.
 
 ### "The fleet is slow" is usually not the fleet
 

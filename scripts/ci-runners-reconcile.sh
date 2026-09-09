@@ -123,10 +123,31 @@ if [ -n "$NEEDY" ]; then
   if [ -n "$REACHABLE" ]; then
     log "registering: $REACHABLE"
     # shellcheck disable=SC2086  # a whitespace-separated id list, passed as separate arguments
-    if "$HERE/ci-runners-register.sh" $REACHABLE >/dev/null 2>&1; then
-      REGISTERED="$REACHABLE"
-    else
-      log "  (registration reported a failure; the next pass retries)"
+    "$HERE/ci-runners-register.sh" $REACHABLE >/dev/null 2>&1 || true
+
+    # THE COUNT IS RE-DERIVED FROM GITHUB, NOT FROM THE EXIT CODE. THE SSM AGENT COMES UP LONG
+    # BEFORE THE RUNNERS DO — a box answered SSM roughly a minute after launch while it was still
+    # eight minutes from having unpacked /opt/runner-1, so this dispatched a registration to a box
+    # with nothing to register, and the SSM command "succeeded". Reporting `registered 2` on that
+    # pass was a summary line that said the fleet was fixed when nothing had changed, which is the
+    # one failure mode a fleet summary must not have. So: ask the org what is online NOW.
+    #
+    # Dispatching early is otherwise harmless (busbar-runner-register is idempotent and skips an
+    # agent that already holds a .runner credential) and costs one extra token mint per pass while
+    # a box bootstraps. Being loudly honest about the outcome is worth more than avoiding that.
+    AFTER="$(gh api --paginate "/orgs/${ORG}/actions/runners?per_page=100" \
+      --jq '.runners[] | select(.status=="online") | .name' 2>/dev/null)"
+    for iid in $REACHABLE; do
+      short="${iid#i-}"; n=1; ok=1
+      while [ "$n" -le "$AGENTS" ]; do
+        printf '%s\n' "$AFTER" | grep -qx "ec2-${short}-${n}" || { ok=0; break; }
+        n=$(( n + 1 ))
+      done
+      [ "$ok" = 1 ] && REGISTERED="$REGISTERED $iid"
+    done
+    REGISTERED="$(printf '%s' "$REGISTERED" | sed -e 's/^ //' -e 's/ $//')"
+    if [ -z "$REGISTERED" ]; then
+      log "  (still no agents online on those boxes — bootstrap is not finished; the next pass retries)"
     fi
   else
     log "short of agents but not SSM-reachable yet: $NEEDY"
@@ -179,8 +200,12 @@ if [ "$REMOTE" = 1 ]; then
         --comment "refresh busbar remote-prove checkouts" --parameters "file://$T" \
         --timeout-seconds 600 --query 'Command.CommandId' --output text 2>/dev/null)"
       if [ -n "$C" ]; then
-        REMOTE_STATUS="$(ssm_wait "$C" 12 10)"
-        log "remote-prove refresh: $REMOTE_STATUS"
+        # ssm_wait returns ONE STATUS PER INSTANCE, tab-separated. Pasting that straight into the
+        # summary made the "one line" eight words wide and unreadable at a glance, which is the one
+        # thing the summary line exists to avoid. Collapse to `<succeeded>/<total>`.
+        raw="$(ssm_wait "$C" 12 10)"
+        REMOTE_STATUS="$(printf '%s' "$raw" | tr -s '[:space:]' '\n' | grep -c '^Success$' || true)/$(n_of "$raw")"
+        log "remote-prove refresh: $REMOTE_STATUS box(es) Success  [$raw]"
       else
         REMOTE_STATUS="dispatch-failed"
         log "remote-prove refresh: could not dispatch (not fatal)"
