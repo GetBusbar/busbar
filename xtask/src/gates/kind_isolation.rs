@@ -3491,19 +3491,89 @@ fn skip_generic_params(s: &str) -> Option<&str> {
     None
 }
 
-/// `impl <Ident> for` at the head of a production line, with literals blanked first.
+/// A `use path::Trait as Alias;` — the RENAME, as `(trait, alias)`.
 ///
-/// THE GENERIC HEAD IS PARSED, NOT REFUSED. `strip_prefix("impl ")` could not see
-/// `impl<S: CellStore> Unit for AdmissionUnit<'_, S>` — the space is a `<` — so three unit crates
-/// implemented their kind's entry trait and were reported as implementing it ZERO times, forever.
-/// The generic parameter list says nothing about WHICH trait is implemented, which is the only
-/// thing this function is asked, so it is skipped as the balanced group it is.
-fn impl_trait_on(code: &str) -> Option<String> {
-    let t = code.trim_start();
-    let rest = t.strip_prefix("impl")?;
+/// `use busbar_contract::plane::Plane as Metered; impl Metered for Wire {}` is a transport
+/// implementing the plane entry face, and it went green: `impl_trait_on` answers by the LAST PATH
+/// SEGMENT, by name, and nothing in this gate resolved a rename. One keystroke, and the face rule
+/// is looking at a word the tree does not use.
+fn use_alias(code: &str) -> Option<(String, String)> {
+    let t = code.trim();
+    let t = t.strip_prefix("pub ").map(str::trim_start).unwrap_or(t);
+    let rest = t.strip_prefix("use ")?;
+    let rest = rest.trim_end().strip_suffix(';')?;
+    let (path, alias) = rest.rsplit_once(" as ")?;
+    let alias = alias.trim().trim_matches(|c| c == '}' || c == ',' || c == ' ');
+    let last = path
+        .trim()
+        .rsplit("::")
+        .next()?
+        .trim()
+        .trim_start_matches('{')
+        .trim();
+    if last.is_empty() || alias.is_empty() {
+        return None;
+    }
+    if !alias.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    if !last.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some((last.to_string(), alias.to_string()))
+}
+
+/// THE HEAD OF THE TRAIT-IMPL STATEMENT, wherever the tokens fall.
+///
+/// `impl_trait_on` reads the head of ONE LINE, and its own doc comment already said the qualified
+/// spelling "is a bypass of any rule written on this function, in one keystroke". Two more
+/// keystrokes were still there when a red team looked:
+///
+/// * `use busbar_contract::plane::Plane as Metered;` + `impl Metered for Wire {}` — the trait under
+///   a name of the author's choosing.
+/// * `impl\n    busbar_contract::plane::Plane\n    for Wire2` — what `cargo fmt` itself writes when
+///   the header is long, and no LINE of it holds both `impl` and ` for `.
+///
+/// So the statement is read as TOKENS rather than as a line: the production lines are joined, the
+/// renames of the file are resolved, and an `impl` is found wherever its three parts sit. A head
+/// that is not a single path (it carries a brace, a paren, a semicolon, a comma) is not a trait
+/// impl and is refused, which is what keeps `impl Foo { … for x in y … }` out of the count.
+fn impl_heads(text: &str) -> Vec<String> {
+    let mut aliases: BTreeMap<String, String> = BTreeMap::new();
+    let mut joined = String::new();
+    for (_, code) in scan::production_lines(text) {
+        let code = scan::blank_literals(&code);
+        if let Some((tr, alias)) = use_alias(&code) {
+            aliases.insert(alias, tr);
+        }
+        joined.push_str(&code);
+        joined.push(' ');
+    }
+    let b = joined.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while let Some(p) = joined[i..].find("impl") {
+        let at = i + p;
+        i = at + 4;
+        if at > 0 && (b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_') {
+            continue;
+        }
+        let Some(head) = head_after_impl(&joined[at + 4..]) else {
+            continue;
+        };
+        out.push(aliases.get(&head).cloned().unwrap_or(head));
+    }
+    out
+}
+
+/// The trait named between an `impl` and its ` for `, when what sits there really is one.
+fn head_after_impl(rest: &str) -> Option<String> {
+    // THE GENERIC HEAD IS PARSED, NOT REFUSED, and the BOUND inside it is not an impl:
+    // `impl<T: Plane> Meter for T` implements `Meter`, and the `Plane` in the bound says only which
+    // types it is written over. Skipping the `<…>` as the balanced group it is answers both.
     let rest = if rest.starts_with('<') {
         skip_generic_params(rest)?
-    } else if rest.starts_with(' ') {
+    } else if rest.starts_with(' ') || rest.starts_with('\t') {
         rest
     } else {
         // `impl_of(…)`, `implement`, … — `impl` has to be the keyword, not a prefix.
@@ -3511,15 +3581,19 @@ fn impl_trait_on(code: &str) -> Option<String> {
     };
     let (head, _) = rest.split_once(" for ")?;
     let head = head.trim();
-    if head.is_empty() || head.contains('<') || head.contains('&') {
+    if head.is_empty()
+        || head.contains([
+            '<', '&', '{', '}', '(', ')', ';', ',', '=', '[', ']', '!', '"', '#',
+        ])
+    {
         return None;
     }
     // THE QUALIFIED SPELLING IS THE SAME IMPLEMENTATION. `impl busbar_contract::Plane for Wire`
     // begins with a lowercase crate segment, so a head-first check answered `None` and the trait
-    // was implemented in plain sight — which is a bypass of any rule written on this function, in
-    // one keystroke. The trait is the LAST path segment; the qualification says where it lives.
+    // was implemented in plain sight. The trait is the LAST path segment; the qualification says
+    // where it lives.
     let head = head.rsplit("::").next().unwrap_or(head).trim();
-    if head.is_empty() || head.contains(':') {
+    if head.is_empty() || head.contains(':') || head.contains(' ') {
         return None;
     }
     head.chars()
@@ -3572,10 +3646,8 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
             }
         }
         let counts = idx.impls.entry(dir.clone()).or_default();
-        for (_, code) in scan::production_lines(&f.text) {
-            if let Some(t) = impl_trait_on(&scan::blank_literals(&code)) {
-                *counts.entry(t).or_default() += 1;
-            }
+        for t in impl_heads(&f.text) {
+            *counts.entry(t).or_default() += 1;
         }
     }
     Ok(idx)
@@ -5961,6 +6033,58 @@ impl Gate for KindIsolationGate {
             &[ROW_FACES],
             ov,
             &["foreign-entry", "busbar-transport-ws", "Plane"],
+        ));
+
+        // …AND THE SAME IMPLEMENTATION UNDER A NAME OF THE AUTHOR'S CHOOSING. The face rule
+        // answers by the LAST PATH SEGMENT, and nothing resolved a rename — so
+        // `use busbar_contract::plane::Plane as Metered;` renamed the entry face out of the rule's
+        // sight in one line, and a red team walked a transport through it green.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_alias.rs",
+            "use busbar_contract::plane::Plane as Metered;\npub struct WireA;\nimpl Metered for \
+             WireA {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a wire implementing a plane face under a `use … as` rename",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-transport-ws", "Plane"],
+        ));
+
+        // …AND WHAT `cargo fmt` ITSELF WRITES. A long header wraps, and no LINE of a wrapped one
+        // holds both `impl` and ` for ` — so the line-based reader saw nothing at all. The
+        // statement is read as tokens now, and this is the fixture that says so.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_wrapped.rs",
+            "pub struct WireB;\nimpl\n    busbar_contract::plane::Plane\n    for WireB\n{\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a wire implementing a plane face across a rustfmt-wrapped header",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-transport-ws", "Plane"],
+        ));
+
+        // …AND A BOUND IS NOT AN IMPLEMENTATION. `impl<T: Plane> Local for T` implements `Local`
+        // and names `Plane` only to say which types it is written over. The green arm is what stops
+        // the token reader above from being a rule that reds on the word.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-ws/src/planted_bound.rs",
+            "pub trait Local {}\nimpl<T: busbar_contract::plane::Plane> Local for T {}\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            self,
+            "a trait named only in an `impl<T: Trait>` bound is not an implementation of it",
+            &[ROW_FACES],
+            ov,
         ));
 
         // THE RATCHET, BOTH WAYS. The four faces that exist today are held at their exact count:
