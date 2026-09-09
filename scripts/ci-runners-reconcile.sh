@@ -16,6 +16,12 @@
 #    failing; a replacement cycle is ten minutes of bootstrap per box and throws away the warm
 #    target/ and sccache that are the point of a persistent runner.
 #
+# IT ALSO REMOVES THE NIGHTLY STOP, unconditionally. That timer terminated the entire fleet at
+# 02:00 PT with nothing scheduled to bring it back, and by morning 32 OFFLINE runner registrations
+# were still absorbing jobs that could never run. A box that was born with the timer must not keep
+# it just because it was born before the default changed; reconcile is where that is corrected.
+# Re-enable it deliberately, per box, only alongside something that starts the fleet again.
+#
 # Everything here is idempotent and safe to run against a box that is already correct. It does NOT
 # restart the runner agents unless asked: `svc.sh stop` kills the job in flight, and the run then
 # reports `failure` with NO failed step, which is indistinguishable at a glance from a real red.
@@ -46,6 +52,7 @@ cat > "$TMP" <<'JSON'
  "printf '#!/usr/bin/env bash\\nset -uo pipefail\\nif [ -n \"${RUNNER_WORKSPACE:-}\" ] && [ -d \"${RUNNER_WORKSPACE}\" ]; then find \"${RUNNER_WORKSPACE}\" -maxdepth 1 -mindepth 1 -name %s_temp*%s -exec rm -rf {} + 2>/dev/null || true; fi\\ndocker container prune -f --filter until=1h >/dev/null 2>&1 || true\\ndocker network   prune -f --filter until=1h >/dev/null 2>&1 || true\\ndocker volume    prune -f                   >/dev/null 2>&1 || true\\ndf -h / | tail -1 || true\\nexit 0\\n' \"'\" \"'\" > /opt/job-started-hook.sh; chmod 0755 /opt/job-started-hook.sh; bash -e /opt/job-started-hook.sh >/dev/null 2>&1 && echo hook=ok || echo hook=STILL-FAILS",
  "su - ubuntu -c 'test -x ~/.cargo/bin/rustup || (curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal --default-toolchain 1.98.0 -c clippy -c rustfmt >/dev/null 2>&1)'; echo base-cargo=$(su - ubuntu -c '~/.cargo/bin/cargo --version' 2>&1 | head -1)",
  "for d in /opt/runner-*; do n=${d##*-}; install -d -o ubuntu -g ubuntu $d/.cargo $d/.rustup $d/sccache; cp -an /home/ubuntu/.rustup/. $d/.rustup/ 2>/dev/null; cp -an /home/ubuntu/.cargo/. $d/.cargo/ 2>/dev/null; chown -R ubuntu:ubuntu $d/.cargo $d/.rustup $d/sccache; sed -i -e '/^PATH=/d' -e '/^CARGO_HOME=/d' -e '/^RUSTUP_HOME=/d' -e '/^SCCACHE_DIR=/d' -e '/^SCCACHE_CACHE_SIZE=/d' -e '/^SCCACHE_SERVER_PORT=/d' -e '/^SCCACHE_BUCKET=/d' -e '/^SCCACHE_REGION=/d' -e '/^SCCACHE_S3_KEY_PREFIX=/d' -e '/^ACTIONS_RUNNER_HOOK_JOB_STARTED=/d' $d/.env; printf 'PATH=%s/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin\\nCARGO_HOME=%s/.cargo\\nRUSTUP_HOME=%s/.rustup\\nSCCACHE_DIR=%s/sccache\\nSCCACHE_CACHE_SIZE=20G\\nSCCACHE_SERVER_PORT=%s\\nACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/job-started-hook.sh\\n' $d $d $d $d $((4226+n)) >> $d/.env; done; echo envs=written",
+ "systemctl disable --now busbar-runner-nightly-stop.timer >/dev/null 2>&1; rm -f /etc/systemd/system/busbar-runner-nightly-stop.timer /etc/systemd/system/busbar-runner-nightly-stop.service; systemctl daemon-reload; echo nightly-stop=$(systemctl is-enabled busbar-runner-nightly-stop.timer 2>&1 | head -1)",
  "echo agents=$(ls -d /opt/runner-* 2>/dev/null | wc -l) ready=$( [ -f /var/run/busbar-runner-ready ] && echo yes || echo NO )"
 ]}
 JSON

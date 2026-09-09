@@ -100,6 +100,7 @@ sed -e "s|__AGENTS__|$AGENTS|g" \
     -e "s|__SCCACHE_BUCKET__|$SCCACHE_BUCKET|g" \
     -e "s|__SCCACHE_REGION__|$AWS_REGION|g" \
     -e "s|__SCCACHE_BACKEND__|$SCCACHE_BACKEND|g" \
+    -e "s|__NIGHTLY_STOP__|$NIGHTLY_STOP|g" \
     -e "s|__RUNNER_LABELS__|$RUNNER_LABELS|g" \
     -e "s|__ORG__|$ORG|g" \
     -e "s|__RUST_CHANNEL__|$RUST_CHANNEL|g" \

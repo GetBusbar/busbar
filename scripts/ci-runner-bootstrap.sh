@@ -21,6 +21,7 @@ AGENTS="__AGENTS__"
 SCCACHE_BUCKET="__SCCACHE_BUCKET__"
 SCCACHE_REGION="__SCCACHE_REGION__"
 SCCACHE_BACKEND="__SCCACHE_BACKEND__"
+NIGHTLY_STOP="__NIGHTLY_STOP__"
 RUNNER_LABELS="__RUNNER_LABELS__"
 ORG="__ORG__"
 RUST_CHANNEL="__RUST_CHANNEL__"
@@ -236,11 +237,25 @@ for d in /opt/runner-*; do
   echo "ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/job-started-hook.sh" >> "$d/.env"
 done
 
-# ── Nightly stop at 02:00 America/Los_Angeles ───────────────────────────────────────────────────
-# The fleet is for agents pushing during the working day; a box idling overnight is pure burn.
-# `shutdown -h` on a spot instance with InstanceInitiatedShutdownBehavior=terminate ends the
-# billable hour; scripts/ci-runners-up.sh brings the fleet back. Local time is set to PT so the
-# schedule reads the way the team says it.
+# ── Nightly stop: OPT-IN, AND OFF BY DEFAULT ────────────────────────────────────────────────────
+# This was on by default, on the reasoning that "the fleet is for agents pushing during the working
+# day; a box idling overnight is pure burn". Both halves of that were wrong here.
+#
+# There is no working day. Agents push around the clock, and the timer proved it: at 02:00 PT every
+# box ran `shutdown -h`, InstanceInitiatedShutdownBehavior=terminate turned that into a TERMINATE,
+# and the fleet went to zero. Nothing brings it back — `ci-runners-up.sh` is a command someone runs,
+# not a schedule. By morning there were 32 OFFLINE runner registrations, which are worse than no
+# runners at all: GitHub still routes jobs to them, so four keep-proof runs sat queued behind
+# machines that had not existed for seven hours, with no error anywhere saying so.
+#
+# A cost control that silently takes CI to zero and needs a human to notice is not a cost control.
+# So: opt in deliberately, and only where something also brings the fleet back.
+#
+#   CI_RUNNER_NIGHTLY_STOP=1 ./scripts/ci-runners-up.sh
+#
+# The saving it was buying is real but small against the failure mode — roughly $2.4/hr of idle
+# spot on a fleet whose whole purpose is that nobody waits for it.
+if [ "${NIGHTLY_STOP}" = "1" ]; then
 timedatectl set-timezone America/Los_Angeles
 cat > /etc/systemd/system/busbar-runner-nightly-stop.timer <<'TEOF'
 [Unit]
@@ -260,6 +275,14 @@ ExecStart=/sbin/shutdown -h +1 "busbar CI runner nightly stop (02:00 PT)"
 SEOF
 systemctl daemon-reload
 systemctl enable --now busbar-runner-nightly-stop.timer
+else
+  # Explicit, so a box that was born with the timer and later reconciled cannot keep it by accident.
+  systemctl disable --now busbar-runner-nightly-stop.timer >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/busbar-runner-nightly-stop.timer \
+        /etc/systemd/system/busbar-runner-nightly-stop.service
+  systemctl daemon-reload
+  echo "nightly stop: DISABLED (set CI_RUNNER_NIGHTLY_STOP=1 to enable)"
+fi
 
 # ── PRE-WARM ────────────────────────────────────────────────────────────────────────────────────
 # Compile the workspace once, on the box, before it takes any job. This populates the shared S3

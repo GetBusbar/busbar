@@ -30,6 +30,9 @@ SCCACHE_BUCKET="${SCCACHE_BUCKET:-busbar-ci-sccache-us-east-1}"
 # `local` (the default) or `s3`. See the SCCACHE_BACKEND block in ci-runner-bootstrap.sh: the S3
 # bucket and its IAM policy are provisioned either way, so switching is one variable and a relaunch.
 SCCACHE_BACKEND="${CI_RUNNER_SCCACHE:-local}"
+# OFF by default. See the long comment in ci-runner-bootstrap.sh: on, it terminated the whole fleet
+# at 02:00 PT and left 32 offline registrations routing jobs into nothing until someone noticed.
+NIGHTLY_STOP="${CI_RUNNER_NIGHTLY_STOP:-0}"
 
 # ── Fleet size ──────────────────────────────────────────────────────────────────────────────────
 # See docs/ci/self-hosted-runners.md for the arithmetic these two defaults come from.

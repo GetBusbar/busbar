@@ -114,9 +114,21 @@ GitHub still believes are available, and a job routed to a dead runner sits `que
 timeout with no error anywhere. So: deregister (the boxes are still alive to be told), then
 terminate, then sweep every `offline` org runner regardless.
 
-**Nightly stop, 02:00 America/Los_Angeles.** A systemd timer on each box runs `shutdown -h`; the
-launch template sets `InstanceInitiatedShutdownBehavior=terminate`, so the billable hour ends and
-the EBS volume goes with it. `ci-runners-up.sh` brings the fleet back.
+**The nightly stop is OPT-IN, and off by default.** It used to be on: a systemd timer ran
+`shutdown -h` at 02:00 PT, and with `InstanceInitiatedShutdownBehavior=terminate` that is a
+terminate. It fired, and the failure was worse than the bill it was avoiding — there is no working
+day here, agents push around the clock, and **nothing brings the fleet back**; `ci-runners-up.sh` is
+a command someone runs, not a schedule. By morning: zero instances, **32 offline runner
+registrations still absorbing jobs**, and keep-proof runs queued behind machines that had not
+existed for seven hours, with no error anywhere saying so. A cost control that silently takes CI to
+zero and needs a human to notice is not a cost control.
+
+```sh
+CI_RUNNER_NIGHTLY_STOP=1 ./scripts/ci-runners-up.sh   # only alongside something that restarts it
+```
+
+`ci-runners-reconcile.sh` removes the timer from any box that still carries one, so a box born
+before this default changed cannot keep it by accident.
 
 ## 5. What is on a box
 
@@ -304,9 +316,16 @@ queue, loudly.
    Boxes are ready in 8–12 minutes; the pre-warm build means the first job is not also the first
    cold compile. If spot is refused, the script says so and falls back to one on-demand box.
 
-4. **Ghost runners.** An `offline` org runner is a routing black hole: GitHub will hand it a job
-   that never runs. `./scripts/ci-runners-down.sh` sweeps every offline entry (it does this even
-   when there are no instances left to terminate).
+4. **Ghost runners — sweep them BEFORE you re-register.** An `offline` org runner is a routing
+   black hole: GitHub hands it a job that never runs, and the job sits queued until the 24h timeout
+   with no error anywhere. This is not hypothetical; it is exactly what the nightly stop left
+   behind, 32 of them. `./scripts/ci-runners-down.sh` sweeps every offline entry, and does so even
+   when there are no instances left to terminate:
+   ```sh
+   gh api "/orgs/GetBusbar/actions/runners?per_page=100" \
+     --jq '.runners[] | select(.status=="offline") | .id' \
+   | while read -r id; do gh api -X DELETE "/orgs/GetBusbar/actions/runners/$id"; done
+   ```
 
 5. **A box is up but jobs fail immediately.** Look at `Set up runner` — that is the job hook. Then:
    ```sh
