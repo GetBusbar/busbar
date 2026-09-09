@@ -1,6 +1,6 @@
 # The busbar-xl runner fleet
 
-Four EC2 spot boxes in `us-east-1`, sixteen GitHub Actions runner agents registered at the
+Eight EC2 spot boxes in `us-east-1`, **thirty-two** GitHub Actions runner agents registered at the
 **GetBusbar org** level with the labels `self-hosted, linux, x64, busbar-xl`, and two ways to reach
 them: as Actions runners, and directly over ssh.
 
@@ -31,8 +31,14 @@ a fresh container does not: a warm `sccache` and a warm `target/`. What the flee
 absorb is the **burst** — several hand-backs landing inside the same five minutes — and the ceiling
 that matters is concurrency, not throughput.
 
-    4 instances × 4 runner agents        = 16 concurrent job slots
+    8 instances × 4 runner agents        = 32 concurrent job slots
     c7a.8xlarge = 32 vCPU                → 8 vCPU per slot
+
+It opened at four boxes / sixteen slots, and sixteen was not enough: within the first evening all
+sixteen were busy, four keep-proof runs were queued, and one of them sat **47 minutes without a
+single job starting**. Doubling to eight drained that queue in under a minute. Sixteen slots is
+about four concurrent hand-backs; the arrival rate above is more than that whenever three agents
+finish together.
 
 **`CARGO_BUILD_JOBS` is the load-bearing line.** Cargo defaults to `nproc`, so four agents on one
 32-vCPU box would each spawn 32 rustc threads: 4× oversubscription, and every job slower than if it
@@ -41,7 +47,7 @@ four agents per box a throughput win rather than a wash.
 
 To scale, move either number:
 
-    CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh            # more boxes
+    CI_RUNNER_COUNT=12 ./scripts/ci-runners-up.sh           # more boxes
     CI_RUNNER_ITYPE=c7a.16xlarge CI_RUNNER_AGENTS=8 ./scripts/ci-runners-up.sh
 
 Autoscaling is deliberately **not** here yet. A fixed fleet with a nightly stop is a cost you can
@@ -54,12 +60,12 @@ added when the fixed fleet is demonstrably the constraint.
 |---|---|
 | c7a.8xlarge on-demand, us-east-1 | **$1.6422 /hr** |
 | c7a.8xlarge **spot**, us-east-1a (2026-09-08) | **$0.667 /hr** — 59% off |
-| fleet of 4, spot | **$2.67 /hr** |
 | EBS: 300 GB gp3 + 6000 IOPS + 500 MB/s, per box | ≈ $54 /month ≈ $0.074 /hr |
-| fleet of 4, all-in while running | **≈ $2.97 /hr** |
+| fleet of 4, all-in while running | ≈ $2.97 /hr |
+| **fleet of 8 (current), all-in while running** | **≈ $5.93 /hr** — $5.34 spot + $0.59 EBS |
 
-With the nightly stop (below) and roughly ten working hours a day, twenty-two days a month, that is
-**≈ $650/month**. The comparison is not "$650 versus $0": it is $650 versus twenty-five agents each
+With the nightly stop (below) and roughly ten working hours a day, twenty-two days a month, eight
+boxes are **≈ $1,300/month**. The comparison is not "$650 versus $0": it is $650 versus twenty-five agents each
 burning a laptop for thirty to sixty minutes per hand-back, on trees whose CI is red for reasons
 that have nothing to do with the hand-back.
 
@@ -72,7 +78,8 @@ of taking CI to zero, not so much that a bad spot day quietly triples the bill.
 ## 4. Start, stop, scale
 
 ```sh
-./scripts/ci-runners-up.sh          # create/scale. Idempotent: tops the fleet up to CI_RUNNER_COUNT
+CI_RUNNER_COUNT=8 ./scripts/ci-runners-up.sh   # create/scale. Idempotent: tops the fleet up
+./scripts/ci-runners-reconcile.sh   # converge RUNNING boxes on the current bootstrap (no replace)
 ./scripts/ci-runners-register.sh    # mint an org registration token and register every agent
 ./scripts/ci-runners-ssh.sh         # ssh key + session-manager-plugin + ~/.busbar-fleet
 ./scripts/prove-remote.sh --setup   # bare repo + warm checkout on every box
@@ -82,6 +89,19 @@ of taking CI to zero, not so much that a bad spot day quietly triples the bill.
 `ci-runners-up.sh` is also the scale-up command: it leaves running boxes alone and launches the
 difference. Bootstrap takes 8–12 minutes (apt, rustup, the runner tarballs, and a full pre-warm
 build so the first real job is a warm job).
+
+**User-data is capped at 16384 bytes, so it is gzipped.** The bootstrap outgrew the cap;
+`CreateLaunchTemplateVersion` refused it — and refusing a *new* version leaves the OLD one as
+default, so `run-instances --version $Latest` launched four boxes from a template that predated the
+GitHub CLI, python3-venv and the per-agent cargo homes. A scale-up that "succeeds" into a stale
+image is the worst failure available here: the boxes register, take jobs, and fail them for reasons
+that were fixed hours earlier. cloud-init decompresses gzipped user-data before executing it
+(16734 bytes raw → 6588 encoded), the encoded size is asserted against the cap before EC2 is asked,
+and a refused version now **stops** the scale-up instead of being logged and ignored.
+
+**`ci-runners-reconcile.sh` is the way out of that state**, and the way a fix reaches the boxes in a
+minute rather than a bootstrap cycle per box that also discards the warm `target/` and sccache. It
+is idempotent, and it does not restart the agents unless given `--restart`.
 
 **The registration token is never stored.** `POST /orgs/GetBusbar/actions/runners/registration-token`
 is called at registration time, travels to the boxes over SSM SendCommand, and is used within
