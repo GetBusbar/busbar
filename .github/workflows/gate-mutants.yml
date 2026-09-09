@@ -1,0 +1,247 @@
+# gate-mutants — THE RATCHET IS ITSELF UNDER TEST, MECHANICALLY, ON EVERY PUSH.
+#
+# THE LAW THIS WORKFLOW HOLDS. Every rule in this tree is enforced by a gate, and every gate is a
+# program that says NO. The only way a gate fails is by SAYING NOTHING: delete a check's body,
+# force its `ok` argument true, turn an `offenders.push` into a `drop`, and it still compiles, still
+# prints PASS, and nothing notices. A hand audit found 53 such holes in four gates in one pass. A
+# hand audit is not a gate. This is.
+#
+# WHAT IT DOES. On any push that touches gate code, gate data, the landing runner or the workflows,
+# it runs `cargo-mutants` over the CHANGED RUST ONLY, with the four gates' own `--selftest` as the
+# test command. A mutant that survives that command is a line of gate code no self-test case holds
+# down. Any survivor makes `gate-mutants` red, and `gate-mutants` is a required check on `qa` and
+# `main` (scripts/ci-branch-protection.sh). There is no human step between the red and the fix.
+#
+# WHY IT IS ITS OWN WORKFLOW AND NOT A JOB IN ci.yml. Its shape is different from every job there:
+# a fan-out matrix whose WIDTH is computed at run time from the diff, on a trigger whose work is
+# path-scoped. Folding that into ci.yml would put a dynamic matrix inside the umbrella's `needs:`
+# accounting, where `ci-umbrella`'s membership rules cannot read it. The umbrella stays a fixed list
+# of fixed jobs; this stays a required check of its own, named in branch protection alongside it.
+#
+# WHY THE REQUIRED CHECK IS NOT PATH-FILTERED. A required status that a `paths:` filter can decline
+# to report is a required status that blocks every unrelated pull request forever, which is how
+# required checks get removed. So the WORKFLOW always runs and the required job `gate-mutants`
+# always reports; the expensive WORK is what the scope decides. A push with no gate Rust in it gets
+# a green `gate-mutants` in about a minute, honestly, having measured that there was nothing to
+# measure.
+name: gate-mutants
+
+on:
+  push:
+    # Same branch set as ci.yml, plus the `keep-*` hand-back branches: an agent's branch is exactly
+    # where a new gate rule first appears, so it is exactly where the hole is cheapest to find.
+    # `!wip/**` for the same reason ci.yml carries it — checkpoint pushes arrive by the dozen.
+    branches: ['integration/**', 'dev', 'qa', 'main', 'keep-*', '!wip/**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      shards:
+        description: 'How many shards to fan the mutants out over'
+        required: false
+        default: '24'
+
+concurrency:
+  group: gate-mutants-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # PINNED. A mutation job whose tool floats is a job whose verdict can change without a commit —
+  # the same tree would be green one week and red the next, and neither would be a fact about the
+  # tree. Bump this deliberately, in a commit, like any other pin.
+  CARGO_MUTANTS_VERSION: "27.1.0"
+  # THE FAN-OUT. Wall clock is (baseline) + (mutants-per-shard x one full four-gate self-proof).
+  # One self-proof is roughly half an hour, so the shard count is chosen to keep the expected
+  # mutants-per-shard at one for a normal landing-sized diff. The fleet is ~40 busbar-xl runners;
+  # 24 leaves room for the rest of CI to run beside it.
+  SHARD_COUNT: "24"
+
+jobs:
+  # -------------------------------------------------------------------------------------------
+  # WHAT THIS PUSH ACTUALLY CHANGED. Cheap, and the only job that decides whether the rest runs.
+  # -------------------------------------------------------------------------------------------
+  scope:
+    name: gate-mutants scope
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 10
+    outputs:
+      in_scope: ${{ steps.scope.outputs.in_scope }}
+      shards: ${{ steps.scope.outputs.shards }}
+      matrix: ${{ steps.scope.outputs.matrix }}
+      base: ${{ steps.scope.outputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Fetch the line the branch is measured against
+        # `ceiling-rose`'s ref, spelled once in scripts/gate-mutants.sh. Without it the merge-base
+        # cannot be computed and the script REFUSES (exit 2) rather than reporting an empty scope —
+        # a shallow clone must never read as "nothing changed".
+        run: |
+          git fetch --no-tags --quiet origin \
+            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - name: The scope script proves itself
+        run: scripts/gate-mutants.sh --selftest
+      - name: What is in scope
+        id: scope
+        run: |
+          set -euo pipefail
+          files="$(scripts/gate-mutants.sh --scope)"
+          echo "in scope on this push:"
+          printf '%s\n' "$files" | sed 's/^/  /'
+          if [ -n "$files" ]; then in=yes; else in=no; fi
+          n="${{ github.event.inputs.shards || env.SHARD_COUNT }}"
+          matrix="$(python3 -c "import json,sys; print(json.dumps(list(range(int(sys.argv[1])))))" "$n")"
+          {
+            echo "in_scope=$in"
+            echo "shards=$n"
+            echo "matrix=$matrix"
+          } >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------------------------------
+  # THE BASELINE. The test command, on the UNMUTATED tree, once for the whole commit.
+  #
+  # cargo-mutants can do this per shard (`--baseline run`) and that is its default; paying for it
+  # in all 24 shards is the single largest term in the wall clock, and it measures the same fact 24
+  # times. It runs here instead, in parallel with the shards, and the shards run `--baseline skip`.
+  # If this job is red, `gate-mutants` is red: a shard's "caught" means nothing when the command
+  # was already failing before anything was mutated.
+  # -------------------------------------------------------------------------------------------
+  baseline:
+    name: gate-mutants baseline (the four gates, unmutated)
+    needs: scope
+    if: needs.scope.outputs.in_scope == 'yes'
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Fetch the line the branch is measured against
+        run: |
+          git fetch --no-tags --quiet origin \
+            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: gate-mutants
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+      - name: The test command, unmutated
+        env:
+          XTASK_GATE_MUTATION_PROOF: "1"
+          XTASK_GATE_CEILING_SECS: "3600"
+        run: cargo test -p xtask --lib --test gate_mutation_proof
+
+  # -------------------------------------------------------------------------------------------
+  # THE MUTANTS. One shard per runner; every shard sees the same diff and the same denominator, or
+  # cargo-mutants' own sharding stops agreeing on how the work is divided.
+  # -------------------------------------------------------------------------------------------
+  shard:
+    name: gate-mutants shard ${{ matrix.shard }}
+    needs: scope
+    if: needs.scope.outputs.in_scope == 'yes'
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 55
+    strategy:
+      # fail-fast OFF on purpose. The output of this job is the LIST of survivors; cancelling the
+      # other 23 shards the moment one of them finds a hole reports one hole and hides the rest,
+      # which turns a single mechanical run into a queue of runs.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.scope.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Fetch the line the branch is measured against
+        run: |
+          git fetch --no-tags --quiet origin \
+            +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: gate-mutants
+      - name: Cache the pinned cargo-mutants binary
+        id: mutants-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-mutants
+          key: cargo-mutants-${{ env.CARGO_MUTANTS_VERSION }}-linux-x64
+      - name: Install cargo-mutants (pinned)
+        if: steps.mutants-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-mutants --version "${CARGO_MUTANTS_VERSION}" --locked
+      - name: Mutate the changed gate code, shard ${{ matrix.shard }}
+        env:
+          # The baseline job proves the unmutated command for the whole commit; see its comment.
+          GATE_MUTANTS_BASELINE: skip
+          GATE_MUTANTS_JOBS: "4"
+          GATE_MUTANTS_TIMEOUT: "5400"
+        run: scripts/gate-mutants.sh --shard "${{ matrix.shard }}/${{ needs.scope.outputs.shards }}"
+      - name: Keep the shard's outcome for the record
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gate-mutants-shard-${{ matrix.shard }}
+          path: |
+            mutants.out/
+            target/gate-mutants.diff
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # -------------------------------------------------------------------------------------------
+  # THE REQUIRED CHECK. Named `gate-mutants` and nothing else, because that is the string branch
+  # protection holds. It runs on every event, including the ones where there was no work, so the
+  # status always reports.
+  # -------------------------------------------------------------------------------------------
+  gate-mutants:
+    name: gate-mutants
+    needs: [scope, baseline, shard]
+    if: always()
+    runs-on: [self-hosted, linux, x64, busbar-xl]
+    timeout-minutes: 10
+    steps:
+      - name: Verdict
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          BASELINE_RESULT: ${{ needs.baseline.result }}
+          SHARD_RESULT: ${{ needs.shard.result }}
+          IN_SCOPE: ${{ needs.scope.outputs.in_scope }}
+        run: |
+          set -uo pipefail
+          echo "scope=$SCOPE_RESULT baseline=$BASELINE_RESULT shards=$SHARD_RESULT in_scope=$IN_SCOPE"
+
+          # A scope job that did not succeed says nothing about the tree. Nothing is not green.
+          if [ "$SCOPE_RESULT" != "success" ]; then
+            echo "RED: the scope job did not succeed ($SCOPE_RESULT). Without a scope this run \
+          measured no mutants, and a run that measured nothing is not a run that found nothing."
+            exit 1
+          fi
+
+          if [ "$IN_SCOPE" != "yes" ]; then
+            # Honest green: the diff touched no gate source, gate data, landing runner or workflow.
+            echo "GREEN: nothing in the mutation scope changed on this push."
+            exit 0
+          fi
+
+          rc=0
+          if [ "$BASELINE_RESULT" != "success" ]; then
+            echo "RED: the four gates do not hold their own planted faults on the UNMUTATED tree \
+          ($BASELINE_RESULT). Every 'caught' in every shard is meaningless until that is fixed."
+            rc=1
+          fi
+          if [ "$SHARD_RESULT" != "success" ]; then
+            echo "RED: at least one shard reported a SURVIVING mutant ($SHARD_RESULT) -- gate code \
+          that this branch changed and that no self-test case holds down. Open the red shard jobs \
+          above; each prints the exact file, line and stub that survived."
+            rc=1
+          fi
+          [ "$rc" = "0" ] && echo "GREEN: every mutant in the changed gate code was CAUGHT by the \
+          gates' own self-proof."
+          exit $rc
