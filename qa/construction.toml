@@ -113,19 +113,12 @@ busbar-voice = ["busbar-voice-codec"]
 # and an entry that describes no rise is refused as stale. It cannot be left behind, and it cannot
 # cover the next raise of the same ceiling.
 
-[gate.ceiling_raises."rules.legacy-reach.prefixes.busbar_substrate.figure"]
-from = 26
-to = 47
-because = """ONE-TIME CALIBRATION of a row that was not gating (integrator ruling, 2026-09-09). \
-`legacy-reach:busbar_substrate` was informational() -- PASS whatever it measured, titled WARN -- \
-and the root's substrate reach grew from 26 to 47 underneath it while its busbar_core figure fell \
-from 49 to 27. That is the retirement working as designed: a core symbol retargeted onto the \
-substrate on its way to the kernel is one fewer `busbar_core::` name and one more \
-`busbar_substrate::` one, and permitting exactly that sideways move is what the WARN posture was \
-for. The commit that makes the row GATE cannot also be the commit that declares a twenty-one \
-symbol regression, because nothing ever held this number. It is calibrated once, to what the tree \
-measures today, and it ratchets down from here like every other figure in this file: this row \
-holds it from above and `ceiling-slack` holds it from below."""
+# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
+# `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
+# while the commit that needed it was in flight. That commit LANDED: the base now carries 47, the
+# rise the row was written to excuse no longer exists, and `ceiling-rose` refused the declaration as
+# stale -- which is the expiry working exactly as the paragraph above describes it. Striking it
+# returns `construction` to its eight standing FAILs, none of which is about a ceiling.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
