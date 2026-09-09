@@ -18,6 +18,8 @@ pub const SECS_PER_DAY: u64 = 86_400;
 pub const WINDOW_TOTAL: &str = "total";
 /// The calendar-day window, aligned to UTC midnight.
 pub const WINDOW_DAY: &str = "day";
+/// The ISO week window, aligned to UTC Monday midnight.
+pub const WINDOW_WEEK: &str = "week";
 /// The calendar-month window, aligned to the UTC first of the month.
 pub const WINDOW_MONTH: &str = "month";
 /// The wall-clock minute window.
@@ -26,13 +28,26 @@ pub const WINDOW_MINUTE: &str = "minute";
 pub const WINDOW_HOUR: &str = "hour";
 
 /// Every window word, in the order the vocabulary lists them.
-pub const ALL_WINDOWS: [&str; 5] = [
+pub const ALL_WINDOWS: [&str; 6] = [
     WINDOW_MINUTE,
     WINDOW_HOUR,
     WINDOW_DAY,
+    WINDOW_WEEK,
     WINDOW_MONTH,
     WINDOW_TOTAL,
 ];
+
+/// Epoch day 0 (1970-01-01) is a THURSDAY, so a week aligned to Monday starts three days before
+/// it. Shifting by three before the divide and back after is what puts the boundary on Monday
+/// rather than on whatever day the epoch happened to be.
+const EPOCH_DOW_SHIFT: u64 = 3;
+const SECS_PER_WEEK: u64 = 7 * SECS_PER_DAY;
+
+/// The UTC Monday midnight at or before `now`.
+fn week_start(now: u64) -> u64 {
+    let shifted = now + EPOCH_DOW_SHIFT * SECS_PER_DAY;
+    shifted / SECS_PER_WEEK * SECS_PER_WEEK - EPOCH_DOW_SHIFT * SECS_PER_DAY
+}
 
 /// The epoch start of the window containing `now` for a given window word (nouns): `total` = a
 /// single all-time window (0); `day` = UTC midnight; `month` = UTC first-of-month.
@@ -46,6 +61,7 @@ pub fn budget_window(period: &str, now: u64) -> u64 {
         WINDOW_MINUTE => now / 60 * 60,
         WINDOW_HOUR => now / 3600 * 3600,
         WINDOW_DAY => now / SECS_PER_DAY * SECS_PER_DAY,
+        WINDOW_WEEK => week_start(now),
         WINDOW_MONTH => {
             let days = (now / SECS_PER_DAY) as i64;
             let (y, m, _) = civil_from_days(days);
@@ -70,6 +86,7 @@ pub fn window_end(period: &str, now: u64) -> Option<u64> {
         WINDOW_MINUTE => Some(now / 60 * 60 + 60),
         WINDOW_HOUR => Some(now / 3600 * 3600 + 3600),
         WINDOW_DAY => Some(now / SECS_PER_DAY * SECS_PER_DAY + SECS_PER_DAY),
+        WINDOW_WEEK => Some(week_start(now) + SECS_PER_WEEK),
         WINDOW_MONTH => {
             let days = (now / SECS_PER_DAY) as i64;
             let (y, m, _) = civil_from_days(days);

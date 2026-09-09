@@ -300,3 +300,64 @@ pub(crate) const HOUR: &str = WINDOW_HOUR;
 pub(crate) const DAY: &str = WINDOW_DAY;
 pub(crate) const MONTH: &str = WINDOW_MONTH;
 pub(crate) const TOTAL: &str = WINDOW_TOTAL;
+
+// ── 1.6.0: the `week` window ─────────────────────────────────────────────────────────────────────
+
+/// A week is aligned to UTC MONDAY midnight, and the arithmetic has to say so explicitly because
+/// epoch day 0 (1970-01-01) is a THURSDAY -- a naive `now / SECS_PER_WEEK` would put every boundary
+/// on a Thursday, which is not a week anybody writes a budget against.
+#[test]
+fn the_week_window_starts_on_monday_midnight_utc() {
+    use crate::window::{budget_window, window_end, WINDOW_WEEK};
+    const DAY: u64 = 86_400;
+
+    // 2026-09-08 is a Tuesday. Days from epoch to 2026-09-07 (Monday) = 20_703.
+    let monday = 20_703 * DAY;
+    let tuesday_noon = monday + DAY + 12 * 3_600;
+
+    assert_eq!(
+        budget_window(WINDOW_WEEK, tuesday_noon),
+        monday,
+        "a Tuesday belongs to the Monday that opened its week"
+    );
+    // The boundary itself belongs to its own week, not to the one before it.
+    assert_eq!(budget_window(WINDOW_WEEK, monday), monday);
+    // One second earlier is the PREVIOUS week.
+    assert_eq!(budget_window(WINDOW_WEEK, monday - 1), monday - 7 * DAY);
+    // And it rolls exactly seven days on.
+    assert_eq!(
+        window_end(WINDOW_WEEK, tuesday_noon),
+        Some(monday + 7 * DAY)
+    );
+}
+
+/// The week is a KNOWN window word, so it never falls through the corrupt-row backstop that
+/// enforces an unrecognized word as all-time. A `per: week` cap that silently enforced as `total`
+/// would be a cap that never resets.
+#[test]
+fn the_week_window_is_a_known_word_and_never_falls_back_to_all_time() {
+    use crate::window::{budget_window, is_known_window, ALL_WINDOWS, WINDOW_WEEK};
+    assert!(is_known_window(WINDOW_WEEK));
+    assert_eq!(ALL_WINDOWS.len(), 6);
+    assert!(ALL_WINDOWS.contains(&WINDOW_WEEK));
+    // The fall-safe answer is 0; a real week is not 0 (except in the epoch's own first week).
+    assert_ne!(budget_window(WINDOW_WEEK, 20_703 * 86_400), 0);
+}
+
+/// Every window word the vocabulary lists resolves to a window start that CONTAINS the instant it
+/// was asked about, and (except for the never-rolling all-time window) to an end after it. This is
+/// the property a new window is most likely to break, and it is checked over the whole vocabulary
+/// rather than over the new entry alone.
+#[test]
+fn every_window_word_brackets_the_instant_it_is_asked_about() {
+    use crate::window::{budget_window, window_end, ALL_WINDOWS, WINDOW_TOTAL};
+    let now = 20_703 * 86_400 + 45_296;
+    for w in ALL_WINDOWS {
+        let start = budget_window(w, now);
+        assert!(start <= now, "{w}: the window start is at or before now");
+        match window_end(w, now) {
+            Some(end) => assert!(end > now, "{w}: the window ends after now"),
+            None => assert_eq!(w, WINDOW_TOTAL, "only the all-time window never rolls"),
+        }
+    }
+}

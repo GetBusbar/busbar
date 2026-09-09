@@ -376,7 +376,7 @@ pools:
 # Named enforcement buckets forming an acyclic tree (parent chains AND together). A
 # minted key binds to at most one group; a key with no group is authed + unlimited. Generic limits:
 # each is `{ <metric>: <amount>, per: <window> }` with metric one of requests|tokens|budget|
-# concurrent and window one of minute|hour|day|month|total (`concurrent` is instantaneous: no per).
+# concurrent and window one of minute|hour|day|week|month|total (`concurrent` is instantaneous: no per).
 # `enabled: false` freezes a group (history kept).
 # groups:
 #   acme:

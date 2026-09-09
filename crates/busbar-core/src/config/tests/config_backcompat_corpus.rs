@@ -176,6 +176,7 @@ fn render_limit(l: &super::LimitCfg) -> String {
         None => "-",
         Some(super::groups::OnExhaust::Block) => "block",
         Some(super::groups::OnExhaust::Downgrade) => "downgrade",
+        Some(super::groups::OnExhaust::Cut) => "cut",
     };
     let downgrade_to = l
         .downgrade_to

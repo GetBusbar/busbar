@@ -35,12 +35,26 @@ pub(crate) use busbar_substrate::governance::SECS_PER_DAY;
 pub(crate) const WINDOW_TOTAL: &str = "total";
 /// The "day" window sentinel: resets at UTC midnight.
 pub(crate) const WINDOW_DAY: &str = "day";
+/// The "week" window sentinel: resets at UTC Monday midnight.
+pub(crate) const WINDOW_WEEK: &str = "week";
 /// The "month" window sentinel: resets at UTC first-of-month.
 pub(crate) const WINDOW_MONTH: &str = "month";
 /// The "minute" window sentinel: resets each UTC minute.
 pub(crate) const WINDOW_MINUTE: &str = "minute";
 /// The "hour" window sentinel: resets each UTC hour.
 pub(crate) const WINDOW_HOUR: &str = "hour";
+
+/// Epoch day 0 (1970-01-01) is a THURSDAY, so a week aligned to Monday starts three days before
+/// it. Shifting by three before the divide and back after is what puts the boundary on Monday
+/// rather than on whatever day the epoch happened to be.
+const EPOCH_DOW_SHIFT: u64 = 3;
+const SECS_PER_WEEK: u64 = 7 * SECS_PER_DAY;
+
+/// The UTC Monday midnight at or before `now`.
+fn week_start(now: u64) -> u64 {
+    let shifted = now + EPOCH_DOW_SHIFT * SECS_PER_DAY;
+    shifted / SECS_PER_WEEK * SECS_PER_WEEK - EPOCH_DOW_SHIFT * SECS_PER_DAY
+}
 
 // ── Virtual-key / bearer-secret formats ──────────────────────────────────────────────────────────
 /// The `"vk_"` prefix prepended to the 16-hex-char hash prefix to form a virtual-key id.
@@ -900,6 +914,7 @@ pub(crate) fn budget_window(period: &str, now: u64) -> u64 {
         WINDOW_MINUTE => now / 60 * 60,
         WINDOW_HOUR => now / 3600 * 3600,
         WINDOW_DAY => now / SECS_PER_DAY * SECS_PER_DAY,
+        WINDOW_WEEK => week_start(now),
         WINDOW_MONTH => {
             let days = (now / SECS_PER_DAY) as i64;
             let (y, m, _) = civil_from_days(days);
@@ -928,6 +943,7 @@ pub(crate) fn window_end(period: &str, now: u64) -> Option<u64> {
         WINDOW_MINUTE => Some(now / 60 * 60 + 60),
         WINDOW_HOUR => Some(now / 3600 * 3600 + 3600),
         WINDOW_DAY => Some(now / SECS_PER_DAY * SECS_PER_DAY + SECS_PER_DAY),
+        WINDOW_WEEK => Some(week_start(now) + SECS_PER_WEEK),
         WINDOW_MONTH => {
             let days = (now / SECS_PER_DAY) as i64;
             let (y, m, _) = civil_from_days(days);

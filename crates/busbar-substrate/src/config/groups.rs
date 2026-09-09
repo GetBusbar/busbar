@@ -139,6 +139,9 @@ pub enum LimitWindow {
     Minute,
     Hour,
     Day,
+    /// The ISO week, aligned to UTC Monday midnight. Added in 1.6.0: an operator who wanted a
+    /// weekly cap had to approximate it with a day or a month, and neither is a week.
+    Week,
     Month,
     Total,
 }
@@ -147,10 +150,11 @@ impl LimitWindow {
     /// Every window, so a consumer that has to recognize a window WORD (e.g. `cost::
     /// is_bucket_of_group`, parsing a bucket id back) enumerates the same five spellings the
     /// projector writes rather than hard-coding its own list.
-    pub const ALL: [LimitWindow; 5] = [
+    pub const ALL: [LimitWindow; 6] = [
         LimitWindow::Minute,
         LimitWindow::Hour,
         LimitWindow::Day,
+        LimitWindow::Week,
         LimitWindow::Month,
         LimitWindow::Total,
     ];
@@ -162,6 +166,7 @@ impl LimitWindow {
             LimitWindow::Minute => "minute",
             LimitWindow::Hour => "hour",
             LimitWindow::Day => "day",
+            LimitWindow::Week => "week",
             LimitWindow::Month => "month",
             LimitWindow::Total => "total",
         }
@@ -200,10 +205,19 @@ pub struct LimitCfg {
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum OnExhaust {
-    /// Refuse the request (429 / the vendor's quota status) - the default.
+    /// FINISH THE IN-FLIGHT UNIT, THEN REFUSE. The unit that was already running when the budget
+    /// ran out completes and is billed for what it delivered; the next request to arrive is
+    /// refused (429 / the vendor's quota status). The default when the key is absent, and 1.5.5's
+    /// behaviour exactly: a request that had been admitted has always been allowed to finish.
     Block,
-    /// Re-route the request through `downgrade_to` instead of refusing it.
+    /// Re-route the request through `downgrade_to` instead of refusing it. Unchanged.
     Downgrade,
+    /// CUT AT THE CAP. Where `block` lets the in-flight unit finish, `cut` ends it the moment the
+    /// budget is reached: a stream stops mid-flight and is billed for the prefix it delivered, and
+    /// the unit's outcome is `cut` rather than `completed`. For a long-lived unit -- a stream, a
+    /// duplex voice session -- `block` is a cap the unit can overrun by however much it had left to
+    /// say, and `cut` is the one that holds.
+    Cut,
 }
 
 impl<'de> Deserialize<'de> for LimitCfg {
@@ -221,7 +235,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                     "a limit map `{ <metric>: <amount>, per: <window>, pool: <name> }` where \
                      <metric> is one of requests|tokens|tokens_input|tokens_output|\
                      tokens_cache_read|tokens_cache_write|budget|concurrent and <window> one of \
-                     minute|hour|day|month|total (omit `per` for concurrent; `pool` is optional \
+                     minute|hour|day|week|month|total (omit `per` for concurrent; `pool` is optional \
                      and scopes the limit to one pool's traffic)",
                 )
             }
@@ -367,7 +381,7 @@ impl<'de> Deserialize<'de> for LimitCfg {
                     }),
                     (_, None) => Err(de::Error::custom(format!(
                         "a `{}` limit requires a `per:` window \
-                         (minute | hour | day | month | total)",
+                         (minute | hour | day | week | month | total)",
                         metric.as_str()
                     ))),
                     (_, Some(window)) => Ok(LimitCfg {

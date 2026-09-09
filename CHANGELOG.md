@@ -129,6 +129,19 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
   [the diagnostics reference](docs/diagnostics.md), which says what each one means and what to do.
+- **A budget limit may be written `per: week`.** The window vocabulary was a closed set of five —
+  `minute`, `hour`, `day`, `month`, `total` — so an operator who wanted a weekly cap had to
+  approximate it with a day or a month, and neither is a week. `week` joins them as a sixth,
+  aligned to UTC Monday midnight. Purely additive: a config that never writes the word parses to
+  exactly the `LimitCfg` it always did, and the only recorded difference is that the parse error a
+  windowed limit raises when it omits `per:` now lists six window words instead of five.
+- **`on_exhaust:` gained a third value, `cut`.** `block` (the default when the key is absent)
+  finishes the unit that was already in flight when the budget ran out and refuses the next request
+  — which is what Busbar has always done, and it means a long-lived unit can overrun its cap by
+  however much it had left to say. `downgrade` is unchanged. `cut` ends the unit AT the cap: a
+  stream stops mid-flight and is billed for the prefix it delivered. The value is accepted, carried
+  through the config and reported on the admin API's limit view; the mid-unit enforcement hook it
+  names is not wired yet, so a limit written `on_exhaust: cut` behaves as `block` until it is.
 - **Two A2A verbs that were answered for free are now metered.** `GetExtendedAgentCard` on
   `POST /a2a` and `ListTasks` reached a handler, did the work and left no ledger row: the card verb
   reads the caller's whole catalogue and builds a document, and `ListTasks` scans every task the

@@ -263,3 +263,87 @@ fn provision_child_builds_leaf_from_nearest_default() {
     assert_eq!(unknown.parent.as_deref(), Some("nope"));
     assert!(unknown.limits.is_empty());
 }
+
+// ── 1.6.0: the `week` window and `on_exhaust: cut` ───────────────────────────────────────────────
+
+/// `per: week` parses. Before 1.6.0 an operator who wanted a weekly cap had to approximate it with
+/// a day or a month, and neither is a week; the closed window enum simply had no variant for it.
+#[test]
+fn a_limit_may_name_the_week_window() {
+    let weekly: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: week }").unwrap();
+    assert_eq!(weekly.per, Some(LimitWindow::Week));
+    assert_eq!(LimitWindow::Week.as_str(), "week");
+}
+
+/// Serialize↔deserialize symmetry over EVERY `LimitWindow`, for the same reason the metric table
+/// above exists: `as_str` (which `Serialize` uses) and serde's `snake_case` renaming are decided in
+/// separate places, and `ALL` is a hand-maintained array that a new variant can be left out of. An
+/// EXHAUSTIVE match means adding a window without extending this test fails to compile.
+#[test]
+fn every_limit_window_serde_round_trips() {
+    fn spelling(w: LimitWindow) -> &'static str {
+        match w {
+            LimitWindow::Minute => "minute",
+            LimitWindow::Hour => "hour",
+            LimitWindow::Day => "day",
+            LimitWindow::Week => "week",
+            LimitWindow::Month => "month",
+            LimitWindow::Total => "total",
+        }
+    }
+    // `ALL` must carry every variant: the consumers that recognize a window WORD walk it, so a
+    // variant missing from it is a window the config accepts and the runtime does not know.
+    assert_eq!(LimitWindow::ALL.len(), 6);
+    for w in LimitWindow::ALL {
+        let key = spelling(w);
+        assert_eq!(w.as_str(), key, "as_str and the spelling table agree");
+        let parsed: LimitCfg =
+            serde_yaml::from_str(&format!("{{ budget: 7, per: {key} }}")).unwrap();
+        assert_eq!(
+            parsed.per,
+            Some(w),
+            "`per: {key}` parses back to its variant"
+        );
+        let out = serde_yaml::to_string(&parsed).unwrap();
+        assert!(out.contains(key), "the window serializes as `{key}`: {out}");
+        let back: LimitCfg = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(parsed, back, "`per: {key}` survives a round trip");
+    }
+}
+
+/// `on_exhaust: cut` parses, beside the two values that were already there.
+///
+/// The three are one axis, which is why `cut` extends the EXISTING key rather than arriving as a
+/// second one: `block` finishes the in-flight unit and then refuses, `downgrade` re-routes, and
+/// `cut` ends the unit at the cap. A separate key would have let an operator write two answers to
+/// one question.
+#[test]
+fn on_exhaust_accepts_cut_beside_block_and_downgrade() {
+    let cut: LimitCfg =
+        serde_yaml::from_str("{ budget: 5000, per: week, pool: frontier, on_exhaust: cut }")
+            .unwrap();
+    assert_eq!(cut.on_exhaust, Some(OnExhaust::Cut));
+    assert_eq!(cut.per, Some(LimitWindow::Week));
+    // And it round-trips under its config spelling.
+    let out = serde_yaml::to_string(&cut).unwrap();
+    assert!(out.contains("on_exhaust: cut"), "{out}");
+    let back: LimitCfg = serde_yaml::from_str(&out).unwrap();
+    assert_eq!(cut, back);
+
+    let block: LimitCfg = serde_yaml::from_str("{ budget: 5000, per: day }").unwrap();
+    assert_eq!(block.on_exhaust, None, "absent is still absent, not `cut`");
+}
+
+/// `cut` inherits every rule `on_exhaust` already had, and gains none of `downgrade`'s. In
+/// particular it does NOT take a `downgrade_to`: there is nowhere to send traffic you are cutting.
+#[test]
+fn cut_does_not_take_a_downgrade_to() {
+    let err = serde_yaml::from_str::<LimitCfg>(
+        "{ budget: 5000, per: day, pool: frontier, on_exhaust: cut, downgrade_to: cheap }",
+    )
+    .expect_err("`downgrade_to` beside `cut` is a config error");
+    assert!(
+        err.to_string().contains("downgrade"),
+        "the refusal explains which key wanted the other: {err}"
+    );
+}

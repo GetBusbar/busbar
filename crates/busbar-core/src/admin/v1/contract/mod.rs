@@ -656,6 +656,7 @@ impl LimitView {
             on_exhaust: l.on_exhaust.map(|e| match e {
                 crate::config::groups::OnExhaust::Block => "block",
                 crate::config::groups::OnExhaust::Downgrade => "downgrade",
+                crate::config::groups::OnExhaust::Cut => "cut",
             }),
             downgrade_to: l.downgrade_to.as_ref().map(|s| s.value.clone()),
         }

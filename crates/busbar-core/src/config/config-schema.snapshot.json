@@ -863,7 +863,8 @@
         "hour",
         "minute",
         "month",
-        "total"
+        "total",
+        "week"
       ]
     },
     "LimitsCfg": {
@@ -1139,6 +1140,7 @@
       "transparent": false,
       "variants": [
         "block",
+        "cut",
         "downgrade"
       ]
     },
