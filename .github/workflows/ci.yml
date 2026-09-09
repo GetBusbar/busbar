@@ -625,7 +625,27 @@ jobs:
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
+      # FULL HISTORY AND THE AUDIT PINS, FOR THE SAME REASON THE structure-lint JOB TAKES THEM.
+      # `cargo test -p xtask` below runs `gates::audit_ledger::tests::…`, and those two tests assert
+      # the same two facts the blocking `audit-ledger` gate asserts over there: that every record's
+      # `audited_at` commit RESOLVES, and that the tree it stamps is the one that commit held. Both
+      # questions are answered by asking git. This job's checkout answered neither: `actions/checkout`
+      # defaults to depth 1, and it carries nothing outside `refs/heads/*` and `refs/tags/*`, so the
+      # pin set here was empty and `reachable()` degenerated to "an ancestor of HEAD". Measured on
+      # this base: 23 records name 23 commits, TEN of which are ancestors of HEAD — the other
+      # thirteen are green only because thirteen `refs/audit-pins/*` refs exist, and no checkout
+      # brings them. So the job ran a claim it had not been given the inputs to judge, and reported
+      # `audit-ledger:audited-at-reachable: FAIL` and `audit-ledger:hash-matches-commit: FAIL` about
+      # a register that is sound. The claim is right; what was missing is the history it reads.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # `fetch-depth: 0` is depth, not namespace: it cannot bring a ref the remote never advertises
+      # under `refs/heads/*`. Pins are written locally under `refs/audit-pins/*` and MIRRORED to
+      # `refs/backup/audit-pins/*`, which is the namespace this fetch reads. `|| true`: a repository
+      # with no pins yet is not a broken job, and the tests are what decide whether one is missing.
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*' || true
 
       # SERVICE CONTAINERS ARE ADDRESSED BY CONTAINER IP, NOT localhost. On a GitHub-hosted runner
       # a job owned the whole machine, so `ports: - 5432:5432` and `localhost:5432` were the same
