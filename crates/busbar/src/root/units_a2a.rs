@@ -1681,8 +1681,16 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // The MONEY does not move through here. The metering step reads the draft's own figures and
         // the settlement reads the same evidence it always did; what this records is the bytes the
         // Encode step reports on, which is the answer's size and not a priced quantity.
+        // THE BUFFERING IS THIS PLANE'S CHOICE AND IT IS MADE HERE. `execute` hands back the
+        // surface's own response with its body unread; this plane's exit path carries BYTES, and the
+        // Encode step reports the answer's size, so this plane asks for those bytes. `collected` does
+        // it generically over the seam's two methods — the mount does not do it on every plane's
+        // behalf, because a plane that streams its answer would be buffered against its will.
+        //
+        // The three values are the same three the seam used to hand back, in the same order, so the
+        // figure recorded below and the frame it rides out on are byte-for-byte what they were.
         if let (Some(dispatch), Some(op)) = (self.bindings.dispatch, self.draft.op) {
-            let answer = dispatch.execute(op);
+            let answer = crate::root::transports::collected(dispatch, op);
             let mut progress = read_through_poison(&self.progress);
             progress.encoded = answer.body.len() as u64;
             progress.answer = Some(answer);

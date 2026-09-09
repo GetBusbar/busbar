@@ -334,17 +334,28 @@ impl CountingSurface {
     }
 }
 
+/// The bytes this double answers with, named so `execute` and `collect` cannot disagree about them.
+const SURFACE_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the surface"}}"#;
+
 impl crate::root::transports::MountDispatch for CountingSurface {
     fn execute(
         &self,
         _op: busbar_contract::ids::OpClassId,
-    ) -> crate::root::transports::PlaneAnswer {
+    ) -> crate::root::transports::MountedReply {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        crate::root::transports::PlaneAnswer {
-            status: 200,
-            headers: vec![("content-type".to_string(), "application/json".to_string())],
-            body: br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the surface"}}"#.to_vec(),
-        }
+        axum::http::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(SURFACE_BODY.to_vec()))
+            .expect("the double's answer always builds")
+    }
+
+    fn collect(&self, _body: axum::body::Body) -> Option<Vec<u8>> {
+        // A DOUBLE ANSWERS FROM THE BODY IT WROTE. There is no runtime on the far side of this seam to
+        // step onto and no surface to wait for: the bytes are the ones `execute` just handed back, so
+        // reading them is returning them. What the cells are asserting is what the LOOP does with an
+        // answer, and that is unchanged by where the double keeps it.
+        Some(SURFACE_BODY.to_vec())
     }
 }
 

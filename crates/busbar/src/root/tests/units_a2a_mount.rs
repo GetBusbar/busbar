@@ -557,9 +557,14 @@ async fn the_seam_of_one_arrival_executes_at_most_once() {
     .await
     .expect("the blocking probe ran");
 
-    assert_eq!(first.status, SURFACE_STATUS, "the first drive reached it");
     assert_eq!(
-        second.status, 503,
+        first.status().as_u16(),
+        SURFACE_STATUS,
+        "the first drive reached it"
+    );
+    assert_eq!(
+        second.status().as_u16(),
+        503,
         "and the second could not, because the request had already gone"
     );
     assert_eq!(calls.seen(), 1, "so the surface ran exactly once");
