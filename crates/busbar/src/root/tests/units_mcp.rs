@@ -392,6 +392,7 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
             (credential == "tok" && expected_aud == Some("mcp")).then(|| KeyFacts {
                 id: "key-mcp-1".to_string(),
                 name: "an approved key".to_string(),
+                scope: Some(busbar_contract::CallerScope::Full),
             })
         }
 

@@ -363,6 +363,7 @@ impl crate::root::kernel::auth_bindings::VirtualKeyDirectory for TheNodesOwnBoun
         admissible.then(|| crate::root::kernel::auth_bindings::KeyFacts {
             id: "key-a2a-1".to_string(),
             name: "an approved key".to_string(),
+            scope: Some(busbar_contract::CallerScope::Full),
         })
     }
 

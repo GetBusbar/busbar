@@ -62,7 +62,6 @@ use busbar_plane_a2a::{ops, records, A2aPlane};
 use busbar_substrate::net_guard::SystemResolver as HostResolver;
 use busbar_unit_admission::{BucketChain, Door, GroupTable, InMemoryCells, Pricer};
 use busbar_unit_auth::Auth;
-use busbar_unit_scope::{Grants, Scope};
 use busbar_unit_trust::lane::BreakerView;
 use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
 
@@ -851,6 +850,12 @@ impl A2aLeg {
             // Nothing on this plane's mounted path is a bound session: every claim carries its
             // credential on the request, so every unit re-authenticates and revocation bites.
             from_session: false,
+            // THE SAME READING OF THE ADDRESS the audience field above is derived from, carried
+            // forward whole. The scope step needs it and cannot re-derive it: it is handed a
+            // principal and an operation class, and the card operation is served at three addresses
+            // of which two are open — so an operation-shaped answer would be the wrong answer at
+            // two of them. Read once, here, where the address is.
+            open: self.addresses_openly(arrival),
             // NARROWED BY WHAT ARRIVED, within what the plane declared. A carrier the plane's claims
             // do not name narrows to nothing, and narrowing to nothing inside a NON-EMPTY declared
             // set is a refusal at the authenticate step — which is the fail-closed answer and the
@@ -1011,28 +1016,20 @@ impl A2aLeg {
             bytes_nanos,
             open,
         );
-        // THE GRANTS ARE THE CALLER'S, and this arrival presented no credential, so they are the
-        // anonymous set. Read-only is what an unidentified caller holds; the approve step compares
-        // it against the policy's own entry for the class and refuses what it does not cover.
+        // NO GRANTS ARE ASSEMBLED HERE, and that is the change. This function runs BEFORE the walk,
+        // so anything it decided about what the caller may do would be decided before the chain had
+        // said who the caller is — which is precisely what it used to do, and why every
+        // credentialled request to this plane held the anonymous read-only set no matter which key
+        // it presented. The rung now travels on the principal the authenticate step settles, and
+        // `A2aUnits::approve` reads it off the caller it is handed.
         //
-        // EXCEPT ON AN ADDRESS THIS PROTOCOL DECLARED OPEN, where the scope step has nothing to
-        // decide: there is no identity to narrow, because the declaration says this address admits
-        // an unidentified caller, and the operation's real authority is the surface's to check —
-        // the push callback's token is INSIDE the request and is where the shipped release checks
-        // it. A loop that admitted the caller at the door and refused it at Approve turned every
-        // real push delivery into a refusal before the surface saw the token.
-        //
-        // The narrowness is the safety argument, and it is worth stating: only an address the
-        // plane's own surface declares OPEN reaches this arm, this protocol declares three, and two
-        // of them are read-only discovery.
-        let grants = Grants::of(if open {
-            draft
-                .op
-                .map_or(Scope::ReadOnly, crate::root::units_a2a::declared_scope)
-        } else {
-            Scope::ReadOnly
-        });
-        let units = A2aUnits::new(bindings, draft, grants);
+        // The OPEN addresses keep their own answer, and it is still the plane's rather than this
+        // file's: an address the surface declares open admits an unidentified caller by
+        // declaration, and the operation's real authority is the surface's to check — the push
+        // callback's token is INSIDE the request. That answer moved to `A2aDraft::open_grant`,
+        // where the draft that knows the address is, so this file no longer holds an opinion about
+        // authority at all.
+        let units = A2aUnits::new(bindings, draft);
         let ended = busbar_kernel::teller::run_unit(kernel, &units, ctx, run);
         // READ AFTER THE WALK and off the units the walk ran against, which is the only place it
         // exists: the loop's ending carries a frame and a frame carries no status and no headers.

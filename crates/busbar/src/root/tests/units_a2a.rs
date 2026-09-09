@@ -363,10 +363,12 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
                 "tok" => Some(KeyFacts {
                     id: "key-a2a-1".to_string(),
                     name: "an approved key".to_string(),
+                    scope: Some(busbar_contract::CallerScope::Full),
                 }),
                 "burned" => Some(KeyFacts {
                     id: "key-a2a-burned".to_string(),
                     name: "a key that was minted and then burned".to_string(),
+                    scope: Some(busbar_contract::CallerScope::Full),
                 }),
                 _ => None,
             }
@@ -1005,6 +1007,9 @@ fn draft(op: OpClassId) -> A2aDraft {
         narrowing: Some("bearer"),
         declared_schemes: &["bearer"],
         from_session: false,
+        // A credentialed address: the cells here are about what a CALLER holds, and an open address
+        // answers from the plane's own declaration instead. The one cell about that arm says so.
+        open: false,
         credential: None,
         expected_aud: None,
         destination: DestinationFacts::Upstream {
@@ -1682,6 +1687,58 @@ impl Deployment {
         self.calling_at(chain, 1_700_000_000)
     }
 
+    /// One unit of this deployment over a draft the caller supplies — for the cells that are about
+    /// what the plane SAID rather than about the money.
+    fn calling_with<'r>(
+        &'r self,
+        chain: Option<&'r busbar_unit_admission::BucketChain>,
+        draft: A2aDraft,
+    ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+        A2aUnits::new(self.bindings_at(chain, 1_700_000_000), draft)
+    }
+
+    /// The bindings one unit of this deployment runs over. Split out of [`Deployment::calling_at`]
+    /// so a cell can supply its own draft without a second copy of the twenty-three fields.
+    fn bindings_at<'r>(
+        &'r self,
+        chain: Option<&'r busbar_unit_admission::BucketChain>,
+        now: u64,
+    ) -> A2aBindings<'r, busbar_unit_admission::InMemoryCells> {
+        A2aBindings {
+            auth: &self.auth,
+            auth_bindings: &self.auth_bindings,
+            trust_token: &self.trust,
+            pools: &self.pools,
+            kinds: &self.kinds,
+            breaker: &EveryLaneOpen,
+            resolver: &self.resolver,
+            guard: GuardPolicy::default(),
+            denylist: &self.denylist,
+            pinned: &[],
+            door: &self.door,
+            chain,
+            pricer: &self.pricer,
+            bytes_nanos: 0,
+            records: &self.records,
+            meter_policy: &self.meter_policy,
+            scope_policy: &self.scope,
+            durability: &self.durability,
+            pool: "agents",
+            now,
+            // An hour, which is long enough that no fixture here trips the deadline by
+            // accident and short enough that a test meaning to trip it can just step the
+            // wall clock past it.
+            task_ttl_secs: 3_600,
+            // One reading per unit, off the node's own counter, exactly as the root would
+            // take it at arrival.
+            mono: self.mono.fetch_add(1, Ordering::AcqRel),
+            // No surface behind these cells: they are about what the loop DECIDES, and a seam
+            // here would make every one of them also a cell about what a router answered.
+            dispatch: None,
+            origin: self.origin,
+        }
+    }
+
     /// The same unit, arriving at a named wall epoch — so a test can step the wall clock the
     /// way an operator or an NTP correction steps it and watch what the record does.
     fn calling_at<'r>(
@@ -1689,43 +1746,7 @@ impl Deployment {
         chain: Option<&'r busbar_unit_admission::BucketChain>,
         now: u64,
     ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
-        A2aUnits::new(
-            A2aBindings {
-                auth: &self.auth,
-                auth_bindings: &self.auth_bindings,
-                trust_token: &self.trust,
-                pools: &self.pools,
-                kinds: &self.kinds,
-                breaker: &EveryLaneOpen,
-                resolver: &self.resolver,
-                guard: GuardPolicy::default(),
-                denylist: &self.denylist,
-                pinned: &[],
-                door: &self.door,
-                chain,
-                pricer: &self.pricer,
-                bytes_nanos: 0,
-                records: &self.records,
-                meter_policy: &self.meter_policy,
-                scope_policy: &self.scope,
-                durability: &self.durability,
-                pool: "agents",
-                now,
-                // An hour, which is long enough that no fixture here trips the deadline by
-                // accident and short enough that a test meaning to trip it can just step the
-                // wall clock past it.
-                task_ttl_secs: 3_600,
-                // One reading per unit, off the node's own counter, exactly as the root would
-                // take it at arrival.
-                mono: self.mono.fetch_add(1, Ordering::AcqRel),
-                // No surface behind these cells: they are about what the loop DECIDES, and a seam
-                // here would make every one of them also a cell about what a router answered.
-                dispatch: None,
-                origin: self.origin,
-            },
-            draft(ops::OP_MESSAGE_SEND),
-            Grants::of(Scope::Full),
-        )
+        A2aUnits::new(self.bindings_at(chain, now), draft(ops::OP_MESSAGE_SEND))
     }
 }
 
@@ -1776,6 +1797,226 @@ fn ask_the_door_as(
         &slip,
     );
     (decision.into_result(&seal), slip)
+}
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE GRANTS ARE THE CALLER'S
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// Ask this unit's APPROVE step about one caller.
+fn ask_approve(
+    unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+    who: &PrincipalId,
+) -> Result<ScopeFacts, busbar_caps::Refusal> {
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    Units::approve(
+        unit,
+        &busbar_caps::UnitToken::mint(&seal),
+        &a2a_ctx(),
+        who,
+        &[],
+    )
+    .into_result(&seal)
+}
+
+/// **APPROVE decides from the CALLER it is handed, and from nothing this unit was built with.**
+///
+/// RED FIRST. `A2aUnits` carried a `grants: Grants` assembled before the walk — before the chain
+/// had run, therefore before anybody knew who was calling — and `approve` read that field while
+/// taking the principal as `_principal`. Every credentialled request to this plane consequently
+/// held the anonymous read-only set, whatever key it presented, and every operation this plane
+/// declares `Full` was refused at APPROVE. The two calls below are the SAME unit and differ only in
+/// the caller, so a step that decided from its own field cannot tell them apart:
+///
+/// ```text
+/// assertion failed: a caller holding the full rung reached the send: Err(Refusal ScopeDenied)
+/// ```
+#[test]
+fn approve_decides_from_the_caller_it_is_handed_and_not_from_a_field() {
+    let deployment = deployment(busbar_unit_admission::GroupTable::default());
+    let unit = deployment.calling(None);
+    assert_eq!(
+        unit.draft().op,
+        Some(ops::OP_MESSAGE_SEND),
+        "the fixture's unit is a send, which this plane declares FULL"
+    );
+    assert_eq!(
+        declared_scope(ops::OP_MESSAGE_SEND),
+        Scope::Full,
+        "and the policy the step reads says so"
+    );
+
+    // The same id, twice, carrying two different rungs. Identity is held constant on purpose: the
+    // only thing that differs between the two calls is the authority the chain resolved.
+    let unidentified = PrincipalId::new("vk_1");
+    let full = PrincipalId::new("vk_1").granting(busbar_contract::CallerScope::Full);
+    assert_eq!(
+        unidentified, full,
+        "the rung is not part of the identity — the ledger bucket and the audit actor are one \
+         caller, not two"
+    );
+
+    match ask_approve(&unit, &unidentified) {
+        Err(refusal) => assert_eq!(
+            refusal.reason(),
+            ReasonCode::ScopeDenied,
+            "a caller carrying no rung holds the bottom of the chain, which does not reach a send"
+        ),
+        Ok(facts) => panic!("a caller with no resolved rung was approved for a send: {facts:?}"),
+    }
+    assert!(
+        ask_approve(&unit, &full).is_ok(),
+        "a caller holding the full rung reached the send"
+    );
+}
+
+/// **A read-only caller still cannot reach a send, and a read is still a read.**
+///
+/// The other half of the pair above: the rung travelling is not the same as the rung being
+/// IGNORED. A caller the chain resolved to `ReadOnly` is refused exactly what read-only is refused,
+/// and admitted exactly what it is not — so the fix cannot have been "grant everything that
+/// authenticated".
+#[test]
+fn the_rung_the_chain_resolved_is_enforced_in_both_directions() {
+    let deployment = deployment(busbar_unit_admission::GroupTable::default());
+    let read_only = PrincipalId::new("vk_1").granting(busbar_contract::CallerScope::ReadOnly);
+
+    let send = deployment.calling(None);
+    assert!(
+        ask_approve(&send, &read_only).is_err(),
+        "read-only does not reach a send"
+    );
+
+    // The same caller, the same deployment, an operation this plane declares read-only.
+    let mut reading = draft(ops::OP_TASK_LIST);
+    reading.destination = DestinationFacts::PlaneRecord {
+        schema: records::SCHEMA_TASK,
+        op: records::OP_SCAN,
+    };
+    let unit = deployment.calling_with(None, reading);
+    assert!(
+        ask_approve(&unit, &read_only).is_ok(),
+        "and it does reach a read"
+    );
+}
+
+/// **The rung reaches the principal through the CHAIN, off the node's own key directory.**
+///
+/// The port end to end, and the cell that says the plane never has to name an auth internal to get
+/// it: a directory answers with a rung, the engine's signed-key arm resolves a key carrying it, and
+/// what comes out of the authenticate step is a `PrincipalId` the scope unit can read. RED FIRST —
+/// `KeyFacts` was two strings, so there was nothing on this path for a rung to travel on.
+#[test]
+fn the_rung_the_directory_named_arrives_on_the_principal_the_chain_settles() {
+    use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+    use busbar_caps::Authenticated;
+
+    /// A directory that names a rung for one credential and none for the other.
+    struct TwoKeys;
+
+    impl VirtualKeyDirectory for TwoKeys {
+        fn verify(&self, credential: &str, _now: u64, _aud: Option<&str>) -> Option<KeyFacts> {
+            match credential {
+                "full" => Some(KeyFacts {
+                    id: "vk_full".to_string(),
+                    name: "a key that confers everything".to_string(),
+                    scope: Some(busbar_contract::CallerScope::Full),
+                }),
+                "silent" => Some(KeyFacts {
+                    id: "vk_silent".to_string(),
+                    name: "a directory that names no rung".to_string(),
+                    scope: None,
+                }),
+                _ => None,
+            }
+        }
+        fn revoked(&self, _credential: &str) -> bool {
+            false
+        }
+    }
+
+    let auth = Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), true));
+    let bindings = AuthBindings::new(Arc::new(TwoKeys));
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let settled = |credential: &str| {
+        let mut d = draft(ops::OP_MESSAGE_SEND);
+        d.credential = Some(credential.to_string());
+        auth.resolve(
+            &auth_request(&d, 100),
+            bindings.cache(),
+            bindings.keys(),
+            bindings.revocations(),
+            None,
+            &busbar_caps::UnitToken::mint(&seal),
+        )
+        .into_result(&seal)
+    };
+
+    match settled("full") {
+        Ok(Authenticated::Principal(p)) => {
+            assert_eq!(p.as_str(), "vk_full", "the identity is the key's");
+            assert_eq!(
+                p.scope(),
+                Some(busbar_contract::CallerScope::Full),
+                "and the rung the directory named travelled with it"
+            );
+            assert_eq!(
+                busbar_unit_scope::grants_of(&p),
+                Grants::of(Scope::Full),
+                "which is what the scope unit reads it as"
+            );
+        }
+        other => panic!("the bound directory did not reach the arm: {other:?}"),
+    }
+
+    // A directory that names no rung grants none, and the scope unit reads the absence as the
+    // BOTTOM of the chain rather than as a permission.
+    match settled("silent") {
+        Ok(Authenticated::Principal(p)) => {
+            assert_eq!(p.scope(), None, "no rung was named");
+            assert_eq!(
+                busbar_unit_scope::grants_of(&p),
+                Grants::of(Scope::ReadOnly),
+                "and an unnamed rung is the bottom of the chain, not a wildcard"
+            );
+        }
+        other => panic!("the second credential did not reach the arm: {other:?}"),
+    }
+}
+
+/// **An address the plane declares OPEN answers from the plane's declaration, not from the
+/// caller.**
+///
+/// The one narrow arm, pinned so it cannot widen: `open` is a fact about the ADDRESS, so a draft
+/// that is not on one has no open grant at all and falls through to the caller — which is the
+/// property that stops the arm from being a way past APPROVE on any credentialed address.
+#[test]
+fn only_an_address_the_plane_declared_open_answers_from_the_declaration() {
+    let mut credentialed = draft(ops::OP_MESSAGE_SEND);
+    credentialed.open = false;
+    assert_eq!(
+        credentialed.open_grant(),
+        None,
+        "a credentialed address asks the caller"
+    );
+
+    let mut open = draft(ops::OP_PUSH_EVENT);
+    open.open = true;
+    assert_eq!(
+        open.open_grant(),
+        Some(declared_scope(ops::OP_PUSH_EVENT)),
+        "an open address carries the plane's OWN declared requirement for the class"
+    );
+
+    // And it carries that and nothing more: an open address serving a read-only class grants
+    // read-only, never the top of the chain.
+    let mut discovery = draft(ops::OP_AGENT_CARD);
+    discovery.open = true;
+    assert_eq!(
+        discovery.open_grant(),
+        Some(Scope::ReadOnly),
+        "an open discovery address is read-only, not full"
+    );
 }
 
 /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against an A2A group gets one

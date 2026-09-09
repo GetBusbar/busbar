@@ -366,6 +366,7 @@ fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
             Some(crate::chain::ResolvedKey {
                 id: "vk_live".to_string(),
                 name: "live".to_string(),
+                scope: Some(busbar_contract::CallerScope::Full),
             })
         }
     }

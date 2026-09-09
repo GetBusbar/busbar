@@ -45,17 +45,27 @@ use std::sync::Arc;
 
 /// The facts the chain reads out of a verified key.
 ///
-/// Two strings, because two strings are what the unit's own `ResolvedKey` carries and what the
-/// principal it builds is made of. The key's policy — its group, its pools, its labels — is the
-/// governance state's business and is deliberately not in this shape: a value carried through here
-/// would be a value the authenticate step could act on, and the authenticate step decides who is
-/// calling and nothing else.
+/// Two strings and a RUNG. The key's policy — its group, its pools, its labels — is the governance
+/// state's business and is deliberately not in this shape: a value carried through here would be a
+/// value the authenticate step could act on, and the authenticate step decides who is calling and
+/// nothing else.
+///
+/// The rung is the exception, and it is one because it is not a policy this step acts on: it is
+/// what the credential CONFERS, established by the same verification that established the id, and
+/// carried so that the step which does act on it — APPROVE, several steps later, on whichever plane
+/// the unit belongs to — is handed it rather than left to guess. While this port carried only the
+/// two strings, every plane behind it had to supply a grant of its own from somewhere, and the A2A
+/// plane supplied a constant decided before the chain had run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyFacts {
     /// The key's stable subject id — the principal's id, the ledger bucket, the audit attribution.
     pub id: String,
     /// The key's operator-facing label.
     pub name: String,
+    /// THE RUNG THIS KEY CONFERS. `None` is a directory that names no rung, which every reader
+    /// collapses to the bottom of the chain — an implementor that cannot answer loses nothing it
+    /// was entitled to and grants nothing it did not mean to.
+    pub scope: Option<busbar_contract::CallerScope>,
 }
 
 /// The port the root reaches a node's virtual-key directory through.
@@ -112,6 +122,7 @@ impl KeyVerifier for DirectoryArm {
             .map(|facts| ResolvedKey {
                 id: facts.id,
                 name: facts.name,
+                scope: facts.scope,
             })
     }
 }
@@ -221,6 +232,7 @@ impl VirtualKeyDirectory for GovernanceDirectory {
             .map(|key| KeyFacts {
                 id: key.id.clone(),
                 name: key.name.clone(),
+                scope: Some(key_rung(&key)),
             })
     }
 
@@ -231,6 +243,23 @@ impl VirtualKeyDirectory for GovernanceDirectory {
         // answer the gate would have reached by any other route.
         self.state.is_revoked(credential)
     }
+}
+
+/// THE RUNG A NODE'S OWN VIRTUAL KEY CONFERS, read off the key the governance state resolved.
+///
+/// `Full`, and the reason is what a virtual key IS on this deployment rather than an opinion about
+/// what would be convenient. A minted key is the credential a caller spends on the DATA planes, and
+/// the shipped release lets a live key that resolves at all perform every operation of the plane it
+/// was minted for; what narrows a key is `allowed_scopes` — WHICH pool, WHICH server, WHICH agent —
+/// enforced by the trust unit against the destination, and it is a different axis entirely. A row
+/// in the key table carries no rung at all, so there is nothing narrower here to read: answering
+/// `ReadOnly` would not be caution, it would be inventing a restriction no operator configured and
+/// refusing every send on every plane.
+///
+/// This is the ONE place that judgement is made, so the day the key row grows a rung of its own is
+/// the day this function reads it — and nothing above it changes.
+fn key_rung(_key: &busbar_api::VirtualKey) -> busbar_contract::CallerScope {
+    busbar_contract::CallerScope::Full
 }
 
 /// The fixed id the operator's admin credential identifies as.

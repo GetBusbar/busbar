@@ -129,8 +129,23 @@ impl Auth {
             } if Principal::id_is_reserved(&principal.id) => {
                 Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
             }
-            ChainVerdict::Identified { principal, .. } => {
-                Decision::proceed(token, Authenticated::Principal((&principal).into()))
+            // THE RUNG TRAVELS WITH THE IDENTITY. The chain resolved a key; that key says what the
+            // credential confers; and the only thing a later step is handed is the principal. So
+            // the rung is attached HERE, at the one seam where both halves exist at once — a step
+            // that had to be told separately is a step that can be told nothing, which is the
+            // defect this repairs. A verdict with no resolved key attaches none, and the scope unit
+            // reads that absence as the bottom of the chain rather than as a permission.
+            ChainVerdict::Identified {
+                principal,
+                resolved,
+                ..
+            } => {
+                let id = busbar_contract::PrincipalId::from(&principal);
+                let id = match resolved.as_ref().and_then(|key| key.scope) {
+                    Some(scope) => id.granting(scope),
+                    None => id,
+                };
+                Decision::proceed(token, Authenticated::Principal(id))
             }
             // The open front door admits with the anonymous principal: no bucket, and an actor id
             // that reads as the plain word everywhere it is written.

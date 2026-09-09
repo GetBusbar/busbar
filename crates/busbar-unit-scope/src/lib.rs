@@ -373,6 +373,35 @@ pub fn required_scope(claim: ClaimKey, op: OpClassId, policy: &dyn PolicyView) -
     policy.required_scope(claim, op)
 }
 
+/// The rung the CONTRACT carries, read as the rung this unit decides with.
+///
+/// One conversion, in the crate that owns the meaning of a rung, so a plane that is handed a
+/// contract-side rung never has to invent the mapping — and adding a rung to either enum stops this
+/// build until somebody writes the pair down. It is an exhaustive match rather than a numeric
+/// correspondence for exactly that reason.
+impl From<busbar_contract::CallerScope> for Scope {
+    fn from(scope: busbar_contract::CallerScope) -> Self {
+        match scope {
+            busbar_contract::CallerScope::ReadOnly => Scope::ReadOnly,
+            busbar_contract::CallerScope::Full => Scope::Full,
+        }
+    }
+}
+
+/// WHAT THE CALLER THE CHAIN IDENTIFIED ACTUALLY HOLDS — the one reading, for every step that is
+/// handed a principal.
+///
+/// The APPROVE step is handed a principal and nothing else, so this is where a principal becomes an
+/// authority. A principal carrying NO rung holds `ReadOnly`: `None` is the absence of an answer,
+/// not a permissive one, and the bottom of the chain is what an unidentified caller has always
+/// held. Every caller of `approve` on a data plane reads its held set through here rather than off
+/// a value decided before the chain ran — a fixed grant assembled ahead of the walk is a grant that
+/// cannot be the caller's, whoever the caller turned out to be.
+#[must_use]
+pub fn grants_of(principal: &busbar_contract::PrincipalId) -> Grants {
+    Grants::of(principal.scope().map_or(Scope::ReadOnly, Scope::from))
+}
+
 /// The APPROVE step: does `held` satisfy `needed`? Kernel-granted operations
 /// ([`TRANSPORT_HANDSHAKE`], [`is_kernel_granted`]) are checked by the caller before reaching here —
 /// this function is the ordinary `Policy`-scope comparison for everything else. Resource locators

@@ -363,6 +363,7 @@ impl crate::chain::KeyVerifier for OrderRecordingVerifier {
         Some(ResolvedKey {
             id: "vk_order".to_string(),
             name: "order-pin".to_string(),
+            scope: Some(busbar_contract::CallerScope::Full),
         })
     }
 }

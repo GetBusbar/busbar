@@ -38,6 +38,7 @@ fn a_directory() -> Arc<Directory> {
             KeyFacts {
                 id: "vk_1".to_string(),
                 name: "the operator's key".to_string(),
+                scope: Some(busbar_contract::CallerScope::Full),
             },
         )],
         revoked: vec!["vk_gone".to_string()],
@@ -85,6 +86,7 @@ fn the_bound_verifier_resolves_through_the_directory() {
         Some(ResolvedKey {
             id: "vk_1".to_string(),
             name: "the operator's key".to_string(),
+            scope: Some(busbar_contract::CallerScope::Full),
         })
     );
     assert_eq!(keys.verify_token("tok-unknown", 10, None), None);

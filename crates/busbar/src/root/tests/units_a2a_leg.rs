@@ -867,7 +867,7 @@ fn admit_with_no_chain(
         0,
         false,
     );
-    let units = A2aUnits::new(bindings, draft, Grants::of(Scope::ReadOnly));
+    let units = A2aUnits::new(bindings, draft);
     let seal = busbar_caps::KernelSeal::acquire_for_kernel();
     let slip = busbar_kernel::slice::GroupLeaseSlip::new();
     let decision = units.admit(
@@ -925,6 +925,7 @@ impl crate::root::kernel::auth_bindings::VirtualKeyDirectory for TheNodesOwnBoun
         admissible.then(|| crate::root::kernel::auth_bindings::KeyFacts {
             id: "key-a2a-1".to_string(),
             name: "an approved key".to_string(),
+            scope: Some(busbar_contract::CallerScope::Full),
         })
     }
 

@@ -98,6 +98,7 @@ impl crate::chain::KeyVerifier for OneKey {
         Some(ResolvedKey {
             id: "vk_one".to_string(),
             name: "the one key".to_string(),
+            scope: Some(busbar_contract::CallerScope::Full),
         })
     }
 }

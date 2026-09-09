@@ -44,6 +44,18 @@ pub struct ResolvedKey {
     pub id: String,
     /// The key's operator-facing label.
     pub name: String,
+    /// THE RUNG THIS KEY CONFERS, as the contract spells a rung.
+    ///
+    /// `None` is "the directory named none", and it is not `ReadOnly`: the absence of an answer and
+    /// the bottom of the chain are different facts, and only the reader that has to DECIDE — the
+    /// scope unit — is allowed to collapse them, which it does fail-closed.
+    ///
+    /// The type is `busbar_contract::CallerScope` rather than a shape of this crate's own, and that
+    /// is the whole point of the field: the rung has to reach a plane's APPROVE step, and a plane
+    /// may not name this crate. Carried on the RESOLVED KEY and not on `Principal` because only an
+    /// engine arm resolves a key — a boxed module's answer type cannot carry one, so a module
+    /// cannot mint authority for itself.
+    pub scope: Option<busbar_contract::CallerScope>,
 }
 
 /// The built-in signed-key verifier, as the chain reaches it.

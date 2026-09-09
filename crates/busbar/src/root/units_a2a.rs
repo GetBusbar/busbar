@@ -671,6 +671,15 @@ pub struct A2aDraft {
     pub declared_schemes: &'static [&'static str],
     /// Whether the principal is the bound session's rather than these bytes'.
     pub from_session: bool,
+    /// WHETHER THE PLANE'S OWN SURFACE DECLARES THIS ADDRESS OPEN.
+    ///
+    /// Read off the declared surface, exactly as the door that served the arrival was chosen: an
+    /// address whose claim declares no scheme admits an unidentified caller BY DECLARATION, and
+    /// there is consequently no identity for the scope step to narrow. It is on the draft rather
+    /// than computed later because it is a fact about the ARRIVAL, decided once where the address
+    /// is in hand, and a second derivation of it is a second reading that can disagree with the
+    /// door.
+    pub open: bool,
     /// The credential the transport masked out of the frame, where one arrived.
     pub credential: Option<String>,
     /// The audience an audience-bound ingress requires.
@@ -694,6 +703,33 @@ pub struct A2aDraft {
 }
 
 impl A2aDraft {
+    /// THE GRANT AN ADDRESS THIS PROTOCOL DECLARED OPEN CARRIES, where the arrival is on one.
+    ///
+    /// `None` — the ordinary case, every credentialed address — means "ask the caller", and the
+    /// APPROVE step then reads the rung off the principal the chain settled on.
+    ///
+    /// `Some` is the plane's own declaration, and it is the plane's rather than a convenience: an
+    /// open address is one whose claim declares no scheme, so there is no identity to narrow and
+    /// nothing for the scope step to decide. What authorises the operation is checked elsewhere and
+    /// EXISTS — the push callback's token travels INSIDE the request and is read by the first leg
+    /// of the plane's own route plan, which is where the shipped release checks it. A loop that
+    /// refused here would refuse every real push delivery at APPROVE, several steps before the
+    /// token it was refusing for had been looked at, and would answer that refusal with the status
+    /// of a scope failure rather than the `401` this endpoint has always answered.
+    ///
+    /// The scope granted is the plane's OWN declared requirement for the class, not a blanket
+    /// `Full`: what an open address may do is exactly what the address is for, and an operation
+    /// class this plane does not carry gets the bottom of the chain.
+    ///
+    /// The narrowness is the safety argument and is worth stating: only an address the plane's own
+    /// declared surface marks open reaches this at all, this protocol declares three, and two of
+    /// them are read-only discovery.
+    #[must_use]
+    pub fn open_grant(&self) -> Option<Scope> {
+        self.open
+            .then(|| self.op.map_or(Scope::ReadOnly, declared_scope))
+    }
+
     /// Whether this operation reaches an agent rather than only this node's own records.
     ///
     /// The fee's origin rule and the request slot's both read it, and both read it off the verified
@@ -747,6 +783,10 @@ pub struct Decoded {
     pub expected_aud: Option<String>,
     /// Whether the principal is the bound session's rather than these bytes'.
     pub from_session: bool,
+    /// Whether the plane's declared surface marks the arrival's address OPEN. See
+    /// [`A2aDraft::open`]; it is carried here so the draft records the same reading of the address
+    /// that chose the door the arrival was served through.
+    pub open: bool,
     /// The scheme alternative the claim was narrowed to. `None` on the three open surfaces.
     pub narrowing: Option<&'static str>,
     /// The alternatives the matched claim declared. Empty on an open surface.
@@ -805,6 +845,7 @@ impl A2aDraft {
             narrowing: decoded.narrowing,
             declared_schemes: decoded.declared_schemes,
             from_session: decoded.from_session,
+            open: decoded.open,
             credential: decoded.credential.clone(),
             expected_aud: decoded.expected_aud.clone(),
             destination,
@@ -1066,22 +1107,26 @@ struct Progress {
 pub struct A2aUnits<'r, S: CellStore> {
     bindings: A2aBindings<'r, S>,
     draft: A2aDraft,
-    grants: Grants,
     progress: Mutex<Progress>,
 }
 
 impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// Drive one unit.
     ///
-    /// The draft is what the plane already said; the grants are what the caller's credential
-    /// carries. Both are inputs because both are decided before the first step runs, and a step
-    /// that produced either of them would be a step deciding its own inputs.
+    /// The draft is what the plane already said, and it is an input because it is decided before
+    /// the first step runs — a step that produced it would be a step deciding its own input.
+    ///
+    /// THE GRANTS ARE NOT AN INPUT, and their absence here is the fix rather than an omission. They
+    /// used to be: a `Grants` handed in at assembly, before the walk, and therefore before the
+    /// chain had said who was calling. `approve` then read that field and IGNORED the principal it
+    /// was handed, so every caller of this plane held whatever the assembly guessed — read-only, on
+    /// the credentialled path — whoever they actually turned out to be. What a caller holds is a
+    /// fact about the caller, so it is read off the caller, at the step that needs it.
     #[must_use]
-    pub fn new(bindings: A2aBindings<'r, S>, draft: A2aDraft, grants: Grants) -> Self {
+    pub fn new(bindings: A2aBindings<'r, S>, draft: A2aDraft) -> Self {
         A2aUnits {
             bindings,
             draft,
-            grants,
             progress: Mutex::new(Progress::default()),
         }
     }
@@ -1488,7 +1533,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // audit and the settlement both read it and neither is handed it again.
             let mut progress = read_through_poison(&self.progress);
             progress.principal = Some(principal.clone());
-            progress.grants = Some(self.grants);
+            // AND WHAT THAT PRINCIPAL HOLDS, read off the principal itself through the scope unit —
+            // the same reading `approve` makes two steps later, so the record and the decision
+            // cannot disagree about one caller.
+            progress.grants = Some(busbar_unit_scope::grants_of(principal));
         }
         match self.verified_lanes(trust_origin(ctx.origin)) {
             Err(refusal) => Decision::refuse(token, refusal),
@@ -1512,7 +1560,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         &self,
         token: &UnitToken<Approve>,
         _ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
         let Some(op) = self.draft.op else {
@@ -1526,7 +1574,20 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         else {
             return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
         };
-        match busbar_unit_scope::approve(self.grants, needed) {
+        // WHAT THIS CALLER HOLDS, off THIS CALLER. The principal is the only thing this step is
+        // handed about who is asking, and it is now the thing that carries the answer: the chain
+        // attached the rung the verified credential conferred, and a principal that carries none is
+        // read as the bottom of the chain. No grant of this unit's own is consulted — the field
+        // that used to hold one was decided before the walk, which is the defect this replaces.
+        //
+        // The one exception is the plane's own OPEN declaration, which is a statement about the
+        // ADDRESS and not about the caller; see `A2aDraft::open_grant` for why an open address has
+        // no identity to narrow and where its operation's real authority is checked instead.
+        let held = match self.draft.open_grant() {
+            Some(declared) => Grants::of(declared),
+            None => busbar_unit_scope::grants_of(principal),
+        };
+        match busbar_unit_scope::approve(held, needed) {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
             Ok(()) => {
                 // The plane says WHAT is being asked for; the resource travels with the approval so

@@ -156,8 +156,8 @@ step_markers! {
 // it recognised, which is the part of the draft every later step reads, while the draft itself
 // stays with the kernel.
 pub use busbar_contract::{
-    ArrivalRecord, AuditFacts, Challenge, Frame, LaneId, MeterClassId, OpClassId, PrincipalId,
-    RoutePlan, ScopeFacts, UnitKey,
+    ArrivalRecord, AuditFacts, CallerScope, Challenge, Frame, LaneId, MeterClassId, OpClassId,
+    PrincipalId, RoutePlan, ScopeFacts, UnitKey,
 };
 
 /// What passing the authenticate step carries forward.

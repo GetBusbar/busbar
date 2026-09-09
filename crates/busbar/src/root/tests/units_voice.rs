@@ -280,6 +280,7 @@ fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                scope: Some(busbar_contract::CallerScope::Full),
             })
         }
 
@@ -1505,6 +1506,7 @@ fn a_paid_turns_record_names_its_principal() {
             .then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                scope: Some(busbar_contract::CallerScope::Full),
             })
         }
 
@@ -2182,6 +2184,7 @@ fn a_credential_is_resolved_against_this_planes_own_audience() {
             (expected_aud == Some(minted_for)).then(|| KeyFacts {
                 id: "key-voice-1".to_string(),
                 name: "an approved key".to_string(),
+                scope: Some(busbar_contract::CallerScope::Full),
             })
         }
 

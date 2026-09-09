@@ -129,30 +129,134 @@ impl fmt::Display for UnitKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct UpstreamIdx(pub u8);
 
-/// Who a unit is for.
+/// What an identified caller is AUTHORIZED to do — the two-rung chain, as the CONTRACT carries it.
+///
+/// The rung lives here, in the one crate that stands alone, because it has to TRAVEL: the auth kind
+/// resolves it off the credential and the scope kind decides with it, and those are two crates that
+/// may not name each other. Putting the rung in either would make the other depend on an internal
+/// of the kind it is supposed to be isolated from — which is the same defect as a plane reaching
+/// into the auth unit to ask what a key was minted for.
+///
+/// It says WHICH rung and nothing else. Whether one rung covers another is `busbar-unit-scope`'s
+/// answer and is spelled there as an exhaustive match, so a rung added here stops that build until
+/// somebody writes the answer down rather than inheriting one from declaration order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub enum CallerScope {
+    /// Reads only.
+    ReadOnly,
+    /// Everything.
+    Full,
+}
+
+/// Who a unit is for, and what that caller may do.
 ///
 /// The auth kind resolves this; a plane never sees a credential and never mints a principal. The
 /// anonymous principal is the kernel's own and has no bucket.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
-pub struct PrincipalId(String);
+///
+/// ## The rung travels WITH the identity and is not PART of it
+///
+/// `scope` is what the credential the chain verified confers. It rides here because the APPROVE
+/// step is handed a principal and nothing else, and a step that has to be handed its input by some
+/// other route is a step whose input can go missing — which is exactly what happened: the A2A
+/// plane's units were built with a fixed grant before the chain had run, so `approve` decided from
+/// an assembly-time constant and ignored the caller it was handed.
+///
+/// It is NOT part of the identity, and every trait below says so in code rather than in a comment:
+/// `PartialEq`, `Eq`, `Ord`, `Hash` and `Serialize` are written by hand over the id ALONE. A
+/// principal is a ledger bucket, an audit actor and an idempotency namespace, and two readings of
+/// one caller that differed only in what the caller was allowed to do would be two buckets, two
+/// actors and two namespaces.
+#[derive(Clone, Debug)]
+pub struct PrincipalId {
+    /// The stable identity handle — the ONLY thing this value is equal, ordered, hashed or
+    /// serialised by.
+    id: String,
+    /// The rung the credential conferred, where the chain resolved one. `None` is "no rung was
+    /// established", which every reader treats as the bottom of the chain — fail closed.
+    scope: Option<CallerScope>,
+}
 
 impl PrincipalId {
-    /// Name a principal.
+    /// Name a principal, with no rung established.
+    ///
+    /// This is what every producer that is not the authentication chain builds: a ledger bucket, an
+    /// audit actor, a test's subject. `None` is not `ReadOnly` — it is the absence of an answer,
+    /// and the reader that turns it into a rung is the scope unit, fail-closed.
     #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+        Self {
+            id: id.into(),
+            scope: None,
+        }
+    }
+
+    /// The same principal, carrying the rung its credential conferred.
+    ///
+    /// Named as a grant rather than offered as a setter because this is the ONE thing on a
+    /// principal that confers authority: it belongs to the chain that verified a credential, and a
+    /// mutator would put it one line away from every step that is merely handed one.
+    #[must_use]
+    pub fn granting(self, scope: CallerScope) -> Self {
+        Self {
+            id: self.id,
+            scope: Some(scope),
+        }
+    }
+
+    /// The rung this caller's credential conferred, where the chain resolved one.
+    #[must_use]
+    pub fn scope(&self) -> Option<CallerScope> {
+        self.scope
     }
 
     /// The identity as the audit row prints it.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.id
+    }
+}
+
+// THE IDENTITY TRAITS, BY HAND, OVER THE ID ALONE. See the type's own note: a principal is a
+// bucket, an actor and a namespace, and a derived impl would make the same caller two of each the
+// moment one request resolved a rung and another did not.
+impl PartialEq for PrincipalId {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for PrincipalId {}
+
+impl PartialOrd for PrincipalId {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PrincipalId {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl core::hash::Hash for PrincipalId {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+// AND THE SERIALISATION IS THE STRING IT ALWAYS WAS. A principal is sealed into audit rows and
+// ledger postings; a rung appearing in that serialisation would change bytes an operator's tooling
+// already reads, for a value that is not part of the identity being recorded.
+impl serde::Serialize for PrincipalId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.id)
     }
 }
 
 impl fmt::Display for PrincipalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.id)
     }
 }
 
