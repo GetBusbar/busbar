@@ -16,7 +16,9 @@ use std::collections::BTreeMap;
 use crate::chain::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
 use crate::decide::{Blocked, Door, Metric};
 use crate::price::{Pricer, RateNanos};
-use crate::window::{WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH, WINDOW_TOTAL};
+use crate::window::{
+    WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH, WINDOW_TOTAL, WINDOW_WEEK,
+};
 use crate::{BucketChain, InMemoryCells};
 
 mod carried;
@@ -25,6 +27,7 @@ mod hold;
 mod leases;
 mod ported;
 mod price;
+mod window;
 
 /// Which counter a limit caps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -299,5 +302,6 @@ pub(crate) fn bucket_usage(
 pub(crate) const MINUTE: &str = WINDOW_MINUTE;
 pub(crate) const HOUR: &str = WINDOW_HOUR;
 pub(crate) const DAY: &str = WINDOW_DAY;
+pub(crate) const WEEK: &str = WINDOW_WEEK;
 pub(crate) const MONTH: &str = WINDOW_MONTH;
 pub(crate) const TOTAL: &str = WINDOW_TOTAL;
