@@ -406,6 +406,11 @@ land_runner_scripts() {
 land_scripts_touched() {  # $1 = newline-separated touched paths
   printf '%s\n' "$1" | grep -E '^scripts/' || true
 }
+# WHAT THE GATE-SCRIPTS LEG PROVES: every touched gate script, and — when anything under scripts/
+# is touched — every sibling landing script the tree carries, touched or not. Order kept, no repeats.
+land_gate_files_to_prove() {  # $1 = newline-separated touched paths
+  { land_gate_scripts "$1"; [ -n "$(land_scripts_touched "$1")" ] && land_runner_scripts; } | grep . | awk '!seen[$0]++' || true
+}
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # SHARDING THE ORACLE RECORDING.
@@ -904,7 +909,14 @@ EOF
       # advertises a `--selftest` runs it. These are cheap (seconds) and they catch the two failures
       # that actually happen to a picked gate script: it no longer parses, and its own self-test
       # cases no longer hold.
-      local gate_files; gate_files="$(land_gate_scripts "$touched")"
+      # …and when the landing touches scripts/ at all, the runner's own four (land.sh,
+      # land-remote.sh, ci-remote-lib.sh, landq4.sh) are proven as a set from the PICKED tree — the
+      # `$here/scripts/` the picks produced on this box — whether or not each was touched:
+      # land-remote.sh sources ci-remote-lib.sh and land.sh execs the land-remote.sh beside it, so
+      # a change to one is a change to what the others prove. Never the staged scratch copy
+      # (target/gate/land.run.sh) that is executing this landing: its self-test is evidence about
+      # the previous engine.
+      local gate_files; gate_files="$(land_gate_files_to_prove "$touched")"
       local n_parsed=0 n_selftests=0 f
       if [ -n "$gate_files" ]; then
         while IFS= read -r f; do
@@ -940,11 +952,11 @@ EOF
           case "$f" in
             *.sh)
               # A script ADVERTISES a self-test when it handles the flag (a `case` arm or a quoted
-              # comparison), not when its prose merely mentions one. The runner's own four are
-              # run below, as a set, on the picked tree — not here one by one.
-              if land_runner_scripts | grep -qxF -- "$f"; then :
-              elif grep -qE -- "(--selftest\)|[\"']--selftest[\"'])" "$here/$f"; then
-                if ! (cd "$here" && bash "$f" --selftest >"$slog" 2>&1); then
+              # comparison), not when its prose merely mentions one. The landing's own environment
+              # is stripped first: a self-test that inherits LAND_REMOTE_INNER or the base sha is
+              # not the self-test an operator runs.
+              if grep -qE -- "(--selftest\)|[\"']--selftest[\"'])" "$here/$f"; then
+                if ! (cd "$here" && env -u LAND_REMOTE_INNER -u LAND_BASE_SHA -u LANDQ_RUNNER_PID -u LAND_SELFTEST_SHARDS -u LAND_PREPROVE bash "$f" --selftest >"$slog" 2>&1); then
                   tail -20 "$slog" >&2
                   echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; return 1
                 fi
@@ -963,28 +975,6 @@ EOF
 $gate_files
 EOF
         PROVEN="$PROVEN $n_parsed gate file(s) parsed, $n_selftests self-test(s) green;"
-      fi
-      # THE RUNNER'S OWN FOUR, ON THE PICKED TREE. When a line changes scripts/, every one of
-      # land.sh, land-remote.sh, ci-remote-lib.sh and landq4.sh runs its --selftest from
-      # `$here/scripts/` — the tree the picks produced, on this box — never from the staged copy
-      # that is executing this landing (target/gate/land.run.sh), whose self-test would be evidence
-      # about the PREVIOUS engine. The landing's own environment is stripped first: a self-test that
-      # inherits LAND_REMOTE_INNER or the base sha is not the self-test an operator runs.
-      if [ -n "$(land_scripts_touched "$touched")" ]; then
-        local rs n_runner=0
-        while IFS= read -r rs; do
-          [ -n "$rs" ] && [ -f "$here/$rs" ] || continue
-          local rlog; rlog="$here/target/land-runner-selftest-$stamp-$(basename "$rs" .sh).log"
-          if ! (cd "$here" && env -u LAND_REMOTE_INNER -u LAND_BASE_SHA -u LANDQ_RUNNER_PID -u LAND_SELFTEST_SHARDS -u LAND_PREPROVE \
-                  bash "$here/$rs" --selftest >"$rlog" 2>&1); then
-            tail -20 "$rlog" >&2
-            echo "land.sh: RED — $rs --selftest failed on the picked tree (log: $rlog)" >&2; return 1
-          fi
-          n_runner=$((n_runner + 1))
-        done <<EOF
-$(land_runner_scripts)
-EOF
-        PROVEN="$PROVEN scripts/ touched: $n_runner runner self-test(s) green on the picked tree;"
       fi
 
       # …AND THE GATES' OWN DATA AND SOURCE. A landing that edits a ceiling, a waiver table or the
@@ -1928,8 +1918,17 @@ land_selftest() {
   _stgrep "scripts/ touched: any file under scripts/ counts" "$root/st-sh.txt" '^scripts/ci-remote-lib\.sh$'
   land_scripts_touched "qa/construction.toml" >"$root/st-toml.txt"
   _stno   "scripts/ touched: a ceiling file does not"  "$root/st-toml.txt" '[^[:space:]]'
-  _stgrep "runner scripts run from \$here/scripts, the PICKED tree" "$0" 'bash "\$here/\$rs" --selftest'
-  _stno   "runner scripts never run from the staged copy"  "$0" 'land\.run\.sh" --selftest'
+  land_gate_files_to_prove "scripts/ci-remote-lib.sh" >"$root/gfp-one.txt"
+  _st     "one touched sibling: all four are proven"  0 bash -c '[ "$(grep -c . "$1")" = 4 ]' _ "$root/gfp-one.txt"
+  _stgrep "  ...the untouched landq4.sh among them"    "$root/gfp-one.txt" '^scripts/landq4\.sh$'
+  _st     "  ...the touched one first, once"           0 bash -c '[ "$(head -n1 "$1")" = scripts/ci-remote-lib.sh ] && [ "$(grep -c ci-remote-lib "$1")" = 1 ]' _ "$root/gfp-one.txt"
+  land_gate_files_to_prove "$(printf 'scripts/foo.txt\ntesting/x.py')" >"$root/gfp-txt.txt"
+  _st     "a non-script under scripts/ still brings the four" 0 bash -c '[ "$(grep -c "^scripts/" "$1")" = 4 ]' _ "$root/gfp-txt.txt"
+  _stgrep "  ...beside the touched gate script"        "$root/gfp-txt.txt" '^testing/x\.py$'
+  land_gate_files_to_prove "qa/construction.toml" >"$root/gfp-none.txt"
+  _stno   "a ceiling-only line proves no script"       "$root/gfp-none.txt" '[^[:space:]]'
+  _stgrep "gate scripts run from the PICKED tree (cd \$here; bash \$f)" "$0" 'cd "\$here" && env -u LAND_REMOTE_INNER .* bash "\$f" --selftest'
+  _stno   "never the staged copy"                      "$0" 'land\.run\.sh" --selftest'
 
   echo "land.sh selftest: the shard partition (record.sh's own matcher)"
   if [ -f "$here/testing/shadow-oracle/cells.json" ]; then
