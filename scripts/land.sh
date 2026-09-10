@@ -229,6 +229,12 @@ land_gate_scripts() {  # $1 = newline-separated touched paths
 land_gate_data() {  # $1 = newline-separated touched paths
   printf '%s\n' "$1" | grep -E '^(qa/.*\.toml|xtask/src/gates/.*\.rs)$' || true
 }
+# The gate RUNNER itself: any file under xtask/. A line that touches it re-proves every registered
+# gate's self-test and the registry-vs-workflow equality (below); a line that does not, does not
+# pay the ~50 minutes for evidence the previous landing already produced on an identical runner.
+land_xtask_touched() {  # $1 = newline-separated touched paths
+  printf '%s\n' "$1" | grep -E '^xtask/' || true
+}
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # SHARDING THE ORACLE RECORDING.
@@ -602,11 +608,32 @@ EOF
         [ "${crows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $clog)" >&2; return 1; }
         land_ceiling_verdict "$clog" || return 1
         PROVEN="$PROVEN $ndata gate data/source file(s): construction self-test + ceiling ratchets green;"
+      fi
+      # EVERY REGISTERED GATE'S SELF-TEST, ONCE, WHEN THE RUNNER CHANGED. xtask/tests/cli.rs carries
+      # two cases that do exactly this (`xtask selftest` over every gate, then `full-gate --selftest`
+      # for the registry-vs-ci.yml equality). They took 46 minutes of one landing's tests leg on a
+      # line that did not touch xtask at all, beside a kind-isolation and a construction self-test
+      # this script had already run. The tests leg skips those two cases by name; this is where
+      # their evidence is produced instead — on the lines that can have changed it. CI runs
+      # `full-gate --selftest` on every push regardless: the judge is unchanged.
+      if [ -n "$(land_xtask_touched "$touched")" ]; then
+        (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
+          || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
+        local xlog="$here/target/land-xselftest-$stamp.log"
+        (cd "$here" && XTASK_GATE_CEILING_SECS=1800 cargo xtask selftest >"$xlog" 2>&1) \
+          || { tail -20 "$xlog" >&2; echo "land.sh: RED — xtask selftest (a registered gate can no longer prove itself; log: $xlog)" >&2; return 1; }
+        (cd "$here" && cargo xtask full-gate --selftest >>"$xlog" 2>&1) \
+          || { tail -20 "$xlog" >&2; echo "land.sh: RED — full-gate --selftest (the registry and ci.yml no longer name the same gates; log: $xlog)" >&2; return 1; }
+        PROVEN="$PROVEN xtask touched: every registered gate self-test + full-gate --selftest green;"
       fi ;;
 
     tests)
       local args=""; for p in $tests; do args="$args -p $p"; done
       [ -n "$features" ] && args="$args --features $features"
+      # The two xtask/tests/cli.rs cases that re-run every gate's self-test are produced by the
+      # gatefiles leg on the lines that touch xtask (see land_xtask_touched); here they are named
+      # and skipped, never silently filtered.
+      case " $tests " in *" xtask "*) args="$args -- --skip selftest_runs_every_registered_gates_red_proof --skip the_registry_and_the_workflow_still_name_the_same_gates" ;; esac
       echo "land.sh: cargo test $args"
       # cargo's own exit status is the verdict; the grep only names the red lines. A pipeline here
       # would let pipefail turn a failing cargo into a skipped check.
