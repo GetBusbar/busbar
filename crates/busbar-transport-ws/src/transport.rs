@@ -17,6 +17,16 @@ use busbar_contract::{
     TransportConfigView, TransportKeyHandle, TransportMeta,
 };
 use busbar_contract_transport::registry::facts as tfacts;
+// THE FACE THIS TRANSPORT IMPLEMENTS, and the vocabulary its two serving halves are written in.
+// Imported rather than spelled out at each signature: the same names were written long-form a dozen
+// times, which is a dozen places for this crate's reach into the seam to be counted and one place
+// for it to be read.
+#[cfg(feature = "serve-sessions")]
+use busbar_contract_transport::session::{
+    DuplexWire, SessionBudgets, SessionDriver, SessionEnd, SessionHandle,
+};
+#[cfg(feature = "serve-sessions")]
+use busbar_contract_transport::surface::WireSurface;
 use busbar_contract_transport::wire::ArrivalRecord;
 use busbar_contract_transport::wire::CloseReason;
 use busbar_contract_transport::wire::Conn;
@@ -176,7 +186,7 @@ pub struct OpenSession {
     /// The upgraded carrier, still unread.
     sock: Sock,
     /// The driver's own handle for this session, minted inside the upgrade callback.
-    session: busbar_contract_transport::session::SessionHandle,
+    session: SessionHandle,
 }
 
 #[cfg(feature = "serve-sessions")]
@@ -187,7 +197,7 @@ impl OpenSession {
     /// needs to name it before it starts pumping it — and after the pump has been handed the value
     /// there is nothing left to ask.
     #[must_use]
-    pub fn session(&self) -> busbar_contract_transport::session::SessionHandle {
+    pub fn session(&self) -> SessionHandle {
         self.session
     }
 }
@@ -343,10 +353,10 @@ impl WsTransport {
     /// content of this method. `accept` upgrades a stream and hands back a connection for somebody
     /// else to pump frames off; this one is the somebody else.
     ///
-    /// The two halves are [`WsTransport::serve_upgrade`] and [`WsTransport::pump_session`], and this
-    /// is the two of them in a row. It is kept as one call for the caller that has no stop to
-    /// answer: an embedder running one session to its end has nothing to distinguish, and making it
-    /// spell two calls would be making it carry a seam it has no use for.
+    /// The two halves are [`DuplexWire::serve_upgrade`] and [`DuplexWire::pump_session`], which this
+    /// transport implements, and this is the two of them in a row. It is kept as one call for the
+    /// caller that has no stop to answer: an embedder running one session to its end has nothing to
+    /// distinguish, and making it spell two calls would be making it carry a seam it has no use for.
     ///
     /// # Errors
     ///
@@ -356,13 +366,29 @@ impl WsTransport {
     pub async fn serve_accept(
         &self,
         l: &Listener,
-        driver: &dyn busbar_contract_transport::session::SessionDriver,
-        surface: &busbar_contract_transport::surface::WireSurface,
-        budgets: crate::mount::SessionBudgets,
-    ) -> Result<busbar_contract_transport::session::SessionEnd, TransportError> {
+        driver: &dyn SessionDriver,
+        surface: &WireSurface,
+        budgets: SessionBudgets,
+    ) -> Result<SessionEnd, TransportError> {
         let open = self.serve_upgrade(l, driver, surface).await?;
         Ok(self.pump_session(open, driver, budgets).await)
     }
+}
+
+/// THE SEAM AN ACCEPTOR REACHES THIS WIRE THROUGH, and the two halves it is made of.
+///
+/// These were inherent methods, and that is what kept the composition root's duplex acceptor from
+/// landing: an acceptor that calls them by their concrete receiver has to HOLD a `WsTransport`, and
+/// a second place in the tree that names this wire's own type through this wire's own crate path is
+/// a second registration of the wire in everything but the word. Registered once, in the transport
+/// registry the root composes, and reached everywhere else through this face.
+///
+/// Nothing about the two bodies changed in the move, and nothing needed to: the split they make —
+/// wait, then finish what you were handed — is the seam's own, written here first and lifted into
+/// the contract where every duplex wire can be asked for it.
+#[cfg(feature = "serve-sessions")]
+impl DuplexWire for WsTransport {
+    type OpenSession = OpenSession;
 
     /// THE WAITING HALF: take one upgrade off the layer below and OPEN the session it names — and
     /// stop there, with the session open and not one frame pumped.
@@ -414,14 +440,12 @@ impl WsTransport {
     /// The large-error lint is allowed rather than worked around: the `Err` type is the upgrade
     /// library's own callback signature, and boxing it would mean not implementing that signature.
     #[allow(clippy::result_large_err)]
-    #[cfg(feature = "serve-sessions")]
-    pub async fn serve_upgrade(
-        &self,
-        l: &Listener,
-        driver: &dyn busbar_contract_transport::session::SessionDriver,
-        surface: &busbar_contract_transport::surface::WireSurface,
-    ) -> Result<OpenSession, TransportError> {
-        use busbar_contract_transport::session::SessionHandle;
+    async fn serve_upgrade<'w>(
+        &'w self,
+        l: &'w Listener,
+        driver: &'w dyn SessionDriver,
+        surface: &'w WireSurface,
+    ) -> Result<Self::OpenSession, TransportError> {
         use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 
         let lower = self.lower()?;
@@ -506,21 +530,20 @@ impl WsTransport {
     ///
     /// It answers rather than erring, because past the 101 every ending is an ending: the peer went,
     /// the deadline ran out, the driver ended it, the carrier failed. Which end cut it and why are in
-    /// the [`SessionEnd`](busbar_contract_transport::session::SessionEnd), and
-    /// [`SessionDriver::close`](busbar_contract_transport::session::SessionDriver::close) has been
-    /// called exactly once by the time this returns — on every one of those endings, including the
-    /// ugly ones.
-    #[cfg(feature = "serve-sessions")]
-    pub async fn pump_session(
-        &self,
-        open: OpenSession,
-        driver: &dyn busbar_contract_transport::session::SessionDriver,
-        budgets: crate::mount::SessionBudgets,
-    ) -> busbar_contract_transport::session::SessionEnd {
+    /// the [`SessionEnd`], and [`SessionDriver::close`] has been called exactly once by the time
+    /// this returns — on every one of those endings, including the ugly ones.
+    async fn pump_session<'w>(
+        &'w self,
+        open: Self::OpenSession,
+        driver: &'w dyn SessionDriver,
+        budgets: SessionBudgets,
+    ) -> SessionEnd {
         let (source, sink) = crate::session_io::split(open.sock);
         crate::mount::pump(driver, open.session, source, sink, budgets).await
     }
+}
 
+impl WsTransport {
     /// The one place a WebSocket connection is made, whichever direction it came from.
     async fn handshake(
         &self,
