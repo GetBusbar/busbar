@@ -1984,7 +1984,7 @@ count = "60"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "281"
+count = "282"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -3224,92 +3224,68 @@ note = "segment scanner 105, window scanner 106. The two read the brand and acro
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "417"
+count = "600"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "dialect"
-count = "22"
+count = "30"
 
 [[cell]]
 crate = "busbar-api"
 kind = "dialect"
-count = "17"
+count = "20"
 
 [[cell]]
 crate = "busbar-contract"
 kind = "dialect"
-count = "2"
+count = "20"
 
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "579"
+count = "1778"
 
 [[cell]]
 crate = "busbar-llm"
 kind = "dialect"
-count = "216"
+count = "3424"
 
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "97"
+count = "11307"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "dialect"
-count = "87"
+count = "206"
 
 [[cell]]
 crate = "busbar-mcp-codec"
 kind = "dialect"
-count = "5"
+count = "12"
 
-[[cell]]
-crate = "busbar-plane-a2a"
-kind = "dialect"
-count = "2"
 
 [[cell]]
 crate = "busbar-plane-admin"
 kind = "dialect"
 count = "3"
 
-[[cell]]
-crate = "busbar-plane-llm"
-kind = "dialect"
-count = "10"
 
-[[cell]]
-crate = "busbar-plane-llm-openai"
-kind = "dialect"
-count = "1"
 
 [[cell]]
 crate = "busbar-plane-llm-openai"
 kind = "plane"
 count = "2"
 
-[[cell]]
-crate = "busbar-plane-llm-responses"
-kind = "dialect"
-count = "1"
 
-[[cell]]
-crate = "busbar-plane-mcp"
-kind = "dialect"
-count = "4"
 
-[[cell]]
-crate = "busbar-plane-voice"
-kind = "dialect"
-count = "12"
 
 [[cell]]
 crate = "busbar-plugin"
 kind = "dialect"
-count = "3"
+count = "6"
 
 [[cell]]
 crate = "busbar-plugin-testkit"
@@ -3324,17 +3300,17 @@ count = "1"
 [[cell]]
 crate = "busbar-secret-ref"
 kind = "dialect"
-count = "1"
+count = "3"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "dialect"
-count = "173"
+count = "263"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "dialect"
-count = "50"
+count = "302"
 
 [[cell]]
 crate = "busbar-timing"
@@ -3354,7 +3330,7 @@ count = "4"
 [[cell]]
 crate = "busbar-unit-breaker"
 kind = "dialect"
-count = "5"
+count = "8"
 
 [[cell]]
 crate = "busbar-unit-egress"
@@ -3364,17 +3340,17 @@ count = "1"
 [[cell]]
 crate = "busbar-unit-trust"
 kind = "dialect"
-count = "2"
+count = "7"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "17"
+count = "352"
 
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "dialect"
-count = "14"
+count = "271"
 
 
 # ------------------------------------------------------------------------------------------------
@@ -5895,7 +5871,7 @@ count = "3424"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "11298"
+count = "11307"
 
 [[cell]]
 crate = "busbar-mcp"
