@@ -371,6 +371,37 @@ file = "qa/kind-isolation.toml"
 by = 15
 because = "MOUNT TEST SIBLING identity, root x unit: the cells that prove the composition, in tests/units_a2a_leg.rs 0->22, tests/units_a2a_mount.rs 0->12, tests/units_mcp_leg.rs 0->10 and tests/units_mcp_mount.rs 0->10 - a sibling holds the scope, trust and admission entries the leg it tests was assembled with; the class rose by 52 gross and the same cell drained 37 lines elsewhere on this branch (tests/units_mcp.rs among them), so the NET rise the ceiling owes is 15; 1191 -> 1206"
 
+# THE LLM LEG AND ITS MOUNT, declared as the root composing what it mounts. THREE FILES, and only
+# their NON-PROSE halves: units_llm_leg.rs, units_llm_mount.rs and the mount half of units_llm.rs.
+# These are the same shape as the a2a and mcp legs and mounts already declared above them: a leg is
+# the plane's decode, claim and record vocabulary carried across the kernel seam, and a mount is
+# that leg bound to the served surface the plane declared. Naming the plane is what mounting one IS.
+# The number is the MEASURED rise in those three files' non-prose halves and nothing else; their
+# comments and doc comments are prose and stay measured, and no test sibling is declared here.
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "LLM LEG identity, root x contract-transport: the llm leg's arrival lines - the leg reads the reserved fact keys off the arrival the driver seam handed it rather than reading a header, which is the same reason the a2a and mcp legs name the seam; measured over the non-prose half of units_llm_leg.rs only (0 -> 6); 91 -> 97"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "LLM LEG AND MOUNT identity, root x kernel: the llm leg and mount's kernel lines - a mounted driver answers a completed unit with the frame the Encode step wrote and the leg holds the trust unit's lent token for the Verify step, both of which are the root driving the teller loop from above it; measured over the non-prose halves of units_llm_mount.rs (0 -> 5), units_llm.rs's mount half (16 -> 19) and units_llm_leg.rs (0 -> 1); 237 -> 246"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 40
+because = "LLM LEG AND MOUNT identity, root x plane: the llm leg and mount's plane lines - the leg carries the plane's decode, claim and record vocabulary across the kernel seam and the mount binds that leg to the served surface the plane declared, so every one of these lines is the root naming the plane it mounts and nothing else; measured over the non-prose halves of units_llm_mount.rs (0 -> 22) and units_llm_leg.rs (0 -> 18); 2511 -> 2551"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "LLM LEG identity, root x transport: the llm leg's wire lines - the binding the plane declared is resolved against the instance the root composed, in the same two-line shape the a2a leg carries; measured over the non-prose half of units_llm_leg.rs only (0 -> 2); 1095 -> 1097"
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
