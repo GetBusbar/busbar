@@ -167,14 +167,34 @@ lq_preprove_sweep() {
   [ -n "$lines" ] || { lq_log "pre-prove: no disjoint line to hand out at $(printf '%.9s' "$tip")"; return 0; }
   local dir="$W/target/gate/preprove-$tip"
   mkdir -p "$dir"
-  local i=0 line
+  # ONE BOX PER LINE, ALLOCATED BEFORE ANY OF THEM STARTS.
+  #
+  # `fleet_pick_host` is a read-modify-write of a cursor FILE shared by every agent on this host, so
+  # six processes asking at once can be handed the same box — and six pre-proofs queued on one box
+  # is the wall clock of six serial landings, which is the opposite of the point. The hosts are
+  # therefore picked here, serially, before a single child is launched, and each is named to
+  # `land.sh --remote <host>` explicitly rather than left to `auto`.
+  # shellcheck source=scripts/ci-remote-lib.sh
+  . "$SCRIPTS/ci-remote-lib.sh" 2>/dev/null || {
+    lq_log "pre-prove: no ci-remote-lib.sh; the sweep has no transport and is skipped"; return 0; }
+  ( remote_wrapper ) || { lq_log "pre-prove: no ssh wrapper for the fleet; sweep skipped"; return 0; }
+  local i=0 line hosts="" cand try
   while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] || continue
+    cand=""; try=0
+    while [ "$try" -lt $(( PREPROVE_LINES * 4 )) ]; do
+      try=$((try + 1))
+      local h; h="$( fleet_pick_host )" || h=""
+      [ -n "$h" ] || break
+      case " $hosts " in *" $h "*) continue ;; esac
+      cand="$h"; hosts="$hosts $h"; break
+    done
+    [ -n "$cand" ] || { lq_log "pre-prove: out of free boxes; the rest of the sweep waits for the next one"; break; }
     i=$((i + 1))
     local bf="$dir/line-$i.batch"
     printf '%s\n' "$line" >"$bf"
     (
-      LAND_PREPROVE=1 LAND_REMOTE=auto bash "$SCRIPTS/land.sh" --batch "$bf" \
+      LAND_PREPROVE=1 bash "$SCRIPTS/land.sh" --remote "$cand" --batch "$bf" \
         >"$dir/line-$i.log" 2>&1
       echo $? >"$dir/line-$i.rc"
     ) &
