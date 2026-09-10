@@ -7,12 +7,9 @@
 //! The mechanism (the `PathIngress` fn-pointer type, the installed side-table, `install_path_ingress`,
 //! `path_ingress_for`) lives in `busbar-substrate` so the extracted dialect crate (`busbar-llm`) names
 //! the registration-pair type and its arrivals live there, calling core back through the neutral
-//! `ArrivalHost` seam rather than core holding them. The composition root names no `PathIngress`
-//! spelling at all (the `busbar_core::ingress::PathIngress` re-export is deleted); the one remaining
-//! reader of the re-export below is `proto::registry`, which re-points when that file's owner lands.
-//! What this module keeps is the seeding around `path_ingress_for`.
-
-pub use busbar_substrate::ingress::arrival::{install_path_ingress, PathIngress};
+//! `ArrivalHost` seam rather than core holding them. The composition root and `proto::registry` name
+//! the substrate directly (the `busbar_core::ingress::PathIngress` re-exports are deleted); what this
+//! module keeps is the seeding around `path_ingress_for`.
 
 // PRODUCTION / `test-support`: the catch-all resolves an arrival straight off the installed table (the
 // composition root wrote it; a `test-support` consumer seeds the hook via `busbar_llm::testkit`).

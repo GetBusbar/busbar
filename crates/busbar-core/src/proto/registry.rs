@@ -38,6 +38,7 @@ pub use busbar_substrate::proto::IngressAuth;
 // `busbar-llm` dialects) names the declaration WITHOUT reaching into `busbar-core`. Re-exported here
 // at their historical `busbar_core::proto::registry::{ProtocolDecl, EgressAuthHeaders}` paths so the
 // built-in table, and every core / plugin caller, are unchanged.
+use busbar_substrate::ingress::arrival::PathIngress;
 pub use busbar_substrate::proto::{EgressAuthHeaders, ProtocolDecl};
 // The generic detection ABI relocated to `busbar_substrate::proto` alongside `ProtocolDecl`: the
 // opaque claim strength and the two predicate types each dialect states on its own decl, so the
@@ -151,8 +152,8 @@ pub fn declared_verbs() -> &'static [crate::operation::Operation] {
 /// **Every declaration whose model is in the URL path (`has_model_in_url`) MUST register a
 /// `path_ingress` arrival.** A path-model protocol installed WITHOUT its arrival would resolve no
 /// arrival and SILENTLY fall through to the body-model branch — a wrong-behavior 404-shaped bug.
-/// Asserting it here makes that drift a LOUD PANIC at boot. Stays in `busbar-core` because it names
-/// the core-only `Arrival` (`crate::ingress::path_ingress`).
+/// Asserting it here makes that drift a LOUD PANIC at boot. Stays in `busbar-core` because it seeds
+/// core's own registry (`install_protocols`).
 ///
 /// # Panics
 /// - if a `has_model_in_url` decl has no registered arrival (the parity failure above).
@@ -160,7 +161,7 @@ pub fn declared_verbs() -> &'static [crate::operation::Operation] {
 #[allow(dead_code)] // pub-widened and called by the busbar binary's `register_protocols`
 pub fn install_protocols_with_path_ingress(
     decls: Vec<&'static ProtocolDecl>,
-    path_ingress: Vec<(&'static str, crate::ingress::path_ingress::PathIngress)>,
+    path_ingress: Vec<(&'static str, PathIngress)>,
 ) {
     if let Some(name) = first_path_model_without_arrival(
         &decls,
@@ -173,5 +174,5 @@ pub fn install_protocols_with_path_ingress(
         );
     }
     install_protocols(decls);
-    crate::ingress::path_ingress::install_path_ingress(path_ingress);
+    busbar_substrate::ingress::arrival::install_path_ingress(path_ingress);
 }
