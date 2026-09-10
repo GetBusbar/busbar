@@ -54,6 +54,23 @@ fn a_key_outside_the_canonical_order_sorts_at_the_tail() {
     assert_eq!(keys, ["one", "two"]);
 }
 
+/// The fallback is the declaration that FLAGS itself; with none flagged the base plane answers so
+/// a test binary registering one plane still labels its telemetry; an empty list answers nothing.
+/// The predicate is the strict half: it never promotes the base plane.
+#[test]
+fn the_fallback_is_the_flagged_declaration_or_the_base_plane_and_never_a_spelled_key() {
+    const FALLBACK_TWO: PlaneDeclaration = PlaneDeclaration {
+        fallback: true,
+        ..TWO
+    };
+    assert_eq!(fallback_key_of(&[ONE, FALLBACK_TWO]), "two");
+    assert_eq!(fallback_key_of(&[ONE, TWO]), "one");
+    assert_eq!(fallback_key_of(&[]), "");
+    assert!(is_fallback_in(&[ONE, FALLBACK_TWO], "two"));
+    assert!(!is_fallback_in(&[ONE, FALLBACK_TWO], "one"));
+    assert!(!is_fallback_in(&[ONE, TWO], "one"));
+}
+
 #[test]
 fn the_section_fold_dedups_against_the_trailing_sections() {
     let sections = config_sections_from(&[ONE, TWO], &["export", "twos"]);

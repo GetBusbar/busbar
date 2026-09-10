@@ -130,47 +130,21 @@ pub mod store;
 //                    advertises — so the card cannot claim a binding the plane does not list.
 pub use busbar_substrate::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
 
-/// The FALLBACK plane's registry key — DERIVED from the plane registry rather than a hard-coded
-/// `"llm"` literal: the ONE built-in plane whose decl declares [`registry::PlaneDecl::fallback`]
-/// (the LLM plane). Read by the fallback guard (`PlaneDispatch::mount`/`admit` no-op) and the
-/// model-plane telemetry branch so core names no dialect. The composition root (`register_planes`)
-/// installs the LLM plane before any reader runs, and core's own test binary carries it in
-/// `registry::builtin_plane_decls`, so exactly one fallback is always present. Core expresses "which
-/// plane handles unmatched routes" by ASKING the declared fallback plane, never by naming the LLM.
+/// The FALLBACK plane's registry key — a fact of the plane LIST, answered by the contract
+/// ([`busbar_contract::plane::registry::fallback_key_of`]) over the list this crate binds through
+/// [`registry::plane_decls`] (seeded in core's own `cfg(test)` binary). Read by the fallback guard
+/// (`PlaneDispatch::mount`/`admit` no-op) and the model-plane telemetry branch so core names no
+/// dialect: core expresses "which plane handles unmatched routes" by ASKING the declared fallback
+/// plane, never by naming the LLM.
 pub(crate) fn fallback_key() -> &'static str {
-    let decls = registry::plane_decls();
-    // The fallback is FIRST-WINS: with two fallback decls the `find` below would silently pick one
-    // and the other's paths would fall through nowhere. At most one plane may flag itself fallback.
-    debug_assert!(
-        decls.iter().filter(|d| d.fallback).count() <= 1,
-        "more than one registered plane declares itself the fallback catch-all — it must be \
-         unique or `fallback_key`/`is_fallback` first-win nondeterministically"
-    );
-    // Prefer the plane that DECLARES itself the fallback (the LLM plane, always present in a
-    // production or core-`cfg(test)` build). Fall back to the BASE (first-layered) registered plane
-    // for the one build where no fallback is flagged: the `test-support`-only dependency-copy of core
-    // the plane crates link, whose built-in plane rows are empty and which registers only the plane
-    // under test (MCP/A2A) — a TestApp built there has no model plane, so this key labels an empty
-    // telemetry bank and is never emitted. Never a hard-coded `"llm"` literal, so core names no dialect.
-    decls
-        .iter()
-        .find(|d| d.fallback)
-        .or_else(|| decls.first())
-        .map(|d| d.key)
-        .unwrap_or("")
+    busbar_contract::plane::registry::fallback_key_of(registry::plane_decls())
 }
 
 /// Whether `key` names THE FALLBACK plane — the non-panicking predicate the fallback GUARDS read
-/// (`PlaneDispatch::mount`/`admit` no-op; the model-plane telemetry branch). Distinct from
-/// [`fallback_key`]: it answers "is THIS key the fallback" WITHOUT requiring a fallback to be
-/// registered, so it is safe in a build where the fallback (LLM) plane's decl is absent — the
-/// dependency-copy of core the plane crates link, whose built-in plane rows are empty and which only
-/// ever asks this about a mounted plane's OWN key (never the LLM key). `fallback_key`, by contrast,
-/// is read only on paths (App build, request telemetry family) where the fallback is always present.
+/// (`PlaneDispatch::mount`/`admit` no-op; the model-plane telemetry branch). The contract's
+/// [`busbar_contract::plane::registry::is_fallback_in`] over the same bound list.
 pub(crate) fn is_fallback(key: &str) -> bool {
-    registry::plane_decls()
-        .iter()
-        .any(|d| d.key == key && d.fallback)
+    busbar_contract::plane::registry::is_fallback_in(registry::plane_decls(), key)
 }
 
 /// Every built-in plane's registry key, in layering order. Iterated by dispatch, the config

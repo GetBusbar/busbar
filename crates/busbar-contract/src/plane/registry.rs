@@ -356,3 +356,45 @@ pub fn plane_decl_for(key: &str) -> Option<&'static PlaneDeclaration> {
 pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDeclaration> {
     plane_decls().iter().find(|d| d.config_section == section)
 }
+
+/// THE FALLBACK PLANE'S KEY over a GIVEN list — the one declaration that flags itself
+/// [`PlaneDeclaration::fallback`], the plane every unclaimed path falls through to. A fact of the
+/// list, so it is answered here beside the list rather than by whichever layer happens to read it:
+/// the config grammar resolves the section the fallback plane owns through it, and the engine's
+/// dispatch guards read the same answer. Neither may spell the key.
+///
+/// FIRST-WINS, and at most one: with two fallback declarations a `find` would silently pick one and
+/// the other's paths would fall through nowhere, so a list carrying two is a programming error the
+/// debug build reports. When NO declaration is flagged the BASE (first-layered) plane answers — the
+/// one build where that happens is a test binary that registers only the plane under test, whose
+/// key then labels an empty telemetry bank and is never emitted. An empty list answers `""`.
+pub fn fallback_key_of(decls: &[PlaneDeclaration]) -> &'static str {
+    debug_assert!(
+        decls.iter().filter(|d| d.fallback).count() <= 1,
+        "more than one registered plane declares itself the fallback catch-all — it must be \
+         unique or `fallback_key`/`is_fallback` first-win nondeterministically"
+    );
+    decls
+        .iter()
+        .find(|d| d.fallback)
+        .or_else(|| decls.first())
+        .map(|d| d.key)
+        .unwrap_or("")
+}
+
+/// Whether `key` names THE FALLBACK plane in a GIVEN list — the non-panicking predicate a fallback
+/// GUARD reads. Distinct from [`fallback_key_of`]: it answers "is THIS key the fallback" WITHOUT
+/// requiring a fallback to be declared, so it is safe in a list where none is.
+pub fn is_fallback_in(decls: &[PlaneDeclaration], key: &str) -> bool {
+    decls.iter().any(|d| d.key == key && d.fallback)
+}
+
+/// [`fallback_key_of`] over the process list.
+pub fn fallback_key() -> &'static str {
+    fallback_key_of(plane_decls())
+}
+
+/// [`is_fallback_in`] over the process list.
+pub fn is_fallback(key: &str) -> bool {
+    is_fallback_in(plane_decls(), key)
+}

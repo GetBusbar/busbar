@@ -211,13 +211,35 @@ key = "gate.surface_ceilings.contract_caps"
 by = 188
 because = "new face busbar_contract::plane::registry (the plane declaration list as contract data, D33 section 7.2): MEASURED 188 plugin-visible surface lines by scripts/loc-surface.py. Names no plane; the rows are installed as data by the composition root. ARCHITECTURE.md section 1.1 amended in the same commit."
 
+# THE FALLBACK PLANE IS A FACT OF THE PLANE LIST. `busbar_contract::plane::registry::{fallback_key_of,
+# is_fallback_in}` (pure, over a given list) and their process-list wrappers answer "which plane
+# every unclaimed path falls through to" beside the list that declares it, so the config grammar --
+# which resolves the section the fallback plane owns -- reads the same answer the engine's dispatch
+# guards do, and neither spells a key. Moved out of busbar-core/src/plane/mod.rs (core's copy is now
+# the wrappers over its own bound list). MEASURED 22 lines under loc-ceilings' rule and 21 by
+# scripts/loc-surface.py; names no plane.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 22
+because = "busbar_contract::plane::registry::{fallback_key_of, is_fallback_in, fallback_key, is_fallback}: the fallback plane is a fact of the plane LIST, answered beside it so the config layer and the engine read one answer; MEASURED 22 surface lines under loc-ceilings' counting rule; names no plane."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 22
+because = "the caps/contract term of the union rose by exactly the 22 measured lines of the contract's fallback-plane readers (see the caps_contract_ceiling raise above); the kernel and unit-* terms are unchanged."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 21
+because = "busbar_contract::plane::registry::{fallback_key_of, is_fallback_in, fallback_key, is_fallback}: the fallback plane is a fact of the plane LIST, answered beside it; MEASURED 21 plugin-visible surface lines by scripts/loc-surface.py; names no plane."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3666
+contract_caps = 3687
 grammar = 388
 contract_transport = 845
 
@@ -438,12 +460,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3671
+caps_contract_ceiling = 3693
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23656
+union_ceiling = 23678
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
