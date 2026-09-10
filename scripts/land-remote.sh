@@ -41,6 +41,9 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qF -- '[ "$BASE_SHA" = "$BASESHA" ] ||' "${BASH_SOURCE[0]}" && _ok "the box refuses a base that differs from the laptop's" || _fail "the box refuses a differing base"
   # The shard launcher's .rc line: written after the group, from the variable, by the same shell.
   # An `exit` inside the group is exactly the form that lost every shard's verdict once.
+  grep -qF -- 'rsh "$HOST" cat "$pdir/shard-1.rc"' "${BASH_SOURCE[0]}" && _ok "shard 1 is read from the request's recorded directory, by name" || _fail "shard 1 is read by name"
+  grep -qE -- 'pdir="busbar-prove/target/land-shards-\$R_gate-\*' "${BASH_SOURCE[0]}" && _fail "shard 1 must not be found by a glob (two landings' files concatenate)" || _ok "shard 1 is never found by a glob"
+  grep -qF -- 'rm -rf target/land-shards-*' "${BASH_SOURCE[0]}" && _ok "an earlier landing's request directories are removed before this one starts" || _fail "stale request directories are removed"
   grep -qF -- 'rsh "$HOST" mv -f "$2.tmp" "$2"' "${BASH_SOURCE[0]}" && _ok "a delivered file is renamed into place, never written in place" || _fail "delivery is atomic"
   grep -qF -- 'echo "$rc" >target/shard.rc' "${BASH_SOURCE[0]}" && _ok "the shard launcher writes its .rc after the group, from \$rc" || _fail "the shard launcher writes its .rc after the group"
   grep -qE -- 'exit \$rc; \} >target/shard.log' "${BASH_SOURCE[0]}" && _fail "the shard launcher must not exit from inside the group" || _ok "the shard launcher does not exit from inside the group"
@@ -229,6 +232,11 @@ git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/heads/$REF-base:$BA
 git checkout -q -f "$REF" || exit 2
 git clean -qffdx -e target -e .cargo -e node_modules
 mkdir -p target
+# AN EARLIER LANDING'S REQUESTS ARE NOT THIS ONE'S. target/ survives `git clean` on purpose (it is the
+# warm build), so the shard directories of the last landing survive with it, and their REQUEST files
+# were served again by the next laptop — "could not fetch" against a ref that landing had already
+# consumed (measured, third real run). Their logs were copied back when they were served; they go.
+rm -rf target/land-shards-*
 LOG="target/land-remote-$REF.log"; RC="target/land-remote-$REF.rc"
 rm -f "$RC"
 echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)" >"$LOG"
@@ -317,6 +325,11 @@ serve_requests() {
     seq="${R_ref##*-}"
     if [ "$R_n" != "$SHARDS" ]; then rlog "fan-out: request $R_ref asks for $R_n shards, $SHARDS were allocated — not served (the primary will report them missing)"; continue; fi
     mkdir -p "$FANDIR/$seq"; printf '%s\n' "${line#* }" >"$FANDIR/$seq/REQUEST"
+    # THE PRIMARY'S REQUEST DIRECTORY, EXACTLY. The join used to find it by a glob over the gate and
+    # sequence number, which also matched an earlier landing's directory left on the box — two
+    # shard-1.rc files concatenated read "00", and a complete green union was refused as
+    # "exited 00" (measured, third real run).
+    printf '%s\n' "$dir" >"$FANDIR/$seq/DIR"
     if ! GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST/~/$REMOTE_BARE" "+refs/heads/$R_ref:refs/remotes/fanout/$R_ref" 2>>"$FANDIR/$seq/transport.log"; then
       rlog "fan-out: could not fetch $R_ref ($(printf '%.9s' "$R_sha")) from $HOST — shards 2..$R_n are not launched (see $FANDIR/$seq/transport.log)"; continue
     fi
@@ -414,11 +427,12 @@ if [ "$SHARDS" -gt 0 ]; then
     [ -f "$d/REQUEST" ] || continue
     nreq=$((nreq + 1)); seq="$(basename "$d")"
     fanout_parse_request "$(cat "$d/REQUEST")" || continue
-    # shard 1 ran on the primary: its log and rc are in the primary's request directory.
-    pdir="busbar-prove/target/land-shards-$R_gate-*-$seq"
-    rsh "$HOST" bash -c "cat $pdir/shard-1.rc 2>/dev/null" </dev/null 2>/dev/null | tr -d '[:space:]' >"$d/shard-1.rc"
+    # shard 1 ran on the primary: its log and rc are in the request's own directory (DIR), by name.
+    pdir="$(cat "$d/DIR" 2>/dev/null)"
+    [ -n "$pdir" ] || { rlog "fan-out: request $seq has no recorded directory on $HOST — its shard 1 cannot be read"; continue; }
+    rsh "$HOST" cat "$pdir/shard-1.rc" </dev/null 2>/dev/null | tr -d '[:space:]' >"$d/shard-1.rc"
     [ -s "$d/shard-1.rc" ] || rm -f "$d/shard-1.rc"
-    rsh "$HOST" bash -c "cat $pdir/shard-1.log 2>/dev/null" </dev/null 2>/dev/null >"$d/shard-1.log"
+    rsh "$HOST" cat "$pdir/shard-1.log" </dev/null 2>/dev/null >"$d/shard-1.log"
     if land_shard_union "$R_gate" "$R_n" "${d%/}" >"$d/union.txt" 2>&1; then
       joined=$((joined + 1)); rlog "fan-out: request $seq ($R_gate): $(cat "$d/union.txt")"
     else
