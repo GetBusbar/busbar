@@ -152,3 +152,25 @@ fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
     assert_eq!(v["error"]["type"], crate::engine::KIND_API_ERROR);
     assert_eq!(v["error"]["message"], "upstream vanished");
 }
+
+// ── GOLDEN PARITY CELL: the (class -> ingress `kind` word) column the engine renders for a
+//    client-fault answer, pinned as bytes; the nine classes are spelled by hand so the cell says
+//    the same thing whichever crate owns the enum.
+#[test]
+fn status_word_golden_engine_client_fault_kind() {
+    use busbar_substrate::breaker::StatusClass;
+    let golden: [(StatusClass, &str); 9] = [
+        (StatusClass::RateLimit, "invalid_request_error"),
+        (StatusClass::Overloaded, "invalid_request_error"),
+        (StatusClass::ServerError, "invalid_request_error"),
+        (StatusClass::Timeout, "invalid_request_error"),
+        (StatusClass::Network, "invalid_request_error"),
+        (StatusClass::Auth, "invalid_request_error"),
+        (StatusClass::Billing, "invalid_request_error"),
+        (StatusClass::ClientError, "invalid_request_error"),
+        (StatusClass::ContextLength, "context_length_exceeded"),
+    ];
+    for (class, word) in golden {
+        assert_eq!(super::client_fault_kind(class), word, "class={class:?}");
+    }
+}
