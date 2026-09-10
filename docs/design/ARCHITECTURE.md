@@ -73,11 +73,16 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3509`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=3526`), which the construction gate runs as
   `surface-ceiling:contract+caps`. The figure is the PIN, not a budget: it is held at zero
   slack against today's measurement, and it moves up only when a new-architecture face lands
   with a declared raise (`[gate.ceiling_raises]` in `qa/construction.toml`) that names the face
-  and its measured lines, this figure amended in the same commit — the virtual-key directory
+  and its measured lines, this figure amended in the same commit. The THIRD is
+  **`busbar_contract::telemetry::Telemetry`** (17 lines): the seven-method telemetry face — stamp the
+  request-completion family, count the dispatch/failover/breaker/translation events, bound a
+  client-supplied name to a label — moved by identity off `busbar_substrate::plane_host::TelemetryHost`,
+  because the substrate is frozen and a face declared on a crate being deleted cannot outlive it. The
+  first was the virtual-key directory
   face (`KeyScope`, `KeyFacts`, `VirtualKeyDirectory`; 19 lines) was the first, and the deletion
   that followed it (the never-written `Unit` byte and frame counts, 21 lines) paid it back. The
   second is **`busbar_contract::limits`** (`LimitMetric`, `ScopeSpec`, `LimitSpec`, `GroupSpec`;
