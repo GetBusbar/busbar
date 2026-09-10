@@ -432,6 +432,152 @@ where
     }
 }
 
+/// THE DIALECT'S ERROR CODE for a client event this node cannot carry out because it dials nobody.
+///
+/// Named once, here, so the frame the served session writes and the frame a cell reads are one
+/// string. It is not an apology for a missing feature: the browser sideband's media is
+/// peer-to-peer BY DESIGN, and a node that brokered the call and holds only the control channel
+/// genuinely has no upstream to ask for a response. Saying so in the dialect's own terminal is the
+/// answer; silence is what a client cannot act on.
+const NO_UPSTREAM_CODE: &str = "no_upstream_session";
+
+/// The message that error carries. Written for the operator reading a browser console, which is the
+/// only place it ever appears.
+const NO_UPSTREAM_MESSAGE: &str =
+    "this session's control channel is served locally and dials no model provider, so a response \
+     cannot be generated on it";
+
+impl<C> SessionCore<C>
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
+    /// THE FIRST SERVER EVENT OF A SESSION THIS NODE SERVES ITSELF.
+    ///
+    /// Every other leg gets its `session.created` by relaying the one an upstream sent: the decode of
+    /// that frame is the ONLY place `SessionCreated` is constructed on a dialed leg, which is exactly
+    /// why the leg that dials nobody had no first frame at all. The GA handshake opens with the
+    /// resolved `session` object and a client that never receives one has no session to update in and
+    /// no id to name, so a served session authors its own from the config it is locked to — the same
+    /// object the operator wrote under `streams.session:`, and not a stand-in shape.
+    ///
+    /// `None` when no config was locked: a session with nothing resolved to announce announces
+    /// nothing, which is the same answer an unrepresentable event gives everywhere else in this file.
+    pub fn served_session_created(&self) -> Option<WireEvent> {
+        let config = self.locked_config.clone()?;
+        let session = serde_json::to_value(config).ok()?;
+        let mut g = self.inner.lock().expect("session inner poisoned");
+        self.codec
+            .write_down(IrServerEvent::SessionCreated { session }, &mut g.decode)
+    }
+
+    /// DECODE + ANSWER ONE CLIENT FRAME ON A LEG WITH NO UPSTREAM.
+    ///
+    /// The sibling of [`Self::on_client_frame`], and the difference is where the answer goes. On a
+    /// dialed leg a client frame is reconciled and FORWARDED, and the client hears back only what the
+    /// upstream says; on a served leg there is no upstream, so the only party that can answer is this
+    /// node and the only place to answer is the socket the frame arrived on. Returns the DOWNLINK
+    /// frames to write back, in order.
+    ///
+    /// It answers the two client events a session cannot proceed without, and carries nothing else:
+    ///
+    /// * `session.update` — the config-lock invariant is unchanged (a client-originated configure is
+    ///   a HINT reconciled against the lock, never trusted blind), and the client is told what the
+    ///   session actually resolved to rather than left to assume its patch took.
+    /// * `response.create` — the one client event that is a REQUEST. With no provider composed there
+    ///   is no response to generate, and the dialect's terminal for that is an `error` event. A
+    ///   client that asked for a response and was told nothing waits for one forever.
+    ///
+    /// Audio uplink, commits and item operations are DROPPED rather than answered, and that is not an
+    /// omission: they are notifications, the GA dialect gives a server no acknowledgement to send for
+    /// them, and inventing one would put a frame on the wire that the dialect does not define.
+    pub fn on_served_client_frame(&self, frame: WireEvent) -> Vec<WireEvent> {
+        if self.carrier.is_closed() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut g = self.inner.lock().expect("session inner poisoned");
+        let events = self.codec.read_up(frame, &mut g.decode);
+        for ev in events {
+            let answer = match ev {
+                IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) => {
+                    let effective = self.locked_config.clone().unwrap_or(config);
+                    serde_json::to_value(effective)
+                        .ok()
+                        .map(|session| IrServerEvent::SessionCreated { session })
+                }
+                IrClientEvent::Control(IrDuplexControl::ResponseCreate { .. }) => {
+                    Some(IrServerEvent::Error {
+                        code: NO_UPSTREAM_CODE.to_string(),
+                        message: NO_UPSTREAM_MESSAGE.to_string(),
+                    })
+                }
+                _ => None,
+            };
+            if let Some(ev) = answer {
+                if let Some(framed) = self.codec.write_down(ev, &mut g.decode) {
+                    out.push(framed);
+                }
+            }
+        }
+        out
+    }
+}
+
+/// THE SERVED SESSION PLANE — bound to the socket of the one leg that dials nobody.
+///
+/// [`VoiceSession`] is the DOWNLINK-facing plane: its `handle` reads each frame with the codec's
+/// server→client reader, because on a dialed leg the frames it is handed came from the provider. The
+/// browser sideband handed it the BROWSER's frames, which are client→server events the downlink
+/// reader has no arm for — so every one of them decoded to nothing and the socket answered silence.
+/// This plane is the client-facing half: it reads the browser's own vocabulary and writes this
+/// node's answers back onto the same socket, which on a leg with no upstream is the only wire there
+/// is.
+pub struct ServedSession<C> {
+    core: Arc<SessionCore<C>>,
+}
+
+impl<C> ServedSession<C> {
+    /// Bind the served plane to a session core.
+    pub fn new(core: Arc<SessionCore<C>>) -> Self {
+        ServedSession { core }
+    }
+
+    /// The shared session core.
+    pub fn core(&self) -> &Arc<SessionCore<C>> {
+        &self.core
+    }
+}
+
+#[async_trait::async_trait]
+impl<C> DuplexPlane for ServedSession<C>
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
+    fn classify(&self, _frame: &[u8]) -> Option<WireCallRef> {
+        // Same answer as the downlink plane's, for the same reason: GA Realtime events are
+        // fire-and-forget notifications, never a reply to a transport-level call busbar issued.
+        None
+    }
+
+    async fn handle(self: Arc<Self>, frame: Vec<u8>, out: DuplexHandle) {
+        for answer in self
+            .core
+            .on_served_client_frame(WireEvent(Bytes::from(frame)))
+        {
+            // A write that fails means the client's socket is gone; the rest of this frame's answer
+            // would go into the same dead socket, so stop rather than emit into it. The same policy
+            // the downlink plane takes on its upstream, one wire over.
+            if let Err(e) = out.emit(answer.0.to_vec()).await {
+                tracing::warn!(
+                    error = %e,
+                    "voice: a served answer could not be written to the client; abandoning the rest of this frame's answer"
+                );
+                break;
+            }
+        }
+    }
+}
+
 /// How often the tick beside a session's pump sweeps its governed calls.
 ///
 /// One second, against a reply deadline the plane declares in tens of seconds: fine enough that a

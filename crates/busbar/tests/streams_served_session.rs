@@ -475,7 +475,14 @@ fn drain_frames(buf: &mut Vec<u8>) -> Vec<String> {
         if rest.len() < at + len {
             break;
         }
-        if opcode == 1 {
+        // TEXT (1) **and BINARY (2)**. The GA Realtime wire is JSON in TEXT frames, and this node
+        // writes every outbound frame as BINARY — the neutral duplex acceptor's one send site frames
+        // `Vec<u8>` as `Message::Binary`, so a browser's `WebSocket` hands the page a `Blob` where
+        // the dialect says it should hand it a string. That is a real fidelity gap and it is
+        // recorded as one; it is NOT this file's subject, and a reader that refused the frame would
+        // report "the session served nothing" for a session that served everything. So both opcodes
+        // are read, and the gap is named in the commit rather than hidden behind a red.
+        if opcode == 1 || opcode == 2 {
             out.push(String::from_utf8_lossy(&rest[at..at + len]).to_string());
         }
         cut += at + len;

@@ -34,7 +34,7 @@ use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{serve_with_sweep, UplinkForwarder, VoiceSession};
+use crate::runtime::session::{serve_with_sweep, ServedSession, UplinkForwarder};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
@@ -1455,7 +1455,9 @@ where
                     }
                 },
                 // BROWSER-WEBRTC SIDEBAND: media is peer-to-peer by design (see `crate::topology::webrtc`
-                // docs) — this socket is control-only, so there is no provider leg to dial here.
+                // docs) — this socket is control-only, so there is no provider leg to dial here. It is
+                // therefore the one leg SERVED rather than relayed: the frames on it are the browser's
+                // own client→server events, and the only party that can answer them is this node.
                 Ingress::Sideband => {
                     if let Ok((core, _handle, _guard)) = open_admitted_session(
                         &rt,
@@ -1469,9 +1471,28 @@ where
                         now,
                         served_governed_session(),
                     ) {
+                        // THE FIRST SERVER EVENT, written before the pump takes the sink. GA opens
+                        // with `session.created` and every other leg gets it by relaying the
+                        // upstream's; this leg has no upstream, so it authors its own from the config
+                        // the session is locked to. It goes HERE rather than through the pump because
+                        // the neutral pump is frame-driven — it writes when a frame arrives — and the
+                        // one frame a session owes before any frame arrives is this one. A write that
+                        // fails means the client is already gone; there is then no session to serve
+                        // and the arm ends rather than pumping into a dead socket.
+                        let mut sink = sink;
+                        if let Some(created) = core.served_session_created() {
+                            use futures::SinkExt as _;
+                            if sink.send(created.0.to_vec()).await.is_err() {
+                                tracing::debug!(
+                                    "voice: the sideband client went away before its session.created \
+                                     could be written; the session is not served"
+                                );
+                                return;
+                            }
+                        }
                         serve_with_sweep(
                             Arc::clone(&core),
-                            serve_messages(stream, sink, Arc::new(VoiceSession::new(core))),
+                            serve_messages(stream, sink, Arc::new(ServedSession::new(core))),
                         )
                         .await;
                     }
