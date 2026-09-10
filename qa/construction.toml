@@ -260,6 +260,49 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 4
 because = "contract face `busbar_contract::surface` (the served-surface vocabulary): the same 4 busbar-contract surface.rs lines, summed into the kernel + caps/contract + unit-* union"
 
+# THE MOUNT ITSELF, declared as the root composing what it mounts. SEVEN FILES, and only their
+# production halves: plane_mount.rs, transports.rs, units_{a2a,mcp}_leg.rs, units_{a2a,mcp}_mount.rs
+# and registry.rs. These are the composition root's mount chain — the place a declared surface, a
+# composed wire, a plane's leg and the kernel's loop are joined — and the matrix counts the joining
+# as the root naming what it joins, which is exactly what it is. The number is the MEASURED rise in
+# those seven files and nothing else; every other file the chain touched is drained or is reported
+# in the residual, and no test sibling is declared here.
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 21
+because = "MOUNT identity, root × caps: the mount files' capability lines: a transport composed at the root is handed the sealed token the kernel minted, and a leg assembled before the loop starts holds the trust unit's lent token so the Verify step has something to check; measured in the production halves of the seven mount files only (transports.rs 11->24, units_a2a_leg.rs 0->4, units_mcp_leg.rs 0->4); 302 -> 323"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 43
+because = "MOUNT identity, root × contract-transport: the mount files' arrival lines: the composition root IMPLEMENTS the driver seam a transport hands an arrival across, and the mount reads the reserved fact keys off that arrival rather than reading a header, which is the whole reason the seam exists; measured in the production halves of the seven mount files only (plane_mount.rs 0->17, units_a2a_leg.rs 0->8, units_mcp_leg.rs 0->7, transports.rs 8->12, units_a2a_mount.rs 0->4, units_mcp_mount.rs 0->3); 18 -> 61"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 37
+because = "MOUNT identity, root × kernel: the mount files' kernel lines: the root drives the teller loop from above it, so a mounted driver answers a completed unit with the frame the Encode step wrote and a composed wire is registered against the kernel's own registry; measured in the production halves of the seven mount files only (transports.rs 18->32, plane_mount.rs 0->8, units_a2a_mount.rs 0->5, units_mcp_mount.rs 0->5, units_a2a_leg.rs 0->3, units_mcp_leg.rs 0->2); 158 -> 195"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 318
+because = "MOUNT identity, root × plane: the mount files' plane lines: a leg is the plane's decode, claim and record vocabulary carried across the kernel seam, and a mount is that leg bound to the served surface the plane declared — naming the plane is what mounting one IS, and every one of these lines is that naming and nothing else; measured in the production halves of the seven mount files only (units_a2a_leg.rs 0->106, units_mcp_leg.rs 0->99, units_mcp_mount.rs 0->41, units_a2a_mount.rs 0->36, registry.rs 72->91, plane_mount.rs 0->12, transports.rs 8->13); 1798 -> 2116"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 42
+because = "MOUNT identity, root × transport: the mount files' wire lines: the mount is where a declared surface meets a composed wire, so the binding a plane declared is resolved against the instance the root composed and nowhere else in the tree; measured in the production halves of the seven mount files only (plane_mount.rs 0->34, units_a2a_leg.rs 0->4, transports.rs 20->22, units_a2a_mount.rs 0->1, units_mcp_mount.rs 0->1); 939 -> 981"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 22
+because = "MOUNT identity, root × unit: the mount files' unit lines: a leg assembled before the loop holds the scope, trust and admission entries its plane's operations are governed by, because a unit may not be reached from inside a plane and the root is the only place both are visible; measured in the production halves of the seven mount files only (units_a2a_leg.rs 0->12, units_mcp_leg.rs 0->10); 1169 -> 1191"
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
