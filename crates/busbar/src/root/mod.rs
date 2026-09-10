@@ -68,6 +68,10 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+// WHAT A MOUNTED LEG IS HANDED AT MOUNT TIME. Not gated on any plane's switch and named after none:
+// the three values are the substrate's own ingress vocabulary, and the reason they need a seam at
+// all is that a mount answers in front of the catch-all that would otherwise have resolved them.
+pub mod mount_ingress;
 pub mod plane_ctx;
 // ONE MOUNT, for every plane that has one. Not gated on either plane's switch: the body is about
 // the closed grammar, the operator's ingress cap and the loop's own refusal rule, and it is compiled
