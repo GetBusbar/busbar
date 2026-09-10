@@ -1083,6 +1083,137 @@ impl LlmUnit<'_> {
         }
     }
 
+    /// HOW THIS UNIT ENDED, as the client saw it.
+    ///
+    /// ONE expression, read by the record below and by the fee evidence the settlement is decided
+    /// from, because they are two readers of one ending: a row that says a unit completed over a
+    /// posting that charged nothing for it is a discrepancy nothing downstream can settle. A unit
+    /// with no status yet never reached a terminal at all, and `Error` is the honest reading of an
+    /// ending nobody was served.
+    fn finish_class(&self) -> busbar_contract::FinishClass {
+        match self.walk.served_status() {
+            Some(status) if (200..300).contains(&status) => busbar_contract::FinishClass::Complete,
+            _ => busbar_contract::FinishClass::Error,
+        }
+    }
+
+    /// The facts this plane's flat per-request fee is decided from.
+    ///
+    /// Lifted out of [`LlmUnit::evidence`] so the record and the settlement read ONE answer through
+    /// one function rather than two spellings of the same rule.
+    fn fee_evidence(&self, origin: OriginKind) -> FeeEvidence {
+        let status = self.walk.served_status();
+        FeeEvidence {
+            // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is
+            // what a caller pays for a request the node carried on its behalf, and a unit the
+            // node runs for any other reason is not a caller's request. Hard-coded true, every
+            // origin this loop could ever carry would post one — a provider push, a tick, a
+            // nested unit — and the sibling planes, which read the same field off the same
+            // context, would price the same traffic differently. The origin the kernel sealed is
+            // the one fact that answers this, so it is the one thing read.
+            client_open_or_one_shot: origin == OriginKind::Client,
+            selected_upstream: self.walk.upstream_candidate(),
+            relayed_first_response_frame: status.is_some(),
+            // This transport reports no status leg of its own: the response IS the status, and
+            // the plane's finish is decided from the frame the client saw.
+            status_at: None,
+            status: None,
+            finish: status.map(|_| self.finish_class()),
+        }
+    }
+
+    /// THE AUDIT RECORD ONE ENDING SEALS — the same fixed record every other plane of this node
+    /// seals, filled from this plane's own evidence.
+    ///
+    /// The record's shape is not this plane's to choose. It is the audit unit's six groups, and a
+    /// plane contributes exactly two identifiers to it — what kind of operation this was and how it
+    /// finished — so that two rows written by two planes can be compared at all. Everything else
+    /// here is read off evidence some earlier step already produced; nothing is decided a second
+    /// time, least of all the fee, which comes back through [`LlmUnit::fee_evidence`].
+    fn audit_inputs(
+        &self,
+        ctx: &UnitCtx,
+        outcome: Outcome,
+        destination: &str,
+    ) -> busbar_unit_audit::AuditInputs {
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee_evidence(ctx.origin));
+        busbar_unit_audit::AuditInputs {
+            // WHO THE RECORD IS ABOUT. The key the deployment's own door resolved, where one was
+            // resolved. `Arrival` is the honest answer for a request that presented nothing a door
+            // could name — and it is written rather than dropped, because a chain that silently
+            // omits every anonymous request has a hole a caller can choose.
+            subject: match self.walk.gov().key() {
+                Some(key) => busbar_unit_audit::Subject::PrincipalId(key.id.clone()),
+                None => busbar_unit_audit::Subject::Arrival,
+            },
+            what: busbar_unit_audit::What {
+                unit_key: ctx.key,
+                op_class: busbar_unit_audit::OpClassId::new(self.op_class.as_str()),
+                // THE SAME DESTINATION BOTH DOORS NAME, handed in by the terminal that is sealing:
+                // the bounded pool label, which is the string an auditor can join on and which an
+                // unconfigured model name can never widen.
+                destination: Some(destination.to_string()),
+                parent: None,
+                pre_hook_head: None,
+                post_hook_head: None,
+            },
+            // The two clocks, and they are two READINGS of the one arrival: the wall epoch DATES
+            // the record and the monotonic reading ORDERS it. Both off the reading this unit was
+            // stamped with at the door, so a record and the posting beside it are two accounts of
+            // one moment rather than two clock reads.
+            wall: self.arrived.secs(),
+            mono: self.arrived.mono(),
+            origin: self.node.kernel.origin(ctx.origin),
+            outcome: busbar_unit_audit::OutcomeFacts {
+                unit_end: outcome,
+                step: outcome.step(),
+                finish: audit_finish(self.finish_class()),
+                hook_failed: false,
+                emission_delta: 0,
+                stale_policy: false,
+            },
+            amount: busbar_unit_audit::Amount {
+                // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, for the reason `evidence` gives at
+                // length: the figure lands in the walk's tap after this unit has ended, so a
+                // reading taken here would be a number the books could not defend. What the record
+                // can say without inventing anything is whether the flat fee landed, and it says
+                // that through the same function the settlement reads.
+                lines: Vec::new(),
+                pre_tier: 0,
+                priced: 0,
+                tier_bp: 0,
+                fee_count,
+                currency: String::new(),
+                rate_card_version: 0,
+                bucket_chain_ref: String::new(),
+            },
+            controls: busbar_unit_audit::Controls::default(),
+            // The label itself never reaches the chain — only its digest does — so there is nothing
+            // here a reader could resolve back to a conversation.
+            correlation_label: None,
+        }
+    }
+
+    /// Seal this unit's record on the node's chain, where the composition root bound a book.
+    ///
+    /// Unbound, this does nothing and the unit ends as it always has — the same statement the exit
+    /// arm makes for the same reason: a build with no root ledger in it has nowhere for a record to
+    /// go, and that is an honest nothing rather than a record quietly dropped.
+    fn seal_record(
+        &self,
+        token: &UnitToken<Audit>,
+        ctx: &UnitCtx,
+        outcome: Outcome,
+        destination: &str,
+    ) {
+        let Some(book) = self.node.book.get() else {
+            return;
+        };
+        let inputs = self.audit_inputs(ctx, outcome, destination);
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _record = busbar_unit_audit::Audit::seal(&mut durability.record, inputs, token);
+    }
+
     /// The node's own answer, for a terminal reached with an empty carry.
     ///
     /// Handed to the walk's doors as a fallback rather than fetched here: the bytes a step rendered
@@ -1397,35 +1528,49 @@ impl Units for LlmUnit<'_> {
         })
     }
 
-    fn audit(
-        &self,
-        token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        _outcome: &Outcome,
-    ) -> Decision<Audit> {
+    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
         // THE CHARGED TERMINAL. A unit that passed the door leaves here, whatever it ended on: a
         // delivered answer, a relayed upstream failure, or a destination that resolved to nothing
         // after the caller was already charged. All three are the same door.
         let destination = self.destination();
-        self.walk.audit(token, &self.audit_ctx(&destination), || {
-            self.nothing_rendered()
-        })
+        let ctx_of = self.audit_ctx(&destination);
+        let decision = self.walk.audit(token, &ctx_of, || self.nothing_rendered());
+        // AND THE RECORD, on the one chain every plane of this node writes to. Sealed AFTER the
+        // door, because the door is what produces the ending the record carries: a record written
+        // before the terminal posted would be a row describing an answer nobody had given yet.
+        self.seal_record(token, ctx, *outcome, &destination);
+        decision
     }
 
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        _refusal: &Refusal,
+        ctx: &UnitCtx,
+        refusal: &Refusal,
     ) -> Decision<Audit> {
         // THE NOT-CHARGED TERMINAL. Nothing was charged, so nothing is refunded — and the label is
         // the same bound the charged door applies over the same destination, so a refusal raised
         // against a CONFIGURED pool is recorded under that pool's name on both paths.
         let destination = self.destination();
-        self.walk
-            .audit_refused(token, &self.audit_ctx(&destination), || {
-                self.nothing_rendered()
-            })
+        let ctx_of = self.audit_ctx(&destination);
+        let decision = self
+            .walk
+            .audit_refused(token, &ctx_of, || self.nothing_rendered());
+        // THE SAME CHAIN, and that is the point of writing it here. A log that records only what
+        // succeeded cannot answer the question an audit is actually asked — "was this caller ever
+        // turned away, and why" — and a plane that chains its answers while dropping its refusals
+        // reads, from the records, exactly like a plane nobody was ever refused by. The refusal
+        // carries the STEP it was raised at, which is the half a status line cannot say.
+        self.seal_record(
+            token,
+            ctx,
+            Outcome::Refused(
+                refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+                refusal.reason(),
+            ),
+            &destination,
+        );
+        decision
     }
 
     fn encode(
@@ -1477,29 +1622,7 @@ impl Units for LlmUnit<'_> {
             // A verified set with an upstream in it is what makes a client unit draw a request slot,
             // and the slot is drawn at the door and never released.
             upstream_candidate: self.walk.upstream_candidate(),
-            fee: FeeEvidence {
-                // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is
-                // what a caller pays for a request the node carried on its behalf, and a unit the
-                // node runs for any other reason is not a caller's request. Hard-coded true, every
-                // origin this loop could ever carry would post one — a provider push, a tick, a
-                // nested unit — and the sibling planes, which read the same field off the same
-                // context, would price the same traffic differently. The origin the kernel sealed is
-                // the one fact that answers this, so it is the one thing read.
-                client_open_or_one_shot: ctx.origin == OriginKind::Client,
-                selected_upstream: self.walk.upstream_candidate(),
-                relayed_first_response_frame: status.is_some(),
-                // This transport reports no status leg of its own: the response IS the status, and
-                // the plane's finish is decided from the frame the client saw.
-                status_at: None,
-                status: None,
-                finish: status.map(|s| {
-                    if (200..300).contains(&s) {
-                        busbar_contract::FinishClass::Complete
-                    } else {
-                        busbar_contract::FinishClass::Error
-                    }
-                }),
-            },
+            fee: self.fee_evidence(ctx.origin),
         }
     }
 }
@@ -1552,6 +1675,20 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
 
 /// The balance an LLM unit's kernel posting moves: the caller's own, in nano-units, unscoped.
 ///
+/// The audit unit's spelling of a finish class.
+///
+/// Two crates name the same four endings and neither depends on the other, so the mapping is
+/// written once, here, where both are in scope. Totality is what makes it safe: a fifth ending
+/// would not compile.
+fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_unit_audit::FinishClass {
+    match finish {
+        busbar_contract::FinishClass::Complete => busbar_unit_audit::FinishClass::Complete,
+        busbar_contract::FinishClass::TurnComplete => busbar_unit_audit::FinishClass::TurnComplete,
+        busbar_contract::FinishClass::Partial => busbar_unit_audit::FinishClass::Partial,
+        busbar_contract::FinishClass::Error => busbar_unit_audit::FinishClass::Error,
+    }
+}
+
 /// The caller rather than the pool, because the kernel's posting is the unit's — what the POOL spent
 /// is the governance ledger's figure and is already moved there by the walk's tap. Two figures, two
 /// books, neither a second spelling of the other.

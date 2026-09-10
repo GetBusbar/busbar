@@ -2410,3 +2410,246 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
         failures.join("\n")
     );
 }
+
+// ── THE UNIFORM AUDIT RECORD ───────────────────────────────────────────────────────────────
+//
+// Every plane of this node seals ONE record shape, through ONE step, onto ONE chain. The model
+// plane was the last one not on it: its two terminals ended a unit, posted a metric and a
+// response, and left the operator nothing to read back that could be compared against a row any
+// other plane wrote. What follows is that record, from both doors, on one chain.
+//
+// The comparison is by DIGEST rather than field by field, and that is deliberate: the chain hashes
+// every field of the record, so a mirror chain sealed from the inputs this file spells out agrees
+// with the node's chain only if the unit wrote exactly those inputs. A field the unit filled
+// differently — a destination, a subject, an ending, a fee that landed where none should have —
+// moves the digest, and there is no field the comparison can quietly skip.
+
+/// A book of this node's own, and a node bound to it. One per case, so two cases never share a
+/// chain and "this chain has two records" cannot be satisfied by somebody else's unit.
+fn booked() -> (LlmNode, Arc<Mutex<crate::root::durability::Durability>>) {
+    let book = Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ));
+    let node = LlmNode::new();
+    node.bind_book(Arc::clone(&book));
+    (node, book)
+}
+
+/// One request through the real loop on a node that has a book, at an instant this file picks.
+///
+/// The arrival reading is HANDED IN rather than taken, so the two clock readings the record carries
+/// are values a comparison can name. A drive that read the clock itself could be asked whether a
+/// record exists and never what it says.
+async fn drive_recording(
+    node: &LlmNode,
+    rig: &Rig,
+    fixture: Fixture,
+    arrived: Arrived,
+) -> Response {
+    let arrival = WalkArrival {
+        host: rig.host(),
+        gov: rig.gov(),
+        proto: PROTO,
+        operation: busbar_api::operation::Operation::CHAT,
+        caller_token: None,
+        headers: json_headers(),
+        body: fixture.body(),
+        path: None,
+    };
+    node.answer_arriving_at(arrival, None, NATIVE_SEATS, arrived)
+        .await
+}
+
+/// The chain's three observable readings, taken together: how many records it has sealed, where
+/// the next one goes, and the digest of the most recent one.
+fn chain_of(book: &Arc<Mutex<crate::root::durability::Durability>>) -> (u64, u64, String) {
+    let durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    (
+        durability.record.sealed(),
+        durability.record.next_seq(),
+        durability.record.head().to_string(),
+    )
+}
+
+/// The record this file EXPECTS one unit of this plane to have written, as the audit unit's own
+/// inputs — spelled here, in the vocabulary every other plane spells, so that "uniform" is a claim
+/// about values and not about a shape that happens to compile.
+#[allow(clippy::too_many_arguments)]
+fn expected_inputs(
+    principal: &str,
+    unit_key: u64,
+    destination: &str,
+    at: Arrived,
+    outcome: busbar_caps::Outcome,
+    finish: busbar_unit_audit::FinishClass,
+    fee_count: u32,
+) -> busbar_unit_audit::AuditInputs {
+    busbar_unit_audit::AuditInputs {
+        subject: busbar_unit_audit::Subject::PrincipalId(principal.to_string()),
+        what: busbar_unit_audit::What {
+            unit_key: UnitKey::new(unit_key),
+            op_class: busbar_unit_audit::OpClassId::new(
+                busbar_api::operation::Operation::CHAT.name(),
+            ),
+            destination: Some(destination.to_string()),
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: at.secs(),
+        mono: at.mono(),
+        origin: busbar_caps::Origin::seal(
+            &busbar_caps::KernelSeal::acquire_for_kernel(),
+            OriginKind::Client,
+        ),
+        outcome: busbar_unit_audit::OutcomeFacts {
+            unit_end: outcome,
+            step: outcome.step(),
+            finish,
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        amount: busbar_unit_audit::Amount {
+            lines: Vec::new(),
+            pre_tier: 0,
+            priced: 0,
+            tier_bp: 0,
+            fee_count,
+            currency: String::new(),
+            rate_card_version: 0,
+            bucket_chain_ref: String::new(),
+        },
+        controls: busbar_unit_audit::Controls::default(),
+        correlation_label: None,
+    }
+}
+
+/// **THE MODEL PLANE'S UNIT WRITES THE UNIFORM AUDIT RECORD, THROUGH BOTH DOORS, ON ONE CHAIN.**
+///
+/// A served request and a refusal, in that order, on one node with one book. Three claims:
+///
+/// 1. **The unit writes it.** Nothing else on this path does — no terminal, no host seam, no
+///    metric. Before the drive the chain has nothing on it; after each drive it has exactly one
+///    more record, at the next position, under a new head.
+/// 2. **Both halves are on the SAME chain.** The refusal takes seq 2 behind the dispatch's seq 1.
+///    A record set that chained answers and dropped refusals would read, from the records alone,
+///    exactly like a node nobody was ever refused by — and one that wrote refusals onto a second
+///    chain of its own would be two chains that each verify and together describe nothing.
+/// 3. **The fields are the fields every other plane's record carries.** The mirror chain below is
+///    sealed from inputs spelled in the audit unit's vocabulary, and it agrees with the node's
+///    chain digest for digest. Every field the record has is inside that comparison.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
+    let (node, book) = booked();
+    // A mirror of the same chain, sealed from what this file says the records should be. It starts
+    // where the node's chain starts, so record N of one is record N of the other or the digests
+    // part company.
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
+    let mut mirror = busbar_unit_audit::AuditChain::new();
+
+    assert_eq!(
+        chain_of(&book),
+        (0, 1, String::new()),
+        "a node that has run nothing has sealed nothing — this is the reading the whole cell is \
+         measured against"
+    );
+
+    // ── THE SERVED REQUEST ─────────────────────────────────────────────────────────────────
+    let served_rig = rig(Fixture::BufferedOk).await;
+    let served_principal = served_rig.key.id.clone();
+    let served_at = Arrived::at(1_700_000_000_999, 41);
+    let resp = drive_recording(&node, &served_rig, Fixture::BufferedOk, served_at).await;
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "the fixture is a served answer"
+    );
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    served_rig.server.shutdown().await;
+
+    let (sealed, next, served_head) = chain_of(&book);
+    assert_eq!(
+        (sealed, next),
+        (1, 2),
+        "one unit through the charged door seals one record, at the first position"
+    );
+    busbar_unit_audit::Audit::seal(
+        &mut mirror,
+        expected_inputs(
+            &served_principal,
+            // THE FIRST UNIT this node took, by the node's own counter: a record that named every
+            // unit the same could not tell two units of one node apart.
+            1,
+            POOL,
+            served_at,
+            busbar_caps::Outcome::Completed,
+            busbar_unit_audit::FinishClass::Complete,
+            1,
+        ),
+        &audit_token,
+    );
+    assert_eq!(
+        served_head,
+        mirror.head(),
+        "the served record's every field is the record this file spelled: subject, unit key, \
+         operation class, the bounded pool, both clock readings, the origin, the ending and the \
+         one flat fee that landed"
+    );
+
+    // ── THE REFUSAL, ON THE SAME CHAIN ─────────────────────────────────────────────────────
+    // The pre-admission guard: a key that may not reach the pool it named. Nothing was charged,
+    // so no fee is on the record — and the destination is the CONFIGURED pool's own name, not the
+    // unresolved label, because a refusal raised against a pool that exists names it.
+    let refused_rig = rig(Fixture::PoolAcl).await;
+    let refused_principal = refused_rig.key.id.clone();
+    let refused_at = Arrived::at(1_700_000_007_500, 42);
+    let resp = drive_recording(&node, &refused_rig, Fixture::PoolAcl, refused_at).await;
+    assert_eq!(resp.status().as_u16(), 403, "the fixture is a refusal");
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    refused_rig.server.shutdown().await;
+
+    let (sealed, next, refused_head) = chain_of(&book);
+    assert_eq!(
+        (sealed, next),
+        (2, 3),
+        "the refusal is a record too, and it takes the position after the dispatch"
+    );
+    assert_ne!(
+        refused_head, served_head,
+        "two units, two records: a chain whose head did not move recorded the second one nowhere"
+    );
+    busbar_unit_audit::Audit::seal(
+        &mut mirror,
+        expected_inputs(
+            &refused_principal,
+            // The SECOND.
+            2,
+            POOL,
+            refused_at,
+            // WHERE it stopped and WHY, which is the half of an audit a status line cannot say:
+            // the pre-admission guard is the Verify step, and the reason is that this key holds no
+            // grant on the pool it named.
+            busbar_caps::Outcome::Refused(
+                busbar_caps::StepName::Verify,
+                busbar_caps::ReasonCode::PoolNotPermitted,
+            ),
+            busbar_unit_audit::FinishClass::Error,
+            0,
+        ),
+        &audit_token,
+    );
+    assert_eq!(
+        refused_head,
+        mirror.head(),
+        "the refusal's record carries the step it was raised at and the reason — the half of an \
+         audit a success-only record cannot supply — and it is LINKED to the dispatch before it, \
+         because the mirror's second record hashes the first one's digest as its previous"
+    );
+}
