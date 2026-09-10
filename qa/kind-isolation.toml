@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "610"
+count = "608"
 
 [[cell]]
 crate = "busbar-core"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5517"
+count = "5513"
 
 [[cell]]
 crate = "busbar-core"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3057"
+count = "3029"
 
 [[cell]]
 crate = "busbar-core"

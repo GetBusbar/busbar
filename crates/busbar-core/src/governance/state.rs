@@ -2359,3 +2359,14 @@ impl GovState {
 fn still_enforces_a_cap(cost: &crate::cost::CostModel, bucket_id: &str) -> bool {
     cost.bucket_enforces_a_cap(bucket_id)
 }
+
+/// Core-side [`busbar_substrate::trust::validate::GovResolve`]: re-resolve a principal by its stable
+/// subject id against the LIVE governance registry. Threading it as a trait keeps the substrate's
+/// standing-permission primitive transport-neutral (it holds an `id`, re-asks through this, and never
+/// names `GovState`). Lives here, beside the state it resolves against, because the orphan rule
+/// requires the impl in the crate that owns `GovState`.
+impl busbar_substrate::trust::validate::GovResolve for GovState {
+    fn resolve_by_sub(&self, sub: &str) -> Option<Arc<VirtualKey>> {
+        self.lookup_by_sub(sub)
+    }
+}

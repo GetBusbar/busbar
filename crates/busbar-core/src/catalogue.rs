@@ -4,7 +4,7 @@
 //! Re-export shim. THE CATALOGUE — the "what may this caller SEE" walk and its judgement — moved
 //! DOWN into `busbar-substrate` in Phase-B B1; this module re-exports it (glob) so every
 //! `crate::catalogue::…` name resolves unchanged and hosts the core-only catalogue tests, which name
-//! `crate::trust::validate::validate_visibility` (resolved here through core's own `trust::validate`
+//! `busbar_substrate::trust::validate::validate_visibility` (resolved here through core's own `trust::validate`
 //! re-export).
 
 // The catalogue serves whichever protocol planes are installed and nothing else; with none installed
