@@ -749,7 +749,7 @@ EOF
         (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
           || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
         # Same reason as the kind-isolation leg above: 394s measured over thirty-two planted trees.
-        (cd "$here" && XTASK_GATE_CEILING_SECS_CONSTRUCTION=1800 cargo xtask gate construction --selftest >"$here/target/land-cselftest-$stamp.log" 2>&1) \
+        (cd "$here" && XTASK_GATE_CEILING_SECS_CONSTRUCTION=3600 cargo xtask gate construction --selftest >"$here/target/land-cselftest-$stamp.log" 2>&1) \
           || { tail -20 "$here/target/land-cselftest-$stamp.log" >&2
                echo "land.sh: RED — construction --selftest (the gate that reads these files can no longer prove itself)" >&2; return 1; }
         local clog="$here/target/land-ceilings-$stamp.log"
@@ -823,7 +823,10 @@ EOF
       # registry rather than being grepped out of the construction gate's log. Self-test FIRST.
       (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
         || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
-      # THE HANG CEILING IS A CEILING, NOT A BUDGET. `gates::DEFAULT_GATE_CEILING` is 300s, which
+      # THE HANG CEILING IS A CEILING, NOT A BUDGET. Measured 2026-09-09: 1508 s on the laptop, 1642 s
+      # on a fleet box beside four CI runners — 91% of 1800, and the remote landing that hit it was
+      # reported as "the gate can no longer prove itself" when nothing was wrong with the gate. 3600
+      # is still a hang ceiling (the work-unit budget is the ratchet that notices growth). `gates::DEFAULT_GATE_CEILING` is 300s, which
       # is right for a gate RUN and wrong for a self-test that plants fifty-eight trees and runs
       # the whole gate over each (273s measured on a warm laptop; a loaded landing box is slower).
       # Raised for THIS GATE ONLY, so a hang anywhere else still costs five minutes and a red row —
@@ -833,7 +836,7 @@ EOF
       # gate can no longer prove itself" and the operator re-ran fifteen minutes of proof to learn
       # which case — on a fleet box, from a session that had already ended.
       local kslog="$here/target/land-kselftest-$stamp.log"
-      (cd "$here" && XTASK_GATE_CEILING_SECS_KIND_ISOLATION=1800 cargo xtask gate kind-isolation --selftest >"$kslog" 2>&1) \
+      (cd "$here" && XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 cargo xtask gate kind-isolation --selftest >"$kslog" 2>&1) \
         || { grep -E 'FAILED|expected|infra' "$kslog" | head -12 >&2
              echo "land.sh: RED — kind-isolation self-test (the gate can no longer prove itself; log: $kslog)" >&2; return 1; }
       (cd "$here" && cargo xtask gate kind-isolation) \
