@@ -37,6 +37,12 @@ remote_wrapper
 
 # The batch file, if this is a batch. Its path on the box mirrors its path here, so the log the box
 # prints names paths the operator recognises.
+# THE MODE IS READ HERE TOO. A pre-proof publishes nothing and the box's land.sh puts its tree back,
+# so the tip that comes back is the tip that was sent — and if it is NOT, something on the box ran an
+# ordinary landing under a flag it did not understand (seen once: an older engine on the box). That
+# is a refusal, not a fast-forward: this script must never move the runner's tree on a pre-proof.
+PREPROVE=0
+for a in "${ARGS[@]}"; do [ "$a" = "--preprove" ] && PREPROVE=1; done
 BATCH=""
 i=0
 while [ $i -lt ${#ARGS[@]} ]; do
@@ -207,7 +213,13 @@ fi
 # else means the tree here and the tree proved there have diverged, and that is a refusal.
 if GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST/~/$REMOTE_BARE" "+refs/heads/$REF-landed:refs/remotes/landed/$REF" 2>/dev/null; then
   landed="$(git -C "$REPO" rev-parse "refs/remotes/landed/$REF")"
-  if [ "$landed" != "$(git -C "$REPO" rev-parse HEAD)" ]; then
+  if [ "$PREPROVE" = 1 ]; then
+    if [ "$landed" = "$(git -C "$REPO" rev-parse HEAD)" ]; then
+      rlog "pre-proof: tree stays at $(git -C "$REPO" rev-parse --short HEAD); nothing was published and nothing is fast-forwarded"
+    else
+      rlog "ERROR: the box published $(echo "$landed" | cut -c1-9) on a PRE-PROOF of $(git -C "$REPO" rev-parse --short HEAD) — an engine there took a landing it was told not to take; this tree is NOT moved"; RC=2
+    fi
+  elif [ "$landed" != "$(git -C "$REPO" rev-parse HEAD)" ]; then
     if git -C "$REPO" merge -q --ff-only "$landed" 2>/dev/null; then
       rlog "tree fast-forwarded to the landed tip $(git -C "$REPO" rev-parse --short HEAD)"
     else
