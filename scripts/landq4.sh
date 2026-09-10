@@ -230,6 +230,25 @@ EOF
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE ENGINE THE RUNNER RUNS, staged under target/gate with its roots pointed at THIS tree.
+#
+# `$SCRIPTS` (LAND_SH_SRC) is a scratch copy of scripts/ — usually inside another worktree — so that a
+# landing can change land.sh without changing the copy that is landing it. land.sh derives `here`
+# from its own path and execs the land-remote.sh BESIDE it, whose REPO is likewise derived. Run from
+# `$SCRIPTS` directly, both resolve to the SCRATCH tree: land-remote.sh refuses the batch file as
+# "outside the repository", and had it not, the tip it pushed would have been the scratch worktree's
+# HEAD while the ledger keyed the verdict by this tree's. The sweep did exactly that in its first
+# form. So the three files are rewritten here, once per iteration, and EVERYTHING the runner launches
+# — the sweep and the batch alike — runs the staged copies.
+lq_stage_engine() {
+  mkdir -p "$W/target/gate"
+  sed "s|^here=.*|here=\"$W\"|" "$SCRIPTS/land.sh" >"$W/target/gate/land.run.sh"
+  sed "s|^REPO=.*|REPO=\"$W\"|" "$SCRIPTS/land-remote.sh" >"$W/target/gate/land-remote.sh"
+  cp "$SCRIPTS/ci-remote-lib.sh" "$W/target/gate/ci-remote-lib.sh"
+  chmod +x "$W/target/gate/land.run.sh" "$W/target/gate/land-remote.sh"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE PRE-PROVE SWEEP
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # One box per line, in parallel, each against the CURRENT tip and each publishing nothing. The
@@ -250,8 +269,9 @@ lq_preprove_sweep() {
   # is the wall clock of six serial landings, which is the opposite of the point. The hosts are
   # therefore picked here, serially, before a single child is launched, and each is named to
   # `land.sh --remote <host>` explicitly rather than left to `auto`.
+  lq_stage_engine
   # shellcheck source=scripts/ci-remote-lib.sh
-  . "$SCRIPTS/ci-remote-lib.sh" 2>/dev/null || {
+  . "$W/target/gate/ci-remote-lib.sh" 2>/dev/null || {
     lq_log "pre-prove: no ci-remote-lib.sh; the sweep has no transport and is skipped"; return 0; }
   ( remote_wrapper ) || { lq_log "pre-prove: no ssh wrapper for the fleet; sweep skipped"; return 0; }
   local i=0 line hosts="" cand try
@@ -274,7 +294,10 @@ lq_preprove_sweep() {
       # into the other for a caller who typed the variable, but the argv is what reaches the box —
       # see land.sh's own note — and a sweep whose mode depended on that conversion would be one
       # refactor away from six real landings nobody asked for.
-      bash "$SCRIPTS/land.sh" --preprove --remote "$cand" --batch "$bf" \
+      # THE STAGED ENGINE, whose `here` is this tree (see lq_stage_engine), and WITHOUT the shard
+      # fan-out: the sweep's parallelism is across lines, and a fan-out inside each of six pre-proofs
+      # would ask the fleet for four boxes apiece.
+      env -u LAND_SELFTEST_SHARDS bash "$W/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf" \
         >"$dir/line-$i.log" 2>&1
       echo $? >"$dir/line-$i.rc"
     ) &
@@ -515,6 +538,19 @@ lq_selftest() {
   _t "an unresolvable line does not join"      "$(printf -- '--prove %s\n--prove %s' "$ha" "$hc")" "$(cat "$root/b7.txt")"
   W="$savedW"; D="$savedD"; Q="$savedQ"; PP="$savedPP"; L="$savedL"
 
+  echo "landq4 selftest: the staged engine (the sweep runs the copy whose root is THIS tree)"
+  local savedW2="$W" savedS="$SCRIPTS"; W="$root/tree"; SCRIPTS="$root/scratch/scripts"
+  mkdir -p "$SCRIPTS" "$W"
+  printf '#!/usr/bin/env bash\nhere="$(cd "$(dirname "$0")/.." && pwd)"\necho "here=$here"\n' >"$SCRIPTS/land.sh"
+  printf '#!/usr/bin/env bash\nREPO="$(cd "$(dirname "$0")/.." && pwd)"\necho "REPO=$REPO"\n' >"$SCRIPTS/land-remote.sh"
+  printf 'rlog() { :; }\n' >"$SCRIPTS/ci-remote-lib.sh"
+  lq_stage_engine
+  _t "land.run.sh's root is the runner's tree, not the scratch" "here=$W" "$(bash "$W/target/gate/land.run.sh")"
+  _t "land-remote.sh's REPO is the runner's tree"               "REPO=$W" "$(bash "$W/target/gate/land-remote.sh")"
+  _t "the sweep launches the staged engine"                     1 "$(grep -c 'bash "\$W/target/gate/land.run.sh" --preprove' "$0")"
+  _t "the sweep never launches \$SCRIPTS/land.sh"              0 "$(grep -c 'bash "\$SCRIPTS/land.sh" --preprove' "$0")"
+  W="$savedW2"; SCRIPTS="$savedS"
+
   echo "landq4 selftest: the popper"
   Q="$root/popq.txt"; PP="$pp"; L="$root/log.txt"; : >"$L"; W="$repo"
   printf -- '--prove %s\n--prove %s\n--prove %s\n' "$ha" "$hb" "$hc" >"$Q"
@@ -574,12 +610,9 @@ while true; do
 
   lq_log "=== $(date +%H:%M:%S) batch of $n line(s) (size $B), head: $(head -n1 "$batch" | cut -c1-100)"
   rm -f "$batch.result"
-  # THE SCRIPTS THE RUNNER RUNS, copied so a landing can change land.sh without changing the copy
-  # that is landing it. Same arrangement as the runner this replaces.
-  sed "s|^here=.*|here=\"$W\"|" "$SCRIPTS/land.sh" >"$W/target/gate/land.run.sh"
-  sed "s|^REPO=.*|REPO=\"$W\"|" "$SCRIPTS/land-remote.sh" >"$W/target/gate/land-remote.sh"
-  cp "$SCRIPTS/ci-remote-lib.sh" "$W/target/gate/ci-remote-lib.sh"
-  chmod +x "$W/target/gate/land.run.sh" "$W/target/gate/land-remote.sh"
+  # The staged engine (see lq_stage_engine): a landing can change land.sh without changing the copy
+  # that is landing it.
+  lq_stage_engine
   # THE FULL PROOF, OVER THE UNION, ALWAYS. A pre-proof chose which lines are here; it is not any
   # part of the verdict on them.
   bash "$W/target/gate/land.run.sh" --batch "$batch" >>"$L" 2>&1
