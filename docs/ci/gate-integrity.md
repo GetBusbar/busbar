@@ -167,6 +167,30 @@ integration line while they are drained. That is reasonable to have and unreason
 promoting it does not drain it, it promotes the breakage and retires the record of it. So the row is
 green-with-the-list-printed on the dev line and red for `qa`/`main` while anything is on it.
 
+### Whose mutation verdict is about this tree
+
+`ship-ready:gate-mutants` asks the checks API about **HEAD**. When HEAD has no `gate-mutants` check
+at all, there is exactly one commit that may answer for it and one condition under which it may:
+
+> The base may answer for the tip only when the branch changed **nothing in the mutation job's
+> scope** — because only then is the gate code at the tip the gate code at the base.
+
+This used to be unconditional, and the rationale beside it was true of one case and applied to all
+of them: a commit that only moved documentation carries no run of its own, so the branch point's
+standing verdict is the honest answer for it. For a branch that moved documentation, yes. For a
+branch that rewrote `xtask/src/gates` and was never pushed, the base is a commit that **carries none
+of the picks** — its green says nothing about the gate code being shipped, and the row printed PASS
+over it.
+
+Which files count as "the scope" is not written down here, and not written down in `xtask` either.
+`scripts/gate-mutants.sh` says of its own list *"this list is the single source of truth: the
+workflow does not repeat it, it calls `--scope`"*, so the row reads `gm_scope_paths()` out of that
+script. A copy in Rust would be the second source of truth, and a path added to the job but not to
+the copy is a path this row believes the branch cannot have touched — the fallback going quiet
+again, one file at a time. A scope that cannot be read, or that reads as **empty**, is RED: empty
+means "this branch changed nothing the job measures", which is the answer that hands every
+ancestor's verdict to every tip.
+
 ### Why the mutation verdict is read from GitHub and not from a file in the tree
 
 The obvious design is for the mutation job to commit `qa/gate-mutants.json` — `{tree, surviving,

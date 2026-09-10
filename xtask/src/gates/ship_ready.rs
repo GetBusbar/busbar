@@ -51,7 +51,7 @@
 
 use std::process::Command;
 
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Overlay};
 use crate::gates::construction::ceilings;
 use crate::gates::{Case, Expect, Gate, Report, CONSTRUCTION_STANDING_REDS};
 use crate::ledger::{Row, Status, Verdict};
@@ -230,10 +230,8 @@ struct CheckAnswer {
 
 /// ASK GITHUB. See the module comment for why this is a network read and not a file read.
 ///
-/// It asks about HEAD first and falls back to the merge-base with the line the branch is measured
-/// against, because the mutation job's own claim is scoped to `merge-base..HEAD`: a commit that
-/// only moved documentation carries no `gate-mutants` run of its own and the standing verdict for
-/// the branch point is the honest answer for it.
+/// One sha, one answer. WHICH shas may be asked is [`verdict_candidates`]'s question, and it is a
+/// question with a hole in it that this comment used to describe as a feature — see there.
 fn ask_github(cx: &Ctx, repo: &str, sha: &str) -> Result<Option<CheckAnswer>, String> {
     let out = Command::new("gh")
         .current_dir(cx.root())
@@ -272,6 +270,89 @@ fn ask_github(cx: &Ctx, repo: &str, sha: &str) -> Result<Option<CheckAnswer>, St
     }))
 }
 
+/// The script that owns the mutation job's scope, and the shell function inside it that IS the
+/// list. `scripts/gate-mutants.sh` says of that list, in its own words, "this list is the single
+/// source of truth: the workflow does not repeat it, it calls `--scope`" — so this row does not
+/// repeat it either. It reads it.
+const MUTANTS_SCRIPT: &str = "scripts/gate-mutants.sh";
+const SCOPE_FN: &str = "gm_scope_paths()";
+
+/// THE PATHS THE MUTATION JOB IS SCOPED TO, read out of the script that owns them.
+///
+/// A COPY OF THE LIST IN RUST WOULD BE THE SECOND SOURCE OF TRUTH the script's own comment refuses
+/// to have. A path added to the job's scope and not to the copy would be a path this row still
+/// believes the branch cannot have touched, which is exactly the fallback below going quiet again
+/// — one file at a time, invisibly, as the scope grows.
+///
+/// A SCRIPT THAT CANNOT BE READ IS AN ERROR, never an empty list: empty reads as "this branch
+/// changed nothing the job measures", which is the permissive answer to every question below.
+fn mutants_scope(cx: &Ctx) -> Result<Vec<String>, String> {
+    let text = cx.read(MUTANTS_SCRIPT)?;
+    let Some((_, rest)) = text.split_once(SCOPE_FN) else {
+        return Err(format!(
+            "{MUTANTS_SCRIPT} carries no `{SCOPE_FN}`, so the paths the mutation job is scoped to \
+             cannot be read out of the script that owns them"
+        ));
+    };
+    let Some((_, body)) = rest.split_once("<<'PATHS'\n") else {
+        return Err(format!(
+            "`{SCOPE_FN}` in {MUTANTS_SCRIPT} no longer prints a `PATHS` heredoc, so its list \
+             cannot be read"
+        ));
+    };
+    let out: Vec<String> = body
+        .lines()
+        .take_while(|l| l.trim() != "PATHS")
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    if out.is_empty() {
+        return Err(format!(
+            "`{SCOPE_FN}` in {MUTANTS_SCRIPT} lists no path at all. An empty scope reads as \"this \
+             branch changed nothing the mutation job measures\", which is the answer that makes \
+             every other commit's verdict acceptable for this one"
+        ));
+    }
+    Ok(out)
+}
+
+/// WHAT THIS BRANCH CHANGED that the mutation job would have measured — the job's own `gm_scope`,
+/// asked of the same base every other ratchet in this binary uses.
+fn picks(cx: &Ctx, base: &str, scope: &[String]) -> Result<Vec<String>, String> {
+    let mut args: Vec<&str> = vec!["diff", "--name-only", base, "HEAD", "--"];
+    args.extend(scope.iter().map(String::as_str));
+    Ok(cx
+        .git_lines(&args)?
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .collect())
+}
+
+/// WHICH COMMITS MAY ANSWER FOR THIS TREE, in the order they are asked.
+///
+/// THE HOLE THIS FUNCTION EXISTS TO CLOSE. The row used to ask HEAD and then, whatever the branch
+/// contained, fall back to the base — and take the base's `success` as the tip's verdict. The
+/// rationale written beside it was true of one case and applied to all of them: "a commit that
+/// only moved documentation carries no `gate-mutants` run of its own, and the standing verdict for
+/// the branch point is the honest answer for it". For a branch that moved documentation, yes. For
+/// a branch that rewrote `xtask/src/gates`, the base is a commit that carries NONE OF THE PICKS —
+/// its green says nothing whatever about the gate code being shipped, and an unpushed tip full of
+/// new gate code inherited it silently. That is a PASS with no evidence under it, which is the one
+/// thing this whole gate exists not to print.
+///
+/// So the fallback keeps exactly the case its rationale describes and loses the rest: the base may
+/// answer for the tip only when the branch changed NOTHING in the mutation job's scope, because
+/// then the gate code at the tip and the gate code at the base are the same gate code and the
+/// verdict really is about it.
+fn verdict_candidates(head: &str, base: &str, picks: &[String]) -> Vec<String> {
+    let mut out = vec![head.to_string()];
+    if picks.is_empty() && !base.is_empty() && base != head {
+        out.push(base.to_string());
+    }
+    out
+}
+
 fn mutants_row(cx: &Ctx, repo: &str) -> Row {
     let head = cx
         .git(&["rev-parse", "HEAD"])
@@ -293,8 +374,28 @@ fn mutants_row(cx: &Ctx, repo: &str) -> Row {
     // two ratchets disagreeing about what they ratchet from while both stay green.
     let base = ceilings::base_ref(cx).unwrap_or_default();
 
+    // READ BEFORE ANYTHING IS ASKED OF GITHUB, because the answer decides WHO may be asked. A run
+    // that cannot tell what this branch changed cannot tell whose verdict is about it.
+    let picked = match mutants_scope(cx).and_then(|scope| picks(cx, &base, &scope)) {
+        Ok(p) => p,
+        Err(why) => {
+            return Row::fail(
+                ROW_MUTANTS,
+                "what this branch changed could not be read",
+                format!(
+                    "{why}. Which commit's `{MUTANTS_CHECK}` verdict is about THIS tree depends on \
+                     what this tree changed in the job's scope; a run that cannot read the scope \
+                     cannot say, and cannot be told yes."
+                ),
+            );
+        }
+    };
+
     let mut tried: Vec<String> = Vec::new();
-    for sha in [head.clone(), base].into_iter().filter(|s| !s.is_empty()) {
+    for sha in verdict_candidates(&head, &base, &picked)
+        .into_iter()
+        .filter(|s| !s.is_empty())
+    {
         match ask_github(cx, repo, &sha) {
             Err(why) => {
                 // A GATE THAT CANNOT REACH ITS EVIDENCE HAS NOT BEEN SATISFIED. This is the one
@@ -343,13 +444,25 @@ fn mutants_row(cx: &Ctx, repo: &str) -> Row {
             }
         }
     }
+    let carried = if picked.is_empty() {
+        "This branch changed nothing in the mutation job's scope, so the base's standing verdict \
+         would have answered for it — and there is not one."
+            .to_string()
+    } else {
+        format!(
+            "This branch changed {} file(s) in the job's scope ({}), so NO ancestor's verdict is \
+             about this tree: an ancestor carries none of those picks.",
+            picked.len(),
+            picked.join(", ")
+        )
+    };
     Row::fail(
         ROW_MUTANTS,
         "no mutation verdict exists for this commit",
         format!(
             "no `{MUTANTS_CHECK}` check on {}. The job reports on every push, so no check means \
              the commit was never pushed, or the workflow is not on this branch. Either way \
-             nothing has measured whether this tree's gates still bite.",
+             nothing has measured whether this tree's gates still bite. {carried}",
             tried.join(" or ")
         ),
     )
@@ -504,6 +617,92 @@ impl Gate for ShipReadyGate {
             },
             mutants_row(cx, "GetBusbar/no-such-repository-ever-0000"),
         ));
+
+        // -- WHOSE VERDICT IS ABOUT THIS TREE. The audit's claim, as a fixture: a tip that
+        //    carries gate-code picks used to inherit its merge-base's green, and the base carries
+        //    none of those picks. The rule is now a pure function of (head, base, picks) and each
+        //    of its two arms is a case, because the arm that is right for a documentation-only
+        //    push is the arm that was wrong for every other one.
+        for (name, picks, want, why) in [
+            (
+                "a tip carrying picks in the job's scope may NOT inherit an ancestor's verdict",
+                vec!["xtask/src/gates/construction/ceilings.rs".to_string()],
+                vec!["deadbeef".to_string()],
+                "the base carries none of this branch's picks",
+            ),
+            (
+                "a tip that changed nothing in the job's scope may read the base's standing verdict",
+                Vec::new(),
+                vec!["deadbeef".to_string(), "cafef00d".to_string()],
+                "the gate code at the tip IS the gate code at the base",
+            ),
+        ] {
+            let got = verdict_candidates("deadbeef", "cafef00d", &picks);
+            report.push(Case {
+                name: name.to_string(),
+                covers: vec![ROW_MUTANTS.to_string()],
+                expected: Expect::Green,
+                got: if got == want {
+                    Expect::Green
+                } else {
+                    Expect::Red {
+                        naming: vec![format!(
+                            "picks {picks:?} may be answered for by {got:?}, and only {want:?} \
+                             answers for them: {why}"
+                        )],
+                    }
+                },
+            });
+        }
+
+        // -- THE SCOPE IS READ, NEVER COPIED. An empty or unreadable scope reads as "this branch
+        //    changed nothing the job measures", which is the answer that hands every ancestor's
+        //    verdict to every tip — so it is RED, and it is red before `gh` is reached, which is
+        //    what lets this case run with no network and no token.
+        for (name, planted, naming) in [
+            (
+                "a gate-mutants script with no scope function reddens the row, never widens it",
+                "#!/usr/bin/env bash\necho hello\n".to_string(),
+                "carries no `gm_scope_paths()`",
+            ),
+            (
+                "a gate-mutants script whose scope list is EMPTY is refused, not read as \"nothing changed\"",
+                format!("#!/usr/bin/env bash\n{SCOPE_FN} {{\n  cat <<'PATHS'\nPATHS\n}}\n"),
+                "lists no path at all",
+            ),
+        ] {
+            let mut ov = Overlay::new();
+            ov.set(MUTANTS_SCRIPT, planted);
+            report.push(unit_case(
+                name,
+                &[ROW_MUTANTS],
+                Expect::Red {
+                    naming: vec![naming.to_string()],
+                },
+                mutants_row(&cx.with_overlay(ov), "GetBusbar/no-such-repository-ever-0000"),
+            ));
+        }
+
+        // -- AND THE REAL SCRIPT'S LIST IS READABLE. The two refusals above prove the reader
+        //    refuses; this proves it reads, against the file that owns the list — so a heredoc
+        //    reformatted in the script turns this red rather than quietly emptying the scope.
+        report.push(Case {
+            name: "the mutation job's scope is read out of scripts/gate-mutants.sh itself".into(),
+            covers: Vec::new(),
+            expected: Expect::Green,
+            got: match mutants_scope(cx) {
+                Ok(paths) if paths.iter().any(|p| p == "xtask/src/gates") => Expect::Green,
+                Ok(paths) => Expect::Red {
+                    naming: vec![format!(
+                        "{MUTANTS_SCRIPT} scope read as {paths:?}, which does not name the gate \
+                         sources — the reader and the script have come apart"
+                    )],
+                },
+                Err(e) => Expect::Red {
+                    naming: vec![format!("{MUTANTS_SCRIPT} scope could not be read: {e}")],
+                },
+            },
+        });
 
         // -- THE GATE RUNS END TO END AND OWES WHAT IT SAYS IT OWES.
         //

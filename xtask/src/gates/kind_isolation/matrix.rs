@@ -2189,6 +2189,63 @@ pub fn selftest(
         },
     ));
 
+    // ONCE MEANS ONCE ACROSS HISTORY, and this is the fixture for the claim that it does not.
+    //
+    // The claim under audit: a crate the BASE already minted may be minted again on the branch —
+    // a second row set admitted by a row whose whole content is "this crate's rows were minted".
+    // Everything above proves the door against a base that never minted the crate; this proves it
+    // against one that did, which is the only base the claim is about. The base's ledger is
+    // PLANTED through `git-show` — the branch cannot edit history, and neither can this case.
+    match super::base::read(cx) {
+        Err(why) => report.push(crate::gates::Case {
+            name: "a [[minted]] row for a crate the merge-base already minted admits nothing"
+                .to_string(),
+            covers: vec![ROW_MATRIX.to_string()],
+            expected: crate::gates::Expect::Red {
+                naming: vec!["second-mint".to_string()],
+            },
+            got: crate::gates::Expect::Red {
+                naming: vec![format!(
+                    "the base could not be read, so the case is unproven: {why}"
+                )],
+            },
+        }),
+        Ok(base) => {
+            const TWICE: &str = "busbar-control-oauth2";
+            let mut ov = landed_crate(
+                TWICE,
+                "//! The tcp transport is named once here, so this crate has a cell to mint.\n",
+            );
+            ov.set(
+                LEDGER,
+                format!(
+                    "{}\n\n[[cell]]\n{}\n\n{}",
+                    cx.read(LEDGER).unwrap_or_default().trim_end(),
+                    cell_row(TWICE, "transport", "1"),
+                    minted_row(TWICE, 1, None),
+                ),
+            );
+            // THE BASE ALREADY CARRIES THE ADMISSION. Its row set is history; a second row for the
+            // same crate admits nothing, whatever number it writes.
+            ov.set_command(
+                format!("git-show:{}:{LEDGER}", base.commit),
+                format!(
+                    "{}\n\n{}",
+                    base.registry.trim_end(),
+                    minted_row(TWICE, 1, None)
+                ),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                "a [[minted]] row for a crate the merge-base already minted admits nothing",
+                &[ROW_MATRIX],
+                ov,
+                &["second-mint", &format!("[[minted]] {TWICE}")],
+            ));
+        }
+    }
+
     // ── THE DOOR'S SECOND LEAF: `[[minted_kind]]` ───────────────────────────────────────────────
     //
     // The FIRST crate of a kind makes the kind's vocabulary countable, and the tree answers with a
