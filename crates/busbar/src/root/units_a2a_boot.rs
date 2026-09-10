@@ -174,6 +174,22 @@ pub struct DeclaredAgent {
 ///
 /// A section that is not this plane's answers with nothing — the honest reading of a deployment that
 /// has no `agents:` block at all, which is the same deployment the legacy plugin mounts no route for.
+///
+/// AND THE PLANE CRATE IS A SEPARATE SWITCH FROM THE LEG, which is why the downcast is behind its
+/// own cfg. `root-a2a-serve` says the root's leg is on the request path; `plane-a2a` says this
+/// binary carries the A2A plane crate at all. The strong-form deletion test builds a binary with
+/// the second removed and the first, being in `default`, still on — and an unconditional
+/// `busbar_a2a::` here made that build fail to compile, which is the plane failing to be deletable
+/// rather than the plane being absent. With the crate gone there is no configuration shape to
+/// downcast TO, and a deployment whose `agents:` section this binary cannot read fronts no agents:
+/// the same empty answer a deployment with no `agents:` block gets, which is the honest one.
+#[cfg(not(feature = "plane-a2a"))]
+fn declared_agents(_section: &dyn std::any::Any) -> Vec<DeclaredAgent> {
+    Vec::new()
+}
+
+/// The same question, asked of a binary that CARRIES the plane crate. See the twin above.
+#[cfg(feature = "plane-a2a")]
 fn declared_agents(section: &dyn std::any::Any) -> Vec<DeclaredAgent> {
     let Some(agents) = section.downcast_ref::<busbar_a2a::a2a::config::AgentsCfg>() else {
         return Vec::new();
