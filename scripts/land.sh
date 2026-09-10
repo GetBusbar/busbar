@@ -890,6 +890,58 @@ land_export_gate_base() { # $1 = the base sha this run is judging against
   export BUSBAR_GATE_BASE_REF="$1" GATE_MUTANTS_BASE="$1"
 }
 
+# ── THE PLUGIN CDYLIBS THE TEST HARNESSES dlopen ──────────────────────────────────────────────────
+# WHICH CRATES: read from the tree, not written down here, so a plugin added, renamed or removed by
+# the very batch being proven is built exactly as the tree says. A `crate-type` line naming cdylib
+# is the definition; the word in a description or a comment is not (crates/plugin-sdk and
+# crates/plugin-loader both talk about cdylibs at length and are neither).
+land_plugin_cdylib_crates() { # $1 = tree; prints one cargo package name per line
+  local f n
+  for f in "$1"/crates/*/Cargo.toml; do
+    [ -f "$f" ] || continue
+    grep -qE '^[[:space:]]*crate-type[[:space:]]*=.*"cdylib"' "$f" || continue
+    n="$(grep -m1 '^name = ' "$f" | sed 's/^name = *"//; s/".*$//')"
+    [ -n "$n" ] && printf '%s\n' "$n"
+  done
+}
+# BUILT, AND THEN MADE NEWER THAN THEIR SOURCES. The batteries assert BOTH that the artifact exists
+# and that no source under the plugin, the SDK or the ABI crate is newer than it — a stale cdylib
+# answers every write Ok(()) and every read empty, which is byte-for-byte the ABI defect the fixture
+# hunts, so it refuses to judge one. `cargo build` returning 0 is the proof that the artifact and
+# those sources agree; cargo does not relink an artifact it considers fresh, so it does not always
+# leave the mtime saying so. Touching the artifacts AFTER a successful build of exactly those
+# packages states what cargo just proved, and states nothing else: a source edited after this point
+# is newer again, and the ratchet fires exactly as it should.
+land_build_plugin_cdylibs() { # $1 = tree; 0 when every plugin cdylib in the tree is built and current
+  local here_="$1" pkgs args="" p tdir n
+  pkgs="$(land_plugin_cdylib_crates "$here_")"
+  [ -n "$pkgs" ] || { echo "land.sh: no cdylib plugin crate in this tree; nothing to build"; return 0; }
+  for p in $pkgs; do args="$args -p $p"; done
+  local plog="$here_/target/land-plugins-${stamp:-now}.log"
+  mkdir -p "$(dirname "$plog")" 2>/dev/null || true
+  echo "land.sh: building the plugin cdylibs the test harnesses dlopen:$args"
+  # shellcheck disable=SC2086
+  if ! (cd "$here_" && cargo build $args >"$plog" 2>&1); then
+    grep -E '^error' "$plog" | head -5 >&2
+    echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; return 1
+  fi
+  # THE SAME PROFILE DIRECTORY THE TESTS READ FROM: the harnesses derive it from their own binary
+  # (<target>/<profile>/deps/<bin>), and `cargo test` and this `cargo build` share both the target
+  # directory (CARGO_TARGET_DIR, else <tree>/target) and the profile (debug).
+  tdir="${CARGO_TARGET_DIR:-$here_/target}/debug"
+  n=0
+  for p in $pkgs; do
+    local snake; snake="$(printf '%s' "$p" | tr - _)"
+    local a
+    for a in "$tdir/lib$snake.dylib" "$tdir/lib$snake.so" "$tdir/$snake.dll"; do
+      [ -f "$a" ] || continue
+      touch "$a"; n=$((n + 1))
+    done
+  done
+  echo "land.sh: plugin cdylibs current in $tdir ($n artifact(s))"
+  return 0
+}
+
 prove_tree() {
   local base="$1" tests="$2" gate="$3" families="$4" label="$5" features="${6:-}"
   PROVEN=""
@@ -917,11 +969,7 @@ prove_tree() {
     plugins)
       # The plugin batteries refuse to skip when their cdylib is absent, so the example plugins are
       # built before any test leg; a green here must mean the ABI-crossing cells actually ran.
-      local plog="$here/target/land-plugins-$stamp.log"
-      if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-store-example-plugin -p busbar-export-example-plugin -p busbar-secret-example-plugin >"$plog" 2>&1); then
-        grep -E '^error' "$plog" | head -5 >&2
-        echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; return 1
-      fi
+      land_build_plugin_cdylibs "$here" || return 1
       PROVEN="$PROVEN plugin cdylibs build;" ;;
 
     fmt)
@@ -1073,6 +1121,18 @@ EOF
       fi ;;
 
     tests)
+      # THE CDYLIBS ARE BUILT AGAIN, HERE, IMMEDIATELY BEFORE THE TESTS THAT dlopen THEM.
+      # Measured on a fresh prove box (CFG-MIGRATE, and the tree-reds pre-proof this hour): nine
+      # busbar-core cells — plane::approvals::spentledger_tests::*, plane::quarantine::
+      # demotion_tests::* — panicked at crates/busbar-core/src/test_support/plugin_store.rs:80,
+      # which is the STALE arm, not the absent one. The `plugins` leg above did run; between it and
+      # the test binary something else (any leg that compiles busbar-plugin-sdk as a DEPENDENCY,
+      # which is most of them) left cargo believing the cdylib fresh without relinking it, and the
+      # fixture compares the ARTIFACT's mtime against the sources under crates/store-example-plugin,
+      # crates/plugin-sdk and crates/busbar-plugin directly — not against cargo's fingerprint. On a
+      # box whose checkout gave every source a fresh mtime, artifact-older-than-source is the
+      # ordinary state, and every landing that named busbar-core was red for it.
+      land_build_plugin_cdylibs "$here" || return 1
       local args=""; for p in $tests; do args="$args -p $p"; done
       [ -n "$features" ] && args="$args --features $features"
       # The two xtask/tests/cli.rs cases that re-run every gate's self-test are produced by the
@@ -1779,6 +1839,10 @@ land_selftest() {
   local root="$here/target/land-selftest-$stamp"
   local repo="$root/repo" fails=0 name
   rm -rf "$root"; mkdir -p "$repo"
+  # THIS ENGINE'S SOURCE WITHOUT ITS SELF-TEST. A `grep -c … "$0"` that asks whether a leg does
+  # something counts the line that ASSERTS it as well as the line that does it.
+  local LAND_SRC="$root/src-nosel.sh"
+  sed -n '1,/^land_selftest() {/p' "$0" >"$LAND_SRC"
   _st() { # $1 = name, $2 = expected rc (0|1|2), rest = command
     local nm="$1" want="$2"; shift 2
     ST_OUT="$root/$(printf '%s' "$nm" | tr -c 'A-Za-z0-9._-' '_').out"
@@ -2570,6 +2634,74 @@ EOF
   _st "M3: a plain comment line is still ignored" 0 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-M.txt" \
       bash "$0" --batch "$bm5"
   _stgrep "M3: the commented batch landed its one line" "$bm5.result" "^GREEN.*$c1"
+
+  # ── CASE N — THE PLUGIN CDYLIBS THE TEST HARNESSES dlopen ─────────────────────────────────────
+  # The batteries in busbar-core do not skip when the artifact is missing and do not judge when it
+  # is stale; both are hard failures, and both were landing-reds this week. A stub `cargo` on PATH
+  # stands in for the real one and behaves the way the real pair does: `build` writes the artifact
+  # only when it is ABSENT (cargo does not relink one it considers fresh), and `test` refuses in
+  # exactly the two ways plugin_store.rs refuses — absent, and older than its sources.
+  echo "land.sh selftest: the plugin cdylibs the test harnesses dlopen"
+  local pt="$root/plugintree"
+  mkdir -p "$pt/crates/store-example-plugin/src" "$pt/crates/plugin-sdk/src" "$pt/crates/busbar-core/src" "$pt/target/debug" "$root/bin"
+  printf 'name = "busbar-store-example-plugin"\n[lib]\ncrate-type = ["cdylib"]\n' >"$pt/crates/store-example-plugin/Cargo.toml"
+  printf 'fn plugin() {}\n' >"$pt/crates/store-example-plugin/src/lib.rs"
+  # Talks about cdylibs at length and is not one — the shape that would make a hard-coded list wrong.
+  printf 'name = "busbar-plugin-sdk"\ndescription = "build as a cdylib; emits the glue"\n' >"$pt/crates/plugin-sdk/Cargo.toml"
+  printf 'name = "busbar-core"\n' >"$pt/crates/busbar-core/Cargo.toml"
+  _t2() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  _t2 "N: the tree's cdylib crates are read from the tree" "busbar-store-example-plugin" "$(land_plugin_cdylib_crates "$pt")"
+  _t2 "  ...and a crate that only TALKS about cdylibs is not one" 0 \
+     "$(land_plugin_cdylib_crates "$pt" | grep -c 'plugin-sdk' || true)"
+  cat >"$root/bin/cargo" <<'STUBCARGO'
+#!/bin/bash
+# The stub pair. `build` is cargo's fresh path: it writes the artifact only when it is absent, and
+# leaves an existing one exactly as it found it (mtime included). `test` is plugin_store.rs.
+T="${CARGO_TARGET_DIR:?}"; SRC="${STUB_PLUGIN_SRC:?}"
+art="$T/debug/libbusbar_store_example_plugin.so"
+case "${1:-}" in
+  build) mkdir -p "$T/debug"; [ -f "$art" ] || : >"$art"; exit 0 ;;
+  test)
+    [ -f "$art" ] || { echo "panicked at plugin_store.rs:56: the busbar-store-example-plugin cdylib is not built"; exit 101; }
+    [ "$art" -nt "$SRC" ] || { echo "panicked at plugin_store.rs:80: the cdylib is STALE"; exit 101; }
+    echo "test result: ok"; exit 0 ;;
+esac
+exit 2
+STUBCARGO
+  chmod +x "$root/bin/cargo"
+  export CARGO_TARGET_DIR="$pt/target" STUB_PLUGIN_SRC="$pt/crates/store-example-plugin/src/lib.rs"
+  # RED FIRST, in both of the fixture's two refusals.
+  _t2 "N: with no build step the dlopen test is RED" 101 \
+     "$(PATH="$root/bin:$PATH" cargo test -p busbar-core >/dev/null 2>&1; echo $?)"
+  _t2 "  ...and it says which refusal it is"        1 \
+     "$(PATH="$root/bin:$PATH" cargo test -p busbar-core 2>&1 | grep -c 'plugin_store.rs:56' || true)"
+  # ...GREEN once the build step has run.
+  _t2 "N: the build step runs and reports its artifacts" 1 \
+     "$(PATH="$root/bin:$PATH" land_build_plugin_cdylibs "$pt" 2>&1 | grep -c 'plugin cdylibs current in .* (1 artifact(s))' || true)"
+  _t2 "  ...and now the dlopen test is GREEN"      0 \
+     "$(PATH="$root/bin:$PATH" cargo test -p busbar-core >/dev/null 2>&1; echo $?)"
+  # THE STALE ARM, which is the one the fleet actually hit: the artifact is there, a source is newer,
+  # and a `cargo build` that considers it fresh does not relink it. The build step must still leave
+  # the tree in a state the harness will judge.
+  sleep 1; touch "$pt/crates/store-example-plugin/src/lib.rs"
+  _t2 "N: a source newer than the artifact is STALE, and RED" 101 \
+     "$(PATH="$root/bin:$PATH" cargo test -p busbar-core >/dev/null 2>&1; echo $?)"
+  _t2 "  ...and it says so"                        1 \
+     "$(PATH="$root/bin:$PATH" cargo test -p busbar-core 2>&1 | grep -c 'plugin_store.rs:80' || true)"
+  # A second of daylight: `test -nt` on this host compares whole seconds, and the point being made
+  # is about ORDER, not about granularity. (The Rust fixture compares SystemTime, and a real build
+  # is not instantaneous.)
+  sleep 1
+  PATH="$root/bin:$PATH" land_build_plugin_cdylibs "$pt" >/dev/null 2>&1
+  _t2 "  ...the build step makes the artifact current again" 0 \
+     "$(PATH="$root/bin:$PATH" cargo test -p busbar-core >/dev/null 2>&1; echo $?)"
+  unset CARGO_TARGET_DIR STUB_PLUGIN_SRC
+  # ...AND THE TESTS LEG ASKS FOR IT, immediately before the tests that dlopen.
+  _stgrep "N: the tests leg builds them first" \
+     <(grep -A16 '^    tests)$' "$0") 'land_build_plugin_cdylibs "\$here" \|\| return 1'
+  _t2 "  ...before it runs cargo test"             1 \
+     "$( [ "$(grep -n 'land_build_plugin_cdylibs "$here" || return 1' "$LAND_SRC" | tail -n1 | cut -d: -f1)" -lt "$(grep -n 'echo "land.sh: cargo test \$args"' "$LAND_SRC" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t2 "  ...and the plugins leg is the same call"  2 "$(grep -c 'land_build_plugin_cdylibs "$here" || return 1' "$LAND_SRC")"
 
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
