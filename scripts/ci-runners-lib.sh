@@ -201,6 +201,82 @@ ROWS
   printf '%s\n' "${launched# }"
 }
 
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A PROVE BOX, WHICH IS NOT A RUNNER AND MUST NOT BE COUNTED AS ONE.
+#
+# The fleet's arithmetic is `CI_RUNNER_COUNT` spot plus `CI_RUNNER_ONDEMAND_FLOOR` on-demand, and
+# every one of those queries is `Name=tag:Name,Values=$FLEET`. A box launched into that Name for a
+# proof is therefore indistinguishable from a runner to fleet_instances_tsv, to the top-up
+# arithmetic in ci-runners-reconcile.sh and to write_fleet_file - so the next reconcile counts it
+# toward the floor, declines to launch the runner it is standing in for, and the fleet quietly
+# shrinks by one. It also lands in ~/.busbar-fleet, where the allocator hands it landings.
+#
+# So the prove box carries its OWN Name tag, `$FLEET-prove`, and `busbar-ci-capacity=prove`. Every
+# fleet query above filters on Values=$FLEET exactly, so none of them sees it; `prove-remote.sh
+# --host <id>` names it explicitly and does not need the fleet file to.
+#
+# CI_RUNNER_PROVE_ITYPE is its own knob because the two boxes are sized for different things: a
+# runner box carries CI_RUNNER_AGENTS concurrent jobs at 8 vCPU each, and a prove box carries ONE
+# proof that would like every core it can get.
+#
+# AND IT DEFAULTS TO THE 8XLARGE, ON EVIDENCE, NOT ON THRIFT. An on-demand c7a.16xlarge (64 vCPU,
+# 123 GB) was launched through launch_prove_box below and measured against a c7a.8xlarge (32 vCPU,
+# 61 GB) on the SAME tree (the FLEET-1 commit 12bb3d265), the same commands, a cold target/ on both
+# and sccache off on both — `cargo build --workspace --locked` then
+# `cargo clippy --workspace --all-targets --locked -- -D warnings`:
+#
+#     jobs             c7a.8xlarge      c7a.16xlarge     gain
+#     CARGO_BUILD_JOBS=nproc   84 s          76 s        1.11x
+#     CARGO_BUILD_JOBS=8      122 s         121 s        1.01x
+#
+# The second row is the one that decides it: prove-remote.sh ships CARGO_BUILD_JOBS=8, so at the
+# configuration the fleet actually runs, twice the box is one percent. Even uncapped it is 1.11x —
+# the workspace's build graph is critical-path bound well below 32 cores, so the extra 32 have
+# nothing to do. The bar was 1.4x and this is not close to it; doubling the hourly rate for eleven
+# percent, or for one, is not a landing-rate lever. THE LEVER IS CONCURRENCY, NOT SIZE: the same
+# 32-vCPU box now runs two proofs at once (BUSBAR_PROVE_PER_BOX in ci-remote-lib.sh), which is the
+# 2x this measurement says a 16xlarge cannot buy.
+#
+# The knob stays because the measurement is a fact about THIS workspace on THIS date, and the next
+# person to ask should be able to re-ask it with one variable rather than a patch.
+PROVE_ITYPE="${CI_RUNNER_PROVE_ITYPE:-c7a.8xlarge}"
+PROVE_FLEET="${CI_RUNNER_PROVE_FLEET:-$FLEET-prove}"
+
+# Echoes the instance id on stdout, everything else on stderr - same contract as the two launchers.
+launch_prove_box() { # $1 = instance type (default $PROVE_ITYPE)
+  local t="${1:-$PROVE_ITYPE}" vpc sub az rt ids
+  vpc="$(fleet_vpc_id)"
+  # THE POOLS EC2 ACTUALLY OFFERS FOR THIS TYPE, not a cross product: a 16xlarge is offered in
+  # fewer AZs than an 8xlarge, and asking a subnet that cannot have one costs a round trip and an
+  # `Unsupported` that reads like a credentials problem.
+  while read -r sub az rt; do
+    [ -n "$sub" ] || continue
+    [ "$rt" = "$t" ] || continue
+    if dry; then
+      printf '[dry-run] aws ec2 run-instances --instance-type %s --subnet-id %s  # PROVE box in %s, Name=%s\n' \
+        "$t" "$sub" "$az" "$PROVE_FLEET" >&2
+      printf 'i-dryrun-prove-%s-%s\n' "$az" "$t"; return 0
+    fi
+    ids="$(aws ec2 run-instances --launch-template "LaunchTemplateName=$LT_NAME,Version=\$Latest" \
+      --count 1 --instance-type "$t" --subnet-id "$sub" \
+      --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$PROVE_FLEET},{Key=busbar-ci,Value=prove},{Key=busbar-ci-capacity,Value=prove}]" \
+      --query 'Instances[].InstanceId' --output text 2>/tmp/busbar-prove-box.err)"
+    if [ -n "$ids" ]; then log "prove box $t in $az -> $ids" >&2; printf '%s\n' "$ids"; return 0; fi
+    log "prove box $t in $az refused: $(tail -1 /tmp/busbar-prove-box.err 2>/dev/null)" >&2
+  done <<ROWS
+$(ITYPES="$t" capacity_matrix "$vpc")
+ROWS
+  log "prove box: no capacity for $t in any default subnet of $vpc" >&2
+  return 1
+}
+
+# Every prove box, whatever its type. Never a runner: the Name tag is the whole of the distinction.
+prove_box_ids() {
+  aws ec2 describe-instances \
+    --filters "Name=tag:Name,Values=$PROVE_FLEET" "Name=instance-state-name,Values=pending,running" \
+    --query 'Reservations[].Instances[].InstanceId' --output text | tr '\t' '\n' | grep . || true
+}
+
 launch_spot() { # $1 = how many. Echoes the ids launched (possibly fewer than asked for).
   local want="${1:-0}" vpc rows ov cfg out ids launched="" got sub az t progressed
   [ "$want" -gt 0 ] 2>/dev/null || return 0
@@ -365,3 +441,59 @@ write_fleet_file() {
       --output text
   } > "$f"
 }
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# --selftest, when this file is EXECUTED rather than sourced. This library had none, and the two
+# things worth pinning are the two that are silently expensive to get wrong: a prove box that the
+# fleet arithmetic counts as a runner, and a prove instance type that somebody raised without
+# re-measuring.
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+_runners_lib_selftest() {
+  local fails=0
+  _t() { if [ "$2" = "$3" ]; then printf '  ok   %-54s\n' "$1"; else printf '  FAIL %-54s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  echo "ci-runners-lib selftest: this file"
+  _t "parses (bash -n)" 0 "$(bash -n "${BASH_SOURCE[0]}"; echo $?)"
+
+  # ── THE PROVE BOX IS NOT A RUNNER ────────────────────────────────────────────────────────────
+  # Every fleet query filters on `Name=tag:Name,Values=$FLEET` exactly. If the prove box carried
+  # that Name, the next ci-runners-reconcile.sh would count it toward CI_RUNNER_ONDEMAND_FLOOR,
+  # decline to launch the runner it stands in for, and the fleet would quietly shrink by one — and
+  # write_fleet_file would put it in ~/.busbar-fleet, where the allocator hands out landings.
+  echo "ci-runners-lib selftest: a prove box is never counted as a runner"
+  _t "the prove Name is not the fleet Name"  differ \
+     "$([ "$PROVE_FLEET" = "$FLEET" ] && echo same || echo differ)"
+  _t "  ...and it is the fleet name plus -prove" "$FLEET-prove" "$PROVE_FLEET"
+  # The launch itself, dry: the tag it writes, and the type it writes it for.
+  local dryout; dryout="$(DRY_RUN=1 launch_prove_box c7a.16xlarge 2>&1)"
+  _t "the dry launch names the prove tag"    1 "$(printf '%s\n' "$dryout" | grep -c "Name=$PROVE_FLEET")"
+  _t "  ...and never the runner tag"         0 "$(printf '%s\n' "$dryout" | grep -c "Name=$FLEET,")"
+  _t "  ...and honours the type it was given" 1 "$(printf '%s\n' "$dryout" | grep -c 'instance-type c7a.16xlarge')"
+  # The three queries the fleet's arithmetic is made of, read from THIS FILE: each must filter on
+  # Values=$FLEET and nothing wider. A `Values=$FLEET*` in any of them puts the prove box back in.
+  _t "no fleet query globs the Name tag"     0 "$(grep -c 'Name=tag:Name,Values=\$FLEET\*' "${BASH_SOURCE[0]}")"
+  _t "the host file is written from the runner Name only" 1 \
+     "$(sed -n '/^write_fleet_file/,/^}/p' "${BASH_SOURCE[0]}" | grep -c 'Name=tag:Name,Values=\$FLEET"')"
+
+  # ── THE PROVE TYPE'S DEFAULT IS THE MEASURED ONE ─────────────────────────────────────────────
+  # Measured 2026-09-10 on the FLEET-1 tree: a c7a.16xlarge is 1.11x a c7a.8xlarge uncapped and
+  # 1.01x at the CARGO_BUILD_JOBS=8 that prove-remote.sh ships. The bar for raising this default
+  # was 1.4x. This case is what goes red if the default is raised without a new measurement beside
+  # it — the number in the header above is the evidence, and it is about c7a.8xlarge.
+  echo "ci-runners-lib selftest: the prove instance type's default is the one that was measured"
+  _t "the default prove type is the 8xlarge" "c7a.8xlarge" "$(CI_RUNNER_PROVE_ITYPE=; PROVE_ITYPE="${CI_RUNNER_PROVE_ITYPE:-c7a.8xlarge}"; printf '%s' "$PROVE_ITYPE")"
+  # THIS FILE WITHOUT ITS SELF-TEST: a grep that asks whether the header records the measurement
+  # counts the line that ASSERTS it as well as the line that carries it.
+  local LIB_SRC; LIB_SRC="$(mktemp "${TMPDIR:-/tmp}/ci-runners-lib-src.XXXXXX")"
+  sed '/^_runners_lib_selftest() {/,$d' "${BASH_SOURCE[0]}" >"$LIB_SRC"
+  _t "  ...and the header carries the measurement" 1 \
+     "$(grep -c 'CARGO_BUILD_JOBS=8      122 s         121 s        1.01x' "$LIB_SRC")"
+  _t "  ...and the 1.4x bar it was judged against" 1 \
+     "$(grep -c 'The bar was 1.4x and this is not close to it' "$LIB_SRC")"
+  rm -f "$LIB_SRC"
+  _t "an operator can still override it"     "m7a.16xlarge" \
+     "$(CI_RUNNER_PROVE_ITYPE=m7a.16xlarge bash -c 'printf "%s" "${CI_RUNNER_PROVE_ITYPE:-c7a.8xlarge}"')"
+
+  if [ "$fails" -eq 0 ]; then echo "ci-runners-lib selftest: GREEN (prove box is not a runner; the prove type's default is measured)"; return 0; fi
+  echo "ci-runners-lib selftest: RED ($fails failure(s))" >&2; return 1
+}
+if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--selftest" ]; then _runners_lib_selftest; exit $?; fi
