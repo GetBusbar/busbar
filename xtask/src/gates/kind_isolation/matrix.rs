@@ -906,6 +906,48 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         }
     }
 
+    // ── THE MOVE FORM: THE SOURCE NAMES THE CRATE IT MINTED ─────────────────────────────────────
+    //
+    // A carve-out leaves a SECOND new cell behind, and it is in the crate that was drained rather
+    // than the crate that landed. `busbar-core` keeps a re-export and a seat adapter over the hook
+    // engine it lost to `busbar-core-policy`, so `busbar-core × core` measures 36 the day the
+    // engine lands — and the base carries no `busbar-core × core` row, because there was no
+    // core-kind crate for it to name. `[[minted]]` does not admit it: that row is about the NEW
+    // crate's cells, and this is the OLD crate's. `ceiling-rose` cannot see it either, for the
+    // same reason `minted-row` exists at all. Measured on the hook policy engine's landing: one
+    // `minted-row` finding that no row in the file could answer without editing the gate.
+    //
+    // So the admission is the row that already names the move. A `[[transitional]]` row whose
+    // `to` is an EXACT crate (no glob) that a `[[minted]]` row on this branch mints with
+    // `moved_from = <from>` says, in the ledger's own words, "this source drained into that
+    // crate" — and a source that drained into a crate may name the KIND of that crate, once, at
+    // the measured count. It is not a widening: the same row already exempts the dependency edge
+    // (`:deps`), the destination has to be a crate this very branch admits out of this very
+    // source, the cell is scored exactly like every other cell, and a glob does not qualify,
+    // because a glob names a family and a source drains into a crate.
+    let kind_of = |name: &str| -> Option<String> {
+        reg.registered
+            .iter()
+            .find(|r| r.name == name)
+            .map(|r| r.kind.clone())
+            .or_else(|| super::kind_of_name(name).map(str::to_string))
+    };
+    let mut move_form: BTreeSet<(String, String)> = BTreeSet::new();
+    for t in &reg.transitional {
+        if t.to.ends_with('*') {
+            continue;
+        }
+        let minted_out_of_from = admits
+            .get(t.to.as_str())
+            .is_some_and(|m| m.moved_from.as_deref() == Some(t.from.as_str()));
+        if !minted_out_of_from {
+            continue;
+        }
+        if let Some(kind) = kind_of(&t.to) {
+            move_form.insert((t.from.clone(), kind));
+        }
+    }
+
     // ── THE MINTED ROWS THEMSELVES ──────────────────────────────────────────────────────────────
     //
     // old name -> new name, the direction the BASE's keys have to be read in.
@@ -937,8 +979,14 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
             }
             let (left, right) = key.split_once(" \u{d7} ").unwrap_or((key.as_str(), ""));
             let admitted = match table {
-                // A `[[cell]]`/`[[disagreement]]` row is about ONE crate, by name.
-                "cell" | "disagreement" => admits.contains_key(left),
+                // A `[[cell]]` row is about ONE crate, by name — the crate being minted, or the
+                // crate it was minted OUT OF naming the kind it minted (the MOVE form above).
+                "cell" => {
+                    admits.contains_key(left)
+                        || move_form.contains(&(left.to_string(), right.to_string()))
+                }
+                // A `[[disagreement]]` row is about ONE crate, by name.
+                "disagreement" => admits.contains_key(left),
                 // An `[[edge]]` row is about a CLASS, so either end may be the kind being minted.
                 _ => minting_kind.contains_key(left) || minting_kind.contains_key(right),
             };
@@ -1564,6 +1612,74 @@ pub fn selftest(
             "busbar-control-oauth2 \u{d7} transport",
             "moved_from",
         ],
+    ));
+
+    // THE MOVE FORM: THE SOURCE NAMES THE CRATE IT MINTED. A carve-out leaves a second new cell in
+    // the crate that was DRAINED — `busbar-core` keeps a re-export and the seat adapter over the
+    // engine it lost, so `busbar-core × core` measures 36 and the base has no such row. It is
+    // admitted by the `[[transitional]]` row that names the drain edge exactly, read with the
+    // `[[minted]]` row whose `moved_from` is that source. Both halves are load-bearing, so each
+    // has its red: the row naming a DIFFERENT crate than the one minted admits nothing, and a
+    // `[[minted]]` row that does not say it was moved out of the source admits nothing either.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the [[transitional]] row must name the crate the source minted, or the source's cell is a minted row",
+        &[ROW_MATRIX],
+        ledger_with(
+            cx,
+            "to = \"busbar-core-policy\"",
+            "to = \"busbar-core-config\"",
+        ),
+        &[
+            "minted-row",
+            "busbar-core \u{d7} core",
+            "this branch MINTED it",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a [[minted]] row that was not moved out of the source admits no cell in the source",
+        &[ROW_MATRIX],
+        ledger_with(cx, "moved_from = \"busbar-core\"\n", ""),
+        &[
+            "minted-row",
+            "busbar-core \u{d7} core",
+            "this branch MINTED it",
+        ],
+    ));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "the [[transitional]] busbar-core -> busbar-core-policy row admits busbar-core × core at the measured count (the MOVE form)",
+        &[ROW_MATRIX],
+        crate::ctx::Overlay::new(),
+    ));
+
+    // A RENAMED CRATE MINTS AGAINST THE NAME THE BASE ANNOUNCED. The base announced
+    // `busbar-core-hooks`; the crate landed as `busbar-core-policy` under a `[[renamed]]` row, and
+    // its `[[minted]]` row is read through that translation. The green arm is the real tree; the
+    // red arm re-keys the rename to a name the base never announced, and the mint answers to
+    // nothing.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a crate announced under one name and landed under a [[renamed]] one mints against the announcement",
+        &[ROW_MATRIX],
+        crate::ctx::Overlay::new(),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a [[renamed]] row whose old name the base never announced translates the mint into nothing",
+        &[ROW_MATRIX],
+        ledger_with(
+            cx,
+            "from   = \"busbar-core-hooks\"",
+            "from   = \"busbar-core-ghost\"",
+        ),
+        &["unannounced-mint", "busbar-core-policy"],
     ));
 
     // THE INCIDENT, PLANTED — and its green twin, which is the same tree with the file absent.
