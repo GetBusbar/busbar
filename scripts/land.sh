@@ -788,6 +788,20 @@ land_shard_local() { # $1 gate  $2 n  $3 dir  $4 CEIL=VALUE
   return 0
 }
 
+# ONE DIRECTORY PER LEG, NOT PER RUN. prove_tree is called once per batch and once per bisected
+# half, and each call runs this leg again; a directory named by the run's stamp alone was the SAME
+# directory for every round, so a second round's union check read the first round's `.rc` files —
+# four green votes from a tree that is not the one being proven. The sequence number is the run's
+# own, advanced on every leg, and the name carries the gate so two gates' legs never share one.
+# It SETS a variable rather than printing: called as `$(...)` the increment would happen in a
+# subshell and every leg would be handed the same "-1" directory — which is what the self-test's
+# first run of this found.
+LAND_SHARD_SEQ=0
+land_shard_dir() { # $1 = gate; sets LAND_SHARD_DIR (does not create it)
+  LAND_SHARD_SEQ=$((LAND_SHARD_SEQ + 1))
+  LAND_SHARD_DIR="$here/target/land-shards-$1-$stamp-$LAND_SHARD_SEQ"
+}
+
 # THE LEG. Unsharded unless asked; sharded across the fleet when this copy is already ON a box
 # (LAND_REMOTE_INNER), sharded SEQUENTIALLY when it is not — a laptop has one set of cores, and four
 # shards racing on it is the same wall clock with four times the noise.
@@ -798,7 +812,7 @@ land_selftest_leg() { # $1 gate  $2 log  $3 CEIL=VALUE
     ( cd "$here" && env "$ceil" cargo xtask gate "$g" --selftest >"$log" 2>&1 )
     return $?
   fi
-  dir="$here/target/land-shards-$g-$stamp"
+  land_shard_dir "$g"; dir="$LAND_SHARD_DIR"
   mkdir -p "$dir"
   if [ -n "${LAND_REMOTE_INNER:-}" ]; then
     echo "land.sh: $g self-test in $n shard(s): shard 1 here, the rest on the fleet"
@@ -1644,6 +1658,13 @@ land_selftest() {
   _stgrep "shards: 4 prints 4"                     "$ST_OUT" '^4$'
   _st "shards: a word is REFUSED"                1 _shcount eight
   _st "shards: above four boxes is REFUSED"      1 _shcount 8
+
+  echo "land.sh selftest: the shard directory (one per LEG, so a bisect round never reads the last round's votes)"
+  local sd1 sd2; land_shard_dir kind-isolation; sd1="$LAND_SHARD_DIR"; land_shard_dir kind-isolation; sd2="$LAND_SHARD_DIR"
+  [ "$sd1" != "$sd2" ] && printf '  ok   %-46s\n' "shards: two legs of one gate get two directories" \
+    || { printf '  FAIL %-46s (%s twice)\n' "shards: two legs of one gate get two directories" "$sd1"; fails=$((fails + 1)); }
+  case "$sd1" in "$here/target/land-shards-kind-isolation-$stamp-"*) printf '  ok   %-46s\n' "shards: the directory names the gate and the run" ;;
+    *) printf '  FAIL %-46s (%s)\n' "shards: the directory names the gate and the run" "$sd1"; fails=$((fails + 1)) ;; esac
 
   echo "land.sh selftest: the shard union (a shard that does not report is RED, never skipped)"
   _mkshard() { # $1 = dir, $2 = k, $3 = n, $4 = rc, $5 = owned|'-' for no count line, $6 = total
