@@ -22,8 +22,8 @@ use busbar_contract::ids::{
 use busbar_contract::kinds::{
     Ack, Anchor, AuthOutcome, AuthScheme, Challenge, ChallengeState, ContentFacts, Credential,
     CredentialFacts, CredentialLocator, EgressAuthScheme, Export, ExportItem, Head, Hook,
-    HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret,
-    SecretError, SecretRef, SecretValue, Signer, Store, StoreError,
+    HookFacts, HookKindDecl, HookView, KeyMaterial, OnFailure, PlaneFacts, Seat, Secret, SecretRef,
+    SecretValue, Signer, Store,
 };
 use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
@@ -38,6 +38,7 @@ use busbar_contract::wire::{
     ArrivalRecord, CloseReason, Conn, Decode, DiscardCode, Encode, Frame, FrameCursor, Listener,
     StatusAt, TransportError, Unit0Trigger,
 };
+use busbar_contract::{ErrorClass, PluginError};
 
 // ── the fixture per kind: each of these only compiles if the trait is object-safe ─────────────
 
@@ -593,9 +594,11 @@ fn the_remaining_kinds_shapes_are_constructible() {
         expiry: None,
         session_bindable: true,
     });
-    let _: Result<SecretValue, SecretError> = Err(SecretError::Unknown);
+    let _: Result<SecretValue, PluginError> =
+        Err(PluginError::new(ErrorClass::NotFound, "fixture.missing"));
     let _ = SecretRef("fixture://key".into());
-    let _: Result<Head, StoreError> = Err(StoreError::Unavailable);
+    let _: Result<Head, PluginError> =
+        Err(PluginError::new(ErrorClass::Unavailable, "fixture.down"));
     let _ = ExportItem::Segment {
         stream: "journal",
         from: 0,
@@ -604,6 +607,37 @@ fn the_remaining_kinds_shapes_are_constructible() {
     };
     let _ = Ack::Durable;
     let _: Option<AuthDecoration<'static>> = None;
+}
+
+/// The class taxonomy draws the line an OPERATOR acts on, and `Denied` is on the config side of it.
+///
+/// The previous release's secret taxonomy separated a configuration/policy problem someone must go
+/// and fix — a reference that does not exist, a malformed reference, and a caller who is not
+/// PERMITTED to read the secret — from an outage they must wait out. A face that carried the first
+/// two and not the third left a loader mapping the wire onto it no landing but to fold "denied"
+/// onto "not found", and an operator reading "the reference does not resolve" for a policy
+/// refusal goes and edits the reference, which is not the thing that is wrong.
+///
+/// So this cell states the distinction rather than the class list: `Denied` exists, and it is not
+/// `NotFound` and not `Unavailable`. Folding it back onto either is a test failure.
+#[test]
+fn the_class_taxonomy_keeps_a_denial_apart_from_a_miss_and_from_an_outage() {
+    let denied = PluginError::new(ErrorClass::Denied, "fixture.denied");
+    assert_ne!(
+        denied.class,
+        ErrorClass::NotFound,
+        "a policy refusal is not a reference that does not resolve"
+    );
+    assert_ne!(
+        denied.class,
+        ErrorClass::Unavailable,
+        "a policy refusal is a config error, not an outage"
+    );
+    assert_ne!(denied.class, ErrorClass::Integrity);
+    assert_ne!(denied.class, ErrorClass::Malformed);
+    // It is an `Error` like every other class, so a host that only logs still logs the right one.
+    let boxed: Box<dyn std::error::Error> = Box::new(denied);
+    assert_eq!(boxed.to_string(), "denied fixture.denied");
 }
 
 // ── an egress-auth scheme, implemented in full ────────────────────────────────────────────────

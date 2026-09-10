@@ -148,6 +148,55 @@ busbar-voice = ["busbar-voice-codec"]
 key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
 by = 1
 because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the composition root owns the boot installers. kind-isolation cell crate `busbar`, kind `substrate`. The root's busbar_core:: prefix falls 27 -> 25 and its total legacy reach falls 91 -> 90 in the same commit."
+# The one-time 26 -> 47 calibration that used to stand here
+# (`rules.legacy-reach.prefixes.busbar_substrate.figure`) LANDED and was struck: the base carried
+# the new number, the rise disappeared, and `ceiling-rose` refused the declaration as stale -- which
+# is the expiry working exactly as the paragraph above describes it.
+#
+# FOUR ENTRIES STAND TODAY: three are ONE seam seen by three rules, the fourth is a name.
+#
+# The seam. Every plugin kind's face used to fail with its own enum -- `StoreError` with five
+# variants, `SecretError` with five others -- and neither carried the plugin's own code, its
+# parameters, its words for a log or a hint. The owner ruling (docs/design/1.6.0-api-retirement.md
+# section 3.6.2) replaces both with ONE structured error, `busbar_contract::error::PluginError`
+# `{ class, code, params, developer_message, advisory }`, one CLOSED class taxonomy the host keys
+# status, retry, severity and visibility off, and one catalog-as-data shape a plugin ships beside
+# its claims so the host renders a code by READING a template rather than by calling the plugin.
+# The two per-kind enums leave on the same commit; the Store, Anchor and Secret faces return the
+# one type. Each declaration below names the exact path and both numbers as MEASURED at the base
+# (the base carries the earlier +1 `Denied` raise unlanded, so each spans from that number), and
+# each expires by itself the moment this lands.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 206
+because = "busbar_contract::error -- the one structured error every plugin kind answers with (`PluginError { class, code, params, developer_message, advisory }`), its closed ten-class taxonomy (`ErrorClass`: malformed, not_found, denied, rejected, conflict, integrity, unavailable, timeout, exhausted, internal) and the catalog-as-data shape (`Catalog`, `CatalogEntry`, `Template`, with `check()` and locale fallback) a plugin ships beside its claims. MEASURED by this rule's own counter: busbar-contract 2328 -> 2533 (error.rs +205 net of the deleted `StoreError`/`SecretError` enums, bounded.rs +15 for the `BoundedVec` Deserialize that refuses an over-capacity list), busbar-caps 1151 -> 1153 (the base's figure; nothing in caps moved). The Store, Anchor and Secret faces now return the one type, so two per-kind taxonomies became one."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 206
+because = "The same seam seen through the union, which sums caps/contract in with the kernel (5379, unmoved) and the units (14606, unmoved): the plugin structured-error seam lands in busbar-contract/src/error.rs and in no kernel or unit crate, so the +206 here is the caps/contract +206 by arithmetic."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 206
+because = "The plugin-visible surface a plugin author reads grows by the structured error seam and nothing else: `ErrorClass` (the closed class taxonomy), `PluginError` (the one error type and its builders), `Catalog`/`CatalogEntry`/`Template` (the catalog data shape) and the three bounds `MAX_ERROR_PARAMS`/`MAX_CATALOG_CODES`/`MAX_CATALOG_LOCALES`. scripts/loc-surface.py measures busbar-contract 2328 -> 2533 and busbar-caps 1151 unchanged; `StoreError` and `SecretError` leave the surface on the same commit."
+
+# A FOURTH, AND IT IS ABOUT A TYPE'S NAME RATHER THAN ABOUT COUPLING. `kind-isolation:matrix`
+# scores a crate's naming of another kind's vocabulary over the WHOLE TEXT, and `busbar-secret-ref`
+# is a crate of kind `secret`, so the identifier `SecretRef` reads as naming it. The secret kind's
+# face type in `busbar-contract` is called `SecretRef`, and the loader is the crate that implements
+# that face for a dlopened plugin -- so every signature and every construction of a reference in
+# `busbar-plugin-loader` scores as a hit against a crate the loader does not depend on and never
+# names. The spellings were already collapsed as far as they go (one helper in the battery, one
+# import in the source); what is left is the type appearing in the two trait signatures that MUST
+# name it. The number falls again when `busbar-secret-ref` is deleted, which is this same
+# retirement's own next step. Keyed by the row's IDENTITY, never its ordinal: striking one
+# `[[cell]]` renumbers every later row.
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-loader.secret.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "busbar-plugin-loader x secret. The loader now implements busbar_contract::kinds::Secret for DynSecret, and the face's reference type is spelled `SecretRef` -- which the matrix reads as the loader naming the `busbar-secret-ref` package. It does not: the loader has no such dependency and the ledger's dep rows show none. Eight hits, every one of them the face's own type name in a signature, a construction or the single import; the battery's five call sites were already collapsed behind one helper. It falls when busbar-secret-ref is deleted, later in this same retirement."
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -155,7 +204,7 @@ because = "moved verbatim from busbar-core/src/proto/registry.rs (52 lines): the
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3684
 grammar = 388
 contract_transport = 845
 
@@ -376,12 +425,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3686
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14771
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23630
+union_ceiling = 23836
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

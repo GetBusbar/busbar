@@ -972,13 +972,6 @@ drain = "delete the per-unit wiring from crates/busbar/src/root/** and crates/bu
 
 [[edge]]
 from = "secret"
-to = "api"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — api is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind secret naming api vocabulary: api package names in any spelling, the kind-qualified id (api-<id>), and — where api is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW secret -> api coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
-
-[[edge]]
-from = "secret"
 to = "control"
 cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
 why = "crates of kind secret naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -2119,7 +2112,7 @@ count = "102"
 [[cell]]
 crate = "busbar-plugin"
 kind = "api"
-count = "58"
+count = "57"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2154,7 +2147,7 @@ count = "12"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "api"
-count = "72"
+count = "65"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2199,7 +2192,7 @@ count = "19"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "secret"
-count = "19"
+count = "27"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2239,7 +2232,7 @@ count = "14"
 [[cell]]
 crate = "busbar-plugin-sdk"
 kind = "api"
-count = "61"
+count = "60"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
@@ -2280,11 +2273,6 @@ count = "10"
 crate = "busbar-plugin-testkit"
 kind = "plane"
 count = "5"
-
-[[cell]]
-crate = "busbar-secret-example-plugin"
-kind = "api"
-count = "4"
 
 [[cell]]
 crate = "busbar-secret-example-plugin"
@@ -4112,6 +4100,16 @@ drain   = "none while the loader and the plugin tooling are outside the kind sys
 
 [[dep]]
 from    = "busbar-plugin-loader"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-loader names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the edge the 1.6.0 busbar-api retirement MOVES ONTO, not a new coupling — `DynSecret` implements busbar_contract::kinds::Secret so a dlopened kind:secret plugin reaches the engine through the face the contract declares, and the wire-token -> face-error map lives on this side of the ABI because this is the one crate that is on both sides of it. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number. Note the direction of travel: this row exists so `busbar-plugin-loader -> busbar-api` can eventually reach zero, which is the retirement's own ratchet rather than this one's."
+
+[[dep]]
+from    = "busbar-plugin-loader"
 to      = "busbar-kernel"
 half    = "shipped"
 count   = "1"
@@ -4202,6 +4200,16 @@ drain   = "none while the loader and the plugin tooling are outside the kind sys
 
 [[dep]]
 from    = "busbar-plugin-sdk"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "tcb"
+cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
+why     = "busbar-plugin-sdk names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The plugin structured-error seam: the SDK carries `busbar_contract::error::PluginError` and the catalog shape across the cdylib boundary for every kind, and names the contract's error module and nothing else of it — no face type, no reference type, so no kind vocabulary rides with the edge. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number. This is the edge `busbar-plugin-sdk -> busbar-api` retires onto."
+
+[[dep]]
+from    = "busbar-plugin-sdk"
 to      = "busbar-api"
 half    = "shipped"
 count   = "1"
@@ -4229,16 +4237,6 @@ verdict = "tcb"
 cite    = "ARCHITECTURE.md 1.4 \"`loader` and `abi` are TCB crates, not kinds.\" Not a kind edge; inside the trusted computing base."
 why     = "busbar-plugin-testkit names busbar-api: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none while the loader and the plugin tooling are outside the kind system (ARCHITECTURE.md 1.4: they are not kinds). The drain is the ruling that gives them one; until it lands this row holds the number."
-
-[[dep]]
-from    = "busbar-secret-example-plugin"
-to      = "busbar-api"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "ARCHITECTURE.md 1.2 manifest allow-list: busbar-contract (+busbar-grammar) and reviewed third-party. busbar-api / the loader are not on it."
-why     = "busbar-secret-example-plugin names busbar-api: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-api dependency from busbar-secret-example-plugin's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-secret-example-plugin"
@@ -5422,6 +5420,14 @@ count = "1"
 cite = "ARCHITECTURE.md 1.4 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
 why = "the loader implements the store face to hand a dynamically loaded store plugin to the kernel. One implementation, in shipped source."
 drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
+
+[[face]]
+crate = "busbar-plugin-loader"
+face = "Secret"
+count = "1"
+cite = "ARCHITECTURE.md 1.4 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
+why = "THE SECOND FACE THE ROW ABOVE SAID WOULD HAVE TO SAY WHY, and this is why: the 1.6.0 busbar-api retirement moves the secret kind onto busbar_contract::kinds::Secret, and `DynSecret` is what hands a dynamically loaded kind:secret plugin to the engine through it. It is the Store row's claim, one kind over, and it appears now because secret is the first kind of the retirement to land. One implementation, in shipped source."
+drain = "none while the loader is outside the kind system, on the Store row's terms exactly. When the ruling gives the trusted base a kind of its own, both rows go together — and until then a THIRD face in the loader is again a landing that has to say why."
 
 [[face]]
 crate = "busbar"

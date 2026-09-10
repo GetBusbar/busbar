@@ -13,6 +13,9 @@ license = "Apache-2.0"
 tracing = { workspace = true }
 tracing-core = { workspace = true }
 busbar-api = { path = "../api" }
+# The structured error every kind fails with, and the catalog shape a plugin ships. The SDK names
+# the contract's error module and nothing else of it: no face type, no reference type.
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
 serde_json = { workspace = true }
 

@@ -4,7 +4,7 @@
 //! Tests for `crates/plugin-abi/src/lib.rs`.
 
 use super::*;
-use busbar_api::{AuditRecord, ScopeRef, VirtualKey};
+use busbar_api::{AuditRecord, ScopeRef, SecretErrorKind as LegacySecretErrorKind, VirtualKey};
 
 /// The five status codes are pairwise DISTINCT integers. The loader's discrimination (esp. the
 /// revocation-denylist fallback) keys on these being different: an undecodable-variant signal
@@ -231,4 +231,92 @@ fn abi_version_is_four() {
 #[test]
 fn auth_abi_version_is_two() {
     assert_eq!(AUTH_ABI_VERSION, 2);
+}
+
+// ── the secret kind's wire error taxonomy, re-homed ─────────────────────────────────────────────
+//
+// `SecretErrorKind` used to be declared in the retiring 1.5.5 plugin-contract crate, named ON the
+// frozen `SecretResponse` wire. That crate is being deleted, so the enum moves into the crate that
+// owns the wire. The move is a NAMESPACING change and nothing else, and these two cells are what
+// proves that rather than asserting it: the first pins the five wire tokens against literal JSON,
+// the second serialises EVERY variant through BOTH spellings — the legacy one, imported here as
+// `LegacySecretErrorKind`, and the re-homed one — and requires the bytes to be equal.
+// `SECRET_ABI_VERSION` therefore does not move.
+
+/// Every variant's wire token, against a literal. These five strings are what an installed
+/// third-party `kind: secret` plugin emits today; a rename here is a signed-wire break.
+#[test]
+fn secret_error_kind_wire_tokens_are_the_frozen_five() {
+    let pairs = [
+        (SecretErrorKind::NotFound, "\"not_found\""),
+        (SecretErrorKind::Unavailable, "\"unavailable\""),
+        (SecretErrorKind::Denied, "\"denied\""),
+        (SecretErrorKind::Invalid, "\"invalid\""),
+        (SecretErrorKind::Internal, "\"internal\""),
+    ];
+    for (variant, token) in pairs {
+        assert_eq!(
+            serde_json::to_string(&variant).expect("wire enum serialises"),
+            token,
+            "the frozen secret wire token for {variant:?}"
+        );
+        assert_eq!(
+            serde_json::from_str::<SecretErrorKind>(token).expect("wire enum deserialises"),
+            variant,
+            "the frozen secret wire token for {variant:?} round-trips"
+        );
+    }
+}
+
+/// BYTE-IDENTITY, both directions, for the whole `SecretResponse::Error` envelope as well as the
+/// bare kind: the re-homed enum and the legacy enum it replaces serialise to the SAME BYTES, and
+/// each decodes the other's bytes. This is the cell that licenses deleting the legacy copy without
+/// bumping `SECRET_ABI_VERSION`.
+#[test]
+fn secret_error_kind_is_byte_identical_to_the_legacy_enum_it_replaces() {
+    let before = [
+        LegacySecretErrorKind::NotFound,
+        LegacySecretErrorKind::Unavailable,
+        LegacySecretErrorKind::Denied,
+        LegacySecretErrorKind::Invalid,
+        LegacySecretErrorKind::Internal,
+    ];
+    let after = [
+        SecretErrorKind::NotFound,
+        SecretErrorKind::Unavailable,
+        SecretErrorKind::Denied,
+        SecretErrorKind::Invalid,
+        SecretErrorKind::Internal,
+    ];
+    assert_eq!(before.len(), after.len(), "same variant count, same order");
+    for (old, new) in before.iter().zip(after.iter()) {
+        let old_bytes = serde_json::to_vec(old).expect("legacy enum serialises");
+        let new_bytes = serde_json::to_vec(new).expect("cold enum serialises");
+        assert_eq!(
+            old_bytes, new_bytes,
+            "the re-homed {new:?} must serialise to the bytes the legacy {old:?} does"
+        );
+        // Each side decodes the other's bytes, so a plugin built against either spelling talks to
+        // an engine built against the other.
+        serde_json::from_slice::<SecretErrorKind>(&old_bytes)
+            .expect("the cold enum decodes the legacy enum's bytes");
+        serde_json::from_slice::<LegacySecretErrorKind>(&new_bytes)
+            .expect("the legacy enum decodes the cold enum's bytes");
+
+        // And the whole envelope the wire actually carries, not just the tag.
+        let envelope = serde_json::to_string(&SecretResponse::Error {
+            kind: *new,
+            message: "m".to_string(),
+            error: None,
+        })
+        .expect("envelope serialises");
+        assert_eq!(
+            envelope,
+            format!(
+                "{{\"Error\":{{\"kind\":{},\"message\":\"m\"}}}}",
+                String::from_utf8(old_bytes).expect("token is utf-8")
+            ),
+            "the frozen SecretResponse::Error envelope"
+        );
+    }
 }

@@ -804,6 +804,7 @@ dependencies = [
  "async-trait",
  "busbar-api",
  "busbar-caps",
+ "busbar-contract",
  "busbar-kernel",
  "busbar-plugin",
  "busbar-plugin-sign",
@@ -839,6 +840,7 @@ name = "busbar-plugin-sdk"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin",
  "busbar-store-memory",
  "serde_json",
@@ -870,7 +872,6 @@ dependencies = [
 name = "busbar-secret-example-plugin"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
  "busbar-plugin-sdk",
  "serde",
  "serde_json",

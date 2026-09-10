@@ -16,6 +16,11 @@ busbar-plugin-sign = { path = "../plugin-sign" }
 # side of the seam — where the loaded plugin and its declared payload schema already are. All three
 # depend only on `busbar-caps`/`busbar-contract`, so there is no cycle back into this crate.
 busbar-caps = { path = "../busbar-caps" }
+# The plugin faces themselves. `DynSecret` implements `busbar_contract::kinds::Secret` — bridging a
+# loaded plugin's face across the ABI is what a loader does, and it is the one crate whose job is to
+# be on both sides of it. The wire-token -> face-error map for the secret kind lives here and
+# nowhere else.
+busbar-contract = { path = "../busbar-contract" }
 busbar-kernel = { path = "../busbar-kernel" }
 busbar-unit-verbs = { path = "../busbar-unit-verbs" }
 # The migration's read off the previous release's rows. The ledger unit states WHAT an opening

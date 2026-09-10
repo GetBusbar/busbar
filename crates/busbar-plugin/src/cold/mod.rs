@@ -44,7 +44,7 @@
 
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneSelector, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, SecretErrorKind as LegacySecretErrorKind, UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -181,7 +181,25 @@ pub mod symbol {
     /// `busbar_set_log_sink(sink, ctx)` — OPTIONAL, the only symbol here that is. See
     /// [`super::SetLogSinkFn`] for why its absence is not an error and not a transport bump.
     pub const SET_LOG_SINK: &[u8] = b"busbar_set_log_sink\0";
+    /// `busbar_catalog(out_len) -> *const u8` — OPTIONAL. The plugin's ERROR CATALOG, as the
+    /// UTF-8 JSON of `busbar_contract::error::Catalog`, in `'static` bytes the plugin owns (the
+    /// host never frees them). Read ONCE at load, never on a call: a host renders a plugin's
+    /// error code by reading this table, not by asking the plugin. A plugin that does not export
+    /// it emits only the wire's own `wire.*` codes, which the host's own catalog declares.
+    pub const CATALOG: &[u8] = b"busbar_catalog\0";
 }
+
+/// `busbar_catalog` — the optional catalog symbol (see [`symbol::CATALOG`]). Writes the byte
+/// length through `out_len` and returns a pointer to `'static` UTF-8 JSON, or null for none.
+pub type CatalogFn = unsafe extern "C-unwind" fn(out_len: *mut usize) -> *const u8;
+
+/// THE STRUCTURED ERROR ON THE WIRE: the JSON of `busbar_contract::error::PluginError`
+/// (`{ class, code, params, developer_message, advisory }`), carried as an opaque document so
+/// this crate names no contract type and the shape has exactly ONE definition — the contract's.
+/// It rides beside a kind's frozen typed error slot where one exists ([`SecretResponse::Error`]),
+/// and as the whole `STATUS_ERR` body otherwise; a host that predates it reads that body as the
+/// UTF-8 message it always was.
+pub type WireError = serde_json::Value;
 
 /// Severity for a record crossing [`LogSinkFn`]. Deliberately a plain `u32` rather than a Rust enum:
 /// this crosses a C boundary between two independently-compiled objects, so it has to be a value
@@ -605,6 +623,65 @@ pub enum SecretRequest {
     },
 }
 
+/// The taxonomy a secret `call`'s typed failure carries ON THE WIRE — five snake_case tokens
+/// (`not_found`, `unavailable`, `denied`, `invalid`, `internal`) that an installed third-party
+/// `kind: secret` plugin already emits under `SECRET_ABI_VERSION` 1.
+///
+/// It lives HERE, in the crate that owns the wire, because that is what a wire enum is. It used to
+/// be declared in the retiring 1.5.5 plugin-contract crate — an in-process error taxonomy doing
+/// double duty as the serialized wire tag — and the 1.6.0 retirement of that crate would have
+/// silently changed a SIGNED wire had the enum gone with it. The move is a namespacing change and
+/// nothing else: same five variants, same order, same `rename_all`, and the byte-identity cells in
+/// this module's tests serialise every variant through both spellings and require equal bytes. For
+/// that reason `SECRET_ABI_VERSION` does NOT move.
+///
+/// The distinction the five draw is the one an operator acts on: a configuration problem they must
+/// fix (`NotFound`, `Invalid`, `Denied`) versus an outage they must wait out (`Unavailable`).
+/// `Internal` is the catch-all, and is what an untyped string failure has always become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretErrorKind {
+    /// The referenced secret does not exist at the source (wrong key/path/name) — a config error.
+    NotFound,
+    /// The source could not be reached (network, auth-to-the-backend, timeout) — an outage.
+    Unavailable,
+    /// The caller is not permitted to read this secret — a config/policy error.
+    Denied,
+    /// The request itself is malformed (bad settings shape) — a config error.
+    Invalid,
+    /// Anything else, including every error that predates this taxonomy.
+    Internal,
+}
+
+/// TRANSITIONAL, both directions — the variant-for-variant bridge to the legacy taxonomy this enum
+/// replaces. It exists only while the retiring 1.5.5 plugin-contract crate still has a copy: the
+/// loader and the SDK are still written against the old spelling on the commit that re-homes the
+/// wire, and a total map is the honest way to say "these are the same five" while both names are in
+/// the tree. Both impls go with that copy, on the commit that deletes it.
+impl From<LegacySecretErrorKind> for SecretErrorKind {
+    fn from(k: LegacySecretErrorKind) -> Self {
+        match k {
+            LegacySecretErrorKind::NotFound => Self::NotFound,
+            LegacySecretErrorKind::Unavailable => Self::Unavailable,
+            LegacySecretErrorKind::Denied => Self::Denied,
+            LegacySecretErrorKind::Invalid => Self::Invalid,
+            LegacySecretErrorKind::Internal => Self::Internal,
+        }
+    }
+}
+
+impl From<SecretErrorKind> for LegacySecretErrorKind {
+    fn from(k: SecretErrorKind) -> Self {
+        match k {
+            SecretErrorKind::NotFound => Self::NotFound,
+            SecretErrorKind::Unavailable => Self::Unavailable,
+            SecretErrorKind::Denied => Self::Denied,
+            SecretErrorKind::Invalid => Self::Invalid,
+            SecretErrorKind::Internal => Self::Internal,
+        }
+    }
+}
+
 /// The success payload for a secret `call`. A TRANSPORT-level failure (the plugin panicked, or
 /// explicitly signals a status the loader treats as an error) still returns `STATUS_ERR` with a
 /// UTF-8 message in the out buffer (which must never carry secret material) — that path is
@@ -619,8 +696,13 @@ pub enum SecretResponse {
     Bytes(Vec<u8>),
     /// `resolve` failed at the module level (not the transport level) with a known taxonomy.
     Error {
-        kind: busbar_api::SecretErrorKind,
+        kind: SecretErrorKind,
         message: String,
+        /// ADDITIVE (1.6.0, airlock minor 21): the structured error beside the frozen pair. A
+        /// plugin that predates it never sends it and a host that predates it never reads it;
+        /// `skip_serializing_if` keeps the frozen envelope byte-identical when it is absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<WireError>,
     },
 }
 
