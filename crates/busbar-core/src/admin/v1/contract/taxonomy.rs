@@ -239,7 +239,7 @@ impl Cond {
                 // asserted `export` was not a section while it was becoming one.
                 static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
                     format!(
-                        "unknown overlay section (expected one of {})",
+                        "unknown overlay section (expected {})",
                         crate::config::overlay::OverlaySection::valid_names()
                     )
                 });

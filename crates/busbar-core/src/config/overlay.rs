@@ -676,15 +676,25 @@ impl OverlaySection {
         }
     }
 
-    /// The valid section names as a comma-separated, backticked list for an error message. Derived
-    /// from [`OverlaySection::all`] rather than written out, because the hand-written version of this
-    /// string is exactly what told operators `export` was not a section while it was becoming one.
+    /// The valid section names, backticked and joined with `|`, for the ERROR TAXONOMY's 400
+    /// sentence. Derived from [`OverlaySection::all`] rather than written out, because the
+    /// hand-written version of this string is exactly what told operators `export` was not a
+    /// section while it was becoming one.
+    ///
+    /// The pipe join and the sentence around it are the PUBLISHED 1.5.5 spelling of that
+    /// sentence. Only the SET of names grows; the template does not move, so the difference from
+    /// the published document is the growth and nothing else.
+    // Read by the ERROR TAXONOMY's `phrase()`, which is itself compiled only under
+    // `openapi-schema` (a CI-only feature that builds the committed document). The route's own
+    // 400 message reads `valid_names_or` instead, because the two surfaces spell their lists
+    // differently, so on a default build this one has no caller and `dead_code` would fire.
+    #[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
     pub(crate) fn valid_names() -> String {
         OverlaySection::all()
             .iter()
             .map(|s| format!("`{}`", s.as_str()))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join("|")
     }
 
     /// The valid section names as the PUBLISHED 1.5.5 prose list — backticked, comma-separated,

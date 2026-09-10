@@ -1209,10 +1209,10 @@
         "type": "object"
       },
       "HookView": {
-        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see\n[`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is\nno `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the\ntop-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and\nATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it\nglobal, or at one pool's own `hooks:` list. On THIS API the same hook is written with\n`global: true`; the wire and the config file are deliberately different surfaces. Live connection\nstatus (`health`) is a separate endpoint. Additive-only.\n\n`groups:` and `phase:` are the config-file SELECTION axes (which callers, which pipeline stages),\nand this view used to omit both. That was not a decision to keep them file-only: both are\nWRITABLE over this API (`POST`/`PUT /hooks` deserialize `config::HookCfg` verbatim, which is the\ndocumented \"paste a `hooks:` entry\" contract), so omitting them made a field an operator can set\nthrough the API one they could not read back through it. `groups` and the stage pair\n(`phase` + `fires_at`) close that.",
+        "description": "A hook definition in the registry read (`GET /api/v1/admin/hooks`, `GET /api/v1/admin/hooks/{name}`): the\nplugin catalog read. Projects the DEFINITION (kind, transport, grants, ordering, stage), never a\nsecret, INCLUDING the `settings:` bag, which is projected as KEY NAMES only (see\n[`HookView::settings_keys`]). `global` reports whether the hook fires on EVERY request. There is\nno `global_hooks:` config key to write: 1.5.3 deleted it, and a hook is now DEFINED once in the\ntop-level `hooks:` named map (its `module:` naming the `kind: hook` plugin that backs it) and\nATTACHED by bare name, at the reserved all-pools key `pools.hooks:`, which is what makes it\nglobal, or at one pool's own `hooks:` list. `groups:` and `phase:` are the config-file selection\naxes (which callers, which pipeline stages). On THIS API the same hook is written with\n`global: true`; the wire and the config file are deliberately different surfaces. Live connection\nstatus (`health`) is a separate endpoint. Additive-only.",
         "properties": {
           "at": {
-            "description": "The LEGACY single-valued tap stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or\n`null`. Kept for back-compat and NOT the field to read: `null` here does NOT mean \"a gate\"\nand does not mean \"unscoped\". Every hook written in the current top-level `hooks:` grammar\nhas `at: null` by construction (`config::hook_cfg_from_def` never sets it, and\n`--migrate-config` rewrites a legacy `at:` into `phase:`), so this field is `null` for\nessentially every hook a running deployment has. Read `fires_at`.\n1.6.0 owner rule: a 1.5.5 client reading this view must see this field byte-for-byte, so it\nis RESTORED alongside `phase`/`fires_at`.",
+            "description": "TAP observation stage (`\"request\"`/`\"candidate\"`/`\"routing\"`/`\"response\"`), or `None` for a gate.",
             "type": [
               "string",
               "null"
@@ -1294,12 +1294,12 @@
           "user",
           "priority",
           "at",
-          "phase",
-          "fires_at",
           "on_error",
           "timeout_ms",
           "settings_keys",
           "global",
+          "phase",
+          "fires_at",
           "groups"
         ],
         "type": "object"
@@ -1867,7 +1867,7 @@
             ]
           },
           "module": {
-            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).\n\nOMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today\n`agents:`, whose entries describe endpoints somebody else runs\n(`NamedMapSection::requires_module`).\nEvery section that HAS a module requires it to be non-empty, so this can never be omitted\nfor one that does.",
+            "description": "The `module:` backing this instance (a built-in name or a signed-plugin name/alias).",
             "type": "string"
           },
           "name": {
@@ -8566,7 +8566,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: unknown overlay section (expected one of `groups`, `hooks`, `root`, `plugin_versions`, `identity-providers`, `export`, `tools`, `agents`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
+            "description": "`invalid_request`: unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`|`identity-providers`|`export`|`tools`|`agents`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
           },
           "401": {
             "content": {

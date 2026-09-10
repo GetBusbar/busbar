@@ -58,12 +58,14 @@ pub struct NamedDefView {
     /// The instance NAME: the map key, and the token every reference site uses.
     pub name: String,
     /// The `module:` backing this instance (a built-in name or a signed-plugin name/alias).
-    ///
-    /// OMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today
-    /// `agents:`, whose entries describe endpoints somebody else runs
-    /// (`NamedMapSection::requires_module`).
-    /// Every section that HAS a module requires it to be non-empty, so this can never be omitted
-    /// for one that does.
+    // FROZEN PUBLISHED PROSE: this doc comment is the field's `description` in the served
+    // `openapi.json`, a wire document judged as a JSON superset of the published one, so a
+    // description that GROWS is an existing string leaf whose value changed rather than a new path
+    // beside the old. The 1.6.0 note therefore lives here, not above:
+    //   OMITTED, not empty-stringed, for a section whose entries are not plugin instances -- today
+    //   `agents:`, whose entries describe endpoints somebody else runs
+    //   (`NamedMapSection::requires_module`). Every section that HAS a module requires it to be
+    //   non-empty, so this can never be omitted for one that does.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub module: String,
     /// The KEY NAMES of the module's opaque settings bag, sorted, WITHOUT their values, the
