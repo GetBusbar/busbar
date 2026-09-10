@@ -507,3 +507,52 @@ book, so deleting the legacy accrual without moving the views first turns thirte
   every plane follows; a control surface is not on it and follows the lesser one
   (verify → admit → audit → answer). `PLUGIN-TREE.md` §1 carries the kind row, its CAN/CANNOT list
   and the dependency row; `ARCHITECTURE.md` §1.4 carries the closed-shape/open-vocabulary row.
+
+### 7.14 The settlement column, and what the legacy money path still owes it — 2026-09-10
+
+Found while writing `docs/design/1.6.0-refusal-reason-table.md` (Track 5, T5-1).
+
+**The rule existed in prose in two places and as data in none.**
+`busbar_contract::unit::RefusalReason`'s doc has always said adding a code "is a kernel change,
+because every code has to have a settlement row"; `busbar_caps::step::StepName::under_hold`'s doc has
+always said "a refusal here is audited WITH the hold: the admission stands and the caller was
+charged". Neither statement was reachable from code. The money path decided the same question with
+two booleans threaded through `busbar-core`'s `finish_inner`, and the hazard of the two spellings
+drifting is named in that file in capitals: `refund_request` is a blind `UPDATE`, so a refund issued
+against a request that was never charged decrements the spend and count of OTHER requests in the same
+window. `busbar_contract::unit::Settlement` is that rule as data.
+
+**It is three-way, and the third row is what the prose gets wrong.** A unit can be past the door and
+still never have been charged — governance off, no resolved key, or a store error that failed open,
+which is why `finish_admitted` carries a `charged` flag at all. `StepName::under_hold`'s "the caller
+was charged" is therefore true only sometimes, and `Settlement` splits the hold from the charge:
+`NeverCharged`, `AdmittedUncharged`, `ChargedRefundable`.
+
+**What is now retired from the retirement's point of view.** One production site was re-pointed:
+`crates/busbar-llm/src/unit/meter.rs`, which decided the refund with `ctx.charged` alone and now reads
+`Settlement::of(true, ctx.charged).refunds()`. Byte-identical by truth table.
+
+**What is NOT, and what would let it go.** These are the legacy money path's own, and they are
+deleted only when their readers move:
+
+| what | where | what would let it go |
+|---|---|---|
+| `refund_request` | `crates/busbar-core/src/governance/state.rs:2050` | its one caller, `ingress/mod.rs:688`, moving to the unit path |
+| `refund_on_non_2xx` + `charged` as parameters | `crates/busbar-core/src/ingress/mod.rs` `finish_inner` / `finish_admitted` / `finish_rejected` | both wrappers collapsing into one `finish` that reads `Settlement::of(step, charged)` — which is why the column lands ahead of the readers rather than behind them |
+| `GovState::try_admit` + `LimitBlocked` | `crates/busbar-core/src/governance/state.rs`, `governance/mod.rs:282` | the SECOND copy of the admission algorithm. `busbar-unit-admission::Door::try_admit` is the first; the two are hand-kept in sync, and only the core one is on the live LLM path (`ingress/mod.rs:161`, `plane_host/govern.rs:99`). The unit twin is live for voice only (`busbar/src/root/units_voice.rs:790`) |
+
+**`legacy.rs` / `migration.rs` are NOT unblocked by this and were not moved.** They live in
+`crates/busbar-unit-ledger/src/`, not in core. They are readers of the STORED form of a posting — the
+1.5.5 row shapes a node upgrading in place still has on disk — and not of the refusal vocabulary, so
+the settlement column does not touch them. What unblocks them is a sealed `Migration` epoch floor
+past which no 1.5.5-shaped posting can be read back, at which point the conversion has no input. Their
+out-of-crate readers are all in `busbar/src/root/*` (boot sequencing) and
+`plugin-loader/src/store_adapter.rs` (the durable-store binding); no plane and no `busbar-core` module
+names them, which is consistent with their being boot-time-only and never on the request path.
+
+**One more thing the seam was missing, and it was E1's.** `busbar_contract::error::Catalog` could
+FIND a code's words in a locale and nothing in the tree could FILL its `{param}` holes — every caller
+of `template()` was a plugin test asserting `is_some()`. `Catalog::render` is that half. It lands
+unwired on the money path deliberately: the refusal wire is the admin plane's ratified table
+(`crates/busbar-plane-admin/src/refusal.rs`) and each dialect's own
+(`crates/busbar-plane-llm/src/codec.rs`), and this line's byte-identity rests on neither moving.
