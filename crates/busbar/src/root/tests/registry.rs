@@ -68,24 +68,38 @@ const SEALED_ORDER: &[&str] = &[
 /// against; a build that compiled voice out is a different composition, not a smaller one.
 const VOICE: bool = cfg!(feature = "plane-voice");
 
-/// Every transport and every plane goes into one registry, and both counts are what the design
-/// says they are. This is the half of the seal that does not depend on the claims.
+/// Every transport, every plane and the one control surface go into one registry, and every count
+/// is what the design says it is. This is the half of the seal that does not depend on the claims.
+///
+/// FOUR PLANES AND ONE CONTROL SURFACE, not five planes. The admin surface answers `Kind::Control`
+/// at the ABI — it is an unmetered served surface, and the registry holds a plugin under the kind it
+/// declares — so it resolves under that kind and under no other. A cell that still found it among
+/// the planes would be a cell agreeing with a claim the crate stopped making.
 #[test]
-fn seven_transports_and_five_planes_register() {
+fn seven_transports_four_planes_and_one_control_surface_register() {
     let transports = compose_transports(ClientSettings::default());
     let registry = register_all(&transports).expect("nothing collides on a key");
     assert_eq!(
         registry.count(PluginKind::Transport),
         if VOICE { 7 } else { 6 }
     );
-    assert_eq!(registry.count(PluginKind::Plane), if VOICE { 5 } else { 4 });
+    assert_eq!(registry.count(PluginKind::Plane), if VOICE { 4 } else { 3 });
+    assert_eq!(registry.count(PluginKind::Control), 1);
+    assert!(
+        registry.resolve(PluginKind::Control, "admin").is_some(),
+        "the admin control surface is not registered under the kind it declares"
+    );
+    assert!(
+        registry.resolve(PluginKind::Plane, "admin").is_none(),
+        "the admin surface is resolvable as a plane, which is the claim it stopped making"
+    );
     for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
         assert!(
             registry.resolve(PluginKind::Transport, key).is_some(),
             "transport `{key}` is not registered"
         );
     }
-    for key in ["llm", "mcp", "a2a", "admin"] {
+    for key in ["llm", "mcp", "a2a"] {
         assert!(
             registry.resolve(PluginKind::Plane, key).is_some(),
             "plane `{key}` is not registered"
@@ -482,17 +496,23 @@ fn an_unregistered_layer_refuses_at_boot() {
     );
 }
 
-/// A guard against a claim slice that quietly names a plane the registry never took: the
+/// A guard against a claim slice that quietly names a surface the registry never took: the
 /// pairing in `plane_claims` is done by hand, so the one thing worth asserting about it is that
 /// every key it produces is a key the registry actually resolves.
+///
+/// The table holds the CLAIMS OF EVERY SERVED SURFACE, which is what the overlap check needs it to
+/// hold — a surface whose claim were kept somewhere else would be a surface the check never compared
+/// against. So a key here resolves as a plane OR as the control kind, and one that resolves as
+/// neither is the pairing having gone wrong.
 #[test]
-fn every_claimed_plane_key_is_a_registered_plane() {
+fn every_claimed_key_is_a_registered_surface() {
     let transports = compose_transports(ClientSettings::default());
     let registry = register_all(&transports).expect("nothing collides on a key");
     for claim in &plane_claims() {
         assert!(
-            registry.resolve(PluginKind::Plane, claim.plane).is_some(),
-            "claim names plane `{}`, which is not registered",
+            registry.resolve(PluginKind::Plane, claim.plane).is_some()
+                || registry.resolve(PluginKind::Control, claim.plane).is_some(),
+            "claim names `{}`, which is registered under no kind at all",
             claim.plane
         );
     }
