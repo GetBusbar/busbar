@@ -1231,10 +1231,18 @@ jobs:
       # the whole workflow: a job that grows a `cargo` line later must not red on a missing wrapper.
       - name: Compiler cache (sccache, GitHub Actions cache backend)
         uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      # THIS JOB NEEDS A TOOLCHAIN, AND NOW DECLARES ONE. It ran `cargo xtask gate service-images`
+      # on whatever the runner image happened to ship, and that is a property of the image, not of
+      # anything this repository controls. It failed exactly the way an assumption fails: the cache
+      # step reported `Command failed: rustc -vV` and the gate step reported
+      # `cargo: command not found`, exit 127 — a green gate turned into a red job with nothing
+      # about service images having changed. `structure-lint` declares the same pin for the same
+      # stated reason; this is that reason applied to the second job that builds only the runner.
+      - name: Install Rust toolchain (the gate runner)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       # THE REGISTRY/TARGET CACHE, which this job never had: it builds the gate runner from source on
-      # every run with nothing restored, on the image's ambient toolchain. Keyed `xtask`, the same key
-      # `structure-lint` uses, so the two jobs that build only the runner share one entry instead of
-      # each paying for it.
+      # every run with nothing restored. Keyed `xtask`, the same key `structure-lint` uses, so the
+      # two jobs that build only the runner share one entry instead of each paying for it.
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
