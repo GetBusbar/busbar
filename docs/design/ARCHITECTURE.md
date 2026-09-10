@@ -68,13 +68,22 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ 3.5k **of plugin-visible SURFACE** —
-  non-blank, non-comment code lines under each crate's `src/`, excluding `#[cfg(test)]` modules and
-  `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
-  compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
-  in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=3500`), which the construction gate runs as
-  `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,531** **of plugin-visible SURFACE**
+  (3,529 as `scripts/loc-surface.py` counts it, 3,531 as `loc-ceilings:caps-contract` does; the two
+  differ by two lines of counting rule and are pinned as one decision) — raised from 3.5k on
+  2026-09-09 for the DIALECT KIND'S CONTRACT FACE and pinned at its measured size, zero slack:
+  `Kind::{Dialect, Control}` with their sealed markers and `DIALECT_ABI`/`CONTROL_ABI` (the two
+  kinds §1.1 names crates for and the closed set could not spell), `DialectMeta` (the dialect row's
+  declaration column of PLUGIN-TREE.md §1, constant for constant) and `Dialect` (the kind's four
+  codec methods at the span-`Ir` seam) — 51 lines, none of them a plane's or a dialect's
+  convenience. A future face raises this figure by its own declared, measured amount
+  (`[gate.ceiling_raises]` in `qa/construction.toml`) and amends this sentence; nothing else moves
+  it. Surface is non-blank, non-comment code lines under each crate's `src/`, excluding
+  `#[cfg(test)]` modules and `src/tests/`; the proofs (overlap totality over the selector-form
+  pairs, the lint symbol lists, the compile-fail fixtures and their positive companions, the honesty
+  tables) are not surface and live in each crate's `tests/` or `fixtures/`. Measured and gated by
+  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3529`), which the construction
+  gate runs as `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as
