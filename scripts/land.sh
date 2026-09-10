@@ -1485,6 +1485,19 @@ land_run_batch() {  # $1 = batch file
   # PER-LINE OUTCOMES, in the queue's own order, for the runner and for the record.
   local res="$bf.result"; : >"$res"
   local done_file="${LAND_DONE:-$here/target/gate/land-done.txt}"
+  # ── LAND_PREPROVE=1: PROVE AND REPORT, PUBLISH NOTHING ─────────────────────────────────────────
+  # A pre-proof runs the SAME batch through the SAME engine — the picks, the legs, the bisect — and
+  # then puts the tree back. It exists so a box can answer "would this line be green on the current
+  # tip?" ahead of the serial runner reaching it, and it is worth nothing unless it is impossible to
+  # mistake for a landing. So:
+  #   * its outcomes go to a scratch file, never to the land-done ledger. The ledger is the record
+  #     of what LANDED, and a pre-proof landed nothing.
+  #   * the tree is reset to the base it started from, which also makes the remote transport a
+  #     no-op: scripts/land-remote.sh fast-forwards the local tree to the tip the box published,
+  #     and a box that published its own base has nothing to fast-forward TO.
+  # NOTHING LANDS ON A PRE-PROOF. The serial runner still runs the full proof over the union it
+  # pops; a green here only chooses the ORDER of the queue, never its verdict.
+  [ "${LAND_PREPROVE:-}" = 1 ] && done_file="$here/target/land-preprove-$stamp.done"
   mkdir -p "$(dirname "$done_file")" 2>/dev/null || true
   local green=0 red=0 conflict=0
   i=0
@@ -1499,6 +1512,10 @@ land_run_batch() {  # $1 = batch file
   done
   echo "land.sh: batch $stamp: $green green, $red red, $conflict red-conflict; base $(git -C "$here" rev-parse --short "$base0"), tip $(git -C "$here" rev-parse --short HEAD)"
   echo "land.sh: per-line outcomes: $res"
+  if [ "${LAND_PREPROVE:-}" = 1 ]; then
+    git -C "$here" reset -q --hard "$base0"
+    echo "land.sh: PRE-PROVE — published nothing; tree back at $(git -C "$here" rev-parse --short HEAD) (proven against $(git -C "$here" rev-parse --short "$base0"))"
+  fi
   [ $((red + conflict)) -eq 0 ]
 }
 
@@ -1850,6 +1867,37 @@ EOF
     || { printf '  FAIL %-46s\n' "C: three GREEN lines"; fails=$((fails + 1)); }
   _stgrep "C: proved ONCE, over all three lines" "$ST_OUT" 'proving lines 1,2,3'
   _stno   "C: no bisection happened"             "$ST_OUT" 'bisecting'
+
+  # CASE C-PRE — THE SAME BATCH AS A PRE-PROOF. Same verdict, same result file, and the tree is
+  # exactly where it was: a pre-proof that moved the tree would be a landing nobody asked for, and
+  # the serial runner would then be popping lines onto a tip it never proved.
+  local bcp="$root/batchCpre.txt"
+  cp "$bc" "$bcp"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  local pre_before; pre_before="$(git -C "$repo" rev-parse HEAD)"
+  _st "pre-prove of an all-green batch exits 0" 0 env LAND_SELFTEST_ROOT="$repo" LAND_PREPROVE=1 \
+      LAND_DONE="$root/done-pre.txt" bash "$0" --batch "$bcp"
+  [ "$(grep -c '^GREEN' "$bcp.result")" = 3 ] && printf '  ok   %-46s\n' "pre: three GREEN lines reported" \
+    || { printf '  FAIL %-46s\n' "pre: three GREEN lines reported"; fails=$((fails + 1)); }
+  [ "$(git -C "$repo" rev-parse HEAD)" = "$pre_before" ] \
+    && printf '  ok   %-46s\n' "pre: the tree did NOT move" \
+    || { printf '  FAIL %-46s (tree moved to %s)\n' "pre: the tree did NOT move" "$(git -C "$repo" rev-parse --short HEAD)"; fails=$((fails + 1)); }
+  for f in a.txt b.txt c.txt; do
+    [ -f "$repo/$f" ] && { printf '  FAIL %-46s\n' "pre: $f did NOT land"; fails=$((fails + 1)); } \
+      || printf '  ok   %-46s\n' "pre: $f did NOT land"
+  done
+  [ -s "$root/done-pre.txt" ] && { printf '  FAIL %-46s\n' "pre: nothing written to land-done"; fails=$((fails + 1)); } \
+    || printf '  ok   %-46s\n' "pre: nothing written to land-done"
+  _stgrep "pre: it says it published nothing"    "$ST_OUT" 'PRE-PROVE — published nothing'
+  # A RED PRE-PROOF IS STILL RED, and still moves nothing.
+  local bfp="$root/batchFpre.txt"
+  { echo "--prove $c2"; } >"$bfp"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "pre-prove of a poisoned batch is RED" 1 env LAND_SELFTEST_ROOT="$repo" LAND_PREPROVE=1 \
+      LAND_DONE="$root/done-pre.txt" bash "$0" --batch "$bfp"
+  [ "$(git -C "$repo" rev-parse HEAD)" = "$pre_before" ] \
+    && printf '  ok   %-46s\n' "pre(red): the tree did NOT move" \
+    || { printf '  FAIL %-46s\n' "pre(red): the tree did NOT move"; fails=$((fails + 1)); }
 
   # CASE D — an empty batch is refused, not silently green.
   : >"$root/batchD.txt"
