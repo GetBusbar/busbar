@@ -527,3 +527,86 @@ book, so deleting the legacy accrual without moving the views first turns thirte
   every plane follows; a control surface is not on it and follows the lesser one
   (verify → admit → audit → answer). `PLUGIN-TREE.md` §1 carries the kind row, its CAN/CANNOT list
   and the dependency row; `ARCHITECTURE.md` §1.4 carries the closed-shape/open-vocabulary row.
+
+## 8. The keep-core deletion slot — what was cut, and the four that refused
+
+Measured on `integration/oracle-phase0` at `b0c5b6f1b`. The slot was scoped by a count of
+**production readers outside `crates/busbar-core`**, which came back zero for all five modules below.
+That counter is necessary but not sufficient, and four of the five prove why: `busbar-core` is a
+production dependency of exactly ONE crate, so a module with no external reader is the NORMAL case,
+not evidence of death. What decides a cut is whether the behaviour has a replacement and whether
+core's own graph still runs it — and for four of these it does, through `appbuild`, `router`,
+`state` and `config` rather than through a name another crate spells.
+
+### 8.1 CUT — `diagnostics` (151 lines, landed)
+
+The only one of the five that was residue. `diagnostics/mod.rs` was a
+`pub use busbar_substrate::diagnostics::*` glob plus local `#[macro_export]` twins of
+`diag_warn!` / `diag_error!` / `diag_debug!`. Both halves exist below: the catalog in
+`busbar-substrate-values`, re-exported at `busbar_substrate::diagnostics`; the macros at the
+`busbar_substrate` crate root, with expansions byte-identical to the deleted ones. Every in-crate
+caller repointed — constants onto `busbar_substrate::diagnostics::`, macros onto `busbar_substrate::`
+(the substrate keeps the macros off its `diagnostics` module deliberately, so a glob import cannot
+shadow them). The module header's claim that `busbar-llm` reaches these macros across the crate
+boundary is **stale and measured false**; nothing outside core named `busbar_core::diagnostics`.
+
+**Gap opened, not backfilled.** The deleted `diagnostics/tests.rs` carried the uncoded-diagnostic
+coverage lint: a `MIGRATED_FILES` list of ~30 core paths, each asserted to contain no bare
+`tracing::warn!` / `tracing::error!`. It scanned CORE's tree through core's own manifest dir, so the
+per-crate floors in `busbar-substrate` and the plane crates do not cover it. That proof is gone. It
+is not re-created here because re-homing it would add code to a deletion; whoever wants it back owns
+re-landing it as a core-tree lint.
+
+### 8.2 BLOCKED — `failover` (322 production lines): the replacement is PARTIAL, and core owns the half that did not cross
+
+`busbar-substrate/src/failover.rs` (563) holds the generic seam — `Candidate`, `Order`, `Stage`,
+`Repeatable`, `Refusal`, `Admitted`, `Attempt`, `walk_with`. Core's remnant still **defines**, and
+the substrate does not have anywhere:
+
+- `CandidatePoolCfg` — the entire operator-facing `tool_pools:` / `agent_pools:` serde vocabulary,
+- `walk`, `record_outcome`, `record_success` — the three concrete entry points over `walk_with`.
+
+The module's own header says so in as many words ("the serde config type and the LLM-shaped
+disposition halves stay here"). Its in-core callers are the config grammar (`config/mod.rs` at seven
+sites, including the pool parse), `state.rs` (three), and `engine_facade.rs` (the `pub use` the
+engine reaches through). Deleting it deletes the pool config vocabulary and the disposition loop that
+the `route.failover` cells record. **Blocker:** `CandidatePoolCfg` is config-layer grammar and follows
+the config layer to `busbar-core-config`, which does not exist; the three disposition functions need
+an owner ruling (substrate beside `walk_with`, or the egress unit) before anything can be deleted.
+Not a cut until then. Note that `busbar-mcp` already reaches the substrate spelling directly, so the
+plane side of this is done — it is only the config type and the three wrappers that are stuck.
+
+### 8.3 BLOCKED — `export` (1,332 production lines): there is no replacement anywhere
+
+`export/{mod,projection,webhook,file,prometheus}.rs` is the whole built-in exporter implementation:
+the projection resolver (605), the webhook and file request-log sinks, and the Prometheus scrape
+endpoint. **The workspace contains no `export` module or crate outside core** —
+`export-example-plugin` is a sample plugin, not the built-in path. It is live in the shipped binary:
+`appbuild.rs` builds its route table from `export::route_decls`, `preflight.rs` claims its route
+owners, `ingress/mod.rs` calls `export::deliver_request_log` on the request path, `state.rs` holds
+the resolved `ProjectionUnion`, and `config/mod.rs` resolves every sink's projection. Deleting it
+removes the Prometheus endpoint and both request-log sinks — behaviour the `admin.ops|export` cells
+record. **Blocker:** no destination exists and none is announced. Needs an owner ruling on the home
+before it is schedulable.
+
+### 8.4 BLOCKED — `oauth_as` (2,388 production lines): the home is announced but not built
+
+The authorization server — metadata document, routes, consent UI, signer, policy, CIMD. The owner
+ruling already recorded above names it a CONTROL surface, `busbar-control-oauth2`. **That crate does
+not exist**; `qa/kind-isolation.toml` carries it only as an `[[announced]]` row. Meanwhile the module
+is mounted in the shipped binary: `router.rs` calls `oauth_as::routes::mount`, `appbuild.rs` builds
+the plane and spawns its sweeper, `config/mod.rs` and `config/prepass.rs` carry its config, and
+`config_validate/secret_refs.rs` destructures its identity. Deleting it deletes a shipped OAuth
+issuer and everything the `auth.lifecycle` cells record of it. **Blocker:** create the announced
+crate first; this is a relocation into a new home, which is exactly what a deletion slot may not do.
+
+### 8.5 BLOCKED — `session` (219 production lines): no replacement, and it dies with the hooks engine
+
+`session/mod.rs` is a typed, TTL'd, owner-keyed per-session scratch store (`SessionKey`, `OwnerKey`,
+`put<T: Any>` / `get<T>` / `set_pinned`). The kernel's `Sessions` / `SessionSlot` are **not** this:
+they are transport in-flight slots keyed by `SessionId`, a different concept with a different
+lifetime. Nothing else in the workspace holds a `SessionStore`. Its production consumers are
+`appbuild.rs` (construction), `state.rs` (the `App` field) and — the reason it cannot go —
+`hooks/gate.rs`, which keys its screen state by `OwnerKey = "gate.screen"`. **Blocker:** the session
+store dies with the hooks engine, and the hooks engine has no home either until `busbar-core-hooks`
+exists. Both are behind the same design gate.
