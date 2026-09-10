@@ -89,7 +89,8 @@ fi
 # batch was bisected by a self-test the fix in the batch had already cured. So the runner's land.sh
 # — this script's sibling — travels to the box and is what runs there.
 rsh "$HOST" mkdir -p busbar-prove/target/gate
-rcp_to "$HOST" "$HERE/land.sh" "busbar-prove/target/gate/land.run.sh" || rdie "could not copy the runner's land.sh to $HOST"
+ENGINE="$HERE/land.sh"; [ -f "$HERE/land.run.sh" ] && ENGINE="$HERE/land.run.sh"   # the runner's copy is named land.run.sh
+rcp_to "$HOST" "$ENGINE" "busbar-prove/target/gate/land.run.sh" || rdie "could not copy the runner's land.sh ($ENGINE) to $HOST"
 
 # The remote argv is this one with the batch path rewritten to the box's copy.
 RARGS=()
