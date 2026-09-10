@@ -29,8 +29,9 @@
 use busbar_contract::ids::OpClassId;
 
 use super::{
-    cache_hints, initialize_result, instructions, ping_result, reads, tool_call_result,
-    tools_list_result, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS, PROTOCOL_VERSION, SERVER_NAME,
+    cache_hints, initialize_result, instructions, ping_result, prompts_list_result, reads,
+    resource_templates_list_result, resources_list_result, tool_call_result, tools_list_result,
+    Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS, PROTOCOL_VERSION, SERVER_NAME,
 };
 use crate::{ops, records};
 
@@ -188,7 +189,11 @@ fn every_answered_class_is_declared_and_read() {
         );
         assert!(reads(*op).is_some(), "{op} is answered and reads nothing");
     }
-    assert_eq!(ANSWERED.len(), 4, "this stage answers the first four");
+    assert_eq!(
+        ANSWERED.len(),
+        7,
+        "the four that were first through the loop, and the three listings beside them"
+    );
 }
 
 /// A class this stage does not answer says so, rather than being read as reading nothing.
@@ -196,7 +201,6 @@ fn every_answered_class_is_declared_and_read() {
 fn an_unanswered_class_has_no_reading() {
     for op in [
         ops::OP_DISCOVER,
-        ops::OP_PROMPTS_LIST,
         ops::OP_RESOURCE_READ,
         ops::OP_NOTIFICATION,
         ops::OP_SAMPLING,
@@ -272,4 +276,74 @@ fn the_readings_name_the_schemas_they_say_they_do() {
         .legs()
         .iter()
         .all(|(_, op)| *op == records::OP_GET));
+}
+
+/// The three listings are read the way `tools/list` is read, and for the same reason.
+///
+/// One reading for four classes because one SENTENCE covers all four: a listing is what was
+/// approved, minus what is quarantined. A listing composed from the catalogue alone would advertise
+/// the operator's approved shape for a server that has stopped serving it that way, which is the
+/// sentence [`Reads::CatalogueSnapshot`] is written under.
+#[test]
+fn the_listings_read_the_catalogue_snapshot() {
+    for op in [
+        ops::OP_TOOLS_LIST,
+        ops::OP_PROMPTS_LIST,
+        ops::OP_RESOURCES_LIST,
+        ops::OP_RESOURCE_TEMPLATES_LIST,
+    ] {
+        assert_eq!(
+            reads(op),
+            Some(Reads::CatalogueSnapshot),
+            "{op} is a listing and is not read as one"
+        );
+    }
+}
+
+/// Each listing carries its OWN member name, and carries the cacheable pair beside it.
+///
+/// The member is the whole of what separates these answers on the wire: a listing rendered under
+/// another listing's member is an answer to a question the caller did not ask, and every client of
+/// this protocol reads the member rather than the request it replies to.
+#[test]
+fn each_listing_carries_its_own_member() {
+    let one = vec![serde_json::json!({"name": "a"})];
+    for (answer, member) in [
+        (prompts_list_result(one.clone()), "prompts"),
+        (resources_list_result(one.clone()), "resources"),
+        (
+            resource_templates_list_result(one.clone()),
+            "resourceTemplates",
+        ),
+    ] {
+        assert_eq!(answer[member], serde_json::json!([{"name": "a"}]));
+        assert_eq!(answer["cacheScope"], CACHE_SCOPE);
+        assert_eq!(answer["ttlMs"], CACHE_TTL_MS);
+        assert_eq!(
+            answer.as_object().expect("a listing is a document").len(),
+            3,
+            "the {member} listing carries a member the server half does not write"
+        );
+    }
+}
+
+/// A caller whose grant reaches nothing gets the EMPTY listing rather than an error.
+///
+/// Asserted per listing rather than once, because it is the rule each of them is written under: an
+/// error would tell a caller that something exists behind the grant, and the empty list is what the
+/// existing server answers on all four.
+#[test]
+fn an_empty_grant_lists_nothing_rather_than_refusing() {
+    assert_eq!(
+        prompts_list_result(Vec::new())["prompts"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        resources_list_result(Vec::new())["resources"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        resource_templates_list_result(Vec::new())["resourceTemplates"],
+        serde_json::json!([])
+    );
 }
