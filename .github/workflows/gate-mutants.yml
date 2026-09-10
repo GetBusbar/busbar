@@ -106,10 +106,16 @@ jobs:
   # THE BASELINE. The test command, on the UNMUTATED tree, once for the whole commit.
   #
   # THE SHARDS RUN THEIR OWN BASELINE TOO, and this job does not replace it: a shard's baseline is
-  # about the scratch copy cargo-mutants builds, and this one is about the checkout. They are
-  # different environments and the first run of this workflow found them disagreeing — the lib
-  # suite passes here and fails there, which under a skipped per-shard baseline reported every
-  # mutant CAUGHT over a campaign that measured nothing.
+  # about the scratch copy cargo-mutants builds, and this one is about the checkout. The first run
+  # of this workflow was read as those two disagreeing — the lib suite passing here and failing
+  # there — and that reading was wrong. Both were failing, for one reason, in one place: this
+  # workflow never fetched `refs/backup/audit-pins/*`, so `audit-ledger` could not resolve thirteen
+  # of the register's commits on the runner, and the scratch copy inherited the same empty pin set
+  # because `--copy-vcs true` copies the refs it was given. The fetch step above is the fix.
+  #
+  # The per-shard baseline stays anyway, and not out of superstition: it is the only thing that can
+  # observe the environment a mutant is actually tested in, and a campaign whose baseline is assumed
+  # rather than measured scores every mutant CAUGHT the moment that assumption breaks.
   #
   # What this job adds is the plain statement, on the tree as it actually stands, that the four
   # gates DO hold their own planted faults. If it is red, `gate-mutants` is red, and no shard's
@@ -129,6 +135,22 @@ jobs:
         run: |
           git fetch --no-tags --quiet origin \
             +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        # WITHOUT THIS STEP EVERY SHARD REPORTS BASELINE RED, AND THAT IS NOT A FIGURE OF SPEECH:
+        # it is what the first two runs of this workflow did. `audit-ledger`'s
+        # `audited-at-reachable` row asks whether every commit the register names can still be
+        # produced -- an ancestor of HEAD, or of an audit pin. Pins are written locally under
+        # `refs/audit-pins/*` and MIRRORED to `refs/backup/audit-pins/*`, and neither `git clone`
+        # nor `actions/checkout` carries anything outside `refs/heads/*` and `refs/tags/*`. On a
+        # runner that has not fetched the mirror the pin set is EMPTY, thirteen of the register's
+        # commits read as unreachable, and two `audit_ledger` cases in `cargo test -p xtask --lib`
+        # go red for a reason that has nothing to do with any mutation.
+        #
+        # `cargo-mutants`' scratch copy was blamed for this and is innocent: `--copy-vcs true`
+        # copies `.git` faithfully, so the copy carries exactly the refs the checkout had -- no
+        # pins in, no pins out. The difference was never checkout-vs-copy, it was runner-vs-laptop.
+        # ci.yml and keep-proof.yml already carried this fetch; this workflow did not.
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -167,6 +189,22 @@ jobs:
         run: |
           git fetch --no-tags --quiet origin \
             +refs/heads/integration/oracle-phase0:refs/remotes/origin/integration/oracle-phase0
+      - name: Fetch the audit pins (no checkout carries refs/audit-pins/*)
+        # WITHOUT THIS STEP EVERY SHARD REPORTS BASELINE RED, AND THAT IS NOT A FIGURE OF SPEECH:
+        # it is what the first two runs of this workflow did. `audit-ledger`'s
+        # `audited-at-reachable` row asks whether every commit the register names can still be
+        # produced -- an ancestor of HEAD, or of an audit pin. Pins are written locally under
+        # `refs/audit-pins/*` and MIRRORED to `refs/backup/audit-pins/*`, and neither `git clone`
+        # nor `actions/checkout` carries anything outside `refs/heads/*` and `refs/tags/*`. On a
+        # runner that has not fetched the mirror the pin set is EMPTY, thirteen of the register's
+        # commits read as unreachable, and two `audit_ledger` cases in `cargo test -p xtask --lib`
+        # go red for a reason that has nothing to do with any mutation.
+        #
+        # `cargo-mutants`' scratch copy was blamed for this and is innocent: `--copy-vcs true`
+        # copies `.git` faithfully, so the copy carries exactly the refs the checkout had -- no
+        # pins in, no pins out. The difference was never checkout-vs-copy, it was runner-vs-laptop.
+        # ci.yml and keep-proof.yml already carried this fetch; this workflow did not.
+        run: git fetch origin '+refs/backup/audit-pins/*:refs/audit-pins/*'
       - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
