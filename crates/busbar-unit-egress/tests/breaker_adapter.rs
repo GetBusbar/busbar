@@ -209,6 +209,7 @@ impl Breaker for BreakerAdapter {
             map_outcome_to_breaker(outcome),
             &self.1,
             now,
+            busbar_unit_breaker::clock::unix_time_nanos(),
             token,
         )
     }

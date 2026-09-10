@@ -151,6 +151,16 @@ pub trait Breaker: sealed::Sealed {
     /// `HardDown` fan-out counts only the DEFAULT cell's freshness, and a sub-threshold or
     /// already-Open failure all return `false`) — the one signal a trip-count metric should
     /// increment on.
+    ///
+    /// `now_nanos` is the SAME instant as `now`, read in nanoseconds: the cooldown jitter seed
+    /// 1.5.5 read from `SystemTime::now().as_nanos()` inside the cell. It is a parameter for the
+    /// same reason `now` is — a unit crate reads no clock, so the root reads this once and hands it
+    /// down (`crate::clock::unix_time_nanos`).
+    // One over the default threshold, and the one over is the clock: `now` and `now_nanos` are two
+    // resolutions of ONE reading, and a struct to carry the pair would be a type the rest of this
+    // trait does not take (`state`/`try_admit` are answered from whole seconds alone). Widening the
+    // seam's vocabulary to quiet a count is the more expensive trade.
+    #[allow(clippy::too_many_arguments)]
     fn observe(
         &self,
         pool: &str,
@@ -158,6 +168,7 @@ pub trait Breaker: sealed::Sealed {
         outcome: Outcome,
         cfg: &BreakerCfg,
         now: u64,
+        now_nanos: u128,
         token: &UnitToken<Route>,
     ) -> bool;
 
@@ -524,6 +535,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
 impl<J: JournalSink, D: Diagnostics> sealed::Sealed for BreakerUnit<J, D> {}
 
 impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
+    #[allow(clippy::too_many_arguments)]
     fn observe(
         &self,
         pool: &str,
@@ -531,6 +543,7 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
         outcome: Outcome,
         cfg: &BreakerCfg,
         now: u64,
+        now_nanos: u128,
         _token: &UnitToken<Route>,
     ) -> bool {
         match outcome {
@@ -560,8 +573,13 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
                 // Success arm gates on record_success's own answer. A state read here can be stale
                 // by the time record_failure takes the transition lock, and the journal would then
                 // name a probe failure for a fresh trip, or miss one for a reopen.
-                let effect =
-                    cell.record_failure(now, cfg, retry_after, self.max_honored_retry_after_secs);
+                let effect = cell.record_failure(
+                    now,
+                    now_nanos,
+                    cfg,
+                    retry_after,
+                    self.max_honored_retry_after_secs,
+                );
                 if effect.reopened() {
                     let cooldown_until = match cell.state() {
                         CellState::Open { until } => until,

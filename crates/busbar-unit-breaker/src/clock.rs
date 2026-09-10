@@ -17,3 +17,17 @@ pub fn unix_time_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+/// The same instant, in whole NANOSECONDS since the Unix epoch — the jitter seed
+/// [`crate::cell::BreakerCell::compute_cooldown_with_retry_after`] mixes, and the one reading in
+/// this crate's vocabulary that seconds cannot stand in for. 1.5.5 read it inside the cooldown
+/// computation itself (`busbar-core/src/store/in_memory/breaker.rs:518-524`); the reading moves out
+/// here, to the root's side of the seam, and the value is handed down. Two cells tripping in the
+/// same second must not draw the same jitter, which is the whole reason the band exists.
+pub fn unix_time_nanos() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+}

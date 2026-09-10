@@ -358,12 +358,17 @@ impl Breaker for BreakerAdapter {
         let Some(cfg) = self.policy.for_pool(pool) else {
             return false;
         };
+        // The clock reading the unit is forbidden to take for itself: the cooldown jitter seed
+        // 1.5.5 read from `SystemTime::now().as_nanos()` inside the cell. It is read HERE, on the
+        // root's side of the seam, at the same point on the same path, so the value on the wire is
+        // the value 1.5.5 put there — and the unit still decides only from what it was handed.
         self.unit.observe(
             pool,
             destination,
             to_breaker_outcome(outcome),
             cfg,
             now,
+            busbar_unit_breaker::clock::unix_time_nanos(),
             token,
         )
     }

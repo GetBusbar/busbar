@@ -227,6 +227,7 @@ fn breaker_unit_classify_then_observe_trips_every_pool_cell_on_hard_down() {
         out.outcome,
         &BreakerCfg::default(),
         0,
+        0_u128,
         &route_token(),
     );
     assert!(

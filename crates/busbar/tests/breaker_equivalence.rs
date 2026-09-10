@@ -782,10 +782,8 @@ mod shim {
         pub trips: u64,
     }
 
-    /// `observe`, with the jitter seed the legacy reads at exactly this point.
-    ///
-    /// GAP (difference 1): the unit's `observe` takes only `now` in whole seconds and seeds its
-    /// cooldown jitter from it, so this shim has no nanosecond reading to hand over.
+    /// `observe`, with the jitter seed the legacy reads at exactly this point — the same reading
+    /// `BreakerAdapter` takes on the root's side of the seam.
     pub fn observe(
         u: &BreakerUnit,
         pool: &str,
@@ -794,7 +792,15 @@ mod shim {
         cfg: &UnitCfg,
         now: u64,
     ) -> bool {
-        u.observe(pool, dest, outcome, cfg, now, &super::tok())
+        u.observe(
+            pool,
+            dest,
+            outcome,
+            cfg,
+            now,
+            busbar_unit_breaker::clock::unix_time_nanos(),
+            &super::tok(),
+        )
     }
 
     /// Classify one upstream answer, carrying the credential provenance and the body-derived
@@ -848,6 +854,7 @@ mod shim {
             Outcome::Transient { retry_after },
             &resolve_cfg(""),
             now,
+            busbar_unit_breaker::clock::unix_time_nanos(),
             &super::tok(),
         );
     }
@@ -864,6 +871,7 @@ mod shim {
             Outcome::Success,
             &UnitCfg::default(),
             now,
+            busbar_unit_breaker::clock::unix_time_nanos(),
             &super::tok(),
         );
     }
