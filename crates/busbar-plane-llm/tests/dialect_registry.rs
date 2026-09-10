@@ -25,6 +25,7 @@ const FIXTURE: Dialect = Dialect {
     cache_write_pointer: None,
     scheme_alt: "bearer",
     egress_scheme: "bearer",
+    requires_max_response: false,
 };
 
 /// The one path this fixture claims, on a rung between two the plane still declares itself.

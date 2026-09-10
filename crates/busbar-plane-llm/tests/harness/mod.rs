@@ -243,6 +243,7 @@ pub const OPENAI: Dialect = Dialect {
     cache_write_pointer: None,
     scheme_alt: "bearer",
     egress_scheme: "bearer",
+    requires_max_response: false,
 };
 
 /// The fixture's rungs, at the numbers the real crate declares them.
@@ -296,6 +297,7 @@ pub const RESPONSES: Dialect = Dialect {
     cache_write_pointer: Some("/usage/input_tokens_details/cache_write_tokens"),
     scheme_alt: "bearer",
     egress_scheme: "bearer",
+    requires_max_response: false,
 };
 
 /// The fixture's rung, at the number the real crate declares it.

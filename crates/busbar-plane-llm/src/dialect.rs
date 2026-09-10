@@ -49,6 +49,13 @@ pub struct Dialect {
     pub scheme_alt: &'static str,
     /// The egress-auth scheme that decorates a request to an upstream of this dialect.
     pub egress_scheme: &'static str,
+    /// Whether this dialect's upstreams REFUSE a request that names no response ceiling.
+    ///
+    /// A column of the row rather than a question asked of the codec crate by name: the crossing
+    /// fills the ceiling in only when the destination dialect demands one, and the fact that it
+    /// demands one is the dialect's own declaration — read off the row the crossing is already
+    /// holding, so a dialect that registered by claim answers it the same way a declared one does.
+    pub requires_max_response: bool,
 }
 
 /// The top-level member the four body-carrying dialects name the model under.
@@ -76,6 +83,8 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cache_creation_input_tokens"),
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        // The one dialect of the six whose upstreams refuse a request with no ceiling.
+        requires_max_response: true,
     },
     // THE `openai` ROW IS NOT HERE, and its absence is the split. It lives in
     // `busbar-plane-llm-openai`, which registers it into this plane by claim; this crate no longer
@@ -94,6 +103,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "api-key",
         egress_scheme: "bearer",
+        requires_max_response: false,
     },
     Dialect {
         name: "bedrock",
@@ -107,6 +117,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: Some("/usage/cacheWriteInputTokens"),
         scheme_alt: "request-signature",
         egress_scheme: "request-signature",
+        requires_max_response: false,
     },
     // THE SECOND CARVED-OUT ROW IS NOT HERE EITHER. It went to `busbar-plane-llm-responses`, which
     // declares it and registers it into this plane by claim. It left with rung 10, and it left as
@@ -125,6 +136,7 @@ pub const DIALECTS: &[Dialect] = &[
         cache_write_pointer: None,
         scheme_alt: "bearer",
         egress_scheme: "bearer",
+        requires_max_response: false,
     },
 ];
 
@@ -132,16 +144,4 @@ pub const DIALECTS: &[Dialect] = &[
 #[must_use]
 pub fn dialect(name: &str) -> Option<&'static Dialect> {
     DIALECTS.iter().find(|d| d.name == name)
-}
-
-/// Whether a dialect refuses a request that names no response ceiling.
-///
-/// Read off the codec crate's own declaration rather than restated here, so the two cannot drift:
-/// this is the fact the request writer acts on, asked at its source.
-#[must_use]
-pub fn requires_max_response(name: &str) -> bool {
-    busbar_llm_codec::DECLS
-        .iter()
-        .find(|d| d.name == name)
-        .is_some_and(|d| d.requires_max_tokens)
 }
