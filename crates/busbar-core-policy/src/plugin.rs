@@ -1,27 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The engine-side glue that binds a `kind: hook` dlopen plugin to the routing seam: the
-//! [`HookProjectors`] the loader's [`busbar_plugin_loader::DlopenPolicy`] calls to (a) build the wire
-//! `payload` for each op from the borrowed projection and (b) parse the reply back through the
-//! engine's OWN fail-closed `hooks::wire` normalizers.
+//! The engine-side glue that binds a seated `kind: hook` plugin to the routing seam: the
+//! [`Projectors`] whatever the seat opens calls to (a) build the wire `payload` for each op from the
+//! borrowed projection and (b) parse the reply back through the engine's OWN fail-closed
+//! `hooks::wire` normalizers.
 //!
 //! This is what keeps the retired socket/webhook seam and the dlopen seam provably identical: the
 //! projection built here is byte-for-byte [`wire::build`]'s output, and the reply is parsed by the
 //! same [`wire::normalize`] / [`wire::transform_outcome`] / [`wire::parse_status_metrics`] the old
-//! transports used. The loader crate never depends on `hooks::wire` — it only calls these closures.
+//! transports used. Nothing behind the seat depends on `hooks::wire` — it only calls these closures.
 
+use super::seat::Projectors;
 use super::wire;
-use busbar_plugin_loader::hook::HookProjectors;
 use std::sync::Arc;
 
-/// Build the shared [`HookProjectors`] the engine installs on every [`DlopenPolicy`]. Constructed
-/// once at config load and cloned (behind the `Arc`) into each hook's `open_hook`. Stateless — every
+/// Build the shared [`Projectors`] the engine installs on every plugin the seat opens. Constructed
+/// once at config load and cloned (behind the `Arc`) into each hook's open. Stateless — every
 /// closure is a pure projection/parse over the request or the reply.
-///
-/// [`DlopenPolicy`]: busbar_plugin_loader::DlopenPolicy
-pub fn projectors() -> Arc<HookProjectors> {
-    Arc::new(HookProjectors {
+pub fn projectors() -> Arc<Projectors> {
+    Arc::new(Projectors {
         // decide: the full request projection (candidates + context). Byte-identical to what the
         // socket/webhook transports sent — `wire::build` serialized to an owned Value.
         decide: Box::new(|req, cands, ctx| {
@@ -70,7 +68,7 @@ pub fn projectors() -> Arc<HookProjectors> {
         // the caller's `on_error` disposes of (the `normalize` twin above does the same).
         transform_outcome: Box::new(|v| match serde_json::from_value::<wire::HookResponse>(v) {
             Ok(parsed) => wire::transform_outcome(parsed),
-            Err(e) => busbar_api::TransformOutcome::Failed {
+            Err(e) => busbar_contract::TransformOutcome::Failed {
                 message: format!("hook transform reply failed to parse: {e}"),
             },
         }),

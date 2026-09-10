@@ -134,7 +134,7 @@ rustls-pki-types = { workspace = true }
 # protocol-extraction step's job; this split is what makes it possible. Do not "fix" it here.
 default = ["auth-admin-tokens", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a"]
 auth-admin-tokens = ["dep:busbar-auth-admin-tokens"]
-hooks-ranking = ["dep:busbar-hooks-ranking", "busbar-core-policy/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hooks-ranking"]
 # THE MCP PLANE, in-core today (`src/mcp`), behind the SAME switch the binary already uses for MCP
 # the protocol codec (`busbar-mcp`): one plane-kind name for MCP-the-protocol and MCP-the-plane,
 # never two. Default-on — the shipped engine speaks MCP. With it OFF, `src/mcp` is compiled out and
@@ -232,11 +232,6 @@ test-support = ["busbar-substrate/test-support", "dep:rmcp", "dep:reqwest"]
 timing = ["busbar-timing/timing"]
 
 [dev-dependencies]
-# The plugin TARBALL fixture (`loader_fixtures`): a scratch plugins dir, a manifest at the loader's
-# own supported abi, and an unsigned-but-valid archive. Shared with the hook engine's battery, which
-# dlopens a real plugin from its own crate — one fixture, so the two batteries can never disagree
-# about what the loader accepts.
-busbar-plugin-testkit = { path = "../plugin-testkit", features = ["loader-fixtures"] }
 # The hook engine's transport-publish READINESS signal, which this crate's admin battery waits on
 # rather than betting a wall clock on the dynamic linker. Dev-only: production never links it.
 busbar-core-policy = { path = "../busbar-core-policy", features = ["test-support"] }

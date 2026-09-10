@@ -1,5 +1,7 @@
 use super::*;
+use busbar_core_policy::test_support::*;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 #[test]
 fn from_ranked_drops_unknown_and_dedups() {
@@ -96,24 +98,25 @@ pub(super) static DLOPEN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new
 /// spans awaits.
 pub(super) static DLOPEN_BODY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// `resolve_policy` with this build's ranking resolver, as production calls it.
+fn resolve_policy_native(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
+    resolve_policy(cfg, &super::seat::native_resolver())
+}
+
 fn test_env_needs(alias: &str, needs: busbar_plugin_sign::HookNeeds) -> Option<HookEnv> {
     // Poison-tolerant: a panicking test elsewhere must not cascade into every other dlopen test
     // reporting a lock error instead of its own result.
     let _staging_guard = DLOPEN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let lib = std::fs::read(hook_cdylib()?).expect("read hook cdylib");
-    let dir = busbar_plugin_testkit::loader_fixtures::tmp_plugin_dir(&format!("hook-env-{alias}"));
-    let mut m = busbar_plugin_testkit::loader_fixtures::plugin_manifest(
-        "busbar-hook-test-plugin",
-        alias,
-        "acme",
-    );
+    let dir = crate::tests::tmp_plugin_dir(&format!("hook-env-{alias}"));
+    let mut m = crate::tests::plugin_manifest("busbar-hook-test-plugin", alias, "acme");
     m.kind = "hook".into();
     m.abi_version = *busbar_plugin_loader::supported_abi("hook")
         .iter()
         .max()
         .expect("hook abi");
     m.needs = needs;
-    let tarball = busbar_plugin_testkit::loader_fixtures::unsigned_tarball(m, &lib);
+    let tarball = crate::tests::unsigned_tarball(m, &lib);
     std::fs::write(dir.join("hook.tar.gz"), tarball).unwrap();
     let mut policy = busbar_plugin_sign::TrustPolicy {
         binary_version: "1.5.0".into(),
@@ -306,7 +309,7 @@ fn native_policy_resolves_constructed_policy() {
         (PoolPolicy::Usage, "usage"),
     ] {
         let cfg = pool_policy(policy);
-        match resolve_policy(&cfg) {
+        match resolve_policy(&cfg, &super::seat::native_resolver()) {
             Some(ResolvedPolicy::Policy { policy, .. }) => {
                 assert_eq!(
                     policy.name(),
@@ -426,7 +429,7 @@ fn default_rw_hook_is_not_the_base_ordering() {
 #[test]
 fn weighted_policy_resolves_none_zero_cost() {
     assert!(
-        resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none(),
+        resolve_policy_native(&pool_policy(PoolPolicy::Weighted)).is_none(),
         "the weighted native must collapse to the zero-cost default path"
     );
 }
@@ -478,7 +481,7 @@ fn plugin_gate_resolves_constructed_policy() {
 /// The plain default (`policy: weighted`, no hook) stays the zero-cost `None` path.
 #[test]
 fn weighted_default_resolves_none() {
-    assert!(resolve_policy(&pool_policy(PoolPolicy::Weighted)).is_none());
+    assert!(resolve_policy_native(&pool_policy(PoolPolicy::Weighted)).is_none());
 }
 
 /// `on_error` resolution: a reserved terminal yields an EMPTY chain + that terminal; a gate
@@ -634,11 +637,12 @@ fn missing_plugin_gate_is_absent_not_stranded() {
 
 /// THE ABA HAZARD IN THE RESOLUTION CACHE, WRITTEN AS A TEST.
 ///
-/// `resolution::key` identifies a registry by its `Arc` ADDRESS, and a published entry outlives the
-/// registry it was resolved against. Nothing in the entry USED TO KEEP THAT ALLOCATION, so once the
-/// old registry was dropped its address was free, the very next `Arc<PluginRegistry>` the allocator
-/// handed out landed on it, and a resolution against a registry that had never heard of the plugin
-/// collided with the dead one's key and was served ITS transport.
+/// `resolution::key` identifies a plugin set by its SEAT's `Arc` ADDRESS (the seat is 1:1 with the
+/// registry it is bound over), and a published entry outlives the seat it was resolved against.
+/// Nothing in the entry USED TO KEEP THAT ALLOCATION, so once the old seat was dropped its address
+/// was free, the very next seat the allocator handed out landed on it, and a resolution against a
+/// registry that had never heard of the plugin collided with the dead one's key and was served ITS
+/// transport.
 ///
 /// That is the inverse of the property `missing_plugin_gate_is_absent_not_stranded` pins: a gate
 /// whose plugin is NOT installed must be absent, and here it would resolve — with a plugin image
@@ -661,16 +665,19 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
         1,
         "the plugin-backed gate resolves against the registry that carries it"
     );
-    let freed = std::sync::Arc::as_ptr(&env.registry) as usize;
+    let freed = std::sync::Arc::as_ptr(&env.seat) as *const () as usize;
     drop(env);
 
-    // Now hunt for a NEW, EMPTY registry that the allocator places on the freed allocation.
-    let mut keepalive: Vec<std::sync::Arc<busbar_plugin_loader::PluginRegistry>> = Vec::new();
+    // Now hunt for a NEW seat over an EMPTY registry that the allocator places on the freed
+    // allocation.
+    let mut keepalive: Vec<std::sync::Arc<super::seat::RegistrySeat>> = Vec::new();
     for _ in 0..4096 {
         let reg = std::sync::Arc::new(busbar_plugin_loader::PluginRegistry::empty());
-        if std::sync::Arc::as_ptr(&reg) as usize == freed {
-            let reused = HookEnv::new(
+        let seat = std::sync::Arc::new(super::seat::RegistrySeat(reg.clone()));
+        if std::sync::Arc::as_ptr(&seat) as *const () as usize == freed {
+            let reused = HookEnv::bound(
                 reg,
+                seat,
                 std::sync::Arc::new(crate::config::secret::SecretResolver::builtins_only()),
             );
             assert!(
@@ -681,7 +688,7 @@ fn a_reused_registry_address_never_inherits_a_dead_registrys_resolution() {
             );
             return;
         }
-        keepalive.push(reg);
+        keepalive.push(seat);
     }
     // Falling out of the loop is the ORDINARY outcome once the defect is fixed, not a skip: the
     // published entry holds a `Weak` to the dead registry, which pins its allocation, so the
@@ -810,7 +817,7 @@ fn rewrite_admission_requires_the_signed_manifest_rewrite_need() {
 /// `open_relay_banner`/`inert_durable_keys_banner` unit tests pin theirs.
 #[test]
 fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch() {
-    use busbar_plugin_sign::NeedLevel;
+    use busbar_core_policy::Need;
 
     // The exact bug scenario: `kind: gate`, operator `prompt: rw`, manifest only `ro`. Must banner,
     // loudly, naming the hook, the plugin, and both exclusion mechanisms.
@@ -818,7 +825,7 @@ fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch(
         "compliance-gate",
         "acme.compliance",
         HookKind::Gate,
-        NeedLevel::Ro,
+        Need::Ro,
     )
     .expect("a gate with a manifest-denied rw grant must produce a banner");
     assert!(
@@ -833,12 +840,12 @@ fn hook_inert_gate_banner_fires_only_for_a_gate_with_the_chain_killing_mismatch(
     );
 
     // Manifest declaring `no` need is the same story (absent `needs.prompt` deserializes to `No`).
-    assert!(hook_inert_gate_banner("g", "p", HookKind::Gate, NeedLevel::No).is_some());
+    assert!(hook_inert_gate_banner("g", "p", HookKind::Gate, Need::No).is_some());
 
     // A `kind: tap` hook was never in either admission chain to begin with — the same grant/manifest
     // mismatch on a tap is a fat-fingered grant (still warn-worthy), not a silent gate outage.
     assert!(
-        hook_inert_gate_banner("t", "p", HookKind::Tap, NeedLevel::Ro).is_none(),
+        hook_inert_gate_banner("t", "p", HookKind::Tap, Need::Ro).is_none(),
         "a tap never joins an admission chain, so it must not get the gate-outage banner"
     );
 }
@@ -1017,14 +1024,14 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
     h.prompt = PromptAccess::Rw;
 
     assert!(
-        !env.banner_seen.lock().unwrap().contains("h"),
+        !banner_seen(&env, "h"),
         "banner_seen must start empty for this name"
     );
     tracing::subscriber::with_default(sub, || {
         let _ = effective_access("h", &h, &env);
     });
     assert!(
-        env.banner_seen.lock().unwrap().contains("h"),
+        banner_seen(&env, "h"),
         "the FIRST call for an inert-rewrite gate must record the hook name in banner_seen \
          (proves the dedup guard's `.insert()` actually ran)"
     );
@@ -1069,7 +1076,7 @@ fn effective_access_inert_gate_rewrite_banner_fires_once_per_hook_name() {
         let _ = effective_access("clean", &h3, &env3);
     });
     assert!(
-        !env3.banner_seen.lock().unwrap().contains("clean"),
+        !banner_seen(&env3, "clean"),
         "a gate whose manifest matches its grant must never enter banner_seen"
     );
     assert!(
@@ -1298,7 +1305,7 @@ fn from_ranked_empty_is_abstain() {
 #[cfg(feature = "hooks-ranking")]
 #[test]
 fn native_resolve_forces_opt_in_flags_off() {
-    match resolve_policy(&pool_policy(PoolPolicy::Cheapest)) {
+    match resolve_policy_native(&pool_policy(PoolPolicy::Cheapest)) {
         Some(ResolvedPolicy::Policy {
             send_prompt,
             send_user,
@@ -1858,12 +1865,12 @@ fn a_hook_carrying_a_secret_ref_is_never_reused() {
         serde_json::json!({ "env": "BUSBAR_TEST_HOOK_LICENSE_KEY" }),
     );
     assert_eq!(
-        super::resolution::key("h", &with_secret, &env),
+        super::resolution_key("h", &with_secret, &env),
         None,
         "a SecretRef-carrying hook must be resolved fresh every time, never published for reuse"
     );
     assert!(
-        super::resolution::key("h", &base_gate(), &env).is_some(),
+        super::resolution_key("h", &base_gate(), &env).is_some(),
         "a hook with no secret indirection is eligible"
     );
 }
@@ -2258,7 +2265,7 @@ fn offload_bounded_returns_none_when_the_work_outlives_the_deadline() {
 /// warn distinctly from an ordinary "no resolvable transport" `None`.
 #[test]
 fn offload_bounded_logs_when_the_blocking_task_panics() {
-    use busbar_substrate_values::testkit::warn_capture::WarnCapture;
+    use crate::test_support::warn_capture::WarnCapture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -2330,7 +2337,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert!(
-        crate::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
+        crate::hooks::settings_drift_keys(&hook, Some(&in_sync)).is_empty(),
         "a hook running EXACTLY the pushed settings is not drifting — comparing the resolved echo \
          against the unresolved `SecretRef` made every secret-bearing hook report drift forever"
     );
@@ -2345,7 +2352,7 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .as_object()
     .unwrap()
     .clone();
-    let keys = crate::settings_drift_keys(&hook, Some(&drifted));
+    let keys = crate::hooks::settings_drift_keys(&hook, Some(&drifted));
     assert_eq!(
         keys,
         vec!["ratio".to_string()],
@@ -2366,13 +2373,13 @@ fn settings_drift_reports_only_key_names_and_never_resolves_a_secret() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::settings_drift_keys(&hook, Some(&literal_drift)),
+        crate::hooks::settings_drift_keys(&hook, Some(&literal_drift)),
         vec!["db".to_string()],
         "`{{ literal: … }}` is ordinary data, compared against its INNER value"
     );
 
     // A hook that reports no settings at all is fail-open, not drift.
-    assert!(crate::settings_drift_keys(&hook, None).is_empty());
+    assert!(crate::hooks::settings_drift_keys(&hook, None).is_empty());
 }
 
 /// `hook_status` is a POLLED async GET, so nothing it calls may resolve a secret.
@@ -2417,7 +2424,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     ] {
         let observed = echoed.as_object().unwrap().clone();
         assert!(
-            crate::settings_drift_keys(&hook, Some(&observed)).is_empty(),
+            crate::hooks::settings_drift_keys(&hook, Some(&observed)).is_empty(),
             "a SecretRef-valued field is never compared on the read path (and resolving it to \
              compare would be blocking FFI on a polled async GET): {observed:?}"
         );
@@ -2433,7 +2440,7 @@ fn settings_drift_never_compares_a_secret_ref_field() {
     .unwrap()
     .clone();
     assert_eq!(
-        crate::settings_drift_keys(&hook, Some(&observed)),
+        crate::hooks::settings_drift_keys(&hook, Some(&observed)),
         vec!["ratio".to_string()],
         "an ordinary field still drifts — the fix must not blind the endpoint"
     );
@@ -2505,7 +2512,9 @@ fn concurrent_push_configure_does_not_starve_the_runtime() {
     let tasks: Vec<_> = (0..4)
         .map(|_| {
             let (h, e) = (hook.clone(), env.clone());
-            rt.spawn(async move { crate::push_configure(&h, "compliance-gate", 1, &e).await })
+            rt.spawn(
+                async move { crate::hooks::push_configure(&h, "compliance-gate", 1, &e).await },
+            )
         })
         .collect();
     std::thread::sleep(std::time::Duration::from_millis(200));

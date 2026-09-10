@@ -28,20 +28,22 @@
 //! `busbar-core-policy`. The kernel SEATS a hook plugin after Admit; deciding WHICH hook runs, with
 //! WHICH grants, on WHICH terminal, from WHICH pool's configuration, is POLICY — and policy is
 //! core's, not the kernel's and not a plane's. Those are two different jobs and they were sharing
-//! one crate only because busbar-core was the only place there was.
+//! one crate only because the legacy crate was the only place there was.
 //!
 //! KIND ISOLATION is the standing constraint on this crate, and it is checkable rather than
 //! promised: read `Cargo.toml`. There is no plane crate in it, no dialect crate, no transport crate,
-//! and no `busbar-core`. The engine's entire vocabulary is the hook CONTRACT (`busbar_api`'s
+//! and not the legacy crate this engine was carved out of. The engine's entire vocabulary is the hook CONTRACT (`busbar_contract`'s
 //! `RoutingPolicy` and its read-only projections, plus `busbar_substrate::hooks::wire` for what goes
 //! out on the wire) and the config leaf structs the operator wrote. A request reaches the gate as an
 //! `IrFacts` projection and as nothing else. That is what "protocol-blind" means here: not that the
 //! code avoids saying "mcp", but that there is no type in scope that could say it.
 //!
-//! `hooks-ranking` stays a PLUGIN and is not pulled in here. Its native policy is called through the
-//! contract, exactly like a dlopened one; a built-in that the engine linked directly would be a
-//! second class of hook with a shorter path, and the first behavioural difference between the two
-//! would be one nobody could see in the config.
+//! The built-in ranking strategies stay a PLUGIN and are not linked here: the composition hands the
+//! engine a [`NativeResolver`] and the native policy is called through the contract, exactly like a
+//! dlopened one; a built-in that the engine linked directly would be a second class of hook with a
+//! shorter path, and the first behavioural difference between the two would be one nobody could
+//! see in the config. Likewise the LOADER: the engine reaches a plugin only through [`HookSeat`],
+//! its own port, which the composition binds a registry behind (see `seat`).
 //!
 //! # THE VOCABULARY MODULES BELOW
 //!
@@ -49,7 +51,7 @@
 //! `crate::session::…`, `crate::store::…` and `crate::limits::…` while it lived in busbar-core, and
 //! every one of those names now resolves to the neutral substrate. The four small modules at the
 //! foot of this file are those spellings, and they exist so the move could be BODY-FOR-BODY: a
-//! reviewer diffing this crate against the deleted `busbar_core::hooks` sees import lines and
+//! reviewer diffing this crate against the legacy crate's deleted `hooks` module sees import lines and
 //! nothing else. They re-export; they define no policy of their own.
 
 use std::sync::Arc;
@@ -72,17 +74,21 @@ fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
 /// own phase-2 reconcile (which also has a candidate set to reconcile) stays in `proxy::engine`.
 pub mod gate;
 pub mod plugin;
+/// THE SEAT: the port through which the engine reaches a `kind: hook` plugin, the projections it
+/// drives one with, and the built-in ranking resolver the composition hands in.
+pub mod seat;
+pub use seat::{DeclaredNeeds, HookSeat, NativeResolver, Need, Projectors};
 pub mod scrape;
 pub mod wire;
 
 // The HOOK CONTRACT — the `RoutingPolicy` trait and the read-only projections it is invoked with
-// (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — lives in the
-// `busbar-api` crate (the one crate both the engine and every plugin build against). Re-exported
+// (`RoutingRequest`, `Candidate`, `RoutingContext`, `RoutingDecision`, …) — is the CONTRACT's
+// (`busbar-contract`, the one crate both the engine and every plugin build against). Re-exported
 // here so engine-internal paths are unchanged.
 // `PolicyError`/`PolicyResult` are re-exported for the `#[cfg(test)]` hook-seam tests (which
 // implement `RoutingPolicy` against the engine's types); allow the unused-in-non-test warning.
 #[allow(unused_imports)]
-pub use busbar_api::{
+pub use busbar_contract::{
     CallerIdentity, Candidate, PolicyError, PolicyResult, PromptProjection, RoutingContext,
     RoutingDecision, RoutingPolicy, RoutingRequest,
 };
@@ -90,7 +96,10 @@ pub use busbar_api::{
 // `SignalBag` are re-exported here for the same reason the hook contract types above are: engine-
 // internal paths reference them as `crate::Signal` etc.
 #[allow(unused_imports)]
-pub use busbar_api::{Signal, SignalBag, SignalValue};
+pub use busbar_contract::{Signal, SignalBag, SignalValue};
+// The governance key's POSTURE a gate subject carries (`GateSubject::key`): the contract's shape
+// of a resolved key, re-exported so a firing site projects into the engine's own vocabulary.
+pub use busbar_contract::{KeyFacts, KeyScope};
 
 /// The per-generation, config-derived UNION of every hook's declared [`Signal`] set — a dense
 /// bitmask ("which catalog entries does ANYTHING configured on this generation want"), consulted
@@ -152,15 +161,23 @@ pub fn any_content_hook(hooks: &std::collections::HashMap<String, crate::config:
     hooks.values().any(|h| h.prompt.sends_prompt())
 }
 
-/// The plugin-resolution environment threaded through every hook-transport builder: the validated
-/// plugin registry (the ONLY resolution surface — a hook's `plugin:` ref opens a `DlopenPolicy`
-/// through it) and the shared [`HookProjectors`] every `DlopenPolicy` uses to project the request and
-/// parse the reply through the engine's own fail-closed `wire` normalizers. Cheap to clone (both are
-/// `Arc`-backed); replaces the old `&reqwest::Client` the retired webhook transport needed.
+/// The plugin-resolution environment threaded through every hook-transport builder: the [`HookSeat`]
+/// a hook's `plugin:` ref is resolved and opened through (the ONLY resolution surface), the shared
+/// [`Projectors`] every seated plugin is driven with — the request projected and the reply parsed
+/// through the engine's own fail-closed `wire` normalizers — and the built-in ranking resolver the
+/// composition handed in. Cheap to clone (everything is `Arc`-backed).
 #[derive(Clone)]
 pub struct HookEnv {
-    pub registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
-    pub projectors: std::sync::Arc<busbar_plugin_loader::hook::HookProjectors>,
+    /// Whatever seats a `kind: hook` plugin, behind the engine's own port. Its `Arc` ADDRESS is the
+    /// identity the single-flight resolution cache keys on (see [`resolution`]), so one seat is one
+    /// plugin set: a `plugins refresh` or a config reload installs a new one.
+    pub seat: std::sync::Arc<dyn HookSeat>,
+    /// The engine's projections, installed on every plugin the seat opens.
+    pub projectors: std::sync::Arc<Projectors>,
+    /// A built-in ranking strategy by name, or `None`. `|_| None` when the ranking plugin is
+    /// compiled out — `route: cheapest` is then a boot-time config error at validation, so the
+    /// arm that would ask is unreachable in a running server.
+    pub native: NativeResolver,
     /// The secret resolver used to turn any SecretRef-typed hook setting (e.g. a `licenseKey`) into
     /// its raw value BEFORE the settings cross the ABI at open/configure (ADR-0010). Shared with the
     /// store/auth open paths; the same fail-closed resolver.
@@ -178,15 +195,17 @@ pub struct HookEnv {
 }
 
 impl HookEnv {
-    /// Bundle a registry + the shared projectors + the secret resolver into the resolution
-    /// environment.
+    /// Bundle a seat + the built-in ranking resolver + the secret resolver into the resolution
+    /// environment; the projectors are the engine's own.
     pub fn new(
-        registry: std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
+        seat: std::sync::Arc<dyn HookSeat>,
+        native: NativeResolver,
         secret_resolver: std::sync::Arc<crate::config::secret::SecretResolver>,
     ) -> Self {
         HookEnv {
-            registry,
+            seat,
             projectors: plugin::projectors(),
+            native,
             secret_resolver,
             banner_seen: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashSet::new(),
@@ -263,7 +282,7 @@ impl HookEnv {
             // a plugin that actually resolves — `plugins_preflight` already loudly flags a
             // referenced-but-unloadable plugin, and a truly missing plugin degrades to "gate absent"
             // exactly as before. This is the DISTINCTION between absent (ok) and open()-failed (abort).
-            if self.registry.resolve(&hook.plugin).is_none() {
+            if self.seat.declared_needs(&hook.plugin).is_none() {
                 continue;
             }
             // The plugin IS present: resolve its (already-secret-substituted) settings and OPEN it.
@@ -273,8 +292,8 @@ impl HookEnv {
                 .resolve_hook_settings(&hook.settings)
                 .map_err(|e| format!("hook '{name}' settings: {e}"))?;
             let cfg_json = serde_json::Value::Object(resolved).to_string();
-            self.registry
-                .open_hook(&hook.plugin, &cfg_json, name, self.projectors.clone())
+            self.seat
+                .open(&hook.plugin, &cfg_json, name, &self.projectors)
                 .map_err(|e| {
                     format!(
                         "gate hook '{name}' (plugin '{}') failed to open; refusing to boot/reload \
@@ -306,17 +325,20 @@ pub use busbar_substrate::hooks::{FallbackHook, ResolvedPolicy};
 /// fire in the phase-2 decision reconcile — a gate's `order` overrides the base; its abstain falls
 /// through to the base. The resolved base is stored on `PoolRuntime::policy` and consumed
 /// per-request by `proxy::decide_policy_order`.
-pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
+pub fn resolve_policy(
+    cfg: &crate::config::PoolCfg,
+    native: &NativeResolver,
+) -> Option<ResolvedPolicy> {
     // `weighted` ⇒ the zero-cost default path (no policy object, inline SWRR) — byte-identical to
     // 1.2.1's `route: weighted` — so `native_name()` returns `None` here and we take the `?`
     // short-circuit BELOW regardless of the ranking feature.
     let name = cfg.policy.native_name()?;
-    // The non-weighted ranking strategies are the `hooks-ranking` plugin. When it's compiled OUT, a
+    // The non-weighted ranking strategies are the ranking PLUGIN, reached through the resolver the
+    // composition handed in. When it's compiled OUT the resolver answers `None` and a
     // `policy: cheapest` (etc.) is a config_validate BOOT ERROR, so this arm is unreachable in a
     // running server; degrade to None (SWRR) as belt-and-suspenders.
-    #[cfg(feature = "hooks-ranking")]
     {
-        let policy = busbar_hooks_ranking::native_policy(name)?;
+        let policy = native(name)?;
         Some(ResolvedPolicy::Policy {
             policy,
             on_error: crate::config::PolicyOnError::default(),
@@ -328,11 +350,6 @@ pub fn resolve_policy(cfg: &crate::config::PoolCfg) -> Option<ResolvedPolicy> {
             // A native ordering policy never restricts, so on_empty is inert; keep the fail-closed default.
             on_empty: crate::config::PolicyOnError::Reject,
         })
-    }
-    #[cfg(not(feature = "hooks-ranking"))]
-    {
-        let _ = name;
-        None
     }
 }
 
@@ -381,7 +398,7 @@ pub fn resolve_pool_ordering(
             }
         }
     }
-    resolve_policy(cfg)
+    resolve_policy(cfg, &env.native)
 }
 
 /// Resolve a pool's GATES (`hook:` / the non-strategy names in `hooks: [...]`) into their transports,
@@ -471,7 +488,7 @@ pub fn resolve_pool_rewrites(
 
 /// THE `on_error` DECORATOR for the READ-WRITE (transform) seat: wraps a resolved `prompt: rw`
 /// transport with the hook's configured `on_error` and maps a call that FAILED
-/// ([`TransformOutcome::Failed`](busbar_api::TransformOutcome::Failed)) to that disposition —
+/// ([`TransformOutcome::Failed`](busbar_contract::TransformOutcome::Failed)) to that disposition —
 /// `reject` refuses the unit, anything else proceeds with the ORIGINAL body.
 ///
 /// A DECORATOR rather than a branch at each firing site: the rewrite chain fires from four places
@@ -514,9 +531,9 @@ impl RoutingPolicy for RewriteOnError {
         &self,
         req: &RoutingRequest<'_>,
         budget: std::time::Duration,
-    ) -> busbar_api::TransformOutcome {
+    ) -> busbar_contract::TransformOutcome {
         match self.inner.transform(req, budget).await {
-            busbar_api::TransformOutcome::Failed { message } => {
+            busbar_contract::TransformOutcome::Failed { message } => {
                 if busbar_substrate::hooks::failed_call_refuses(&self.on_error) {
                     tracing::warn!(
                         hook = self.inner.name(),
@@ -527,7 +544,7 @@ impl RoutingPolicy for RewriteOnError {
                     // The hook's own words go to the OPERATOR's log, never into the refusal: what
                     // reaches the client is the shared, content-free body, the same one the
                     // read-only seat renders for the same condition.
-                    busbar_api::TransformOutcome::Reject {
+                    busbar_contract::TransformOutcome::Reject {
                         status: busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
                         message: busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
                             .to_string(),
@@ -536,7 +553,7 @@ impl RoutingPolicy for RewriteOnError {
                     // Not load-bearing: the request proceeds with the ORIGINAL body. The failure is
                     // carried on rather than swallowed, so the firing site still logs it as the
                     // failure it is — this decorator decides the DISPOSITION, not the diagnostics.
-                    busbar_api::TransformOutcome::Failed { message }
+                    busbar_contract::TransformOutcome::Failed { message }
                 }
             }
             other => other,
@@ -559,7 +576,7 @@ impl RoutingPolicy for RewriteOnError {
         self.inner.describe(budget).await
     }
 
-    async fn status(&self, budget: std::time::Duration) -> Option<busbar_api::HookStatus> {
+    async fn status(&self, budget: std::time::Duration) -> Option<busbar_contract::HookStatus> {
         self.inner.status(budget).await
     }
 
@@ -633,7 +650,7 @@ fn hook_inert_gate_banner(
     name: &str,
     plugin: &str,
     kind: crate::config::HookKind,
-    needs_prompt: busbar_plugin_sign::NeedLevel,
+    needs_prompt: Need,
 ) -> Option<String> {
     if kind != crate::config::HookKind::Gate {
         return None;
@@ -664,22 +681,20 @@ fn effective_access(
     env: &HookEnv,
 ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
     use crate::config::{PromptAccess, UserAccess};
-    use busbar_plugin_sign::NeedLevel;
 
     let grant_prompt = hook.prompt;
     let grant_user = hook.user;
-    let Some(p) = env.registry.resolve(&hook.plugin) else {
+    let Some(needs) = env.seat.declared_needs(&hook.plugin) else {
         return (grant_prompt, grant_user);
     };
-    let needs = &p.manifest.needs;
     // MEET on the ladder: the effective rung is the lower of the two declarations.
     let eff_prompt = match (grant_prompt, needs.prompt) {
-        (PromptAccess::No, _) | (_, NeedLevel::No) => PromptAccess::No,
-        (PromptAccess::Rw, NeedLevel::Rw) => PromptAccess::Rw,
+        (PromptAccess::No, _) | (_, Need::No) => PromptAccess::No,
+        (PromptAccess::Rw, Need::Rw) => PromptAccess::Rw,
         _ => PromptAccess::Ro,
     };
     let eff_user = match (grant_user, needs.user) {
-        (UserAccess::No, _) | (_, NeedLevel::No) => UserAccess::No,
+        (UserAccess::No, _) | (_, Need::No) => UserAccess::No,
         _ => UserAccess::Ro,
     };
     // Surface a fat-fingered grant that the manifest never declared: the projection is a no-op, but
@@ -752,8 +767,8 @@ fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> b
     effective_access(name, hook, env).0.can_rewrite()
 }
 
-/// Open the `kind: hook` PLUGIN backing this hook as a [`busbar_plugin_loader::DlopenPolicy`] — the
-/// in-process replacement for the retired socket/webhook transports. The plugin's opaque `settings:`
+/// Open the `kind: hook` PLUGIN backing this hook through the [`HookSeat`] — the in-process
+/// replacement for the retired socket/webhook transports. The plugin's opaque `settings:`
 /// map is its `open` config (verbatim JSON). `name` + `settings_version` are carried for diagnostics
 /// and the configure ack. `None` when the reference doesn't resolve to a loadable `kind: hook`
 /// plugin (the plugin pre-flight already fails boot on that, so a `None` here is a safety net that
@@ -781,7 +796,7 @@ fn gate_transport_named(
     let Some(key) = resolution::key(name, hook, env) else {
         return gate_transport_uncached(name, hook, env);
     };
-    let claim = match resolution::admit(key, &env.registry) {
+    let claim = match resolution::admit(key, &env.seat) {
         resolution::Admission::Published(hit) => return Some(hit),
         resolution::Admission::Claim(claim) => claim,
     };
@@ -821,8 +836,8 @@ fn gate_transport_uncached(
     };
     let cfg_json = serde_json::Value::Object(resolved.clone()).to_string();
     match env
-        .registry
-        .open_hook(&hook.plugin, &cfg_json, name, env.projectors.clone())
+        .seat
+        .open(&hook.plugin, &cfg_json, name, &env.projectors)
     {
         Ok(policy) => Some((policy, resolved)),
         Err(e) => {
@@ -853,9 +868,8 @@ type Resolved = (Arc<dyn RoutingPolicy>, ResolvedSettings);
 /// not O(size of the library). And this engine calls it on EVERY control-plane touch: per
 /// `push_configure`, per `fetch_status` (i.e. per `/metrics/hooks` scrape refresh, which a
 /// monitoring system performs on a fixed interval forever), per `fetch_schema`, per
-/// `resolve_on_error_chain`, per reload. `busbar_plugin_loader`'s own `intern_name` doc already
-/// names that list as the reason a per-open allocation had to be interned; the load itself was left
-/// alone.
+/// `resolve_on_error_chain`, per reload. The loader's own `intern_name` doc already names that
+/// list as the reason a per-open allocation had to be interned; the load itself was left alone.
 ///
 /// Measured on this tree, on the 2.1 MB `busbar-hook-test-plugin` cdylib (macOS, 18 cores), timing
 /// the `Library::new` call alone:
@@ -928,7 +942,7 @@ mod resolution {
         /// plugin set the operator has already replaced — the exact thing a `plugins refresh` or a
         /// config reload does to the old registry. Pinned by
         /// `a_reused_registry_address_never_inherits_a_dead_registrys_resolution`.
-        registry: std::sync::Weak<busbar_plugin_loader::PluginRegistry>,
+        seat: std::sync::Weak<dyn super::HookSeat>,
     }
 
     #[derive(Default)]
@@ -968,7 +982,7 @@ mod resolution {
         // reissuing that address to a different registry. This comment used to claim the resolving
         // closure's own `Arc` clone was enough; it is not — the closure's clone is gone the moment
         // the resolution returns, while the entry it published lives on.
-        (std::sync::Arc::as_ptr(&env.registry) as *const u8 as usize).hash(&mut h);
+        (std::sync::Arc::as_ptr(&env.seat) as *const () as usize).hash(&mut h);
         name.hash(&mut h);
         hook.plugin.hash(&mut h);
         serde_json::Value::Object(hook.settings.clone())
@@ -1039,10 +1053,7 @@ mod resolution {
     /// Takes the registry the key was computed over so the entry can hold it WEAKLY — see
     /// [`Entry::registry`]: that handle is what stops a dead registry's address being reissued to a
     /// different registry, which is what makes the key's registry half mean "this registry".
-    pub(super) fn admit(
-        key: u64,
-        registry: &std::sync::Arc<busbar_plugin_loader::PluginRegistry>,
-    ) -> Admission {
+    pub(super) fn admit(key: u64, seat: &std::sync::Arc<dyn super::HookSeat>) -> Admission {
         let (lock, cv) = state();
         let mut inner = lock.lock().unwrap_or_else(|p| p.into_inner());
         loop {
@@ -1063,7 +1074,7 @@ mod resolution {
                             seq,
                             in_flight: true,
                             value: None,
-                            registry: std::sync::Arc::downgrade(registry),
+                            seat: std::sync::Arc::downgrade(seat),
                         },
                     );
                     return Admission::Claim(Claim {
@@ -1107,7 +1118,7 @@ mod resolution {
         let dead: Vec<u64> = inner
             .entries
             .iter()
-            .filter(|(_, e)| !e.in_flight && e.registry.strong_count() == 0)
+            .filter(|(_, e)| !e.in_flight && e.seat.strong_count() == 0)
             .map(|(k, _)| *k)
             .collect();
         for k in dead {
@@ -1290,6 +1301,14 @@ async fn gate_transport_offloaded(
 // Reachable under `test-support`, not only under this crate's own `cfg(test)`: busbar-core's admin
 // battery waits on this readiness signal too, and a `cfg(test)` here would not exist for it. Inert
 // in a production build, where the feature is off and nothing links it.
+/// The single-flight resolution key for `(name, hook)` under `env`, or `None` when the hook is not
+/// eligible for reuse (a `SecretRef` in its settings). Reachable under `test-support` for the
+/// dlopen battery in busbar-core, which pins the cache's ABA property against it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolution_key(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> Option<u64> {
+    resolution::key(name, hook, env)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub async fn await_transport_published(
     name: &str,
@@ -1350,7 +1369,7 @@ pub async fn fetch_status(
     hook: &crate::config::HookCfg,
     settings_version: u64,
     env: &HookEnv,
-) -> Option<busbar_api::HookStatus> {
+) -> Option<busbar_contract::HookStatus> {
     let (transport, _resolved) =
         gate_transport_offloaded(name, hook, env, settings_version).await?;
     transport
@@ -1453,9 +1472,9 @@ fn resolve_on_error_chain<'a>(
             return (chain, terminal);
         }
         // A built-in ranking strategy: sync, no I/O, cannot fail — one link, then done. Compiled
-        // out, the name falls through to the registry lookup below (and validation errored at boot).
-        #[cfg(feature = "hooks-ranking")]
-        if let Some(policy) = busbar_hooks_ranking::native_policy(current) {
+        // out, the resolver answers `None` and the name falls through to the hook lookup below
+        // (and validation errored at boot).
+        if let Some(policy) = (env.native)(current) {
             chain.push(FallbackHook {
                 policy,
                 timeout: policy_timeout(crate::config::DEFAULT_POLICY_TIMEOUT_MS),
@@ -1634,7 +1653,7 @@ pub fn resolve_gate_hooks(
 
 /// THE ADDITIVE-LIST COMBINE RULE — relocated to the neutral seam (`busbar_substrate::plane::config`)
 /// beside the [`ContainerGateInputs`](busbar_substrate::plane::config::ContainerGateInputs) it folds,
-/// so an extracted plane crate reaches it without naming `busbar_core::hooks`. Re-exported here so
+/// so an extracted plane crate reaches it without naming the legacy crate. Re-exported here so
 /// `crate::attach_list` (this module's [`resolve_container_gates`], and the A2A twin) is
 /// unchanged.
 // Referenced only from the protocol planes' container-gate resolution; with none installed
@@ -1733,8 +1752,6 @@ pub(crate) mod config {
     // One more of the same vocabulary that only the BATTERY spells: the pool's declared strategy.
     // Production reaches it through the resolvers above; the tests name it to build the config they
     // resolve.
-    #[cfg(test)]
-    pub(crate) use busbar_substrate::config::pools::PoolPolicy;
     pub(crate) use busbar_substrate::config::secret;
     pub(crate) use busbar_substrate::config::PolicyOnError;
 }
@@ -1758,7 +1775,7 @@ pub(crate) mod store {
 }
 
 /// The one installed LIMIT the engine reads. Deliberately the SAME process-global slot
-/// `busbar_core::limits` reads — `busbar_substrate::config::limits::installed()` — rather than a
+/// the legacy crate's `limits` reads — `busbar_substrate::config::limits::installed()` — rather than a
 /// second copy: an operator who raises `limits.default_policy_timeout_ms` must not find that half
 /// the process observed it.
 pub(crate) mod limits {
@@ -1770,9 +1787,91 @@ pub(crate) mod limits {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/tests.rs"]
-mod tests;
+/// THE ENGINE INTERNALS THE DLOPEN BATTERY REACHES. That battery lives in busbar-core beside the
+/// seat adapter (the claim "the plugin answered this" is about adapter + loader + engine together),
+/// and it pins engine behaviour that has no public face: the grant MEET, the inert-gate banner and
+/// its de-dup guard, the single-flight resolution, the bounded offload. Reachable under
+/// `test-support` only; inert in a production build, where the feature is off and nothing links it.
+/// Wrappers rather than widened visibility, so the internals stay internal.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use super::*;
+
+    /// [`super::resolve_gate_transport`].
+    pub fn resolve_gate_transport(
+        name: &str,
+        hook: &crate::config::HookCfg,
+        hooks: &std::collections::HashMap<String, crate::config::HookCfg>,
+        env: &HookEnv,
+        settings_version: u64,
+    ) -> Option<ResolvedPolicy> {
+        super::resolve_gate_transport(name, hook, hooks, env, settings_version)
+    }
+    /// [`super::effective_access`].
+    pub fn effective_access(
+        name: &str,
+        hook: &crate::config::HookCfg,
+        env: &HookEnv,
+    ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
+        super::effective_access(name, hook, env)
+    }
+    /// [`super::projection_grants`].
+    pub fn projection_grants(
+        name: &str,
+        hook: &crate::config::HookCfg,
+        env: &HookEnv,
+    ) -> (bool, bool) {
+        super::projection_grants(name, hook, env)
+    }
+    /// [`super::hook_inert_gate_banner`].
+    pub fn hook_inert_gate_banner(
+        name: &str,
+        plugin: &str,
+        kind: crate::config::HookKind,
+        needs_prompt: Need,
+    ) -> Option<String> {
+        super::hook_inert_gate_banner(name, plugin, kind, needs_prompt)
+    }
+    /// Has `name` already emitted its inert-gate banner under `env`?
+    pub fn banner_seen(env: &HookEnv, name: &str) -> bool {
+        env.banner_seen
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(name)
+    }
+    /// [`super::gate_transport_named`].
+    #[allow(clippy::type_complexity)]
+    pub fn gate_transport_named(
+        name: &str,
+        hook: &crate::config::HookCfg,
+        env: &HookEnv,
+        settings_version: u64,
+    ) -> Option<(
+        Arc<dyn RoutingPolicy>,
+        serde_json::Map<String, serde_json::Value>,
+    )> {
+        super::gate_transport_named(name, hook, env, settings_version)
+    }
+    /// [`super::policy_timeout`].
+    pub fn policy_timeout(timeout_ms: u64) -> std::time::Duration {
+        super::policy_timeout(timeout_ms)
+    }
+    /// [`super::offload_bounded`].
+    pub async fn offload_bounded<T: Send + 'static>(
+        what: &str,
+        f: impl FnOnce() -> Option<T> + Send + 'static,
+    ) -> Option<T> {
+        super::offload_bounded(what, f).await
+    }
+    /// [`super::offload_bounded_with_deadline`].
+    pub async fn offload_bounded_with_deadline<T: Send + 'static>(
+        what: &str,
+        deadline: std::time::Duration,
+        f: impl FnOnce() -> Option<T> + Send + 'static,
+    ) -> Option<T> {
+        super::offload_bounded_with_deadline(what, deadline, f).await
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/limits_tests.rs"]
