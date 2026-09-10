@@ -16,59 +16,16 @@
 /// documented by Anthropic as their server-overloaded signal (distinct from 503).
 const HTTP_OVERLOADED: u16 = 529;
 
-/// Protocol-neutral, dialect-normalized status class.
-/// Emitted by Stage 1 normalizer (the per-protocol classifier) in src/proto/.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusClass {
-    /// Rate limit / slow down — transient, may recover with retry-after
-    RateLimit,
-    /// Overloaded server — transient
-    Overloaded,
-    /// Server error (5xx) — transient
-    ServerError,
-    /// Request timeout — transient
-    Timeout,
-    /// Network failure — transient
-    Network,
-    /// Authentication failure (401/403) — hard down, key invalid
-    Auth,
-    /// Billing / insufficient balance — hard down, account issue
-    Billing,
-    /// Client error (4xx other than 401/403) — client fault, do not penalize lane
-    ClientError,
-    /// Request exceeds this model's context window — the LANE is healthy; fail over (ideally to
-    /// a larger-context model) WITHOUT penalizing the breaker.
-    ContextLength,
-}
-
-/// Final disposition that drives the LaneRuntime write path.
-/// Per ADR-0002 +:
-///   - ClientFault: caller's bad input → relay verbatim, record NOTHING
-///   - TransientUpstream: transient failure → cooldown + err counter
-///   - HardDown: definitive signal → permanent dead state (with probe recovery)
-///   - ContextLength: request too big for this model → fail over, record NOTHING (lane healthy)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Disposition {
-    ClientFault,
-    TransientUpstream,
-    HardDown,
-    ContextLength,
-}
+/// The status class and the disposition, as the contract owns them.
+///
+/// Both used to be declared HERE, and again in two unit crates, with the labels kept in step by
+/// hand. They are one table now — `busbar_contract::upstream` — and this crate names the rows
+/// rather than re-spelling them; every reader that matched on `breaker::StatusClass` still does.
+pub use busbar_contract::upstream::{Disposition, StatusClass};
 
 /// Convert a string to StatusClass. Returns None for unknown values.
 pub fn status_class_from_str(s: &str) -> Option<StatusClass> {
-    match s {
-        "rate_limit" => Some(StatusClass::RateLimit),
-        "overloaded" => Some(StatusClass::Overloaded),
-        "server_error" => Some(StatusClass::ServerError),
-        "timeout" => Some(StatusClass::Timeout),
-        "network" => Some(StatusClass::Network),
-        "auth" => Some(StatusClass::Auth),
-        "billing" => Some(StatusClass::Billing),
-        "client_error" => Some(StatusClass::ClientError),
-        "context_length" => Some(StatusClass::ContextLength),
-        _ => None,
-    }
+    StatusClass::parse(s)
 }
 
 /// Warn (once per distinct value) that an operator `error_map` entry maps to a string that is not a
@@ -94,20 +51,10 @@ fn warn_unrecognized_error_map_value(value: &str) {
     }
 }
 
-/// Classify a CanonicalSignal into a disposition.
-/// EXHAUSTIVE match on StatusClass — NO `_ =>` allowed.
+/// Classify a CanonicalSignal into a disposition — the disposition column of the contract's table.
 /// Per ADR-0002: ClientFault never counted; HardDown immediate trip.
 pub fn classify(sig: &CanonicalSignal) -> Disposition {
-    match sig.class {
-        StatusClass::RateLimit
-        | StatusClass::Overloaded
-        | StatusClass::ServerError
-        | StatusClass::Timeout
-        | StatusClass::Network => Disposition::TransientUpstream,
-        StatusClass::Auth | StatusClass::Billing => Disposition::HardDown,
-        StatusClass::ClientError => Disposition::ClientFault,
-        StatusClass::ContextLength => Disposition::ContextLength,
-    }
+    sig.class.disposition()
 }
 
 /// Raw upstream error extracted from HTTP response (Stage 1a output).

@@ -1498,7 +1498,7 @@ count = "939"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1169"
+count = "1166"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1943,7 +1943,7 @@ count = "60"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "282"
+count = "281"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -2888,7 +2888,7 @@ count = "59"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "unit"
-count = "51"
+count = "47"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"
@@ -3169,6 +3169,171 @@ note = "segment scanner 54, window scanner 59. The two read the brand and acrony
 crate = "busbar-unit-transport-key"
 kind = "transport"
 note = "segment scanner 105, window scanner 106. The two read the brand and acronym spellings differently: `gRPC` splits at its own camel joint for the segment scanner and reads whole for the window scanner, and `A2AService` is the mirror case. The scored count is the higher, never the lower, and it falls to zero with the hits."
+
+
+# ── THE DIALECT COLUMN, MINTED AT ITS MEASUREMENT ─────────────────────────────────────────────────
+# The dialect kind's instance vocabulary (`openai`, `responses`) became countable when R6 registered
+# the first two dialect crates, and every cell below is that column (plus the two R6 crates' own
+# `plane` cell and plugin-testkit's `control`/`legacy` cells from the kinds battery R6 extended).
+# None of these rows existed at the base, so `ceiling-rose` compares nothing for them; each is the
+# number the matrix measured on keep-status-table, which names no file the matrix lists for any of
+# them. They are minted by hand because `--write` refuses to write while the matrix is red, and the
+# matrix was red for exactly the rows it would have written.
+
+[[cell]]
+crate = "busbar"
+kind = "dialect"
+count = "417"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "dialect"
+count = "22"
+
+[[cell]]
+crate = "busbar-api"
+kind = "dialect"
+count = "17"
+
+[[cell]]
+crate = "busbar-contract"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-core"
+kind = "dialect"
+count = "579"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "dialect"
+count = "216"
+
+[[cell]]
+crate = "busbar-llm-codec"
+kind = "dialect"
+count = "97"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "dialect"
+count = "87"
+
+[[cell]]
+crate = "busbar-mcp-codec"
+kind = "dialect"
+count = "5"
+
+[[cell]]
+crate = "busbar-plane-a2a"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-plane-llm"
+kind = "dialect"
+count = "10"
+
+[[cell]]
+crate = "busbar-plane-llm-openai"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-llm-openai"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-plane-llm-responses"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-mcp"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-plane-voice"
+kind = "dialect"
+count = "12"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "control"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-secret-ref"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-substrate"
+kind = "dialect"
+count = "173"
+
+[[cell]]
+crate = "busbar-substrate-values"
+kind = "dialect"
+count = "50"
+
+[[cell]]
+crate = "busbar-timing"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-unit-breaker"
+kind = "dialect"
+count = "5"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-unit-trust"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-voice"
+kind = "dialect"
+count = "17"
+
+[[cell]]
+crate = "busbar-voice-codec"
+kind = "dialect"
+count = "14"
 
 
 # ------------------------------------------------------------------------------------------------
@@ -4492,6 +4657,21 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
 why     = "busbar-substrate names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+# NEW ON keep-status-table, and declared by identity (`dep.busbar-substrate-values.busbar-contract.shipped`)
+# rather than by slot: the pure half of the substrate names the contract for ONE reason — the upstream
+# status class and its disposition now have a single owner, `busbar_contract::upstream`, and this
+# crate's `breaker` module re-exports the rows it used to declare a second copy of. The edge class
+# (`substrate -> contract`) is already granted; what this row adds is the NUMBER, 1.
+[[dep]]
+from    = "busbar-substrate-values"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-substrate-values names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
