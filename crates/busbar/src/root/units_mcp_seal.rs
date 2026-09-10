@@ -22,8 +22,12 @@
 //! seal and a cell about a step to be judging different deployments, which is the thing the shared
 //! fixture exists to prevent. They reach these names through the re-export, unchanged.
 
-use busbar_contract::ids::{OpClassId, RecordSchemaId};
-use busbar_contract::plane::PlaneMeta;
+use busbar_contract::{
+    ids::{OpClassId, RecordSchemaId},
+    plane::PlaneMeta,
+    transport::check_surface,
+    transport::SurfaceError,
+};
 use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
 use busbar_plane_mcp::{claims, records, McpPlane};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
@@ -82,7 +86,7 @@ pub enum MountRefusal {
     ///
     /// The vocabulary's own check, asked here: an operation nothing can address, two rows at one
     /// address, a malformed mount, or a dispatch naming a binding the surface does not declare.
-    SurfaceRefused(busbar_contract::transport::SurfaceError),
+    SurfaceRefused(SurfaceError),
 }
 
 impl std::fmt::Display for MountRefusal {
@@ -186,8 +190,7 @@ pub fn seal(plane: &McpPlane) -> Result<Vec<(OpClassId, Scope)>, MountRefusal> {
     }
 
     // ── THE SERVED SURFACE, asked of the vocabulary that will mount it ───────────────────────────
-    busbar_contract::transport::check_surface(&busbar_plane_mcp::surface::SURFACE)
-        .map_err(MountRefusal::SurfaceRefused)?;
+    check_surface(&busbar_plane_mcp::surface::SURFACE).map_err(MountRefusal::SurfaceRefused)?;
 
     // ── WHAT THE PLANE SAYS IT ANSWERS, against what it declares ─────────────────────────────────
     for op in busbar_plane_mcp::served::ANSWERED {

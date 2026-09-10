@@ -9,8 +9,15 @@
 
 use super::*;
 
-use busbar_contract::grammar::{PathSeg, Selector};
+use busbar_contract::{
+    grammar::{PathSeg, Selector},
+    ids::LaneId,
+};
+use busbar_kernel::teller::Kernel;
 use busbar_plane_mcp::claims;
+use busbar_unit_auth::{Auth, AuthChain};
+use busbar_unit_ledger::legacy::RecordingRows;
+use busbar_unit_trust::{lane::BreakerView, net::Denylist, net::GuardPolicy, Unavailable};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   WHAT IS CLAIMED IS THE PLANE'S OWN TABLE, AND NOTHING BESIDE IT
@@ -164,7 +171,7 @@ fn a_mounted_surface(calls: Arc<SurfaceCalls>) -> axum::Router {
 /// The registration these cells' node carries.
 static ONE_SERVER: &[busbar_plane_mcp::Server] = &[busbar_plane_mcp::Server {
     id: "fs",
-    lane: busbar_contract::ids::LaneId::new("fs-lane"),
+    lane: LaneId::new("fs-lane"),
     host: "127.0.0.1:9",
     transport: claims::TRANSPORT_HTTP,
 }];
@@ -172,24 +179,19 @@ static ONE_SERVER: &[busbar_plane_mcp::Server] = &[busbar_plane_mcp::Server {
 /// A breaker that benches nothing, so a cell about the mount is not also a cell about readiness.
 struct EveryLaneOpen;
 
-impl busbar_unit_trust::lane::BreakerView for EveryLaneOpen {
+impl BreakerView for EveryLaneOpen {
     fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
         true
     }
-    fn try_admit(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _now: u64,
-    ) -> Result<(), busbar_unit_trust::Unavailable> {
+    fn try_admit(&self, _pool: &str, _lane: usize, _now: u64) -> Result<(), Unavailable> {
         Ok(())
     }
 }
 
 /// Every source the leg needs, with the auth chain the caller asks for.
 fn sources_with_chain(
-    kernel: &busbar_kernel::teller::Kernel,
-    auth: busbar_unit_auth::Auth,
+    kernel: &Kernel,
+    auth: Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
 ) -> crate::root::units_mcp_leg::McpLegSources<'_> {
     use busbar_unit_admission::{Door, GroupTable, InMemoryCells, Pricer};
@@ -199,11 +201,11 @@ fn sources_with_chain(
         auth: Some(auth),
         auth_bindings: Some(auth_bindings),
         breaker: Some(Arc::new(EveryLaneOpen)),
-        guard: Some(busbar_unit_trust::net::GuardPolicy {
+        guard: Some(GuardPolicy {
             allow_private: true,
-            ..busbar_unit_trust::net::GuardPolicy::default()
+            ..GuardPolicy::default()
         }),
-        denylist: Some(busbar_unit_trust::net::Denylist::default()),
+        denylist: Some(Denylist::default()),
         door: Some(Door::new(InMemoryCells::new())),
         groups: Some(GroupTable::default()),
         pricer: Some(Pricer::flat(0)),
@@ -218,7 +220,7 @@ fn sources_with_chain(
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_unit_wal::NullShipper::new()),
-                Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+                Box::new(RecordingRows::new()),
             )
             .expect("a memory-buffered journal cannot fail to open"),
         ))),
@@ -230,8 +232,8 @@ fn sources_with_chain(
 }
 
 /// A leg with an OPEN chain, for the cells that are about the path rather than about the door.
-fn an_open_leg(kernel: &busbar_kernel::teller::Kernel) -> Arc<McpLeg> {
-    let auth = busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false));
+fn an_open_leg(kernel: &Kernel) -> Arc<McpLeg> {
+    let auth = Auth::new(AuthChain::new(Vec::new(), false));
     let bindings = crate::root::kernel::auth_bindings::AuthBindings::without_directory();
     Arc::new(
         McpLeg::assemble(sources_with_chain(kernel, auth, bindings))
@@ -285,12 +287,12 @@ async fn through(
 /// encoded frame would serve every operation of this protocol under one status with no headers.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_unit_of_this_plane_travels_through_the_loop_and_the_surfaces_answer_reaches_the_wire() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
@@ -323,12 +325,12 @@ async fn a_unit_of_this_plane_travels_through_the_loop_and_the_surfaces_answer_r
 /// The character that would otherwise decide whether a request is gated.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_trailing_slash_form_travels_the_same_loop() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
@@ -352,12 +354,12 @@ async fn the_trailing_slash_form_travels_the_same_loop() {
 /// answered. The fallback status is what says it went around.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_path_this_plane_does_not_claim_goes_straight_to_the_surface() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
@@ -375,12 +377,12 @@ async fn a_path_this_plane_does_not_claim_goes_straight_to_the_surface() {
 /// question rather than the first.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_method_this_plane_does_not_name_is_answered_by_the_surface_and_not_by_the_loop() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
@@ -414,12 +416,12 @@ async fn a_method_this_plane_does_not_name_is_answered_by_the_surface_and_not_by
 /// open this surface.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_discovery_document_is_claimed_and_is_served_by_the_surface() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
@@ -440,12 +442,12 @@ async fn the_discovery_document_is_claimed_and_is_served_by_the_surface() {
 /// rather than being buffered into this node's memory on the way to being rejected anyway.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_body_over_the_operators_cap_goes_straight_to_the_surface() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         Arc::new(crate::root::data_plane::NodeParts::new()),
         // One byte, which every well-formed request of this protocol exceeds.
         1,

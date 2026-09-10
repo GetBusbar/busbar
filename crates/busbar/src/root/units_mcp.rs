@@ -82,9 +82,11 @@ pub use busbar_unit_trust::net::Resolver;
 // re-declared: the callers in this file and its tests already name it here, and one seam that two
 // planes hand to one guard is exactly the thing that must not exist twice.
 pub use crate::root::registrations::{KindRules, Kinds, NetSeam};
+use busbar_unit_admission::{budget_window, window::WINDOW_DAY};
 use busbar_unit_usage::{
     meter as fold_usage, KernelCounts, LegDeclaration, LocatedValue, Metered, RetainedLocatorValues,
 };
+use busbar_unit_usage::{KernelLine, MeterPolicy};
 
 /// The resource kind a registered server is judged as at the approve step.
 ///
@@ -944,7 +946,7 @@ pub fn located_values(op: OpClassId, response_bytes: u64) -> Vec<LocatedValue> {
 pub fn meter(
     retained: &RetainedLocatorValues,
     kernel: &KernelCounts,
-    policy: &busbar_unit_usage::MeterPolicy,
+    policy: &MeterPolicy,
     token: &UsageToken,
 ) -> Result<Metered, busbar_caps::UsageError> {
     fold_usage(retained, kernel, policy, &leg_declaration(), token)
@@ -1096,10 +1098,7 @@ pub fn settle(
     let key = balance(principal);
     let settling = crate::root::durability::Settling {
         key: &key,
-        window: busbar_unit_admission::budget_window(
-            busbar_unit_admission::window::WINDOW_DAY,
-            at.wall,
-        ),
+        window: budget_window(WINDOW_DAY, at.wall),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering
         // step's, and that is the step a durability loss here is attributed to.
@@ -2205,7 +2204,7 @@ impl Units for McpUnits<'_> {
         let retained = RetainedLocatorValues::new(located_values(op, answered));
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
         // beside the located figure, never the charge.
-        let kernel = KernelCounts::new(vec![busbar_unit_usage::KernelLine {
+        let kernel = KernelCounts::new(vec![KernelLine {
             class: CLASS_BYTES,
             quantity: self.draft.request_bytes,
             source: busbar_caps::QuantitySource::KernelBytes { divisor: 1 },

@@ -3,6 +3,20 @@
 //! private items it always did.
 
 use super::*;
+use busbar_caps::{
+    Canary, Hold, HoldCell, OriginKind, Outcome, PrincipalId, ReasonCode, StepName, UnitKey,
+};
+use busbar_contract::{
+    ids::LaneId, ids::OpClassId, transport::facts::METHOD, transport::facts::PATH,
+    transport::Arrival, transport::Bar,
+};
+use busbar_kernel::{
+    registry::Generation, slice::ConcurrencyGauge, slice::LeaseCell, teller::AccrualMeter,
+};
+use busbar_unit_auth::AuthChain;
+use busbar_unit_ledger::legacy::RecordingRows;
+use busbar_unit_scope::required_scope;
+use busbar_unit_trust::Unavailable;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   EVERY BINDING HAS A SOURCE, AND THE TABLE IS CHECKED AGAINST THE STRUCT
@@ -81,7 +95,7 @@ fn every_binding_of_the_unit_has_a_row_in_the_source_table() {
 /// The registration every cell below is written against.
 static ONE_SERVER: &[busbar_plane_mcp::Server] = &[busbar_plane_mcp::Server {
     id: "fs",
-    lane: busbar_contract::ids::LaneId::new("fs-lane"),
+    lane: LaneId::new("fs-lane"),
     host: "127.0.0.1:9",
     transport: claims::TRANSPORT_HTTP,
 }];
@@ -98,12 +112,7 @@ impl BreakerView for EveryLaneOpen {
     fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
         true
     }
-    fn try_admit(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _now: u64,
-    ) -> Result<(), busbar_unit_trust::Unavailable> {
+    fn try_admit(&self, _pool: &str, _lane: usize, _now: u64) -> Result<(), Unavailable> {
         Ok(())
     }
 }
@@ -113,10 +122,7 @@ fn all_sources(kernel: &Kernel) -> McpLegSources<'_> {
     McpLegSources {
         plane: McpPlane::new(ONE_SERVER),
         kernel,
-        auth: Some(Auth::new(busbar_unit_auth::AuthChain::new(
-            Vec::new(),
-            false,
-        ))),
+        auth: Some(Auth::new(AuthChain::new(Vec::new(), false))),
         auth_bindings: Some(AuthBindings::without_directory()),
         breaker: Some(Arc::new(EveryLaneOpen)),
         guard: Some(GuardPolicy {
@@ -136,7 +142,7 @@ fn all_sources(kernel: &Kernel) -> McpLegSources<'_> {
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_unit_wal::NullShipper::new()),
-                Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+                Box::new(RecordingRows::new()),
             )
             .expect("a memory-buffered journal cannot fail to open"),
         ))),
@@ -294,12 +300,9 @@ fn the_leg_keeps_no_captured_rate_and_reads_the_live_card() {
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 /// One arrival, as a mount publishes it: the reserved facts, the body, and the composed stack.
-fn arrival_at<'a>(
-    facts: &'a [(&'static str, &'a str)],
-    body: &'a [u8],
-) -> busbar_contract::transport::Arrival<'a> {
+fn arrival_at<'a>(facts: &'a [(&'static str, &'a str)], body: &'a [u8]) -> Arrival<'a> {
     static CHAIN: [&str; 2] = ["tcp", "http"];
-    busbar_contract::transport::Arrival {
+    Arrival {
         facts,
         body,
         transport: claims::TRANSPORT_HTTP,
@@ -307,18 +310,15 @@ fn arrival_at<'a>(
         // The address named no operation: this is a MOUNT, and which operation these bytes are is
         // the plane's to say off the document.
         operation: None,
-        bar: busbar_contract::transport::Bar::Open,
+        bar: Bar::Open,
     }
 }
 
 /// The facts an ordinary request on this plane's mount publishes.
 fn mounted_facts() -> Vec<(&'static str, &'static str)> {
     vec![
-        (
-            busbar_contract::transport::facts::PATH,
-            claims::DEFAULT_MOUNT,
-        ),
-        (busbar_contract::transport::facts::METHOD, "POST"),
+        (PATH, claims::DEFAULT_MOUNT),
+        (METHOD, "POST"),
         ("peer", "127.0.0.1:1"),
     ]
 }
@@ -339,10 +339,7 @@ impl CountingSurface {
 const SURFACE_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the surface"}}"#;
 
 impl crate::root::transports::MountDispatch for CountingSurface {
-    fn execute(
-        &self,
-        _op: busbar_contract::ids::OpClassId,
-    ) -> crate::root::transports::MountedReply {
+    fn execute(&self, _op: OpClassId) -> crate::root::transports::MountedReply {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         axum::http::Response::builder()
             .status(200)
@@ -368,20 +365,16 @@ fn serve(
     dispatch: Option<&dyn crate::root::transports::MountDispatch>,
 ) -> (Ended, Option<crate::root::transports::PlaneAnswer>) {
     let facts = mounted_facts();
-    let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
-        &kernel.admit_token(),
-        busbar_caps::PrincipalId::new(""),
-        0,
-    ));
-    let leases = busbar_kernel::slice::LeaseCell::new();
-    let meter = busbar_kernel::teller::AccrualMeter::new();
-    let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
-    let canary = busbar_caps::Canary::new();
+    let cell = HoldCell::new(Hold::open(&kernel.admit_token(), PrincipalId::new(""), 0));
+    let leases = LeaseCell::new();
+    let meter = AccrualMeter::new();
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
     let ctx = UnitCtx {
-        key: busbar_caps::UnitKey::new(1),
-        origin: busbar_caps::OriginKind::Client,
+        key: UnitKey::new(1),
+        origin: OriginKind::Client,
         session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
+        generation: Generation::FIRST,
         admin_listener: false,
         kernel_verb_only: false,
     };
@@ -424,7 +417,7 @@ fn the_leg_walks_one_arrival_through_the_loop_and_the_surfaces_answer_comes_back
     };
     assert_eq!(
         end.outcome(),
-        busbar_caps::Outcome::Completed,
+        Outcome::Completed,
         "every one of the twelve answered"
     );
     assert_eq!(surface.asked(), 1, "the surface is asked exactly once");
@@ -475,10 +468,7 @@ fn a_body_this_plane_cannot_name_is_recognised_as_not_ours_and_never_executed() 
     };
     assert_eq!(
         end.outcome(),
-        busbar_caps::Outcome::Refused(
-            busbar_caps::StepName::Decode,
-            busbar_caps::ReasonCode::DecodeFailed
-        )
+        Outcome::Refused(StepName::Decode, ReasonCode::DecodeFailed)
     );
     assert_eq!(surface.asked(), 0);
     assert!(answer.is_none());
@@ -496,20 +486,16 @@ fn the_driven_path_runs_the_same_twelve_and_produces_no_bytes() {
     let kernel = a_kernel();
     let leg = McpLeg::assemble(all_sources(&kernel)).expect("every source is present");
     let facts = mounted_facts();
-    let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
-        &kernel.admit_token(),
-        busbar_caps::PrincipalId::new(""),
-        0,
-    ));
-    let leases = busbar_kernel::slice::LeaseCell::new();
-    let meter = busbar_kernel::teller::AccrualMeter::new();
-    let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
-    let canary = busbar_caps::Canary::new();
+    let cell = HoldCell::new(Hold::open(&kernel.admit_token(), PrincipalId::new(""), 0));
+    let leases = LeaseCell::new();
+    let meter = AccrualMeter::new();
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
     let ctx = UnitCtx {
-        key: busbar_caps::UnitKey::new(1),
-        origin: busbar_caps::OriginKind::Client,
+        key: UnitKey::new(1),
+        origin: OriginKind::Client,
         session: None,
-        generation: busbar_kernel::registry::Generation::FIRST,
+        generation: Generation::FIRST,
         admin_listener: false,
         kernel_verb_only: false,
     };
@@ -529,7 +515,7 @@ fn the_driven_path_runs_the_same_twelve_and_produces_no_bytes() {
     let Ended::Settled { end, frame, .. } = &ended else {
         panic!("the unit settled here: {ended:?}");
     };
-    assert_eq!(end.outcome(), busbar_caps::Outcome::Completed);
+    assert_eq!(end.outcome(), Outcome::Completed);
     assert!(
         frame.as_ref().is_none_or(|f| f.bytes.as_slice().is_empty()),
         "no surface behind the walk, so nothing was written"
@@ -587,7 +573,7 @@ fn the_leg_declares_a_scope_for_every_class_the_plane_has() {
     );
     for op in answered_classes() {
         assert!(
-            busbar_unit_scope::required_scope(claim_key(), *op, &policy).is_some(),
+            required_scope(claim_key(), *op, &policy).is_some(),
             "{op} is a class this plane says it ANSWERS, and the policy is silent about it"
         );
     }

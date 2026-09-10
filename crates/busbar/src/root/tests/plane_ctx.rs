@@ -5,7 +5,7 @@
 
 use super::*;
 
-use busbar_contract::transport::surface::Bar;
+use busbar_contract::{transport::surface::Bar, ARENA_BYTES};
 
 /// One arrival's facts, in the order a mount publishes them: reserved keys first.
 const FACTS: &[(&str, &str)] = &[
@@ -59,7 +59,7 @@ fn the_context_reads_the_arrival_and_reserved_keys_win() {
 /// The arena on the context is the kernel's own, at the contract's own ceiling — not a double.
 ///
 /// This is the whole reason a production context could not be built before: every implementor of
-/// `busbar_contract::bounded::Arena` in the tree was a test's, and a plane handed one of those was
+/// `Arena` in the tree was a test's, and a plane handed one of those was
 /// being handed something that leaked. What a plane allocates here comes out of 4 KiB that lives on
 /// this call's stack, and asking for more than that is refused rather than served.
 #[test]
@@ -72,12 +72,12 @@ fn the_arena_is_the_kernels_and_refuses_past_its_ceiling() {
             .expect("a short answer fits");
         assert_eq!(written.as_slice(), b"{\"jsonrpc\":\"2.0\"}");
 
-        let over = vec![b'x'; busbar_contract::ARENA_BYTES];
+        let over = vec![b'x'; ARENA_BYTES];
         let refused = ctx
             .arena()
             .alloc_bytes(&over)
             .expect_err("more than the whole arena is refused");
-        assert_eq!(refused.wanted, busbar_contract::ARENA_BYTES);
+        assert_eq!(refused.wanted, ARENA_BYTES);
     });
 }
 
@@ -91,13 +91,13 @@ fn each_arrival_gets_its_own_space() {
     let a = arrival(b"{}");
     with_ctx(&a, clock(), |ctx| {
         ctx.arena()
-            .alloc_bytes(&vec![b'a'; busbar_contract::ARENA_BYTES])
+            .alloc_bytes(&vec![b'a'; ARENA_BYTES])
             .expect("the whole arena fits, once");
     });
     with_ctx(&a, clock(), |ctx| {
         let zeroed = ctx
             .arena()
-            .alloc_bytes(&vec![0u8; busbar_contract::ARENA_BYTES])
+            .alloc_bytes(&vec![0u8; ARENA_BYTES])
             .expect("the next arrival has the whole arena again");
         assert!(
             zeroed.as_slice().iter().all(|b| *b == 0),

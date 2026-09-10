@@ -85,7 +85,9 @@ use busbar_caps::{
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_contract::{LaneId, Registration, UnitKey};
+use busbar_contract::{
+    Direction, FinishClass, FrameMeta, LaneId, Registration, SlabBytes, StreamId, UnitKey,
+};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
@@ -94,6 +96,10 @@ pub(crate) use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, A
 use busbar_substrate_values::{
     proxy::KIND_OVERLOADED, proxy::KIND_PERMISSION, proxy::POOL_LABEL_UNRESOLVED,
     store::now as store_now, store::now_ms,
+};
+use busbar_unit_admission::{budget_window, window::WINDOW_DAY};
+use busbar_unit_ledger::{
+    totals::BucketId, totals::BucketScope, totals::CapDimension, totals::TotalsKey,
 };
 
 /// The transport stack every request on this plane arrives over.
@@ -1522,10 +1528,10 @@ impl Units for LlmUnit<'_> {
         Decision::proceed(
             token,
             busbar_caps::Frame {
-                direction: busbar_contract::Direction::Outbound,
-                stream: busbar_contract::StreamId(0),
-                bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b""[..])),
-                meta: busbar_contract::FrameMeta::default(),
+                direction: Direction::Outbound,
+                stream: StreamId(0),
+                bytes: SlabBytes::new(std::sync::Arc::from(&b""[..])),
+                meta: FrameMeta::default(),
             },
         )
     }
@@ -1576,9 +1582,9 @@ impl Units for LlmUnit<'_> {
                 status: None,
                 finish: status.map(|s| {
                     if (200..300).contains(&s) {
-                        busbar_contract::FinishClass::Complete
+                        FinishClass::Complete
                     } else {
-                        busbar_contract::FinishClass::Error
+                        FinishClass::Error
                     }
                 }),
             },
@@ -1637,11 +1643,11 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
 /// The caller rather than the pool, because the kernel's posting is the unit's — what the POOL spent
 /// is the governance ledger's figure and is already moved there by the walk's tap. Two figures, two
 /// books, neither a second spelling of the other.
-fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
-    busbar_unit_ledger::totals::TotalsKey::new(
-        busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
-        busbar_unit_ledger::totals::CapDimension::NanoUnits,
-        busbar_unit_ledger::totals::BucketScope::All,
+fn balance(principal: &PrincipalId) -> TotalsKey {
+    TotalsKey::new(
+        BucketId::new(principal.as_str()),
+        CapDimension::NanoUnits,
+        BucketScope::All,
     )
 }
 
@@ -1702,16 +1708,13 @@ pub fn settle_lent(
 /// splitting anything for: a second copy of this would be a second answer to which window a unit is
 /// billed in, and the two doors would be a mounted request and a driven one billed differently.
 fn settling<'a>(
-    key: &'a busbar_unit_ledger::totals::TotalsKey,
+    key: &'a TotalsKey,
     arrived: Arrived,
     token: &'a busbar_caps::DurabilityToken,
 ) -> crate::root::durability::Settling<'a> {
     crate::root::durability::Settling {
         key,
-        window: busbar_unit_admission::budget_window(
-            busbar_unit_admission::window::WINDOW_DAY,
-            arrived.secs(),
-        ),
+        window: budget_window(WINDOW_DAY, arrived.secs()),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.

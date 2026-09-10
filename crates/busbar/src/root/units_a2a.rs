@@ -80,10 +80,19 @@ use busbar_contract::unit::{FinishClass, ResourceLocator};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_plane_a2a::{ops, records};
-use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
+use busbar_unit_admission::{
+    budget_window, window::WINDOW_DAY, Admission as _, AdmissionUnit, BucketChain, CellStore,
+    ClassEstimate, Door, Estimate, Pricer,
+};
 use busbar_unit_audit::{Audit as _, AuditInputs};
 use busbar_unit_auth::{Auth, AuthRequest};
+use busbar_unit_ledger::{
+    totals::BucketId, totals::BucketScope, totals::CapDimension, totals::TotalsKey,
+};
 use busbar_unit_scope::{Grants, Scope};
+use busbar_unit_trust::{
+    destination_guard, net::check_destination_facts, Denylist, NetworkRefusal, PinnedTarget,
+};
 use busbar_unit_trust::{
     kind_permitted, kind_rule_passes, BreakerQuery, BreakerView, GuardPolicy, KindFacts,
     OriginKind, PoolView, Resolver,
@@ -905,7 +914,7 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// How far the network guard lets this plane's hops reach.
     pub guard: GuardPolicy,
     /// The deployment's additions to and carve-outs from the metadata denylist.
-    pub denylist: &'r busbar_unit_trust::Denylist,
+    pub denylist: &'r Denylist,
     /// The agents whose cards an operator has approved, by configured name.
     ///
     /// The pin itself is decided in the A2A plugin, where the JWS issuer key and the approved
@@ -927,7 +936,7 @@ pub struct A2aBindings<'r, S: CellStore> {
     /// node's configuration does not have, whose caps therefore could not be read. A caller bound
     /// to no group at all — the ordinary posture for a deployment with no `groups:` section — has a
     /// perfectly good chain of one uncapped attribution bucket, and gets it.
-    pub chain: Option<&'r busbar_unit_admission::BucketChain>,
+    pub chain: Option<&'r BucketChain>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
     /// What the deployment's card charges for a byte of the priced document, in nano-units.
@@ -1090,11 +1099,11 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// in; the ledger keeps it. An uncapped attribution bucket is still a balance, which is the
     /// point — a deployment that configured no group still has one figure per principal.
     #[must_use]
-    pub fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
-        busbar_unit_ledger::totals::TotalsKey::new(
-            busbar_unit_ledger::totals::BucketId::new(principal.as_str()),
-            busbar_unit_ledger::totals::CapDimension::NanoUnits,
-            busbar_unit_ledger::totals::BucketScope::All,
+    pub fn balance(principal: &PrincipalId) -> TotalsKey {
+        TotalsKey::new(
+            BucketId::new(principal.as_str()),
+            CapDimension::NanoUnits,
+            BucketScope::All,
         )
     }
 
@@ -1124,10 +1133,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
         let key = Self::balance(principal);
         let at = crate::root::durability::Settling {
             key: &key,
-            window: busbar_unit_admission::budget_window(
-                busbar_unit_admission::window::WINDOW_DAY,
-                self.bindings.now,
-            ),
+            window: budget_window(WINDOW_DAY, self.bindings.now),
             durability: token,
             // The loop has no exit step of its own; the figure this posting is OF is the metering
             // step's, and that is the step a durability loss here is attributed to.
@@ -1164,11 +1170,9 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     pub fn verified_lanes(&self, origin: OriginKind) -> Result<Vec<LaneId>, Refusal> {
         // Guard one, two and three: the pool's allow-list, every fallback pool reachable from it,
         // and the unpriced-name gate.
-        if let Err(refusal) = busbar_unit_trust::destination_guard(
-            self.bindings.pools,
-            self.bindings.pool,
-            UNPRICED_MESSAGE,
-        ) {
+        if let Err(refusal) =
+            destination_guard(self.bindings.pools, self.bindings.pool, UNPRICED_MESSAGE)
+        {
             return Err(Refusal::new(refusal.kind.reason()));
         }
 
@@ -1262,7 +1266,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     /// [`fee_could_land`], which reads the same evidence the settlement reads.
     fn estimate(&self, origin: busbar_caps::OriginKind) -> Estimate {
         Estimate {
-            per_class: vec![busbar_unit_admission::ClassEstimate {
+            per_class: vec![ClassEstimate {
                 class: CLASS_BYTES.as_str().to_string(),
                 quantity: self.draft.request_bytes,
                 max_unit_price_nanos: self.bindings.bytes_nanos,
@@ -1944,18 +1948,12 @@ pub fn guard_destination(
     candidate: &DestinationFacts,
     resolver: &dyn Resolver,
     policy: GuardPolicy,
-    denylist: &busbar_unit_trust::Denylist,
-) -> Result<Option<busbar_unit_trust::PinnedTarget>, busbar_unit_trust::NetworkRefusal> {
-    match busbar_unit_trust::net::check_destination_facts(
-        candidate,
-        &[],
-        resolver,
-        policy,
-        denylist,
-    ) {
+    denylist: &Denylist,
+) -> Result<Option<PinnedTarget>, NetworkRefusal> {
+    match check_destination_facts(candidate, &[], resolver, policy, denylist) {
         // Only an upstream is dialled at an address. Every other kind reaches its destination
         // without one, so "this is not an upstream" is this caller's pass, not its refusal.
-        Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => Ok(None),
+        Err(NetworkRefusal::NotAnUpstream) => Ok(None),
         other => other,
     }
 }

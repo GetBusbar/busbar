@@ -5,7 +5,7 @@
 //!
 //! Three things the design draws have, until now, existed in the tree only as test doubles: an
 //! implementor of `busbar_kernel::teller::Units`, an implementor of
-//! `busbar_kernel::inflight::ArrivalDoor`, and a live `busbar_contract::Registration`. This file is
+//! `busbar_kernel::inflight::ArrivalDoor`, and a live `Registration`. This file is
 //! where the production ones live, and it is the only place in the workspace entitled to name all
 //! fourteen units at once.
 //!
@@ -55,17 +55,20 @@ pub use super::auth_bindings;
 
 use std::sync::{Arc, LazyLock, Mutex};
 
+use busbar_caps::{AdminToken, ReasonCode, StepName, TrustToken};
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
     Meter, Outcome, PrincipalId, Refusal, Route, UnitToken, UsageToken, VerifiedDestination,
     Verify,
 };
+use busbar_contract::{AuditFacts, FinishClass, OpClassId, Registration};
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_unit_admission::{Door, InMemoryCells};
 use busbar_unit_auth::{Auth, AuthChain};
 use busbar_unit_egress::EgressUnit;
+use busbar_unit_ledger::{legacy::LegacyRows, legacy::RecordingRows};
 use busbar_unit_trust::Trust;
 
 /// Take the kernel's seal. Boot only, once per process.
@@ -87,8 +90,8 @@ pub fn new_kernel() -> busbar_kernel::teller::Kernel {
 /// rather than a variant of the rule. [`crate::root::vocabulary`] is what enforces the "exactly
 /// once, and never after boot" half.
 #[must_use]
-pub fn new_registration() -> busbar_contract::Registration {
-    busbar_contract::Registration::new()
+pub fn new_registration() -> Registration {
+    Registration::new()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -493,25 +496,19 @@ impl ArrivalDoor for AdmissionDoor {
 pub struct RefusingStore;
 
 impl busbar_unit_verbs::store::Store for RefusingStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    fn chain_break(&self, _admin: &AdminToken) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
     }
 
     fn store_restore(
         &self,
-        _admin: &busbar_caps::AdminToken,
+        _admin: &AdminToken,
         _backup_ref: &str,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
     }
 
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
+    fn reseal_epoch_floor(&self, _admin: &AdminToken) -> Result<(), busbar_unit_verbs::StoreError> {
         Err(busbar_unit_verbs::StoreError::Failed)
     }
 
@@ -602,7 +599,7 @@ pub struct ProductionUnits {
     /// Minted once, at boot, from the node's one authority — the second token in the tree minted
     /// outside the loop, for the same reason as the first: a kernel verb is a Route destination
     /// rather than a step, so no step's token stands in for it.
-    pub admin_token: busbar_caps::AdminToken,
+    pub admin_token: AdminToken,
 }
 
 impl ProductionUnits {
@@ -712,7 +709,7 @@ impl ProductionUnits {
         // the node; the read half stays here so the ledger views have somewhere to read the
         // previous release's rows from. They are the same rows because they are the same value —
         // a second recorder would be a second answer to what the dual write wrote.
-        let rows = busbar_unit_ledger::legacy::RecordingRows::new();
+        let rows = RecordingRows::new();
         ProductionUnits::admin_only_over(dispatch, Box::new(rows.clone()), Arc::new(rows))
     }
 
@@ -727,7 +724,7 @@ impl ProductionUnits {
     #[must_use]
     pub fn admin_only_over(
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
-        write: Box<dyn busbar_unit_ledger::legacy::LegacyRows>,
+        write: Box<dyn LegacyRows>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
     ) -> Self {
         let durability = crate::root::durability::build(
@@ -866,7 +863,7 @@ impl Units for ProductionUnits {
         if self.is_admin(ctx) {
             return crate::root::units_admin::arrival(&self.admin, token, ctx);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
     }
 
     fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
@@ -874,7 +871,7 @@ impl Units for ProductionUnits {
         if self.is_admin(ctx) {
             return crate::root::units_admin::decode(&self.admin, token, ctx);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
+        Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
     }
 
     fn authenticate(
@@ -892,16 +889,13 @@ impl Units for ProductionUnits {
                 ctx,
             );
         }
-        Decision::refuse(
-            token,
-            Refusal::new(busbar_caps::ReasonCode::Unauthenticated),
-        )
+        Decision::refuse(token, Refusal::new(ReasonCode::Unauthenticated))
     }
 
     fn verify(
         &self,
         token: &UnitToken<Verify>,
-        _trust: &busbar_caps::TrustToken,
+        _trust: &TrustToken,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
@@ -909,7 +903,7 @@ impl Units for ProductionUnits {
         if self.is_admin(ctx) {
             return crate::root::units_admin::verify(&self.admin, token, ctx, principal);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
     }
 
     fn approve(
@@ -930,7 +924,7 @@ impl Units for ProductionUnits {
                 destinations,
             );
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::ScopeDenied))
+        Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied))
     }
 
     fn admit(
@@ -955,7 +949,7 @@ impl Units for ProductionUnits {
                 destinations,
             );
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
     }
 
     fn route(
@@ -975,7 +969,7 @@ impl Units for ProductionUnits {
                 meter,
             );
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::NoDestination))
+        Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
     }
 
     fn meter(
@@ -989,7 +983,7 @@ impl Units for ProductionUnits {
         if self.is_admin(ctx) {
             return crate::root::units_admin::meter(token, usage, ctx, provisional);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::Unpriced))
+        Decision::refuse(token, Refusal::new(ReasonCode::Unpriced))
     }
 
     fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
@@ -1030,7 +1024,7 @@ impl Units for ProductionUnits {
             // without one never came from a decision; the door itself is the latest step it could
             // have been raised at, which is a truer answer than a fixed sentinel.
             unclaimed_facts(&Outcome::Refused(
-                refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+                refusal.step().unwrap_or(StepName::Admit),
                 refusal.reason(),
             )),
         )
@@ -1046,7 +1040,7 @@ impl Units for ProductionUnits {
         if self.is_admin(ctx) {
             return crate::root::units_admin::encode(&self.admin, token, ctx, outcome);
         }
-        Decision::refuse(token, Refusal::new(busbar_caps::ReasonCode::DecodeFailed))
+        Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
@@ -1075,13 +1069,13 @@ const OP_UNCLAIMED: &str = "unclaimed";
 /// configuration page, and a record that says it was is wrong about the one thing an audit record
 /// exists to state. Nothing here is derived from the administrative plane, because nothing about this unit
 /// is administrative.
-fn unclaimed_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
-    busbar_contract::AuditFacts {
-        op_class: busbar_contract::OpClassId::new(OP_UNCLAIMED),
+fn unclaimed_facts(outcome: &Outcome) -> AuditFacts {
+    AuditFacts {
+        op_class: OpClassId::new(OP_UNCLAIMED),
         finish: if outcome.is_completed() {
-            busbar_contract::FinishClass::Complete
+            FinishClass::Complete
         } else {
-            busbar_contract::FinishClass::Error
+            FinishClass::Error
         },
     }
 }

@@ -8,9 +8,11 @@
 
 use super::*;
 
+use busbar_caps::OriginKind;
 use busbar_contract::transport::surface::{
     Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
 };
+use busbar_unit_auth::chain::KEYS_MODULE;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   A SURFACE THAT IS NOBODY'S PLANE
@@ -297,7 +299,7 @@ fn a_data_plane_unit_is_not_an_administrative_one() {
         !verb_only,
         "a unit of an ordinary plane is not a kernel verb"
     );
-    assert_eq!(origin, busbar_caps::OriginKind::Client);
+    assert_eq!(origin, OriginKind::Client);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
@@ -313,7 +315,7 @@ fn a_data_plane_unit_is_not_an_administrative_one() {
 fn a_chain_naming_the_signed_key_arm_resolves_with_the_arm_on() {
     let chain = data_chain(&[ChainPosition {
         provider: "primary",
-        module: busbar_unit_auth::chain::KEYS_MODULE,
+        module: KEYS_MODULE,
     }])
     .expect("the built-in arm is resolvable at every composition");
     assert!(
@@ -350,7 +352,7 @@ fn a_position_this_composition_cannot_resolve_refuses_by_name() {
     let refusal = data_chain(&[
         ChainPosition {
             provider: "primary",
-            module: busbar_unit_auth::chain::KEYS_MODULE,
+            module: KEYS_MODULE,
         },
         ChainPosition {
             provider: "corporate-idp",

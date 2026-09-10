@@ -81,7 +81,10 @@ use crate::root::durability::Durability;
 use crate::root::mount_ingress::BootIngress;
 use crate::root::units_llm::LlmNode;
 use busbar_api::{operation::Operation, PlaneRequestCtx, VirtualKey};
+use busbar_contract::plane::PlaneMeta;
+use busbar_kernel::{teller::Ended, teller::Kernel};
 use busbar_substrate_values::store::now as store_now;
+use busbar_unit_ledger::legacy::RecordingRows;
 
 /// The one dialect these cells speak, and the address its ladder rung names.
 const PROTO: &str = busbar_llm::proto_codec::PROTO_OPENAI;
@@ -165,7 +168,7 @@ fn a_book() -> Arc<Mutex<Durability>> {
         crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
-            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+            Box::new(RecordingRows::new()),
         )
         .expect("a memory-buffered journal cannot fail to open"),
     ))
@@ -212,7 +215,7 @@ async fn mounted(streamed: bool) -> Mounted {
         router: mount(
             a_surface_underneath(),
             Arc::new(leg),
-            busbar_kernel::teller::Kernel::new(),
+            Kernel::new(),
             std::sync::Arc::new(crate::root::data_plane::NodeParts::new()),
             1024 * 1024,
         ),
@@ -593,7 +596,7 @@ async fn one_request_each_way() -> Option<(
     let router = mount(
         a_surface_underneath(),
         Arc::new(leg),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         Arc::new(crate::root::data_plane::NodeParts::new()),
         1024 * 1024,
     );
@@ -649,7 +652,7 @@ async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_pos
         200,
         "the unit ran and the answer is the plane's own"
     );
-    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+    let Ended::Settled { end, .. } = &ended else {
         panic!("a unit that ran ends Settled; `AlreadySettled` here would be a lie");
     };
     assert!(
@@ -664,7 +667,7 @@ async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_pos
 
 /// This plane's key, as the registry spells it. Not a literal: the row the boot reads carries the
 /// plane's own declared key, and a second spelling here is a second answer to which plane this is.
-const THIS_PLANE: &str = <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::KEY;
+const THIS_PLANE: &str = <busbar_plane_llm::LlmPlane as PlaneMeta>::KEY;
 
 /// **RED FIRST: the shipped binary composed no mount at all.**
 ///

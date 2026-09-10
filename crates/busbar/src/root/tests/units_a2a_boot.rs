@@ -3,6 +3,8 @@
 //! private items it always did.
 
 use super::*;
+use busbar_unit_auth::chain::KEYS_MODULE;
+use busbar_unit_cost::nano_rate;
 
 /// One configured agent, at whatever posture a cell wants to state.
 fn agent(name: &str, allow_private: bool, approved: bool) -> DeclaredAgent {
@@ -228,7 +230,7 @@ fn a_deployment_that_named_no_position_gets_the_door_it_configured() {
 #[test]
 fn a_named_position_travels_with_its_provider_and_its_module() {
     let declared = [
-        config::AuthChainEntry::bare(busbar_unit_auth::chain::KEYS_MODULE),
+        config::AuthChainEntry::bare(KEYS_MODULE),
         config::AuthChainEntry::bare("corporate-idp"),
     ];
     assert_eq!(
@@ -296,10 +298,7 @@ fn a_configured_rate_card_reaches_the_metering_policy_as_a_price_per_lane() {
     let built = meter_config(&BTreeMap::new(), &prices);
     assert_eq!(built.prices.len(), 1);
     assert_eq!(built.prices[0].lane, "one");
-    assert_eq!(
-        built.prices[0].price,
-        u128::from(busbar_unit_cost::nano_rate(3.0))
-    );
+    assert_eq!(built.prices[0].price, u128::from(nano_rate(3.0)));
 }
 
 /// **Two boots on one configuration build ONE policy.**

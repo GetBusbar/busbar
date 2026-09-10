@@ -6,11 +6,16 @@ use super::*;
 // The three the shared view (`crate::root::registrations`) reads and this file's cells still name.
 // Spelled at their definition site rather than through the implementation file, so the import that
 // makes a cell compile is the same import a reader follows to find what it is asserting about.
-use busbar_unit_trust::lane::BreakerQuery;
-use busbar_unit_trust::net::{Denylist, GuardPolicy};
+use busbar_unit_trust::{
+    lane::BreakerQuery,
+    net::{Denylist, GuardPolicy},
+    Unavailable,
+};
 // The implementation file stopped naming it when the boot seal moved out; the group-table fixture
 // below still builds one, so the import belongs where the construction is.
 use busbar_api::{MeteringDelta, MeteringRow, ScopeRef, StoreResult, UsageLedger, VirtualKey};
+use busbar_unit_admission::{budget_window, window::WINDOW_DAY, GroupTable};
+use busbar_unit_ledger::legacy::RecordingRows;
 use std::collections::BTreeMap;
 
 /// A resolver that answers every name with one public address.
@@ -564,12 +569,7 @@ fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
         fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
             lane != self.0
         }
-        fn try_admit(
-            &self,
-            _pool: &str,
-            _lane: usize,
-            _now: u64,
-        ) -> Result<(), busbar_unit_trust::Unavailable> {
+        fn try_admit(&self, _pool: &str, _lane: usize, _now: u64) -> Result<(), Unavailable> {
             Ok(())
         }
     }
@@ -1210,7 +1210,7 @@ fn memory_durability() -> crate::root::durability::Durability {
     crate::root::durability::build(
         &crate::root::durability::DurabilityConfig { data_dir: None },
         Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        Box::new(RecordingRows::new()),
     )
     .expect("a memory-buffered journal cannot fail to open")
 }
@@ -1270,7 +1270,7 @@ fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
 ///
 /// Built through the interner the root uses at boot, so the name the slot records is the same
 /// static the vocabulary holds rather than one this fixture invented.
-fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+fn one_call_at_a_time(group: &str) -> GroupTable {
     let groups = BTreeMap::from([(
         group.to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -1415,10 +1415,7 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
     assert!(settled.overdraft.is_none());
 
     let key = balance(&who);
-    let window = busbar_unit_admission::budget_window(
-        busbar_unit_admission::window::WINDOW_DAY,
-        1_700_000_000,
-    );
+    let window = budget_window(WINDOW_DAY, 1_700_000_000);
     let figures = durability.ledger.book().get(&key, window);
     assert_eq!(figures.settled, 400);
     assert_eq!(figures.open_slice_remainders, 600, "the residual goes back");
@@ -1729,12 +1726,7 @@ impl BreakerView for EveryLaneOpen {
     fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
         true
     }
-    fn try_admit(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _now: u64,
-    ) -> Result<(), busbar_unit_trust::Unavailable> {
+    fn try_admit(&self, _pool: &str, _lane: usize, _now: u64) -> Result<(), Unavailable> {
         Ok(())
     }
 }

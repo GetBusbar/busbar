@@ -42,6 +42,7 @@ use std::sync::Arc;
 
 use crate::root::plane_mount::{self, MountedLeg, MEDIA_JSON};
 use crate::root::units_llm_leg::LlmLeg;
+use busbar_contract::{grammar::Claim, plane::PlaneMeta, transport::Arrival};
 
 /// Whether one path is an address THIS plane claims.
 ///
@@ -96,7 +97,7 @@ pub fn media_type() -> &'static str {
 ///
 /// It used to live in the MOVE, with no flag and no check. A borrow cannot carry that, because a
 /// reference can be taken twice. So it is a REFUSAL: the end that owns the posting lends it once.
-/// What the type still carries is the other half — `busbar_caps::PostingLent` has a private field
+/// What the type still carries is the other half — `PostingLent` has a private field
 /// and comes out of exactly one place, so a settlement that takes a borrow cannot be reached from a
 /// `&Posted` anybody happened to be holding.
 ///
@@ -111,17 +112,17 @@ pub const WHAT_UNBLOCKED_THE_LEG: &str =
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
 impl MountedLeg for LlmLeg {
-    fn claims(&self) -> &'static [busbar_contract::grammar::Claim] {
+    fn claims(&self) -> &'static [Claim] {
         busbar_plane_llm::claims::CLAIMS
     }
 
-    fn recognises(&self, arrival: &busbar_contract::transport::Arrival<'_>) -> bool {
+    fn recognises(&self, arrival: &Arrival<'_>) -> bool {
         LlmLeg::recognises(self, arrival)
     }
 
     fn serve<'a>(
         &'a self,
-        arrival: &'a busbar_contract::transport::Arrival<'a>,
+        arrival: &'a Arrival<'a>,
         _kernel: &'a busbar_kernel::teller::Kernel,
         _ctx: &'a busbar_kernel::teller::UnitCtx,
         _run: busbar_kernel::teller::Run<'a>,
@@ -154,7 +155,7 @@ impl MountedLeg for LlmLeg {
 
     fn render_refusal(
         &self,
-        _arrival: &busbar_contract::transport::Arrival<'_>,
+        _arrival: &Arrival<'_>,
         _ended: &busbar_kernel::teller::Ended,
     ) -> Option<Vec<u8>> {
         // NOTHING FOR THE MOUNT TO RENDER, and that is a property of this plane rather than a gap.
@@ -196,7 +197,7 @@ pub fn mount(
 /// boot folds rows and names no plane, so this plane's presence on the shipped serving path is a row
 /// in this file and not a line in `main.rs`.
 pub const MOUNT_ROW: crate::root::registry::MountRow = crate::root::registry::MountRow {
-    plane: <busbar_plane_llm::LlmPlane as busbar_contract::plane::PlaneMeta>::KEY,
+    plane: <busbar_plane_llm::LlmPlane as PlaneMeta>::KEY,
     compose,
 };
 

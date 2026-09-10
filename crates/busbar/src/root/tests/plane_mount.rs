@@ -9,7 +9,12 @@
 
 use super::*;
 
-use busbar_contract::grammar::{PathSeg, Selector};
+use busbar_contract::{
+    grammar::{PathSeg, Selector},
+    ids::OpClassId,
+    transport::facts,
+    transport::Outcome as O,
+};
 
 /// One claim over an exact path, for a walk that is about the matcher and not about any plane.
 const fn exact(path: &'static str) -> Claim {
@@ -125,7 +130,6 @@ fn a_pattern_matches_one_address_and_not_its_prefixes() {
 /// caller with a bad token away to fix its permissions.
 #[test]
 fn the_two_credential_doors_are_two_statuses() {
-    use busbar_contract::transport::Outcome as O;
     assert_eq!(status_of(O::Unauthenticated), 401);
     assert_eq!(status_of(O::Forbidden), 403);
     assert_ne!(status_of(O::Unauthenticated), status_of(O::Forbidden));
@@ -227,11 +231,9 @@ async fn a_chunked_body_and_its_extension_cross_the_seam_intact() {
 
     // Driven from a BLOCKING context, because that is where the loop that drives it runs: the seam's
     // whole reason for existing is that a synchronous walk cannot await.
-    let reply = tokio::task::spawn_blocking(move || {
-        dispatch.execute(busbar_contract::ids::OpClassId::new("probe"))
-    })
-    .await
-    .expect("the blocking probe ran");
+    let reply = tokio::task::spawn_blocking(move || dispatch.execute(OpClassId::new("probe")))
+        .await
+        .expect("the blocking probe ran");
 
     assert_eq!(
         reply.extensions().get::<SurfaceMark>(),
@@ -345,7 +347,6 @@ fn every_header_crosses_as_a_fact_of_this_transport_and_never_as_a_reserved_key(
     let pairs = fact_pairs(&facts);
     let arrival = arrival_over(&pairs, b"{}");
 
-    use busbar_contract::transport::facts;
     // The six reserved readings, exactly as before: the seam widened beside them, not over them.
     assert_eq!(arrival.fact(facts::PATH), Some("/v1/messages?beta=true"));
     assert_eq!(arrival.fact(facts::METHOD), Some("POST"));
@@ -429,7 +430,6 @@ fn the_whole_header_map_comes_back_off_the_facts_it_was_published_as() {
 
     // AND NOT ONE RESERVED KEY. Six of them are published beside the headers and none of them is a
     // header; a read-back that took them would hand a plane a request target as a header value.
-    use busbar_contract::transport::facts;
     assert!(back.get(facts::PATH).is_none());
     assert!(back.get(facts::METHOD).is_none());
     assert!(back.get("credential").is_none());

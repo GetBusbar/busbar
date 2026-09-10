@@ -59,6 +59,7 @@ use crate::root::plane_mount;
 use crate::root::units_llm::ArrivalPayload;
 use crate::root::units_llm::LlmNode;
 use busbar_api::{operation::Operation, PlaneRequestCtx};
+use busbar_kernel::teller::Ended;
 
 /// THE LLM PLANE'S LEG, assembled once.
 ///
@@ -161,16 +162,13 @@ impl LlmLeg {
     /// stream into memory, drop the extension, and with it the money that lands after the terminal.
     ///
     /// The ending is the kernel's own, settled from a lend at the node's exit arm and still carrying
-    /// its posting. Never [`busbar_kernel::teller::Ended::AlreadySettled`] on the path where a unit
+    /// its posting. Never [`Ended::AlreadySettled`] on the path where a unit
     /// ran: that would tell the mount the kernel settled this unit at its own exit, which is the one
     /// thing that did not happen.
     pub async fn serve(
         &self,
         arrival: &busbar_contract::transport::Arrival<'_>,
-    ) -> (
-        busbar_kernel::teller::Ended,
-        crate::root::transports::MountedReply,
-    ) {
+    ) -> (Ended, crate::root::transports::MountedReply) {
         let Some(named) = self.named(arrival) else {
             // UNREACHABLE THROUGH A MOUNT, because the mount asks `recognises` first and both
             // questions are this one function. It is an answer rather than an unwrap because a path
@@ -184,7 +182,7 @@ impl LlmLeg {
             // shape to render one in, and picking a dialect to be wrong in would be worse than being
             // plain.
             return (
-                busbar_kernel::teller::Ended::AlreadySettled,
+                Ended::AlreadySettled,
                 plane_mount::http_response(crate::root::transports::unavailable_answer()),
             );
         };
@@ -198,7 +196,7 @@ impl LlmLeg {
         // gives: no unit ran and there is nothing to settle.
         let Some(payload) = sealed.downcast_ref::<ArrivalPayload>() else {
             return (
-                busbar_kernel::teller::Ended::AlreadySettled,
+                Ended::AlreadySettled,
                 plane_mount::http_response(crate::root::transports::unavailable_answer()),
             );
         };

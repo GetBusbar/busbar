@@ -44,11 +44,19 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use busbar_caps::{Canary, Hold, HoldCell, OriginKind, PrincipalId, UnitKey};
 use busbar_contract::transport::surface::{
     binding_at, check_surface, resolve_target, Bar, WireSurface,
 };
-use busbar_kernel::teller::{Kernel, Run, UnitCtx};
-use busbar_unit_auth::AuthChain;
+use busbar_contract::transport::SurfaceError;
+use busbar_kernel::{
+    registry::Generation,
+    slice::ConcurrencyGauge,
+    slice::LeaseCell,
+    teller::AccrualMeter,
+    teller::{Kernel, Run, UnitCtx},
+};
+use busbar_unit_auth::{chain::ChainEntry, chain::KEYS_MODULE, AuthChain};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   THE BOOT REFUSAL
@@ -64,7 +72,7 @@ use busbar_unit_auth::AuthChain;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceRefused {
     /// What the contract's own check said, in the contract's own words.
-    pub because: busbar_contract::transport::SurfaceError,
+    pub because: SurfaceError,
 }
 
 impl std::fmt::Display for SurfaceRefused {
@@ -235,9 +243,9 @@ impl PlaneChain {
 /// about one unit rather than about the node.
 pub struct NodeParts {
     /// The node's concurrency gauge. ONE per node, held here and lent to every walk.
-    gauge: busbar_kernel::slice::ConcurrencyGauge,
+    gauge: ConcurrencyGauge,
     /// The node's canary. ONE per node, for the same reason.
-    canary: busbar_caps::Canary,
+    canary: Canary,
     /// The next unit key. Monotonic across every walk on this node, so two arrivals are two units.
     next_key: AtomicU64,
 }
@@ -259,8 +267,8 @@ impl NodeParts {
     #[must_use]
     pub fn new() -> Self {
         NodeParts {
-            gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
-            canary: busbar_caps::Canary::new(),
+            gauge: ConcurrencyGauge::new(),
+            canary: Canary::new(),
             next_key: AtomicU64::new(1),
         }
     }
@@ -290,10 +298,10 @@ impl NodeParts {
     pub fn open(&self, kernel: &Kernel) -> UnitCells {
         UnitCells {
             ctx: UnitCtx {
-                key: busbar_caps::UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed)),
-                origin: busbar_caps::OriginKind::Client,
+                key: UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed)),
+                origin: OriginKind::Client,
                 session: None,
-                generation: busbar_kernel::registry::Generation::FIRST,
+                generation: Generation::FIRST,
                 // A DATA listener, and a unit of an ordinary plane. Both are answered with what is
                 // true of this composition rather than derived: a node that answered otherwise
                 // would be running ordinary traffic as kernel verbs, through the operator's own
@@ -301,13 +309,9 @@ impl NodeParts {
                 admin_listener: false,
                 kernel_verb_only: false,
             },
-            cell: busbar_caps::HoldCell::new(busbar_caps::Hold::open(
-                &kernel.admit_token(),
-                busbar_caps::PrincipalId::new(""),
-                0,
-            )),
-            leases: busbar_kernel::slice::LeaseCell::new(),
-            meter: busbar_kernel::teller::AccrualMeter::new(),
+            cell: HoldCell::new(Hold::open(&kernel.admit_token(), PrincipalId::new(""), 0)),
+            leases: LeaseCell::new(),
+            meter: AccrualMeter::new(),
         }
     }
 
@@ -336,9 +340,9 @@ impl NodeParts {
 pub struct UnitCells {
     /// What this unit is, for the steps that ask.
     pub ctx: UnitCtx,
-    cell: busbar_caps::HoldCell,
-    leases: busbar_kernel::slice::LeaseCell,
-    meter: busbar_kernel::teller::AccrualMeter,
+    cell: HoldCell,
+    leases: LeaseCell,
+    meter: AccrualMeter,
 }
 
 impl std::fmt::Debug for UnitCells {
@@ -499,10 +503,10 @@ pub fn data_chain(positions: &[ChainPosition<'_>]) -> Result<AuthChain, Unresolv
     // than a posture: the one arm a data plane's door can be built from at this seam is the
     // built-in signed-key verifier, which is a flag and not a module, and every other position
     // refuses on the line below rather than being quietly left out of this list.
-    let modules: Vec<busbar_unit_auth::chain::ChainEntry> = Vec::new();
+    let modules: Vec<ChainEntry> = Vec::new();
     let mut keys_in_chain = false;
     for position in positions {
-        if position.module == busbar_unit_auth::chain::KEYS_MODULE {
+        if position.module == KEYS_MODULE {
             keys_in_chain = true;
             continue;
         }

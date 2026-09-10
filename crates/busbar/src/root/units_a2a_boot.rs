@@ -45,13 +45,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_core::{config, config_validate, governance::GovState};
 use busbar_plane_a2a::{A2aPlane, Agent};
-use busbar_unit_admission::{Door, InMemoryCells};
+use busbar_unit_admission::{Door, GroupTable, InMemoryCells};
 use busbar_unit_auth::Auth;
 use busbar_unit_trust::net::{Denylist, GuardPolicy};
 
 use crate::root::data_plane::{data_chain, ChainPosition, PlaneChain};
 use crate::root::durability::Durability;
 use crate::root::units_a2a_leg::{A2aLeg, A2aLegSources};
+use busbar_contract::ids::LaneId;
+use busbar_kernel::teller::Kernel;
+use busbar_unit_cost::nano_rate;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   WHERE EVERY BOOT-RESOLVED VALUE COMES FROM
@@ -305,7 +308,7 @@ fn meter_config(
                 // cross-check's three legs disagree - so what it needs is an ORDERING over lanes,
                 // and the input rate is the one figure every configured lane carries. The
                 // arithmetic is the cost unit's; there is none here.
-                price: u128::from(busbar_unit_cost::nano_rate(*micro)),
+                price: u128::from(nano_rate(*micro)),
             })
             .collect(),
         ..crate::root::policy::MeterPolicyConfig::default()
@@ -420,7 +423,7 @@ fn registrations(agents: &[DeclaredAgent]) -> &'static [Agent] {
             .iter()
             .map(|agent| Agent {
                 id: vocabulary.key(&agent.name),
-                lane: busbar_contract::ids::LaneId::new(vocabulary.key(&agent.name)),
+                lane: LaneId::new(vocabulary.key(&agent.name)),
                 host: vocabulary.key(&agent.host),
                 // The document carrier, which is what every `url:` an operator declares names. The
                 // framed binding this protocol also declares is an INGRESS claim — a client speaks
@@ -448,7 +451,7 @@ pub struct A2aConfigured {
     guard: GuardPolicy,
     pinned: Vec<String>,
     denylist: Denylist,
-    groups: busbar_unit_admission::GroupTable,
+    groups: GroupTable,
     meter_policy: crate::root::policy::MeterPolicyHandle,
     lanes: usize,
     auth: Auth,
@@ -571,7 +574,7 @@ pub fn builtin_denylist_size() -> usize {
 pub fn mount(
     inner: axum::Router,
     configured: Option<A2aConfigured>,
-    kernel: busbar_kernel::teller::Kernel,
+    kernel: Kernel,
     governance: Option<Arc<GovState>>,
     durability: Arc<Mutex<Durability>>,
     request_body_max_bytes: usize,

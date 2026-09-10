@@ -92,7 +92,9 @@
 
 use std::path::{Path, PathBuf};
 
-use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
+use busbar_caps::{
+    DurabilityLost, DurabilityToken, Hold, LedgerToken, Posted, PostingLent, StepName, Usage,
+};
 use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_unit_ledger::checkpoint::Checkpoint;
 use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
@@ -259,10 +261,10 @@ impl Durability {
     pub fn settle(
         &mut self,
         at: &Settling<'_>,
-        hold: busbar_caps::Hold,
+        hold: Hold,
         priced_nanos: u128,
-        usage: &busbar_caps::Usage,
-        ledger: &busbar_caps::LedgerToken,
+        usage: &Usage,
+        ledger: &LedgerToken,
     ) -> Result<Settled, DurabilityLost> {
         let settlement =
             self.ledger
@@ -283,7 +285,7 @@ impl Durability {
     pub fn settle_posted(
         &mut self,
         at: &Settling<'_>,
-        posted: busbar_caps::Posted,
+        posted: Posted,
     ) -> Result<Settled, DurabilityLost> {
         let settlement = self.ledger.post(at.key, at.window, posted);
         self.journal_settlement(at, settlement)
@@ -303,7 +305,7 @@ impl Durability {
     /// posting afterwards, which is not a fact about money.
     ///
     /// The exactly-once property is the LEND's — `UnitEnd::lend_posting` hands out one per end and
-    /// refuses the second, and `busbar_caps::PostingLent` cannot be built any other way — so this
+    /// refuses the second, and `PostingLent` cannot be built any other way — so this
     /// door cannot be driven twice for one hold any more than the by-value one can.
     ///
     /// # Errors
@@ -312,7 +314,7 @@ impl Durability {
     pub fn settle_lent(
         &mut self,
         at: &Settling<'_>,
-        lent: busbar_caps::PostingLent<'_>,
+        lent: PostingLent<'_>,
     ) -> Result<SettledLent, DurabilityLost> {
         // READ BEFORE THE LEND TRAVELS. The witness moves into the ledger, and the three figures the
         // journal record carries are the posting's; taking them here is what lets the record be

@@ -3,6 +3,11 @@
 //! private items it always did.
 
 use super::*;
+use busbar_kernel::teller::Kernel;
+use busbar_unit_auth::{Auth, AuthChain};
+use busbar_unit_cost::RateCard;
+use busbar_unit_ledger::legacy::RecordingRows;
+use busbar_unit_trust::{lane::BreakerView, net::Denylist, net::GuardPolicy, Unavailable};
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 //   WHAT IS CLAIMED IS THE PLANE'S OWN TABLE, AND NOTHING BESIDE IT
@@ -269,13 +274,13 @@ fn a_node() -> Arc<crate::root::data_plane::NodeParts> {
 /// a fixture shared between two test modules would be a production item existing for tests.
 fn rates_of(flat: i64) -> Arc<crate::root::kernel::RootRates> {
     let holder = crate::root::kernel::RootHistory::default();
-    holder.apply(busbar_unit_cost::RateCard::absent(flat), 0);
+    holder.apply(RateCard::absent(flat), 0);
     holder.pin_rates(0).expect("the apply put rates in place")
 }
 
 fn sources_with_chain(
-    kernel: &busbar_kernel::teller::Kernel,
-    auth: busbar_unit_auth::Auth,
+    kernel: &Kernel,
+    auth: Auth,
     auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
 ) -> crate::root::units_a2a_leg::A2aLegSources<'_> {
     use busbar_unit_admission::{Door, GroupTable, InMemoryCells};
@@ -285,8 +290,8 @@ fn sources_with_chain(
         auth: Some(auth),
         auth_bindings: Some(auth_bindings),
         breaker: Some(Arc::new(EveryLaneOpen)),
-        guard: Some(busbar_unit_trust::net::GuardPolicy::default()),
-        denylist: Some(busbar_unit_trust::net::Denylist::default()),
+        guard: Some(GuardPolicy::default()),
+        denylist: Some(Denylist::default()),
         pinned: Some(Vec::new()),
         door: Some(Door::new(InMemoryCells::new())),
         groups: Some(GroupTable::default()),
@@ -302,7 +307,7 @@ fn sources_with_chain(
             crate::root::durability::build(
                 &crate::root::durability::DurabilityConfig { data_dir: None },
                 Box::new(busbar_unit_wal::NullShipper::new()),
-                Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+                Box::new(RecordingRows::new()),
             )
             .expect("a memory-buffered journal cannot fail to open"),
         ))),
@@ -316,23 +321,18 @@ fn sources_with_chain(
 /// A breaker that benches nothing, so a cell about the mount is not also a cell about readiness.
 struct EveryLaneOpen;
 
-impl busbar_unit_trust::lane::BreakerView for EveryLaneOpen {
+impl BreakerView for EveryLaneOpen {
     fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
         true
     }
-    fn try_admit(
-        &self,
-        _pool: &str,
-        _lane: usize,
-        _now: u64,
-    ) -> Result<(), busbar_unit_trust::Unavailable> {
+    fn try_admit(&self, _pool: &str, _lane: usize, _now: u64) -> Result<(), Unavailable> {
         Ok(())
     }
 }
 
 /// A leg with an OPEN chain, for the cells that are about the path rather than about the door.
-fn an_open_leg(kernel: &busbar_kernel::teller::Kernel) -> Arc<A2aLeg> {
-    let auth = busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false));
+fn an_open_leg(kernel: &Kernel) -> Arc<A2aLeg> {
+    let auth = Auth::new(AuthChain::new(Vec::new(), false));
     let bindings = crate::root::kernel::auth_bindings::AuthBindings::without_directory();
     Arc::new(
         A2aLeg::assemble(sources_with_chain(kernel, auth, bindings))
@@ -372,8 +372,8 @@ impl crate::root::kernel::auth_bindings::VirtualKeyDirectory for TheNodesOwnBoun
 }
 
 /// A leg whose door is shut to everything but a token minted for THIS node's mount.
-fn a_leg_that_checks_the_audience(kernel: &busbar_kernel::teller::Kernel) -> Arc<A2aLeg> {
-    let auth = busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), true));
+fn a_leg_that_checks_the_audience(kernel: &Kernel) -> Arc<A2aLeg> {
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
     let bindings =
         crate::root::kernel::auth_bindings::AuthBindings::new(Arc::new(TheNodesOwnBoundary));
     Arc::new(
@@ -418,12 +418,12 @@ async fn through(
 /// encoded frame would serve every operation of this protocol under one status with no headers.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_unit_of_this_plane_travels_through_the_loop_and_the_surfaces_answer_reaches_the_wire() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         a_node(),
         1024 * 1024,
     );
@@ -458,12 +458,12 @@ async fn a_unit_of_this_plane_travels_through_the_loop_and_the_surfaces_answer_r
 /// Decode and spelled that with a status of its own.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_body_this_plane_does_not_name_goes_around_the_loop() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         a_node(),
         1024 * 1024,
     );
@@ -481,12 +481,12 @@ async fn a_body_this_plane_does_not_name_goes_around_the_loop() {
 /// **A path this plane does not claim is not this mount's business at all.**
 #[tokio::test(flavor = "multi_thread")]
 async fn a_path_outside_the_claim_reaches_the_surface_unchanged() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         a_node(),
         1024 * 1024,
     );
@@ -509,12 +509,12 @@ async fn a_path_outside_the_claim_reaches_the_surface_unchanged() {
 /// than a sentence this mount made up.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bearer_for_another_audience_is_refused_and_the_surface_is_never_asked() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         a_leg_that_checks_the_audience(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         a_node(),
         1024 * 1024,
     );
@@ -551,12 +551,12 @@ async fn a_bearer_for_another_audience_is_refused_and_the_surface_is_never_asked
 /// everything: a mount that refused every credential would pass the counterfactual and serve nobody.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bearer_for_this_mount_is_admitted_and_the_surface_answers() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         a_leg_that_checks_the_audience(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         a_node(),
         1024 * 1024,
     );
@@ -582,12 +582,12 @@ async fn a_bearer_for_this_mount_is_admitted_and_the_surface_answers() {
 /// rather than being buffered into this node's memory on the way to being rejected anyway.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_body_over_the_operators_cap_is_the_surfaces_to_refuse() {
-    let kernel = busbar_kernel::teller::Kernel::new();
+    let kernel = Kernel::new();
     let calls = Arc::new(SurfaceCalls::default());
     let router = mount(
         a_mounted_surface(Arc::clone(&calls)),
         an_open_leg(&kernel),
-        busbar_kernel::teller::Kernel::new(),
+        Kernel::new(),
         a_node(),
         8,
     );
