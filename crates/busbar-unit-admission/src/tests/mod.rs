@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::chain::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
+use crate::chain::{ChainWalk, GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
 use crate::decide::{Blocked, Door, Metric};
 use crate::price::{Pricer, RateNanos};
 use crate::window::{WINDOW_DAY, WINDOW_HOUR, WINDOW_MINUTE, WINDOW_MONTH, WINDOW_TOTAL};

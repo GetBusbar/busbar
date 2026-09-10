@@ -58,8 +58,8 @@ pub mod window;
 
 pub use cells::{CellStore, Cells, InMemoryCells, InMemoryLocked, LedgerCell, MAX_MODELS_PER_CELL};
 pub use chain::{
-    BucketChain, ChainBucket, ChainError, ChainGroup, GroupBucket, GroupRuntime, GroupTable,
-    MissingGroup, STANDARD_TIER_BP,
+    BucketChain, ChainBucket, ChainError, ChainGroup, ChainWalk, GroupBucket, GroupRuntime,
+    GroupTable, MissingGroup, STANDARD_TIER_BP,
 };
 pub use decide::{AdmitGrant, Blocked, Door, Gauges, Metric};
 pub use estimate::{ClassEstimate, Estimate};

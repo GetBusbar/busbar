@@ -5,6 +5,8 @@
 use super::*;
 use busbar_api::ScopeRef;
 use busbar_core::cost::CostModel;
+use busbar_unit_admission::ChainWalk;
+use busbar_unit_cost::{CostModel as UnitCostModel, CurrencyCode, RateCard};
 use busbar_unit_scope::required_scope;
 
 const POOL: &str = "pool-main";
@@ -401,10 +403,11 @@ fn a_group_this_node_does_not_have_is_fail_closed() {
 
 /// **The hazard.** The `groups:` section is projected into enforcement buckets TWICE while the
 /// retirement is in flight: once by the retiring core's `CostModel::resolve_parts`, and once by
-/// [`group_table`] here, into the table the door walks. Both are shipped, both are internally
-/// consistent, and neither knows the other exists. Two projections of the MONEY topology that
-/// disagree by one field is how a deployment comes to be admitted against one set of ledger cells
-/// and billed against another — with no error, no refusal and nothing on any surface to say so.
+/// the cost unit's `CostModel::resolve_parts`, over the values [`group_specs`] relays to it, into
+/// the table the door walks. Both are shipped, both are internally consistent, and neither knows
+/// the other exists. Two projections of the MONEY topology that disagree by one field is how a
+/// deployment comes to be admitted against one set of ledger cells and billed against another —
+/// with no error, no refusal and nothing on any surface to say so.
 ///
 /// So the cell drives the SAME `(rate_card, fee, groups)` inputs through both and compares every
 /// field of the resolved value: the group order, the freeze flag, the gauge, the parent index, and
@@ -420,8 +423,11 @@ fn a_group_this_node_does_not_have_is_fail_closed() {
 fn identity_case(groups: &BTreeMap<String, GroupCfg>, fee: i64) {
     let core = CostModel::resolve_parts(None, fee, groups);
     let core_view = core.resolved_view();
-    let table = group_table(groups, &BTreeMap::new());
-    let door = table.groups();
+    let unit = UnitCostModel::resolve_parts(
+        RateCard::absent(fee),
+        &group_specs(groups, &BTreeMap::new()),
+    );
+    let door = unit.groups().groups();
 
     assert_eq!(
         core_view.len(),
@@ -512,9 +518,19 @@ fn identity_case(groups: &BTreeMap<String, GroupCfg>, fee: i64) {
     // the clamp is part of what has to agree; with no card every class prices at nothing and the
     // fee is the whole of what a request bills.
     assert_eq!(core.resolved_fee(), fee.max(0), "the clamped fee diverged");
+    assert_eq!(
+        unit.card().per_request_fee(CurrencyCode::USD),
+        core.resolved_fee(),
+        "the unit's clamped fee diverged from core's"
+    );
     assert!(
         !core.pricing_enabled() && !core.model_unpriced("anything"),
         "with no card nothing is unpriced, because there is nothing to be missing from"
+    );
+    assert_eq!(
+        (unit.pricing_enabled(), unit.model_unpriced("anything")),
+        (core.pricing_enabled(), core.model_unpriced("anything")),
+        "the pricing guard's two answers diverged between the unit and core"
     );
 }
 

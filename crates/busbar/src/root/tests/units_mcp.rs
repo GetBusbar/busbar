@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::root::unit_views::{Block, UnitViewSet};
+use busbar_unit_admission::ChainWalk;
 
 /// A resolver that answers every name with one public address.
 ///

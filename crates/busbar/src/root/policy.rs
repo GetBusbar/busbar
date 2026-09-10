@@ -47,7 +47,7 @@ use busbar_contract::{ClaimKey, OpClassId};
 use busbar_substrate::config::groups::{GroupCfg, LimitMetric};
 use busbar_substrate::config::limits::LimitsResolved;
 use busbar_transport_http::ClientSettings;
-use busbar_unit_admission::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
+use busbar_unit_cost::{GroupSpec, GroupTable, LimitMetric as Spec, LimitSpec, ScopeSpec};
 use busbar_unit_scope::{PolicyView, Scope};
 use busbar_unit_usage::MeterPolicy;
 
@@ -202,32 +202,15 @@ pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
 // The group table — the third configured value, and the third way a default is wrong
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The ledger-bucket prefix every configured group's window bucket is named under.
+/// The configured `groups:` tree, read into the values the cost unit resolves.
 ///
-/// The same prefix the shipped release writes, because these are the same rows: a node that
-/// resolved its groups through this projection and a node that resolved them through the shipped
-/// door must charge the same cell for the same group, or one release's usage would read as another
-/// release's silence.
-const GROUP_BUCKET_PREFIX: &str = "group:";
-
-/// Resolve the configured `groups:` tree into the table the door walks.
-///
-/// **Why an empty table is the wrong answer.** The third default this file exists to refuse. A
-/// caller handing the door an empty chain gets a yes from every configured cap at once: the group's
-/// `concurrent` gauge is never raised, its budget is never read, and its freeze flag is never
-/// consulted — a deployment whose operator wrote the caps down and whose node enforces none of
-/// them, with nothing on any surface to say so. So the legs take the table from here, and a leg
-/// that has no table cannot be built.
-///
-/// The projection is the shipped release's, metric for metric: groups in name order so two boots on
-/// one configuration resolve one table; a windowed metric materialising one bucket per distinct
-/// (window, scope) pair in configuration order; a metric written twice for one pair folding to the
-/// MOST RESTRICTIVE amount, which is the same AND the chain applies between groups; the most
-/// restrictive budget's exhaustion behaviour governing, because that is the cap that actually
-/// blocks; and `concurrent` folding to the minimum across repeats, windowless and pool-less by
-/// grammar. A parent naming a group this table does not have resolves to no parent rather than a
-/// panic — the missing parent is a validation refusal that has already run, and a config that
-/// somehow booted past it degrades to a shorter chain.
+/// A relay with no arithmetic in it, the same shape as the card's: the grammar's metric, amount,
+/// window, scope and downgrade target are copied across a crate boundary in the same order, and
+/// what is DONE with them — which bucket a limit lands in, how repeats fold, whose exhaustion
+/// behaviour governs — is the unit's ([`GroupTable::resolve`]). A projection here would be a second
+/// one, and two projections of the money topology that must agree exactly is how a node comes to be
+/// admitted against one set of ledger cells and billed against another, with nothing on any surface
+/// to say so.
 ///
 /// `lease_ids` is the boot-interned name per group, from [`Vocabulary::group_ids`]. A group absent
 /// from it carries no lease id, which is not an error: the door counts it exactly the same and the
@@ -235,111 +218,71 @@ const GROUP_BUCKET_PREFIX: &str = "group:";
 ///
 /// [`Vocabulary::group_ids`]: crate::root::vocabulary::Vocabulary::group_ids
 #[must_use]
+pub fn group_specs(
+    groups: &BTreeMap<String, GroupCfg>,
+    lease_ids: &BTreeMap<String, &'static str>,
+) -> BTreeMap<String, GroupSpec> {
+    groups
+        .iter()
+        .map(|(name, cfg)| {
+            let limits = cfg
+                .limits
+                .iter()
+                .map(|l| LimitSpec {
+                    metric: metric_spec(l.metric),
+                    amount: l.amount,
+                    window: l.per.map(|w| w.as_str()),
+                    scope: l.scope.as_ref().map(|s| ScopeSpec {
+                        kind: s.kind.to_string(),
+                        value: s.value.clone(),
+                    }),
+                    downgrade_to: l.downgrade_to.as_ref().map(|s| ScopeSpec {
+                        kind: s.kind.to_string(),
+                        value: s.value.clone(),
+                    }),
+                })
+                .collect();
+            let spec = GroupSpec {
+                lease_id: lease_ids.get(name).copied(),
+                parent: cfg.parent.clone(),
+                enabled: cfg.enabled,
+                limits,
+            };
+            (name.clone(), spec)
+        })
+        .collect()
+}
+
+/// The grammar's metric in the cost unit's spelling. One arm per variant and no wildcard, so a
+/// metric the grammar gains and this relay does not is a compile error, never a limit that projects
+/// to nothing.
+fn metric_spec(metric: LimitMetric) -> Spec {
+    match metric {
+        LimitMetric::Requests => Spec::Requests,
+        LimitMetric::Tokens => Spec::Tokens,
+        LimitMetric::TokensInput => Spec::TokensInput,
+        LimitMetric::TokensOutput => Spec::TokensOutput,
+        LimitMetric::TokensCacheRead => Spec::TokensCacheRead,
+        LimitMetric::TokensCacheWrite => Spec::TokensCacheWrite,
+        LimitMetric::Budget => Spec::Budget,
+        LimitMetric::Concurrent => Spec::Concurrent,
+    }
+}
+
+/// The configured `groups:` tree, resolved by the cost unit into the table the door walks.
+///
+/// **Why an empty table is the wrong answer.** The third default this file exists to refuse. A
+/// caller handing the door an empty chain gets a yes from every configured cap at once: the group's
+/// `concurrent` gauge is never raised, its budget is never read, and its freeze flag is never
+/// consulted — a deployment whose operator wrote the caps down and whose node enforces none of
+/// them, with nothing on any surface to say so. So the legs take the table from here, and a leg
+/// that has no table cannot be built.
+#[must_use]
 pub fn group_table(
     groups: &BTreeMap<String, GroupCfg>,
     lease_ids: &BTreeMap<String, &'static str>,
 ) -> GroupTable {
-    // Name order, so the table one configuration produces is the same table on every boot: the
-    // parent indices below are positions in this vector, and a table whose order moved would be a
-    // node whose chains moved with it.
-    let index_of: BTreeMap<&str, usize> = groups
-        .keys()
-        .enumerate()
-        .map(|(i, name)| (name.as_str(), i))
-        .collect();
-
-    let resolved = groups
-        .iter()
-        .map(|(name, cfg)| {
-            let mut buckets: Vec<GroupBucket> = Vec::new();
-            let mut concurrent_cap: Option<u64> = None;
-            for limit in &cfg.limits {
-                let (metric, Some(window)) = (limit.metric, limit.per) else {
-                    // `concurrent` is the one metric the grammar gives no window, and it is a
-                    // per-group gauge rather than a bucket. Any other windowless limit cannot
-                    // deserialize, so there is nothing here to project and nothing to panic over.
-                    if limit.metric == LimitMetric::Concurrent {
-                        concurrent_cap =
-                            Some(concurrent_cap.map_or(limit.amount, |c: u64| c.min(limit.amount)));
-                    }
-                    continue;
-                };
-                if metric == LimitMetric::Concurrent {
-                    concurrent_cap =
-                        Some(concurrent_cap.map_or(limit.amount, |c: u64| c.min(limit.amount)));
-                    continue;
-                }
-                let window = window.as_str();
-                // A limit's scope is a kind-tagged reference whose only kind the configuration
-                // grammar can produce is the pool one — the YAML key is `pool:` and the parser
-                // builds nothing else — and the chain's own scope is the pool name it compares by
-                // equality. So the value is the whole of the translation.
-                let scope = limit.scope.as_ref().map(|s| s.value.clone());
-                let position = buckets
-                    .iter()
-                    .position(|b| b.window == window && b.scope == scope);
-                let bucket = match position {
-                    Some(i) => &mut buckets[i],
-                    None => {
-                        let bucket_id = match &limit.scope {
-                            Some(s) => {
-                                format!(
-                                    "{GROUP_BUCKET_PREFIX}{name}@{window}#{}:{}",
-                                    s.kind, s.value
-                                )
-                            }
-                            None => format!("{GROUP_BUCKET_PREFIX}{name}@{window}"),
-                        };
-                        let mut fresh = GroupBucket::new(bucket_id, window);
-                        fresh.scope = scope;
-                        buckets.push(fresh);
-                        buckets.last_mut().expect("just pushed")
-                    }
-                };
-                let amount = limit.amount;
-                let tighter = |cap: Option<u64>| Some(cap.map_or(amount, |c: u64| c.min(amount)));
-                match metric {
-                    LimitMetric::Requests => bucket.requests_cap = tighter(bucket.requests_cap),
-                    LimitMetric::Tokens => bucket.tokens_cap = tighter(bucket.tokens_cap),
-                    LimitMetric::TokensInput => {
-                        bucket.tokens_input_cap = tighter(bucket.tokens_input_cap);
-                    }
-                    LimitMetric::TokensOutput => {
-                        bucket.tokens_output_cap = tighter(bucket.tokens_output_cap);
-                    }
-                    LimitMetric::TokensCacheRead => {
-                        bucket.tokens_cache_read_cap = tighter(bucket.tokens_cache_read_cap);
-                    }
-                    LimitMetric::TokensCacheWrite => {
-                        bucket.tokens_cache_write_cap = tighter(bucket.tokens_cache_write_cap);
-                    }
-                    LimitMetric::Budget => {
-                        let amount = i64::try_from(amount).unwrap_or(i64::MAX);
-                        // The tightest budget is the one that blocks, so its exhaustion behaviour
-                        // is the one that fires — including its absence, which is a block.
-                        if bucket.budget_cap.is_none_or(|c| amount < c) {
-                            bucket.downgrade_to =
-                                limit.downgrade_to.as_ref().map(|s| s.value.clone());
-                        }
-                        bucket.budget_cap =
-                            Some(bucket.budget_cap.map_or(amount, |c: i64| c.min(amount)));
-                    }
-                    LimitMetric::Concurrent => continue,
-                }
-            }
-            GroupRuntime {
-                name: name.clone(),
-                lease_id: lease_ids.get(name).copied(),
-                enabled: cfg.enabled,
-                concurrent_cap,
-                tier_bp: STANDARD_TIER_BP,
-                buckets,
-                parent: cfg.parent.as_deref().and_then(|p| index_of.get(p).copied()),
-            }
-        })
-        .collect();
-
-    GroupTable::new(resolved)
+    GroupTable::resolve(&group_specs(groups, lease_ids))
 }
 
 /// The scope unit's policy view, over what the deployment's policy actually declared.
