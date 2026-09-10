@@ -14,9 +14,10 @@ use busbar_plane_llm::LlmPlane;
 /// THE LADDER THE PLANE WALKS IS EVERY SOURCE'S, AND IT IS STILL ONE THROUGH FOURTEEN.
 ///
 /// This case used to read `LADDER` — the constant in this crate — because every rung was in it.
-/// Rungs 7 and 14 are a carved-out dialect's now, declared in `busbar-plane-llm-openai` and merged
-/// back in at registration, so reading the constant would assert about HALF the ladder and call the
-/// gaps it found correct.
+/// Rungs 7 and 14 are one carved-out dialect's now and rung 10 is a second one's, declared in
+/// `busbar-plane-llm-openai` and `busbar-plane-llm-responses` and merged back in at registration,
+/// so reading the constant would assert about part of the ladder and call the gaps it found
+/// correct.
 ///
 /// So the subject is the WALK, which is the thing that actually decides a request. It is asserted
 /// to be exactly what it was before the split: ascending, and one through fourteen without a gap.
@@ -55,7 +56,7 @@ fn the_planes_own_rungs_ascend_and_gap_only_where_a_dialect_left() {
     let missing: Vec<u16> = (1..=14).filter(|r| !seen.contains(r)).collect();
     assert_eq!(
         missing,
-        vec![7, 14],
+        vec![7, 10, 14],
         "the rungs this crate no longer declares are not the ones a dialect crate took"
     );
 }
@@ -101,7 +102,7 @@ type LadderCase = (
 /// The cases are the rungs themselves: one request per rung, built to satisfy that rung and nothing
 /// tighter, with the dialect the rung names as the expected answer.
 ///
-/// ASKED OF THE PLANE, not of this crate's own constant: two of the rungs below are a registered
+/// ASKED OF THE PLANE, not of this crate's own constant: three of the rungs below are a registered
 /// dialect's, and the answer a request gets is the merged walk's answer. That the answers are
 /// UNCHANGED — every one of the twenty-six requests routes where it routed before the split — is
 /// the case that says the carve-out moved a declaration and not a behaviour.

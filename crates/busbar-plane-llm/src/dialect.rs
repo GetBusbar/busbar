@@ -108,18 +108,11 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "request-signature",
         egress_scheme: "request-signature",
     },
-    Dialect {
-        name: "responses",
-        model_location: MODEL,
-        max_response_pointers: &["/max_output_tokens"],
-        input_pointer: "/input",
-        tokens_in_pointer: "/usage/input_tokens",
-        tokens_out_pointer: "/usage/output_tokens",
-        cache_read_pointer: Some("/usage/input_tokens_details/cached_tokens"),
-        cache_write_pointer: Some("/usage/input_tokens_details/cache_write_tokens"),
-        scheme_alt: "bearer",
-        egress_scheme: "bearer",
-    },
+    // THE SECOND CARVED-OUT ROW IS NOT HERE EITHER. It went to `busbar-plane-llm-responses`, which
+    // declares it and registers it into this plane by claim. It left with rung 10, and it left as
+    // its OWN crate rather than as part of the one above even though the two are one vendor's two
+    // request surfaces — because every field of the two rows that can differ does, and a crate
+    // holding both would hold the vendor-shaped branch the kind exists to remove.
     Dialect {
         name: "cohere",
         model_location: MODEL,
