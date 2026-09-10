@@ -214,6 +214,16 @@ impl PlaneMeta for FixturePlane {
 }
 
 impl Plane for FixturePlane {
+    fn probe_request<'u>(
+        &self,
+        _dest: &VerifiedDestination,
+        _ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>> {
+        // The fixture exists to prove the trait is object-safe with this method on it; the answer
+        // a plane with nothing to ask gives is the one it gives here.
+        None
+    }
+
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,

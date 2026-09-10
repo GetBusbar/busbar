@@ -1031,6 +1031,16 @@ impl Plugin for TestPlane {
 }
 
 impl busbar_contract::Plane for TestPlane {
+    fn probe_request<'u>(
+        &self,
+        _dest: &busbar_contract::VerifiedDestination,
+        _ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>> {
+        // This harness drives the egress unit's own walk, not a prober; the destination is
+        // watched passively, which is what a plane with nothing cheap to ask answers.
+        None
+    }
+
     fn decode_ingress<'u>(
         &self,
         _frames: &mut busbar_contract::FrameCursor<'u>,

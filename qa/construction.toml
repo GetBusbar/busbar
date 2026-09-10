@@ -220,8 +220,23 @@ because = "contract face `RecordSink`: the same 2 net kinds.rs surface lines, su
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 5
+because = "contract face `Plane::probe_request`: active upstream probing is a CORE capability every plane gets, not one plane's — the clock raises a Tick-origin unit, the breaker unit says which destinations are due, and the ONLY thing a kind-neutral crate cannot know is what a live upstream of a given dialect is asked; that question is this face and nothing else about probing is a plane's. It answers with the SAME `EgressBody` `encode_egress` returns, so a probe is decorated by the same egress-auth unit against the same scheme and cannot drift into being distinguishable from organic traffic; `None` means the plane has no cheap side-effect-free question and the destination is watched passively, which is what a2a, mcp, voice and admin each answer explicitly (the contract forbids default bodies). 5 surface lines in plane.rs -- the signature as rustfmt breaks it at 101 columns. Files: crates/busbar-contract/src/plane.rs; counted in the plugin-visible surface figure ARCHITECTURE.md section 1.1 amends to 3507 in this same commit"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 5
+because = "contract face `Plane::probe_request`: active upstream probing is a CORE capability every plane gets, not one plane's — the clock raises a Tick-origin unit, the breaker unit says which destinations are due, and the ONLY thing a kind-neutral crate cannot know is what a live upstream of a given dialect is asked; that question is this face and nothing else about probing is a plane's. It answers with the SAME `EgressBody` `encode_egress` returns, so a probe is decorated by the same egress-auth unit against the same scheme and cannot drift into being distinguishable from organic traffic; `None` means the plane has no cheap side-effect-free question and the destination is watched passively, which is what a2a, mcp, voice and admin each answer explicitly (the contract forbids default bodies). 5 surface lines in plane.rs -- the signature as rustfmt breaks it at 101 columns. Files: crates/busbar-contract/src/plane.rs; the same 5 plane.rs lines counted in the loc-ceilings pair"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 5
+because = "contract face `Plane::probe_request`: active upstream probing is a CORE capability every plane gets, not one plane's — the clock raises a Tick-origin unit, the breaker unit says which destinations are due, and the ONLY thing a kind-neutral crate cannot know is what a live upstream of a given dialect is asked; that question is this face and nothing else about probing is a plane's. It answers with the SAME `EgressBody` `encode_egress` returns, so a probe is decorated by the same egress-auth unit against the same scheme and cannot drift into being distinguishable from organic traffic; `None` means the plane has no cheap side-effect-free question and the destination is watched passively, which is what a2a, mcp, voice and admin each answer explicitly (the contract forbids default bodies). 5 surface lines in plane.rs -- the signature as rustfmt breaks it at 101 columns. Files: crates/busbar-contract/src/plane.rs; the same 5 plane.rs lines, summed into the union"
+
 [gate.surface_ceilings]
-contract_caps = 3502
+contract_caps = 3507
 grammar = 388
 contract_transport = 850
 
@@ -442,12 +457,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5389
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3504
+caps_contract_ceiling = 3509
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23499
+union_ceiling = 23504
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

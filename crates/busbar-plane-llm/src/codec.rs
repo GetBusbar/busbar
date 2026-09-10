@@ -425,6 +425,45 @@ fn view<'u>(body: &'u [u8], pointers: &[&'u str], ctx: &Ctx<'u>) -> Result<Ir<'u
 }
 
 impl Plane for LlmPlane {
+    fn probe_request<'u>(
+        &self,
+        dest: &VerifiedDestination,
+        ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>> {
+        let upstream = upstream_for(self, dest)?;
+        let egress = dialect::dialect(upstream.dialect)?;
+        // The one-token request the dialect's own writer builds, with this lane's model stamped
+        // into it. Six dialects, one call: no probe body is written here, because a probe body
+        // written here would be a seventh dialect that agrees with the other six until it does not.
+        let body = with_writer(egress.name, |w| w.probe_body(upstream.model))?;
+        // Non-streaming, always. A probe asks whether the upstream answers, and an event stream is
+        // a more expensive way to learn the same thing.
+        let path = with_writer(egress.name, |w| {
+            w.upstream_path_for_stream(upstream.model, false)
+        })?;
+        // The SAME three envelope fields, in the SAME order, that `encode_egress` writes for
+        // organic traffic. The order is not incidental: it is what the wire carries, and a probe
+        // that carried a different one would be a probe a backend could recognise.
+        let mut envelope = TransportEnvelope::default();
+        let _ = envelope.fields.push(EnvelopeField {
+            name: "method",
+            value: put(ctx, b"POST").ok()?,
+        });
+        let _ = envelope.fields.push(EnvelopeField {
+            name: "path",
+            value: put(ctx, path.as_bytes()).ok()?,
+        });
+        let _ = envelope.fields.push(EnvelopeField {
+            name: "content-type",
+            value: put(ctx, b"application/json").ok()?,
+        });
+        Some(EgressBody {
+            envelope,
+            body: put(ctx, &body).ok()?,
+            auth: SchemeKey::new(egress.egress_scheme),
+        })
+    }
+
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,

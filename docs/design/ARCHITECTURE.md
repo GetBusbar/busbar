@@ -80,14 +80,23 @@ them). Each axis is blind to the other two; only the kernel composes them.
   and its measured lines, this figure amended in the same commit — the per-unit arena face
   (`bounded::Arena: Send`, the unsatisfiable `Sync` clause struck so a shipping implementor can
   exist; `docs/design/1.6.0-per-unit-arena.md`) measured 0 lines and declared nothing. THE MOUNT
-  CHAIN AMENDS THE PAIR TO **3,502** on two named faces, each declared and each counted exactly:
+  CHAIN AMENDS THE PAIR TO **3,502** on two named faces, and THE PROBER FACE AMENDS IT TO **3,507**,
+  each declared and each counted exactly:
   `busbar-caps::UnitEnd::lend_posting` / `PostingLent` — a unit's end LENDS its posting for one
   settlement and refuses the second, so an exit arm can settle from a lend instead of being handed
   the posting outright (22 lines, `unit_end.rs` + the re-export in `lib.rs`); and
   `busbar-contract::RecordSink` — the three record verbs become a trait of their own that `Store`
   IS, because the kernel's record runner and a store-kind plugin may not name each other and the
   contract is the only crate both are allowed to name (2 lines net in `kinds.rs`; the verbs MOVED
-  off `Store`'s inherent half rather than being added). Two crates carry their own surface ceilings beside it, because
+  off `Store`'s inherent half rather than being added); and `busbar-contract::Plane::probe_request` —
+  active upstream probing is a capability of the node, not of one plane, so the schedule and the
+  health state are the breaker unit's and the clock that drives them is a Tick; the only part of a
+  probe a kind-neutral crate cannot write is the question a live upstream of a given dialect is
+  asked, and this face is that question and nothing more. It answers with the same `EgressBody`
+  `encode_egress` returns, so the probe is decorated by the same egress-auth unit against the same
+  scheme and cannot drift into being distinguishable from organic traffic; `None` means the plane
+  has no cheap, side-effect-free question and the destination is watched passively (5 lines in
+  `plane.rs`, the signature as rustfmt breaks it). Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

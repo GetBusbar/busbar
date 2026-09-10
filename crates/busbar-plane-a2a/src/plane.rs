@@ -522,6 +522,18 @@ fn task_id_of(target: &str) -> Option<&str> {
 }
 
 impl Plane for A2aPlane {
+    fn probe_request<'u>(
+        &self,
+        _dest: &VerifiedDestination,
+        _ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>> {
+        // No probe. A2A's cheapest request is an agent card fetch, which is a GET this plane does not
+        // write and which says nothing about whether the agent will accept work; every request it DOES
+        // write starts a task somebody is billed for and somebody has to cancel. The destination is
+        // watched passively: the breaker trips on real failures and recovers on the half-open probe.
+        None
+    }
+
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,

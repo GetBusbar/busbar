@@ -187,7 +187,7 @@ pub enum Progress<'u> {
 
 /// What bytes mean.
 ///
-/// Seven codec methods, seven fact methods and two introspection methods. Every one of them is
+/// Eight codec methods, seven fact methods and two introspection methods. Every one of them is
 /// pure over its inputs, and none of them may perform input or output.
 ///
 /// # Errors
@@ -211,6 +211,31 @@ pub trait Plane: Plugin + Send + Sync + 'static {
         st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<EgressBody<'u>, Encode>;
+
+    /// Write the request that asks a destination whether it is still alive, where this dialect has
+    /// one to ask with.
+    ///
+    /// Active probing is the node's, not a plane's: the clock raises a [`Origin::Tick`]
+    /// (`crate::unit::Origin::Tick`) unit, the breaker unit says which destinations are due, and
+    /// the only thing left that a neutral crate cannot know is what a live upstream of THIS
+    /// dialect is asked. That is this method, and it is the whole of the plane's part.
+    ///
+    /// The answer is an [`EgressBody`] — the same value `encode_egress` returns for organic
+    /// traffic, decorated by the same egress-auth unit against the same scheme — so a probe cannot
+    /// drift into being distinguishable from a real request by a header, an order or an encoding.
+    /// A plane that writes the probe itself would be writing a second wire format for the same
+    /// upstream, and the one that disagrees quietly is the one that reaches a customer.
+    ///
+    /// `None` means this plane has no way to ask, and the destination is watched passively: the
+    /// breaker still trips on real failures and still recovers on the half-open probe that organic
+    /// traffic drives. It is an honest answer and the common one — a dialect with no cheap,
+    /// side-effect-free, one-token request has nothing to send that would not cost the operator
+    /// money or move somebody's state.
+    fn probe_request<'u>(
+        &self,
+        dest: &VerifiedDestination,
+        ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>>;
 
     /// Write one inbound frame of an open unit onward to its destination. Returning nothing means
     /// the frame is consumed and nothing goes out for it.
