@@ -2219,8 +2219,7 @@ fn validate_providers_with(
                      service-account JSON or key file), so there is nothing to declare keyless"
                 ));
             }
-            let cred = resolve_validate_time_secret(&provider_cfg.api_key)
-                .unwrap_or_default();
+            let cred = resolve_validate_time_secret(&provider_cfg.api_key).unwrap_or_default();
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
                 // so the token_uri SSRF check is identical at validate and apply time.
