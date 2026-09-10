@@ -90,6 +90,10 @@ use busbar_contract::{
 };
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
+// THE DIALECT'S OWN URL PARSE AND ITS ANSWER, under ONE spelling. Named once here rather than at
+// each of the five call sites below: the reach into the retiring engine crate is what the
+// legacy-reach row measures, and five spellings of one import are five reaches for one dependency.
+use busbar_llm::arrival::{bedrock_path_parse, gemini_path_parse, gemini_rest, PathArrivalFacts};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 pub(crate) use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
@@ -1838,12 +1842,11 @@ body_arrivals! {
 /// the dialect's own already-accounted bytes are returned untouched.
 async fn path_arrival(
     proto: &'static str,
-    parsed: busbar_llm::arrival::PathArrivalFacts,
+    parsed: PathArrivalFacts,
     ctx: busbar_substrate::ingress::arrival::ArrivalCtx,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    use busbar_llm::arrival::PathArrivalFacts;
     // The URL's facts, the operation they resolved to, and the routing hint a body-model shape
     // carries. Exactly one of the first and the last is ever set.
     let (facts, operation, model_hint) = match parsed {
@@ -1889,10 +1892,8 @@ fn gemini_path_arrival(
     // Pinned before the parse, because a parse that rejects accounts its own rejection against them.
     let started = Instant::now();
     let charged_at = store_now();
-    let rest = busbar_llm::arrival::gemini_rest(&a.host, &a.path);
-    let parsed = busbar_llm::arrival::gemini_path_parse(
-        &a.host, &a.ctx, &rest, &a.uri, &a.body, started, charged_at,
-    );
+    let rest = gemini_rest(&a.host, &a.path);
+    let parsed = gemini_path_parse(&a.host, &a.ctx, &rest, &a.uri, &a.body, started, charged_at);
     Box::pin(path_arrival(
         busbar_llm::proto_codec::PROTO_GEMINI,
         parsed,
@@ -1909,7 +1910,7 @@ fn bedrock_path_arrival(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     let started = Instant::now();
     let charged_at = store_now();
-    let parsed = busbar_llm::arrival::bedrock_path_parse(
+    let parsed = bedrock_path_parse(
         &a.host, &a.ctx, &a.path, &a.uri, &a.body, started, charged_at,
     );
     Box::pin(path_arrival(

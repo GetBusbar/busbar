@@ -145,6 +145,12 @@ busbar-voice = ["busbar-voice-codec"]
 # The same ten lines are counted three times — the teller file, the kernel total it is part of,
 # and the union that sums the kernel — so the same two faces are declared against each key.
 [[gate.ceiling_raises]]
+key = "cell.busbar-plane-llm.transport.count"
+file = "qa/kind-isolation.toml"
+by = 21
+because = "llm URL-reading face: the plane's `url` module — what the request line says for the two dialects that keep their model there — moved out of the engine's host-bound arrival so a MOUNTED leg, which holds no arrival host, can read it. The twenty-one are the WIRE ITSELF and not a wire this plane names: the query pair `alt=sse` that one dialect's clients send to choose the event framing over the JSON-array framing, and the identifier of the function that recognises it. The crate gained no dependency in this landing and depends on no transport crate; the prose spellings were drained to zero in the same commit (cell.busbar-plane-llm.plane.count is back at its base 5). Files: crates/busbar-plane-llm/src/url.rs, crates/busbar-plane-llm/tests/url.rs"
+
+[[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_files.teller.ceiling"
 by = 3
 because = "kernel face `Kernel::trust_token`: the trust unit's token lent to a leg the root assembles BEFORE the loop (units_a2a_leg/units_mcp_leg hold it for the Verify step), minted beside `admit_token` so the seal stays the kernel's and the root never spells `KernelSeal`; 3 lines in teller.rs"
@@ -1071,7 +1077,7 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 91
+ceiling = 89
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1090,7 +1096,7 @@ prefix = "busbar_llm::"
 # The plane's own unit modules are where the rebuilt steps live; they are not legacy engine reach.
 exclude = ["busbar_llm::unit"]
 because = "the llm engine's non-unit paths: arrival parsing, proto codecs, the stream translator"
-figure = 17
+figure = 15
 
 [rules.legacy-reach.prefixes.busbar_substrate]
 prefix = "busbar_substrate::"
