@@ -1219,8 +1219,18 @@ abi = 1
 # is no way to wait for that listener without naming it. The prose of the fix was written to add
 # none, so this is the code and only the code. It struck the `busbar × transport` rise it also
 # started with, and it expires with the commit that needed it.
+#
+# THE SAME RAISE, EXTENDED BY THE HARNESS SWEEP THAT FOLLOWED IT (1066 -> 1068). The race was not
+# confined to those two harnesses. `ledger_identity`'s rig gated boot on the DATA plane's
+# `/healthz` and then minted a key through the other listener — the same shape, one listener
+# further along, and the same `ConnectionRefused` under load. Its gate now polls `/healthz` on both
+# ports, which costs exactly two hits: the poll itself and the port it names in the failure
+# message. The prose of that fix, and of the `no_state_persist` fix that landed beside it, was
+# written to spend none of this vocabulary at all — measured at +2 and not +9, which is what the
+# first draft of the same two comments cost. One entry, because one ceiling moved once: this is the
+# whole distance from the base to the branch, and it expires when the base carries 1068.
 [gate.ceiling_raises."cell.5.count"]
 file = "qa/kind-isolation.toml"
 from = 1063
-to = 1066
-because = "the neutrality harnesses must name the admin listener's own address to wait for it before minting a virtual key through it; two `admin_port` mentions each, and a boot gate that cannot name the listener it needs is the ConnectionRefused this fix removes"
+to = 1068
+because = "the neutrality harnesses must name the admin listener's own address to wait for it before minting a virtual key through it, and the ledger-identity rig must poll that same listener's own `/healthz` before minting through it; a boot gate that cannot name the listener it needs is the ConnectionRefused these fixes remove"

@@ -104,6 +104,22 @@ fn a_running_busbar_writes_no_state_file() {
 
     // Wait for the boot marker, failing loudly if the process dies first (so a boot failure can
     // never masquerade as a green "no file written").
+    //
+    // BOTH LISTENERS, not the first one to speak. `busbar listening` is logged once per LISTENER
+    // and `run()` brings the two planes up in a fixed order — the per-core data workers first, the
+    // second socket bound only after them — so the bare message means "one plane is up", not "boot
+    // finished". This test's claim is about what a REAL, FULLY BOOTED busbar writes to disk, and
+    // the two writes the removed mechanism performed (the snapshotter's immediate first tick and
+    // the shutdown write) both live past that point; a `SIGTERM` delivered while the second
+    // listener is still coming up stops a half-booted process, and a half-booted process is not
+    // the thing under test. So the gate counts the lines rather than looking for one.
+    //
+    // Exactly two are expected at INFO: `serve_thread_per_core` logs the data plane's line from
+    // worker 0 only (every other worker's identical fact is DEBUG), and the second listener logs
+    // its own. Counted, rather than matched against the addresses, because this fixture asks the
+    // OS for both ports (`:0`) and so does not know them — and because the child writes ANSI field
+    // styling between the `listen` field name and its value, which is why matching that field's
+    // text is the wrong tool here as well.
     let booted = wait_for(Duration::from_secs(30), || {
         if let Some(status) = child.try_wait().expect("try_wait") {
             panic!(
@@ -111,11 +127,13 @@ fn a_running_busbar_writes_no_state_file() {
                 read_to_string(&log_path)
             );
         }
-        read_to_string(&log_path).contains("busbar listening")
+        listening_lines(&read_to_string(&log_path)) >= 2
     });
     assert!(
         booted,
-        "busbar did not reach 'listening' within 30s; log:\n{}",
+        "busbar did not reach 'listening' on BOTH planes within 30s (saw {} of the 2 expected \
+         lines); log:\n{}",
+        listening_lines(&read_to_string(&log_path)),
         read_to_string(&log_path)
     );
 
@@ -201,6 +219,14 @@ fn collect(root: &Path, dir: &Path, out: &mut BTreeSet<PathBuf>) {
 }
 
 /// Poll `cond` until it returns true or `budget` elapses; returns whether it became true.
+/// How many `busbar listening` lines the boot log carries so far — one per LISTENER, which is what
+/// distinguishes "a plane is up" from "the server is up".
+fn listening_lines(log: &str) -> usize {
+    log.lines()
+        .filter(|l| l.contains("busbar listening"))
+        .count()
+}
+
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {

@@ -649,7 +649,21 @@ impl Rig {
             key_noscope: String::new(),
         };
 
-        // A boot may take a while on a loaded machine before it reads as a failure.
+        // BOTH PLANES, not whichever one comes up first.
+        //
+        // The gate below used to end at the data plane's `/healthz`, and the very next thing this
+        // rig does is `mint` a key, which goes to the OTHER listener. `run()` brings the two
+        // planes up in a fixed order that puts that one LAST: the per-core data workers are
+        // spawned first, and only then is the second socket bound. So "the data plane answers"
+        // carries no promise at all about the other one, and on a fast boot under parallel load
+        // the mint connected to a port nothing was bound to — the rig died with `ConnectionRefused`
+        // inside its request helper, reporting on its own start-up race instead of on ledger
+        // identity.
+        //
+        // Readiness is asked of each plane in the terms this rig will actually use it in: a real
+        // answered request on that exact port, not a log line and not a sleep. `/healthz` is
+        // unauthenticated and side-effect-free, so polling it costs the run nothing and proves the
+        // one thing needed — that address accepts and answers.
         let booted = wait_until(Duration::from_secs(60), || {
             if let Some(status) = rig.child.try_wait().expect("try_wait") {
                 panic!(
@@ -658,11 +672,13 @@ impl Rig {
                 );
             }
             get(PORTS.data, "/healthz", None).status == 200
+                && get(PORTS.admin, "/healthz", None).status == 200
         });
         assert!(
             booted.is_some(),
-            "busbar did not answer on {}; log:\n{}",
+            "busbar did not answer on BOTH {} and {}; log:\n{}",
             PORTS.data,
+            PORTS.admin,
             read_to_string(&rig.log_path)
         );
 
