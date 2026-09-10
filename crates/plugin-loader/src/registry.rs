@@ -356,7 +356,7 @@ impl PluginRegistry {
         &self,
         name_or_alias: &str,
         cfg_json: &str,
-    ) -> Result<Box<dyn busbar_api::SecretModule>, String> {
+    ) -> Result<Box<dyn busbar_contract::kinds::Secret>, String> {
         let Some(p) = self.resolve(name_or_alias) else {
             return Err(match self.unresolved_reason(name_or_alias) {
                 Some(s) => format!(
@@ -381,6 +381,29 @@ impl PluginRegistry {
             ));
         }
         crate::load_secret_from_bytes(&p.lib_bytes, cfg_json, &p.manifest.name, &p.manifest.kind)
+    }
+
+    /// Open a SECRET plugin by name or alias and resolve ONE reference's `settings` JSON through
+    /// it, in one call — the HOST-facing whole of the seam.
+    ///
+    /// It exists so the engine's secret resolver never has to name a plugin-face type to use a
+    /// loaded secret plugin. That is not tidiness. The face is the PLUGIN's vocabulary; the
+    /// resolver on the other side of this call is a host concern whose whole question is "these
+    /// bytes, or fail closed". Everything in between — the reference grammar, the frozen wire, the
+    /// token map — belongs to this crate, which is the one crate that is on both sides of the ABI.
+    ///
+    /// # Errors
+    /// Any resolution/kind/load failure, and the module's own taxonomy rendered as a message. The
+    /// plugin's message is not here (the face has no field for it) and is in the log instead; see
+    /// [`crate::DynSecret::resolve`].
+    pub fn resolve_secret(
+        &self,
+        name_or_alias: &str,
+        cfg_json: &str,
+        settings_json: &str,
+    ) -> Result<Vec<u8>, String> {
+        let module = self.open_secret(name_or_alias, cfg_json)?;
+        crate::resolve_secret_settings(module.as_ref(), settings_json)
     }
 
     /// Open an EXPORT sink resolved by name or alias: verifies the resolved plugin's `kind` is
