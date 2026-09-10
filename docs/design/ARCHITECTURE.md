@@ -92,10 +92,11 @@ them). Each axis is blind to the other two; only the kernel composes them.
   neither contract surface nor engine residue but the product's own config GRAMMAR (the 1.5.5
   document root, the loader, the 1.4.x→1.5.0 migrator, the overlay, the named-definition map, the
   byte-identity prepass, the `SecretResolver` and the validator), split out of `busbar-core` into a
-  crate that depends on the neutral substrate and never back on the engine — ≤ **11k**, gated as
-  `surface-ceiling:core-config`. Its ceiling is a budget rather than a ratchet: the config grammar is
-  allowed to grow, and what the ceiling refuses is the layer quietly becoming the engine's second
-  home. All `busbar-unit-*` ≤ 45k (incl. verbs
+  crate that depends on the neutral substrate and never back on the engine — gated as
+  `surface-ceiling:core-config` and PINNED to its measurement (**6,571** the day it landed) like the
+  three rows above it, because `ceiling-slack` refuses room in this table too. The config grammar is
+  allowed to grow; a release that grows it raises the figure and says by how much, which is what
+  keeps the layer from quietly becoming the engine's second home. All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
