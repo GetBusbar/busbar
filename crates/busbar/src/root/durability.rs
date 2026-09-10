@@ -97,7 +97,7 @@ use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_unit_ledger::checkpoint::Checkpoint;
 use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
-use busbar_unit_ledger::settle::{Ledger, Settlement};
+use busbar_unit_ledger::settle::{Booked, Ledger, Overdraft, Settlement};
 use busbar_unit_ledger::totals::{TotalsKey, WindowStart};
 use busbar_unit_wal::{
     BodyWriter, Entry, Journal, JournalAck, Mode, OpenError, RecordClass, Shipper,
@@ -289,18 +289,90 @@ impl Durability {
         self.journal_settlement(at, settlement)
     }
 
+    /// Settle a posting the exit path still OWNS, and journal it.
+    ///
+    /// **THE DOOR FOR A PLANE THAT MUST HAND ITS END ON.** The two doors above both take the posting
+    /// away — one takes the hold, one takes the posting — and a plane behind a mount cannot use
+    /// either, because the mount is owed the kernel's own sealed end and settling through them
+    /// destroys it. So this door takes the lend the end hands out, and the end survives its own
+    /// settlement.
+    ///
+    /// The same act as [`Durability::settle_posted`] and NOT a second answer to it: the books move
+    /// through the ledger's one book-moving function, the two records are built by the one record
+    /// builder below, and the same batch reaches the same chain. What differs is who owns the
+    /// posting afterwards, which is not a fact about money.
+    ///
+    /// The exactly-once property is the LEND's — `UnitEnd::lend_posting` hands out one per end and
+    /// refuses the second, and `busbar_caps::PostingLent` cannot be built any other way — so this
+    /// door cannot be driven twice for one hold any more than the by-value one can.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::settle`].
+    pub fn settle_lent(
+        &mut self,
+        at: &Settling<'_>,
+        lent: busbar_caps::PostingLent<'_>,
+    ) -> Result<SettledLent, DurabilityLost> {
+        // READ BEFORE THE LEND TRAVELS. The witness moves into the ledger, and the three figures the
+        // journal record carries are the posting's; taking them here is what lets the record be
+        // built from the same numbers the books moved by rather than from a second reading.
+        let posted = lent.posted();
+        let (reserved, settled, overdraft) = (
+            i128::from(posted.reserved()),
+            i128::from(posted.settled()),
+            i128::from(posted.overdraft()),
+        );
+        let booked = self.ledger.post_lent(at.key, at.window, lent);
+        let (posting, overdraft) =
+            self.journal_figures(at, reserved, settled, overdraft, booked.overdraft.as_ref())?;
+        Ok(SettledLent {
+            booked,
+            posting,
+            overdraft,
+        })
+    }
+
     fn journal_settlement(
         &mut self,
         at: &Settling<'_>,
         settlement: Settlement,
     ) -> Result<Settled, DurabilityLost> {
+        let (posting, overdraft) = self.journal_figures(
+            at,
+            i128::from(settlement.posted.reserved()),
+            i128::from(settlement.posted.settled()),
+            i128::from(settlement.posted.overdraft()),
+            settlement.overdraft.as_ref(),
+        )?;
+        Ok(Settled {
+            settlement,
+            posting,
+            overdraft,
+        })
+    }
+
+    /// The two journal records one settlement leaves, built from its figures.
+    ///
+    /// One builder for both doors, because a settlement made from a lend and one made from a move
+    /// have to reach the chain as the SAME bytes — that is the whole obligation the lent door was
+    /// added under. A second copy of this would be a second chance for the two to differ, and the
+    /// difference would be in a record a replay adds up.
+    fn journal_figures(
+        &mut self,
+        at: &Settling<'_>,
+        reserved: i128,
+        settled: i128,
+        overdraft_of_posting: i128,
+        note: Option<&Overdraft>,
+    ) -> Result<(Posting, Option<Posting>), DurabilityLost> {
         let stamp = at.stamp;
         let posting = Posting {
             key: at.key.clone(),
             window: at.window,
-            reserved: i128::from(settlement.posted.reserved()),
-            settled: i128::from(settlement.posted.settled()),
-            overdraft: i128::from(settlement.posted.overdraft()),
+            reserved,
+            settled,
+            overdraft: overdraft_of_posting,
             rate_card_version: stamp.rate_card_version,
             wall: stamp.wall,
             mono: stamp.mono,
@@ -309,7 +381,7 @@ impl Durability {
         // settlement above already carries both, and repeating them here would double every figure
         // a replay adds up. What this record holds that nothing else does is the carry, on the
         // chain, in order, beside the posting it came out of.
-        let overdraft = settlement.overdraft.as_ref().map(|note| Posting {
+        let overdraft = note.map(|note| Posting {
             key: note.key.clone(),
             window: note.window,
             reserved: 0,
@@ -331,11 +403,7 @@ impl Durability {
             })
             .collect();
         self.journal.append(at.durability, at.step, &entries)?;
-        Ok(Settled {
-            settlement,
-            posting,
-            overdraft,
-        })
+        Ok((posting, overdraft))
     }
 
     /// The ledger's own records, on the journal.
@@ -396,6 +464,22 @@ pub struct Settling<'a> {
 pub struct Settled {
     /// What the ledger did: the posting, the residual released, the overdraft noted.
     pub settlement: Settlement,
+    /// The settlement's own journal record.
+    pub posting: Posting,
+    /// The overdraft's journal record, where the unit ran past everything reservable.
+    pub overdraft: Option<Posting>,
+}
+
+/// What one settlement moved and what it left on the chain, for a posting the books were LENT.
+///
+/// [`Settled`] without the posting, and the absence is the whole of the difference: a settlement
+/// made from a lend never owned one, because the end it came out of still does. The two journal
+/// records are the same records — built by the same builder from the same figures — which is what
+/// makes this type a shape and not a second kind of settlement.
+#[derive(Debug)]
+pub struct SettledLent {
+    /// What the ledger did: the residual released and the overdraft noted.
+    pub booked: Booked,
     /// The settlement's own journal record.
     pub posting: Posting,
     /// The overdraft's journal record, where the unit ran past everything reservable.
