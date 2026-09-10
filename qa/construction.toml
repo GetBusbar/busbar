@@ -138,7 +138,7 @@ busbar-voice = ["busbar-voice-codec"]
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting:
 # every entry that ever stood here was struck once the base carried it.
 
-# THREE ENTRIES STAND TODAY, and they are one edit seen by three rules. The 1.6.0 busbar-api
+# FOUR ENTRIES STAND TODAY. The first three are one edit seen by three rules. The 1.6.0 busbar-api
 # retirement moves the secret kind onto `busbar_contract::Secret`, and the owner ruling that governs
 # it requires the face to keep the previous release's operator-actionable distinction between a
 # CONFIG/POLICY error and an OUTAGE. The face had `Unknown`/`Unavailable`/`NotAuthentic`/`Malformed`
@@ -164,6 +164,21 @@ key = "gate.surface_ceilings.contract_caps"
 by = 1
 because = "FACE busbar_contract::SecretError::Denied, the same single variant seen a third time: it is plugin-visible by construction -- a secret plugin returns it and a loader matches on it -- so it spends exactly one line of the surface a plugin author reads. That is the cost the owner ruling accepts in exchange for keeping the config-versus-outage distinction the previous release documented."
 
+# A FOURTH, AND IT IS THE ONE CELL THE SECRET KIND'S LANDING GROWS. busbar-secret-example-plugin is
+# re-based onto `busbar_contract::kinds::Secret`, whose base face asks the plugin to DECLARE its ABI
+# generation (`Plugin::abi`). The plugin answers with the SDK's own constant rather than a literal --
+# `busbar_plugin_sdk::secret_abi_version()` -- so the generation it declares and the generation it
+# was built against cannot drift apart, and the handshake refusal that guards against drift has
+# something true to compare. That spelling is two more hits on the SDK's name (the impl and the
+# test that pins it), on top of the `export_secret_plugin!` and manifest lines every SDK-built
+# plugin already carries. The alternative -- a bare `1` -- is the drift the constant exists to
+# refuse. The delta is keyed by the cell's IDENTITY, never its ordinal, and it expires the moment
+# this lands.
+[[gate.ceiling_raises]]
+key = "cell.busbar-secret-example-plugin.plugin-tooling.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "busbar-secret-example-plugin x plugin-tooling (3 -> 5). Re-based onto busbar_contract::kinds::Secret, the plugin must declare its ABI generation through `Plugin::abi`, and it reads that generation off `busbar_plugin_sdk::secret_abi_version()` -- the SDK's own constant -- so a plugin cannot declare a generation it was not built against. The impl and the test that pins it are the two new hits; the export macro and the manifest dependency are the three the base already carried. A literal would be smaller and would be the exact drift the constant refuses."
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
