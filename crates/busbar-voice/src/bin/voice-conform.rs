@@ -1748,6 +1748,15 @@ fn probe_session_scope() -> (&'static str, String) {
 //   * the dispatch slot CLAIMS a Gemini-labelled base distinct from the OpenAI one (`voice_claims`)
 //   * the plane still ADMITS exactly one audience for both dialects (`voice_admission`)
 //   * a Gemini WS-accept arrival is actually declared, keyed to this plane's own slot (`voice_ws_arrivals`)
+//
+// EVERY ONE OF THOSE STRINGS IS READ, NOT TYPED. This leg used to compare the mounted arrival and
+// the claimed bases against URLs written out here, which made it a copy of the declaration standing
+// beside the declaration — the two would have moved apart the moment one of them was edited, and the
+// leg would have gone on passing against its own copy while the served surface changed. The URLs now
+// come off `busbar_plane_streams`'s declared `SURFACE` and claim table and off `busbar-voice`'s own
+// `MOUNT_PATH`, so the leg asserts that the legacy engine's mounted routes and the composition's
+// declaration are THE SAME URLS. If either side moves alone, this goes red — which is the only
+// reading of "conformance" that means anything while two things serve one surface.
 //   * the wire handshake itself: a `setupComplete` frame from the far side (what a dialed provider
 //     sends) is relayed to the client verbatim through a `SessionCore<GeminiLiveCodec>` — the EXACT
 //     codec type the mounted route's `WsArrivalSpec` closure closes over, not a stand-in.
@@ -1756,6 +1765,31 @@ fn probe_session_scope() -> (&'static str, String) {
 // spec/cross-parity battery, but no ingress route spoke it — `voice_claims`/`voice_ws_arrivals` named
 // only the OpenAI base, so a caller had no path to reach the Gemini dialect at all.
 // ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// The mount ONE declared binding of the composition's streams surface is addressed at.
+///
+/// Read off `busbar_plane_streams::surface::SURFACE` — the same `const` a duplex wire addresses an
+/// upgrade against — so this rig and the node agree about where a session is opened by construction
+/// rather than by two people having typed the same string.
+fn declared_mount(binding: &str) -> Option<&'static str> {
+    busbar_plane_streams::surface::SURFACE
+        .bindings
+        .iter()
+        .find(|b| b.name == binding)
+        .and_then(|b| b.mounts.first().copied())
+}
+
+/// The BASE one binding's mount sits one level under: the mount with its capture segment cut.
+///
+/// Derived from the mount rather than typed, and derived from the MOUNT rather than read off the
+/// claim's own selector, which is the sharper of the two readings available here. The composition
+/// claims each duplex leg as one level under its base and declares the mount as that base plus the
+/// call, and its own cells hold the two to each other in both directions — so cutting the capture
+/// off the mount reproduces the claimed base by construction, and this rig needs neither a copy of
+/// the base nor the contract's selector vocabulary to say so.
+fn declared_base(binding: &str) -> Option<&'static str> {
+    declared_mount(binding).and_then(|m| m.rsplit_once('/').map(|(base, _)| base))
+}
 
 fn probe_gemini_live_route() -> (&'static str, String) {
     let unit = ();
@@ -1769,17 +1803,35 @@ fn probe_gemini_live_route() -> (&'static str, String) {
         return ("FAIL", "voice_build produced no dispatch slot".into());
     };
 
-    let claims = busbar_voice::mount::voice_claims(slot.as_ref());
-    if !claims.contains(&("/v1/realtime/gemini".to_string(), busbar_voice::GEMINI_LIVE)) {
+    // THE DECLARED BASE, off the composition's own declared mount. All three duplex legs are claimed
+    // as one level under a base and mounted at that base plus the call, so the base is the mount
+    // with its capture cut and there is no second copy of it anywhere.
+    let Some(gemini_base) = declared_base(busbar_plane_streams::surface::BINDING_GEMINI_LIVE)
+    else {
         return (
             "FAIL",
-            format!("the Gemini base is not claimed under its own dialect: {claims:?}"),
+            "the composition declares no mount for the Gemini dialect to read a base from".into(),
+        );
+    };
+
+    let claims = busbar_voice::mount::voice_claims(slot.as_ref());
+    if !claims.contains(&(gemini_base.to_string(), busbar_voice::GEMINI_LIVE)) {
+        return (
+            "FAIL",
+            format!(
+                "the Gemini base `{gemini_base}` is not claimed under its own dialect: {claims:?}"
+            ),
         );
     }
-    if !claims.contains(&("/v1/realtime".to_string(), busbar_voice::OPENAI_REALTIME)) {
+    // The plane's own audience base, read off the declaration that defines it rather than spelled
+    // again here: a leg that carried its own copy would keep passing after the audience moved.
+    let openai_base = busbar_voice::mount::MOUNT_PATH;
+    if !claims.contains(&(openai_base.to_string(), busbar_voice::OPENAI_REALTIME)) {
         return (
             "FAIL",
-            format!("the OpenAI base is no longer claimed alongside Gemini: {claims:?}"),
+            format!(
+                "the OpenAI base `{openai_base}` is no longer claimed alongside Gemini: {claims:?}"
+            ),
         );
     }
 
@@ -1790,22 +1842,67 @@ fn probe_gemini_live_route() -> (&'static str, String) {
                 .into(),
         );
     };
-    if !admission.audience.ends_with("/v1/realtime") {
+    if !admission.audience.ends_with(openai_base) {
         return (
             "FAIL",
             format!("unexpected audience: {}", admission.audience),
         );
     }
 
-    let arrivals = busbar_voice::mount::voice_ws_arrivals();
-    let Some(gemini) = arrivals
-        .iter()
-        .find(|a| a.path == "/v1/realtime/gemini/{call_id}")
+    // THE MOUNT, off the composition's declared surface. The legacy engine mounts its own routes
+    // from its own constants and the composition declares the same three as binding mounts; this is
+    // the one place the two are held to each other, and it is a lookup rather than a literal so that
+    // it is the DECLARATION this leg is conformant to.
+    let Some(gemini_mount) = declared_mount(busbar_plane_streams::surface::BINDING_GEMINI_LIVE)
     else {
         return (
             "FAIL",
+            "the composition declares no binding mount for the Gemini dialect".into(),
+        );
+    };
+
+    let arrivals = busbar_voice::mount::voice_ws_arrivals();
+
+    // ALL THREE DECLARED MOUNTS ARE SERVED, AND EACH IS KEYED TO THIS PLANE'S OWN SLOT.
+    //
+    // The set and not just this leg's row, because the failure being judged is a served surface and
+    // a declaration drifting apart, and that drift does not announce which of the three it happened
+    // to. A leg that checked only its own row would pass on a node whose carrier leg had quietly
+    // moved. The slot key is read off `PLANE_DECL` rather than written down for the same reason
+    // every URL here is read: an arrival keyed to a slot nobody registered is a route that resolves
+    // to nothing at the moment a call arrives on it.
+    for binding in busbar_plane_streams::surface::SURFACE.bindings {
+        for mount in binding.mounts {
+            let Some(served) = arrivals.iter().find(|a| a.path == *mount) else {
+                return (
+                    "FAIL",
+                    format!(
+                        "the composition declares the `{}` binding at `{mount}` and no WS-accept \
+                         arrival is mounted there; mounted paths: {:?}",
+                        binding.name,
+                        arrivals.iter().map(|a| &a.path).collect::<Vec<_>>()
+                    ),
+                );
+            };
+            if served.slot_key != busbar_voice::PLANE_DECL.key {
+                return (
+                    "FAIL",
+                    format!(
+                        "the arrival at `{mount}` is keyed to '{}', not the plane's own slot '{}'",
+                        served.slot_key,
+                        busbar_voice::PLANE_DECL.key
+                    ),
+                );
+            }
+        }
+    }
+
+    let Some(gemini) = arrivals.iter().find(|a| a.path == gemini_mount) else {
+        return (
+            "FAIL",
             format!(
-                "no Gemini WS-accept arrival mounted; declared paths: {:?}",
+                "no WS-accept arrival is mounted at the declared Gemini mount `{gemini_mount}`; \
+                 declared paths: {:?}",
                 arrivals.iter().map(|a| &a.path).collect::<Vec<_>>()
             ),
         );

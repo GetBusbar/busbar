@@ -20,6 +20,17 @@
 # relays to the client verbatim through the EXACT `SessionCore<GeminiLiveCodec>` type the mounted
 # route's `WsArrivalSpec` closure closes over.
 #
+# EVERY URL IS READ, NOT TYPED. The bases and mounts this leg compares against come off
+# `busbar_plane_streams`'s declared `SURFACE` and off `busbar-voice`'s own `MOUNT_PATH`, never off a
+# string in the harness — so the leg asserts that the legacy engine's mounted routes and the
+# composition's declaration are THE SAME URLS, and goes red the moment either moves alone. A leg
+# holding its own copy of a URL is a leg that keeps passing while the served surface changes, which
+# is the one failure a conformance rig exists to make impossible.
+#
+# And ALL THREE declared mounts are checked, not just this leg's: the drift being judged does not
+# announce which of the three legs it happened to, and a leg that checked only its own row would
+# pass on a node whose carrier leg had quietly moved.
+#
 # WAS RED: no ingress route spoke Gemini Live at all.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
