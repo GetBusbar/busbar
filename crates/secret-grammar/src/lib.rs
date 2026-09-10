@@ -47,6 +47,8 @@
 //! `SecretRef` holds no secret material — only the module name and its opaque settings — so it is
 //! safe to derive `Debug`/`Clone`/`PartialEq` on it and on every struct embedding it.
 
+#![forbid(unsafe_code)]
+
 use std::fmt;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
