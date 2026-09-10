@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use busbar_unit_admission::ChainWalk;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// **The metered line's direction is the side its quantity was measured on.**

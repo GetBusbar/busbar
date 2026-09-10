@@ -15,10 +15,15 @@
 //! participates only when the request's effective pool EQUALS its scope — lane membership is never
 //! consulted, so a pool that happens to share a member lane with another pool never triggers that
 //! other pool's bucket.
+//!
+//! The resolved topology the chain is walked over — the bucket, the group, the table — is the cost
+//! model's, resolved by the cost unit from the configured `groups:` tree and handed to this one.
+//! The WALK is declared here, on that table, as [`ChainWalk`].
 
-// contract: BucketChain, and the resolved group topology behind it, are types the contract crate
-// owns. They are declared here so the decision has something to walk while the crates land side by
-// side; the integrator replaces them and deletes these.
+// contract: BucketChain is a type the contract crate owns. It is declared here so the decision has
+// something to walk while the crates land side by side; the integrator replaces it and deletes it.
+
+pub use busbar_unit_cost::{GroupBucket, GroupRuntime, GroupTable, STANDARD_TIER_BP};
 
 use crate::window::WINDOW_TOTAL;
 
@@ -128,9 +133,6 @@ pub struct ChainGroup {
     pub tier_bp: u32,
 }
 
-/// The neutral tier multiplier: one times ten thousand.
-pub const STANDARD_TIER_BP: u32 = 10_000;
-
 /// A resolved chain: the principal's attribution bucket, then every ancestor group's per-window
 /// buckets, innermost first, plus the groups themselves in the same order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,114 +212,15 @@ impl BucketChain {
     }
 }
 
-// ── the config projection the chain is resolved from ────────────────────────────────────────────
+// ── the walk over the resolved topology ─────────────────────────────────────────────────────────
 
-/// One group's per-window enforcement bucket, before it is bound to a principal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GroupBucket {
-    /// The ledger bucket id this group's window writes to.
-    pub bucket_id: String,
-    /// The window word.
-    pub window: &'static str,
-    /// Request-count cap, if any.
-    pub requests_cap: Option<u64>,
-    /// Total-token cap, if any.
-    pub tokens_cap: Option<u64>,
-    /// Uncached-input token cap, if any.
-    pub tokens_input_cap: Option<u64>,
-    /// Output token cap, if any.
-    pub tokens_output_cap: Option<u64>,
-    /// Cache-read token cap, if any.
-    pub tokens_cache_read_cap: Option<u64>,
-    /// Cache-write token cap, if any.
-    pub tokens_cache_write_cap: Option<u64>,
-    /// Spend cap in cents, if any.
-    pub budget_cap: Option<i64>,
-    /// The pool this bucket is qualified to, if any.
-    pub scope: Option<String>,
-    /// The downgrade target the governing budget limit declared, if any.
-    pub downgrade_to: Option<String>,
-}
-
-impl GroupBucket {
-    /// A bucket for `window` with no caps set, to be filled in by the caller.
-    pub fn new(bucket_id: impl Into<String>, window: &'static str) -> Self {
-        GroupBucket {
-            bucket_id: bucket_id.into(),
-            window,
-            requests_cap: None,
-            tokens_cap: None,
-            tokens_input_cap: None,
-            tokens_output_cap: None,
-            tokens_cache_read_cap: None,
-            tokens_cache_write_cap: None,
-            budget_cap: None,
-            scope: None,
-            downgrade_to: None,
-        }
-    }
-}
-
-/// One resolved group: its freeze flag, its in-flight cap, its per-window buckets, and its parent
-/// by index, so the chain walk is index-chasing with no hashing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GroupRuntime {
-    /// The group's name.
-    pub name: String,
-    /// The same name as the composition root interned it, handed over at registration. See
-    /// [`ChainGroup::lease_id`], which is where it is read.
-    pub lease_id: Option<&'static str>,
-    /// `false` freezes the group and every descendant.
-    pub enabled: bool,
-    /// The instantaneous in-flight cap, if any.
-    pub concurrent_cap: Option<u64>,
-    /// The tier multiplier in basis points.
-    pub tier_bp: u32,
-    /// The group's per-window enforcement buckets, one per distinct window its limits use. Empty
-    /// for a group with only a concurrent cap, or none at all.
-    pub buckets: Vec<GroupBucket>,
-    /// The parent group's index in the table, if any.
-    pub parent: Option<usize>,
-}
-
-impl GroupRuntime {
-    /// An enabled group with no caps and no parent.
-    pub fn new(name: impl Into<String>) -> Self {
-        GroupRuntime {
-            name: name.into(),
-            lease_id: None,
-            enabled: true,
-            concurrent_cap: None,
-            tier_bp: STANDARD_TIER_BP,
-            buckets: Vec::new(),
-            parent: None,
-        }
-    }
-}
-
-/// The resolved group topology: the table the chain walk chases indices through.
-#[derive(Debug, Clone, Default)]
-pub struct GroupTable {
-    groups: Vec<GroupRuntime>,
-}
-
-impl GroupTable {
-    /// Build a table from groups already resolved in dependency order (a parent's index must be
-    /// less than nothing in particular; the walk clamps on cycles either way).
-    pub fn new(groups: Vec<GroupRuntime>) -> Self {
-        GroupTable { groups }
-    }
-
-    /// Every group.
-    pub fn groups(&self) -> &[GroupRuntime] {
-        &self.groups
-    }
-
-    /// The index of a group by name.
-    pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.groups.iter().position(|g| g.name == name)
-    }
-
+/// The chain walk over a resolved [`GroupTable`].
+///
+/// The table is the cost model's: the cost unit resolves the configured `groups:` tree into it and
+/// owns the types it is made of, because the topology is half of what a deployment's money IS. The
+/// WALK is the door's — it is what turns a table into the chain a request is judged against — and
+/// it is declared here, on the table the model handed over, as the one thing this unit adds to it.
+pub trait ChainWalk {
     /// Resolve the enforcement chain for a principal: its attribution bucket, then its group's
     /// window buckets, then the parent's, to the root, innermost first.
     ///
@@ -326,11 +229,24 @@ impl GroupTable {
     /// group and boot re-checks it, so this can only arise from a shared durable store whose
     /// principals reference a group another node's config no longer has — and a chain whose caps
     /// cannot be read cannot be enforced, so nothing is admitted under it.
-    pub fn chain_for(
+    fn chain_for(
+        &self,
+        attribution_bucket_id: &str,
+        group: Option<&str>,
+    ) -> Result<BucketChain, MissingGroup>;
+
+    /// The boot check for the one-tier-per-chain rule: every chain this table can produce carries
+    /// a single tier multiplier. Run at boot; a mixed chain is a boot refusal.
+    fn validate_tiers(&self) -> Result<(), ChainError>;
+}
+
+impl ChainWalk for GroupTable {
+    fn chain_for(
         &self,
         attribution_bucket_id: &str,
         group: Option<&str>,
     ) -> Result<BucketChain, MissingGroup> {
+        let table = self.groups();
         let mut buckets: Vec<ChainBucket> = Vec::with_capacity(8);
         buckets.push(ChainBucket::attribution(attribution_bucket_id));
         let mut groups: Vec<ChainGroup> = Vec::new();
@@ -343,7 +259,7 @@ impl GroupTable {
             },
         };
         while let Some(i) = next {
-            if walked >= self.groups.len() {
+            if walked >= table.len() {
                 // A distinct-node walk cannot exceed the group count without revisiting one, which
                 // is a cycle. Cycles are a validation error; clamp here defensively, never loop.
                 break;
@@ -351,7 +267,7 @@ impl GroupTable {
             // Checked, for the same reason the clamp above exists: this walk does not get to
             // assume the table is well-formed, and a parent index past the end must end the walk
             // rather than the process.
-            let Some(g) = self.groups.get(i) else {
+            let Some(g) = table.get(i) else {
                 break;
             };
             walked += 1;
@@ -386,20 +302,19 @@ impl GroupTable {
         Ok(BucketChain::unchecked(buckets, groups))
     }
 
-    /// The boot check for the one-tier-per-chain rule: every chain this table can produce carries
-    /// a single tier multiplier. Run at boot; a mixed chain is a boot refusal.
-    pub fn validate_tiers(&self) -> Result<(), ChainError> {
-        for (i, g) in self.groups.iter().enumerate() {
+    fn validate_tiers(&self) -> Result<(), ChainError> {
+        let table = self.groups();
+        for (i, g) in table.iter().enumerate() {
             let mut walked = 0usize;
             let mut next = Some(i);
             let expected = g.tier_bp;
             while let Some(j) = next {
-                if walked >= self.groups.len() {
+                if walked >= table.len() {
                     break;
                 }
                 // Checked, as in `chain_for`: a dangling parent index ends this walk, and the boot
                 // check reports on what it could read rather than aborting the boot with a panic.
-                let Some(cur) = self.groups.get(j) else {
+                let Some(cur) = table.get(j) else {
                     break;
                 };
                 walked += 1;

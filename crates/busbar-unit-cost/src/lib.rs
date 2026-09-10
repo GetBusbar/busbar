@@ -57,12 +57,17 @@
 
 mod currency;
 mod history;
+mod model;
 mod posting;
 mod project;
 mod rate;
 
 pub use currency::CurrencyCode;
 pub use history::{Author, CardEntry, CardEntryDraft, History, HistorySeq, HistoryView};
+pub use model::{
+    CostModel, GroupBucket, GroupRuntime, GroupSpec, GroupTable, LimitMetric, LimitSpec, ScopeSpec,
+    GROUP_BUCKET_PREFIX,
+};
 pub use posting::{
     apply_tier, price, price_at_card, price_fail_closed, CachedPrice, Posting, Priced, PricedLine,
     Quantity, Unpriceable, FEE_CLASS, STANDARD_TIER_BP,
