@@ -2,16 +2,29 @@
 //! implementation and nothing else; still a direct child module, so `use super::*` reaches the
 //! private items it always did.
 //!
-//! ## Why three of these read another crate's source
+//! ## The last two source reads, retired
 //!
-//! The two console-era answers were WRITTEN inside `busbar-mcp`'s console serve loop, in private
-//! functions of a crate this one's manifest does not name and must not. The move is only honest if
-//! the two are the same document, and the only way to say so from here is to read the source the
-//! other one is written in. That is the pin this crate's header describes: a copy that is checked is
-//! not a second opinion.
+//! Five of these asked their question TWICE: once of the answer this module composes, and once of
+//! the SOURCE the console-era answer was written in — `include_str!` over
+//! `../../../busbar-mcp/src/…`. That second half was the move-pin, and it cost what every one of
+//! this directory's other source reads cost before it was retired: a coupling to a sibling crate
+//! this manifest does not name and must not. It left the plane unable to be BUILT or DELETED on its
+//! own, which is not a style complaint — `scripts/plane-delete-test.sh mcp` builds this crate with
+//! `busbar-mcp` physically removed, and two `include_str!` lines were the whole of why that build
+//! failed:
 //!
-//! It is a text read and it is deliberately narrow — the members and their values, one at a time,
-//! not a whole-file digest. A digest would go red on a comment; these go red on a byte of the wire.
+//! ```text
+//! error: couldn't read `crates/busbar-plane-mcp/src/tests/../../../busbar-mcp/src/mcp/stdio_serve.rs`
+//! error: couldn't read `crates/busbar-plane-mcp/src/tests/../../../busbar-mcp/src/mcp/method.rs`
+//! ```
+//!
+//! So they go, on the same terms `claims.rs`, `facts.rs`, `ops.rs` and `jsonrpc.rs` retired theirs
+//! on. Every value assertion stays — each of the five already read the member and its value off
+//! this module's own answer, and that half is the half that goes red on a byte of the wire. What is
+//! given up is a text search for a fragment of another crate's private function, which went red on a
+//! reformatting and could not have survived that crate's own deletion in any case. The two halves
+//! stay pinned to one wire where a wire pin belongs: the MCP conformance battery
+//! (`testing/mcp-conformance`) drives both and judges them against the same protocol.
 
 use busbar_contract::ids::OpClassId;
 
@@ -20,12 +33,6 @@ use super::{
     tools_list_result, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS, PROTOCOL_VERSION, SERVER_NAME,
 };
 use crate::{ops, records};
-
-/// The console serve loop this module's two constant answers were moved out of.
-const CONSOLE_SOURCE: &str = include_str!("../../../busbar-mcp/src/mcp/stdio_serve.rs");
-
-/// The server half's method file, where the caching hints and the listing shape were written.
-const METHOD_SOURCE: &str = include_str!("../../../busbar-mcp/src/mcp/method.rs");
 
 /// The revision is the codec's own string and not a copy of it.
 #[test]
@@ -74,21 +81,8 @@ fn the_handshake_is_the_console_loops_own() {
         "the handshake declares a capability the console loop does not"
     );
 
-    // And the same five, found in the loop's own source beside the handshake it belongs to.
-    for fragment in [
-        "\"protocolVersion\": PROTOCOL_VERSION",
-        "\"tools\": { \"listChanged\": true }",
-        "\"prompts\": { \"listChanged\": true }",
-        "\"resources\": { \"listChanged\": true, \"subscribe\": true }",
-        "\"completions\": {}",
-        "\"logging\": {}",
-        "\"name\": \"busbar\"",
-    ] {
-        assert!(
-            CONSOLE_SOURCE.contains(fragment),
-            "the console loop no longer writes {fragment}"
-        );
-    }
+    // And the server's own name, as the wire carries it.
+    assert_eq!(SERVER_NAME, "busbar");
 }
 
 /// The sentence the handshake carries is the console loop's own, word for word.
@@ -101,14 +95,16 @@ fn the_instructions_are_the_console_loops_own() {
     let said = instructions();
     assert!(said.starts_with("This server speaks MCP revision "));
     assert!(said.contains(PROTOCOL_VERSION));
+    // Each phrase is long enough that a rewording moves it, and it is asked of what this module
+    // SAYS rather than of the source another crate says it in.
     for phrase in [
-        "This server speaks MCP revision {PROTOCOL_VERSION}: no handshake is required,",
+        "no handshake is required,",
         "and every request states its protocol version and client capabilities in",
         "`params._meta`.",
     ] {
         assert!(
-            CONSOLE_SOURCE.contains(phrase),
-            "the console loop no longer says: {phrase}"
+            said.contains(phrase),
+            "the handshake no longer says: {phrase}"
         );
     }
 }
@@ -117,10 +113,6 @@ fn the_instructions_are_the_console_loops_own() {
 #[test]
 fn the_liveness_answer_is_empty() {
     assert_eq!(ping_result(), serde_json::json!({}));
-    assert!(
-        CONSOLE_SOURCE.contains("\"ping\" => return Some(json_result(id, serde_json::json!({})))"),
-        "the console loop no longer answers ping with the empty document"
-    );
 }
 
 /// The caching hints are the pair the server half writes, under the names it writes them.
@@ -129,17 +121,18 @@ fn the_cache_hints_are_the_server_halfs_own() {
     let hinted = cache_hints(serde_json::json!({ "tools": [] }));
     assert_eq!(hinted["cacheScope"], CACHE_SCOPE);
     assert_eq!(hinted["ttlMs"], CACHE_TTL_MS);
-    for fragment in [
-        "const CACHE_SCOPE: &str = \"private\";",
-        "const CACHE_TTL_MS: i64 = 0;",
-        "obj.insert(\"cacheScope\".into(), CACHE_SCOPE.into());",
-        "obj.insert(\"ttlMs\".into(), CACHE_TTL_MS.into());",
-    ] {
-        assert!(
-            METHOD_SOURCE.contains(fragment),
-            "the server half no longer writes {fragment}"
-        );
-    }
+    // The two values themselves, as the wire carries them: a scope that is not `private` or a TTL
+    // that is not zero is a different caching instruction to every client that reads them.
+    assert_eq!(CACHE_SCOPE, "private");
+    assert_eq!(CACHE_TTL_MS, 0);
+    // And nothing else is attached: a third hint would be a member no client was told to expect.
+    assert_eq!(
+        hinted
+            .as_object()
+            .expect("a hinted answer is a document")
+            .len(),
+        3
+    );
 }
 
 /// A value that is not a document is handed back untouched.
@@ -166,10 +159,6 @@ fn the_listing_is_the_server_halfs_shape() {
         listed.as_object().expect("a listing is a document").len(),
         3,
         "the listing carries a member the server half does not write"
-    );
-    assert!(
-        METHOD_SOURCE.contains("result(id, cache_hints(serde_json::json!({ \"tools\": tools })))"),
-        "the server half no longer composes its listing this way"
     );
     // A caller whose grant reaches nothing gets the empty list rather than an error.
     assert_eq!(
