@@ -936,7 +936,6 @@ dependencies = [
  "busbar-api",
  "busbar-contract",
  "busbar-plugin",
- "busbar-secret-ref",
  "busbar-substrate-values",
  "busbar-timing",
  "bytes",

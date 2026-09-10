@@ -216,7 +216,7 @@ reason = "the configuration surface being carved out of busbar-core; core kind, 
 [[minted]]
 crate = "busbar-core-policy"
 commit = "5fe28f82a"
-cells = "5"
+cells = "4"
 moved_from = "busbar-core"
 
 # ------------------------------------------------------------------------------------------------
@@ -538,13 +538,6 @@ to = "plane"
 cite = "none. ARCHITECTURE.md 1.1 — `busbar-core-policy` is the hook POLICY engine, the first core-kind crate, and it names no plane, no dialect and no transport: its vocabulary is the hook contract plus the config leaf structs the operator wrote, and a request reaches its gate as an `IrFacts` projection. The 36 hits are the plane words in the gate's own prose and the `Operation` verb constants it matches on — the words that say WHICH request shape a route policy screens, spelled through the contract's axis and never through a plane crate."
 why = "crates of kind core naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the plane names from the core crate: the gate reads `IrFacts::verb()` and the contract's `Operation` axis, and its prose can say 'the dialogue plane' without naming one. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "core"
-to = "secret"
-cite = "none. ARCHITECTURE.md 1.1 — `busbar-core-policy` is the hook POLICY engine, the first core-kind crate, and it names no plane, no dialect and no transport: its vocabulary is the hook contract plus the config leaf structs the operator wrote, and a request reaches its gate as an `IrFacts` projection. A hook's `settings:` map is resolved through the substrate's fail-closed secret resolver BEFORE it crosses the plugin ABI; the 17 hits are the `SecretRef` reference SHAPE (the leaf crate's spelling), not a secret plugin."
-why = "crates of kind core naming secret vocabulary: secret package names in any spelling, the kind-qualified id (secret-<id>), and — where secret is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the secret-kind name from the core crate: when the reference shape is spelled through the contract (Track 4's secret step), every `SecretRef` hit here is one repoint and this class falls to zero. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "core"
@@ -1711,7 +1704,7 @@ count = "256"
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "14"
+count = "6"
 
 [[cell]]
 crate = "busbar-core"
@@ -1757,11 +1750,6 @@ count = "2"
 crate = "busbar-core-policy"
 kind = "plane"
 count = "36"
-
-[[cell]]
-crate = "busbar-core-policy"
-kind = "secret"
-count = "17"
 
 [[cell]]
 crate = "busbar-core-policy"
@@ -2483,10 +2471,15 @@ crate = "busbar-substrate"
 kind = "plugin-tooling"
 count = "1"
 
+# RAISED BY HAND, 2 -> 6, and a person read it: `config::secret` moved here verbatim from
+# busbar-core (`crates/busbar-substrate/src/config/secret.rs`), and the resolver's own module
+# says the word `secret` where it stood in the core. 4 hits in that one file and 2 in this
+# crate's Cargo.toml, every one of them MOVED from busbar-core × secret (14 -> 6), none
+# written. They fall when the secret kind is re-implemented on busbar_contract::kinds.
 [[cell]]
 crate = "busbar-substrate"
 kind = "secret"
-count = "2"
+count = "6"
 
 [[cell]]
 crate = "busbar-substrate"
