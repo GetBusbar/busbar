@@ -461,8 +461,12 @@ mod mounts {
     /// is present exactly when its crate edge is: a row for a mount this binary does not compile would
     /// be the root declaring a surface no request could reach.
     #[must_use]
+    // A `vec![]` of the three would be shorter and cannot be written: each element is gated on its
+    // own plane's two switches, and a `#[cfg]` does not attach to an element of that macro. The
+    // transport rows above take the same shape for the same reason — build the list, then push what
+    // this build carries — and `unused_mut` is the one-row build's honest state.
+    #[allow(clippy::vec_init_then_push, unused_mut)]
     pub fn mount_rows() -> Vec<MountRow> {
-        #[allow(unused_mut)]
         let mut rows: Vec<MountRow> = Vec::new();
         // BOTH SWITCHES ON EVERY ROW, not just the serving one. A serving switch implies its plane's —
         // `root-llm-serve = ["root-llm", …]` — so one of the two would compile identically; it is spelled
