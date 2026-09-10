@@ -61,6 +61,7 @@ pub mod durability;
 pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
+pub mod metrics_drain;
 pub mod migration;
 pub mod policy;
 /// The composition root's one write into both protocol seams, moved verbatim out of

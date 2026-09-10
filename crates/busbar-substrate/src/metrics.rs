@@ -60,10 +60,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::diag_error;
-use crate::diag_warn;
-use crate::diagnostics::{
-    METRICS_MAINTENANCE_THREAD_SPAWN_FAILED, PROMETHEUS_RECORDER_INSTALL_FAILED,
-};
+use crate::diagnostics::PROMETHEUS_RECORDER_INSTALL_FAILED;
 
 // without panicking: `None` = install was attempted and failed; `Some(handle)` = installed. The
 // `OnceLock` still serializes the single global `install_recorder()` call across threads/tests.
@@ -97,11 +94,26 @@ pub fn enabled() -> bool {
 /// Called once, synchronously, from `run()` after config load. The RECORDER install is deferred to a
 /// background thread because its one-time clock calibration (~200 ms) would otherwise delay the
 /// listener bind; the enabled flag is set here, in the foreground, so the router sees it.
-pub fn configure(buffer: Option<Duration>) {
+pub fn configure(buffer: Option<Duration>) -> Option<Duration> {
     let _ = ENABLED.set(buffer.is_some());
     if let Some(buffer) = buffer {
         std::thread::spawn(move || init_with(buffer));
     }
+    // The DRAIN CADENCE, handed back to the composition root so the maintenance tick is driven
+    // from where every other background task of this process is driven, with the same shutdown
+    // broadcast. The derivation stays HERE, beside the retention window it is derived from: a root
+    // that re-divided `buffer_seconds` itself would be a second copy of a retention decision.
+    buffer.map(drain_cadence)
+}
+
+/// One rolling bucket of the operator's declared retention window — the width of a bucket, and so
+/// the longest a raw observation may sit unfolded. Never zero: a cadence of zero would be a tick
+/// that spins.
+pub fn drain_cadence(buffer: Duration) -> Duration {
+    buffer
+        .checked_div(SUMMARY_BUCKETS.get())
+        .unwrap_or(buffer)
+        .max(Duration::from_millis(1))
 }
 
 /// Should a histogram slot RETAIN a newly-recorded sample right now? Three states, not two:
@@ -386,7 +398,7 @@ pub const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4";
 /// always one a human named. It sets both halves of the retention contract: the rolling-summary
 /// window (quantiles cover the last `buffer`; anything older is dropped) and, divided by
 /// [`SUMMARY_BUCKETS`], how often parked raw samples are folded into it — that quotient is the
-/// bucket width AND the [`spawn_maintenance`] tick.
+/// bucket width AND the maintenance tick's cadence ([`drain_cadence`]).
 ///
 /// NOT called unless `observability.metrics` is present. With no recorder installed, every emission
 /// macro and every bank helper is a no-op against the default recorder, so an operator who did not
@@ -395,10 +407,7 @@ pub fn init_with(buffer: Duration) {
     // Retention is split across a few rolling buckets so quantiles degrade smoothly as the window
     // slides, instead of the whole window vanishing at once on rollover. The buckets SUM to
     // `buffer`, which is the operator's declared retention.
-    let bucket = buffer
-        .checked_div(SUMMARY_BUCKETS.get())
-        .unwrap_or(buffer)
-        .max(Duration::from_millis(1));
+    let bucket = drain_cadence(buffer);
     // The global recorder can only be installed once per process, so the `OnceLock` runs this
     // initializer exactly once and serializes concurrent callers (startup + tests). On install
     // FAILURE — typically because another library already installed a global recorder — we log and
@@ -418,7 +427,6 @@ pub fn init_with(buffer: Duration) {
             // labeled gauges appear on the first scrape via `refresh_scrape_gauges`.
             metrics::counter!(BILLING_TRUNCATED_TOTAL).absolute(0);
             metrics::counter!(METERING_PENDING_COALESCED_TOTAL).absolute(0);
-            spawn_maintenance(bucket);
             Some(handle)
         }
         Err(e) => {
@@ -530,28 +538,16 @@ pub fn drain_pending() {
     handle.run_upkeep();
 }
 
-/// Start the maintenance tick. Called once, from the successful branch of [`init`], so every build
-/// that has a recorder also has the drain — no configuration, no operator action, no dependency on
-/// anyone scraping. A dedicated OS thread (not a Tokio task) because the drain is synchronous and
-/// takes the bank's locks: it must never occupy an executor worker, and it must keep running even
-/// if the runtime is saturated. Best-effort: if the thread cannot be spawned we log and continue —
-/// the pre-existing scrape-driven drain still applies.
-fn spawn_maintenance(interval: Duration) {
-    let spawned = std::thread::Builder::new()
-        .name("busbar-metrics-drain".into())
-        .spawn(move || loop {
-            std::thread::sleep(interval);
-            drain_pending();
-        });
-    if let Err(e) = spawned {
-        diag_warn!(
-            METRICS_MAINTENANCE_THREAD_SPAWN_FAILED,
-            error = %e,
-            "could not spawn the metrics maintenance thread; buffered observations now drain only \
-             on a /metrics scrape"
-        );
-    }
-}
+// THE MAINTENANCE TICK'S DECISION AND ITS DRIVER BOTH LEFT THIS CRATE. What stood here was a raw
+// `std::thread::Builder` detached OS thread running `loop { sleep(interval); drain_pending(); }`,
+// spawned from the successful branch of `init_with`: no join handle, no supervision, and NO
+// SHUTDOWN PATH, so whatever the bank had buffered since its last sleep was lost on every exit and
+// nothing in the process could stop it. The decision is now a total function of three arguments
+// — Idle, Drain, or Final, with `stopping` winning over the interval so the last interval's
+// observations are folded rather than dropped — and the loop that runs it is a supervised task in
+// the composition root, on the same shutdown broadcast as every other background task there.
+// [`drain_cadence`] above is what `configure` hands the root so the cadence is still derived beside
+// the retention window it comes from.
 
 fn describe() {
     use metrics::{describe_counter, describe_gauge, describe_histogram, Unit};

@@ -324,3 +324,42 @@ pub fn sweep_settle(
         }
     }
 }
+
+// ── THE MAINTENANCE TICK ─────────────────────────────────────────────────────────────────────────
+
+/// What one maintenance tick decided.
+///
+/// The fourth job of the clock, and the same idea as the other three: a thing that is not happening
+/// still has to be accounted for. An observation that nobody has scraped is buffered raw, and raw
+/// is unbounded — the cost of a request that arrived must not depend on whether an operator wired
+/// a scrape up, or on whether their scrape job happens to be healthy today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Maintenance {
+    /// Nothing is owed: less than one interval has passed since the last drain that ran.
+    Idle,
+    /// Fold what has buffered since the last drain into its bounded aggregate form, and keep going.
+    Drain,
+    /// The node is stopping. Fold once more — the last interval's observations are the ones an
+    /// operator most wants and the ones a detached loop most reliably loses — and schedule no
+    /// further tick.
+    Final,
+}
+
+/// What one maintenance tick should do.
+///
+/// `stopping` wins over the interval unconditionally, and that is the whole reason this decision is
+/// here rather than inline in the loop that runs it: a drain loop with no shutdown arm discards
+/// whatever arrived after its last sleep, and a loop that checks the interval first would skip the
+/// final fold whenever the stop lands mid-interval. `interval` of zero means every tick drains,
+/// which is what a caller that has not yet settled its cadence should get — never a division and
+/// never a silent never.
+pub fn maintenance_tick(interval: Millis, since_drained: Millis, stopping: bool) -> Maintenance {
+    if stopping {
+        return Maintenance::Final;
+    }
+    if since_drained >= interval {
+        Maintenance::Drain
+    } else {
+        Maintenance::Idle
+    }
+}

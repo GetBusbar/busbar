@@ -407,7 +407,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5381
+kernel_ceiling = 5397
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3528
@@ -415,7 +415,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14933
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23842
+union_ceiling = 23858
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -466,7 +466,7 @@ ceiling = 61
 # grows this file is the line that has to justify itself.
 label = "tick: session tick, node tick and the drain sweep"
 patterns = ["tick.rs"]
-ceiling = 193
+ceiling = 209
 
 [rules.loc-ceilings.kernel_files.arena]
 label = "arena/masking"
@@ -1457,3 +1457,43 @@ because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::te
 key = "gate.surface_ceilings.contract_caps"
 by = 17
 because = "the same FACE as the caps_contract_ceiling raise, busbar_contract::telemetry::Telemetry, measured by scripts/loc-surface.py at the identical 17 lines: the seven-method telemetry face a plugin now reads on the contract instead of on the frozen substrate. ARCHITECTURE.md section 1.1 is amended in this same commit, as that figure's own rule requires - it is the THIRD face to move it, after the virtual-key directory and busbar_contract::limits"
+
+# THE MAINTENANCE TICK: `busbar_kernel::tick::{Maintenance, maintenance_tick}`
+# (crates/busbar-kernel/src/tick.rs, 16 surface lines — a three-variant enum and one total function
+# of three arguments). The clock's FOURTH job, and the same idea as the other three the file already
+# holds: a thing that is not happening still has to be accounted for. An observation nobody has
+# scraped is buffered RAW, and raw is unbounded — the cost of a request that arrived must not depend
+# on whether an operator wired a scrape up.
+#
+# What it replaces is not nothing. `busbar-substrate/src/metrics.rs` spawned a raw
+# `std::thread::Builder` detached OS thread — `loop { sleep(interval); drain_pending(); }` — from the
+# recorder install: no join handle, no supervision, and NO SHUTDOWN ARM, so the process could not
+# stop it and every exit dropped whatever had buffered since its last sleep. That is the last
+# interval before a shutdown, which is the interval an operator diagnosing a shutdown most wants.
+# The thread and its spawn helper are DELETED in the same commit (16 raw lines out of the substrate,
+# which is in none of these unions), the decision is here, and the loop that runs it is a supervised
+# task in the composition root on the same shutdown broadcast as the budget flusher.
+#
+# `stopping` wins over the interval unconditionally, and that is precisely why the decision is a
+# function and not three lines inside the loop: a loop that checked the interval first would skip
+# the final fold whenever the stop landed mid-interval, which is the bug the detached thread had.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 16
+because = "FACE busbar_kernel::tick::{Maintenance, maintenance_tick} (tick.rs, 16 surface lines): the clock's fourth job — Idle, Drain or Final, with `stopping` winning over the interval so the final fold is never skipped by a stop that lands mid-interval. It replaces busbar-substrate's raw detached OS drain thread, which had no join handle, no supervision and no shutdown arm; that thread is deleted in this same commit and busbar-substrate is in none of these unions, so it pays nothing back here"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.ticks.ceiling"
+by = 16
+because = "the same FACE as the kernel_ceiling raise, busbar_kernel::tick::{Maintenance, maintenance_tick}: all sixteen lines are in tick.rs, which is what this per-file row measures, and none of them are anywhere else in busbar-kernel. The row's own label already names the drain as one of the jobs inside this file"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 16
+because = "the same FACE as the kernel_ceiling raise, busbar_kernel::tick::{Maintenance, maintenance_tick}: +16 surface lines in busbar-kernel and nothing in busbar-caps, busbar-contract or any busbar-unit-* crate, so the union rises by exactly the kernel rise. The 16 raw lines it deletes are busbar-substrate's, which this union does not carry"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "BY IDENTITY: the composition root composes the maintenance tick it now drives. One `use busbar_kernel::tick::{maintenance_tick, Maintenance};` in crates/busbar/src/root/metrics_drain.rs, and nothing else - the doc text names the function without spelling the crate, deliberately, so the cell rises by the import and by nothing prose could have avoided. The root spending one more kernel name to take a loop off a raw detached OS thread is the retirement working: what it replaces named no crate at all because nobody composed it"
