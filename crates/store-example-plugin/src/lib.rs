@@ -36,6 +36,7 @@ use busbar_api::{
     MeteringDelta, MeteringRow, PlaneDisposition, PlaneRecord, PlaneSelector, Store, StoreError,
     StoreResult, UsageLedger, VirtualKey,
 };
+use busbar_plugin_sdk::{export_catalog, export_store_plugin, Catalog};
 mod ram;
 use ram::RamStore;
 use std::path::PathBuf;
@@ -55,6 +56,28 @@ struct Cfg {
 /// downgrade is the dangerous shape: a stray trailing comma in `{"durable_path": "/var/lib/…"}`
 /// turned a durable store into an ephemeral one, the plugin loaded clean, and the rows only stopped
 /// existing at the next restart.
+/// This plugin's error catalog, as the data the host reads at load: one code per failure this
+/// fixture reports today (its `StoreError` strings), so a host renders each through a template in
+/// the caller's locale rather than through the string.
+pub const CATALOG: &str = r#"{
+  "default_locale": "en",
+  "entries": [
+    { "code": "store_example.unknown_id", "templates": [
+      { "locale": "en", "text": "no row with id {id}" } ] },
+    { "code": "store_example.poisoned", "templates": [
+      { "locale": "en", "text": "the in-process lock was poisoned by an earlier panic" } ] },
+    { "code": "store_example.io", "templates": [
+      { "locale": "en", "text": "the durable file could not be read or written: {detail}" } ] },
+    { "code": "store_example.conflict", "templates": [
+      { "locale": "en", "text": "a row with id {id} already exists" } ] }
+  ]
+}"#;
+
+/// This plugin's catalog, parsed: what the host reads at load, and what the tests check.
+pub fn catalog() -> Catalog {
+    serde_json::from_str(CATALOG).expect("the catalog is a catalog document")
+}
+
 fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
     if cfg.trim().is_empty() {
         return Ok(Box::new(RamStore::new()));
@@ -715,7 +738,22 @@ impl Store for FileStore {
     }
 }
 
-busbar_plugin_sdk::export_store_plugin!(open);
+export_catalog!(CATALOG);
+export_store_plugin!(open);
 
 #[cfg(test)]
 mod tests;
+
+/// THE CATALOG IS WELL-FORMED: what the host reads at load and refuses if it does not check.
+#[test]
+fn the_catalog_is_a_catalog_document_that_checks() {
+    let catalog = catalog();
+    catalog.check().expect("the catalog checks");
+    for e in catalog.entries.as_slice() {
+        assert!(
+            catalog.template(&e.code, "en").is_some(),
+            "{} has an en template",
+            e.code
+        );
+    }
+}

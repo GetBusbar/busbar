@@ -16,6 +16,7 @@
 //! Both optional: absent `order` → abstain; absent `reject_if_contains` → never rejects on content.
 
 use busbar_plugin_sdk::HookHandler;
+use busbar_plugin_sdk::{export_catalog, export_hook_plugin, Catalog};
 use serde::Deserialize;
 
 /// The plugin's opaque config: how this trivial gate behaves.
@@ -236,6 +237,21 @@ impl HookHandler for TestGate {
 
 /// Construct the gate from the engine-passed JSON config. An empty config is fine (a pure-abstain
 /// gate that never rejects); malformed JSON is a fail-closed load error.
+/// This plugin's error catalog: the one failure this gate reports (`HookReply::Failed`, driven
+/// by `fail_decide` / `fail_transform`), as a code with a template.
+pub const CATALOG: &str = r#"{
+  "default_locale": "en",
+  "entries": [
+    { "code": "hook_test.failed", "templates": [
+      { "locale": "en", "text": "the test gate was told to fail: {reason}" } ] }
+  ]
+}"#;
+
+/// This plugin's catalog, parsed: what the host reads at load, and what the tests check.
+pub fn catalog() -> Catalog {
+    serde_json::from_str(CATALOG).expect("the catalog is a catalog document")
+}
+
 fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     // Exercises the host log bridge from the one place it matters most — a constructor, where a
     // plugin has something worth reporting and where `tracing::warn!` inside a cdylib goes nowhere.
@@ -281,7 +297,8 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
     }))
 }
 
-busbar_plugin_sdk::export_hook_plugin!(open);
+export_catalog!(CATALOG);
+export_hook_plugin!(open);
 
 #[cfg(test)]
 #[path = "tests.rs"]
