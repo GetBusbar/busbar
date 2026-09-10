@@ -5157,6 +5157,23 @@
         "stdout_contains": null
       },
       "notes": "neutrality/unknown-key: a typo'd key under a NAMED export entry."
+    },
+    {
+      "id": "VOICE-M-streams-section",
+      "family": "voice.mount",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "raw_yaml": "streams:\n  pools:\n    p-oracle-voice:\n      dialect: openai-realtime\n      mounts:\n        - /v1/realtime/telephony/{call_id}\n"
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "unknown field `streams`",
+        "stdout_contains": null
+      },
+      "notes": "VT-6 streams golden: the 1.5.5 CONFIG GRAMMAR's answer to a `streams:` plane section. busbar-voice's PLANE_DECL claims a `streams:` section in 1.6.0 (main.rs: \"the shipped build installs it and claims its `streams:` section\"); this cell pins that in 1.5.5 the top-level key does not exist AT ALL -- DeployCfg is deny_unknown_fields, so the section is refused BY NAME and the refusal enumerates the entire 1.5.5 top-level key set. That enumeration is the byte-identity floor for the streams plane's arrival: a 1.6.0 build that accepts `streams:` is purely ADDITIVE against this cell, and this cell is what proves `streams` was outside the grammar before it landed."
     }
   ]
 }

@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2330,
+    "total": 2338,
     "by_plane": {
       "a2a": 468,
-      "core": 789,
+      "core": 797,
       "llm": 161,
       "mcp": 912
     },
@@ -88,7 +88,8 @@
       "plugins": 14,
       "queue": 2,
       "route.failover": 16,
-      "teller": 7
+      "teller": 7,
+      "voice.mount": 8
     }
   },
   "cells": [
@@ -32118,6 +32119,167 @@
       "outcome": "ok",
       "weight": 10,
       "why": "step 2 VERIFY: a credential whose allowed_pools excludes the target pool is refused before step 4 ADMIT ever draws a bucket -- native 403, zero egress, zero usage delta"
+    },
+    {
+      "id": "voice.mount|VOICE-M-streams-section|validate",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:VOICE-M-streams-section",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b unknown field `streams`",
+      "needs_fixture": false
+    },
+    {
+      "id": "voice.mount|gemini",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime/gemini/c-oracle-0001",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer to a WebSocket upgrade on /v1/realtime/gemini/c-oracle-0001: the gemini-live leg. The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
+    },
+    {
+      "id": "voice.mount|gemini-live-declared",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/ws/v1beta/models/m-gemini:BidiGenerateContent",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer to a WebSocket upgrade on /ws/v1beta/models/m-gemini:BidiGenerateContent: the composition's declared gemini-live mount, the other half of the same disjunction. The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
+    },
+    {
+      "id": "voice.mount|realtime-root",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer to a WebSocket upgrade on /v1/realtime: the plane's bare mount root, WITH the upgrade preamble \u2014 `neutrality|routes|voice-shaped-404` asks the same path as an ordinary GET and therefore never asked the door to upgrade. The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
+    },
+    {
+      "id": "voice.mount|sessions-mint",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/realtime/sessions",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"model\": \"m-openai-chat\", \"voice\": \"verse\"}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "the mint one-shot (`POST /v1/realtime/sessions`) is the plane's only non-duplex leg; 1.5.5 answers it as an unmounted path like any other, so the ephemeral-credential surface a mint would return is pinned ABSENT before 1.6.0 adds one"
+    },
+    {
+      "id": "voice.mount|sideband",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime/sideband/c-oracle-0001",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer to a WebSocket upgrade on /v1/realtime/sideband/c-oracle-0001: the browser SIDEBAND leg, the one with no dialect and webrtc deliberately unclaimed (VT-3 ruling 3). The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
+    },
+    {
+      "id": "voice.mount|telephony",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime/telephony/c-oracle-0001",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer to a WebSocket upgrade on /v1/realtime/telephony/c-oracle-0001: the served URL VT-2's `/twilio/stream` claim was re-pointed to (VT-3 ruling 2). The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
+    },
+    {
+      "id": "voice.mount|twilio-declared",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/twilio/stream",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer to a WebSocket upgrade on /twilio/stream: the composition's OWN declared mount, the half of the VT-3 disjunction that lost the ruling \u2014 recorded so the ruling rests on the published binary's answer and not on which document was read. The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
     }
   ]
 }

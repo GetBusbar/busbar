@@ -1594,6 +1594,90 @@ def neutrality_cells() -> list[dict]:
     return cells
 
 
+def voice_mount_cells() -> list[dict]:
+    """`voice.mount`: WHAT THE PUBLISHED 1.5.5 DOOR ANSWERS ON THE STREAMS PLANE'S OWN URLS.
+
+    THE HOLE THIS FILLS (VT-3 finding 5, ruled MONEY). The corpus has ZERO `^voice` rows, so no
+    byte-identity claim about the streams plane is readable at all — and busbar-voice (11,609 lines)
+    is about to have its served half deleted and re-mounted. Before that, SOMETHING about the plane's
+    surface has to be pinned against the published binary.
+
+    WHAT IS *NOT* PINNED HERE, AND WHY IT CANNOT BE. A served duplex session, a turn, and the
+    metering decision that bills it are NOT recordable against 1.5.5, because 1.5.5 SERVES NO SUCH
+    THING. Measured on the fleet box against the exact binary golden/1.5.5/meta.json names
+    (`busbar-x86_64-unknown-linux-gnu`, sha256 84bde0a047fe…, `busbar 1.5.5`):
+
+      * every 1.5.x-shaped streams URL answers a flat `404 not_found_error`, WebSocket upgrade
+        headers and all — there is no route, so there is no handshake to record;
+      * `busbar --help`'s ENDPOINTS block lists twelve rows and not one of them is a WebSocket;
+      * `--validate` REFUSES a `streams:` section by name and enumerates the whole top-level key
+        set, which does not contain `streams` (or `voice`);
+      * `/v1/realtime` appears nowhere in the 1.5.5 binary's strings, and no 1.5.5-era published
+        plugin (plugin-digests.tsv) serves it either.
+
+    So the honest golden for this plane is its ABSENCE, recorded rather than assumed — the same
+    class of contract `neutrality|metrics-no-plane-series` already carries, but stated on the
+    streams plane's own vocabulary and under the `^voice` filter so the queue can ask for it by
+    name. Its value is exact: it is the floor the 1.6.0 mount seam is judged additive against.
+    Every one of these cells also carries the recorder's ordinary `effects` — the ledger row, the
+    metrics and the audit deltas — so "no session was opened" is pinned as MONEY, not as a status
+    code: a build that mounts the plane and draws a single unit against a caller's budget on one of
+    these URLs is a diff in `effects.usage`, not a mystery.
+
+    THE URL LIST IS THE DISPUTED ONE, DELIBERATELY. VT-3 ruled that the streams plane must declare
+    the "1.5.x served URLs" because "the served URLs are the published surface and the golden wins".
+    Both halves of the dispute are recorded here — the three `/v1/realtime/{leg}/{call_id}` URLs the
+    registry declares AND the composition's own `/twilio/stream` and
+    `/ws/…:BidiGenerateContent` — so the ruling is settled by a recording instead of by an argument.
+
+    The handshake headers are the real RFC6455 client preamble (`Connection: Upgrade`,
+    `Upgrade: websocket`, `Sec-WebSocket-Version: 13`, and a FIXED `Sec-WebSocket-Key`, so the cell
+    is a pure function of the request and no nonce can move a byte). A door that answers 101 must
+    echo a `Sec-WebSocket-Accept` derived from that fixed key, so the accept value is pinned too the
+    day one appears.
+    """
+    F = "voice.mount"
+    WS = {"Connection": "Upgrade", "Upgrade": "websocket", "Sec-WebSocket-Version": "13",
+          # RFC6455 §1.3's own example key. Fixed, so the derived Sec-WebSocket-Accept a 101 would
+          # carry is `s3pPLMBiTxaQ9kYGzzhZRbK+xOo=` and is itself a recorded byte, not a nonce.
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}
+    CALL = "c-oracle-0001"   # a fixed call id: the path segment must not be a clock or a uuid
+    cells = []
+    for leg, path, note in [
+        ("realtime-root", "/v1/realtime",
+         "the plane's bare mount root, WITH the upgrade preamble — `neutrality|routes|voice-shaped-404` "
+         "asks the same path as an ordinary GET and therefore never asked the door to upgrade"),
+        ("telephony", f"/v1/realtime/telephony/{CALL}",
+         "the served URL VT-2's `/twilio/stream` claim was re-pointed to (VT-3 ruling 2)"),
+        ("sideband", f"/v1/realtime/sideband/{CALL}",
+         "the browser SIDEBAND leg, the one with no dialect and webrtc deliberately unclaimed (VT-3 ruling 3)"),
+        ("gemini", f"/v1/realtime/gemini/{CALL}",
+         "the gemini-live leg"),
+        ("twilio-declared", "/twilio/stream",
+         "the composition's OWN declared mount, the half of the VT-3 disjunction that lost the ruling — "
+         "recorded so the ruling rests on the published binary's answer and not on which document was read"),
+        ("gemini-live-declared", "/ws/v1beta/models/m-gemini:BidiGenerateContent",
+         "the composition's declared gemini-live mount, the other half of the same disjunction"),
+    ]:
+        cells.append(http(f"{F}|{leg}", F, "GET", path, headers=dict(WS),
+                          why=f"1.5.5's answer to a WebSocket upgrade on {path}: {note}. The status, "
+                              "the headers (including whether any `sec-websocket-*` header comes "
+                              "back at all) and the body are pinned, and so are the ledger, metrics "
+                              "and audit deltas — a session that was never opened must also never "
+                              "have been billed."))
+    # The mint/SDP one-shot is an ORDINARY HTTP POST, not an upgrade: it is the only leg of the plane
+    # whose 1.6.0 shape could in principle have existed in 1.5.5 without a WebSocket at all, so it is
+    # asked as itself rather than with the handshake preamble.
+    cells.append(http(f"{F}|sessions-mint", F, "POST", "/v1/realtime/sessions",
+                      body=json.dumps({"model": "m-openai-chat", "voice": "verse"}),
+                      headers={"Content-Type": "application/json"},
+                      why="the mint one-shot (`POST /v1/realtime/sessions`) is the plane's only "
+                          "non-duplex leg; 1.5.5 answers it as an unmounted path like any other, so "
+                          "the ephemeral-credential surface a mint would return is pinned ABSENT "
+                          "before 1.6.0 adds one"))
+    return cells
+
+
 def documented_cells() -> list[dict]:
     """`documented`: PB-71's documented-vs-actual family. One cell per TESTABLE claim in
     docs/design/inventory/1.5.5-ops-observability.md §8 (27 README rows :1047-1073, 29 CHANGELOG
@@ -1854,7 +1938,7 @@ def protocol_wire_cells() -> list[dict]:
     return protocol_cells(json.loads(METHOD_INV.read_text()))
 
 
-# The 22 builders, in order. The engine calls them all and sorts the union by id.
+# The 23 builders, in order. The engine calls them all and sorts the union by id.
 BUILDERS = [
     ("llm.wire", llm_wire_cells),
     ("llm.stream", llm_stream_fault_wire_cells),
@@ -1877,6 +1961,7 @@ BUILDERS = [
     ("auth.lifecycle", auth_lifecycle_cells),
     ("teller", teller_cells),
     ("neutrality", neutrality_cells),
+    ("voice.mount", voice_mount_cells),
     ("documented", documented_cells),
     ("hazard", hazard_cells),
 ]
