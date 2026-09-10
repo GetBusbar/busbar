@@ -111,6 +111,26 @@ crate = "busbar-core-hooks"
 kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
+[[announced]]
+crate  = "busbar-export-file"
+kind   = "export"
+reason = "the append-only request-log file sink lifted out of busbar-core/src/export/file.rs; export kind, Export face"
+
+[[announced]]
+crate  = "busbar-export-webhook"
+kind   = "export"
+reason = "the SSRF-guarded request-log webhook sink lifted out of busbar-core/src/export/webhook.rs; export kind, Export face"
+
+[[announced]]
+crate  = "busbar-export-prometheus"
+kind   = "export"
+reason = "the /metrics pull exporter lifted out of busbar-core/src/export/prometheus.rs; export kind, Export face, declares its route through ExportHandler::routes"
+
+[[announced]]
+crate  = "busbar-export-otlp"
+kind   = "export"
+reason = "the OTLP trace sink, the export half of busbar-core/src/observability.rs; export kind, Export face"
+
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
 # ------------------------------------------------------------------------------------------------
