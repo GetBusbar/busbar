@@ -7,7 +7,6 @@
 //! through the mount, where a client can see it.
 
 use super::*;
-use busbar_api::PlaneRequestCtx;
 
 /// One arrival over these facts and these bytes, composed the way the mount composes one.
 fn probe<T>(
@@ -113,9 +112,9 @@ fn a_leg() -> LlmLeg {
     busbar_llm::testkit::install_test_seams();
     LlmLeg::assemble(
         LlmNode::new(),
-        Arc::new(crate::root::mount_ingress::BootIngress::new(
+        Arc::new(crate::root::mount_ingress::tests::AdmitsOneCaller::new(
             crate::root::mount_ingress::tests::minted(crate::root::mount_ingress::tests::a_host()),
-            |_| PlaneRequestCtx { key: None },
+            None,
         )),
     )
 }
@@ -165,4 +164,76 @@ fn the_mounted_and_driven_readings_of_a_url_named_model_are_one_reading() {
     assert_eq!(mounted("gemini", "/v1/models/gemini-2.0-flash"), None);
     assert_eq!(mounted("bedrock", "/model/amazon.titan-text/invoke"), None);
     assert_eq!(mounted("openai", "/v1/chat/completions"), None);
+}
+
+/// **A CALLER THE DOOR REFUSED IS ANSWERED IN THEIR OWN DIALECT, AND NO UNIT RUNS.**
+///
+/// The root cell for the hole this leg's authenticate arm was opened to close, and it reproduces the
+/// golden's own answers rather than an invention of this file. In the 1.5.5 recording the shadow
+/// oracle judges against, `llm|<dialect>|<dialect>|request|unauthenticated` is:
+///
+/// | dialect    | status | why that one and not 401 |
+/// |------------|--------|--------------------------|
+/// | openai     | 401    | the vendor's own bad-key status |
+/// | anthropic  | 401    | likewise |
+/// | cohere     | 401    | likewise |
+/// | responses  | 401    | likewise |
+/// | gemini     | **400** | the Generative Language API answers `INVALID_ARGUMENT`, never 401 |
+/// | bedrock    | **403** | a real SigV4 rejection is `AccessDeniedException`, never 401 |
+///
+/// On the MOUNTED build every one of those answered **200** and served the request, because the
+/// mount sits in front of the middleware that raises them and the seam it replaced could not refuse.
+///
+/// Two things are asserted and the second is the one that costs money: the status is the dialect's
+/// OWN, and the ending is `AlreadySettled` — no hold was opened, no unit ran, so there is nothing
+/// for the mount to settle and nothing for the books to record. The golden agrees: its
+/// `effects.metrics` and `effects.usage` for these cells are both empty.
+#[tokio::test]
+async fn a_caller_the_door_refused_is_answered_in_their_own_dialect_and_no_unit_runs() {
+    busbar_llm::testkit::install_test_seams();
+    // A leg whose door REFUSES every caller — which is what this node's chain answers a credential
+    // it never minted. The refusal is the door's; what this cell asserts is what the leg does with
+    // one.
+    let leg = LlmLeg::assemble(LlmNode::new(), Arc::new(RefusesEveryCaller));
+
+    for (dialect, uri, expected) in [
+        ("openai", "/v1/chat/completions", 401),
+        ("anthropic", "/v1/messages", 401),
+        ("cohere", "/v2/chat", 401),
+        ("responses", "/v1/responses", 401),
+        ("gemini", "/v1beta/models/m:generateContent", 400),
+        ("bedrock", "/model/m/converse", 403),
+    ] {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .expect("the probe always builds");
+        let (parts, _) = request.into_parts();
+        let facts = plane_mount::test_facts(&parts);
+        let pairs = plane_mount::test_pairs(&facts);
+        let arrival = plane_mount::test_arrival(&pairs, b"{\"model\":\"m\"}");
+
+        let (ended, response) = leg.serve(&arrival).await;
+        assert_eq!(
+            response.status().as_u16(),
+            expected,
+            "{dialect} answers a refused caller with the status its own vendor answers"
+        );
+        assert!(
+            matches!(ended, Ended::AlreadySettled),
+            "{dialect}: no unit ran, so there is no posting for the mount to settle"
+        );
+    }
+}
+
+/// A door that refuses every caller — the answer this node's chain gives a credential it never
+/// minted, and the one the seam this leg reads could not previously carry.
+struct RefusesEveryCaller;
+
+#[async_trait::async_trait]
+impl crate::root::mount_ingress::ArrivalSource for RefusesEveryCaller {
+    async fn arrival(&self, _credential: Option<&str>) -> Admitted {
+        Admitted::Refused
+    }
 }

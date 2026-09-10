@@ -1539,17 +1539,28 @@ async fn run(data_workers: usize) {
                             // its own. The seam that holds this closure names no engine type.
                             let host = busbar_core::plane_host::engine_host(&handle.load());
                             std::sync::Arc::new(root::mount_ingress::boot_ingress(
-                                move |gov, caller_token| {
-                                    use busbar_substrate::ingress::arrival::{
-                                        ArrivalCtx, ArrivalPayload,
-                                    };
-                                    ArrivalCtx::new(ArrivalPayload {
-                                        host: std::sync::Arc::clone(&host),
-                                        gov,
-                                        caller_token,
-                                    })
+                                {
+                                    let host = std::sync::Arc::clone(&host);
+                                    move |gov, caller_token| {
+                                        use busbar_substrate::ingress::arrival::{
+                                            ArrivalCtx, ArrivalPayload,
+                                        };
+                                        ArrivalCtx::new(ArrivalPayload {
+                                            host: std::sync::Arc::clone(&host),
+                                            gov,
+                                            caller_token,
+                                        })
+                                    }
                                 },
-                                handle.load().governance.clone(),
+                                // THE IDENTITY DOOR, WHICH IS THE SAME HOST. It used to be
+                                // `handle.load().governance.clone()` — this node's governance state,
+                                // handed over so the seam could run a credential rule of its own. It
+                                // does not run one any more: the seam asks the host's `identity_admit`,
+                                // which is the configured chain plus the ONE verdict resolution the
+                                // HTTP middleware runs. Passing the host rather than the governance
+                                // state is what makes that literally the same resolution instead of a
+                                // second one that agreed with it on the easy cases.
+                                host,
                             ))
                         },
                         // THE PROCESS'S ONE BOOK, the same handle the administrative views read and

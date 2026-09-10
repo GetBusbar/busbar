@@ -48,8 +48,8 @@
 use std::sync::Arc;
 
 use busbar_api::PlaneRequestCtx;
-use busbar_core::governance::GovState;
 use busbar_substrate::ingress::arrival::ArrivalCtx;
+use busbar_substrate::plane_host::EngineHost;
 
 /// THE ONE QUESTION A MOUNTED LEG ASKS ITS BOOT, per arrival.
 ///
@@ -67,16 +67,40 @@ use busbar_substrate::ingress::arrival::ArrivalCtx;
 /// have built for this request had the mount not answered first — carrying the engine host, the
 /// governance context and the caller token. A leg reads it by downcasting to the payload the
 /// substrate declares, which is exactly how the driven path's own readers read theirs.
+#[async_trait::async_trait]
 pub trait ArrivalSource: Send + Sync + 'static {
-    /// The engine host, governance context and caller token this credential arrives with, sealed.
-    fn arrival(&self, credential: Option<&str>) -> ArrivalCtx;
+    /// The engine host, governance context and caller token this credential arrives with, sealed —
+    /// or the deployment's own REFUSAL to admit this caller at all.
+    ///
+    /// ASYNC because the resolution is: this node's configured auth chain may dial an operator's own
+    /// identity provider, and the driven path's middleware awaits it for exactly the same reason. A
+    /// synchronous answer here could only be a SECOND, weaker resolution — which is what this seam
+    /// used to hold, and what [`Admitted::Refused`] exists to retire.
+    async fn arrival(&self, credential: Option<&str>) -> Admitted;
 }
 
-/// How one deployment turns a presented credential into a governance context.
+/// **WHAT THE DEPLOYMENT'S OWN IDENTITY DOOR SAID ABOUT ONE CALLER.**
 ///
-/// A name rather than the type spelled inline, because spelled inline it is unreadable and what it
-/// says is simple: given what this caller presented — or nothing — who is it.
-type Resolve = dyn Fn(Option<&str>) -> PlaneRequestCtx + Send + Sync;
+/// Two arms, because the door has two answers and a seam that carried only the first is a door that
+/// cannot refuse. That was this seam's shape until now: every credential — absent, malformed,
+/// expired, revoked, or signed for a key this node never minted — resolved to a context with NO key
+/// in it, and `key: None` is not "this caller was refused". It is the UNGOVERNED POSTURE, the open
+/// front door a node with no governance configured serves on purpose, and every step downstream
+/// reads it that way: the authenticate step attributes the anonymous actor, the verify step's scope
+/// guard is `if let Some(key)` and so passes, and the door has no key to meter or bill against.
+///
+/// So a mounted deployment answered `200` to a caller the driven path answers `401` to, served it
+/// out of scope, and recorded no usage for it. One absent arm, three holes.
+pub enum Admitted {
+    /// The chain ADMITTED this caller: the sealed arrival the plane's walk takes, carrying the
+    /// resolved governance context — which is `key: None` only where the chain itself said `Open`.
+    Arrival(ArrivalCtx),
+    /// The chain REFUSED this caller. Carries nothing: which of `Denied` and `NoGrant` it was is the
+    /// operator's diagnostic and never the client's, because a wire that told them apart would let a
+    /// caller enumerate which credentials exist. The leg answers the vendor-native refusal for the
+    /// dialect it named, from the same declaration the driven path's own 401 is shaped from.
+    Refused,
+}
 
 /// How the boot boxes the deployment's own arrival around one caller's resolved half.
 ///
@@ -95,21 +119,24 @@ type Mint = dyn Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync;
 pub struct BootIngress {
     /// This deployment's [`Mint`]: the boot's own host, closed over where the boot minted it.
     mint: Box<Mint>,
-    /// This deployment's [`Resolve`]. Boxed rather than a generic parameter because a leg holds this
-    /// as `dyn ArrivalSource`, and a parameter here would have to travel through every type between
-    /// the two for no gain.
-    resolve: Box<Resolve>,
+    /// **THE DEPLOYMENT'S OWN IDENTITY DOOR**, asked per arrival.
+    ///
+    /// The host the boot minted for this generation, held for the ONE question only it can answer:
+    /// who is this caller, by this node's configured chain. It is the same handle the [`Mint`]
+    /// closes over — one host, asked two things — rather than a second binding that could be minted
+    /// over a different generation than the arrivals it then seals.
+    identity: Arc<dyn EngineHost>,
 }
 
 impl BootIngress {
-    /// Seal one deployment's ingress source.
+    /// Seal one deployment's ingress source over its mint and its identity door.
     pub fn new(
         mint: impl Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
-        resolve: impl Fn(Option<&str>) -> PlaneRequestCtx + Send + Sync + 'static,
+        identity: Arc<dyn EngineHost>,
     ) -> Self {
         BootIngress {
             mint: Box::new(mint),
-            resolve: Box::new(resolve),
+            identity,
         }
     }
 }
@@ -120,16 +147,37 @@ impl std::fmt::Debug for BootIngress {
     }
 }
 
+#[async_trait::async_trait]
 impl ArrivalSource for BootIngress {
-    fn arrival(&self, credential: Option<&str>) -> ArrivalCtx {
-        (self.mint)(
-            (self.resolve)(credential),
-            // FLATTENED TO THE SECRET, because that is what the driven path carries: the catch-all
-            // boxes the resolved caller token, not the header value it came in on. A passthrough
-            // that forwarded the scheme word as part of the token would send `Bearer Bearer sk-…`
-            // upstream, which is a credential no destination has ever accepted.
-            credential.and_then(presented_secret).map(str::to_string),
-        )
+    async fn arrival(&self, credential: Option<&str>) -> Admitted {
+        // FLATTENED TO THE SECRET, because that is what the driven path carries: the catch-all
+        // boxes the resolved caller token, not the header value it came in on. A passthrough that
+        // forwarded the scheme word as part of the token would send `Bearer Bearer sk-…` upstream,
+        // which is a credential no destination has ever accepted. The SAME flattening feeds the
+        // chain below, because the chain is handed a candidate credential and not a header either.
+        let presented = credential.and_then(presented_secret).map(str::to_string);
+        // **THE DATA PLANE'S OWN RESOLUTION, NOT A SECOND ONE.** `identity_admit` is this node's
+        // configured auth chain followed by the ONE verdict resolution the HTTP middleware runs —
+        // the same two steps, over the same live governance state, reached through the plane ABI so
+        // this file names no auth vocabulary and holds no credential rule of its own.
+        //
+        // NO EXPECTED AUDIENCE, spelled as the empty string the seam reads as absent. That is the
+        // DATA-plane boundary: RFC 8707 audience binding is what an admission-bearing plane asks
+        // for, and a dialect surface has no resource canonical URI to bind against. The driven
+        // path's own middleware passes `expected_aud: None` here for the same reason.
+        match self
+            .identity
+            .identity_admit(presented.clone(), String::new(), String::new())
+            .await
+        {
+            // The chain admitted. The context is the chain's — `key: Some` for an identified
+            // caller, `key: None` only where the chain itself answered `Open`, which is the
+            // ungoverned posture and not a refusal quietly renamed.
+            Ok((_principal, gov)) => Admitted::Arrival((self.mint)(gov, presented)),
+            // Denied, or a role principal that earned no grant. Both are refusals on the driven
+            // path and both are refusals here; the distinction stays off the wire.
+            Err(_refusal) => Admitted::Refused,
+        }
     }
 }
 
@@ -166,46 +214,37 @@ pub fn presented_secret(credential: &str) -> Option<&str> {
 /// and writing it out at the call site would put this node's credential rule in the file that
 /// composes routers rather than in the file that owns what a mounted arrival is made of.
 ///
-/// **THE RESOLUTION IS THE DATA PLANE'S, NOT A SECOND ONE.** A presented credential is verified
-/// against this node's governance state at the audience boundary the data plane uses — no expected
-/// audience — which is the same verification the driven path's chain reaches for the same
-/// credential. A resolution invented here would be a second answer to who a caller is, and the two
-/// would disagree the first time an operator rotated a key.
+/// **THE RESOLUTION IS THE DATA PLANE'S, AND IT IS NOW LITERALLY THE SAME ONE.** This used to be a
+/// credential rule written HERE — `presented_secret` into `GovState::verify_token`, at the data
+/// plane's audience boundary — described as "the same verification the driven path's chain reaches
+/// for the same credential". It was not, and the gap was not academic:
 ///
-/// It is SYNCHRONOUS because a leg asks it per arrival, inside a walk. That is not a shortcut: the
-/// verification of a signed credential IS synchronous — a signature check, a revocation read and an
-/// index lookup — and the asynchronous half of the driven path's chain is the modules that dial out,
-/// none of which resolve a busbar-minted key.
+/// - It had **no refusal**. Every credential it could not resolve — absent, malformed, expired,
+///   revoked, minted by another node — came back `key: None`, which every step downstream reads as
+///   the ungoverned open posture rather than as a denial. A mounted node answered `200` where the
+///   driven path answers a vendor-native `401`.
+/// - It had **no SigV4 arm**, so an inbound `AWS4-HMAC-SHA256` credential — the Bedrock SDK's own
+///   model, and the only way that dialect authenticates — flattened to the leftovers after the
+///   first space and resolved to nothing. Every mounted Bedrock-ingress request was therefore
+///   anonymous: unbilled, unscoped and unbudgeted.
+/// - It ran **only the keys arm**, so an operator's configured chain — their own identity provider,
+///   their role bindings — decided nothing on a mounted surface.
 ///
-/// **NO GOVERNANCE STATE IS NO KEY**, which is the ungoverned posture this deployment already
-/// serves: a node with no governance configured enforces nothing on the driven path either, and
-/// answering with an invented identity would be worse than answering with none.
+/// All three were one defect: a second answer to who a caller is. So there is no resolution in this
+/// file any more. The seam holds the deployment's own [`EngineHost`] and asks it, and the host's
+/// `identity_admit` is the configured chain plus the ONE verdict resolution the HTTP middleware
+/// itself runs. One answer, two paths to it.
 ///
 /// The `mint` is the boot's: it closes over the engine host the boot minted for this generation and
-/// boxes the deployment's arrival around the caller's resolved half. See [`Mint`].
+/// boxes the deployment's arrival around the caller's resolved half. See [`Mint`]. The `identity`
+/// is THAT SAME HOST, handed in rather than re-minted, so the generation that seals an arrival is
+/// the generation that admitted it.
 #[must_use]
 pub fn boot_ingress(
     mint: impl Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
-    governance: Option<Arc<GovState>>,
+    identity: Arc<dyn EngineHost>,
 ) -> BootIngress {
-    BootIngress::new(mint, move |credential| PlaneRequestCtx {
-        key: credential
-            .and_then(presented_secret)
-            .zip(governance.clone())
-            .and_then(|(secret, gov)| gov.verify_token(secret, now_secs(), None)),
-    })
-}
-
-/// This node's wall clock, in whole seconds, for the freshness half of a credential check.
-///
-/// The wall clock and not the node's monotonic one: an expiry is a statement about a moment in the
-/// world, and a counter that started when this process did cannot answer it. A clock before the
-/// epoch is not a time this deployment runs at, and it reads as zero rather than panicking on a
-/// request path.
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+    BootIngress::new(mint, identity)
 }
 
 #[cfg(test)]

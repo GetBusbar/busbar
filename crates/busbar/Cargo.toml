@@ -122,6 +122,11 @@ arc-swap = { workspace = true }
 tower = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 axum = { workspace = true }
+# The mounted-arrival ingress seam asks this deployment's identity door per arrival, and that door is
+# async because a configured auth chain may dial an operator's own identity provider. The seam is held
+# as `dyn ArrivalSource`, so the method has to be object-safe — which is exactly what this provides.
+# The same crate, at the same workspace version, that the plane-host trait the seam calls is written in.
+async-trait = { workspace = true }
 # The body trait itself, named because the composition root implements it: the llm plane's answer goes
 # out wrapped so the spend its body reports on the way past has somewhere to land. A passthrough, and
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.

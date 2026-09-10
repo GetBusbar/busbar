@@ -55,7 +55,7 @@ use std::sync::Arc;
 use busbar_llm::arrival::PathModelFacts;
 use busbar_llm::unit::walk::WalkArrival;
 
-use crate::root::mount_ingress::ArrivalSource;
+use crate::root::mount_ingress::{Admitted, ArrivalSource};
 // The payload the substrate declares, under the ONE spelling this plane's root module already
 // carries: the leg reads a sealed context by downcasting to it, as the driven path's readers do.
 use crate::root::plane_mount;
@@ -190,9 +190,33 @@ impl LlmLeg {
             );
         };
         let target = path_of(arrival);
-        let sealed = self
+        // **STEP 1, WHO IS CALLING — AND THE ONE ARM THAT USED TO BE MISSING.**
+        //
+        // The plane's own authenticate step is a READ, not a decision, and its own file says so: on
+        // the driven path every refusal it could raise is raised UPSTREAM, by the HTTP auth
+        // middleware, which runs the configured chain and renders the vendor-native 401 before a
+        // handler is ever reached. That is a true account of the DRIVEN path.
+        //
+        // A MOUNT SITS IN FRONT OF THAT MIDDLEWARE. The request never reaches the code that would
+        // have refused it, so on a mounted surface the read had nothing upstream of it and the
+        // refusal was nobody's — a caller presenting no credential, a revoked one, or one this node
+        // never minted was admitted as the anonymous actor and served. So the door is asked HERE,
+        // at the one place a mounted arrival is made, and it is the deployment's OWN door: the same
+        // chain and the same verdict resolution the middleware runs, reached through the ingress
+        // seam. See `mount_ingress::Admitted`.
+        let sealed = match self
             .ingress
-            .arrival(arrival.fact(busbar_contract::transport::facts::CREDENTIAL));
+            .arrival(arrival.fact(busbar_contract::transport::facts::CREDENTIAL))
+            .await
+        {
+            Admitted::Arrival(sealed) => sealed,
+            // REFUSED, and the ending is `AlreadySettled` because that is the true statement: the
+            // chain refused before any unit opened, so no hold exists, nothing ran, and there is no
+            // posting for anything to settle. The driven path says the same thing by refusing in
+            // middleware — its 401 never reaches the plane's loop either, which is why the golden
+            // carries no metrics and no usage for one.
+            Admitted::Refused => return (Ended::AlreadySettled, refused(named.dialect)),
+        };
         // The sealed context is read the way the driven path's own readers read theirs: by
         // downcasting to the payload the substrate declares. A context carrying anything else is a
         // wiring bug rather than a runtime input, and it is answered rather than unwrapped — with
@@ -226,6 +250,36 @@ impl LlmLeg {
         };
         self.node.walk(walk_arrival, None).await
     }
+}
+
+/// **WHAT A CALLER THE CHAIN REFUSED IS ANSWERED WITH**, in that caller's own dialect.
+///
+/// The vendor-native bad-credential answer, and every part of it is READ rather than written here.
+/// The status and the error kind come from the protocol registry's own
+/// `auth_failure_status_and_kind`; the copy comes from that same registry's
+/// `vendor_auth_failure_message`. Those two are the CANONICAL declarations the driven path's own
+/// 401 shaper dispatches through — `busbar_core::auth::unauthorized_response` calls the same two
+/// and nothing else — so a mounted refusal and a driven one cannot come to different answers about
+/// the same dialect, and a dialect added to the registry is answered here for free.
+///
+/// That matters more than it looks, because these are not one answer with a status swapped. A real
+/// vendor's refusal is a protocol TELL a native SDK keys its typed exception off: Bedrock answers
+/// `403 AccessDeniedException` and never 401; Gemini answers `400 INVALID_ARGUMENT` with an
+/// `API_KEY_INVALID` detail block rather than 401 at all; the rest answer 401 in their own envelope.
+/// A leg that spelled "401 unauthorized" here would be correct for none of the six and would be a
+/// busbar tell on all of them.
+///
+/// The envelope is `ingress_error`, which is the same builder this plane's own refusals are shaped
+/// by — the seated gate's veto and the verify step's out-of-scope 403 both go through it — so the
+/// refusal a mounted caller sees is framed by the writer their dialect declares.
+fn refused(dialect: &'static str) -> crate::root::transports::MountedReply {
+    let (status, kind) = busbar_substrate::proxy::auth_failure_status_and_kind(dialect);
+    busbar_substrate::proxy::ingress_error(
+        dialect,
+        status,
+        kind,
+        busbar_substrate::proto::vendor_auth_failure_message(dialect),
+    )
 }
 
 /// **THE MODEL THE REQUEST LINE NAMED**, for the two dialects that keep it there.

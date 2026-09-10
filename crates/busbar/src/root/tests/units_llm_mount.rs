@@ -78,7 +78,6 @@ use busbar_core::{
 use tower::ServiceExt as _;
 
 use crate::root::durability::Durability;
-use crate::root::mount_ingress::BootIngress;
 use crate::root::units_llm::LlmNode;
 use busbar_api::{operation::Operation, PlaneRequestCtx, VirtualKey};
 use busbar_contract::plane::PlaneMeta;
@@ -204,11 +203,9 @@ async fn mounted(streamed: bool) -> Mounted {
     let resolved = Arc::clone(&d.key);
     let leg = LlmLeg::assemble(
         d.node,
-        Arc::new(BootIngress::new(
+        Arc::new(crate::root::mount_ingress::tests::AdmitsOneCaller::new(
             crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
-            move |_| PlaneRequestCtx {
-                key: Some(Arc::clone(&resolved)),
-            },
+            Some(Arc::clone(&resolved)),
         )),
     );
     Mounted {
@@ -656,11 +653,9 @@ async fn one_request_each_way() -> Option<(
     let resolved = Arc::clone(&key);
     let leg = LlmLeg::assemble(
         second.node,
-        Arc::new(BootIngress::new(
+        Arc::new(crate::root::mount_ingress::tests::AdmitsOneCaller::new(
             crate::root::mount_ingress::tests::minted(engine_host(&second.app)),
-            move |_| PlaneRequestCtx {
-                key: Some(Arc::clone(&resolved)),
-            },
+            Some(Arc::clone(&resolved)),
         )),
     );
     let router = mount(
@@ -692,11 +687,9 @@ async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_pos
     let resolved = Arc::clone(&d.key);
     let leg = LlmLeg::assemble(
         d.node,
-        Arc::new(BootIngress::new(
+        Arc::new(crate::root::mount_ingress::tests::AdmitsOneCaller::new(
             crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
-            move |_| PlaneRequestCtx {
-                key: Some(Arc::clone(&resolved)),
-            },
+            Some(Arc::clone(&resolved)),
         )),
     );
 
@@ -759,11 +752,9 @@ async fn the_boots_own_composition_answers_this_planes_address_from_the_mounted_
     // node it composes to this one, so a posting landing here is a posting the MOUNTED leg made.
     let book = a_book();
     let inputs = crate::root::registry::MountInputs {
-        ingress: Arc::new(BootIngress::new(
+        ingress: Arc::new(crate::root::mount_ingress::tests::AdmitsOneCaller::new(
             crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
-            move |_| PlaneRequestCtx {
-                key: Some(Arc::clone(&resolved)),
-            },
+            Some(Arc::clone(&resolved)),
         )),
         book: Arc::clone(&book),
         request_body_max_bytes: 1024 * 1024,
@@ -812,11 +803,9 @@ async fn a_plane_whose_row_refuses_leaves_its_addresses_on_the_surface_underneat
     let d = deployment(false, None).await;
     let resolved = Arc::clone(&d.key);
     let inputs = crate::root::registry::MountInputs {
-        ingress: Arc::new(BootIngress::new(
+        ingress: Arc::new(crate::root::mount_ingress::tests::AdmitsOneCaller::new(
             crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
-            move |_| PlaneRequestCtx {
-                key: Some(Arc::clone(&resolved)),
-            },
+            Some(Arc::clone(&resolved)),
         )),
         book: a_book(),
         request_body_max_bytes: 1024 * 1024,
