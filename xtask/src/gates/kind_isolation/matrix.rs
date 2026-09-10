@@ -168,10 +168,22 @@ fn alias_of(a: &str, b: &str) -> bool {
 /// A plane contributes its alias too, because `voice` and `streams` are one instance until the
 /// rename lands.
 ///
-/// One spelling is struck: a needle that is a PROPER SEGMENT PREFIX of another crate's package name
-/// names nothing in particular. `busbar`, the composition root's package name, is the prefix of
-/// every crate in the workspace, and counting it would report every `busbar_kernel::` path in the
-/// tree as a crate naming the root.
+/// ONE SPELLING IS STRUCK, AND IT IS STRUCK FOR THE REASON IT WAS WRITTEN FOR: `busbar`, the
+/// composition root's package name, is a proper segment prefix of EVERY OTHER PACKAGE NAME IN THE
+/// WORKSPACE. It is the tree's namespace and not a name, so counting it would report every
+/// `busbar_kernel::` path in the tree as a crate naming the root. That test — "every other package
+/// name extends it" — is the whole strike.
+///
+/// IT USED TO BE "ANY other crate's package name extends it", AND THAT WAS AN INSTRUMENT DEFECT.
+/// A needle was struck EVERYWHERE because ONE sibling's name happened to be longer, so a real
+/// crate's real package name went uncounted for as long as a sibling existed that extended it:
+/// `busbar-voice` was invisible because `busbar-voice-codec` existed, and the day the codec is
+/// renamed the needle comes back to life and cells that read zero for a year read what they always
+/// were. Ambiguity between `busbar-voice` and `busbar-voice-codec` is REAL, but it is ambiguity AT
+/// A POSITION, and it is resolved where every tokeniser resolves it: LONGEST MATCH. A needle is
+/// struck at a position where a longer package name matches AT THAT POSITION, and nowhere else, so
+/// `busbar-voice-codec` scores as the codec and never as `legacy` + `codec`, while `busbar-voice`
+/// in any other spelling scores as what it is.
 fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
     let mut out: BTreeMap<&'static str, Vec<Needle>> = BTreeMap::new();
     for c in crates {
@@ -211,17 +223,38 @@ fn vocabulary(crates: &[CrateInfo]) -> BTreeMap<&'static str, Vec<Needle>> {
         .map(|c| needle_segments(&c.name.to_lowercase()))
         .collect();
     for v in out.values_mut() {
-        v.retain(|n| {
-            let segs = needle_segments(&n.word);
-            !names
-                .iter()
-                .any(|full| full.len() > segs.len() && full[..segs.len()] == segs[..])
-        });
+        v.retain(|n| !is_the_workspace_prefix(&needle_segments(&n.word), &names));
         v.sort_by(|a, b| a.word.cmp(&b.word).then(a.owner.cmp(&b.owner)));
         v.dedup_by(|a, b| a.word == b.word);
     }
     out.retain(|_, v| !v.is_empty());
     out
+}
+
+/// Whether `segs` is the WORKSPACE'S OWN PREFIX: every package name in the tree either IS it or
+/// extends it. That is `busbar` and nothing else, and it is the one spelling that names no crate in
+/// particular.
+fn is_the_workspace_prefix(segs: &[String], names: &[Vec<String>]) -> bool {
+    !names.is_empty()
+        && names
+            .iter()
+            .all(|full| full[..segs.len().min(full.len())] == segs[..segs.len().min(full.len())])
+        && names
+            .iter()
+            .any(|full| full.len() > segs.len() && full[..segs.len()] == *segs)
+}
+
+/// THE PACKAGE NAMES THAT EXTEND THIS NEEDLE — every longer package name whose leading segments are
+/// exactly it. These are the names that WIN at a shared position: `busbar-voice-codec` extends
+/// `busbar-voice`, so text that spells the codec spells the codec and not the crate it was carved
+/// out of. Empty for all but a handful of needles, and the two scanners consult it at the position
+/// rather than the vocabulary consulting it once for the whole tree.
+fn extensions_of(segs: &[String], names: &[Vec<String>]) -> Vec<Vec<String>> {
+    names
+        .iter()
+        .filter(|full| full.len() > segs.len() && full[..segs.len()] == *segs)
+        .cloned()
+        .collect()
 }
 
 /// The needles kind `k` puts to crate `c` — its own spellings and its own instance struck out
@@ -311,13 +344,20 @@ fn line_buckets(chars: &[char]) -> Vec<Bucket> {
     out
 }
 
-/// How many times `needle`'s segment run appears in the segment stream.
-fn count_by_segments(segs: &[String], needle: &[String]) -> usize {
+/// How many times `needle`'s segment run appears in the segment stream, LONGEST MATCH FIRST: a
+/// position where one of `ext` — a package name that extends this needle — also runs is a position
+/// where the text names the LONGER crate, and it is not this needle's hit.
+fn count_by_segments(segs: &[String], needle: &[String], ext: &[Vec<String>]) -> usize {
     if needle.is_empty() || needle.len() > segs.len() {
         return 0;
     }
     (0..=(segs.len() - needle.len()))
-        .filter(|&i| segs[i..i + needle.len()] == *needle)
+        .filter(|&i| {
+            segs[i..i + needle.len()] == *needle
+                && !ext
+                    .iter()
+                    .any(|e| i + e.len() <= segs.len() && segs[i..i + e.len()] == e[..])
+        })
         .count()
 }
 
@@ -370,9 +410,23 @@ fn window_at(chars: &[char], start: usize, needle: &[String]) -> Option<usize> {
     Some(i)
 }
 
+/// The end index of the LONGEST package name in `ext` that matches, bounded, at `start` — the name
+/// the text is actually spelling here.
+fn longest_extension_at(chars: &[char], start: usize, ext: &[Vec<String>]) -> Option<usize> {
+    ext.iter()
+        .filter_map(|e| window_at(chars, start, e))
+        .filter(|&end| is_boundary(Some(chars[end - 1]), chars.get(end).copied()))
+        .max()
+}
+
 /// How many times `needle` appears in `chars` as a bounded, case-insensitive window. `chars` is the
 /// raw line, decoded once by the caller: decoding it per needle made the row minutes long.
-fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
+///
+/// LONGEST MATCH, at the position: where a package name that EXTENDS this needle also matches, the
+/// text spells that longer name, the scan steps over the whole of it, and this needle scores
+/// nothing there. It still scores everywhere the longer name does not reach — which is the
+/// difference between a needle that is ambiguous somewhere and a needle that is deleted everywhere.
+fn count_by_windows(chars: &[char], needle: &[String], ext: &[Vec<String>]) -> usize {
     let mut hits = 0usize;
     let mut i = 0usize;
     while i < chars.len() {
@@ -381,6 +435,10 @@ fn count_by_windows(chars: &[char], needle: &[String]) -> usize {
             if is_boundary(before, Some(chars[i]))
                 && is_boundary(Some(chars[end - 1]), chars.get(end).copied())
             {
+                if let Some(longer) = longest_extension_at(chars, i, ext) {
+                    i = longer;
+                    continue;
+                }
                 hits += 1;
                 i = end;
                 continue;
@@ -447,6 +505,9 @@ struct Resolved {
     kind: &'static str,
     word: String,
     parts: Vec<String>,
+    /// The package names that extend `parts`; a match of one of these at a position is that
+    /// position's longest match, and this needle does not score there.
+    ext: Vec<Vec<String>>,
 }
 
 /// A crate's needles, plus the two-letter index into them and the fingerprint the per-file memo is
@@ -461,6 +522,10 @@ struct Plan {
 fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<(Matrix, usize), String> {
     let vocab = vocabulary(crates);
     let by_dir: BTreeMap<&str, &CrateInfo> = crates.iter().map(|c| (c.dir.as_str(), c)).collect();
+    let names: Vec<Vec<String>> = crates
+        .iter()
+        .map(|c| needle_segments(&c.name.to_lowercase()))
+        .collect();
 
     let mut plan: BTreeMap<&str, Plan> = BTreeMap::new();
     for c in crates {
@@ -475,14 +540,24 @@ fn measure(cx: &Ctx, crates: &[CrateInfo]) -> Result<(Matrix, usize), String> {
                     .entry(bucket_of(&parts[0]))
                     .or_default()
                     .push(p.needles.len());
+                // THE EXTENSIONS ARE PART OF THE ANSWER, SO THEY ARE PART OF THE MEMO KEY. A plant
+                // that adds a crate whose name extends an existing needle changes no needle
+                // spelling and every count that needle produces; a fingerprint that listed only the
+                // spellings would hand back the reading taken before the crate existed.
+                let ext = extensions_of(&parts, &names);
                 p.fingerprint.push_str(kind);
                 p.fingerprint.push(':');
                 p.fingerprint.push_str(&n.word);
+                for e in &ext {
+                    p.fingerprint.push('<');
+                    p.fingerprint.push_str(&e.join("-"));
+                }
                 p.fingerprint.push('\n');
                 p.needles.push(Resolved {
                     kind,
                     word: n.word.clone(),
                     parts,
+                    ext,
                 });
             }
         }
@@ -596,8 +671,8 @@ fn scan_file(plan: &Plan, dir: &str, rel: &str, text: &str) -> std::sync::Arc<Ve
         let segs = line_segments(raw);
         for i in candidates {
             let n = &plan.needles[i];
-            let by_segments = count_by_segments(&segs, &n.parts);
-            let by_windows = count_by_windows(&chars, &n.parts);
+            let by_segments = count_by_segments(&segs, &n.parts, &n.ext);
+            let by_windows = count_by_windows(&chars, &n.parts, &n.ext);
             if by_segments == 0 && by_windows == 0 {
                 continue;
             }
@@ -1323,11 +1398,110 @@ mod tests {
     use super::*;
 
     fn both(line: &str, needle: &str) -> (usize, usize) {
+        with_ext(line, needle, &[])
+    }
+
+    /// The two scanners over one line, with a set of package names that EXTEND the needle.
+    fn with_ext(line: &str, needle: &str, ext: &[&str]) -> (usize, usize) {
         let n = needle_segments(needle);
+        let ext: Vec<Vec<String>> = ext.iter().map(|e| needle_segments(e)).collect();
         (
-            count_by_segments(&line_segments(line), &n),
-            count_by_windows(&line.chars().collect::<Vec<char>>(), &n),
+            count_by_segments(&line_segments(line), &n, &ext),
+            count_by_windows(&line.chars().collect::<Vec<char>>(), &n, &ext),
         )
+    }
+
+    /// A SIBLING'S LONGER NAME STRIKES THE NEEDLE AT A POSITION, NEVER EVERYWHERE.
+    ///
+    /// This is the instrument defect that hid a real crate for a year: `busbar-voice` was struck
+    /// from the vocabulary OUTRIGHT because `busbar-voice-codec` existed, so every crate in the
+    /// tree could spell the legacy plane crate for free and seven cells read a number that was not
+    /// the truth. Ambiguity between the two names is real, and it is ambiguity AT A POSITION.
+    #[test]
+    fn a_needle_a_sibling_extends_still_scores_where_the_sibling_does_not_match() {
+        let ext = ["busbar-voice-codec"];
+        // The bare name, in all three spellings the two scanners are supposed to agree on.
+        assert_eq!(
+            with_ext("busbar-voice = { path = \"..\" }", "busbar-voice", &ext),
+            (1, 1)
+        );
+        assert_eq!(
+            with_ext("use busbar_voice::runtime;", "busbar-voice", &ext),
+            (1, 1)
+        );
+        assert_eq!(
+            with_ext("a BusbarVoice session", "busbar-voice", &ext),
+            (1, 1)
+        );
+    }
+
+    /// AND AT A POSITION THE SIBLING MATCHES, THE SIBLING IS WHAT THE TEXT SPELLS.
+    ///
+    /// `busbar-voice-codec` scores as the codec and NEVER as legacy + codec, which is the half a
+    /// plain "count the shorter name too" would get wrong — it would report one crate name as two
+    /// couplings and double-count the codec's every mention against the crate it was carved out of.
+    #[test]
+    fn the_longer_name_wins_at_the_position_it_matches() {
+        let ext = ["busbar-voice-codec"];
+        assert_eq!(
+            with_ext("use busbar_voice_codec::ir;", "busbar-voice", &ext),
+            (0, 0)
+        );
+        assert_eq!(
+            with_ext(
+                "busbar-voice-codec = { path = \"..\" }",
+                "busbar-voice",
+                &ext
+            ),
+            (0, 0)
+        );
+        // The longer needle scores there, exactly once, with no extension of its own.
+        assert_eq!(
+            both("use busbar_voice_codec::ir;", "busbar-voice-codec"),
+            (1, 1)
+        );
+        // One line carrying both spellings: one hit each, and the scan does not slide backwards
+        // into the middle of the longer name to find a second short one.
+        assert_eq!(
+            with_ext(
+                "busbar-voice-codec re-exports what busbar-voice moved",
+                "busbar-voice",
+                &ext
+            ),
+            (1, 1)
+        );
+    }
+
+    /// THE ONE SPELLING THAT IS STRUCK OUTRIGHT, and the test that says why it is the only one.
+    ///
+    /// `busbar` is a proper segment prefix of EVERY other package name in the workspace: it is the
+    /// namespace and not a name. Any needle that some names extend and others do not is a name.
+    #[test]
+    fn only_the_prefix_every_package_carries_is_struck_outright() {
+        let names: Vec<Vec<String>> = [
+            "busbar",
+            "busbar-voice",
+            "busbar-voice-codec",
+            "busbar-kernel",
+        ]
+        .iter()
+        .map(|n| needle_segments(n))
+        .collect();
+        assert!(is_the_workspace_prefix(&needle_segments("busbar"), &names));
+        assert!(!is_the_workspace_prefix(
+            &needle_segments("busbar-voice"),
+            &names
+        ));
+        assert!(!is_the_workspace_prefix(
+            &needle_segments("busbar-kernel"),
+            &names
+        ));
+        // …and the extensions the position rule consults are exactly the longer names.
+        assert_eq!(
+            extensions_of(&needle_segments("busbar-voice"), &names),
+            vec![needle_segments("busbar-voice-codec")]
+        );
+        assert!(extensions_of(&needle_segments("busbar-kernel"), &names).is_empty());
     }
 
     #[test]
