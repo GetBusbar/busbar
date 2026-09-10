@@ -99,10 +99,26 @@ lq_line_files() { # $1 = queue line, in the repo at $2 (default $W)
 # ledger never reached the eight distinct greens the larger batch waits for; without the second, the
 # second sweep's lines were disjoint among themselves but not from the first sweep's, and the popper
 # would have joined two lines that touch one file. $4 is the tip; empty means "no ledger consulted".
-lq_disjoint_lines() { # $1 = max, $2 = queue file, $3 = repo (default $W), $4 = tip (optional)
+# $5 IS THE BATCH THAT IS PROVING RIGHT NOW (the overlapped sweep, see lq_predict_tip). Its lines
+# are not in the queue any more, but its FILES are about to change under every line behind it, and a
+# line pre-proven against a prediction it overlaps is a pre-proof of something nobody will land: the
+# prediction is only sound where the two file sets do not meet. Those files are claimed BEFORE the
+# walk, exactly as the already-green lines' files are.
+lq_disjoint_lines() { # $1 = max, $2 = queue file, $3 = repo (default $W), $4 = tip (optional), $5 = batch file already claimed (optional)
   # qa/*.toml IS SHARED OVER FIGURE-ONLY DIFFS here too (see lq_line_qa_rows): a sweep that never
   # let two figure-only lines share a box never reached the eight greens the larger batch waits for.
-  local max="$1" qf="$2" repo="${3:-$W}" tip="${4:-}" line files claimed="" n=0 clash f crows=0 myrows
+  local max="$1" qf="$2" repo="${3:-$W}" tip="${4:-}" inflight="${5:-}" line files claimed="" n=0 clash f crows=0 myrows
+  if [ -n "$inflight" ] && [ -f "$inflight" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in ''|'#'*) continue ;; esac
+      files="$(lq_line_files "$line" "$repo")"
+      case "$files" in '?'|'') continue ;; esac
+      [ "$(lq_line_qa_rows "$line" "$repo")" = 0 ] || crows=1
+      while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
+$files
+EOF
+    done <"$inflight"
+  fi
   if [ -n "$tip" ] && [ -f "$PP" ]; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -708,6 +724,71 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log; prints GREEN,
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# THE PREDICTED TIP — WHAT THE TREE WILL BE WHEN THE BATCH THAT IS PROVING RIGHT NOW LANDS
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# Every tip move DROPS the pre-prove ledger (every row is keyed by the tip it was taken on), so the
+# sweep that feeds the next batch could not begin until the current batch had landed: one serial
+# sweep per batch, and audit 16 measured 38 batches over the 103 must-land lines at 54 minutes of
+# sweep apiece. The sweep and the proof are the same fleet doing the same work at different times.
+#
+# They need not be. The tree the batch will produce is KNOWN BEFORE THE BATCH RETURNS: it is this
+# tip with the batch's picks applied, and land.sh applies them with `cherry-pick -x`, which makes a
+# NEW COMMIT (new sha, new date, a `(cherry picked from commit …)` trailer) over the SAME TREE. So
+# the runner builds that tree here, in a scratch worktree of its own repository, while the box is
+# still proving, and sweeps the next disjoint lines against it — keyed by the PREDICTED sha.
+#
+# WHAT IS PREDICTED AND WHAT IS NOT. The prediction is a tree, and it is checked against the landed
+# tree (lq_preproof_rekey) before a single row of it is believed. A pick that does not apply cleanly
+# yields NO prediction at all: nothing is guessed, the overlap is skipped, and the queue runs exactly
+# as it ran before. A line whose files meet the batch's is never swept against the prediction
+# (lq_disjoint_lines $5) — the prediction says what the tree will be, not what a pick onto it does.
+LQ_PREDICT="${LANDQ_PREDICT_TREE:-$W/target/gate/predict}"
+lq_predict_tip() { # $1 = tree, $2 = batch file, $3 = scratch worktree (default $LQ_PREDICT); prints "<sha> <tree-sha>", or nothing
+  local tree="${1:-$W}" bf="$2" wt="${3:-$LQ_PREDICT}" tip h line
+  [ -f "$bf" ] || return 1
+  tip="$(git -C "$tree" rev-parse -q --verify HEAD 2>/dev/null)" || return 1
+  [ -n "$tip" ] || return 1
+  git -C "$tree" worktree prune >/dev/null 2>&1
+  if [ ! -e "$wt/.git" ]; then
+    mkdir -p "$(dirname "$wt")"
+    git -C "$tree" worktree add -q --detach "$wt" "$tip" >/dev/null 2>&1 || return 1
+  fi
+  git -C "$wt" cherry-pick --abort >/dev/null 2>&1
+  git -C "$wt" checkout -q --detach "$tip" >/dev/null 2>&1 || return 1
+  git -C "$wt" reset -q --hard "$tip" >/dev/null 2>&1 || return 1
+  # THE PICKS, IN THE ORDER THE BATCH NAMES THEM, exactly as land.sh applies them.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    for h in $(lq_line_hashes "$line"); do
+      git -C "$wt" cherry-pick -x "$h" >/dev/null 2>&1 || {
+        git -C "$wt" cherry-pick --abort >/dev/null 2>&1
+        git -C "$wt" reset -q --hard "$tip" >/dev/null 2>&1
+        return 1; }
+    done
+  done <"$bf"
+  printf '%s %s\n' "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$wt" rev-parse 'HEAD^{tree}')"
+}
+
+# THE PREDICTION IS CHECKED AGAINST THE TREE, NEVER AGAINST THE SHA. `cherry-pick -x` writes a new
+# commit, so the landed sha is never the predicted sha; the landed TREE is the predicted tree exactly
+# when the batch landed whole and nothing else moved the tip. Equal: the rows taken against the
+# prediction are rows about THIS tree and are re-keyed to the landed sha, and the next pop takes them
+# with no second sweep. Not equal (a red batch that bisected, a hand landing, a partial batch): they
+# are dropped, which is what every stale row has always been.
+lq_preproof_rekey() { # $1 = predicted sha, $2 = predicted tree, $3 = landed sha, $4 = tree (default $W), $5 = ledger (default $PP); 0 = valid, 1 = dropped
+  local psha="$1" ptree="$2" landed="$3" tree="${4:-$W}" pp="${5:-$PP}" ltree
+  [ -n "$psha" ] && [ -f "$pp" ] || return 1
+  ltree="$(git -C "$tree" rev-parse -q --verify "$landed^{tree}" 2>/dev/null)"
+  if [ -n "$ltree" ] && [ "$ltree" = "$ptree" ]; then
+    awk -F"$TAB" -v OFS="$TAB" -v p="$psha" -v l="$landed" '$2 == p { $2 = l } { print }' "$pp" >"$pp.tmp" \
+      && mv "$pp.tmp" "$pp"
+    return 0
+  fi
+  awk -F"$TAB" -v p="$psha" '$2 != p' "$pp" >"$pp.tmp" && mv "$pp.tmp" "$pp"
+  return 1
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE ENGINE THE RUNNER RUNS, staged under target/gate with its roots pointed at THIS tree.
 #
 # `$SCRIPTS` (LAND_SH_SRC) is a scratch copy of scripts/ — usually inside another worktree — so that a
@@ -718,12 +799,16 @@ lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log; prints GREEN,
 # HEAD while the ledger keyed the verdict by this tree's. The sweep did exactly that in its first
 # form. So the three files are rewritten here, once per iteration, and EVERYTHING the runner launches
 # — the sweep and the batch alike — runs the staged copies.
-lq_stage_engine() {
-  mkdir -p "$W/target/gate"
-  sed "s|^here=.*|here=\"$W\"|" "$SCRIPTS/land.sh" >"$W/target/gate/land.run.sh"
-  sed "s|^REPO=.*|REPO=\"$W\"|" "$SCRIPTS/land-remote.sh" >"$W/target/gate/land-remote.sh"
-  cp "$SCRIPTS/ci-remote-lib.sh" "$W/target/gate/ci-remote-lib.sh"
-  chmod +x "$W/target/gate/land.run.sh" "$W/target/gate/land-remote.sh"
+# $1 IS THE TREE THE STAGED ENGINE IS ROOTED IN, and it is not always the runner's: the overlapped
+# sweep proves from the PREDICTION worktree, whose HEAD is the tip the batch is about to make, and an
+# engine rooted in the runner's tree would push the runner's HEAD instead.
+lq_stage_engine() { # $1 = tree (default $W)
+  local t="${1:-$W}"
+  mkdir -p "$t/target/gate"
+  sed "s|^here=.*|here=\"$t\"|" "$SCRIPTS/land.sh" >"$t/target/gate/land.run.sh"
+  sed "s|^REPO=.*|REPO=\"$t\"|" "$SCRIPTS/land-remote.sh" >"$t/target/gate/land-remote.sh"
+  cp "$SCRIPTS/ci-remote-lib.sh" "$t/target/gate/ci-remote-lib.sh"
+  chmod +x "$t/target/gate/land.run.sh" "$t/target/gate/land-remote.sh"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -757,11 +842,13 @@ lq_lock_release() { # $1 = my pid
 # it started from, so the tip land-remote.sh brings back is the tip it sent and the fast-forward is
 # a no-op. That is the whole safety argument, and it is proven by land.sh's own self-test
 # ("pre: the tree did NOT move").
-lq_preprove_sweep() {
-  local tip; tip="$(git -C "$W" rev-parse HEAD)"
-  local lines; lines="$(lq_disjoint_lines "$PREPROVE_LINES" "$Q" "$W" "$tip")"
-  [ -n "$lines" ] || { lq_log "pre-prove: no disjoint line to hand out at $(printf '%.9s' "$tip")"; return 0; }
-  local dir="$W/target/gate/preprove-$tip"
+lq_preprove_sweep() { # $1 = tree to prove FROM (default $W), $2 = the sha rows are keyed by (default that tree's HEAD), $3 = the batch in flight (optional)
+  local tree="${1:-$W}" inflight="${3:-}"
+  local tip; tip="$(git -C "$tree" rev-parse HEAD)"
+  local key="${2:-$tip}"
+  local lines; lines="$(lq_disjoint_lines "$PREPROVE_LINES" "$Q" "$tree" "$key" "$inflight")"
+  [ -n "$lines" ] || { lq_log "pre-prove: no disjoint line to hand out at $(printf '%.9s' "$key")"; return 0; }
+  local dir="$tree/target/gate/preprove-$key"
   mkdir -p "$dir"
   # ONE BOX PER LINE, ALLOCATED BEFORE ANY OF THEM STARTS.
   #
@@ -770,9 +857,9 @@ lq_preprove_sweep() {
   # is the wall clock of six serial landings, which is the opposite of the point. The hosts are
   # therefore picked here, serially, before a single child is launched, and each is named to
   # `land.sh --remote <host>` explicitly rather than left to `auto`.
-  lq_stage_engine
+  lq_stage_engine "$tree"
   # shellcheck source=scripts/ci-remote-lib.sh
-  . "$W/target/gate/ci-remote-lib.sh" 2>/dev/null || {
+  . "$tree/target/gate/ci-remote-lib.sh" 2>/dev/null || {
     lq_log "pre-prove: no ci-remote-lib.sh; the sweep has no transport and is skipped"; return 0; }
   ( remote_wrapper ) || { lq_log "pre-prove: no ssh wrapper for the fleet; sweep skipped"; return 0; }
   local i=0 line hosts="" cand try
@@ -801,14 +888,14 @@ lq_preprove_sweep() {
       # </dev/null: this child is backgrounded while the loop is still READING the list of lines
       # from its heredoc, and a child that inherits that stdin eats the next line — measured: three
       # disjoint lines, two boxes chosen, no "out of free boxes", the third line simply never read.
-      env -u LAND_SELFTEST_SHARDS bash "$W/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf" \
+      env -u LAND_SELFTEST_SHARDS bash "$tree/target/gate/land.run.sh" --preprove --remote "$cand" --batch "$bf" \
         >"$dir/line-$i.log" 2>&1 </dev/null
       echo $? >"$dir/line-$i.rc"
     ) &
   done <<EOF
 $lines
 EOF
-  lq_log "pre-prove: $i line(s) out on the fleet against $(printf '%.9s' "$tip")"
+  lq_log "pre-prove: $i line(s) out on the fleet against $(printf '%.9s' "$key")"
   wait
 
   # RECORD, one row per line, keyed by the tip. A sweep whose box never reported leaves NO row —
@@ -819,8 +906,8 @@ EOF
     local rc; rc="$(cat "$dir/line-$j.rc" 2>/dev/null || true)"
     local text; text="$(head -n1 "$dir/line-$j.batch")"
     case "$(lq_preproof_verdict "$rc" "$dir/line-$j.log")" in
-      GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$tip" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
-      RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$tip" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
+      GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
+      RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
       NONE:never-reported) lq_log "pre-prove: line $j never reported; no record written (log: $dir/line-$j.log)" ;;
       NONE:base)  lq_log "pre-prove: line $j red against the BASE (a ceiling the head repairs); recorded NONE, not parked (log: $dir/line-$j.log)" ;;
       NONE:moved) lq_log "pre-prove: line $j refused by the tree-moved guard; re-queued, not parked (log: $dir/line-$j.log)" ;;
@@ -1330,7 +1417,7 @@ lq_selftest() {
   lq_stage_engine
   _t "land.run.sh's root is the runner's tree, not the scratch" "here=$W" "$(bash "$W/target/gate/land.run.sh")"
   _t "land-remote.sh's REPO is the runner's tree"               "REPO=$W" "$(bash "$W/target/gate/land-remote.sh")"
-  _t "the sweep launches the staged engine"                     1 "$(grep -c 'bash "\$W/target/gate/land.run.sh" --preprove' "$0")"
+  _t "the sweep launches the staged engine"                     1 "$(grep -c 'bash "\$tree/target/gate/land.run.sh" --preprove' "$0")"
   _t "the sweep never launches \$SCRIPTS/land.sh"              0 "$(grep -c 'bash "\$SCRIPTS/land.sh" --preprove' "$0")"
   # THE SWEEP READS EVERY LINE IT WAS GIVEN, even though each child it starts is backgrounded while
   # the loop is still reading its list: a child that inherited that stdin ate the next line (three
@@ -1530,6 +1617,109 @@ lq_selftest() {
   Q="$savedQ5"; QLOCK="$savedQL"
   Q="$savedQ"; W="$savedW"
 
+
+  # ── THE OVERLAP: SWEEP THE NEXT LINES WHILE THIS BATCH PROVES ─────────────────────────────────
+  # Every tip move drops the ledger, so the sweep for batch N+1 could not start until batch N had
+  # landed — one serial sweep per batch, 38 batches, 54 minutes apiece (audit 16). The tree batch N
+  # will make is known before it returns, because `cherry-pick -x` changes the commit and not the
+  # tree; these cases prove exactly that, and prove that the prediction is believed only when the
+  # LANDED TREE says it was right.
+  echo "landq4 selftest: the predicted tip (pre-prove the next lines against the tree this batch will make)"
+  local prepo="$root/prepo"; mkdir -p "$prepo"
+  git -C "$prepo" init -q
+  git -C "$prepo" config user.email landq@selftest; git -C "$prepo" config user.name landq
+  git -C "$prepo" config commit.gpgsign false; git -C "$prepo" config core.hooksPath "$root/nohooks"
+  printf 'x\n' >"$prepo/base.txt"; git -C "$prepo" add -A; git -C "$prepo" commit -qm base
+  local ptip; ptip="$(git -C "$prepo" rev-parse HEAD)"
+  local pmain; pmain="$(git -C "$prepo" rev-parse --abbrev-ref HEAD)"
+  git -C "$prepo" checkout -q -b psrc
+  printf 'p\n' >"$prepo/p.txt"; git -C "$prepo" add -A; git -C "$prepo" commit -qm p
+  local hp; hp="$(git -C "$prepo" rev-parse HEAD)"
+  printf 'q\n' >"$prepo/q.txt"; git -C "$prepo" add -A; git -C "$prepo" commit -qm q
+  local hq; hq="$(git -C "$prepo" rev-parse HEAD)"
+  git -C "$prepo" checkout -q -b pclash "$ptip"
+  printf 'other\n' >"$prepo/base.txt"; git -C "$prepo" add -A; git -C "$prepo" commit -qm clash1
+  printf 'other2\n' >"$prepo/base.txt"; git -C "$prepo" add -A; git -C "$prepo" commit -qm clash2
+  local hclash; hclash="$(git -C "$prepo" rev-parse HEAD)"
+  git -C "$prepo" checkout -q "$pmain"
+  local pbatch="$root/pbatch.txt"
+  printf -- '--prove %s\n--prove %s\n' "$hp" "$hq" >"$pbatch"
+  local pred psha ptree
+  pred="$(lq_predict_tip "$prepo" "$pbatch" "$root/predwt")"
+  psha="${pred%% *}"; ptree="${pred##* }"
+  _t "a prediction is made for a batch that applies" 1 "$( [ -n "$psha" ] && echo 1 || echo 0)"
+  _t "  ...and the runner's OWN tree never moved"    "$ptip" "$(git -C "$prepo" rev-parse HEAD)"
+  # NOW LAND IT THE WAY land.sh LANDS: cherry-pick -x, in the batch's order.
+  # A REAL LANDING IS MINUTES LATER THAN THE PREDICTION, and a commit carries its committer date:
+  # the landed sha differs from the predicted one for that reason alone, which is the whole point of
+  # comparing TREES. (Without the date the fixture picks in the same second and the two shas collide,
+  # and the case would prove nothing.)
+  GIT_COMMITTER_DATE='2030-01-01T00:00:00Z' git -C "$prepo" cherry-pick -x "$hp" >/dev/null 2>&1
+  GIT_COMMITTER_DATE='2030-01-01T00:00:01Z' git -C "$prepo" cherry-pick -x "$hq" >/dev/null 2>&1
+  local landed; landed="$(git -C "$prepo" rev-parse HEAD)"
+  _t "the landed sha is NOT the predicted sha"       1 "$( [ "$landed" != "$psha" ] && echo 1 || echo 0)"
+  _t "  ...nor the sha the queue line named"         1 "$( [ "$landed" != "$hq" ] && echo 1 || echo 0)"
+  _t "  ...because the trailer made a new commit"    2 "$(git -C "$prepo" log --format=%b "$ptip".. | grep -c 'cherry picked from commit ' || true)"
+  _t "the landed TREE **is** the predicted tree"     "$ptree" "$(git -C "$prepo" rev-parse 'HEAD^{tree}')"
+  # A PICK THAT DOES NOT APPLY HAS NO PREDICTION — nothing is guessed and nothing is swept.
+  printf -- '--prove %s\n' "$hclash" >"$root/pbatch2.txt"
+  _t "a conflicting pick yields no prediction"       "" "$(lq_predict_tip "$prepo" "$root/pbatch2.txt" "$root/predwt")"
+  _t "  ...and reports rc 1"                         1 "$(lq_predict_tip "$prepo" "$root/pbatch2.txt" "$root/predwt" >/dev/null; echo $?)"
+  _t "  ...leaving the scratch worktree unpicked"    "$(git -C "$prepo" rev-parse HEAD)" "$(git -C "$root/predwt" rev-parse HEAD)"
+  _t "a batch file that is not there is no prediction" 1 "$(lq_predict_tip "$prepo" "$root/nosuch.txt" "$root/predwt" >/dev/null 2>&1; echo $?)"
+
+  echo "landq4 selftest: the overlapped rows are believed only when the LANDED tree is the predicted one"
+  local ppo="$root/pp-overlap.txt"
+  printf 'GREEN%s%s%s/l/9%s--prove zz\nGREEN%stipOTHER%s/l/8%s--prove yy\n' \
+    "$TAB" "$psha" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" >"$ppo"
+  _t "predicted tree matches: the rows are VALID"    0 "$(lq_preproof_rekey "$psha" "$ptree" "$landed" "$prepo" "$ppo"; echo $?)"
+  _t "  ...re-keyed to the tip that landed"          GREEN "$(lq_preproved_status "$landed" "--prove zz" "$ppo")"
+  _t "  ...and nothing is left at the prediction"    NONE  "$(lq_preproved_status "$psha" "--prove zz" "$ppo")"
+  _t "  ...while another tip's row is untouched"     GREEN "$(lq_preproved_status tipOTHER "--prove yy" "$ppo")"
+  # A RED BATCH BISECTS, AND A BISECT LANDS A DIFFERENT TREE: the overlapped pre-proofs are discarded
+  # exactly as every stale row has always been.
+  printf 'GREEN%s%s%s/l/9%s--prove zz\nGREEN%stipOTHER%s/l/8%s--prove yy\n' \
+    "$TAB" "$psha" "$TAB" "$TAB" "$TAB" "$TAB" "$TAB" >"$ppo"
+  _t "a bisect landed another tree: NOT valid"       1 "$(lq_preproof_rekey "$psha" "$ptree" "$ptip" "$prepo" "$ppo"; echo $?)"
+  _t "  ...and the overlapped rows are gone"         NONE "$(lq_preproved_status "$ptip" "--prove zz" "$ppo")"
+  _t "  ...and gone from the prediction too"         NONE "$(lq_preproved_status "$psha" "--prove zz" "$ppo")"
+  _t "  ...while another tip's row SURVIVES"         GREEN "$(lq_preproved_status tipOTHER "--prove yy" "$ppo")"
+  _t "a landed sha that does not resolve is NOT valid" 1 "$(lq_preproof_rekey "$psha" "$ptree" deadbeef "$prepo" "$ppo"; echo $?)"
+  # AND THE POP THEN TAKES THEM WITH NO SECOND SWEEP: a line re-keyed to the landed tip is a
+  # pre-proven green at that tip, which is what the popper reads.
+  local savedQ6="$Q" savedPP6="$PP" savedL6="$L" savedW6="$W"
+  Q="$root/overq.txt"; PP="$ppo"; L="$root/overlog.txt"; : >"$L"; W="$repo"
+  printf 'GREEN%s%s%s/l/9%s--prove %s\n' "$TAB" "$psha" "$TAB" "$TAB" "$ha" >"$ppo"
+  lq_preproof_rekey "$psha" "$ptree" "$landed" "$prepo" "$ppo"
+  printf -- '--prove %s\n--prove %s\n' "$ha" "$hb" >"$Q"
+  _t "the next pop takes the overlapped line, and only it" 1 "$(lq_pop "$landed" 4 "$root/ob.txt" "$root/ok.txt")"
+  _t "  ...and it is the pre-proven one"             "--prove $ha" "$(cat "$root/ob.txt")"
+  Q="$savedQ6"; PP="$savedPP6"; L="$savedL6"; W="$savedW6"
+
+  # A LINE WHOSE FILES MEET THE BATCH'S IS NEVER SWEPT AGAINST THE PREDICTION. The prediction says
+  # what the TREE will be; it says nothing about a pick that touches what the batch just changed.
+  echo "landq4 selftest: the overlapped sweep claims the in-flight batch's files first"
+  local inb="$root/inflight.txt"; printf -- '--prove %s\n' "$ha" >"$inb"
+  printf -- '--prove %s\n--prove %s\n' "$ha2" "$hb" >"$root/overq2.txt"
+  _t "the overlapping line is held, the disjoint one goes out" \
+     "$(printf -- '--prove %s' "$hb")" \
+     "$(lq_disjoint_lines 6 "$root/overq2.txt" "$repo" "" "$inb")"
+  _t "with no batch in flight both go out" \
+     "$(printf -- '--prove %s\n--prove %s' "$ha2" "$hb")" \
+     "$(lq_disjoint_lines 6 "$root/overq2.txt" "$repo")"
+  _t "a batch file that is not there claims nothing" \
+     "$(printf -- '--prove %s\n--prove %s' "$ha2" "$hb")" \
+     "$(lq_disjoint_lines 6 "$root/overq2.txt" "$repo" "" "$root/nosuch.txt")"
+
+  echo "landq4 selftest: the main flow overlaps the sweep with the proof"
+  _t "the batch is launched in the background"       1 "$(grep -c '^  bash "\$W/target/gate/land.run.sh" --batch "\$batch" >>"\$L" 2>&1 &$' "$0")"
+  _t "  ...and waited for, so rc is still the batch's" 1 "$(grep -c '^  wait "\$bpid"$' "$0")"
+  _t "the prediction is taken BEFORE the batch is launched" 1 \
+     "$( [ "$(grep -n 'read -r predicted predtree' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^  bash "\$W/target/gate/land.run.sh" --batch' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "the overlapped sweep proves from the prediction" 1 "$(grep -c '^    lq_preprove_sweep "\$LQ_PREDICT" "\$predicted" "\$batch"$' "$0")"
+  _t "  ...and is skipped when there is no prediction" 1 "$(grep -c '^    lq_log "overlap: no prediction' "$0")"
+  _t "the landed tree is checked against the predicted one" 1 "$(grep -c 'if lq_preproof_rekey "\$predicted" "\$predtree" "\$newtip" "\$W"; then' "$0")"
+
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
     echo "landq4 selftest: GREEN (file sets, disjoint sweep, tip-keyed ledger, batch ceiling, one-file/one-judge/red-alone, popper)"
@@ -1624,9 +1814,27 @@ while true; do
   # The staged engine (see lq_stage_engine): a landing can change land.sh without changing the copy
   # that is landing it.
   lq_stage_engine
+  # THE OVERLAP (see lq_predict_tip): the tree this batch will make is built HERE, before the batch
+  # is launched — the batch is about to move HEAD, and the prediction is of THIS tip plus these picks.
+  predicted=""; predtree=""
+  if [ "${LANDQ_NO_OVERLAP:-}" != 1 ]; then
+    read -r predicted predtree <<<"$(lq_predict_tip "$W" "$batch")"
+  fi
   # THE FULL PROOF, OVER THE UNION, ALWAYS. A pre-proof chose which lines are here; it is not any
   # part of the verdict on them.
-  bash "$W/target/gate/land.run.sh" --batch "$batch" >>"$L" 2>&1
+  #
+  # BACKGROUNDED, so the next sweep runs while the box proves. It is the same foreground wait either
+  # way — `wait` is what `rc` is read from — but between the launch and the wait the runner has the
+  # idle boxes and a tip to spend them on.
+  bash "$W/target/gate/land.run.sh" --batch "$batch" >>"$L" 2>&1 &
+  bpid=$!
+  if [ -n "$predicted" ]; then
+    lq_log "overlap: pre-proving the next disjoint lines against the PREDICTED tip $(printf '%.9s' "$predicted") (tree $(printf '%.9s' "$predtree")) while the batch proves"
+    lq_preprove_sweep "$LQ_PREDICT" "$predicted" "$batch"
+  else
+    lq_log "overlap: no prediction for this batch (a pick does not apply cleanly onto this tip); no overlapped sweep"
+  fi
+  wait "$bpid"
   rc=$?
 
   want="$(grep -c . "$batch" || true)"
@@ -1661,6 +1869,16 @@ while true; do
   # on and would be ignored anyway; deleting them keeps the file from becoming a history nobody
   # reads and keeps `lq_batch_size` honest about what is CURRENT.
   newtip="$(git -C "$W" rev-parse HEAD)"
+  # ...EXCEPT THE ROWS TAKEN AGAINST THE PREDICTION OF THIS VERY MOVE (see lq_preproof_rekey). The
+  # landed TREE is compared with the predicted tree — `cherry-pick -x` changes the commit and not the
+  # tree — and equal means those rows are rows about the tree that is now HEAD.
+  if [ -n "$predicted" ]; then
+    if lq_preproof_rekey "$predicted" "$predtree" "$newtip" "$W"; then
+      lq_log "overlap: the landed tree IS the predicted tree; the overlapped pre-proofs stand at $(git -C "$W" rev-parse --short HEAD) — no second sweep"
+    else
+      lq_log "overlap: the landed tree is NOT the predicted tree (a bisect, or something else landed); the overlapped pre-proofs are dropped"
+    fi
+  fi
   [ "$newtip" = "$tip" ] || { awk -F"$TAB" -v tip="$newtip" '$2 == tip' "$PP" >"$PP.tmp" 2>/dev/null; mv "$PP.tmp" "$PP"; }
   printf '%s\n' "$newtip" >"$TIPF"   # the last landed tip, which the next census checks HEAD against
   lq_log "=== $(date +%H:%M:%S) batch done: $ngreen green, $nred parked as #RED; tip $(git -C "$W" rev-parse --short HEAD)"
