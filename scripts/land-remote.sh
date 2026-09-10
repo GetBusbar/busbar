@@ -37,6 +37,10 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qE -- 'BASEREF="\$3"; SHARDS="\$4"; shift 4' "${BASH_SOURCE[0]}" && _ok "the box unpacks REF CEIL BASEREF SHARDS, in that order" || _fail "the box unpacks REF CEIL BASEREF SHARDS"
   grep -qF -- 'rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS"' "${BASH_SOURCE[0]}" && _ok "...and this side sends them in that order" || _fail "this side sends REF CEIL BASEREF SHARDS"
   grep -qF -- 'git rev-parse --verify --quiet "$BASEREF"' "${BASH_SOURCE[0]}" && _ok "the base is verified on the box before land.sh runs" || _fail "the base is verified on the box"
+  # The shard launcher's .rc line: written after the group, from the variable, by the same shell.
+  # An `exit` inside the group is exactly the form that lost every shard's verdict once.
+  grep -qF -- 'echo "$rc" >target/shard.rc' "${BASH_SOURCE[0]}" && _ok "the shard launcher writes its .rc after the group, from \$rc" || _fail "the shard launcher writes its .rc after the group"
+  grep -qE -- 'exit \$rc; \} >target/shard.log' "${BASH_SOURCE[0]}" && _fail "the shard launcher must not exit from inside the group" || _ok "the shard launcher does not exit from inside the group"
   bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
   if [ "$fails" = 0 ]; then echo "land-remote selftest: GREEN"; exit 0; fi
   echo "land-remote selftest: RED ($fails failure(s))" >&2; exit 1
@@ -263,10 +267,16 @@ git fetch -q origin "+refs/heads/$JOB:refs/heads/$JOB" || exit 2
 git checkout -q -f "$JOB" || exit 2
 git clean -qffdx -e target -e .cargo
 mkdir -p target; rm -f target/shard.rc
+# THE .rc IS WRITTEN BY THE SAME SHELL THAT RAN THE SHARD, from a variable, after the group. The
+# first form of this `exit`ed from inside the group with the shard's status — which ended the whole
+# `bash -c` before the line that wrote the .rc, so every shard finished, said so in its log, and was
+# never reported (measured on the first real landing: 433 s of green that the primary waited on).
 setsid nohup bash -c '
+  rc=1
   { echo "shard '"$SPEC"' of '"$GATE"' on $(hostname): tree $(git rev-parse --short HEAD) $(date -u +%FT%TZ)"
     cargo xtask gate "'"$GATE"'" --selftest --shard "'"$SPEC"'"; rc=$?
-    echo "shard '"$SPEC"' done rc=$rc $(date -u +%FT%TZ)"; exit $rc; } >target/shard.log 2>&1; echo $? >target/shard.rc
+    echo "shard '"$SPEC"' done rc=$rc $(date -u +%FT%TZ)"; } >target/shard.log 2>&1
+  echo "$rc" >target/shard.rc
 ' >/dev/null 2>&1 </dev/null &
 echo "shard $SPEC of $GATE detached on $(hostname) in $W"
 SHARD
