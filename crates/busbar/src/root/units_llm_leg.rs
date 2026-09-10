@@ -53,7 +53,10 @@ use std::sync::Arc;
 use busbar_llm::unit::walk::WalkArrival;
 
 use crate::root::mount_ingress::ArrivalSource;
+// The payload the substrate declares, under the ONE spelling this plane's root module already
+// carries: the leg reads a sealed context by downcasting to it, as the driven path's readers do.
 use crate::root::plane_mount;
+use crate::root::units_llm::ArrivalPayload;
 use crate::root::units_llm::LlmNode;
 
 /// THE LLM PLANE'S LEG, assembled once.
@@ -184,15 +187,28 @@ impl LlmLeg {
                 plane_mount::http_response(crate::root::transports::unavailable_answer()),
             );
         };
-        let payload = self
+        let sealed = self
             .ingress
-            .payload(arrival.fact(busbar_contract::transport::facts::CREDENTIAL));
+            .arrival(arrival.fact(busbar_contract::transport::facts::CREDENTIAL));
+        // The sealed context is read the way the driven path's own readers read theirs: by
+        // downcasting to the payload the substrate declares. A context carrying anything else is a
+        // wiring bug rather than a runtime input, and it is answered rather than unwrapped — with
+        // the transport's own "cannot take this", for the reason the unnamed-dialect arm above
+        // gives: no unit ran and there is nothing to settle.
+        let Some(payload) = sealed.downcast_ref::<ArrivalPayload>() else {
+            return (
+                busbar_kernel::teller::Ended::AlreadySettled,
+                plane_mount::http_response(crate::root::transports::unavailable_answer()),
+            );
+        };
         let walk_arrival = WalkArrival {
-            host: payload.host,
-            gov: payload.gov,
+            host: Arc::clone(&payload.host),
+            gov: busbar_api::PlaneRequestCtx {
+                key: payload.gov.key.clone(),
+            },
             proto: named.dialect,
             operation: named.operation,
-            caller_token: payload.caller_token,
+            caller_token: payload.caller_token.clone(),
             // THE WHOLE MAP THE CALLER SENT, read back off the facts the mount published. This
             // plane's walk forwards a request's headers to a destination, so a curated subset here
             // would be a request the node made up.

@@ -192,7 +192,7 @@ async fn mounted(streamed: bool) -> Mounted {
     let leg = LlmLeg::assemble(
         d.node,
         Arc::new(BootIngress::new(
-            busbar_core::plane_host::engine_host(&d.app),
+            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
             move |_| busbar_api::PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -581,7 +581,9 @@ async fn one_request_each_way() -> Option<(
     let leg = LlmLeg::assemble(
         second.node,
         Arc::new(BootIngress::new(
-            busbar_core::plane_host::engine_host(&second.app),
+            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(
+                &second.app,
+            )),
             move |_| busbar_api::PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -617,7 +619,7 @@ async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_pos
     let leg = LlmLeg::assemble(
         d.node,
         Arc::new(BootIngress::new(
-            busbar_core::plane_host::engine_host(&d.app),
+            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
             move |_| busbar_api::PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -684,7 +686,7 @@ async fn the_boots_own_composition_answers_this_planes_address_from_the_mounted_
     let book = a_book();
     let inputs = crate::root::registry::MountInputs {
         ingress: Arc::new(BootIngress::new(
-            busbar_core::plane_host::engine_host(&d.app),
+            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
             move |_| busbar_api::PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -737,7 +739,7 @@ async fn a_plane_whose_row_refuses_leaves_its_addresses_on_the_surface_underneat
     let resolved = Arc::clone(&d.key);
     let inputs = crate::root::registry::MountInputs {
         ingress: Arc::new(BootIngress::new(
-            busbar_core::plane_host::engine_host(&d.app),
+            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
             move |_| busbar_api::PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },

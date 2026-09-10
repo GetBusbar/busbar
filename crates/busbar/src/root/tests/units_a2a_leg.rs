@@ -401,23 +401,32 @@ fn the_boot_refusal_quotes_the_source_table() {
 //   THE TWO RESTATED CONSTANTS ARE PINNED AGAINST THEIR ONE SOURCE
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-/// **The pool this plane admits and meters against is the codec's own section name.**
+/// **The pool this plane admits and meters against is the plane's own path segment.**
 ///
 /// A copy that is checked is not a second opinion. The legacy receiving path admits and meters every
-/// A2A unit against `busbar_a2a_codec::CONFIG_SECTION`, and a root that admitted against a different
-/// string would be opening a second set of buckets for one plane's traffic — with both halves
-/// looking healthy, because an empty bucket reconciles.
+/// A2A unit against the plane's configuration section name, and a root that admitted against a
+/// different string would be opening a second set of buckets for one plane's traffic — with both
+/// halves looking healthy, because an empty bucket reconciles. The pin is against the plane's OWN
+/// path grammar — the segment every agent address carries — rather than against a codec's source,
+/// because a plane leg names no codec and a file read at build time is an edge nobody wrote down.
 #[test]
-fn the_plane_pool_is_the_codec_crates_own_section_name() {
-    let codec = include_str!("../../../../busbar-a2a-codec/src/lib.rs");
-    let declared = codec
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("pub const CONFIG_SECTION: &str = "))
-        .and_then(|rest| rest.split('"').nth(1))
-        .expect("the codec crate declares its config section as a string literal");
+fn the_plane_pool_is_the_planes_own_agent_path_segment() {
+    use busbar_contract::grammar::{PathSeg, Selector};
+    let claimed = busbar_plane_a2a::claims::CLAIMS
+        .iter()
+        .filter_map(|c| match c.selector {
+            Selector::PathPattern(segments) => Some(segments),
+            _ => None,
+        })
+        .flat_map(|segments| segments.iter())
+        .find_map(|seg| match seg {
+            PathSeg::Lit(lit) if *lit == PLANE_POOL => Some(*lit),
+            _ => None,
+        })
+        .expect("the plane's claim table carries the agent path segment");
     assert_eq!(
-        PLANE_POOL, declared,
-        "the root's restated pool name and the codec's own section name are one string"
+        PLANE_POOL, claimed,
+        "the root's restated pool name and the plane's own agent path segment are one string"
     );
 }
 

@@ -1531,10 +1531,26 @@ async fn run(data_workers: usize) {
                         // mounted leg on this node. The engine host is this boot generation's, and
                         // the credential resolution is the data plane's own, written in the file
                         // that owns what a mounted arrival is made of rather than here.
-                        ingress: std::sync::Arc::new(root::mount_ingress::boot_ingress(
-                            busbar_core::plane_host::engine_host(&handle.load()),
-                            handle.load().governance.clone(),
-                        )),
+                        ingress: {
+                            // THE HOST IS MINTED HERE, and its type is spelled nowhere in the
+                            // root: the boot closes over it and boxes the deployment's arrival
+                            // around each caller's resolved half, exactly as the catch-all boxes
+                            // its own. The seam that holds this closure names no engine type.
+                            let host = busbar_core::plane_host::engine_host(&handle.load());
+                            std::sync::Arc::new(root::mount_ingress::boot_ingress(
+                                move |gov, caller_token| {
+                                    use busbar_substrate::ingress::arrival::{
+                                        ArrivalCtx, ArrivalPayload,
+                                    };
+                                    ArrivalCtx::new(ArrivalPayload {
+                                        host: std::sync::Arc::clone(&host),
+                                        gov,
+                                        caller_token,
+                                    })
+                                },
+                                handle.load().governance.clone(),
+                            ))
+                        },
                         // THE PROCESS'S ONE BOOK, the same handle the administrative views read and
                         // the driven path's node was bound to. A mount that opened its own would
                         // post onto books nothing serves.

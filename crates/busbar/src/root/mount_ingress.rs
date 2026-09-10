@@ -26,7 +26,7 @@
 //!   three sources at the instant it composes a mount, so it seals one of these and hands it over,
 //!   and the leg asks it per arrival.
 //!
-//! ## Why it names no plane
+//! ## Why it names no plane, and no host
 //!
 //! Nothing here is about a protocol. The three values are the SUBSTRATE's ingress vocabulary — the
 //! same three every driven arrival on this node carries, whichever dialect sent it — and the
@@ -34,10 +34,20 @@
 //! plane alike. A plane that needs them names this seam; a plane that does not — the two mounted
 //! before this one walk their own boot-resolved bindings and never touch the substrate's ingress —
 //! never sees it, which is why neither of their legs changed to make room for it.
+//!
+//! The context is handed over SEALED, in the same opaque box the driven path carries, and the
+//! deployment's half of it is MINTED BY THE BOOT rather than held here. The engine host is the one
+//! value the root reaches the retiring engine through, and this file naming its type would be one
+//! more spelling of that engine's surface in the root: the ratchet that measures how much of the
+//! retiring crates the root still names counts distinct symbols, and the boot already spells the
+//! one it needs where it mints the host. So the boot hands this seam a MINT — given the caller's
+//! resolved governance context and token, box the deployment's own arrival — and this file holds
+//! the mint, the resolution, and no type of the engine's at all. A leg reads the sealed context the
+//! way the driven path's own readers do: by downcasting to the payload the substrate declares.
 
 use std::sync::Arc;
 
-use busbar_substrate::ingress::arrival::ArrivalPayload;
+use busbar_substrate::ingress::arrival::ArrivalCtx;
 
 /// THE ONE QUESTION A MOUNTED LEG ASKS ITS BOOT, per arrival.
 ///
@@ -50,9 +60,14 @@ use busbar_substrate::ingress::arrival::ArrivalPayload;
 /// exactly as the mount published it under the kernel's reserved key. Deciding what a scheme means
 /// belongs to the side that resolves it, which is the same rule the mount's own fact publication
 /// follows when it declines to split one.
+///
+/// The answer is the substrate's SEALED arrival context — the same opaque box the catch-all would
+/// have built for this request had the mount not answered first — carrying the engine host, the
+/// governance context and the caller token. A leg reads it by downcasting to the payload the
+/// substrate declares, which is exactly how the driven path's own readers read theirs.
 pub trait ArrivalSource: Send + Sync + 'static {
-    /// The engine host, governance context and caller token this credential arrives with.
-    fn payload(&self, credential: Option<&str>) -> ArrivalPayload;
+    /// The engine host, governance context and caller token this credential arrives with, sealed.
+    fn arrival(&self, credential: Option<&str>) -> ArrivalCtx;
 }
 
 /// How one deployment turns a presented credential into a governance context.
@@ -61,14 +76,23 @@ pub trait ArrivalSource: Send + Sync + 'static {
 /// says is simple: given what this caller presented — or nothing — who is it.
 type Resolve = dyn Fn(Option<&str>) -> busbar_api::PlaneRequestCtx + Send + Sync;
 
+/// How the boot boxes the deployment's own arrival around one caller's resolved half.
+///
+/// The governance context and the caller token are the CALLER's; everything else in the sealed
+/// context — the engine host — is the DEPLOYMENT's and was minted by the boot. The boot writes this
+/// closure at the one site it holds that host, so the host's type is spelled where the host is
+/// made and nowhere else.
+type Mint = dyn Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync;
+
 /// THE COMPOSITION ROOT'S ANSWER, sealed once and shared by every arrival on one mount.
 ///
 /// The host is the DEPLOYMENT's and does not change for the life of the node; the governance context
 /// is the CALLER's and cannot be known until one arrives. That split is the whole shape of this
-/// type: one value baked in, one function supplied. A struct that baked both would answer every
-/// request with the identity of whoever the boot happened to resolve first.
+/// type: one value baked in (inside the mint), one function supplied. A struct that baked both would
+/// answer every request with the identity of whoever the boot happened to resolve first.
 pub struct BootIngress {
-    host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    /// This deployment's [`Mint`]: the boot's own host, closed over where the boot minted it.
+    mint: Box<Mint>,
     /// This deployment's [`Resolve`]. Boxed rather than a generic parameter because a leg holds this
     /// as `dyn ArrivalSource`, and a parameter here would have to travel through every type between
     /// the two for no gain.
@@ -78,11 +102,11 @@ pub struct BootIngress {
 impl BootIngress {
     /// Seal one deployment's ingress source.
     pub fn new(
-        host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+        mint: impl Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
         resolve: impl Fn(Option<&str>) -> busbar_api::PlaneRequestCtx + Send + Sync + 'static,
     ) -> Self {
         BootIngress {
-            host,
+            mint: Box::new(mint),
             resolve: Box::new(resolve),
         }
     }
@@ -95,16 +119,15 @@ impl std::fmt::Debug for BootIngress {
 }
 
 impl ArrivalSource for BootIngress {
-    fn payload(&self, credential: Option<&str>) -> ArrivalPayload {
-        ArrivalPayload {
-            host: Arc::clone(&self.host),
-            gov: (self.resolve)(credential),
+    fn arrival(&self, credential: Option<&str>) -> ArrivalCtx {
+        (self.mint)(
+            (self.resolve)(credential),
             // FLATTENED TO THE SECRET, because that is what the driven path carries: the catch-all
             // boxes the resolved caller token, not the header value it came in on. A passthrough
             // that forwarded the scheme word as part of the token would send `Bearer Bearer sk-…`
             // upstream, which is a credential no destination has ever accepted.
-            caller_token: credential.and_then(presented_secret).map(str::to_string),
-        }
+            credential.and_then(presented_secret).map(str::to_string),
+        )
     }
 }
 
@@ -155,12 +178,15 @@ pub fn presented_secret(credential: &str) -> Option<&str> {
 /// **NO GOVERNANCE STATE IS NO KEY**, which is the ungoverned posture this deployment already
 /// serves: a node with no governance configured enforces nothing on the driven path either, and
 /// answering with an invented identity would be worse than answering with none.
+///
+/// The `mint` is the boot's: it closes over the engine host the boot minted for this generation and
+/// boxes the deployment's arrival around the caller's resolved half. See [`Mint`].
 #[must_use]
 pub fn boot_ingress(
-    host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    mint: impl Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
     governance: Option<Arc<busbar_core::governance::GovState>>,
 ) -> BootIngress {
-    BootIngress::new(host, move |credential| busbar_api::PlaneRequestCtx {
+    BootIngress::new(mint, move |credential| busbar_api::PlaneRequestCtx {
         key: credential
             .and_then(presented_secret)
             .zip(governance.clone())
@@ -182,4 +208,4 @@ fn now_secs() -> u64 {
 
 #[cfg(test)]
 #[path = "tests/mount_ingress.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -14,6 +14,27 @@ fn a_host() -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
     busbar_core::plane_host::engine_host(&busbar_core::test_support::TestApp::new().build())
 }
 
+/// THE BOOT'S MINT, as a cell writes it: close over one deployment's host and box the substrate's
+/// own payload around a caller's resolved half. Shared by every cell in this crate that seals a
+/// `BootIngress`, so the shape of what the boot hands the seam is written once.
+pub(crate) fn minted(
+    host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+) -> impl Fn(busbar_api::PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static {
+    move |gov, caller_token| {
+        ArrivalCtx::new(busbar_substrate::ingress::arrival::ArrivalPayload {
+            host: Arc::clone(&host),
+            gov,
+            caller_token,
+        })
+    }
+}
+
+/// The payload a sealed context carries, read the way a leg reads it.
+fn payload(ctx: &ArrivalCtx) -> &busbar_substrate::ingress::arrival::ArrivalPayload {
+    ctx.downcast_ref()
+        .expect("a sealed mount arrival carries the substrate's payload")
+}
+
 /// A governance context naming one key by its identifier, for a cell that only has to tell two
 /// callers apart. Built from the public type's own shape and nothing else.
 fn ctx_for(credential: Option<&str>) -> busbar_api::PlaneRequestCtx {
@@ -35,11 +56,14 @@ fn ctx_for(credential: Option<&str>) -> busbar_api::PlaneRequestCtx {
 /// and it is a failure that serves traffic and bills the wrong principal for it.
 #[test]
 fn two_callers_on_one_sealed_source_resolve_to_two_governance_contexts() {
-    let source = BootIngress::new(a_host(), ctx_for);
+    let source = BootIngress::new(minted(a_host()), ctx_for);
 
-    let first = source.payload(Some("Bearer sk-one"));
-    let second = source.payload(Some("Bearer sk-two"));
-    let none = source.payload(None);
+    let (first, second, none) = (
+        source.arrival(Some("Bearer sk-one")),
+        source.arrival(Some("Bearer sk-two")),
+        source.arrival(None),
+    );
+    let (first, second, none) = (payload(&first), payload(&second), payload(&none));
 
     assert_eq!(
         first.gov.key.as_ref().map(|k| k.id.clone()),
@@ -65,12 +89,14 @@ fn two_callers_on_one_sealed_source_resolve_to_two_governance_contexts() {
 #[test]
 fn every_arrival_on_one_mount_reaches_the_one_host_the_boot_sealed() {
     let host = a_host();
-    let source = BootIngress::new(Arc::clone(&host), ctx_for);
+    let source = BootIngress::new(minted(Arc::clone(&host)), ctx_for);
 
-    let first = source.payload(Some("Bearer sk-one"));
-    let second = source.payload(Some("Bearer sk-two"));
+    let (first, second) = (
+        source.arrival(Some("Bearer sk-one")),
+        source.arrival(Some("Bearer sk-two")),
+    );
     assert!(
-        Arc::ptr_eq(&first.host, &host) && Arc::ptr_eq(&second.host, &host),
+        Arc::ptr_eq(&payload(&first).host, &host) && Arc::ptr_eq(&payload(&second).host, &host),
         "one deployment, one engine host, however many callers"
     );
 }
@@ -84,33 +110,22 @@ fn every_arrival_on_one_mount_reaches_the_one_host_the_boot_sealed() {
 /// attribute to this line.
 #[test]
 fn the_caller_token_is_the_secret_the_driven_path_carries() {
-    let source = BootIngress::new(a_host(), |_| busbar_api::PlaneRequestCtx { key: None });
+    let source = BootIngress::new(minted(a_host()), |_| busbar_api::PlaneRequestCtx {
+        key: None,
+    });
+    let token =
+        |credential: Option<&str>| payload(&source.arrival(credential)).caller_token.clone();
 
-    assert_eq!(
-        source
-            .payload(Some("Bearer sk-live"))
-            .caller_token
-            .as_deref(),
-        Some("sk-live")
-    );
+    assert_eq!(token(Some("Bearer sk-live")).as_deref(), Some("sk-live"));
     // A bare secret is what a vendor SDK writing its own key header sends, and it is the whole
     // value: there is no scheme word to drop.
-    assert_eq!(
-        source.payload(Some("sk-live")).caller_token.as_deref(),
-        Some("sk-live")
-    );
+    assert_eq!(token(Some("sk-live")).as_deref(), Some("sk-live"));
     // The scheme word is not matched against a list — which alternatives a plane accepts is the
     // authentication chain's answer, and a list here would be a second one that could drift.
-    assert_eq!(
-        source
-            .payload(Some("ApiKey sk-live"))
-            .caller_token
-            .as_deref(),
-        Some("sk-live")
-    );
+    assert_eq!(token(Some("ApiKey sk-live")).as_deref(), Some("sk-live"));
     // Presented nothing, and presented a blank, are two different statements and only one of them
     // is a caller.
-    assert_eq!(source.payload(None).caller_token, None);
-    assert_eq!(source.payload(Some("Bearer   ")).caller_token, None);
-    assert_eq!(source.payload(Some("   ")).caller_token, None);
+    assert_eq!(token(None), None);
+    assert_eq!(token(Some("Bearer   ")), None);
+    assert_eq!(token(Some("   ")), None);
 }

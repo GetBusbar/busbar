@@ -221,16 +221,31 @@ pub struct NetSeam<'r> {
 /// generic — so the type moved HERE, beside [`NetSeam`], which is the value it is handed to. The
 /// A2A leg re-exports it under the name it already had, so nothing that named it there changed.
 ///
-/// ONE SYMBOL, deliberately. The forward goes through the host resolver's INHERENT `lookup` rather
-/// than through its trait method, because the ratchet that measures how much of the retiring
-/// substrate's surface this root still names counts distinct symbols — and naming the trait as well
-/// as the type would cost two where one does the same work.
+/// THE RESOLUTION IS THE ROOT'S OWN, and it names no retiring crate. It used to forward to the
+/// substrate's system resolver, which runs the standard library's name lookup on a runtime of its
+/// own; the root asks the standard library directly, which is the same `getaddrinfo` the substrate's
+/// forward reached — one question about ADDRESSES, port zero, because the port belongs to the URL
+/// and is applied by the transport. Asking synchronously is what the trait's own signature says;
+/// the substrate's detour through a dedicated runtime existed to call an asynchronous lookup from a
+/// synchronous seam, and the standard library's lookup is synchronous already.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemResolver;
 
 impl Resolver for SystemResolver {
     fn resolve(&self, host: &str) -> Result<Vec<std::net::IpAddr>, String> {
-        busbar_substrate::net_guard::SystemResolver.lookup(host)
+        use std::net::ToSocketAddrs;
+        let answered = (host, 0u16).to_socket_addrs().map_err(|e| e.to_string())?;
+        let mut out: Vec<std::net::IpAddr> = Vec::new();
+        for sa in answered {
+            let ip = sa.ip();
+            // A name answering the same address under both a v4 and a v6 query is ONE fact, not
+            // two. De-duplication is not filtering: nothing that was answered is dropped, so the
+            // guard still sees every distinct address.
+            if !out.contains(&ip) {
+                out.push(ip);
+            }
+        }
+        Ok(out)
     }
 }
 

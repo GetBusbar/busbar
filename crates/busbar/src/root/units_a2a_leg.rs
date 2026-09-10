@@ -193,8 +193,8 @@ pub const SOURCES: &[(&str, &str)] = &[
     // ── the request's own coordinates ────────────────────────────────────────────────────────────
     (
         "pool",
-        "legacy `crates/busbar-a2a/src/a2a/receive.rs::PLANE_POOL` = \
-              `busbar_a2a_codec::CONFIG_SECTION`",
+        "legacy `crates/busbar-a2a/src/a2a/receive.rs::PLANE_POOL`, the plane's own configuration \
+         section name, restated here as `PLANE_POOL`",
     ),
     (
         "now",
@@ -227,15 +227,17 @@ pub const POOL_PREFIX_AGENT: &str = "agent:";
 
 /// The pool one unit of this plane is admitted and metered against.
 ///
-/// NOT a name this file chose. The legacy receiving path spells it once, as
-/// `const PLANE_POOL: &str = busbar_a2a_codec::CONFIG_SECTION;`, and every admission and every meter
-/// on that path names it.
+/// NOT a name this file chose. The legacy receiving path spells it once, as its `PLANE_POOL`, which
+/// is the plane's own configuration section name, and every admission and every meter on that path
+/// names it.
 ///
-/// **A seam to the codec crate, restated rather than depended on.** The root does not carry a Cargo
-/// edge to `busbar-a2a-codec` on this path — the MCP sibling states its own pool prefix the same way
-/// and for the same reason — so the value is written here and PINNED BY A TEST that reads that
-/// crate's own source. A copy that is checked is not a second opinion; a copy that is not is how one
-/// node ends up admitting against one pool and metering against another.
+/// **Restated rather than depended on.** A plane leg names no codec: the root carries no edge to
+/// the codec crate that declares the section name, and reading that crate's source at build time
+/// would be an edge nobody wrote down — so the value is written here, and the MCP sibling states
+/// its own pool prefix the same way and for the same reason. What pins it is the plane's own path
+/// grammar (`a2a/agents/<name>`), which this leg's claim table and the plane's declarations both
+/// read, and the byte-identity cells that drive one request through the leg and the legacy path
+/// and compare what each admitted and metered against.
 pub const PLANE_POOL: &str = "agents";
 
 /// HOW LONG A TASK'S CAPABILITIES MAY OUTLIVE ITS LAST MOVE, in seconds.

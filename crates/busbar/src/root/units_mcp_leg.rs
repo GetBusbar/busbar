@@ -181,7 +181,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     (
         "pool",
         "root: `units_mcp::pool_key(<the registration this unit names>)`, which is the key the \
-         breaker and the pool table already use — pinned against `busbar_substrate::store::tool_key`",
+         breaker and the pool table already use — pinned against the store's own `tool_key` prefix",
     ),
     (
         "at",

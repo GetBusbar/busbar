@@ -445,9 +445,21 @@ impl busbar_substrate::rate_apply::RateApply for CardRepricer {
                 rates.present,
                 node_currency(),
             ),
-            busbar_substrate::store::now_ms(),
+            wall_ms(),
         );
     }
+}
+
+/// This node's wall clock in whole milliseconds, for dating a rate-history entry.
+///
+/// Reading the wall clock is the root's job (the audit chain's clock lives beside the journal for
+/// the same reason), and this is the SAME reading the substrate's store used to hand back: seconds
+/// since the epoch times a thousand, a clock before the epoch reading as zero rather than panicking
+/// on an apply. Owned here so the history is dated by the root and names no retiring crate for it.
+fn wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Install the root as the process's rate holder. Boot only, once.

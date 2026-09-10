@@ -90,7 +90,7 @@ use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
-use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
+pub(crate) use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
 /// The transport stack every request on this plane arrives over.

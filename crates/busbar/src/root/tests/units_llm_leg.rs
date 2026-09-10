@@ -113,9 +113,9 @@ fn a_leg() -> LlmLeg {
     LlmLeg::assemble(
         LlmNode::new(),
         Arc::new(crate::root::mount_ingress::BootIngress::new(
-            busbar_core::plane_host::engine_host(
+            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(
                 &busbar_core::test_support::TestApp::new().build(),
-            ),
+            )),
             |_| busbar_api::PlaneRequestCtx { key: None },
         )),
     )
