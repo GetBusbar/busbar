@@ -106,9 +106,7 @@ pub use recompute::{
     Finding as RecomputeFinding, HistoryArchive, Pass, Posting, PostingOrigin, PricedLine, Recheck,
     SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };
-pub use rows::{
-    attribution_bucket, group_bucket, group_bucket_scoped, is_bucket_of_group, GROUP_BUCKET_PREFIX,
-};
+pub use rows::{group_bucket, group_bucket_scoped};
 pub use settle::{adjusting_entries, Booked, Ledger, Overdraft, Repricing, Settlement};
 pub use totals::{
     totals_as_of, Book, BucketId, BucketScope, CapDimension, Statement, StatementRow, Totals,

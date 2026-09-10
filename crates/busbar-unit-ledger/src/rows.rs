@@ -27,13 +27,13 @@
 //! the traffic dispatched through that scope — a limit written with a `pool:` narrows to one, and
 //! folding it back into the plain row would let one pool's spend exhaust another's allowance.
 //!
-//! ## Reading a name back is anchored at BOTH ends
+//! ## A group name may contain `@` and `#`
 //!
-//! A GROUP NAME MAY CONTAIN `@` AND `#`. Nothing rejects it, and an IdP subject is normally an
-//! email, so `group:user:alice@corp.com@total` is the ORDINARY case and not a pathological one. Any
-//! code that splits a bucket id on `@` gets the wrong answer for the most common deployment there
-//! is. [`is_bucket_of_group`] therefore matches the group name VERBATIM and requires a recognised
-//! window word after it, rather than searching for a separator.
+//! Nothing rejects it, and an IdP subject is normally an email, so `group:user:alice@corp.com@total`
+//! is the ORDINARY case and not a pathological one. Any reader that ever wants a bucket id back has
+//! to match the group name VERBATIM and require a recognised window word after it; splitting on `@`
+//! gets the wrong answer for the most common deployment there is. There is no such reader today,
+//! which is why there is no such function here.
 
 use crate::totals::BucketId;
 
@@ -42,17 +42,7 @@ use crate::totals::BucketId;
 /// The shipped release's literal, unchanged, because these are the same rows: a node that resolved
 /// its groups through one projection and a node that resolved them through another must charge the
 /// same cell for the same group, or one release's usage reads as another release's silence.
-pub const GROUP_BUCKET_PREFIX: &str = "group:";
-
-/// The row a principal is attributed to: its own id, verbatim.
-///
-/// Attribution, never a limit — this row carries no cap at all. It exists so that a deployment with
-/// no `groups:` section still has one figure per principal, which is the ordinary posture and not a
-/// degraded one.
-#[must_use]
-pub fn attribution_bucket(principal_id: &str) -> BucketId {
-    BucketId::new(principal_id)
-}
+const GROUP_BUCKET_PREFIX: &str = "group:";
 
 /// The row a group charges through in one window.
 #[must_use]
@@ -66,30 +56,4 @@ pub fn group_bucket_scoped(group: &str, window: &str, kind: &str, value: &str) -
     BucketId::new(format!(
         "{GROUP_BUCKET_PREFIX}{group}@{window}#{kind}:{value}"
     ))
-}
-
-/// Whether `bucket` is a bucket of the group named `group`, in any of `windows`.
-///
-/// An EXACT structural match against the construction above, NOT a prefix test: the id must be the
-/// prefix, then the group name verbatim, then `@`, then one of the recognised window words, then
-/// optionally `#` and a scope. `group:user:alice@corp.com@total` therefore does NOT belong to
-/// `user:alice` — the window word would have to be `corp.com` — and DOES belong to
-/// `user:alice@corp.com`.
-///
-/// `windows` is passed in rather than known here because the window vocabulary is configuration's,
-/// and a ledger that carried its own copy would be a second list to keep in step.
-#[must_use]
-pub fn is_bucket_of_group(bucket: &BucketId, group: &str, windows: &[&str]) -> bool {
-    let Some(tail) = bucket
-        .as_str()
-        .strip_prefix(GROUP_BUCKET_PREFIX)
-        .and_then(|rest| rest.strip_prefix(group))
-        .and_then(|t| t.strip_prefix('@'))
-    else {
-        return false;
-    };
-    // The scope suffix is everything from the FIRST `#` after the window word; the window word
-    // itself can never contain one, because it is one of a fixed set of literals.
-    let window = tail.split('#').next().unwrap_or(tail);
-    windows.contains(&window)
 }
