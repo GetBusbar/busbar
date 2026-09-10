@@ -262,6 +262,45 @@ pub fn plane_sections() -> Vec<&'static str> {
 /// neutral-purity lint's token rules do not fire on them.
 pub const NAMED_MAP_SECTIONS: [&str; 4] = ["identity-providers", "export", "tools", "agents"];
 
+/// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
+/// tables that declare the config grammar rather than written as a literal.
+///
+/// [`crate::plane::registry::PlaneDecl::config_section`] over
+/// [`crate::plane::registry::plane_decls`] gives the plane sections (`pools:`, `tools:`, `agents:`,
+/// and any registered plane's own section); [`NAMED_MAP_SECTIONS`] gives the 1.5.3 named-definition
+/// maps (`identity-providers:`, `export:`, and the two plane sections again, which is why this
+/// de-duplicates). Both tables state that their variant set is the only thing a new section adds —
+/// this function is what makes that true for the hook-reference rule too.
+///
+/// Order is deterministic (plane tables first, in layering order) so a refusal naming a section
+/// names the same one on every run. A nondeterministic diagnostic makes a boot failure
+/// unreproducible.
+pub fn config_sections() -> Vec<&'static str> {
+    config_sections_from(crate::plane::registry::plane_decls())
+}
+
+/// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
+/// pass a plane busbar does not have and watch its section reach this grammar with nothing written
+/// for it in core (see `busbar-core`'s `plane/tests/registry_tests.rs`). [`config_sections`] passes
+/// the process [`crate::plane::registry::plane_decls`]; the plane sections come off each decl's
+/// [`crate::plane::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what
+/// lets a registered plane's section into the hook-reference grammar.
+pub fn config_sections_from(
+    decls: &[&'static crate::plane::registry::PlaneDecl],
+) -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for section in decls
+        .iter()
+        .map(|decl| decl.config_section)
+        .chain(NAMED_MAP_SECTIONS)
+    {
+        if !out.contains(&section) {
+            out.push(section);
+        }
+    }
+    out
+}
+
 /// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
 /// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
 /// into `busbar_core::plane::config::config_sections`. Byte-for-byte the same fold that singleton runs:
