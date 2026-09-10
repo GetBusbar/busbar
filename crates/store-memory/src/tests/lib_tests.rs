@@ -5,6 +5,9 @@
 
 use super::*;
 use busbar_api::SecretForm;
+// The record verbs are the contract sink's now, not three inherent methods; the trait has to be
+// in scope for these cells to call them.
+use busbar_contract::kinds::RecordSink as _;
 
 fn key(id: &str) -> VirtualKey {
     VirtualKey {
