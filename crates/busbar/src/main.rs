@@ -59,7 +59,7 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
+use busbar_core::{admin, config, config_validate, export, metrics, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
@@ -1224,7 +1224,7 @@ async fn run(data_workers: usize) {
     // subsequent startup and request-path logging is captured.
     // `--mcp-stdio` reserves stdout for the MCP channel, so its logs move to stderr — see
     // `init_logging`'s `stdout_reserved`.
-    observability::init_logging(
+    root::logging::init_logging(
         otlp_cfg.as_ref().map(|o| o.url.as_str()),
         mcp_stdio_requested(std::env::args()),
     );
@@ -1614,7 +1614,7 @@ async fn run(data_workers: usize) {
             let m = gov.flush_metering();
             tracing::info!(flushed = m, "metering rows flushed on shutdown");
         }
-        observability::shutdown_tracing();
+        root::logging::shutdown_tracing();
         std::process::exit(code);
     }
 
@@ -1717,7 +1717,7 @@ async fn run(data_workers: usize) {
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
     // no side-car state file to flush).
-    observability::shutdown_tracing();
+    root::logging::shutdown_tracing();
 }
 
 /// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin

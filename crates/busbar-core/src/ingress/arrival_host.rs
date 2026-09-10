@@ -75,7 +75,7 @@ impl ArrivalHost for CoreArrivalHost {
     }
 
     fn percent_decode(&self, s: &str) -> String {
-        crate::observability::percent_decode(s)
+        busbar_unit_egress::sink_guard::percent_decode(s)
     }
 
     fn kind_not_found(&self) -> &'static str {

@@ -187,7 +187,6 @@ pub use busbar_substrate::media;
 pub mod metrics;
 pub mod net_guard;
 pub mod oauth_as;
-pub mod observability;
 // `operation` is the neutral operation vocabulary (`Operation`, `OpShape`), re-exported wholesale
 // from `busbar-api` so `crate::operation::Operation` and `busbar_core::operation::*` are unchanged
 // for every existing user. THE ONE GAUNTLET (`run`, the single canonical resolved-operation entry

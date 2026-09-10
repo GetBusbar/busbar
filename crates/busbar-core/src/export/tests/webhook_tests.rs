@@ -20,7 +20,7 @@ const TEST_MAX_INFLIGHT: usize = 4;
 
 /// The SSRF guard + auth-header wiring is relocated INTO the exporter: [`push_target`] accepts a
 /// valid external `https://` target, REJECTS an internal (cloud-metadata) one via the reused
-/// [`crate::observability::validate_webhook_url`], and carries a generic-webhook auth header onto the
+/// [`busbar_unit_egress::sink_guard::validate_webhook_url`], and carries a generic-webhook auth header onto the
 /// built target.
 ///
 /// `crate::export::webhook` (and `push_target`/`Target`) did not exist before

@@ -506,6 +506,39 @@ fn is_alternate_loopback_v4(host: &str) -> bool {
     first == 127 && parts.iter().all(|p| p.parse::<u32>().is_ok())
 }
 
+// ── THE URL-COMPONENT DECODER ────────────────────────────────────────────────────────────────────
+//
+// It arrives here with the rest of the URL-shaped atoms and for the same reason: it has TWO readers
+// that live in different crates — the OTLP credential split at boot, and the protocol catch-all's
+// raw-path dispatch on the request path — and a decoder that both call is either in one place both
+// can name or it is two decoders. It was already the latter twice over: two further hand-copies of
+// this exact function exist in the retiring engine, at `ingress/mod.rs` and `oauth_as/routes.rs`.
+// Those are the next two deletions this move makes possible; it does not make them here.
+
+/// Percent-decode a URL component to its raw UTF-8 string, leaving any byte that is not a valid
+/// `%XX` escape (or invalid UTF-8) untouched so a credential is never silently corrupted. Also used
+/// by the protocol catch-all to decode path-model segments (axum's `Path` extractor decoded them
+/// before the collapse; the raw-path dispatch must match).
+pub fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 #[cfg(test)]
 #[path = "tests/sink_guard_tests.rs"]
 mod sink_guard_tests;

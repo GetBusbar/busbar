@@ -127,6 +127,18 @@ axum = { workspace = true }
 # the same version axum is built on — this is the trait axum's own `Body` implements, not a second one.
 http-body = { workspace = true }
 tracing = { workspace = true }
+# THE LOGGING INSTALL, moved out of the retiring engine (root/logging.rs). A process installs its
+# process-global subscriber exactly once, which is a thing only a composition root can do; these are
+# the crates that install do it with, and they are here rather than in a library for that reason.
+tracing-subscriber = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-http = { workspace = true }
+hyper-rustls = { workspace = true }
+http = { workspace = true }
+url = { workspace = true }
 metrics = { workspace = true }
 serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
