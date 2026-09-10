@@ -81,20 +81,10 @@ pub const DIALECTS: &[Dialect] = &[
     // spells that vendor's name anywhere, and `tests/neutrality.rs` is what says so on the source
     // rather than in this comment. The rows below are the dialects that have not been carved out
     // yet, each of which leaves on its own line.
-    Dialect {
-        name: "gemini",
-        // The model is in the request target, not the body.
-        model_location: MODEL_IN_PATH,
-        max_response_pointers: &["/generationConfig/maxOutputTokens"],
-        input_pointer: "/contents",
-        tokens_in_pointer: "/usageMetadata/promptTokenCount",
-        tokens_out_pointer: "/usageMetadata/candidatesTokenCount",
-        cache_read_pointer: Some("/usageMetadata/cachedContentTokenCount"),
-        cache_write_pointer: None,
-        scheme_alt: "api-key",
-        egress_scheme: "bearer",
-        requires_max_response: false,
-    },
+    // THE `gemini` ROW IS NOT HERE. It went to `busbar-plane-llm-gemini`, the fourth crate carved
+    // out and the first whose row names a PATH SEGMENT for the model rather than a body pointer —
+    // the location form below was written for two rows, and one of them now declares it from its
+    // own crate.
     Dialect {
         name: "bedrock",
         // The model is in the request target, not the body.

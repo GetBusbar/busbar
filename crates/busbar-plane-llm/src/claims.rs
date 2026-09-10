@@ -83,16 +83,6 @@ pub const fn claim(selector: Selector) -> Claim {
 /// A path pattern that matches a model-scoped invoke path.
 const MODEL_INVOKE: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Var, PathSeg::Lit("invoke")];
 
-/// A path pattern that matches the whole model-scoped surface of one API version.
-const V1_MODELS: &[PathSeg] = &[PathSeg::Lit("v1"), PathSeg::Lit("models"), PathSeg::Tail];
-
-/// A path pattern that matches the whole model-scoped surface of the preview API version.
-const V1BETA_MODELS: &[PathSeg] = &[
-    PathSeg::Lit("v1beta"),
-    PathSeg::Lit("models"),
-    PathSeg::Tail,
-];
-
 busbar_contract::claims_from_ladder! {
     /// The ladder, in rung order, tightest first.
     ///
@@ -119,19 +109,11 @@ busbar_contract::claims_from_ladder! {
     // header rung at its number exactly as it does a path rung, so a request carrying one of those
     // headers is still answered at two or four, above every path rung, as it always was.
 
-    // Rung 3: a vendor-specific key header.
-    3 => "gemini", Selector::HeaderPresent("x-goog-api-key"),
-
-    // Rung 5: the action suffixes of one vendor's model-scoped surface.
-    5 => "gemini", Selector::PathContains(":generateContent"),
-    5 => "gemini", Selector::PathContains(":streamGenerateContent"),
-    5 => "gemini", Selector::PathContains(":embedContent"),
-    5 => "gemini", Selector::PathContains(":batchEmbedContents"),
-    5 => "gemini", Selector::PathContains(":predict"),
-
-    // Rung 6: the same vendor's model-scoped surface without an action suffix, on either version.
-    6 => "gemini", Selector::PathPattern(V1_MODELS),
-    6 => "gemini", Selector::PathPattern(V1BETA_MODELS),
+    // RUNGS 3, 5 AND 6 ARE NOT HERE. They belong to `busbar-plane-llm-gemini`: a key header at
+    // three, five action suffixes at five and the model-scoped surface as two path PATTERNS at six
+    // — the first pattern rungs to leave this table, and the loosest path family of the six. The
+    // merged walk interleaves them at their numbers, so a bare `/v1beta/models/...` request is
+    // still answered at six, above the chat suffixes another vendor could share.
 
     // RUNG 7 IS NOT HERE. It is the widely-copied chat surface, and it belongs to the dialect crate
     // that claims it — `busbar-plane-llm-openai` declares it and the registry's merged walk
