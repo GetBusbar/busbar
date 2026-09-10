@@ -270,11 +270,11 @@ async fn the_callers_busbar_key_appears_nowhere_on_the_upstream_wire() {
         .generation;
     let mut scoped = key.clone();
     scoped.allowed_scopes = Some(vec![
-        busbar_api::ScopeRef {
+        busbar_contract::store::ScopeRef {
             kind: "mcp_server".to_string(),
             value: "fs".to_string(),
         },
-        busbar_api::ScopeRef {
+        busbar_contract::store::ScopeRef {
             kind: "mcp_tool".to_string(),
             value: "fs_read".to_string(),
         },
@@ -407,7 +407,7 @@ async fn a_wildcard_principal_is_down_scoped_to_the_single_tool_it_called() {
     metrics_init();
     let peer = Peer::start(Behaviour::Result, ISSUED).await;
     let app = app_for(&peer);
-    let wildcard = busbar_api::PlaneRequestCtx {
+    let wildcard = busbar_contract::store::PlaneRequestCtx {
         key: Some(Arc::new(wildcard_key("wildcard-key"))),
     };
 
@@ -449,7 +449,7 @@ async fn an_ungoverned_deployment_still_down_scopes_to_the_tool_it_called() {
 
     let (status, body) = call(
         &app,
-        &busbar_api::PlaneRequestCtx::default(),
+        &busbar_contract::store::PlaneRequestCtx::default(),
         "tools/call",
         params("fs_read"),
     )
@@ -514,7 +514,7 @@ async fn the_dispatch_gate_and_the_egress_gate_agree_on_every_grant_shape() {
                 &crate::mcp::client::identity::ToolKey::parse(tool).unwrap(),
             )
             .is_ok();
-            let gov = busbar_api::PlaneRequestCtx {
+            let gov = busbar_contract::store::PlaneRequestCtx {
                 key: Some(Arc::new(key)),
             };
             let (status, body) = call(&app, &gov, "tools/call", params(tool)).await;

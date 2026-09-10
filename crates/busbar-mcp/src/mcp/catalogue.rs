@@ -769,7 +769,7 @@ impl Catalogue {
     /// under, and the pair is what [`Catalogue::revalidate`] is handed later.
     pub(crate) fn resolve(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::store::VirtualKey>,
         live: LiveSightings<'_>,
         namespaced_name: &str,
         generation: busbar_substrate::trust::validate::Generations,
@@ -881,7 +881,7 @@ impl Catalogue {
     /// rather than on the next one.
     pub(crate) fn revalidate(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::store::VirtualKey>,
         sightings: LiveSightings<'_>,
         selected: &ToolEntry,
         selected_generation: u64,
@@ -917,7 +917,7 @@ impl Catalogue {
 impl Catalogue {
     pub(crate) fn resolve_now(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::store::VirtualKey>,
         live: LiveSightings<'_>,
         namespaced_name: &str,
     ) -> Result<&ToolEntry, DispatchRefusal> {
@@ -932,7 +932,7 @@ impl Catalogue {
 
     pub(crate) fn revalidate_now(
         &self,
-        principal: Option<&busbar_api::VirtualKey>,
+        principal: Option<&busbar_contract::store::VirtualKey>,
         sightings: LiveSightings<'_>,
         selected: &ToolEntry,
         selected_generation: u64,

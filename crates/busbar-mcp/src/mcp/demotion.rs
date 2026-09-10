@@ -34,7 +34,7 @@ pub(crate) fn hydrate(
     };
     let bodies = match store.list_plane_records(
         crate::record::KIND_DEMOTION,
-        &busbar_api::PlaneSelector::All,
+        &busbar_contract::store::PlaneSelector::All,
     ) {
         Ok(bodies) => bodies,
         Err(e) => {

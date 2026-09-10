@@ -75,7 +75,11 @@ fn asking_server(peer: &Peer) -> crate::mcp::config::McpServerDefCfg {
     cfg
 }
 
-async fn deployment() -> (Peer, Arc<dyn EngineApp>, busbar_api::PlaneRequestCtx) {
+async fn deployment() -> (
+    Peer,
+    Arc<dyn EngineApp>,
+    busbar_contract::store::PlaneRequestCtx,
+) {
     metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let app = test_app()

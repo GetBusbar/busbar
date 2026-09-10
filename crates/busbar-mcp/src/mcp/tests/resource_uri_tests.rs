@@ -100,8 +100,8 @@ resource_templates_allow:
 }
 
 /// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
-fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
-    let key = busbar_api::VirtualKey {
+fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_contract::store::PlaneRequestCtx {
+    let key = busbar_contract::store::VirtualKey {
         id: "k-test".to_string(),
         name: "test".to_string(),
         generation_hash: String::new(),
@@ -109,7 +109,7 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
         allowed_scopes: Some(
             pairs
                 .iter()
-                .map(|(k, v)| busbar_api::ScopeRef {
+                .map(|(k, v)| busbar_contract::store::ScopeRef {
                     kind: (*k).to_string(),
                     value: (*v).to_string(),
                 })
@@ -123,14 +123,14 @@ fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
         revision: 0,
         ..Default::default()
     };
-    busbar_api::PlaneRequestCtx {
+    busbar_contract::store::PlaneRequestCtx {
         key: Some(Arc::new(key)),
     }
 }
 
 async fn call(
     app: &Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {

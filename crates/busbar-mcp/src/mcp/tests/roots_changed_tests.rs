@@ -86,7 +86,13 @@ fn asking_server(peer: &Peer, ask_method: &str) -> crate::mcp::config::McpServer
     cfg
 }
 
-async fn deployment(ask_method: &str) -> (Peer, Arc<dyn EngineApp>, busbar_api::PlaneRequestCtx) {
+async fn deployment(
+    ask_method: &str,
+) -> (
+    Peer,
+    Arc<dyn EngineApp>,
+    busbar_contract::store::PlaneRequestCtx,
+) {
     metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let app = test_app()
@@ -99,7 +105,10 @@ async fn deployment(ask_method: &str) -> (Peer, Arc<dyn EngineApp>, busbar_api::
 }
 
 /// Ask the operator's question and hand back the sealed continuation state.
-async fn obtain_state(app: &Arc<dyn EngineApp>, gov: &busbar_api::PlaneRequestCtx) -> String {
+async fn obtain_state(
+    app: &Arc<dyn EngineApp>,
+    gov: &busbar_contract::store::PlaneRequestCtx,
+) -> String {
     let (status, body) = call(
         app,
         gov,
@@ -136,7 +145,7 @@ fn redemption(state: &str) -> serde_json::Value {
 /// what the adapter derives from `gov`.
 fn rpc_ctx(
     handle: Arc<dyn EngineHandle>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     body: axum::body::Bytes,
 ) -> busbar_substrate::plane_routes::PlaneReqCtx {
     busbar_substrate::plane_routes::PlaneReqCtx {
@@ -159,7 +168,10 @@ fn rpc_ctx(
 /// mounts — as the principal `gov` authenticates. The bump is asserted only through its observable
 /// consequences in the cases below; here the assertion is the transport's own contract: `202`,
 /// empty body, even for a plane fact the notification moved.
-async fn announce_roots_changed(app: &Arc<dyn EngineApp>, gov: &busbar_api::PlaneRequestCtx) {
+async fn announce_roots_changed(
+    app: &Arc<dyn EngineApp>,
+    gov: &busbar_contract::store::PlaneRequestCtx,
+) {
     let handle = app_handle(app.clone());
     let body = serde_json::json!({
         "jsonrpc": "2.0",

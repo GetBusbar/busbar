@@ -109,7 +109,7 @@ async fn prompt_text(arguments: serde_json::Value) -> String {
     metrics_init();
     let app = app();
     let handle = app_handle(app.clone());
-    let gov = busbar_api::PlaneRequestCtx { key: None };
+    let gov = busbar_contract::store::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         host: engine_host_from_handle(&handle),
         gov: &gov,
@@ -211,7 +211,7 @@ async fn completion_complete_answers_an_empty_completion_rather_than_method_not_
     metrics_init();
     let app = app();
     let handle = app_handle(app.clone());
-    let gov = busbar_api::PlaneRequestCtx { key: None };
+    let gov = busbar_contract::store::PlaneRequestCtx { key: None };
     let ctx = crate::mcp::method::Ctx {
         host: engine_host_from_handle(&handle),
         gov: &gov,

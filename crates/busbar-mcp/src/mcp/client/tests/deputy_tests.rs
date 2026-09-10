@@ -21,7 +21,7 @@
 //!
 //! NOT PROVEN: that a real inbound MCP `tools/call` resolves to the principal used here. The
 //! server direction's method surface does not exist yet. The principal is
-//! a `busbar_api::VirtualKey`, which is the type BOTH directions resolve to and the one
+//! a `busbar_contract::store::VirtualKey`, which is the type BOTH directions resolve to and the one
 //! `scope_allowed` is defined on, so the seam is real — but egress scoping is one of the two
 //! integrity properties that are only meaningful as a PAIR with the inbound surface, so it is not
 //! proven end to end until the two halves land together, and that is stated rather than implied.
@@ -31,7 +31,8 @@ use crate::mcp::client::egress::{
     UpstreamCredential,
 };
 use crate::mcp::client::support::{key_wildcard, key_with_scopes, sid, tkey};
-use busbar_api::{Redacted, ScopeRef};
+use busbar_api::Redacted;
+use busbar_contract::store::ScopeRef;
 
 /// busbar's ambient credential for an upstream it is fully authorised for. Every test below uses
 /// this, so a refusal can never be explained by busbar lacking a credential — the ONLY variable is

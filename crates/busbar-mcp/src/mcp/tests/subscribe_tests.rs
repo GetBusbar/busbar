@@ -693,7 +693,7 @@ async fn discover_declares_the_capabilities_the_listen_stream_delivers() {
 ///
 /// **THE PLACEBO FINDING IS PRESERVED, because it is the reason the fix had to be a core primitive.**
 /// The tempting local patch was to teach `grant_of` to consult `enabled`/`is_live()` beside
-/// [`busbar_api::VirtualKey::scope_allowed`], which reads `allowed_scopes` alone and looks at
+/// [`busbar_contract::store::VirtualKey::scope_allowed`], which reads `allowed_scopes` alone and looks at
 /// neither. That would have changed nothing: those fields sat on the SAME frozen snapshot and
 /// reported "live" whatever the store row said. `the_placebo_fix_would_still_have_been_a_placebo`
 /// below keeps that finding executable rather than remembered.
@@ -823,7 +823,7 @@ fn a_revoked_key_stops_being_served_on_the_next_poll() {
 /// asserted, because either alone is a different claim.
 #[test]
 fn the_placebo_fix_would_still_have_been_a_placebo() {
-    let mut frozen = busbar_api::VirtualKey {
+    let mut frozen = busbar_contract::store::VirtualKey {
         id: "k".to_string(),
         name: "k".to_string(),
         generation_hash: String::new(),
@@ -850,7 +850,7 @@ fn the_placebo_fix_would_still_have_been_a_placebo() {
     // HALF TWO: and a field check beside it would have read the FROZEN copy, which is why it was a
     // placebo rather than merely insufficient. A snapshot taken while the key was live reports live
     // for as long as the snapshot is held, whatever the store now says.
-    let snapshot_taken_at_open = busbar_api::VirtualKey {
+    let snapshot_taken_at_open = busbar_contract::store::VirtualKey {
         enabled: true,
         deleted_at: None,
         ..frozen.clone()

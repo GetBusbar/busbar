@@ -107,8 +107,8 @@ fn cfg(servers: Vec<(String, McpServerDefCfg)>) -> ToolsCfg {
 /// A KEY carrying an explicit allow-list. The gate asks a principal now rather than a predicate, so
 /// the fixture is a principal — which is the point: a test that hands the gate a closure can hand it
 /// one no real key could produce.
-fn grant_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn grant_of(pairs: &[(&str, &str)]) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: "k1".to_string(),
         name: "k1".to_string(),
         generation_hash: String::new(),
@@ -116,7 +116,7 @@ fn grant_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
         allowed_scopes: Some(
             pairs
                 .iter()
-                .map(|(k, v)| busbar_api::ScopeRef {
+                .map(|(k, v)| busbar_contract::store::ScopeRef {
                     kind: (*k).to_string(),
                     value: (*v).to_string(),
                 })
@@ -136,7 +136,7 @@ fn grant_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
 /// gate — identity and grant, and deliberately not the artifact step, because this plane CATALOGUES
 /// what it will not dispatch — but it asks it of the same ordered validator, so the key, the clock
 /// and the snapshot travel together instead of a bare grant closure.
-fn seeing(key: &busbar_api::VirtualKey) -> busbar_substrate::catalogue::Caller<'_> {
+fn seeing(key: &busbar_contract::store::VirtualKey) -> busbar_substrate::catalogue::Caller<'_> {
     busbar_substrate::catalogue::Caller {
         key: Some(key),
         now: 0,
@@ -166,7 +166,7 @@ fn two_grants_see_two_different_catalogues_and_a_third_sees_none() {
     // Grant C: a grant that names a pool and nothing else — the fail-closed cross-kind case.
     let c = grant_of(&[("pool", "fast")]);
 
-    let names = |g: &busbar_api::VirtualKey| {
+    let names = |g: &busbar_contract::store::VirtualKey| {
         let mut n: Vec<String> = cat
             .tools_for(&seeing(g))
             .iter()
@@ -611,13 +611,13 @@ fn a_key_that_is_no_longer_live_sees_nothing_on_any_surface() {
     for (what, mutate) in [
         (
             "deleted",
-            (|k: &mut busbar_api::VirtualKey| k.deleted_at = Some(1))
-                as fn(&mut busbar_api::VirtualKey),
+            (|k: &mut busbar_contract::store::VirtualKey| k.deleted_at = Some(1))
+                as fn(&mut busbar_contract::store::VirtualKey),
         ),
-        ("disabled", |k: &mut busbar_api::VirtualKey| {
+        ("disabled", |k: &mut busbar_contract::store::VirtualKey| {
             k.enabled = false
         }),
-        ("expired", |k: &mut busbar_api::VirtualKey| {
+        ("expired", |k: &mut busbar_contract::store::VirtualKey| {
             k.expires_at = Some(1)
         }),
     ] {

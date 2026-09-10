@@ -116,7 +116,7 @@ impl PoolRoute {
     /// tool, not for a twin inventory.
     pub(crate) fn build(
         host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-        principal: Option<&std::sync::Arc<busbar_api::VirtualKey>>,
+        principal: Option<&std::sync::Arc<busbar_contract::store::VirtualKey>>,
         selected: &super::catalogue::ToolEntry,
         selected_auth: Authorised,
         arguments: &serde_json::Value,

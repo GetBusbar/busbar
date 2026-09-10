@@ -35,7 +35,7 @@ fn poisoned_schema() -> serde_json::Value {
     })
 }
 
-fn granted() -> busbar_api::PlaneRequestCtx {
+fn granted() -> busbar_contract::store::PlaneRequestCtx {
     gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
 }
 

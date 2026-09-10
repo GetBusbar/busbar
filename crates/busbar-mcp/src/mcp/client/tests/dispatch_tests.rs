@@ -14,7 +14,7 @@ use crate::mcp::client::catalogue::CatalogueCache;
 use crate::mcp::client::dispatch::{resolve, revalidate, visible_catalogue, DispatchRefusal};
 use crate::mcp::client::egress::EgressDenied;
 use crate::mcp::client::support::{approved_server, key_wildcard, key_with_scopes, simple_tool};
-use busbar_api::ScopeRef;
+use busbar_contract::store::ScopeRef;
 use busbar_substrate::trust::TrustState;
 
 fn seeded() -> CatalogueCache {

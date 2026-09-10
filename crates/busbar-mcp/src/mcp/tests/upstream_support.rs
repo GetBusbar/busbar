@@ -551,20 +551,23 @@ pub(super) fn exchanging_server(
 }
 
 /// A `PlaneRequestCtx` holding a key whose `allowed_scopes` is exactly `pairs`.
-pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_api::PlaneRequestCtx {
-    busbar_api::PlaneRequestCtx {
+pub(super) fn gov_with_scopes(pairs: &[(&str, &str)]) -> busbar_contract::store::PlaneRequestCtx {
+    busbar_contract::store::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key_with_scopes("k-test", pairs))),
     }
 }
 
 /// A `VirtualKey` with an EXPLICIT scope list. `Some(..)` is exhaustive across kinds, so what is
 /// not listed is not granted.
-pub(super) fn key_with_scopes(id: &str, pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
+pub(super) fn key_with_scopes(
+    id: &str,
+    pairs: &[(&str, &str)],
+) -> busbar_contract::store::VirtualKey {
     let mut k = wildcard_key(id);
     k.allowed_scopes = Some(
         pairs
             .iter()
-            .map(|(kind, value)| busbar_api::ScopeRef {
+            .map(|(kind, value)| busbar_contract::store::ScopeRef {
                 kind: (*kind).to_string(),
                 value: (*value).to_string(),
             })
@@ -575,8 +578,8 @@ pub(super) fn key_with_scopes(id: &str, pairs: &[(&str, &str)]) -> busbar_api::V
 
 /// A key with NO scope restriction — the store's WILDCARD, and the most common shape in a small
 /// deployment where keys are minted with no scopes at all.
-pub(super) fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+pub(super) fn wildcard_key(id: &str) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: id.to_string(),
         name: id.to_string(),
         generation_hash: String::new(),
@@ -595,7 +598,7 @@ pub(super) fn wildcard_key(id: &str) -> busbar_api::VirtualKey {
 /// Drive one method at the handler, returning `(status, body)`.
 pub(super) async fn call(
     app: &std::sync::Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     method: &str,
     params: serde_json::Value,
 ) -> (u16, serde_json::Value) {
@@ -611,7 +614,7 @@ pub(super) async fn call(
 /// A test that needs a virgin chain asks for its own principal.
 pub(super) async fn call_as(
     app: &std::sync::Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,
@@ -624,7 +627,7 @@ pub(super) async fn call_as(
 /// header — and the (status, body) helpers above deliberately drop the header map.
 pub(super) async fn call_response(
     app: &std::sync::Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,
@@ -638,7 +641,7 @@ pub(super) async fn call_response(
 /// about tasks, so the task-path filter keeps its own tests meaningful).
 pub(super) async fn call_response_caps(
     app: &std::sync::Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     actor: &str,
     method: &str,
     params: serde_json::Value,

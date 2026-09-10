@@ -51,6 +51,10 @@ busbar-substrate = { path = "../busbar-substrate", features = ["plane-mcp"] }
 busbar-mcp-codec = { path = "../busbar-mcp-codec" }
 # The plugin contracts crate, named ahead of use per owner ruling R-E (see header).
 busbar-api = { path = "../api" }
+# THE STORE-KIND FACE, NAMED WHERE IT LIVES. `busbar_contract::store` holds the records and the
+# 1.5.5 replay face this crate reads and writes; `busbar-api` re-exported them while it drained and
+# this line is the drain arriving. No new closure: `busbar-api` already links `busbar-contract`.
+busbar-contract = { path = "../busbar-contract" }
 # The specification authors' own crate, pinned narrow (see busbar-core/Cargo.toml's rationale): the
 # codec takes the protocol VOCABULARY — MCP method names and parameter shapes — from it and nothing
 # else, so a name the SDK retires stops compiling here instead of being served.

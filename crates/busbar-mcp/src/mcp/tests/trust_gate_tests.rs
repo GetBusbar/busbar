@@ -113,13 +113,13 @@ fn cfg_with(
 }
 
 /// A KEY that reaches the one tool, so the matrix isolates the TRUST decision from the grant one.
-fn full_grant() -> busbar_api::VirtualKey {
+fn full_grant() -> busbar_contract::store::VirtualKey {
     key_of(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
 }
 
 /// A principal carrying exactly the listed `(kind, value)` grants and nothing else.
-fn key_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key_of(pairs: &[(&str, &str)]) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: "k1".to_string(),
         name: "k1".to_string(),
         generation_hash: String::new(),
@@ -127,7 +127,7 @@ fn key_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
         allowed_scopes: Some(
             pairs
                 .iter()
-                .map(|(k, v)| busbar_api::ScopeRef {
+                .map(|(k, v)| busbar_contract::store::ScopeRef {
                     kind: (*k).to_string(),
                     value: (*v).to_string(),
                 })

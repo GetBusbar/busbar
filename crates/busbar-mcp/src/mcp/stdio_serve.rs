@@ -155,7 +155,7 @@ pub(crate) const MAX_RESOURCE_SUB_URI_BYTES: usize = 2048;
 /// middleware inserts as request extensions.
 pub(crate) struct SessionIdentity {
     pub(crate) principal: busbar_api::AuthPrincipal,
-    pub(crate) gov: busbar_api::PlaneRequestCtx,
+    pub(crate) gov: busbar_contract::store::PlaneRequestCtx,
 }
 
 /// Resolve the session identity from the boot credential — the SAME admission the HTTP door runs,
@@ -461,7 +461,7 @@ struct Session {
     /// closure closes over the transport's live handle core-side, so this plane names no core handle.
     factory: busbar_substrate::plane_host::LiveHostFactory,
     principal: busbar_api::AuthPrincipal,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::store::PlaneRequestCtx,
     /// THE WRITE-AND-CALL HANDLE onto the one channel, handed to this session by the neutral pump
     /// with the FIRST frame it dispatches ([`DuplexPlane::handle`]) and cached here so the standing
     /// watchers — which predate any frame — can emit server-originated notifications too. The pump

@@ -134,7 +134,7 @@ pub(crate) struct Ctx<'a> {
     /// route adapter, so the live re-read genuinely re-reads.
     pub(crate) host: std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
     /// The caller's resolved governance key. `None` when governance is disabled.
-    pub(crate) gov: &'a busbar_api::PlaneRequestCtx,
+    pub(crate) gov: &'a busbar_contract::store::PlaneRequestCtx,
     /// The attributed principal, for the audit row.
     pub(crate) actor: &'a str,
     /// The CALLER'S DECLARED CAPABILITIES, exactly as they arrived in

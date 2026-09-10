@@ -110,7 +110,11 @@ fn confirming_server(peer: &Peer) -> crate::mcp::config::McpServerDefCfg {
 }
 
 /// The deployment under test, plus the peer that is the witness.
-async fn deployment() -> (Peer, Arc<dyn EngineApp>, busbar_api::PlaneRequestCtx) {
+async fn deployment() -> (
+    Peer,
+    Arc<dyn EngineApp>,
+    busbar_contract::store::PlaneRequestCtx,
+) {
     metrics_init();
     let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
     let app = test_app()
@@ -125,7 +129,7 @@ async fn deployment() -> (Peer, Arc<dyn EngineApp>, busbar_api::PlaneRequestCtx)
 /// Ask the operator's question, and hand back the continuation state the caller was issued.
 async fn obtain_approval(
     app: &Arc<dyn EngineApp>,
-    gov: &busbar_api::PlaneRequestCtx,
+    gov: &busbar_contract::store::PlaneRequestCtx,
     arguments: &serde_json::Value,
 ) -> (String, serde_json::Value) {
     let (status, body) = call(

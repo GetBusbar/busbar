@@ -55,7 +55,7 @@ fn poisoned_schema() -> serde_json::Value {
     })
 }
 
-fn granted() -> busbar_api::PlaneRequestCtx {
+fn granted() -> busbar_contract::store::PlaneRequestCtx {
     gov_with_scopes(&[("mcp_server", "fs"), ("mcp_tool", "fs_read")])
 }
 
@@ -73,7 +73,7 @@ fn granted() -> busbar_api::PlaneRequestCtx {
 fn boot(
     peer: &Peer,
     sightings: Arc<CatalogueCache>,
-    store: Option<Arc<dyn busbar_api::Store>>,
+    store: Option<Arc<dyn busbar_contract::store::Store>>,
 ) -> Arc<dyn EngineApp> {
     let hash = approved_hash("read", DESCRIPTION, honest_schema());
     let mut cfg = server_cfg(peer, &[("read", Some(hash))]);
@@ -106,7 +106,7 @@ fn boot(
 async fn quarantined(
     peer: &Peer,
     sightings: Arc<CatalogueCache>,
-    store: Option<Arc<dyn busbar_api::Store>>,
+    store: Option<Arc<dyn busbar_contract::store::Store>>,
 ) -> Arc<dyn EngineApp> {
     let app = boot(peer, sightings, store);
     let (status, body) = read_call(&app).await;

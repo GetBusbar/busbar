@@ -105,7 +105,7 @@ fn pooled_app(
         .build()
 }
 
-fn gov() -> busbar_api::PlaneRequestCtx {
+fn gov() -> busbar_contract::store::PlaneRequestCtx {
     gov_with_scopes(&[
         ("mcp_server", "fs-a"),
         ("mcp_tool", "fs-a_read"),

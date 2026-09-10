@@ -333,7 +333,7 @@ struct Listen {
 ///
 /// **AND A FIELD CHECK HERE WOULD HAVE BEEN A PLACEBO, which is why the fix is not one.** The
 /// tempting local patch was to have this closure consult `enabled`/`is_live()` alongside
-/// [`busbar_api::VirtualKey::scope_allowed`] — which reads `allowed_scopes` alone and looks at
+/// [`busbar_contract::store::VirtualKey::scope_allowed`] — which reads `allowed_scopes` alone and looks at
 /// neither. It would have changed nothing: those fields lived on the SAME frozen snapshot, so they
 /// reported "live" for the whole life of the stream however long ago the store row said otherwise.
 /// Only re-reading the key closes it, which is what [`busbar_substrate::trust::validate::Standing`] does and
@@ -346,7 +346,7 @@ struct Listen {
 /// same ordered gate every other catalogue read asks, identity step included.
 fn caller_of<'a>(
     host: &std::sync::Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    key: Option<&'a std::sync::Arc<busbar_api::VirtualKey>>,
+    key: Option<&'a std::sync::Arc<busbar_contract::store::VirtualKey>>,
     generation: u64,
 ) -> busbar_substrate::catalogue::Caller<'a> {
     busbar_substrate::catalogue::Caller {
