@@ -494,6 +494,49 @@ lq_tree_settled() { # $1 = tree, $2 = last-landed-tip file; 0 = HEAD is that tip
 # sweep, the head alone, nothing pre-proven behind it. A sweep is also skipped when fewer than two
 # live lines exist — a sweep of one line is the serial runner plus a box.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A HOLD THAT NAMES A SHA RELEASES ITSELF
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A line held behind another line is tagged `#HOLD-after-<thing>` and is a comment until somebody
+# edits the file. When <thing> is a WORD — `#HOLD-after-strike`, `#HOLD-after-K3-and-A1` — only the
+# integrator knows what it means and only the integrator can un-hold it. When <thing> is a SHA, the
+# tree itself knows: the hold is over the moment that commit is an ancestor of HEAD, and an engine
+# that can read `git merge-base --is-ancestor` should not be making its integrator get up to type
+# two characters. So at pop time, and only there, every `#HOLD-after-<7-40 hex>` on the queue is
+# tested against the tree; the ones that landed lose their tag, in place, with a log line.
+#
+# THE TAG IS DROPPED, NOT THE PREFIX. A line may carry several — `#HOLD-after-<sha> #K5-L3 --prove
+# …` — and dropping the one that is satisfied leaves the others holding it: the line goes live only
+# when nothing is left in front of the `--`. A tag that is not a sha, and a sha the tree has never
+# heard of (merge-base fails), are both left exactly as they were found.
+lq_release_holds() { # $1 = tree; rewrites $Q in place, printing one line per release
+  local line rest tok out sha tmp released=0
+  [ -f "$Q" ] || return 0
+  tmp="$Q.release.$$"; : >"$tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      '#'*) case "$line" in *'#HOLD-after-'*) ;; *) printf '%s\n' "$line" >>"$tmp"; continue ;; esac ;;
+      *) printf '%s\n' "$line" >>"$tmp"; continue ;;
+    esac
+    out=""; rest="$line"
+    while : ; do
+      case "$rest" in '#'*) ;; *) break ;; esac
+      tok="${rest%% *}"
+      case "$rest" in *' '*) rest="${rest#* }" ;; *) rest="" ;; esac
+      sha=""
+      case "$tok" in '#HOLD-after-'*) sha="${tok#\#HOLD-after-}" ;; esac
+      if [ -n "$sha" ] && printf '%s' "$sha" | grep -qxE '[0-9a-f]{7,40}' \
+         && git -C "$1" merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
+        printf 'released %s: landed\n' "$tok"; released=$((released + 1))
+      else
+        out="$out$tok "
+      fi
+    done
+    printf '%s%s\n' "$out" "$rest" >>"$tmp"
+  done <"$Q"
+  if [ "$released" -gt 0 ]; then mv "$tmp" "$Q"; else rm -f "$tmp"; fi
+  return 0
+}
 lq_live_lines() { grep -cE '^--' "$1" 2>/dev/null || true; }
 lq_head_line()  { grep -E '^--' "$1" 2>/dev/null | head -n1; }
 lq_line_is_base_fix() { # $1 = queue line, $2 = repo; 0 when every file the line touches is qa/*.toml
@@ -1177,6 +1220,45 @@ lq_selftest() {
   _t "no records at this tip -> the ordinary pop" 3 "$n"
   Q="$savedQ"; PP="$savedPP"; L="$savedL"; W="$savedW"
 
+  # ── A HOLD THAT NAMES A SHA RELEASES ITSELF (see lq_release_holds) ─────────────────────────────
+  # The integrator cannot un-hold a line from inside the engine, and the engine used to be unable to
+  # un-hold one at all: a `#HOLD-after-<sha>` line stayed a comment until somebody edited the file,
+  # which meant a queue that had already earned its release sat still until the next human tick.
+  echo "landq4 selftest: a #HOLD-after-<sha> releases itself when the sha has landed"
+  savedQ="$Q"; savedW="$W"; W="$repo"
+  local hland hside
+  hland="$(git -C "$repo" rev-parse --short=9 HEAD)"
+  git -C "$repo" checkout -q -b hold-side
+  printf 'side\n' >"$repo/side.txt"; git -C "$repo" add -A; git -C "$repo" commit -qm side
+  hside="$(git -C "$repo" rev-parse --short=9 HEAD)"
+  git -C "$repo" checkout -q -
+  Q="$root/holdq.txt"
+  printf '# a note about #HOLD-after-%s that is only a note\n#HOLD-after-%s --prove landed\n#HOLD-after-%s --prove unlanded\n#HOLD-after-strike --prove worded\n#HOLD-after-%s #K5-L3 --prove twotags\n#K5-L3 #HOLD-after-%s --prove tagsecond\n#HOLD-after-zzzzzzz --prove nothex\n--prove live\n' \
+    "$hland" "$hland" "$hside" "$hland" "$hland" >"$Q"
+  lq_release_holds "$repo" >"$root/rel.txt"
+  _t "the landed hold is released"             1 "$(grep -cx -- "--prove landed" "$Q" || true)"
+  # Three lines carry that sha, and each release is its own log line: the ledger reads how many
+  # lines a landing freed, not merely that something was freed.
+  _t "  ...and the release is logged, by tag"  3 "$(grep -cx "released #HOLD-after-$hland: landed" "$root/rel.txt" || true)"
+  _t "a sha that has NOT landed still holds"   1 "$(grep -cx -- "#HOLD-after-$hside --prove unlanded" "$Q" || true)"
+  _t "  ...and is not logged as released"      0 "$(grep -c "$hside" "$root/rel.txt" || true)"
+  _t "a hold on a WORD is the integrator's"    1 "$(grep -cx -- '#HOLD-after-strike --prove worded' "$Q" || true)"
+  _t "a tag that is not hex is a word"         1 "$(grep -cx -- '#HOLD-after-zzzzzzz --prove nothex' "$Q" || true)"
+  _t "one tag of several is dropped, the rest hold" 1 "$(grep -cx -- '#K5-L3 --prove twotags' "$Q" || true)"
+  _t "  ...wherever in the prefix it sits"     1 "$(grep -cx -- '#K5-L3 --prove tagsecond' "$Q" || true)"
+  _t "a comment that merely mentions a tag is untouched" 1 "$(grep -c "^# a note about #HOLD-after-$hland " "$Q" || true)"
+  _t "a live line is untouched"                1 "$(grep -cx -- '--prove live' "$Q" || true)"
+  _t "the file keeps every line it had"        8 "$(grep -c . "$Q" || true)"
+  # A QUEUE WITH NOTHING TO RELEASE IS NOT REWRITTEN — the file is left byte-identical, so a
+  # release is always something that happened rather than a rewrite that might have.
+  printf '#HOLD-after-%s --prove unlanded\n--prove live\n' "$hside" >"$Q"
+  local before; before="$(cksum <"$Q")"
+  lq_release_holds "$repo" >"$root/rel2.txt"
+  _t "nothing to release: the queue is untouched" "$before" "$(cksum <"$Q")"
+  _t "  ...and nothing is logged"              0 "$(grep -c . "$root/rel2.txt" || true)"
+  _t "the main flow releases holds before it reads the head" 1 "$(grep -c '^  lq_release_holds "\$W" | while' "$0")"
+  Q="$savedQ"; W="$savedW"
+
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
     echo "landq4 selftest: GREEN (file sets, disjoint sweep, tip-keyed ledger, batch ceiling, one-file/one-judge/red-alone, popper)"
@@ -1228,6 +1310,9 @@ while true; do
     sleep 60; continue
   fi
   batch="$W/target/gate/landq4-batch.$$.txt"; keep="$W/target/gate/landq4-keep.$$.txt"
+  # A HOLD THAT NAMES A SHA RELEASES ITSELF (see lq_release_holds) — before the head is read, so a
+  # line freed by the last batch can be this batch's head, base fix and all.
+  lq_release_holds "$W" | while IFS= read -r s; do [ -n "$s" ] && lq_log "queue: $s"; done
   headline="$(lq_head_line "$Q")"
   if [ -n "$headline" ] && lq_line_is_base_fix "$headline" "$W"; then
     # A BASE FIX POPS ALONE (see lq_line_is_base_fix): no sweep, the head by itself, nothing behind it.
