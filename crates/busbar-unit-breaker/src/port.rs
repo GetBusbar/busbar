@@ -47,7 +47,10 @@ pub enum UpstreamCode {
     Grpc(u8),
 }
 
-/// WHOSE credential the upstream refused.
+/// WHOSE credential the upstream refused. The ORIGIN of the credential and never the credential:
+/// this type holds no bytes at all, which is why it is not one of the named secret carriers that
+/// must hand-roll `Debug`, and why its name says `Origin` out loud rather than leaving a reader to
+/// check.
 ///
 /// 1.5.5 asks this question on the response path and it changes the answer: a 401/403 against a
 /// key the CALLER supplied is that caller's own credential failing, not this destination's, and it
@@ -55,7 +58,7 @@ pub enum UpstreamCode {
 /// Without the distinction the same response hard-downs the destination in every pool, so one
 /// caller's stale key benches a healthy upstream for everybody else.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Credential {
+pub enum CredentialOrigin {
     /// The credential busbar itself declared for this destination. A refusal is the destination's.
     #[default]
     Declared,
@@ -82,7 +85,7 @@ pub struct UpstreamStatus<'a> {
     /// The upstream's numeric status and the numbering that spelled it, where one is known.
     pub code: Option<UpstreamCode>,
     /// Whose credential this answer refused.
-    pub credential: Credential,
+    pub credential: CredentialOrigin,
     /// The provider's own error CODE, as the dialect read it out of the response body.
     pub provider_code: Option<&'a str>,
     /// The provider's structured error TYPE, as the dialect read it out of the response body — the
@@ -199,7 +202,7 @@ pub fn classify_upstream(
     // still the one the tables produced — only the DISPOSITION is overridden, and only for the two
     // statuses 1.5.5 exempts. A passthrough 429 is still a transient the breaker records, or a
     // caller could suppress every penalty on this destination by relaying its own key.
-    let disposition = if status.credential == Credential::Passthrough
+    let disposition = if status.credential == CredentialOrigin::Passthrough
         && matches!(status.code, Some(UpstreamCode::Http(401 | 403)))
     {
         Disposition::ClientFault

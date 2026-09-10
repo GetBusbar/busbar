@@ -760,7 +760,7 @@ mod shim {
     //! repointing the shim at the real verb and deleting the note.
 
     use super::{DestinationId, LaneState, Outcome, UnitCfg};
-    use busbar_unit_breaker::port::{Classified, Credential, UpstreamCode, UpstreamStatus};
+    use busbar_unit_breaker::port::{Classified, CredentialOrigin, UpstreamCode, UpstreamStatus};
     use busbar_unit_breaker::{Breaker, BreakerUnit};
 
     /// The lane-global counters `/stats` renders (difference 8).
@@ -809,9 +809,9 @@ mod shim {
             UpstreamStatus {
                 code: Some(UpstreamCode::Http(status)),
                 credential: if passthrough {
-                    Credential::Passthrough
+                    CredentialOrigin::Passthrough
                 } else {
-                    Credential::Declared
+                    CredentialOrigin::Declared
                 },
                 provider_code,
                 structured_type,

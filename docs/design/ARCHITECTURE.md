@@ -103,7 +103,15 @@ them). Each axis is blind to the other two; only the kernel composes them.
   them is the node's own Tick, with each plane answering only what a live upstream of its dialect is
   asked (`Plane::probe_request`, §3.2). It is a move and its net is negative by a wide margin — the
   retiring engine's prober is 535 lines and 195 of those do not move at all, being the per-generation
-  task machinery a unit that outlives every config snapshot does not need. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
+  task machinery a unit that outlives every config snapshot does not need. The ONE BREAKER amends it by
+  a further 389: the llm route step's health book is `busbar-substrate::store`'s lane breaker, not the
+  breaker unit, and the unit measured NARROWER than it in ten ways — so the unit becomes that book, with
+  the legacy's exact behaviour, before anything is served through it. It is a move on the same terms:
+  `store/in_memory/availability.rs` is 894 lines and `breaker.rs` 1085, and both go with the legacy book.
+  The asymmetry is why the figure moves at all — the deletion lands in `busbar-core`, which carries no
+  unit ceiling, and the addition lands in a `busbar-unit-*` crate. Every one of the ten is held by an
+  equivalence cell that drives BOTH books through one recorded sequence and demands one answer.
+  100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —

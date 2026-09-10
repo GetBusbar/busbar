@@ -499,7 +499,12 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         due.into_iter()
             .filter(|(destination, scheduled)| match scheduled.policy.mode {
                 probe::ProbeMode::Active => true,
-                probe::ProbeMode::Dead => self.suppressed_anywhere(*destination, now),
+                // A destination whose lifetime budget is spent is not asked at all: it does not
+                // self-recover, so a probe could only produce failures about an upstream that was
+                // never the problem.
+                probe::ProbeMode::Dead => {
+                    !self.budget_exhausted(*destination) && self.needs_probe(*destination, now)
+                }
                 probe::ProbeMode::None => false,
             })
             .map(|(destination, scheduled)| DueProbe {
@@ -507,30 +512,6 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
                 timeout_secs: scheduled.policy.timeout_secs.max(1),
             })
             .collect()
-    }
-
-    /// Whether the breaker is suppressing this destination in any cell it is registered in — the
-    /// default `""` cell included, because a destination reached without a pool routes through it.
-    ///
-    /// A destination whose lifetime budget is spent is NOT suppressed in the sense this asks about:
-    /// it does not self-recover, so probing it can only produce failures against an upstream that
-    /// was never the problem.
-    /// A Tick MUST NOT MATERIALIZE A CELL. Cells are created on first touch by the traffic that
-    /// routes through them, and that is what makes the map a record of what this node has actually
-    /// reached; a sweep that created one per declared destination per Tick would fill it with cells
-    /// nothing ever used and make "which pools is this destination in" answer a config question
-    /// instead of a traffic one. So this reads the existing cells only — and a destination with no
-    /// cell yet is Closed-and-unspent by this crate's own lazy rule, which is not suppressed.
-    fn suppressed_anywhere(&self, destination: DestinationId, now: u64) -> bool {
-        if self.budget_exhausted(destination) {
-            return false;
-        }
-        self.cells
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .filter_map(|by_destination| by_destination.get(&destination))
-            .any(|cell| matches!(cell.verdict(now), BreakerVerdict::Open { .. }))
     }
 
     /// Remaining lifetime budget for a destination, or `None` if unlimited or never declared
@@ -793,14 +774,23 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
                 _ => b,
             }
         }
-        let cells = self.cells_for(destination);
+        let cells = self.existing_cells_for(destination);
         let folded = cells
             .iter()
             .filter(|(pool, _)| !pool.is_empty())
             .map(|(_, cell)| cell.verdict(now))
             .reduce(better)
-            // A destination with no named pool: the default cell IS the routed cell.
-            .unwrap_or_else(|| self.cell("", destination).verdict(now));
+            .or_else(|| {
+                // A destination with no named pool: the default cell IS the routed cell.
+                cells
+                    .iter()
+                    .find(|(pool, _)| pool.is_empty())
+                    .map(|(_, cell)| cell.verdict(now))
+            })
+            // Nothing has routed here yet. Closed-and-unspent by the lazy rule, which is what
+            // 1.5.5's always-present-and-fresh default cell answers too — and answering it without
+            // creating a cell keeps this read as free of trace as the read it renders.
+            .unwrap_or(BreakerVerdict::Ready);
         lane_state_from_verdict(folded)
     }
 
@@ -835,6 +825,22 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         out
     }
 
+    /// [`Self::cells_for`] without creating anything: the cells naming this destination that
+    /// ALREADY exist, default cell included when it does. The read-only half, for the readers that
+    /// must not leave a trace of having asked.
+    fn existing_cells_for(&self, destination: DestinationId) -> Vec<(String, Arc<BreakerCell>)> {
+        self.cells
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter_map(|(pool, by_destination)| {
+                by_destination
+                    .get(&destination)
+                    .map(|c| (pool.clone(), c.clone()))
+            })
+            .collect()
+    }
+
     /// Is this destination due for an out-of-band health probe? True when ANY cell naming it is
     /// suppressed — 1.5.5's `lane_needs_probe`
     /// (`busbar-core/src/store/in_memory/availability.rs:684-691`).
@@ -842,8 +848,15 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     /// This is the filter `ProbeMode::Dead` reads, and the one PROBE-1's `probes_due(now)`
     /// composes on: the schedule says WHEN, this says WHETHER.
     #[must_use]
+    /// A Tick MUST NOT MATERIALIZE A CELL, so this reads the cells that already EXIST and creates
+    /// none. Cells are created on first touch by the traffic that routes through them, which is what
+    /// makes the map a record of what this node has actually reached; a sweep that created one per
+    /// declared destination per Tick would fill it with cells nothing ever used and turn "which
+    /// pools is this destination in" into a config question instead of a traffic one. A destination
+    /// with no cell yet is Closed-and-unspent by this crate's own lazy rule, which is not
+    /// suppressed — the same answer 1.5.5 gives, where the default cell always exists and is fresh.
     pub fn needs_probe(&self, destination: DestinationId, now: u64) -> bool {
-        self.cells_for(destination)
+        self.existing_cells_for(destination)
             .iter()
             .any(|(_, cell)| cell.suppressed(now))
     }
