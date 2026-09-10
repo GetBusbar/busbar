@@ -262,6 +262,17 @@ pub fn plane_sections() -> Vec<&'static str> {
 /// neutral-purity lint's token rules do not fire on them.
 pub const NAMED_MAP_SECTIONS: [&str; 4] = ["identity-providers", "export", "tools", "agents"];
 
+/// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto — the contract's section
+/// fold over the PROCESS plane list, with [`NAMED_MAP_SECTIONS`] as the trailing half: the plane
+/// sections in layering order, then the 1.5.3 named-definition maps, deduped. The process wrapper lives
+/// here beside the trailing list it supplies; the fold itself is the contract's.
+pub fn config_sections() -> Vec<&'static str> {
+    busbar_contract::plane::registry::config_sections_from(
+        busbar_contract::plane::registry::plane_decls(),
+        &NAMED_MAP_SECTIONS,
+    )
+}
+
 /// TEST-SUPPORT SEAM — the section-list PROVIDER a plane's `testkit` binds through
 /// [`install_plane_sections`], so an extracted plane crate reaches the NEUTRAL ABI rather than back
 /// into `busbar_core::plane::config::config_sections`. Byte-for-byte the same fold that singleton runs:

@@ -672,7 +672,7 @@ fn register_protocols() {
 }
 
 /// REGISTER THE LINKED PLANE CRATES — the composition root's one write into the plane axis
-/// (`busbar_core::plane::registry::install_planes`), exactly `register_protocols`' shape on the
+/// (`root::plane_install::install_planes`), exactly `register_protocols`' shape on the
 /// plane axis. The MCP plane is now a crate (`busbar-mcp`), so it contributes its `&PLANE_DECL` here
 /// under the `plane-mcp` feature; core's PRODUCTION build carries no MCP built-in row (it dual-compiles
 /// the plane back in for its own test builds only), and `merged_boot_plane_decls` folds this installed
@@ -685,7 +685,7 @@ fn register_protocols() {
 #[allow(clippy::vec_init_then_push)]
 fn register_planes() {
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_core::plane::registry::PlaneDecl> = Vec::new();
+    let mut installed: Vec<&'static busbar_substrate::plane::registry::PlaneDecl> = Vec::new();
     // The LLM plane, now its own crate (`busbar-llm`), contributes its `&PLANE_DECL` here behind the
     // SAME `proto-llm` feature that carries its dependency edge and its protocol `DECLS` — one switch
     // for the LLM protocol and the LLM plane, never two. `merged_boot_plane_decls` normalises the
@@ -708,7 +708,7 @@ fn register_planes() {
     // build with voice compiled out (`--no-default-features`) pushes nothing.
     #[cfg(feature = "plane-voice")]
     installed.push(&busbar_voice::PLANE_DECL);
-    busbar_core::plane::registry::install_planes(installed.leak());
+    root::plane_install::install_planes(installed.leak());
 
     // THE MCP PLANE'S KERNEL BINDINGS, SEALED. Behind `root-mcp`, which is default-ON: the bindings
     // are built and checked against the real unit traits before any byte is served through them, so
@@ -923,12 +923,12 @@ fn main() {
     // and drives the generic `PlaneRecord` store directly at its own boot hook, so the composition root
     // binds no task codec or reader seam here — both were deleted with the relocation.
     // The parse-time section list: the A2A plane refuses a cross-plane hook reference against the WHOLE
-    // section fold (`busbar_core::plane::config::config_sections`, which reads the process plane
+    // section fold (`busbar_substrate::plane::config::config_sections`, which reads the process plane
     // registry), so it names no core registry. Bound here — after `register_planes`, before the CLI
     // flags read `--validate` — so config validation sees the populated list. Gated to `plane-a2a`.
     #[cfg(feature = "plane-a2a")]
     busbar_substrate::plane::config::install_plane_sections(
-        busbar_core::plane::config::config_sections,
+        busbar_substrate::plane::config::config_sections,
     );
     // The self-enveloping verb backing: the A2A `approve` verb builds its OWN response + audit
     // (`AdminReply::Prebuilt`) through the neutral `PlaneAdminEnvelope` seam, so it names no

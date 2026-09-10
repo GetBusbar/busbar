@@ -70,7 +70,7 @@ impl NamedMapSection {
     /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] instead.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
-        for decl in crate::plane::registry::plane_decls() {
+        for decl in crate::plane::registry::plane_behaviours() {
             if decl.named_def_list.is_some() {
                 out.push(NamedMapSection::Plane(decl.config_section));
             }
@@ -364,7 +364,7 @@ fn plane_config_validate(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    match crate::plane::registry::plane_decl_for_config_section(section.key())
+    match crate::plane::registry::behaviour_for_config_section(section.key())
         .and_then(|d| d.config_validate)
     {
         Some(f) => f(name, def),

@@ -209,7 +209,7 @@ impl RawPlaneSection {
 /// hook and falls back to an empty raw capture (never present, never refused). Byte-identical to the
 /// pre-seam typed field's `Default`.
 fn default_plane_section(config_section: &str) -> Box<dyn PlaneCfg> {
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match crate::plane::registry::behaviour_for_config_section(config_section)
         .and_then(|d| d.default_section)
     {
         Some(f) => f(),
@@ -230,7 +230,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = serde_yaml::Value::deserialize(deserializer)?;
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match crate::plane::registry::behaviour_for_config_section(config_section)
         .and_then(|d| d.parse_section)
     {
         Some(parse) => parse(&value).map_err(serde::de::Error::custom),
@@ -255,7 +255,7 @@ where
     if value.is_null() {
         return Ok(None);
     }
-    match crate::plane::registry::plane_decl_for_config_section(config_section)
+    match crate::plane::registry::behaviour_for_config_section(config_section)
         .and_then(|d| d.parse_endpoint)
     {
         Some(parse) => parse(&value).map(Some).map_err(serde::de::Error::custom),
@@ -362,44 +362,12 @@ impl<'de> serde::Deserialize<'de> for McpEndpointSection {
     }
 }
 
-/// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
-/// tables that declare the config grammar rather than written as a literal.
-///
-/// [`super::registry::PlaneDecl::config_section`] over [`super::registry::plane_decls`] gives the
-/// plane sections (`pools:`, `tools:`, `agents:`, and any registered plane's own section);
-/// [`NamedMapSection::key`] over [`NamedMapSection::ALL`] gives the 1.5.3 named-definition maps
-/// (`identity-providers:`, `export:`, and the two plane sections again, which is why this
-/// de-duplicates). Both tables state that their variant set is the only thing a new section adds —
-/// this function is what makes that true for the hook-reference rule too.
-///
-/// Order is deterministic (plane tables first, in layering order) so a refusal naming a section
-/// names the same one on every run. A nondeterministic diagnostic makes a boot failure
-/// unreproducible.
-pub fn config_sections() -> Vec<&'static str> {
-    config_sections_from(super::registry::plane_decls())
-}
-
-/// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
-/// pass a plane busbar does not have and watch its section reach this grammar with nothing written
-/// for it in core (see `plane/tests/registry_tests.rs`). [`config_sections`] passes the process
-/// [`super::registry::plane_decls`]; the plane sections come off each decl's
-/// [`super::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what lets a
-/// registered plane's section into the hook-reference grammar.
-pub(crate) fn config_sections_from(
-    decls: &[&'static super::registry::PlaneDecl],
-) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for section in decls
-        .iter()
-        .map(|decl| decl.config_section)
-        .chain(busbar_substrate::plane::config::NAMED_MAP_SECTIONS)
-    {
-        if !out.contains(&section) {
-            out.push(section);
-        }
-    }
-    out
-}
+// THE SECTION LIST is the substrate's wrapper of the contract's fold, bound here for the reason the
+// registry binds the list's readers (core's own `cfg(test)` binary seeds its built-in rows on read).
+#[cfg(test)]
+pub(crate) use crate::plane::registry::registry_tests::seeded::config_sections;
+#[cfg(not(test))]
+pub(crate) use busbar_substrate::plane::config::config_sections;
 
 /// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
 /// no per-entry parse to hang off, and a looser rule there would be a hole in exactly the place an

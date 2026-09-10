@@ -3990,7 +3990,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // DECLARATION ORDER so this document documents exactly the surface `JsonV1::router` mounts from
     // the same `plane_decls()` list. The typed success-body schemas for these paths are attached
     // below by the shared `typed!`/`body!` pass, which looks each path up by the key inserted here.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_behaviours() {
         if let Some(openapi) = decl.openapi {
             if let Some(obj) = openapi().as_object() {
                 for (path, item) in obj {
@@ -4721,7 +4721,7 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
     // types register into `#/components/schemas` exactly as the inline `typed!`/`body!` calls used to,
     // and this document is byte-identical while this function names no `busbar_mcp::mcp`/`busbar_a2a::a2a` view
     // type. Folded in `plane_decls()` order (MCP then A2A), matching the source order those calls had.
-    for decl in crate::plane::registry::plane_decls() {
+    for decl in crate::plane::registry::plane_behaviours() {
         if let Some(schemas) = decl.openapi_schemas {
             schemas(&mut gen, &mut req_gen, &mut paths);
         }
