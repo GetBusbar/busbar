@@ -257,7 +257,8 @@ reason = "the Google Gemini dialect of the LLM plane, extracted from busbar-plan
 # need it — the landing would then be a SECOND mint and refused, which is the rule working exactly
 # as written and against the wrong branch.
 #
-# THE FIRST TWO ROWS ARE THE EXCEPTION THE DOOR WAS BUILT FOR: the two dialect crates landed before
+# THE FIRST TWO ROWS ARE THE EXCEPTION THE DOOR WAS BUILT FOR (the third and fourth, below them, are
+# the door used as designed): the two dialect crates landed before
 # the door existed, their cells were written by hand at measurement (commit cd7a4a0fb), and the
 # announcement that should have preceded them is the [[announced]] rows above, landed one commit
 # earlier. `cells` is the count of [[cell]] rows each crate carries in this file, exactly. RE-KEYED (K7)
@@ -273,6 +274,23 @@ cells = "1"
 [[minted]]
 crate = "busbar-plane-llm-responses"
 commit = "b07f0a7cb"
+cells = "0"
+
+# THE THIRD AND FOURTH, MINTED THE WAY THE DOOR WAS BUILT FOR: announced on the previous commit of
+# their own line, minted here against it, and each at `cells = "0"` because the matrix measures no
+# cell for either — neither names a sibling dialect, another plane, or any kind but its own and its
+# plane's, which is the sink set of D36 section 2 read as vocabulary rather than as manifest edges.
+# Not carve-outs in the vault door's sense (no `moved_from`): the rows they took out of
+# busbar-plane-llm were the plane's OWN vendor rows, and the plane's cell in this column went UP
+# by the two crate names its gap comments now cite, not down.
+[[minted]]
+crate = "busbar-plane-llm-anthropic"
+commit = "aa98c0c69"
+cells = "0"
+
+[[minted]]
+crate = "busbar-plane-llm-gemini"
+commit = "aa98c0c69"
 cells = "0"
 
 # ------------------------------------------------------------------------------------------------
@@ -310,13 +328,19 @@ cells = "0"
 # other. A later crate of the same kind mints its own [[minted]] row and nothing more. Two rows for
 # one kind are two admissions and are refused.
 #
-# The shape, for the column the two dialect crates opened:
-#
-#   [[minted_kind]]
-#   kind   = "dialect"
-#   commit = "cd7a4a0fb"
-#   cells  = "26"
-#   edges  = "15"
+# THE COLUMN THE TWO DIALECT CRATES OPENED, MEASURED. T0-F landed the mechanism and wrote the shape;
+# this is the row. `cells = "26"` is every OTHER crate's `<crate> × dialect` cell — the 28 in the
+# column less the two crates' own (openai's and responses's, which stay with their [[minted]]
+# rows) — and `edges = "15"` is the fourteen `<kind> -> dialect` classes plus `dialect -> plane`,
+# every one of them written below with its cite and its drain. The third and fourth dialect crates
+# add NOTHING to either number: each mints zero cells, and no class they open is new (root ->
+# dialect and dialect -> plane were the first crate's). That is measured, not assumed — the
+# kind-mint-count check refuses a row that says a number the branch does not mint.
+[[minted_kind]]
+kind = "dialect"
+commit = "cd7a4a0fb"
+cells = "26"
+edges = "15"
 
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
@@ -1513,6 +1537,121 @@ cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crat
 why = "crates of kind unit naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the unit name from the unit crate: a unit reaches unit through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
+# ------------------------------------------------------------------------------------------------
+# THE DIALECT COLUMN'S CLASSES — the fifteen the [[minted_kind]] row above admits
+# ------------------------------------------------------------------------------------------------
+#
+# Fourteen `<kind> -> dialect` classes and one `dialect -> plane`, each with the clause that grants
+# it or the words that say none does, and the line that deletes it. Every class but three is
+# `none`: the vendor vocabulary was in the tree before the dialect kind existed, and the kind is
+# what made it countable (D36 section 8). The counts are the [[cell]] rows below; the ship twin
+# owes every one of them at zero.
+
+[[edge]]
+from = "api"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.2 — busbar-api is a core face; a face names KINDS, never a vendor. The dialect words in it (operation names spelled per vendor) are the legacy engine's vocabulary the face still carries."
+why = "crates of kind api naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the vendor-spelled operation names from crates/busbar-api/src/**: D33 moves the six PROTO_* names into busbar-llm-codec and then out with it; each hit goes on the commit that moves the spelling into the dialect crate that owns it."
+
+[[edge]]
+from = "codec"
+to = "dialect"
+cite = "none by name — the codec crates ARE the legacy dialect bodies (D33 section 2.3, D36 section 1): busbar-llm-codec is 37k of vendor code the dialect crates delegate to until R5 deletes it."
+why = "crates of kind codec naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete crates/busbar-llm-codec/src/<vendor>/** as each dialect crate takes its body (D36 section 5 step 2 lands equality first, R5 lands the deletion); busbar-mcp-codec and busbar-voice-codec drain when mcp and voice become dialects of their own planes."
+
+[[edge]]
+from = "contract"
+to = "dialect"
+cite = "ARCHITECTURE.md 1.2 — the dialect kind's contract face (`DialectMeta`, `Dialect`, `Kind::Dialect`) names the KIND, and the two hits are the face saying which kind it is for."
+why = "crates of kind contract naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "none: a face that did not name its kind would be a face for nothing. Struck the day the kind is retired."
+
+[[edge]]
+from = "control"
+to = "dialect"
+cite = "none. A control surface is unmetered and vendor-blind (PLUGIN-TREE.md section 1); busbar-plane-admin naming a dialect is the admin verbs' legacy dialect list."
+why = "crates of kind control naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the dialect names from crates/busbar-plane-admin/src/**: the admin reads the registered dialect list off the plane registry, so each hit goes on the commit that makes the verb read the registry."
+
+[[edge]]
+from = "dialect"
+to = "dialect"
+cite = "none. D36 section 2 — a dialect names its plane and the contract and no sibling. The hits are one doc comment in each of the first two crates explaining why it is a sibling of the other."
+why = "crates of kind dialect naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the sibling's name from crates/busbar-plane-llm-openai/src/lib.rs and crates/busbar-plane-llm-responses/src/lib.rs: say 'the vendor's other surface' and let the registry say which crate that is. The third and fourth crates name no sibling."
+
+[[edge]]
+from = "dialect"
+to = "plane"
+cite = "ARCHITECTURE.md 1.2 / 3.1 — dialect -> its OWN plane is the kind's one edge. The two hits are busbar-plane-llm-openai naming the VOICE plane in a comment about the audio paths it leaves to it, which is not its own plane and is not granted."
+why = "crates of kind dialect naming plane vocabulary: plane package names in any spelling and the kind-qualified id (plane-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the voice plane's name from crates/busbar-plane-llm-openai/src/claims.rs: say 'another plane's one-shot operations' and cite the plane inventory instead of the plane."
+
+[[edge]]
+from = "legacy"
+to = "dialect"
+cite = "none by name — the legacy engine crates (busbar-core, busbar-llm, busbar-mcp, busbar-a2a, busbar-voice) carry the vendor vocabulary the planes were cut out of (D33 section 2)."
+why = "crates of kind legacy naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete with the engine twins (D33 wave 4): each hit goes on the commit that deletes the arrival, pipeline or native-ingress file that spells the vendor."
+
+[[edge]]
+from = "plane"
+to = "dialect"
+cite = "none. D36 section 2 — the plane never names a dialect; `kind-isolation:deps` refuses the manifest edge and this class is the same rule on vocabulary. The busbar-plane-llm hits are the gap comments naming the crate that took each rung (allowed by tests/neutrality.rs, counted here); the mcp, voice and a2a hits are those planes still carrying their own single dialect."
+why = "crates of kind plane naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the crate names from the gap comments in crates/busbar-plane-llm/src/{claims,dialect}.rs and tests/{neutrality,claims_ladder}.rs once every row is carved out and the comments describe a pattern rather than four exceptions; the other three planes drain when their codec becomes their first dialect crate (D36 section 7)."
+
+[[edge]]
+from = "plugin-abi"
+to = "dialect"
+cite = "none. busbar-plugin is the loading ABI and names kinds, not instances; the hits are the legacy loader's dialect-named fixtures."
+why = "crates of kind plugin-abi naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the dialect names from crates/busbar-plugin/src/**: the loader reads a plugin's `Kind` and never its vendor."
+
+[[edge]]
+from = "root"
+to = "dialect"
+cite = "ARCHITECTURE.md 1.1 / 3.1 — the composition root is the one thing that names all three axes, and a dialect registers BY CLAIM: the root names the crate in its manifest and seals its published const in crates/busbar/src/root/dialects.rs. What the clause does NOT grant is the legacy engine wiring under crates/busbar/src/root/units_llm.rs and the tests that spell six vendors by hand, which is most of the count."
+why = "crates of kind root naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the per-vendor wiring from crates/busbar/src/root/units_llm.rs, main.rs and tests/plane_host_universal_purity.rs with the engine twins (D33 wave 4); what remains is one manifest line and one table row per dialect crate, and those are the granted edge."
+
+[[edge]]
+from = "secret"
+to = "dialect"
+cite = "none. busbar-secret-ref resolves references and has no business knowing a vendor; the one hit is a doc example naming one."
+why = "crates of kind secret naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the vendor from the doc example in crates/busbar-secret-ref/src/**."
+
+[[edge]]
+from = "substrate"
+to = "dialect"
+cite = "none by name — busbar-substrate and busbar-substrate-values carry the legacy protocol registry (ProtocolDecl, the detection fold) that names every vendor (D33 section 2.2)."
+why = "crates of kind substrate naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete with the protocol registry when busbar-plane-llm is the sole LLM path (D33: `{PLANE_DECL, DECLS}` DELETE after the flip); each hit goes on the commit that deletes the decl it spells."
+
+[[edge]]
+from = "timing"
+to = "dialect"
+cite = "none. busbar-timing measures durations and names no vendor; the two hits are doc examples."
+why = "crates of kind timing naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the vendor names from the doc examples in crates/busbar-timing/src/**."
+
+[[edge]]
+from = "transport"
+to = "dialect"
+cite = "none. A transport is a WIRE and never named for a plane or a vendor (ARCHITECTURE.md 1.1); the hits are legacy header-relay lists in the http and grpc wires that spell vendor header names."
+why = "crates of kind transport naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the vendor header names from crates/busbar-transport-http/src/** and crates/busbar-transport-grpc/src/**: the relay set is declared by the dialect (`ingress_relayed_response_header_names`) and read off the registry, so each hit goes on the commit that makes the wire read the declaration."
+
+[[edge]]
+from = "unit"
+to = "dialect"
+cite = "none. A unit names no plane and no transport and no vendor (ARCHITECTURE.md 1.1); the hits in breaker, egress and trust are legacy status-class and header spellings."
+why = "crates of kind unit naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
+drain = "delete the vendor spellings from crates/busbar-unit-{breaker,egress,trust}/src/**: the status table is busbar_contract::upstream now (S1), so each remaining hit goes on the commit that makes the unit read the table."
+
 [[cell]]
 crate = "busbar"
 kind = "api"
@@ -1561,7 +1700,7 @@ count = "98"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1835"
+count = "1850"
 
 [[cell]]
 crate = "busbar"
@@ -2226,7 +2365,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "codec"
-count = "18"
+count = "17"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -3849,6 +3988,26 @@ why     = "busbar names busbar-plane-llm-responses: declared normal in the shipp
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
+from    = "busbar"
+to      = "busbar-plane-llm-anthropic"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and a dialect registers BY CLAIM: it publishes one const and a composition root seals it into the plane it declares. The root is the only place this edge may exist; the reverse, a plane naming a dialect, is what the kind refuses."
+why     = "busbar names busbar-plane-llm-anthropic: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the THIRD dialect the root seals — the first dialect whose rungs are headers — and the cost is the same one line of crates/busbar/Cargo.toml and one row of crates/busbar/src/root/dialects.rs, with not one line of the boot's logic changed for a rung shape the earlier dialects did not have. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-plane-llm-gemini"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes, and a dialect registers BY CLAIM: it publishes one const and a composition root seals it into the plane it declares. The root is the only place this edge may exist; the reverse, a plane naming a dialect, is what the kind refuses."
+why     = "busbar names busbar-plane-llm-gemini: declared normal in the shipped graph, 1 declaration(s) at this commit. This is the FOURTH dialect the root seals — the first dialect whose rungs are path patterns and whose model rides the request target — and the cost is the same one line of crates/busbar/Cargo.toml and one row of crates/busbar/src/root/dialects.rs, with not one line of the boot's logic changed for a rung shape the earlier dialects did not have. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
 from    = "busbar-a2a"
 to      = "busbar-a2a-codec"
 half    = "shipped"
@@ -4446,6 +4605,46 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane. `busbar-plane-<p>-<d>` deps are exactly contract + its plane, and this is the second of the two. It is the same clause the `busbar-plane-llm -> busbar-llm-codec` row above is refused BY, read in the direction it grants rather than the one it inverts."
 why     = "busbar-plane-llm-responses names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. Together with the row above this is the whole sink set of the dialect kind's SECOND crate — two dependencies and no dev-dependencies, identical to the first — and that identity is the point of the pair: the sink set is the kind's rule rather than the first crate's habit, and a third dialect that needed a third dependency would have to add a row here and say why. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-anthropic"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-llm-anthropic names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-anthropic"
+to      = "busbar-plane-llm"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane. `busbar-plane-<p>-<d>` deps are exactly contract + its plane, and this is the second of the two. It is the same clause the `busbar-plane-llm -> busbar-llm-codec` row above is refused BY, read in the direction it grants rather than the one it inverts."
+why     = "busbar-plane-llm-anthropic names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. Together with the row above this is the whole sink set of the dialect kind's THIRD crate — two dependencies and no dev-dependencies, identical to the first two — and the identity is what the pair is for: the sink set is the kind's rule, and a dialect that needed a third dependency would have to add a row here and say why. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-gemini"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 manifest allow-list — busbar-contract is the face every kind is written against."
+why     = "busbar-plane-llm-gemini names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-llm-gemini"
+to      = "busbar-plane-llm"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2/ARCHITECTURE.md 3.1 — the edge runs dialect -> plane. `busbar-plane-<p>-<d>` deps are exactly contract + its plane, and this is the second of the two. It is the same clause the `busbar-plane-llm -> busbar-llm-codec` row above is refused BY, read in the direction it grants rather than the one it inverts."
+why     = "busbar-plane-llm-gemini names busbar-plane-llm: declared normal in the shipped graph, 1 declaration(s) at this commit. Together with the row above this is the whole sink set of the dialect kind's FOURTH crate — two dependencies and no dev-dependencies, identical to the first two — and the identity is what the pair is for: the sink set is the kind's rule, and a dialect that needed a third dependency would have to add a row here and say why. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

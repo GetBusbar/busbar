@@ -88,6 +88,20 @@ reason = "ONE reviewed, non-I/O edge reaches libc from this crate, and it is str
 owner = "S2 dialect-closure slot, 2026-09-09"
 
 [[allow]]
+crate = "busbar-plane-llm-anthropic"
+dep = "libc"
+via = "ahash"
+reason = "ONE reviewed, non-I/O edge reaches libc from this crate, and it is structural to sonic-rs: sonic_rs -> ahash -> getrandom -> libc. sonic-rs (the JSON scanner busbar-plane-llm and busbar-substrate-values name) requests `ahash` with its default features in EVERY published version (0.4.0 through 0.5.8, checked against the crates.io index), and ahash's default `runtime-rng` feature turns on `getrandom` to seed its hasher once per process; Cargo cannot subtract a feature a dependency requests, so no manifest in this workspace can drop the edge. getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall for that seed — a syscall wrapper, not a socket, file or process primitive — and nothing in this crate's closure reaches getrandom by any other path (`via` is the ahash edge alone: a second path would fail this waiver's bypass check and go red by itself). The two roots this crate's row was red on before 1.6.0 — busbar-llm-codec's own getrandom (the synth_rng pool) and busbar-api's sha2 -> cpufeatures — are FIXED, not waived: entropy is an installed source (synth_rng::install, written by the composition root) and SHA-256/HMAC-SHA256 are plain Rust in busbar-api. Closing this last edge means sonic-rs gaining a feature to build ahash without runtime-rng (an upstream change), or the closure naming a different scanner; re-review if any other path to libc appears."
+owner = "S2 dialect-closure slot, 2026-09-09; the SAME one-edge waiver read for the third and fourth dialect crates by the S3 dialect-pair-2 slot, 2026-09-10 — no new path, no new reason: the crate reaches libc only through its plane's sonic_rs -> ahash edge"
+
+[[allow]]
+crate = "busbar-plane-llm-gemini"
+dep = "libc"
+via = "ahash"
+reason = "ONE reviewed, non-I/O edge reaches libc from this crate, and it is structural to sonic-rs: sonic_rs -> ahash -> getrandom -> libc. sonic-rs (the JSON scanner busbar-plane-llm and busbar-substrate-values name) requests `ahash` with its default features in EVERY published version (0.4.0 through 0.5.8, checked against the crates.io index), and ahash's default `runtime-rng` feature turns on `getrandom` to seed its hasher once per process; Cargo cannot subtract a feature a dependency requests, so no manifest in this workspace can drop the edge. getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall for that seed — a syscall wrapper, not a socket, file or process primitive — and nothing in this crate's closure reaches getrandom by any other path (`via` is the ahash edge alone: a second path would fail this waiver's bypass check and go red by itself). The two roots this crate's row was red on before 1.6.0 — busbar-llm-codec's own getrandom (the synth_rng pool) and busbar-api's sha2 -> cpufeatures — are FIXED, not waived: entropy is an installed source (synth_rng::install, written by the composition root) and SHA-256/HMAC-SHA256 are plain Rust in busbar-api. Closing this last edge means sonic-rs gaining a feature to build ahash without runtime-rng (an upstream change), or the closure naming a different scanner; re-review if any other path to libc appears."
+owner = "S2 dialect-closure slot, 2026-09-09; the SAME one-edge waiver read for the third and fourth dialect crates by the S3 dialect-pair-2 slot, 2026-09-10 — no new path, no new reason: the crate reaches libc only through its plane's sonic_rs -> ahash edge"
+
+[[allow]]
 crate = "busbar-plane-mcp"
 dep = "libc"
 via = "ahash"
