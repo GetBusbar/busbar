@@ -281,9 +281,9 @@ plus `busbar-secret-ref`.
 
 | # | Name | Dir | Where | Notes |
 |---|---|---|---|---|
-| $1 | `BudgetHost::cost_price_usage` | out | def `busbar-substrate/src/plane_host/mod.rs:1056`; impl `busbar-core/src/plane_host/mod.rs:860` → `price_usage_nanos` `:874` | caller `busbar-llm/src/unit/meter.rs:370` |
-| $2 | `MeteringHost::price_usage` | out | def `plane_host/mod.rs:687`; impl `busbar-core/src/plane_host/mod.rs:548` → same fn `:552` | callers `busbar-voice/src/runtime/metering.rs:370`, `runtime/session.rs:221`. Same function, different card (caller handle vs host snapshot). |
-| $3 | `CostModel::price_usage_nanos` | — | `crates/busbar-core/src/cost.rs:693` → `rate_for :674` → `RateNanos::reserved_nanos` `cost.rs:181` | prices **only the reserved four** classes; **no tier multiplier, no flat fee**; `Option` = fail-closed on unknown model |
+| $1 | `BudgetHost::cost_price_usage` | out | def `busbar-substrate/src/plane_host/mod.rs:1056`; impl `busbar-core/src/plane_host/mod.rs:884` → `price_usage_nanos` `:898` | caller `busbar-llm/src/unit/meter.rs:370` |
+| $2 | `MeteringHost::price_usage` | out | def `plane_host/mod.rs:687`; impl `busbar-core/src/plane_host/mod.rs:572` → same fn `:576` | callers `busbar-voice/src/runtime/metering.rs:370`, `runtime/session.rs:221`. Same function, different card (caller handle vs host snapshot). |
+| $3 | `plane_host::price_usage_nanos` | — | `crates/busbar-core/src/plane_host/mod.rs:73` → `CostModel::card` → `busbar_unit_cost::LaneRates::reserved_units_nanos` (`rate.rs`) | **no longer a pricer of its own** (keep-core-delete-7): a private free function beside its two only callers, whose whole body is the card lookup and the cost unit's map-shaped fold. Prices **only the reserved four** classes; **no tier multiplier, no flat fee**; `Option` = fail-closed on unknown model |
 | $4 | `busbar_core::cost::price` | — | `crates/busbar-core/src/cost.rs:208`, documented "THE ONE ENFORCEMENT PRICER" | reserved four + open keys + tier bp — and it is `#[cfg_attr(not(test), allow(dead_code))]`, i.e. **dead outside tests**. The live seam routes around it. |
 | $5 | `busbar_unit_cost::price` | — | `crates/busbar-unit-cost/src/posting.rs:129`, re-exported `lib.rs:45` | class-open lines (`rate.rs:196`), explicit fee line (`rate.rs:149`), one tier divide (`apply_tier posting.rs:119`), pinned card version, per-line `unpriced` flags. Callers `crates/busbar/src/root/units_llm.rs:635`, `crates/busbar/tests/ledger_identity.rs:56`. |
 
@@ -620,8 +620,11 @@ denylist, deadlines), §1.4, §4.8's `PluginAbiTooOld` refusal and PB-11's windo
 `manifest-allowlist` + `source-denylist` (`qa/construction.toml:347,382`), and a new
 `abi-window-pinned` rule asserting `supported_abi` matches §1.4's table byte for byte.
 
-**T6 — one cost seam.** Delete `busbar_core::cost::price` (dead) and `CostModel::price_usage_nanos`
-(narrow); route `cost_price_usage` and `price_usage` onto `busbar_unit_cost::price`; keep
+**T6 — one cost seam.** `busbar_core::cost::price` (dead) is deleted (keep-core-delete-4) and
+`CostModel::price_usage_nanos` (narrow) is deleted with it (keep-core-delete-7): what is left is a
+private `plane_host::price_usage_nanos` whose arithmetic is the cost unit's own map-shaped fold,
+which is the narrowness rather than a second pricer. What REMAINS of T6 is the tier and the fee:
+route `cost_price_usage` and `price_usage` onto `busbar_unit_cost::price`; keep
 `rate_headroom` as an admission read, not a pricing call. Owner unit: **`busbar-unit-cost`**.
 Respects §4.5, §4.2 (the independent recompute must be able to re-derive `priced_amount` from the
 sealed `Policy` — it cannot today if the seam prices without the tier). Proved by: `one-pricing-site`
