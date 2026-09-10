@@ -254,7 +254,8 @@ land_xtask_touched() {  # $1 = newline-separated touched paths
 
 # All cell ids, one per line. Extraction only — the matching is bash's.
 land_cell_ids() {
-  python3 -c 'import json,sys
+  python3 -c 'import json,sys,signal
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 d=json.load(open(sys.argv[1]))
 for c in d["cells"]: print(c["id"])' "$here/testing/shadow-oracle/cells.json"
 }
@@ -267,7 +268,8 @@ for c in d["cells"]: print(c["id"])' "$here/testing/shadow-oracle/cells.json"
 # a RED landing where the unsharded run was green. So the packer weights families by RECORDABLE
 # cells and refuses to emit a shard that has none.
 land_cell_recordable() {
-  python3 -c 'import json,sys
+  python3 -c 'import json,sys,signal
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 d=json.load(open(sys.argv[1]))
 for c in d["cells"]:
     print("%s\t%d" % (c["id"], 0 if c.get("plane") in ("mcp","a2a") else 1))' \
@@ -414,7 +416,7 @@ land_shards_collect() {
 # hand it a ledger pair it knows is wrong and watch it refuse.
 land_ledger_assert() {
   local filter="$1" pre="$2" k="$3" i=0 rows=0
-  local tmp; tmp="$(mktemp -t land-ledger)" || return 1
+  local tmp; tmp="$(mktemp -t land-ledger.XXXXXX)" || return 1
   : >"$tmp"
   while [ "$i" -lt "$k" ]; do
     [ -f "$pre$i/ledger.tsv" ] || {
