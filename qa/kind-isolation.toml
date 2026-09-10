@@ -1468,7 +1468,7 @@ count = "98"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1826"
+count = "1835"
 
 [[cell]]
 crate = "busbar"
@@ -5634,7 +5634,7 @@ drain = "move both implementations into a store-kind crate and have the root REG
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "587"
+count = "600"
 
 [[cell]]
 crate = "busbar-a2a"
