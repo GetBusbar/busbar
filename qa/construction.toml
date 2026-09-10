@@ -1193,3 +1193,64 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ── DECLARED CEILING RAISES (EG-5) ───────────────────────────────────────────────────────────────
+# `ceiling-rose` refuses a number that is higher than it is at the base, and it is right to: a
+# ceiling that rises is a coupling that grew, and absorbing the rise silently is the one thing the
+# ratchet exists to prevent. A declaration is not a waiver -- it names the file, the exact dotted
+# path and BOTH numbers, so it describes ONE edit and not a direction; it carries a reason; and it
+# EXPIRES BY ITSELF, because once this line lands the base carries the new number, the rise is gone,
+# and an entry that describes no rise is refused as stale. THESE SEVEN MUST BE STRUCK BY THE LANDING
+# THAT FOLLOWS THIS ONE.
+#
+# What actually moved, and why the measurement cannot be drained instead: `kind-isolation:matrix`
+# counts a crate's naming of another kind's vocabulary across its whole source text -- prose and
+# doc comments included, deliberately, because a comment that explains another kind's wire IS
+# coupling to it. This line adds one new function to each of two crates and the doc comments that
+# say why they exist (a fabricated terminal has no stream state to take its creation time from, so
+# the caller's clock reading is threaded to the writer), plus two red-first tests that drive the
+# Responses door end to end. Six of the seven rises are a handful of words each; the two large ones
+# are the tests and the doc comments, and shrinking a comment to move a counter is not draining a
+# measurement, it is hiding one.
+
+[gate.ceiling_raises."cell.91.count"]
+file = "qa/kind-isolation.toml"
+from = 25
+to = 26
+because = "busbar-llm x codec +1: engine/wire.rs reaches busbar_llm_codec::wire_shim::stream_error_frame for the fabricated mid-stream terminal, because the neutral DialectCodec seam takes only (&IrError) and cannot carry the caller's clock reading, and the substrate that declares that seam is frozen. wire_shim is the module the engine already reaches for its other body-shaping helpers, so this is one more name at a seam that already existed rather than a new edge."
+
+[gate.ceiling_raises."cell.96.count"]
+file = "qa/kind-isolation.toml"
+from = 300
+to = 301
+because = "busbar-llm x plane +1: one word, in the doc comment on the stream-open site in engine/attempt/respond.rs that explains where the creation time a streaming writer stamps comes from. No new dependency, no new call, no new type -- the rise is prose that makes the clock reading's provenance findable at the site that reads it."
+
+[gate.ceiling_raises."cell.100.count"]
+file = "qa/kind-isolation.toml"
+from = 1206
+to = 1211
+because = "busbar-llm x transport +5: the red-first integration test drives a real streaming request through the Responses door and reads the fabricated terminal off the wire, and the fabrication site's own doc comment names the transport failure it answers. A mid-stream cut is a transport event; a test that proves what the door writes when the socket dies cannot avoid naming it."
+
+[gate.ceiling_raises."cell.337.count"]
+file = "qa/kind-isolation.toml"
+from = 3208
+to = 3225
+because = "busbar-llm x dialect +17: the two red-first tests. One drives /v1/responses end to end and asserts the fabricated response.failed carries a real unix second inside the bracket the test reads around the request; the other pins the seam, that the caller's reading lands on the frame verbatim and that no other dialect's terminal error frame grows a timestamp from it. Proving a dialect's wire means naming that dialect's wire."
+
+[gate.ceiling_raises."cell.338.count"]
+file = "qa/kind-isolation.toml"
+from = 11200
+to = 11219
+because = "busbar-llm-codec x dialect +19: three small functions and the doc comments that say why they exist -- protocol_stamped, protocol_for_stamped and with_writer_stamped, each the stamped twin of a resolver that already existed. The prose is the load-bearing part: it records that the creation time is an INPUT and never a clock read, which is the rule this line finishes wiring rather than one it bends."
+
+[gate.ceiling_raises."cell.105.count"]
+file = "qa/kind-isolation.toml"
+from = 904
+to = 905
+because = "busbar-llm-codec x substrate +1: wire_shim::stream_error_frame names the substrate's own error carrier in its signature (breaker::CanonicalSignal), which is the neutral type the seam it stands beside already takes. One name, in one signature, for a type this crate was already handed on every other error path."
+
+[gate.ceiling_raises."cell.107.count"]
+file = "qa/kind-isolation.toml"
+from = 615
+to = 617
+because = "busbar-llm-codec x transport +2: the stamped stream-translator factory and its doc comment, which say that the reading is taken when the stream is OPENED -- a transport moment -- and carried for the life of that stream. The three-argument factory keeps its signature for the neutral fn-pointer seam; the four-argument one is the production path."
