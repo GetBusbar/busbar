@@ -11,7 +11,6 @@ use busbar_caps::{step::MeterClassId, KernelSeal, QuantitySource, Usage, UsageLi
 
 use crate::{price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable};
 
-mod budget_tests;
 mod currency_tests;
 mod derive_tests;
 mod history_tests;

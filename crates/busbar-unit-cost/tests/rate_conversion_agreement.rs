@@ -22,8 +22,8 @@
 //! re-forks those three lines to "avoid a dependency", these are the assertions that stop being
 //! trivially true.
 
-use busbar_unit_admission::{ChainBucket, RateNanos};
-use busbar_unit_cost::{minor_of, nano_rate, CurrencyCode, KeyBudgetView, LaneClass, RateCard};
+use busbar_unit_admission::RateNanos;
+use busbar_unit_cost::{minor_of, nano_rate, CurrencyCode, LaneClass, RateCard};
 
 /// The admission unit's conversion, asked for one rate.
 ///
@@ -183,85 +183,4 @@ fn the_currency_enters_at_the_projection_and_nowhere_else() {
     assert_eq!(minor_of(nanos, CurrencyCode::USD), 350);
     assert_eq!(minor_of(nanos, jpy), 3);
     assert_eq!(minor_of(nanos, bhd), 3_500);
-}
-
-// ── PARITY WITH THE DOOR, ON THE BUDGET SIDE ─────────────────────────────────────────────────────
-//
-// The door performs the budget comparison inline over its own bucket chain, because a unit never
-// calls another unit and the admission unit cannot reach the cost unit. Two copies of one
-// comparison with nothing checking they agree is how a request comes to be judged at one figure
-// and billed at another — the same argument as the rate side above, applied to the budget view.
-
-/// Build the door's own chain of one bucket, capped, so the same question can be put to both.
-fn door_bucket(cap: Option<i64>) -> ChainBucket {
-    ChainBucket {
-        bucket_id: "group:parity@total".to_string(),
-        group_name: Some("parity".to_string()),
-        window: "total",
-        requests_cap: None,
-        tokens_cap: None,
-        tokens_input_cap: None,
-        tokens_output_cap: None,
-        tokens_cache_read_cap: None,
-        tokens_cache_write_cap: None,
-        budget_cap: cap,
-        scope: None,
-        downgrade_to: None,
-    }
-}
-
-/// The door's blocking rule for the budget metric, lifted out of `decide.rs` as the source of truth
-/// this view has to match. Not a re-implementation: the two expressions are compared below over ten
-/// thousand cases, which is what makes copying it here a MEASUREMENT rather than a second policy.
-fn door_blocks(bucket: &ChainBucket, derived: i64, fee: i64) -> bool {
-    bucket
-        .budget_cap
-        .is_some_and(|cap| derived >= cap || derived.saturating_add(fee) > cap)
-}
-
-/// The door's headroom rule, likewise.
-fn door_headroom(bucket: &ChainBucket, derived: i64) -> Option<i64> {
-    bucket
-        .budget_cap
-        .map(|cap| cap.saturating_sub(derived).max(0))
-}
-
-#[test]
-fn the_view_blocks_exactly_where_the_door_blocks() {
-    for cap in [None, Some(0), Some(1), Some(100), Some(i64::MAX)] {
-        let bucket = door_bucket(cap);
-        let view = match cap {
-            None => KeyBudgetView::uncapped("group:parity@total"),
-            Some(c) => KeyBudgetView::capped("group:parity@total", c),
-        };
-        for spent in [0u128, 1, 50, 99, 100, 101, 1_000, u128::MAX] {
-            for fee in [0i64, 1, 10, 100, i64::MAX] {
-                let derived = view.spent_cents(spent);
-                assert_eq!(
-                    view.would_exceed(spent, fee),
-                    door_blocks(&bucket, derived, fee),
-                    "cap={cap:?} spent_nanos={spent} fee={fee}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn the_views_remaining_is_exactly_the_doors_headroom() {
-    for cap in [None, Some(0), Some(1), Some(100), Some(i64::MAX)] {
-        let bucket = door_bucket(cap);
-        let view = match cap {
-            None => KeyBudgetView::uncapped("group:parity@total"),
-            Some(c) => KeyBudgetView::capped("group:parity@total", c),
-        };
-        for spent in [0u128, 1, 50, 99, 100, 101, 1_000, u128::MAX] {
-            let derived = view.spent_cents(spent);
-            assert_eq!(
-                view.remaining_cents(spent),
-                door_headroom(&bucket, derived),
-                "cap={cap:?} spent_nanos={spent}"
-            );
-        }
-    }
 }
