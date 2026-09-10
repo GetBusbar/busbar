@@ -606,6 +606,37 @@ fn the_remaining_kinds_shapes_are_constructible() {
     let _: Option<AuthDecoration<'static>> = None;
 }
 
+/// `SecretError` draws the line an OPERATOR acts on, and `Denied` is on the config side of it.
+///
+/// The previous release's secret taxonomy separated a configuration/policy problem someone must go
+/// and fix — a reference that does not exist, a malformed reference, and a caller who is not
+/// PERMITTED to read the secret — from an outage they must wait out. The face carried the first two
+/// and not the third, so the only landing available to a loader mapping the wire onto it was to
+/// fold "denied" onto `Unknown`, and an operator reading "the reference does not resolve" for a
+/// policy refusal goes and edits the reference, which is not the thing that is wrong.
+///
+/// So this cell states the distinction rather than the variant list: `Denied` exists, and it is not
+/// `Unknown` and not `Unavailable`. Folding it back onto either is a test failure.
+#[test]
+fn secret_error_keeps_a_denial_apart_from_a_miss_and_from_an_outage() {
+    let denied = SecretError::Denied;
+    assert_ne!(
+        denied,
+        SecretError::Unknown,
+        "a policy refusal is not a reference that does not resolve"
+    );
+    assert_ne!(
+        denied,
+        SecretError::Unavailable,
+        "a policy refusal is a config error, not an outage"
+    );
+    assert_ne!(denied, SecretError::NotAuthentic);
+    assert_ne!(denied, SecretError::Malformed);
+    // It is an `Error` like every other variant, so a host that only logs still logs the right one.
+    let boxed: Box<dyn std::error::Error> = Box::new(denied);
+    assert_eq!(boxed.to_string(), "Denied");
+}
+
 // ── an egress-auth scheme, implemented in full ────────────────────────────────────────────────
 
 /// An arena that answers every request by leaking a fresh allocation.
