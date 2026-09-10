@@ -479,13 +479,14 @@ pub fn voice_start(_ctx: &dyn PlaneBootCtx) -> Result<(), String> {
 /// no audience rather than mount a door that could only ever refuse.
 #[must_use]
 pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
+    let streams = crate::config::section_of(ctx);
     let public = ctx.public_url?;
     let audience = absolute(public, MOUNT_PATH)?;
     let resource_metadata = absolute(public, METADATA_PATH)?;
     let mount = VoiceMount {
         audience,
         resource_metadata,
-        runtime: Arc::new(dispatch_runtime()),
+        runtime: Arc::new(dispatch_runtime(&streams)),
         // No per-slot override: the composed provider is read process-wide at request time, because the
         // composition root composes it only after the deployment's config resolves (see the field doc).
         provider: None,
@@ -494,17 +495,17 @@ pub fn voice_build(ctx: &BuildCtx) -> Option<Arc<dyn Any + Send + Sync>> {
 }
 
 /// The per-generation session runtime the dispatch slot carries. Seeded with the operator's own
-/// `streams:` posture (the section the plane parsed — see `crate::config::configured`), so the locked
-/// session config a mint carries and the ceilings the pump enforces are the ones the deployment wrote
-/// rather than the plane's dev defaults. Its metering port is the pre-host default; every route
+/// `streams:` posture — the section the ROOT parsed and handed this generation's `build` — so the
+/// locked session config a mint carries and the ceilings the pump enforces are the ones the deployment
+/// wrote rather than the plane's dev defaults. Its metering port is the pre-host default; every route
 /// rebinds it onto the live host lease (see [`VoiceMount::runtime`]).
-fn dispatch_runtime() -> VoiceRuntime {
+fn dispatch_runtime(streams: &crate::config::StreamsCfg) -> VoiceRuntime {
     VoiceRuntime::new(
         Arc::new(DurableHandleEngine::new()),
         Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     )
-    .with_streams(&crate::config::configured())
+    .with_streams(streams)
 }
 
 /// [`PlaneDecl::claims`] — the ONE audience-checked region the voice plane answers on, spoken in its

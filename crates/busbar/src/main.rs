@@ -1314,7 +1314,14 @@ async fn run(data_workers: usize) {
     // credential exists. A deployment with no `streams:` block pins no model and captures nothing, so
     // nothing about it changes.
     #[cfg(feature = "plane-voice")]
-    let voice_provider = busbar_voice::config::configured_session_model()
+    let voice_provider = cfg
+        .plane_sections
+        .get(busbar_voice::PLANE_DECL.config_section)
+        .and_then(|parsed| {
+            busbar_voice::config::session_model(busbar_substrate::plane::config::PlaneCfg::as_any(
+                &**parsed,
+            ))
+        })
         .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
         .and_then(|provider| cfg.providers.get(&provider))
         .map(|p| (p.base_url.clone(), p.api_key.clone()));

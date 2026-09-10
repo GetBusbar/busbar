@@ -532,4 +532,3 @@ fn redaction_leaves_a_message_that_carries_no_query_credential_alone() {
         "wss://h/p?key=<redacted>&alt=sse"
     );
 }
-
