@@ -12,11 +12,14 @@
 //! `Ok(vec![...])`, or drops a step out of a sequential default, produces no compile error and no
 //! existing test failure.
 //!
-//! This is an INTEGRATION test (crates/api/tests/, auto-discovered by Cargo — the crate's existing
-//! convention of `#[cfg(test)] #[path = "tests/x.rs"] mod tests;` inline unit tests is left
-//! untouched; no `mod` line needs to be added anywhere for this file to run). It exercises only the
-//! kind face's public surface (`busbar_contract::store::*`), same as any out-of-tree Store-plugin
-//! author would.
+//! This is an INTEGRATION test (`crates/busbar-contract/tests/`, auto-discovered by Cargo — no
+//! `mod` line needs to be added anywhere for this file to run). It exercises only the kind face's
+//! public surface (`busbar_contract::store::*`), same as any out-of-tree Store-plugin author would.
+//!
+//! IT LIVES BESIDE THE FACE IT TESTS. It was written under the retiring 1.5.5 compatibility crate's
+//! tests while that crate still re-exported this face; the re-export is deleted, so the file moved
+//! to the crate that DECLARES the trait. Byte-identical but for this paragraph and the sentence
+//! above it: the assertions, the `Bare` double and every default body exercised are untouched.
 //!
 //! `Bare` implements ONLY the eight REQUIRED `Store` methods — every other method here is exercised
 //! at its DEFAULT, unmodified body.

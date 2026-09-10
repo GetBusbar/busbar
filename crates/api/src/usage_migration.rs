@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ONE-SHOT USAGE-LEDGER MIGRATION (1.6.0 M1b): fold the pre-M1b scalar `TierTokens` rows onto
-//! the name-keyed [`crate::store::ModelTokens::usage_units`] ledger, gated by a BACKEND-INTERNAL
+//! the name-keyed [`busbar_contract::store::ModelTokens::usage_units`] ledger, gated by a BACKEND-INTERNAL
 //! usage-ledger schema version ([`USAGE_SCHEMA_V2`]).
 //!
 //! WHERE THE GATE LIVES. The schema version is a durable-backend concern, exactly like the existing
@@ -17,7 +17,7 @@
 //! WHY A MIGRATION EXISTS. Before M1b, a persisted ledger row carried a scalar `tokens: TierTokens`
 //! struct (`input`/`output`/`cache_read`/`cache_write`) BESIDE an optional open `usage_units` map.
 //! M1b dissolves `TierTokens`: the reserved four are now PLAIN KEYS in the one `usage_units` map, so
-//! the live [`crate::store::ModelTokens`] no longer has a `tokens` field. A byte-persisting backend
+//! the live [`busbar_contract::store::ModelTokens`] no longer has a `tokens` field. A byte-persisting backend
 //! that deserialized an old row straight into the new type would SILENTLY DROP the `tokens` field
 //! (serde ignores unknown fields) — losing the never-rolling budget totals. This module recovers
 //! them: the frozen V1 deserialization structs below still carry `tokens`, and [`fold_v1_ledger`]
