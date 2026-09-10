@@ -18,10 +18,16 @@
 //! keys arm resolves a whole enforced key — a thing the module contract has no shape for. It is
 //! also cache-exempt: revocation on that path is a per-request verification plus a short denylist
 //! sync, and caching its verdict would widen the revocation window to the cache lifetime.
+//!
+//! The arm reads the contract's [`VirtualKeyDirectory`] face — the signed-key verifier and the
+//! revocation denylist as ONE directory, bound by the caller — so a deployment cannot end up with
+//! a verifier and a denylist that disagree. The order the verifier must check in is the face's own
+//! doc; this crate never re-derives it.
 
 use crate::cache::CredentialCache;
 use crate::module::{AuthModule, AuthOutcome};
 use crate::principal::Principal;
+use busbar_contract::{KeyFacts, VirtualKeyDirectory};
 
 /// One resolved chain position: the provider NAME the config referenced, and the module behind it.
 ///
@@ -32,52 +38,6 @@ pub struct ChainEntry {
     pub provider: String,
     /// The module resolved for that position.
     pub module: Box<dyn AuthModule>,
-}
-
-/// The enforced key the built-in signed-key arm resolves.
-///
-/// Opaque here on purpose: this unit needs to carry it, never to read it.
-// contract: the governance crate's `VirtualKey`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedKey {
-    /// The key's stable id — the principal's id.
-    pub id: String,
-    /// The key's operator-facing label.
-    pub name: String,
-}
-
-/// The built-in signed-key verifier, as the chain reaches it.
-///
-/// The audience argument is the plane boundary: `None` on the residual plane, where the verifier
-/// rejects any token that CARRIES an audience; the plane's own canonical name on an audience-bound
-/// ingress, where it rejects a token whose audience is absent or different. Threading it through
-/// the verifier rather than a caller is what stops a route added to that plane later from forgetting
-/// the check.
-///
-/// An implementation must check things in this order: **signature → `exp` → denylist → `by_id`
-/// generation**. Each step short-circuits the ones after it — an unsigned or expired token is never
-/// looked up against the denylist, and a revoked subject is never resolved to its binding — so a
-/// caller can rely on the FIRST reason a token failed being the true one, not a later one that
-/// happened to also be true. `expires_at` itself stays unenforced here: only the token's own
-/// `exp` claim gates step two.
-pub trait KeyVerifier: Send + Sync {
-    /// Verify a signed key. `None` for unknown, expired, rotated, revoked or disabled.
-    fn verify_token(
-        &self,
-        token: &str,
-        now: u64,
-        expected_aud: Option<&str>,
-    ) -> Option<ResolvedKey>;
-}
-
-/// The revocation set, as the kernel derives it from the journal tail.
-///
-/// It gates NEW units only. A unit already in flight runs to its own end: revoking mid-unit would
-/// tear down work already paid for and observed, and the next unit is refused a fraction of a
-/// second later anyway.
-pub trait RevocationView: Send + Sync {
-    /// Whether this credential is revoked as of the current policy epoch.
-    fn is_revoked(&self, credential: &str) -> bool;
 }
 
 /// The whole chain's verdict for one unit.
@@ -91,8 +51,10 @@ pub enum ChainVerdict {
         module: String,
         /// Who is calling.
         principal: Principal,
-        /// The enforced key, when an engine arm resolved one.
-        resolved: Option<ResolvedKey>,
+        /// The enforced key, when an engine arm resolved one. Boxed because the facts carry the
+        /// key's scope list, and a verdict carried inline would make the two admit-without-a-key
+        /// variants as large as the one that carries it.
+        resolved: Option<Box<KeyFacts>>,
     },
     /// Admitted anonymously — the open front door.
     Open,
@@ -151,8 +113,8 @@ impl AuthChain {
         self.keys_in_chain
     }
 
-    /// Run the chain with no cache and no key verifier — the thin form for callers that only need
-    /// the shape of the verdict.
+    /// Run the chain with no cache and no directory — the thin form for callers that only need the
+    /// shape of the verdict.
     pub fn run_chain(&self, candidate: Option<&str>) -> ChainVerdict {
         self.run_chain_cached(candidate, None, None, 0, None)
     }
@@ -166,7 +128,7 @@ impl AuthChain {
         &self,
         candidate: Option<&str>,
         cache: Option<&CredentialCache>,
-        keys: Option<&dyn KeyVerifier>,
+        directory: Option<&dyn VirtualKeyDirectory>,
         now: u64,
         expected_aud: Option<&str>,
     ) -> ChainVerdict {
@@ -249,7 +211,7 @@ impl AuthChain {
         // flushing it here would mean a chain ending in the keys arm re-runs every passing module on
         // every request, cache or not.
         if self.keys_in_chain {
-            let verdict = keys_arm_verdict(keys, candidate, now, expected_aud);
+            let verdict = keys_arm_verdict(directory, candidate, now, expected_aud);
             if matches!(verdict, ChainVerdict::Identified { .. }) {
                 if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
                     for name in &pending_pass {
@@ -271,14 +233,13 @@ impl AuthChain {
         &self,
         candidate: Option<&str>,
         cache: Option<&CredentialCache>,
-        keys: Option<&dyn KeyVerifier>,
+        directory: Option<&dyn VirtualKeyDirectory>,
         now: u64,
         expected_aud: Option<&str>,
-        revocations: Option<&dyn RevocationView>,
     ) -> ChainVerdict {
-        let verdict = self.run_chain_cached(candidate, cache, keys, now, expected_aud);
-        if let (Some(r), Some(cred)) = (revocations, candidate) {
-            if r.is_revoked(cred) {
+        let verdict = self.run_chain_cached(candidate, cache, directory, now, expected_aud);
+        if let (Some(d), Some(cred)) = (directory, candidate) {
+            if d.is_revoked(cred) {
                 return ChainVerdict::Denied;
             }
         }
@@ -295,12 +256,12 @@ impl AuthChain {
 ///
 /// - Nothing presented, or an empty credential, denies. The arm is the terminal authenticator, so
 ///   it fails closed.
-/// - No verifier available denies: a signed key cannot be verified without one.
+/// - No directory bound denies: a signed key cannot be verified without one.
 /// - A token that resolves to an enabled key identifies, carrying the key.
 /// - Anything else — unknown, expired, rotated, revoked, disabled — denies. A disabled key is
 ///   refused HERE and never handed onward to be quietly re-admitted by an identity synthesis.
 fn keys_arm_verdict(
-    keys: Option<&dyn KeyVerifier>,
+    directory: Option<&dyn VirtualKeyDirectory>,
     candidate: Option<&str>,
     now: u64,
     expected_aud: Option<&str>,
@@ -308,14 +269,14 @@ fn keys_arm_verdict(
     let Some(token) = candidate.filter(|t| !t.is_empty()) else {
         return ChainVerdict::Denied;
     };
-    let Some(keys) = keys else {
+    let Some(directory) = directory else {
         return ChainVerdict::Denied;
     };
-    match keys.verify_token(token, now, expected_aud) {
+    match directory.verify(token, now, expected_aud) {
         Some(key) => ChainVerdict::Identified {
             module: KEYS_MODULE.to_string(),
             principal: principal_from_key(&key),
-            resolved: Some(key),
+            resolved: Some(Box::new(key)),
         },
         None => ChainVerdict::Denied,
     }
@@ -323,7 +284,7 @@ fn keys_arm_verdict(
 
 /// The principal for a resolved key: the stable key id, its label as the name, and no roles — a key
 /// is a direct grant rather than a group membership resolved through bindings.
-fn principal_from_key(key: &ResolvedKey) -> Principal {
+fn principal_from_key(key: &KeyFacts) -> Principal {
     Principal {
         id: key.id.clone(),
         name: Some(key.name.clone()),

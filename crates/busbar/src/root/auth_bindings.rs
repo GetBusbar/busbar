@@ -1,34 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The three seams the authenticate unit is handed and cannot own.
+//! The two seams the authenticate unit is handed and cannot own.
 //!
-//! `busbar-unit-auth` depends on the capability crate and on nothing else — its own manifest states
-//! the rule and gives the reason: a unit that could name the kernel could reach past its token, and
-//! a unit that could name a transport would grow a second opinion about what a credential is. The
-//! price of that rule is that three things the chain genuinely needs arrive as traits the caller
-//! implements:
+//! `busbar-unit-auth` depends on the capability crate and the contract and on nothing else — its
+//! own manifest states the rule and gives the reason: a unit that could name the kernel could reach
+//! past its token, and a unit that could name a transport would grow a second opinion about what a
+//! credential is. The price of that rule is that two things the chain genuinely needs arrive as
+//! traits the caller implements:
 //!
 //! 1. **The credential digest.** The cache stores a digest of a credential and never the credential,
 //!    and the digest has to be the same one the rest of the node uses or two components disagree
 //!    about what one credential is.
-//! 2. **The key verifier.** The built-in signed-key arm resolves a whole enforced key, which is a
-//!    thing the boxed-module answer type has no shape for. Resolving it means reading a signature, an
-//!    expiry, a denylist and a rotation generation — four facts that live with the governance state.
-//! 3. **The revocation set.** The gate that applies to a NEW unit, over the same denylist.
+//! 2. **The virtual-key directory.** The built-in signed-key arm resolves a whole enforced key,
+//!    which is a thing the boxed-module answer type has no shape for — reading a signature, an
+//!    expiry, a denylist and a rotation generation, four facts that live with the governance state
+//!    — and the NEW-unit revocation gate reads the same denylist. One face for both, so a
+//!    deployment cannot end up with a verifier and a denylist that disagree.
 //!
-//! This module is where the root holds all three, because the root is the only thing that sees both
-//! the unit and the state the answers come from.
+//! This module is where the root holds both, because the root is the only thing that sees both the
+//! unit and the state the answers come from.
 //!
 //! ## Why there is a port in the middle
 //!
-//! The verifier could name the governance state directly. It does not, because the three facts the
+//! The unit could name the governance state directly. It does not, because the three facts the
 //! chain needs out of a key — does this credential verify, what id does it resolve to, and is that
-//! subject revoked — are a far smaller surface than the state that answers them, and a root that
-//! named the whole state would make every later reader of this file reason about the whole state.
-//! The port is the contract's [`VirtualKeyDirectory`] face — declared there, beside the other kind
-//! faces, because the unit that asks and the root that answers may not name each other. This file
-//! is the root's side of it: an adapter that turns the face into the two traits the unit asks for
+//! subject revoked — are a far smaller surface than the state that answers them, and a unit that
+//! named the whole state would make every later reader reason about the whole state. The port is
+//! the contract's [`VirtualKeyDirectory`] face — declared there, beside the other kind faces,
+//! because the unit that asks and the root that answers may not name each other. This file is the
+//! root's side of it: the bindings value that carries the face to every plane's authenticate step
 //! ([`AuthBindings`]), and the one implementor this deployment has. `GovernanceDirectory` is that
 //! implementor for a node whose keys are busbar's own; a deployment whose keys come from somewhere
 //! else writes its own and nothing here changes.
@@ -43,36 +44,7 @@
 
 use busbar_contract::{KeyFacts, KeyScope, VirtualKeyDirectory};
 use busbar_unit_auth::cache::CredentialCache;
-use busbar_unit_auth::chain::{KeyVerifier, ResolvedKey, RevocationView};
 use std::sync::Arc;
-
-/// The two traits the unit asks for, over one directory.
-///
-/// One value implementing both, rather than two, because they answer from the same source and
-/// binding them separately is how a deployment ends up with a verifier and a denylist that disagree.
-struct DirectoryArm(Arc<dyn VirtualKeyDirectory>);
-
-impl KeyVerifier for DirectoryArm {
-    fn verify_token(
-        &self,
-        token: &str,
-        now: u64,
-        expected_aud: Option<&str>,
-    ) -> Option<ResolvedKey> {
-        self.0
-            .verify(token, now, expected_aud)
-            .map(|facts| ResolvedKey {
-                id: facts.id,
-                name: facts.name,
-            })
-    }
-}
-
-impl RevocationView for DirectoryArm {
-    fn is_revoked(&self, credential: &str) -> bool {
-        self.0.is_revoked(credential)
-    }
-}
 
 /// Everything the authenticate step is handed beside the request itself.
 ///
@@ -82,7 +54,7 @@ impl RevocationView for DirectoryArm {
 /// meant to have killed.
 pub struct AuthBindings {
     cache: CredentialCache,
-    directory: Option<DirectoryArm>,
+    directory: Option<Arc<dyn VirtualKeyDirectory>>,
 }
 
 impl AuthBindings {
@@ -91,7 +63,7 @@ impl AuthBindings {
     pub fn new(directory: Arc<dyn VirtualKeyDirectory>) -> Self {
         AuthBindings {
             cache: credential_cache(),
-            directory: Some(DirectoryArm(directory)),
+            directory: Some(directory),
         }
     }
 
@@ -115,16 +87,11 @@ impl AuthBindings {
         Some(&self.cache)
     }
 
-    /// The signed-key verifier, when a directory was bound.
+    /// The virtual-key directory, when one was bound: the signed-key verifier and the revocation
+    /// denylist as the one face the unit takes, so the two cannot disagree.
     #[must_use]
-    pub fn keys(&self) -> Option<&dyn KeyVerifier> {
-        self.directory.as_ref().map(|d| d as &dyn KeyVerifier)
-    }
-
-    /// The revocation view, when a directory was bound.
-    #[must_use]
-    pub fn revocations(&self) -> Option<&dyn RevocationView> {
-        self.directory.as_ref().map(|d| d as &dyn RevocationView)
+    pub fn directory(&self) -> Option<&dyn VirtualKeyDirectory> {
+        self.directory.as_deref()
     }
 }
 

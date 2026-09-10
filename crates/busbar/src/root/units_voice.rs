@@ -1457,8 +1457,7 @@ impl Units for VoiceUnit<'_> {
         self.node.auth.resolve(
             &request,
             bindings.cache(),
-            bindings.keys(),
-            bindings.revocations(),
+            bindings.directory(),
             None,
             token,
         )

@@ -1375,7 +1375,7 @@ count = "159"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "96"
+count = "93"
 
 [[cell]]
 crate = "busbar"
@@ -1420,7 +1420,7 @@ count = "944"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1179"
+count = "1177"
 
 [[cell]]
 crate = "busbar-a2a"

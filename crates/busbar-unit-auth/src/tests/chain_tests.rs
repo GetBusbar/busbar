@@ -5,9 +5,10 @@
 
 use super::{entry, Canned, DefaultCacheability, OneKey};
 use crate::cache::CredentialCache;
-use crate::chain::{AuthChain, ChainVerdict, ResolvedKey};
+use crate::chain::{AuthChain, ChainVerdict};
 use crate::module::AuthOutcome;
 use crate::principal::Principal;
+use busbar_contract::KeyFacts;
 
 fn chain(entries: Vec<crate::chain::ChainEntry>, keys: bool) -> AuthChain {
     AuthChain::new(entries, keys)
@@ -314,9 +315,9 @@ fn test_validate_token_is_admit_or_deny() {
 
 /// PB-92's order (`ARCHITECTURE.md`, `VirtualKey.expires_at`): signature → `exp` → denylist →
 /// `by_id` generation, each step short-circuiting the ones after it. This crate does not own the
-/// governance implementation of [`crate::chain::KeyVerifier`] — that lives on the composition root's
+/// governance implementation of [`busbar_contract::VirtualKeyDirectory`] — that lives on the composition root's
 /// side — so this is a fake that RECORDS the order it was asked to perform each check in, pinning
-/// the contract [`crate::chain::KeyVerifier::verify_token`]'s doc now states, over the same shape a
+/// the contract [`busbar_contract::VirtualKeyDirectory::verify`]'s doc now states, over the same shape a
 /// real implementation has: four sequential, short-circuiting steps.
 struct OrderRecordingVerifier {
     log: std::sync::Mutex<Vec<&'static str>>,
@@ -341,13 +342,14 @@ impl OrderRecordingVerifier {
     }
 }
 
-impl crate::chain::KeyVerifier for OrderRecordingVerifier {
-    fn verify_token(
-        &self,
-        _token: &str,
-        _now: u64,
-        _expected_aud: Option<&str>,
-    ) -> Option<ResolvedKey> {
+impl busbar_contract::VirtualKeyDirectory for OrderRecordingVerifier {
+    fn is_revoked(&self, _credential: &str) -> bool {
+        false
+    }
+    fn operator_token_hash(&self) -> Option<String> {
+        None
+    }
+    fn verify(&self, _token: &str, _now: u64, _expected_aud: Option<&str>) -> Option<KeyFacts> {
         if !self.record_and_check("signature") {
             return None;
         }
@@ -360,9 +362,13 @@ impl crate::chain::KeyVerifier for OrderRecordingVerifier {
         if !self.record_and_check("by_id") {
             return None;
         }
-        Some(ResolvedKey {
+        Some(KeyFacts {
             id: "vk_order".to_string(),
             name: "order-pin".to_string(),
+            scopes: None,
+            enabled: true,
+            expires_at: None,
+            deleted_at: None,
         })
     }
 }
@@ -408,7 +414,18 @@ fn keys_arm_verify_token_short_circuits_at_the_failing_step() {
 #[test]
 fn revocation_gates_new_units_only() {
     struct AllRevoked;
-    impl crate::chain::RevocationView for AllRevoked {
+    impl busbar_contract::VirtualKeyDirectory for AllRevoked {
+        fn verify(
+            &self,
+            _c: &str,
+            _now: u64,
+            _aud: Option<&str>,
+        ) -> Option<busbar_contract::KeyFacts> {
+            None
+        }
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
         fn is_revoked(&self, _credential: &str) -> bool {
             true
         }
@@ -425,7 +442,7 @@ fn revocation_gates_new_units_only() {
     );
     // A new unit is gated.
     assert_eq!(
-        c.run_chain_for_new_unit(Some("cred"), None, None, 1000, None, Some(&AllRevoked)),
+        c.run_chain_for_new_unit(Some("cred"), None, Some(&AllRevoked), 1000, None),
         ChainVerdict::Denied
     );
     // The same walk without the gate — the in-flight unit's path — still identifies.
