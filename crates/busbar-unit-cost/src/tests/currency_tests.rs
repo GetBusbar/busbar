@@ -132,3 +132,70 @@ fn the_cent_projection_is_the_minor_projection_at_usd() {
         assert_eq!(crate::cents_of(nanos), minor_of(nanos, CurrencyCode::USD));
     }
 }
+
+/// **PRESENT BUT UNPRICED IS NEVER A SILENT ZERO** — the flat fee's half of the rule the lane has
+/// obeyed since there was a lane.
+///
+/// A card can name a currency for its RATES and stay silent about the flat fee in that same
+/// currency: [`RateCard::set_rate`] records the currency, [`RateCard::set_fee`] records the fee, and
+/// nothing obliges a caller to do both. Such a card passes [`RateCard::prices_currency`], so the
+/// currency guard upstream lets the request through, and the fee is then read out of a map that does
+/// not hold it. Read as a zero, every request bills its fees at nothing and says nothing about it:
+/// silent under-billing, which is the one outcome this crate refuses everywhere else. A lane a
+/// present card does not name refuses; a currency a present card names no fee in must refuse in the
+/// SAME shape — visible on the line for a read, an [`Unpriceable`] for settlement.
+#[test]
+fn a_fee_currency_the_card_is_silent_about_is_never_a_silent_zero() {
+    let eur = CurrencyCode::new("EUR").expect("a three-letter code");
+    // Priced in EUR for the lane; silent in EUR for the fee.
+    let mut card = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 2.0)], 3);
+    card.set_rate(LaneClass::new("m", INPUT), eur, 5.0);
+
+    // The card NAMES the currency, so the currency refusal does not catch this one.
+    assert!(card.prices_currency(eur));
+    // …and the fee in it is a silence rather than a figure. `None` is not zero and never becomes it.
+    assert_eq!(card.fee_for(CurrencyCode::USD), Some(3));
+    assert_eq!(card.fee_for(eur), None);
+    assert!(card.fee_unpriced(eur));
+    assert!(!card.fee_unpriced(CurrencyCode::USD));
+    assert_eq!(card.fee_unit_price_nanos(eur), None);
+
+    // THE READ POSTURE prices the fee at nothing and SAYS SO, exactly as it does for a class the
+    // card is silent about: never a silent nothing, always a visible one.
+    let report = usage(&[(INPUT, 1_000)]);
+    let read = priced_in(&card, "m", &report, 4, STANDARD_TIER_BP, eur)
+        .expect("a read reports the silence per line rather than refusing");
+    assert!(read.fee_unpriced);
+    let fee_line = read
+        .lines
+        .iter()
+        .find(|l| l.class == crate::FEE_CLASS)
+        .expect("the fee is a line of the answer, not a scalar");
+    assert!(fee_line.unpriced);
+    assert_eq!(fee_line.quantity, 4);
+    assert_eq!(fee_line.amount_nanos, 0);
+    assert!(read.unpriced_classes().contains(&crate::FEE_CLASS));
+    // Four fees at a silence contribute nothing, so the whole answer is the lane's tokens: the
+    // figure a caller that ignored the flag would post as a bill.
+    assert_eq!(read.pre_tier_nanos, 5_000_000);
+
+    // THE SETTLEMENT POSTURE REFUSES, in the same family and the same shape an unpriced lane
+    // refuses in. This is the assertion that stops the node billing four fees at zero in silence.
+    let history = crate::History::opening(card.clone(), 0);
+    let posting = crate::Posting::from_usage("m", &report, 4, STANDARD_TIER_BP, 0, 0);
+    let refused = crate::price_fail_closed(&history.current(), &posting, eur)
+        .expect_err("a fee the card is silent about is a refusal, not a free request");
+    assert_eq!(
+        refused,
+        Unpriceable::FeeUnpriced {
+            card_seq: crate::HistorySeq(0),
+            currency: eur,
+        }
+    );
+
+    // The currency the card DOES name a fee in is untouched by any of this.
+    let usd = priced_in(&card, "m", &report, 4, STANDARD_TIER_BP, CurrencyCode::USD)
+        .expect("the card names a fee in USD");
+    assert!(!usd.fee_unpriced);
+    assert_eq!(usd.pre_tier_nanos, 2_000_000 + 4 * 30_000_000);
+}
