@@ -1329,7 +1329,7 @@ count = "5"
 [[cell]]
 crate = "busbar"
 kind = "contract-transport"
-count = "18"
+count = "17"
 
 [[cell]]
 crate = "busbar"
@@ -1614,7 +1614,7 @@ count = "8"
 [[cell]]
 crate = "busbar-contract-transport"
 kind = "transport"
-count = "183"
+count = "153"
 
 [[cell]]
 crate = "busbar-core"
@@ -2174,12 +2174,12 @@ count = "50"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "export"
-count = "29"
+count = "25"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "hooks"
-count = "2"
+count = "1"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2199,12 +2199,12 @@ count = "19"
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "secret"
-count = "19"
+count = "18"
 
 [[cell]]
 crate = "busbar-plugin-loader"
 kind = "store"
-count = "66"
+count = "63"
 
 [[cell]]
 crate = "busbar-plugin-loader"
