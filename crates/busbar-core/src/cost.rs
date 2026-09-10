@@ -43,14 +43,15 @@ pub(crate) use busbar_unit_cost::{
     TierRates, NANOS_PER_MICRO,
 };
 // THE DRAIN EDGE, read rather than restated: the resolved topology is the cost unit's
-// (`GroupTable`) and the WALK over it is the admission unit's (`ChainWalk`, which yields a
-// `BucketChain`). This module used to declare a second copy of both — its own `GroupBucket`,
-// `GroupRuntime`, `project_groups` and `Chain` — and two projections of the money topology that must
-// agree exactly is how a deployment comes to be ADMITTED against one set of ledger cells and BILLED
-// against another. The copies are gone; what is left here is a CURSOR over the unit's values (see
-// [`BucketView`]), which holds no topology of its own.
-use busbar_unit_admission::{BucketChain, ChainWalk};
-use busbar_unit_cost::GroupTable;
+// (`GroupTable`) and both the WALK over it and the MEMO OF THE WALK are the admission unit's
+// (`ChainCache`, which yields a `Chain` of `BucketView` cursors). This module used to declare a
+// second copy of the topology — its own `GroupBucket`, `GroupRuntime`, `project_groups` and
+// `Chain` — and two projections of the money topology that must agree exactly is how a deployment
+// comes to be ADMITTED against one set of ledger cells and BILLED against another. The copies are
+// gone, and so is the cursor that read them: `BucketView` and `Chain` are the admission unit's,
+// spelled here so this crate's readers name one crate as before.
+use busbar_unit_admission::ChainCache;
+pub(crate) use busbar_unit_admission::{BucketView, Chain};
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
 /// collide with a real key's bucket. Read from the crate that builds the ids rather than restated,
@@ -88,121 +89,6 @@ pub(crate) fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
         .any(|w| w.as_str() == window)
 }
 
-/// ONE ENFORCEMENT BUCKET OF A RESOLVED CHAIN, AS A CURSOR — every field is a borrow of, or a `Copy`
-/// off, a value the units own; nothing here is a copy of the topology.
-///
-/// It exists because a chain has TWO sources and the enforcement walks read them uniformly. The
-/// group half is [`busbar_unit_admission::ChainBucket`], resolved ONCE per group when the model is
-/// built and thereafter only borrowed. The principal's own attribution bucket is the KEY ID, which
-/// is per-request and belongs to the key — materialising it as an owned bucket would be one heap
-/// allocation on the admission path for a bucket that carries no caps and can never block. So the
-/// two are read through this view instead, and the admission path allocates NOTHING to resolve a
-/// chain (`cost_tests::chain_read_is_a_borrow_not_a_build` pins that: two keys of one group read
-/// the SAME chain, by address).
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BucketView<'a> {
-    /// The store/ledger bucket id (the key id, or `group:<name>@<window>[#<pool>]`).
-    pub(crate) bucket_id: &'a str,
-    /// The operator-facing group name for diagnostics; `None` for the key's own bucket.
-    pub(crate) group_name: Option<&'a str>,
-    /// The bucket's window word - the `budget_window` period sentinel (`total` for the key's own
-    /// attribution bucket).
-    pub(crate) window: &'static str,
-    pub(crate) requests_cap: Option<u64>,
-    pub(crate) tokens_cap: Option<u64>,
-    pub(crate) tokens_input_cap: Option<u64>,
-    pub(crate) tokens_output_cap: Option<u64>,
-    pub(crate) tokens_cache_read_cap: Option<u64>,
-    pub(crate) tokens_cache_write_cap: Option<u64>,
-    pub(crate) budget_cap: Option<i64>,
-    /// `Some(pool)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
-    /// request was dispatched through that pool. `None` = applies to every request through the
-    /// group.
-    pub(crate) scope: Option<&'a str>,
-    /// The budget limit's `downgrade_to` pool, when it declared `on_exhaust: downgrade`.
-    pub(crate) downgrade_to: Option<&'a str>,
-}
-
-impl<'a> BucketView<'a> {
-    /// The principal's own attribution bucket: the key id, no caps, the all-time window. It is
-    /// there so every posting is attributed, it is charged on every admission, and it can never
-    /// block.
-    fn attribution(key_id: &'a str) -> Self {
-        BucketView {
-            bucket_id: key_id,
-            group_name: None,
-            window: crate::governance::WINDOW_TOTAL,
-            requests_cap: None,
-            tokens_cap: None,
-            tokens_input_cap: None,
-            tokens_output_cap: None,
-            tokens_cache_read_cap: None,
-            tokens_cache_write_cap: None,
-            budget_cap: None,
-            scope: None,
-            downgrade_to: None,
-        }
-    }
-
-    /// A cursor onto one of the walk's resolved group buckets. Borrows; copies only the caps,
-    /// which are integers.
-    fn of(b: &'a busbar_unit_admission::ChainBucket) -> Self {
-        BucketView {
-            bucket_id: &b.bucket_id,
-            group_name: b.group_name.as_deref(),
-            window: b.window,
-            requests_cap: b.requests_cap,
-            tokens_cap: b.tokens_cap,
-            tokens_input_cap: b.tokens_input_cap,
-            tokens_output_cap: b.tokens_output_cap,
-            tokens_cache_read_cap: b.tokens_cache_read_cap,
-            tokens_cache_write_cap: b.tokens_cache_write_cap,
-            budget_cap: b.budget_cap,
-            scope: b.scope.as_deref(),
-            downgrade_to: b.downgrade_to.as_deref(),
-        }
-    }
-
-    /// Whether this bucket participates in a request dispatched through `pool` - group-wide
-    /// buckets always do; a pool-scoped bucket only for its own pool. Every enforcement walk
-    /// (admit / charge / refund / accrue / headroom) keys off this ONE predicate so the paths
-    /// can never disagree on what was charged vs what is refunded.
-    pub(crate) fn applies_to_pool(&self, pool: &str) -> bool {
-        self.scope.is_none_or(|s| s == pool)
-    }
-}
-
-/// A resolved enforcement chain for ONE KEY: the key's attribution bucket plus the GROUP HALF, which
-/// is a borrow of a chain the model resolved once and holds for its whole life.
-///
-/// The group half depends only on the group the key is bound to, and the model is immutable once
-/// resolved — so it is walked at BOOT, once per group, and every request that arrives on that group
-/// thereafter reads the same value. What is per-request is the key id and nothing else.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Chain<'a> {
-    key_id: &'a str,
-    groups: &'a BucketChain,
-}
-
-impl<'a> Chain<'a> {
-    /// Every bucket of the chain, innermost first: the key's attribution bucket, then the
-    /// innermost group's window buckets, then its parent's, to the root.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = BucketView<'a>> {
-        std::iter::once(BucketView::attribution(self.key_id))
-            .chain(self.groups.buckets().iter().map(BucketView::of))
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        1 + self.groups.buckets().len()
-    }
-
-    /// The chain's groups, innermost first — the `enabled` freeze flag and the `concurrent` gauge
-    /// are per GROUP, not per window bucket.
-    pub(crate) fn groups(&self) -> &'a [busbar_unit_admission::ChainGroup] {
-        self.groups.groups()
-    }
-}
-
 // THE BYTE-IDENTITY VIEW IS GONE, WITH THE SECOND PROJECTION IT EXISTED TO WATCH.
 //
 // `ResolvedGroupView`/`ResolvedBucketView`/`resolved_view`/`resolved_fee` were here so a cell could
@@ -223,21 +109,11 @@ pub struct CostModel {
     /// value because a budget cap is a number in one configured section compared against a sum
     /// derived from the other.
     inner: busbar_unit_cost::CostModel,
-    /// THE CHAIN PER GROUP, WALKED ONCE. The group half of a chain depends only on the group a key
-    /// is bound to, and this model is immutable, so the admission unit's walk runs at BOOT — once
-    /// per group — and every request on that group thereafter READS the resolved value rather than
-    /// rebuilding it. Indexed by the group's position in the table, so the lookup is the same
-    /// index-chase the walk itself is.
-    chains: Vec<BucketChain>,
-    /// The chain of a key bound to NO group: no group buckets and no groups. Held as a value rather
-    /// than built per read for the same reason the rest are — an unbound key's chain is one shape,
-    /// and a read of it allocates nothing either.
-    empty_chain: BucketChain,
-    /// The ids of every LIVE bucket that still carries at least one windowed cap — the exact set
-    /// the projection just emitted, indexed for O(1) membership. This is what makes
-    /// "does this ledger cell still back an enforced cap?" an IDENTITY question (is this id one of
-    /// the ids the model produces?) instead of a parse of the id's internal structure.
-    capped_bucket_ids: std::collections::HashSet<String>,
+    /// THE CHAINS, WALKED ONCE, and the index of the ids that still carry a cap. The group half of
+    /// a chain depends only on the group a key is bound to, and this model is immutable, so the
+    /// admission unit's walk runs at BOOT — once per group — and every request on that group
+    /// thereafter READS the resolved value rather than rebuilding it.
+    chains: ChainCache,
 }
 
 impl CostModel {
@@ -310,58 +186,17 @@ impl CostModel {
         );
         let inner = busbar_unit_cost::CostModel::resolve_parts(card, &specs);
         let table = inner.groups();
-        let chains = (0..table.groups().len())
-            .map(|i| Self::group_chain(table, i))
-            .collect();
         Self {
-            capped_bucket_ids: Self::capped_bucket_ids(table.groups()),
-            chains,
-            empty_chain: BucketChain::unchecked(Vec::new(), Vec::new()),
+            chains: ChainCache::resolve(table),
             inner,
         }
-    }
-
-    /// The GROUP HALF of the chain that starts at `index`, walked once by the admission unit and
-    /// kept for the model's whole life.
-    ///
-    /// The walk yields the principal's attribution bucket first and then the groups', and the
-    /// attribution bucket is the one part that is NOT shareable — it is the key id, which is
-    /// per-request. So it is walked with an empty id and dropped, and each request supplies its own
-    /// through [`BucketView::attribution`], which borrows. That is the whole reason a chain read
-    /// costs no allocation.
-    fn group_chain(table: &GroupTable, index: usize) -> BucketChain {
-        let name = table.groups()[index].name.as_str();
-        let walked = table
-            .chain_for("", Some(name))
-            .expect("the name came from the table being walked");
-        BucketChain::unchecked(walked.buckets()[1..].to_vec(), walked.groups().to_vec())
-    }
-
-    /// Index the ids of every projected bucket that carries at least one windowed cap. Built from
-    /// the SAME buckets the engine enforces against, so the set can never disagree with the model
-    /// about which cells are load-bearing.
-    fn capped_bucket_ids(groups: &[GroupRuntime]) -> std::collections::HashSet<String> {
-        groups
-            .iter()
-            .flat_map(|g| g.buckets.iter())
-            .filter(|b| {
-                b.requests_cap.is_some()
-                    || b.tokens_cap.is_some()
-                    || b.tokens_input_cap.is_some()
-                    || b.tokens_output_cap.is_some()
-                    || b.tokens_cache_read_cap.is_some()
-                    || b.tokens_cache_write_cap.is_some()
-                    || b.budget_cap.is_some()
-            })
-            .map(|b| b.bucket_id.clone())
-            .collect()
     }
 
     /// Whether `bucket_id` is, RIGHT NOW, the id of a live bucket that still enforces at least one
     /// windowed cap. Pure identity: the id either is one the live model produces or it is not, so
     /// no assumption about `@`/`#` being delimiters (or a group name avoiding them) exists here.
     pub(crate) fn bucket_enforces_a_cap(&self, bucket_id: &str) -> bool {
-        self.capped_bucket_ids.contains(bucket_id)
+        self.chains.bucket_enforces_a_cap(bucket_id)
     }
 
     /// A minimal model for tests / governance-off paths: no card, no groups, the given flat fee.
@@ -436,14 +271,9 @@ impl CostModel {
         self.inner.model_unpriced(model)
     }
 
-    /// READ the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window
-    /// buckets -> parent's -> ... root, innermost first.
-    ///
-    /// A READ AND NOT A WALK, WHICH IS THE POINT. The group half of a chain is decided entirely by
-    /// the group the key names, and this model is immutable once resolved — so the admission unit's
-    /// walk ran at BOOT, once per group, and this is an index-chase into the result. Nothing is
-    /// allocated: the group buckets are borrowed from the model and the attribution bucket is the
-    /// key's own id, borrowed from the key.
+    /// READ the ENFORCEMENT CHAIN for a key, off the cache the admission unit walked at boot: the
+    /// key's own id supplies the attribution bucket and the group name indexes the rest, so this is
+    /// an index-chase that allocates nothing.
     ///
     /// `Err(missing)` when the key names a `group` that does not exist in config - the
     /// FAIL-CLOSED outcome (mint validates the group; boot re-checks; this arm covers a shared
@@ -452,17 +282,8 @@ impl CostModel {
         &'a self,
         key: &'a busbar_api::VirtualKey,
     ) -> Result<Chain<'a>, &'a str> {
-        let groups = match key.group.as_deref() {
-            None => &self.empty_chain,
-            Some(name) => match self.inner.groups().index_of(name) {
-                Some(i) => &self.chains[i],
-                None => return Err(name),
-            },
-        };
-        Ok(Chain {
-            key_id: &key.id,
-            groups,
-        })
+        self.chains
+            .chain_for(self.inner.groups(), &key.id, key.group.as_deref())
     }
 }
 

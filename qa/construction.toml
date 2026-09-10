@@ -1284,12 +1284,18 @@ because = "FACE busbar_contract::limits: the composition root names busbar_subst
 # exists. Both copies are struck: cost.rs falls 756 -> 566 lines and the engine resolves and walks
 # through the units. The cell rises because the engine now NAMES the units where it used to restate
 # them, which is the drain measured rather than asserted, and it falls to zero with busbar-core.
+#
+# RE-PRICED 24 -> 18 (keep-core-delete-8, the same transaction that drains it): the memo half of
+# this seam — the walked chains, the cursor over them and the capped-id index — left cost.rs for
+# busbar_unit_admission::ChainCache, and the six names that went with it are six lines this seam no
+# longer costs. A `by` is what the face measured on the tree that carries it, not room reserved for
+# it, so it is lowered here rather than left as slack the cell could drift back into.
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
-by = 24
-because = "SEAM busbar_unit_admission::ChainWalk / busbar_unit_cost::GroupTable read from the retiring engine: cost.rs deletes its own GroupBucket, GroupRuntime, project_groups, Chain and ChainBucket (-190 lines) and names the units that own them instead — the topology types re-exported through the one seam, GroupTable::resolve driven over the one GroupCfg -> GroupSpec relay, and ChainWalk walked ONCE PER GROUP AT BOOT so a request READS its chain rather than rebuilding it (cost::BucketView is a cursor that borrows; cost_tests::chain_read_is_a_borrow_not_a_build pins the no-allocation claim by ADDRESS, not by equality, because a per-request rebuild returns equal values and would pass an assert_eq). 22 of the 24 are in cost.rs and the Cargo.toml row that declares the edge; the drain is that these names go with busbar-core."
+by = 18
+because = "SEAM busbar_unit_admission::ChainWalk / busbar_unit_cost::GroupTable read from the retiring engine: cost.rs deletes its own GroupBucket, GroupRuntime, project_groups, Chain and ChainBucket (-190 lines) and names the units that own them instead — the topology types re-exported through the one seam, GroupTable::resolve driven over the one GroupCfg -> GroupSpec relay, and ChainWalk walked ONCE PER GROUP AT BOOT so a request READS its chain rather than rebuilding it (cost::BucketView is a cursor that borrows; cost_tests::chain_read_is_a_borrow_not_a_build pins the no-allocation claim by ADDRESS, not by equality, because a per-request rebuild returns equal values and would pass an assert_eq). 16 of the 18 are in cost.rs and the Cargo.toml row that declares the edge; the drain is that these names go with busbar-core. Re-priced 24 -> 18 in keep-core-delete-8, which moved the memo of the walk (ChainCache, Chain, BucketView) into the admission unit and took six of these names out of cost.rs with it."
 
 # ------------------------------------------------------------------------------------------------
 # [gate.census] — THE RATCHET ON THE RATCHETS
