@@ -45,7 +45,6 @@
 //! test that reads the other crate's own source, so a rename there goes red here rather than
 //! quietly writing a record nobody reads back.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
@@ -1771,21 +1770,6 @@ const PLANNED_LEGS: &[(RecordSchemaId, &str)] = &[
 #[must_use]
 pub fn planned_legs() -> &'static [(RecordSchemaId, &'static str)] {
     PLANNED_LEGS
-}
-
-/// The pricing table the cost unit prices this plane's classes from, keyed by class name.
-///
-/// A convenience over the card rather than a second card: the root reads the two classes out once
-/// and hands the estimate the maxima, so the admission step does not reach a rate table at all.
-#[must_use]
-pub fn class_prices(rates: &BTreeMap<String, u64>) -> ClassPrices {
-    ClassPrices {
-        tool_calls: rates
-            .get(CLASS_TOOL_CALLS.as_str())
-            .copied()
-            .unwrap_or_default(),
-        bytes: rates.get(CLASS_BYTES.as_str()).copied().unwrap_or_default(),
-    }
 }
 
 #[cfg(test)]

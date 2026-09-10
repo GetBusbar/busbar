@@ -4,6 +4,7 @@
 
 use super::*;
 use busbar_unit_admission::ChainWalk;
+use std::collections::BTreeMap;
 
 /// A resolver that answers every name with one public address.
 ///

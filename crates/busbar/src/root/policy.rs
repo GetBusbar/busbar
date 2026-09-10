@@ -60,19 +60,6 @@ pub struct PoolExpansion {
     pub lanes: Vec<String>,
 }
 
-/// One lane's comparable price, off the rate card.
-///
-/// Used for one thing only: choosing the cheaper entry when the three legs of a lane cross-check
-/// disagree. A lane with no entry sorts as cheapest, which is the conservative direction — an
-/// unpriced lane cannot be made to look expensive by omission.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanePrice {
-    /// The lane.
-    pub lane: String,
-    /// Its comparable unit price.
-    pub price: u128,
-}
-
 /// What the root reads off the parsed rate cards to build the metering policy.
 ///
 /// Named as a struct rather than passed as four arguments because the point of the type is the
@@ -82,8 +69,6 @@ pub struct LanePrice {
 pub struct MeterPolicyConfig {
     /// Every configured pool and the lanes it expands to.
     pub pools: Vec<PoolExpansion>,
-    /// Every priced lane.
-    pub prices: Vec<LanePrice>,
     /// Per-class tightenings of the variance tolerance. A card may tighten and never loosen; an
     /// entry that would loosen is ignored by the unit, so a card cannot widen its own tolerance by
     /// declaring one.
@@ -112,10 +97,10 @@ impl MeterPolicyHandle {
 
 /// Build the metering policy from the parsed rate cards.
 ///
-/// The two fields that matter are filled from configuration and are the reason this function
-/// exists: `lane_expansions` and `lane_prices`. The two tolerances fall back to the unit's own
-/// figures, which is correct — those ARE the design's numbers, and a deployment that sets neither
-/// is asking for them. Empty expansions are not, which is the difference.
+/// The field that matters is filled from configuration and is the reason this function exists:
+/// `lane_expansions`. The two tolerances fall back to the unit's own figures, which is correct —
+/// those ARE the design's numbers, and a deployment that sets neither is asking for them. Empty
+/// expansions are not, which is the difference.
 #[must_use]
 pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
     let mut lane_expansions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -125,12 +110,6 @@ pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
             .or_default()
             .extend(pool.lanes.iter().cloned());
     }
-
-    let lane_prices = cfg
-        .prices
-        .iter()
-        .map(|p| (p.lane.clone(), p.price))
-        .collect();
 
     let defaults = MeterPolicy::default();
     MeterPolicyHandle(MeterPolicy {
@@ -142,7 +121,6 @@ pub fn build(cfg: &MeterPolicyConfig) -> MeterPolicyHandle {
             .locator_floor_ratio
             .unwrap_or(defaults.locator_floor_ratio),
         lane_expansions,
-        lane_prices,
     })
 }
 
