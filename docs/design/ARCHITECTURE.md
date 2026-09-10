@@ -111,6 +111,15 @@ them). Each axis is blind to the other two; only the kernel composes them.
   The asymmetry is why the figure moves at all — the deletion lands in `busbar-core`, which carries no
   unit ceiling, and the addition lands in a `busbar-unit-*` crate. Every one of the ten is held by an
   equivalence cell that drives BOTH books through one recorded sequence and demands one answer.
+  THE PORT AT THE UNIT'S WIDTH amends it by a further 75: the egress unit reaches the breaker
+  through one port, and that port carried neither whose credential the upstream refused nor what the
+  dialect read out of the body, and its hard-down carried no reason — so three of the ten closed
+  differences were the unit's and not the served path's. The port now carries all three at the
+  width the breaker takes them, and the reason rides the outcome from the classify call to the
+  observe call, which is the only call between them; nothing is decided in the port.
+  Its vocabulary cost is declared cell by cell in `qa/construction.toml`: a namespaced status is
+  the seam's subject and cannot cross it without its numbering, and the reason's text is the
+  previous release's own `/stats` field, moved by identity.
   100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
 

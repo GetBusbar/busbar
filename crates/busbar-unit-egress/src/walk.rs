@@ -29,7 +29,9 @@ use busbar_contract::{Ctx, Plane, Transport, Unit, VerifiedDestination};
 use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
 use crate::exhaustion::handle_exhaustion_for_pool;
 use crate::pool::{Member, PoolTable};
-use crate::ports::{Breaker, Capacity, Clock, Disposition, EgressAuth, Journal, Telemetry};
+use crate::ports::{
+    Breaker, Capacity, Clock, CredentialOrigin, Disposition, EgressAuth, Journal, Telemetry,
+};
 use crate::select::{pick_among, PickInput, Preference, RequestCtx, WeightedFloor};
 use crate::wire::{RouteOutcome, Shed};
 
@@ -84,6 +86,10 @@ pub struct RouteRequest<'a> {
     pub lane_field: Option<&'a str>,
     /// Which stream of the connection the request goes out on.
     pub stream: busbar_contract::StreamId,
+    /// Whose credential decorates the requests this walk sends: the one busbar declared for the
+    /// pool's destinations, or the caller's own, relayed. Resolved once per walk, as the previous
+    /// release resolved it once per dispatch, because it is the pool's posture and not a hop's.
+    pub credential: CredentialOrigin,
     /// The weighted floor's memory, which belongs to the unit rather than to a request.
     pub floor: &'a WeightedFloor,
 }
@@ -195,6 +201,7 @@ pub async fn walk(request: &RouteRequest<'_>, ctx: &mut RequestCtx) -> RouteOutc
                 stream_ceiling_secs: request.stream_ceiling_secs,
                 lane_field: request.lane_field,
                 stream: request.stream,
+                credential: request.credential,
                 degraded: false,
             },
             permit: pick.permit,

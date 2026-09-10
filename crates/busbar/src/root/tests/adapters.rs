@@ -4,7 +4,6 @@
 
 use super::*;
 use busbar_caps::KernelSeal;
-use busbar_contract::WireStatus;
 
 /// A fresh `UnitToken<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
 /// minted through the kernel seal exactly as CG-29 says a real deployment would
@@ -69,6 +68,7 @@ fn an_unrecognized_error_map_class_reaches_the_bound_sink() {
             )),
             class: None,
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
 
@@ -106,6 +106,7 @@ fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lan
                 14,
             )),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
 
@@ -141,6 +142,7 @@ fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
             14,
         )),
         retry_after: None,
+        ..UpstreamStatus::default()
     };
     let http = UpstreamStatus {
         class: Some(StatusClass::ServerError),
@@ -149,11 +151,13 @@ fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
             14,
         )),
         retry_after: None,
+        ..UpstreamStatus::default()
     };
     let classless = UpstreamStatus {
         class: Some(StatusClass::ServerError),
         code: None,
         retry_after: None,
+        ..UpstreamStatus::default()
     };
     assert_eq!(
         BreakerAdapter::narrow_code(grpc),
@@ -183,6 +187,16 @@ fn a_slow_ladder() -> BreakerCfg {
             ..busbar_unit_breaker::cfg::TripConfig::default()
         },
         ..BreakerCfg::default()
+    }
+}
+
+/// A hard-down as the classifier answers a refused credential, for a cell about the ladder
+/// rather than about the reason.
+fn auth_hard_down() -> Outcome {
+    Outcome::HardDown {
+        reason: HardDownReason::Auth {
+            code: Some(WireStatus::new(status_ns::HTTP, 403)),
+        },
     }
 }
 
@@ -252,7 +266,7 @@ fn an_unconfigured_pool_records_nothing_rather_than_guessing() {
     let breaker = BreakerAdapter::with_diagnostics(silent_sink(), BreakerPolicy::new());
     let dest = DestinationId::new(2);
 
-    assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0, &route_token()));
+    assert!(!breaker.observe("unknown-pool", dest, auth_hard_down(), 0, &route_token()));
     assert!(
         breaker.ready("unknown-pool", dest, 0, &route_token()),
         "nothing was recorded, so nothing tripped"
@@ -274,7 +288,7 @@ fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
         !breaker.observe(
             "unconfigured-pool",
             dest,
-            Outcome::HardDown,
+            auth_hard_down(),
             0,
             &route_token()
         ),
@@ -295,7 +309,7 @@ fn the_default_cell_takes_its_own_declared_ladder() {
         BreakerPolicy::new().with_default_cell(a_slow_ladder()),
     );
     let dest = DestinationId::new(4);
-    assert!(breaker.observe("", dest, Outcome::HardDown, 0, &route_token()));
+    assert!(breaker.observe("", dest, auth_hard_down(), 0, &route_token()));
     assert!(breaker.cooldown_remaining("", dest, 0, &route_token()) > 0);
 }
 
@@ -321,10 +335,16 @@ fn classification_carries_the_declared_error_map_through() {
                 1113,
             )),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out.disposition, Disposition::HardDown);
-    assert_eq!(out.outcome, Outcome::HardDown);
+    assert_eq!(
+        out.outcome,
+        Outcome::HardDown {
+            reason: HardDownReason::Billing
+        }
+    );
 }
 
 /// The one fold the adapter performs: with no numeric status reported, the transport's coarse
@@ -338,6 +358,7 @@ fn a_coarse_transport_reading_stands_in_for_a_missing_status() {
             class: Some(StatusClass::ServerError),
             code: None,
             retry_after: Some(5),
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out.disposition, Disposition::TransientUpstream);
@@ -539,29 +560,18 @@ fn a_hard_down_carries_its_reason_across_the_port_into_the_unit() {
 }
 
 mod shim {
-    //! One function for the status the cells above want to hand the port. Where the port has the
-    //! field, the shim fills it. Where it does not, the shim hands over what the port CAN carry
-    //! and its doc comment names the gap — the cell then fails on the difference, which is the
-    //! red we want, rather than on a missing field, which is a red nobody can run.
-    //!
-    //! A shim never implements the missing behaviour. Widening the port means repointing the shim
-    //! at the real field and deleting the note.
+    //! One function for the status the cells above hand the port: the number, whose credential it
+    //! refused, and the two body-derived signals — every field at the width the port carries it.
 
-    use busbar_unit_egress::ports::UpstreamStatus;
+    use busbar_unit_egress::ports::{CredentialOrigin, UpstreamStatus};
 
-    /// An HTTP status as the served path reads it: the number, whose credential it refused, and
-    /// the two body-derived signals the dialect read out of the response.
-    ///
-    /// GAP: the port carries none of the last three. `passthrough`, `provider_code` and
-    /// `structured_type` are accepted and dropped here, so every cell that turns on one of them
-    /// reads the port's default — a declared credential and a body that said nothing.
+    /// A status as the served path reads it.
     pub fn status(
         code: u16,
         passthrough: bool,
         provider_code: Option<&'static str>,
         structured_type: Option<&'static str>,
-    ) -> UpstreamStatus {
-        let _ = (passthrough, provider_code, structured_type);
+    ) -> UpstreamStatus<'static> {
         UpstreamStatus {
             class: None,
             code: Some(busbar_contract::WireStatus::new(
@@ -569,6 +579,13 @@ mod shim {
                 u32::from(code),
             )),
             retry_after: None,
+            credential: if passthrough {
+                CredentialOrigin::Passthrough
+            } else {
+                CredentialOrigin::Declared
+            },
+            provider_code,
+            structured_type,
         }
     }
 }

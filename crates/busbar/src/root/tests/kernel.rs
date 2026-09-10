@@ -449,6 +449,7 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
             )),
             class: None,
             retry_after: None,
+            ..busbar_unit_egress::ports::UpstreamStatus::default()
         },
     );
 

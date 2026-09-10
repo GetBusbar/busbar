@@ -46,13 +46,15 @@
 //!    where the kernel could compare against it is the thing the lean-core scan exists to catch.
 
 use busbar_caps::{Route, UnitToken};
-use busbar_contract::StatusClass;
+use busbar_contract::transport::status_ns;
+use busbar_contract::{StatusClass, WireStatus};
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::classify::Diagnostics;
 use busbar_unit_breaker::journal::NoopJournal;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit, DestinationId};
 use busbar_unit_egress::ports::{
-    Admit, Breaker, Classified, Disposition, Outcome, Unavailable, UpstreamStatus,
+    Admit, Breaker, Classified, CredentialOrigin, Disposition, HardDownReason, Outcome,
+    Unavailable, UpstreamStatus,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -216,15 +218,22 @@ impl BreakerAdapter {
     /// class but no number at all, and a frame that HAS a number never reaches it. The folded
     /// stand-in is an HTTP one because the coarse class is protocol-neutral and HTTP's bands are the
     /// table the breaker has always read a classless answer through.
-    fn narrow_code(status: UpstreamStatus) -> Option<busbar_unit_breaker::port::UpstreamCode> {
-        use busbar_unit_breaker::port::UpstreamCode;
-        // Asked by NAMESPACE, not by arm. The narrowing is this adapter's own — the breaker's
-        // enum is closed and names the two numberings it keeps tables for — but the question put
-        // to the frame is a keyed one, so a numbering this adapter has no table for is simply not
-        // one of these two, and adding a family costs the transport contract nothing here.
+    fn narrow_code(status: UpstreamStatus<'_>) -> Option<busbar_unit_breaker::port::UpstreamCode> {
         let Some(code) = status.code else {
-            return Self::fold_class(status.class).map(UpstreamCode::Http);
+            return Self::fold_class(status.class)
+                .map(busbar_unit_breaker::port::UpstreamCode::Http);
         };
+        Self::narrow_wire(code)
+    }
+
+    /// One namespaced status onto the breaker's own vocabulary, with no class to fall back on.
+    ///
+    /// Asked by NAMESPACE, not by arm. The narrowing is this adapter's own — the breaker's enum is
+    /// closed and names the two numberings it keeps tables for — but the question put to the frame
+    /// is a keyed one, so a numbering this adapter has no table for is simply not one of these
+    /// two, and adding a family costs the transport contract nothing here.
+    fn narrow_wire(code: WireStatus) -> Option<busbar_unit_breaker::port::UpstreamCode> {
+        use busbar_unit_breaker::port::UpstreamCode;
         if let Some(http) = code.http().and_then(|n| u16::try_from(n).ok()) {
             return Some(UpstreamCode::Http(http));
         }
@@ -233,25 +242,61 @@ impl BreakerAdapter {
         }
         None
     }
+
+    /// The breaker's status restated in the contract's namespaced vocabulary — the
+    /// other direction of [`Self::narrow_wire`], for the reason that rides an outcome back out.
+    fn widen_code(code: busbar_unit_breaker::port::UpstreamCode) -> WireStatus {
+        use busbar_unit_breaker::port::UpstreamCode;
+        match code {
+            UpstreamCode::Http(n) => WireStatus::new(status_ns::HTTP, u32::from(n)),
+            UpstreamCode::Grpc(n) => WireStatus::new(status_ns::GRPC, u32::from(n)),
+        }
+    }
 }
 
 fn to_breaker_outcome(outcome: Outcome) -> busbar_unit_breaker::Outcome {
+    use busbar_unit_breaker::port::HardDownReason as R;
     use busbar_unit_breaker::Outcome as B;
+    let narrow = |code: Option<WireStatus>| code.and_then(BreakerAdapter::narrow_wire);
     match outcome {
         Outcome::Success => B::Success,
         Outcome::Transient { retry_after } => B::Transient { retry_after },
-        Outcome::HardDown => B::HardDown,
+        Outcome::HardDown { reason } => B::HardDown {
+            reason: match reason {
+                HardDownReason::Billing => R::Billing,
+                HardDownReason::Auth { code } => R::Auth(narrow(code)),
+                HardDownReason::Rejected { code } => R::Rejected(narrow(code)),
+            },
+        },
         Outcome::RecordNothing => B::RecordNothing,
     }
 }
 
 fn from_breaker_outcome(outcome: busbar_unit_breaker::Outcome) -> Outcome {
+    use busbar_unit_breaker::port::HardDownReason as R;
     use busbar_unit_breaker::Outcome as B;
+    let widen = |code: Option<busbar_unit_breaker::port::UpstreamCode>| {
+        code.map(BreakerAdapter::widen_code)
+    };
     match outcome {
         B::Success => Outcome::Success,
         B::Transient { retry_after } => Outcome::Transient { retry_after },
-        B::HardDown => Outcome::HardDown,
+        B::HardDown { reason } => Outcome::HardDown {
+            reason: match reason {
+                R::Billing => HardDownReason::Billing,
+                R::Auth(code) => HardDownReason::Auth { code: widen(code) },
+                R::Rejected(code) => HardDownReason::Rejected { code: widen(code) },
+            },
+        },
         B::RecordNothing => Outcome::RecordNothing,
+    }
+}
+
+fn to_breaker_credential(origin: CredentialOrigin) -> busbar_unit_breaker::port::CredentialOrigin {
+    use busbar_unit_breaker::port::CredentialOrigin as B;
+    match origin {
+        CredentialOrigin::Declared => B::Declared,
+        CredentialOrigin::Passthrough => B::Passthrough,
     }
 }
 
@@ -342,20 +387,20 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
+    fn classify(&self, destination: DestinationId, status: UpstreamStatus<'_>) -> Classified {
         let code = Self::narrow_code(status);
-        // contract: the egress port's `UpstreamStatus` carries the transport's reading of the frame
-        // and nothing the dialect read out of the BODY, and it does not say whose credential was
-        // refused. The breaker takes both — they are what keeps an operator's `error_map` keyed on a
-        // provider's own vocabulary and a caller's own 401 off this destination's breaker — so this
-        // narrowing hands over the defaults until the served path supplies them (ROUTE-design L2,
-        // where `unit/route.rs` stops calling the legacy forward and hydrates the walk instead).
+        // Whose credential was refused and what the dialect read out of the body cross untouched:
+        // they are what keeps an operator's `error_map` keyed on a provider's own vocabulary and a
+        // caller's own 401 off this destination's breaker. The port carries both at the same width
+        // the breaker takes them, so there is nothing for this adapter to decide here.
         let classified = self.unit.classify(
             destination,
             busbar_unit_breaker::port::UpstreamStatus {
                 code,
                 retry_after: status.retry_after,
-                ..busbar_unit_breaker::port::UpstreamStatus::default()
+                credential: to_breaker_credential(status.credential),
+                provider_code: status.provider_code,
+                structured_type: status.structured_type,
             },
         );
         Classified {

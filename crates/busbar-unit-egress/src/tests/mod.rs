@@ -169,6 +169,7 @@ impl Node {
             stream_ceiling_secs: 300,
             lane_field: self.lane_field,
             stream: busbar_contract::StreamId(0),
+            credential: crate::ports::CredentialOrigin::Declared,
             floor: &self.floor,
         };
         f(&request)

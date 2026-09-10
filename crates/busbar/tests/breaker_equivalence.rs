@@ -238,9 +238,8 @@ fn d2_passthrough_401_is_not_a_hard_down() {
 
     // Busbar's OWN key refused: a hard-down, in both books. This half must stay true.
     let owned = shim::classify(&u, DEST, 401, false, None, None, None);
-    assert_eq!(
-        owned.outcome,
-        Outcome::HardDown,
+    assert!(
+        matches!(owned.outcome, Outcome::HardDown { .. }),
         "a 401 against busbar's own credential is the destination's fault and must hard-down it"
     );
 

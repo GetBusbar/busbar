@@ -28,13 +28,24 @@ use busbar_contract_transport::wire::WireStatus;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::{Breaker as BreakerUnitTrait, BreakerUnit};
 use busbar_unit_egress::ports::{
-    Admit, Breaker, Classified, DestinationId, Disposition, Outcome, Unavailable, UpstreamStatus,
+    Admit, Breaker, Classified, CredentialOrigin, DestinationId, Disposition, HardDownReason,
+    Outcome, Unavailable, UpstreamStatus,
 };
 
 /// A fresh `UnitToken<Route>` for one `observe`/`state` call — test-only, minted through the
 /// kernel seal exactly as CG-29 says a real deployment would.
 fn route_token() -> UnitToken<Route> {
     UnitToken::mint(&KernelSeal::acquire_for_kernel())
+}
+
+/// A hard-down as the classifier answers a refused credential, for a cell about the trip rather
+/// than about the reason.
+fn auth_hard_down() -> Outcome {
+    Outcome::HardDown {
+        reason: HardDownReason::Auth {
+            code: Some(WireStatus::new(status_ns::HTTP, 403)),
+        },
+    }
 }
 
 /// The integrator's binding of the egress unit's `Breaker` port onto the breaker unit's
@@ -78,22 +89,60 @@ fn map_disposition(d: busbar_unit_breaker::classify::Disposition) -> Disposition
     }
 }
 
+/// The namespaced status, narrowed onto the breaker's own two-table vocabulary — the same
+/// narrowing `classify` does below, factored so the reason's status crosses by the same rule.
+fn narrow(code: Option<WireStatus>) -> Option<busbar_unit_breaker::port::UpstreamCode> {
+    use busbar_unit_breaker::port::UpstreamCode;
+    let w = code?;
+    w.http()
+        .and_then(|c| u16::try_from(c).ok())
+        .map(UpstreamCode::Http)
+        .or_else(|| {
+            w.grpc()
+                .and_then(|c| u8::try_from(c).ok())
+                .map(UpstreamCode::Grpc)
+        })
+}
+
+/// The breaker's status, restated in the contract's namespaced vocabulary.
+fn widen(code: Option<busbar_unit_breaker::port::UpstreamCode>) -> Option<WireStatus> {
+    use busbar_unit_breaker::port::UpstreamCode;
+    code.map(|c| match c {
+        UpstreamCode::Http(n) => WireStatus::new(status_ns::HTTP, u32::from(n)),
+        UpstreamCode::Grpc(n) => WireStatus::new(status_ns::GRPC, u32::from(n)),
+    })
+}
+
 fn map_outcome_to_breaker(o: Outcome) -> busbar_unit_breaker::Outcome {
+    use busbar_unit_breaker::port::HardDownReason as BR;
     use busbar_unit_breaker::Outcome as BO;
     match o {
         Outcome::Success => BO::Success,
         Outcome::Transient { retry_after } => BO::Transient { retry_after },
-        Outcome::HardDown => BO::HardDown,
+        Outcome::HardDown { reason } => BO::HardDown {
+            reason: match reason {
+                HardDownReason::Billing => BR::Billing,
+                HardDownReason::Auth { code } => BR::Auth(narrow(code)),
+                HardDownReason::Rejected { code } => BR::Rejected(narrow(code)),
+            },
+        },
         Outcome::RecordNothing => BO::RecordNothing,
     }
 }
 
 fn map_outcome_from_breaker(o: busbar_unit_breaker::Outcome) -> Outcome {
+    use busbar_unit_breaker::port::HardDownReason as BR;
     use busbar_unit_breaker::Outcome as BO;
     match o {
         BO::Success => Outcome::Success,
         BO::Transient { retry_after } => Outcome::Transient { retry_after },
-        BO::HardDown => Outcome::HardDown,
+        BO::HardDown { reason } => Outcome::HardDown {
+            reason: match reason {
+                BR::Billing => HardDownReason::Billing,
+                BR::Auth(code) => HardDownReason::Auth { code: widen(code) },
+                BR::Rejected(code) => HardDownReason::Rejected { code: widen(code) },
+            },
+        },
         BO::RecordNothing => Outcome::RecordNothing,
     }
 }
@@ -167,7 +216,7 @@ impl Breaker for BreakerAdapter {
         }
     }
 
-    fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
+    fn classify(&self, destination: DestinationId, status: UpstreamStatus<'_>) -> Classified {
         // The namespace crosses with the number: each numbering is read against its own table on
         // the far side, and the class fold is the fallback for an answer that carried no number.
         // Asked by NAMESPACE, not by arm: the breaker's own enum is closed and names the two
@@ -177,26 +226,26 @@ impl Breaker for BreakerAdapter {
             None => {
                 Self::fold_class(status.class).map(busbar_unit_breaker::port::UpstreamCode::Http)
             }
-            Some(w) => w
-                .http()
-                .and_then(|c| u16::try_from(c).ok())
-                .map(busbar_unit_breaker::port::UpstreamCode::Http)
-                .or_else(|| {
-                    w.grpc()
-                        .and_then(|c| u8::try_from(c).ok())
-                        .map(busbar_unit_breaker::port::UpstreamCode::Grpc)
-                }),
+            some => narrow(some),
         };
         let classified = self.0.classify(
             destination,
             busbar_unit_breaker::port::UpstreamStatus {
                 code,
                 retry_after: status.retry_after,
-                // This port carries the transport's reading of the frame and nothing the dialect
-                // read out of the body, and it does not say whose credential was refused — so the
-                // narrowing an integrator does here hands over the defaults, exactly as the root's
-                // own `BreakerAdapter` does.
-                ..busbar_unit_breaker::port::UpstreamStatus::default()
+                // Whose credential was refused and what the dialect read out of the body cross
+                // untouched: they are what keeps a caller's own 401 off this destination's
+                // breaker and an operator's rule keyed on the provider's own vocabulary.
+                credential: match status.credential {
+                    CredentialOrigin::Declared => {
+                        busbar_unit_breaker::port::CredentialOrigin::Declared
+                    }
+                    CredentialOrigin::Passthrough => {
+                        busbar_unit_breaker::port::CredentialOrigin::Passthrough
+                    }
+                },
+                provider_code: status.provider_code,
+                structured_type: status.structured_type,
             },
         );
         Classified {
@@ -269,10 +318,16 @@ fn classify_folds_the_declared_error_map_through_the_adapter() {
             class: None,
             code: Some(WireStatus::new(status_ns::HTTP, 1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out.disposition, Disposition::HardDown);
-    assert_eq!(out.outcome, Outcome::HardDown);
+    assert_eq!(
+        out.outcome,
+        Outcome::HardDown {
+            reason: HardDownReason::Billing
+        }
+    );
 }
 
 #[test]
@@ -286,6 +341,7 @@ fn classify_falls_back_to_the_coarse_transport_class_when_no_code_is_known() {
             class: Some(StatusClass::ServerError),
             code: None,
             retry_after: Some(5),
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out.disposition, Disposition::TransientUpstream);
@@ -306,7 +362,7 @@ fn a_hard_down_trip_suppresses_a_later_admit_with_the_cooldown_the_port_expects(
     let tripped = breaker.observe(
         "pool",
         DestinationId::new(4),
-        Outcome::HardDown,
+        auth_hard_down(),
         0,
         &route_token(),
     );
@@ -338,6 +394,7 @@ fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with
             class: Some(StatusClass::ClientError),
             code: Some(WireStatus::new(status_ns::HTTP, 403)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(
@@ -345,7 +402,7 @@ fn a_403_is_hard_down_and_takes_every_sibling_pool_cell_for_the_destination_with
         Disposition::HardDown,
         "the number is what tells a withdrawn credential from a malformed request"
     );
-    assert_eq!(out.outcome, Outcome::HardDown);
+    assert_eq!(out.outcome, auth_hard_down());
 
     // Two pools name the same destination. Touch both so both cells exist — `hard_down_all` fans
     // out to the pools already known for the destination.
@@ -378,6 +435,7 @@ fn a_429_with_a_retry_after_of_seven_sets_a_seven_second_cooldown() {
             class: Some(StatusClass::ClientError),
             code: Some(WireStatus::new(status_ns::HTTP, 429)),
             retry_after: Some(7),
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out.disposition, Disposition::TransientUpstream);
@@ -412,6 +470,7 @@ fn a_server_error_with_no_retry_after_keeps_the_ladders_own_cooldown() {
             class: Some(StatusClass::ServerError),
             code: Some(WireStatus::new(status_ns::HTTP, 503)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out.disposition, Disposition::TransientUpstream);
@@ -447,7 +506,7 @@ fn probe_release_crosses_the_seam() {
     breaker.observe(
         "pool",
         DestinationId::new(5),
-        Outcome::HardDown,
+        auth_hard_down(),
         0,
         &route_token(),
     );
@@ -459,4 +518,51 @@ fn probe_release_crosses_the_seam() {
         .expect("an expired cooldown re-admits via a probe");
     // Released without ever completing the dispatch: does not panic, does not wedge the cell.
     breaker.release_probe("pool", DestinationId::new(5), epoch, 100_000);
+}
+
+/// A passthrough 401 is the CALLER's own key failing: the exemption the breaker unit holds is
+/// reachable from this port, so a walk relaying a caller's key never benches the destination for
+/// everybody else.
+#[test]
+fn a_passthrough_401_crosses_the_seam_as_the_callers_own_fault() {
+    let breaker = BreakerAdapter::new();
+    let refused = |credential| {
+        breaker.classify(
+            DestinationId::new(6),
+            UpstreamStatus {
+                class: Some(StatusClass::ClientError),
+                code: Some(WireStatus::new(status_ns::HTTP, 401)),
+                credential,
+                ..UpstreamStatus::default()
+            },
+        )
+    };
+    assert_eq!(
+        refused(CredentialOrigin::Declared).disposition,
+        Disposition::HardDown
+    );
+    let passthrough = refused(CredentialOrigin::Passthrough);
+    assert_eq!(passthrough.disposition, Disposition::ClientFault);
+    assert_eq!(passthrough.outcome, Outcome::RecordNothing);
+}
+
+/// The reason the classifier decided rides the outcome across the seam and is what the unit
+/// records — in the words the previous release wrote lane-wide.
+#[test]
+fn the_reason_rides_the_outcome_across_the_seam_into_the_units_record() {
+    let breaker = BreakerAdapter::new();
+    let dest = DestinationId::new(7);
+    let classified = breaker.classify(
+        dest,
+        UpstreamStatus {
+            class: Some(StatusClass::ClientError),
+            code: Some(WireStatus::new(status_ns::HTTP, 403)),
+            ..UpstreamStatus::default()
+        },
+    );
+    assert!(breaker.observe("", dest, classified.outcome, 0, &route_token()));
+    assert_eq!(
+        breaker.0.hard_down_reason(dest).as_deref(),
+        Some("auth rejected (HTTP 403)")
+    );
 }

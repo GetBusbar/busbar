@@ -155,6 +155,7 @@ async fn dispatch_degraded<'a>(
             stream_ceiling_secs: request.stream_ceiling_secs,
             lane_field: request.lane_field,
             stream: request.stream,
+            credential: request.credential,
             degraded: true,
         },
         permit,

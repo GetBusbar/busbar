@@ -191,8 +191,13 @@ pub enum Outcome {
         retry_after: Option<u64>,
     },
     /// A definitive signal (bad key, billing exhausted): trips every pool cell for this
-    /// destination, not just the one this attempt ran through — see [`BreakerUnit::hard_down_all`].
-    HardDown,
+    /// destination, not just the one this attempt ran through — see
+    /// [`BreakerUnit::hard_down_all_with_reason`] — and records what the upstream said when it
+    /// went, because the classifier is the only thing that ever knew.
+    HardDown {
+        /// What the upstream said, in the words `/stats` renders.
+        reason: port::HardDownReason,
+    },
     /// The request was too big for this destination, or the caller's own fault: record nothing,
     /// the destination is healthy either way.
     RecordNothing,
@@ -675,9 +680,10 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     /// the part that exists only at this instant, and discarding it at the call site — as this unit
     /// did — leaves the one question the page will ask with no answer anywhere.
     ///
-    /// [`Self::hard_down_all`] leaves any recorded reason alone rather than blanking it, because
-    /// the classifier holds the reason and `Outcome::HardDown` does not carry one across yet; that
-    /// widening belongs to the landing that serves the route step, not to this one.
+    /// [`Self::hard_down_all`] leaves any recorded reason alone rather than blanking it: it is the
+    /// fan-out without the record, for a caller that has no words to record. The served path
+    /// always has them — [`Breaker::observe`] reaches this through
+    /// [`Outcome::HardDown`]'s own `reason`.
     pub fn hard_down_all_with_reason(
         &self,
         destination: DestinationId,
@@ -1130,7 +1136,9 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
             // tell a client fault from a context-length answer, and 1.5.5 counts the one not the
             // other.
             Outcome::RecordNothing => false,
-            Outcome::HardDown => self.hard_down_all(destination, now),
+            Outcome::HardDown { reason } => {
+                self.hard_down_all_with_reason(destination, &reason.to_string(), now)
+            }
             Outcome::Success => {
                 let cell = self.cell(pool, destination);
                 // Gated on what the call REPORTS, exactly as the Transient arm below is. The

@@ -105,21 +105,65 @@ pub enum Outcome {
         retry_after: Option<u64>,
     },
     /// A definitive signal about the shared destination — a rejected key, an exhausted account.
-    /// It trips every pool's cell for that destination, not only the one this attempt ran through.
-    HardDown,
+    /// It trips every pool's cell for that destination, not only the one this attempt ran through,
+    /// and it carries what the upstream said, because the classifier that decided it is the only
+    /// thing that ever knew and `observe` is the only call the walk makes after it.
+    HardDown {
+        /// What the upstream said when the destination went.
+        reason: HardDownReason,
+    },
     /// The caller's own fault, or a request too large for this destination's window. The
     /// destination is healthy either way and nothing is recorded.
     RecordNothing,
 }
 
+/// Why a destination went hard-down, as this unit carries it across the seam.
+///
+/// The breaker unit decides the reason and records it; this unit never reads it, only carries it
+/// from the classify call to the observe call. It is a value rather than a string so that the
+/// outcome stays `Copy` and the record on the far side can still be rendered in the exact words an
+/// operator reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HardDownReason {
+    /// The account behind the credential is out of money.
+    Billing,
+    /// The credential itself was refused, by an answer carrying this status.
+    Auth {
+        /// The status the refusal carried, where one was reported.
+        code: Option<busbar_contract_transport::wire::WireStatus>,
+    },
+    /// A definitive refusal the destination's own rules classed as hard-down without being either
+    /// of the two above.
+    Rejected {
+        /// The status the refusal carried, where one was reported.
+        code: Option<busbar_contract_transport::wire::WireStatus>,
+    },
+}
+
+/// WHOSE credential decorated the request the upstream answered.
+///
+/// Never the credential — the origin of it. A refusal of the caller's own key says nothing about
+/// this destination's health and is relayed with no breaker penalty; a refusal of the key busbar
+/// declared for the destination is the destination's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CredentialOrigin {
+    /// The credential busbar declared for this destination.
+    #[default]
+    Declared,
+    /// The caller's own key, relayed unchanged.
+    Passthrough,
+}
+
 /// What the upstream said, as the classifier reads it.
 ///
 /// The unit reads no body: the transport's own status reading and the plane's finish class are the
-/// two legs, and the wait the upstream asked for is the third input. Everything else about what a
-/// given code means to a given destination is configuration, and it lives on the other side of the
-/// classify call.
+/// two legs, and the wait the upstream asked for is the third input. What the DIALECT read out of
+/// the body — the provider's own error code and structured type — is carried here too, because an
+/// operator's `error_map` is keyed on that vocabulary and a port that dropped it would re-key every
+/// rule onto status numbers without saying so. Everything else about what a given code means to a
+/// given destination is configuration, and it lives on the other side of the classify call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct UpstreamStatus {
+pub struct UpstreamStatus<'a> {
     /// The transport's own reading of the frame, where it carries one.
     pub class: Option<busbar_contract_transport::wire::StatusClass>,
     /// The upstream's numeric status AND the numbering that spelled it, where the transport
@@ -128,6 +172,12 @@ pub struct UpstreamStatus {
     pub code: Option<busbar_contract_transport::wire::WireStatus>,
     /// The wait the upstream asked for, in seconds.
     pub retry_after: Option<u64>,
+    /// Whose credential this answer refused.
+    pub credential: CredentialOrigin,
+    /// The provider's own error CODE, as the dialect read it out of the response body.
+    pub provider_code: Option<&'a str>,
+    /// The provider's structured error TYPE, as the dialect read it out of the response body.
+    pub structured_type: Option<&'a str>,
 }
 
 /// Where a classified failure sends the request next.
@@ -220,7 +270,7 @@ pub trait Breaker: Send + Sync {
     /// key is bad, which means the request was simply too big — is the breaker unit's own data,
     /// including the operator's per-destination overrides. This unit passes the answer through and
     /// acts on what comes back; it holds no copy of the table and no literal from it.
-    fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified;
+    fn classify(&self, destination: DestinationId, status: UpstreamStatus<'_>) -> Classified;
 
     /// Record what one attempt meant. Returns true only on a fresh logical trip — the one signal a
     /// trip counter should increment on, never a re-trip of an already-open cell.

@@ -167,6 +167,18 @@ pub enum Recorded {
     Refunded(DestinationId),
 }
 
+/// One status as it crossed the classify seam, owned so the log can outlive the borrow the port
+/// hands over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeenStatus {
+    pub class: Option<StatusClass>,
+    pub code: Option<WireStatus>,
+    pub retry_after: Option<u64>,
+    pub credential: crate::ports::CredentialOrigin,
+    pub provider_code: Option<String>,
+    pub structured_type: Option<String>,
+}
+
 /// A breaker whose every answer is a value the test set.
 #[derive(Debug, Default)]
 pub struct TestBreaker {
@@ -178,7 +190,7 @@ pub struct TestBreaker {
     pub admitted: Mutex<Vec<(String, DestinationId)>>,
     /// Every status the walk actually handed the classifier, in order — the only way a test can
     /// see WHAT crossed the seam rather than only what came back across it.
-    pub classified: Mutex<Vec<UpstreamStatus>>,
+    pub classified: Mutex<Vec<SeenStatus>>,
 }
 
 impl TestBreaker {
@@ -338,11 +350,18 @@ impl Breaker for TestBreaker {
         self.health_of(destination).cooldown
     }
 
-    fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
+    fn classify(&self, _destination: DestinationId, status: UpstreamStatus<'_>) -> Classified {
         self.classified
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push(status);
+            .push(SeenStatus {
+                class: status.class,
+                code: status.code,
+                retry_after: status.retry_after,
+                credential: status.credential,
+                provider_code: status.provider_code.map(str::to_string),
+                structured_type: status.structured_type.map(str::to_string),
+            });
         // A test states a verdict per NAMESPACED code; a frame with no numeric status on it
         // reports none, so a verdict set under HTTP zero stands for "whatever this upstream
         // answered".
@@ -376,7 +395,9 @@ impl Breaker for TestBreaker {
             (Some(401 | 403), _, _)
             | (_, Some(GRPC_PERMISSION_DENIED | GRPC_UNAUTHENTICATED), _) => Classified {
                 disposition: Disposition::HardDown,
-                outcome: Outcome::HardDown,
+                outcome: Outcome::HardDown {
+                    reason: crate::ports::HardDownReason::Auth { code: status.code },
+                },
                 label: disposition::HARD_DOWN,
             },
             (Some(408 | 429), _, _)

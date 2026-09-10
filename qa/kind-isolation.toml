@@ -1329,7 +1329,7 @@ count = "6"
 [[cell]]
 crate = "busbar"
 kind = "contract-transport"
-count = "18"
+count = "20"
 
 [[cell]]
 crate = "busbar"
@@ -1379,12 +1379,12 @@ count = "10"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "953"
+count = "961"
 
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1210"
+count = "1228"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -2729,7 +2729,7 @@ count = "5"
 [[cell]]
 crate = "busbar-unit-breaker"
 kind = "transport"
-count = "232"
+count = "251"
 
 [[cell]]
 crate = "busbar-unit-breaker"
@@ -2754,7 +2754,7 @@ count = "34"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "contract-transport"
-count = "55"
+count = "57"
 
 [[cell]]
 crate = "busbar-unit-egress"
@@ -2769,12 +2769,12 @@ count = "1"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "transport"
-count = "59"
+count = "69"
 
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "unit"
-count = "63"
+count = "73"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"

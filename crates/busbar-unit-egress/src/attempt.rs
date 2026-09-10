@@ -28,8 +28,9 @@ use busbar_contract_transport::wire::{Conn, StatusClass};
 use futures::StreamExt;
 
 use crate::ports::{
-    disposition, net, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched, Disposition,
-    EgressAuth, Journal, OutboundRequest, Outcome, Permit, Telemetry, UpstreamStatus,
+    disposition, net, Breaker, Capacity, Classified, Clock, CredentialOrigin, DestinationId,
+    Dispatched, Disposition, EgressAuth, Journal, OutboundRequest, Outcome, Permit, Telemetry,
+    UpstreamStatus,
 };
 use crate::race;
 use crate::select::ProbeGuard;
@@ -91,6 +92,9 @@ pub struct Hop<'a> {
     pub lane_field: Option<&'a str>,
     /// Which stream of the connection this request goes out on.
     pub stream: busbar_contract::StreamId,
+    /// Whose credential decorates this request. A refusal of the caller's own key is the caller's,
+    /// and the classifier is told so.
+    pub credential: CredentialOrigin,
     /// Whether this hop is a degraded one.
     pub degraded: bool,
 }
@@ -345,6 +349,15 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         class: first.frame.meta.status,
         code: first.frame.meta.status_code,
         retry_after: first.frame.meta.retry_after_secs,
+        credential: hop.credential,
+        // The two body-derived signals are the dialect's reading of the answer, and the plane's
+        // response decode carries no reading of an ERROR body across the contract today — an
+        // error frame decodes as malformed rather than as a document with a code in it. Nothing
+        // read is nothing to hand over, and the classifier's own fallback (the status string
+        // stands in) is the honest answer for it. The port carries the slots so the moment the
+        // plane face answers, no seam between it and the breaker has to widen again.
+        provider_code: None,
+        structured_type: None,
     };
     let succeeded = matches!(first.frame.meta.status, Some(StatusClass::Success) | None);
     // An upstream answered, which is the one thing an abandonment says did not happen. From here
@@ -581,7 +594,7 @@ fn transport_failure(hop: &Hop<'_>, label: &'static str, now: u64) -> AttemptOut
 /// outcome.
 fn classify_failure(
     hop: &Hop<'_>,
-    status: UpstreamStatus,
+    status: UpstreamStatus<'_>,
     permit: Permit,
     now: u64,
 ) -> AttemptOutcome {

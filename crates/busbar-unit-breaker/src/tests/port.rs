@@ -10,6 +10,12 @@ use busbar_caps::{KernelSeal, Route, UnitToken};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// A reason for an arm that never reads one: only the hard-down arm records it, so any value
+/// serves a cell about the other three.
+fn unread() -> HardDownReason {
+    HardDownReason::Rejected(None)
+}
+
 fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs
         .iter()
@@ -40,21 +46,21 @@ impl Diagnostics for RecordingDiagnostics {
 
 #[test]
 fn client_fault_records_nothing() {
-    let (outcome, label) = outcome_and_label(Disposition::ClientFault, Some(30));
+    let (outcome, label) = outcome_and_label(Disposition::ClientFault, Some(30), unread());
     assert_eq!(outcome, Outcome::RecordNothing);
     assert_eq!(label, label::CLIENT_FAULT);
 }
 
 #[test]
 fn context_length_records_nothing() {
-    let (outcome, label) = outcome_and_label(Disposition::ContextLength, None);
+    let (outcome, label) = outcome_and_label(Disposition::ContextLength, None, unread());
     assert_eq!(outcome, Outcome::RecordNothing);
     assert_eq!(label, label::CONTEXT_LENGTH);
 }
 
 #[test]
 fn transient_upstream_threads_retry_after_through() {
-    let (outcome, label) = outcome_and_label(Disposition::TransientUpstream, Some(42));
+    let (outcome, label) = outcome_and_label(Disposition::TransientUpstream, Some(42), unread());
     assert_eq!(
         outcome,
         Outcome::Transient {
@@ -66,15 +72,80 @@ fn transient_upstream_threads_retry_after_through() {
 
 #[test]
 fn transient_upstream_with_no_retry_after() {
-    let (outcome, _) = outcome_and_label(Disposition::TransientUpstream, None);
+    let (outcome, _) = outcome_and_label(Disposition::TransientUpstream, None, unread());
     assert_eq!(outcome, Outcome::Transient { retry_after: None });
 }
 
 #[test]
 fn hard_down_is_hard_down() {
-    let (outcome, label) = outcome_and_label(Disposition::HardDown, None);
-    assert_eq!(outcome, Outcome::HardDown);
+    let reason = HardDownReason::Auth(Some(UpstreamCode::Http(401)));
+    let (outcome, label) = outcome_and_label(Disposition::HardDown, None, reason);
+    assert_eq!(outcome, Outcome::HardDown { reason });
     assert_eq!(label, label::HARD_DOWN);
+}
+
+/// The reason renders to the words the previous release recorded lane-wide
+/// (`1.5.5's forward path, attempt/classify.rs:306-318`), character for character, because
+/// `/stats` shows them and an operator's runbook greps for them.
+#[test]
+fn a_hard_down_reason_renders_in_the_previous_releases_words() {
+    assert_eq!(
+        HardDownReason::Billing.to_string(),
+        "billing / insufficient balance"
+    );
+    assert_eq!(
+        HardDownReason::Auth(Some(UpstreamCode::Http(403))).to_string(),
+        "auth rejected (HTTP 403)"
+    );
+    assert_eq!(
+        HardDownReason::Rejected(Some(UpstreamCode::Http(1113))).to_string(),
+        "request rejected (HTTP 1113)"
+    );
+    // The gRPC leg has no previous-release text to match, so it says what it is.
+    assert_eq!(
+        HardDownReason::Auth(Some(UpstreamCode::Grpc(16))).to_string(),
+        "auth rejected (grpc-status 16)"
+    );
+    assert_eq!(
+        HardDownReason::Auth(None).to_string(),
+        "auth rejected (no status)"
+    );
+}
+
+/// The classifier decides the reason from the class it settled on and the code it was handed: a
+/// refused credential names the status, a billing answer names the money, and an operator's
+/// mapping onto neither says only that the request was rejected.
+#[test]
+fn classify_upstream_decides_the_reason_with_the_disposition() {
+    let auth = classify_upstream(
+        &HashMap::new(),
+        UpstreamStatus {
+            code: Some(UpstreamCode::Http(403)),
+            ..UpstreamStatus::default()
+        },
+        &NoopDiagnostics,
+    );
+    assert_eq!(
+        auth.outcome,
+        Outcome::HardDown {
+            reason: HardDownReason::Auth(Some(UpstreamCode::Http(403)))
+        }
+    );
+    let billing = classify_upstream(
+        &err_map(&[("insufficient_quota", "billing")]),
+        UpstreamStatus {
+            code: Some(UpstreamCode::Http(429)),
+            provider_code: Some("insufficient_quota"),
+            ..UpstreamStatus::default()
+        },
+        &NoopDiagnostics,
+    );
+    assert_eq!(
+        billing.outcome,
+        Outcome::HardDown {
+            reason: HardDownReason::Billing
+        }
+    );
 }
 
 // ── classify_upstream: error_map precedence over the HTTP-status table, verbatim values from
@@ -96,7 +167,12 @@ fn error_map_code_wins_over_http_status() {
         &NoopDiagnostics,
     );
     assert_eq!(out.disposition, Disposition::HardDown);
-    assert_eq!(out.outcome, Outcome::HardDown);
+    assert_eq!(
+        out.outcome,
+        Outcome::HardDown {
+            reason: HardDownReason::Billing
+        }
+    );
 }
 
 #[test]
@@ -148,7 +224,12 @@ fn auth_status_is_hard_down() {
         &NoopDiagnostics,
     );
     assert_eq!(out.disposition, Disposition::HardDown);
-    assert_eq!(out.outcome, Outcome::HardDown);
+    assert_eq!(
+        out.outcome,
+        Outcome::HardDown {
+            reason: HardDownReason::Auth(Some(UpstreamCode::Http(401)))
+        }
+    );
 }
 
 #[test]

@@ -47,6 +47,60 @@ pub enum UpstreamCode {
     Grpc(u8),
 }
 
+/// WHY a destination went hard-down — what the upstream said when it went, in the words the
+/// previous release recorded lane-wide (`1.5.5's forward path, attempt/classify.rs:306-318`).
+///
+/// A value, not a string, so it can ride [`crate::Outcome::HardDown`] across a `Copy` seam and
+/// still render to the exact text an operator reads off `/stats`. The classifier decides it, the
+/// walk hands it to `observe`, and the unit records it — there is no call between those two at
+/// which a reason could be recorded any other way, which is why it is on the outcome and not a
+/// second verb.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HardDownReason {
+    /// The account behind the credential is out of money.
+    Billing,
+    /// The credential itself was refused.
+    Auth(Option<UpstreamCode>),
+    /// A definitive refusal the operator's `error_map` classed as hard-down without being either
+    /// of the two above.
+    Rejected(Option<UpstreamCode>),
+}
+
+impl HardDownReason {
+    /// The reason for a hard-down classified as `class`, from an answer carrying `code`.
+    #[must_use]
+    pub fn of(class: classify::StatusClass, code: Option<UpstreamCode>) -> Self {
+        match class {
+            classify::StatusClass::Billing => Self::Billing,
+            classify::StatusClass::Auth => Self::Auth(code),
+            _ => Self::Rejected(code),
+        }
+    }
+}
+
+/// The status, spelled the way the reason's text has always spelled it.
+struct SpelledCode(Option<UpstreamCode>);
+
+impl std::fmt::Display for SpelledCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(UpstreamCode::Http(code)) => write!(f, "HTTP {code}"),
+            Some(UpstreamCode::Grpc(code)) => write!(f, "grpc-status {code}"),
+            None => f.write_str("no status"),
+        }
+    }
+}
+
+impl std::fmt::Display for HardDownReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Billing => f.write_str("billing / insufficient balance"),
+            Self::Auth(code) => write!(f, "auth rejected ({})", SpelledCode(*code)),
+            Self::Rejected(code) => write!(f, "request rejected ({})", SpelledCode(*code)),
+        }
+    }
+}
+
 /// WHOSE credential the upstream refused. The ORIGIN of the credential and never the credential:
 /// this type holds no bytes at all, which is why it is not one of the named secret carriers that
 /// must hand-roll `Debug`, and why its name says `Origin` out loud rather than leaving a reader to
@@ -125,11 +179,13 @@ pub mod label {
 
 /// Fold a classified [`Disposition`] into the [`Outcome`] this unit's state machine acts on and the
 /// metric label a caller records the failure under. A pure function: no destination, no lock, no
-/// clock.
+/// clock. `reason` is read on the hard-down arm alone — it is the one arm whose record outlives
+/// the call.
 #[must_use]
 pub fn outcome_and_label(
     disposition: Disposition,
     retry_after: Option<u64>,
+    reason: HardDownReason,
 ) -> (Outcome, &'static str) {
     match disposition {
         // The caller's bad input: the destination is healthy either way, so nothing is recorded —
@@ -144,7 +200,7 @@ pub fn outcome_and_label(
         // A definitive signal about the shared destination: every pool cell trips, not just this
         // one — see `BreakerUnit::hard_down_all`, which `BreakerUnit::observe` dispatches
         // `Outcome::HardDown` to.
-        Disposition::HardDown => (Outcome::HardDown, label::HARD_DOWN),
+        Disposition::HardDown => (Outcome::HardDown { reason }, label::HARD_DOWN),
         // Too big for this destination's window: the destination is healthy, record nothing.
         Disposition::ContextLength => (Outcome::RecordNothing, label::CONTEXT_LENGTH),
     }
@@ -209,7 +265,11 @@ pub fn classify_upstream(
     } else {
         classify::classify(&sig)
     };
-    let (outcome, label) = outcome_and_label(disposition, sig.retry_after);
+    let (outcome, label) = outcome_and_label(
+        disposition,
+        sig.retry_after,
+        HardDownReason::of(sig.class, status.code),
+    );
     Classified {
         disposition,
         outcome,

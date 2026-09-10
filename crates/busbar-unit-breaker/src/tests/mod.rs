@@ -660,7 +660,9 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
     let fresh = unit.observe(
         "pool-a",
         DestinationId::new(1),
-        Outcome::HardDown,
+        Outcome::HardDown {
+            reason: crate::port::HardDownReason::Auth(Some(crate::port::UpstreamCode::Http(401))),
+        },
         &cfg,
         now,
         u128::from(now),
@@ -681,13 +683,22 @@ fn hard_down_trips_every_pool_cell_for_the_destination() {
     let fresh_again = unit.observe(
         "pool-a",
         DestinationId::new(1),
-        Outcome::HardDown,
+        Outcome::HardDown {
+            reason: crate::port::HardDownReason::Auth(Some(crate::port::UpstreamCode::Http(401))),
+        },
         &cfg,
         now,
         u128::from(now),
         &route_token(),
     );
     assert!(!fresh_again);
+
+    // The reason rode the outcome in and was recorded against the destination, in the words the
+    // previous release recorded lane-wide — the same door `hard_down_all_with_reason` is.
+    assert_eq!(
+        unit.hard_down_reason(DestinationId::new(1)).as_deref(),
+        Some("auth rejected (HTTP 401)")
+    );
 }
 
 // ── The probe journal is a function of what the cell actually did ───────────────────────────────

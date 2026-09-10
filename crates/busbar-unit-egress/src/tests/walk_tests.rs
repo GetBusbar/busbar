@@ -233,7 +233,11 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
         WireStatus::new(status_ns::HTTP, 403),
         crate::ports::Classified {
             disposition: crate::ports::Disposition::HardDown,
-            outcome: Outcome::HardDown,
+            outcome: Outcome::HardDown {
+                reason: crate::ports::HardDownReason::Auth {
+                    code: Some(WireStatus::new(status_ns::HTTP, 403)),
+                },
+            },
             label: disposition::HARD_DOWN,
         },
     );
@@ -261,7 +265,11 @@ fn a_403_reaches_the_classifier_as_a_403_and_the_destination_goes_hard_down() {
     );
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
-        vec![Outcome::HardDown],
+        vec![Outcome::HardDown {
+            reason: crate::ports::HardDownReason::Auth {
+                code: Some(WireStatus::new(status_ns::HTTP, 403)),
+            },
+        }],
         "and the destination is recorded hard-down, which is what fans out to its siblings"
     );
     assert!(
@@ -289,13 +297,13 @@ fn a_429_carries_the_upstreams_own_retry_after_through_to_the_breaker() {
     node.transport.script("b", Script::Frames(ok_frames()));
 
     assert!(node.route("primary").is_delivered());
-    let seen = node.breaker.classified.lock().unwrap().first().copied();
+    let seen = node.breaker.classified.lock().unwrap().first().cloned();
     assert_eq!(
-        seen.map(|s| s.code),
+        seen.as_ref().map(|s| s.code),
         Some(Some(WireStatus::new(status_ns::HTTP, 429)))
     );
     assert_eq!(
-        seen.map(|s| s.retry_after),
+        seen.as_ref().map(|s| s.retry_after),
         Some(Some(7)),
         "the seven seconds the upstream asked for reached the classifier"
     );
@@ -326,12 +334,12 @@ fn a_server_error_with_no_retry_after_leaves_the_cooldown_to_the_ladder() {
     node.transport.script("b", Script::Frames(ok_frames()));
 
     assert!(node.route("primary").is_delivered());
-    let seen = node.breaker.classified.lock().unwrap().first().copied();
+    let seen = node.breaker.classified.lock().unwrap().first().cloned();
     assert_eq!(
-        seen.map(|s| s.code),
+        seen.as_ref().map(|s| s.code),
         Some(Some(WireStatus::new(status_ns::HTTP, 503)))
     );
-    assert_eq!(seen.map(|s| s.retry_after), Some(None));
+    assert_eq!(seen.as_ref().map(|s| s.retry_after), Some(None));
     assert_eq!(
         node.breaker.outcomes("primary", DestinationId::new(0)),
         vec![Outcome::Transient { retry_after: None }],
@@ -364,9 +372,9 @@ fn a_grpc_unavailable_records_a_failure_and_fails_over() {
         node.route("primary").is_delivered(),
         "the walk failed over to the sibling rather than relaying the refusal"
     );
-    let seen = node.breaker.classified.lock().unwrap().first().copied();
+    let seen = node.breaker.classified.lock().unwrap().first().cloned();
     assert_eq!(
-        seen.map(|s| s.code),
+        seen.as_ref().map(|s| s.code),
         Some(Some(WireStatus::new(status_ns::GRPC, 14))),
         "the number crossed the seam WITH the numbering that spelled it"
     );
