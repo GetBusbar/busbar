@@ -5,6 +5,7 @@
 use super::*;
 use busbar_caps::KernelSeal;
 use busbar_contract::WireStatus;
+use busbar_unit_egress::ports::Disposition;
 
 /// A fresh `UnitToken<Route>` for one `observe`/`ready`/`cooldown_remaining` call — test-only,
 /// minted through the kernel seal exactly as CG-29 says a real deployment would

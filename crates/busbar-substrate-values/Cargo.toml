@@ -25,6 +25,10 @@ license = "Apache-2.0"
 # leaves, exactly as the parent crate named them.
 busbar-api = { path = "../api" }
 busbar-plugin = { path = "../busbar-plugin" }
+# The plugin-visible contract, for the ONE owner of the upstream status class and its disposition
+# (`busbar_contract::upstream`), which this crate's breaker taxonomy used to declare a second copy
+# of. Std-only closure (contract-transport: serde, futures) -- opens nothing.
+busbar-contract = { path = "../busbar-contract" }
 # The bare HTTP vocabulary (`HeaderMap`/`HeaderName`/`HeaderValue`/`StatusCode`) the protocol
 # declarations, the breaker's `Retry-After` parse and the wire types name. These are the SAME types
 # `axum::http::…` resolves to — axum re-exports this crate — so the move off the `axum::` spelling
