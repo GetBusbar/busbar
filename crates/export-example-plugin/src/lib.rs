@@ -12,6 +12,7 @@
 //! default (a no-op). Config JSON is ignored (this sink has no configurable shape), mirroring
 //! `busbar-store-example-plugin`'s config-less posture.
 
+use busbar_plugin_sdk::{export_catalog, export_export_plugin, Catalog};
 use busbar_plugin_sdk::{ExportHandler, ExportStream};
 
 /// The trivial sink: carries the metrics stream, drops batches (default `deliver`).
@@ -26,11 +27,22 @@ impl ExportHandler for ExampleExport {
 
 /// Construct the sink. No config is read; malformed JSON in `cfg` is accepted and ignored rather than
 /// a load error, since there is nothing in this plugin's config shape that could be malformed.
+/// This plugin's error catalog: EMPTY, and honestly so — this sink reports no failure today
+/// (`deliver` is the no-op default). A host reads an empty catalog as "every code this plugin
+/// emits is uncatalogued", which is exactly right for a plugin that emits none.
+pub const CATALOG: &str = r#"{ "default_locale": "en", "entries": [] }"#;
+
+/// This plugin's catalog, parsed: what the host reads at load, and what the tests check.
+pub fn catalog() -> Catalog {
+    serde_json::from_str(CATALOG).expect("the catalog is a catalog document")
+}
+
 fn open(_cfg: &str) -> Result<Box<dyn ExportHandler>, String> {
     Ok(Box::new(ExampleExport))
 }
 
-busbar_plugin_sdk::export_export_plugin!(open);
+export_catalog!(CATALOG);
+export_export_plugin!(open);
 
 #[cfg(test)]
 #[path = "tests.rs"]
