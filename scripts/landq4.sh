@@ -137,20 +137,25 @@ lq_preproved_status() { # $1 = tip sha, $2 = queue line, $3 = ledger (default $P
   echo "$ans"
 }
 
-# THE BATCH SIZE. Eight when eight lines have already been proven green against THIS tip on boxes of
-# their own, four otherwise.
+# THE BATCH SIZE. THE DEFAULT becomes eight when eight lines have already been proven green against
+# THIS tip on boxes of their own; four otherwise.
 #
 # The larger batch is not a bet: those eight lines have each been through the whole engine against
 # this exact tip, so the union is far likelier to be green in one pass than eight arbitrary lines
 # would be — and a batch that goes green in one pass is the only thing that makes a bigger batch
 # cheaper rather than dearer, because a red one bisects.
+#
+# AN EXPLICIT `LAND_BATCH` STILL WINS. This moves a DEFAULT, and an operator who wrote a number in
+# the environment wrote it for a reason this file does not know; silently doubling it would be this
+# script overruling the person running it.
 lq_batch_size() { # $1 = tip sha, $2 = ledger (default $PP)
   local tip="$1" pp="${2:-$PP}" n=0
+  [ -z "${LAND_BATCH:-}" ] || { echo "$LAND_BATCH"; return 0; }
   if [ -f "$pp" ]; then
     n="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$pp" | sort -u | grep -c . || true)"
   fi
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  if [ "$n" -ge 8 ]; then echo 8; else echo "${LAND_BATCH:-4}"; fi
+  if [ "$n" -ge 8 ]; then echo 8; else echo 4; fi
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -358,17 +363,22 @@ lq_selftest() {
   _t "no ledger at all is NONE"    NONE "$(lq_preproved_status tip1 "--prove $ha" "$root/absent.txt")"
 
   echo "landq4 selftest: the batch size (8 only when 8 lines are pre-proven at THIS tip)"
-  _t "no ledger -> the ordinary batch" "${LAND_BATCH:-4}" "$(lq_batch_size tip1 "$root/absent.txt")"
-  _t "two greens -> the ordinary batch" "${LAND_BATCH:-4}" "$(lq_batch_size tip1 "$pp")"
+  _bs() { local n="$1"; shift; ( LAND_BATCH="$n"; lq_batch_size "$@" ); }
+  _t "no ledger -> the ordinary batch" 4 "$(_bs "" tip1 "$root/absent.txt")"
+  _t "two greens -> the ordinary batch" 4 "$(_bs "" tip1 "$pp")"
   local i=0; : >"$root/pp8.txt"
   while [ "$i" -lt 8 ]; do printf 'GREEN\ttip1\t/l/%s\t--prove line%s\n' "$i" "$i" >>"$root/pp8.txt"; i=$((i + 1)); done
-  _t "eight greens at this tip -> 8"    8 "$(lq_batch_size tip1 "$root/pp8.txt")"
-  _t "eight greens at ANOTHER tip -> the ordinary batch" "${LAND_BATCH:-4}" "$(lq_batch_size tip2 "$root/pp8.txt")"
+  _t "eight greens at this tip -> 8"    8 "$(_bs "" tip1 "$root/pp8.txt")"
+  _t "eight greens at ANOTHER tip -> the ordinary batch" 4 "$(_bs "" tip2 "$root/pp8.txt")"
+  # THE DEFAULT MOVES; AN EXPLICIT NUMBER DOES NOT. An operator who wrote LAND_BATCH=6 gets 6,
+  # eight pre-proven lines or none.
+  _t "an explicit LAND_BATCH wins over the raise"  6 "$(_bs 6 tip1 "$root/pp8.txt")"
+  _t "an explicit LAND_BATCH wins with no ledger"  6 "$(_bs 6 tip1 "$root/absent.txt")"
   # Eight ROWS but only four distinct lines is not eight pre-proven lines. A sweep re-run against
   # the same tip appends, and counting rows would let one line stand in for the batch.
   : >"$root/pp8dup.txt"
   i=0; while [ "$i" -lt 8 ]; do printf 'GREEN\ttip1\t/l/%s\t--prove line%s\n' "$i" "$((i % 4))" >>"$root/pp8dup.txt"; i=$((i + 1)); done
-  _t "eight rows over four lines -> the ordinary batch" "${LAND_BATCH:-4}" "$(lq_batch_size tip1 "$root/pp8dup.txt")"
+  _t "eight rows over four lines -> the ordinary batch" 4 "$(_bs "" tip1 "$root/pp8dup.txt")"
 
   echo "landq4 selftest: the popper"
   local savedQ="$Q" savedPP="$PP" savedL="$L"
