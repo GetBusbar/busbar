@@ -538,6 +538,16 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 /// same kind of statement made about a crate that does not exist yet.
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("caps", "contract"),
+    // EVERY KIND IS GRANTED `busbar-contract`, AND THAT INCLUDES THE TWO FAMILIES THAT ARE NOT
+    // PLUGIN KINDS. A `*-codec` crate is a pre-split dialect and reads its plane's DURABLE RECORD
+    // vocabulary — `PlaneRecord`, `PlaneSelector`, `PlaneDisposition`, the token-unit keys — which
+    // is the store kind's face and lives in `busbar_contract::store`. It reached those types
+    // through `busbar-api`'s re-export while that crate drained, and `busbar-api` is being deleted:
+    // without this row the drain's last five crates would have to keep a retiring crate alive to
+    // name a face they are entitled to. Owner ruling 2026-09-10, and `ARCHITECTURE.md` 1.2 now says
+    // it in the same sentence it already makes for `store` and `secret`. It widens no closure —
+    // `busbar-api` links `busbar-contract` already, so the edge moves rather than appears.
+    ("codec", "contract"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
     ("contract", "contract-transport"),
@@ -547,6 +557,17 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("kernel", "grammar"),
     ("legacy", "contract"),
     ("plane", "contract"),
+    // THE PLUGIN ABI CRATE IS GRANTED THE CONTRACT FOR THE SAME REASON, and it is stated as its own
+    // row rather than folded into the TCB table below. `busbar-plugin` is the cold lane's wire: it
+    // serializes the store kind's records — `VirtualKey`, `UsageLedger`, `CredentialSecret`,
+    // `MeteringDelta` — across the C boundary, so the crate that DECLARES the ABI must name the
+    // crate that DECLARES those records. It named them through `busbar-api`'s re-export while that
+    // crate drained. `ARCHITECTURE.md` 1.4 says `abi` is a TCB crate and not a kind, and that is
+    // exactly why this is an `allowed` row and not a `tcb` one: TCB is a hole in the kind graph for
+    // edges the kind rules have no opinion about, and the architecture HAS an opinion here — every
+    // kind is granted `busbar-contract` and the ABI is written on the same face the plugins are.
+    // Owner ruling 2026-09-10. No closure widens: `busbar-api` links `busbar-contract` already.
+    ("plugin-abi", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
     ("root", "caps"),

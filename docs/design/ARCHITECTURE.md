@@ -135,6 +135,18 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
   CI failure. **The one exception, and the only cross-crate edge in the whole plugin tree:** a
   DIALECT crate `busbar-plane-<p>-<d>` names its own plane `busbar-plane-<p>`, for the plane's IR
   type and nothing else; naming any other plane, any dialect, or a transport is a CI failure.
+  **EVERY KIND IS GRANTED `busbar-contract`, and so are the two families that are not kinds**
+  (OWNER RULING 2026-09-10, the same sentence this list already makes for `store` and `secret`):
+  a `*-codec` crate — kind `codec`, a PRE-SPLIT DIALECT — reads its plane's durable record
+  vocabulary (`PlaneRecord`, `PlaneSelector`, `PlaneDisposition`, the token-unit keys), which is the
+  store kind's face; and `busbar-plugin` — kind `plugin-abi`, the TCB crate of §1.4 — serializes
+  those same records across the C boundary, so the crate that DECLARES the ABI names the crate that
+  DECLARES the records. Both reached them through `busbar-api`'s re-export while that crate drained,
+  and `busbar-api` is being deleted; without the grant the drain's last five crates would have to
+  keep a retiring crate alive to name a face they are entitled to. The grant WIDENS NO CLOSURE —
+  `busbar-api` links `busbar-contract` already, so each edge moves rather than appears — and it
+  grants nothing else: `codec -> api` and `plugin-abi -> api` stay refused, and the `codec` row goes
+  with the kind the day the last `*-codec` becomes a `busbar-plane-<p>-<d>`.
 - **Source denylist** (transitive via `cargo metadata`), scoped to the **pure kinds**: plane, hook,
   static auth schemes that are pure, egress-auth-scheme, and the FFI transform crate: any path under
   `std::{net, fs, process, os, env}`, `tokio::{net, fs, process}`, `async_std::*`, `libc`, `reqwest`,
