@@ -84,16 +84,6 @@ impl CanonicalClass {
             estimated: false,
         }
     }
-
-    /// Name one declared class, its evidence and whether that evidence is a floor.
-    #[must_use]
-    pub fn new(class: MeterClassId, source: QuantitySource, estimated: bool) -> Self {
-        CanonicalClass {
-            class,
-            source,
-            estimated,
-        }
-    }
 }
 
 /// The fold's whole answer: what the record holds, and what it could not.
@@ -105,16 +95,11 @@ pub struct Folded {
     ///
     /// **NOT A DIAGNOSTIC, AND NOT EMPTY MEANS SOMETHING WENT UNBILLED.** The previous release's
     /// budget cell accrues these; this record cannot represent them. A caller that ignores this
-    /// field is a caller whose two books disagree by exactly its contents.
+    /// field is a caller whose two books disagree by exactly its contents. **EMPTY IS THE WHOLE
+    /// FOLD**: `usage`'s lines plus this map are exactly the report that came in, class for class
+    /// and figure for figure, so `undeclared.is_empty()` is the caller's test for "nothing was
+    /// lost" and is read directly rather than through a predicate that restates the field.
     pub undeclared: BTreeMap<String, u64>,
-}
-
-impl Folded {
-    /// Whether everything the report carried made it into the record.
-    #[must_use]
-    pub fn whole(&self) -> bool {
-        self.undeclared.is_empty()
-    }
 }
 
 /// Fold a delivered unit's name-keyed report into the usage record the books settle against.

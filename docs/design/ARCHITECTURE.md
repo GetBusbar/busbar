@@ -127,7 +127,32 @@ them). Each axis is blind to the other two; only the kernel composes them.
   cost unit naming the admission unit is a Cargo library cycle, refused by name. The topology is the
   cost unit's, the walk is the door's, and a memo of the walk is the door's too. It is a MOVE: 105
   of the 138 lines are the retiring engine's own by identity, and `busbar-core/src/cost.rs` falls
-  471 -> 292 in the same transaction. 100 % (non-equivalent)
+  471 -> 292 in the same transaction. The third is
+  **`busbar_unit_usage::{report_from_units, CanonicalClass, Folded}`** (`src/accrual.rs`; 53
+  measured lines, declared at +55 with the two module-wiring lines its `lib.rs` needs, on both this
+  line and the union and on neither the kernel line nor the caps/contract one): THE ONE FOLD from a
+  delivered unit's name-keyed `class → quantity` report to the record the books settle against.
+  Three walks turned one delivered response into lines and they did not agree — the previous
+  release's budget cell folds the report WHOLE and skips only the zeros, while the composition
+  root's own copy walked a hard-coded list of four token class names and dropped everything else, so
+  a delivery metered in seconds landed as `{input, output, seconds}` on one book and
+  `{input, output}` on the other. It is not repaired by widening: the previous release's book is
+  keyed by an OPEN `String` and a usage line is keyed by `MeterClassId`, a `&'static str`, so a
+  class must be DECLARED in a caller's own const meter-class table before a line can exist for it,
+  and no expression mints one from a name read out of a map at runtime. Two books, two answers to
+  "what is a billable class". So the fold does not widen and does not drop: it HANDS BACK what it
+  cannot hold, by name and quantity (`Folded::undeclared`), and the caller settles what is declared
+  and can see what is not — a quantity that is not written down cannot be disputed, re-derived or
+  invoiced, which is the one direction a money defect may never go. It names no class and no unit of
+  measure; the declared table is the caller's, because a unit that named four of them is a unit that
+  has to be edited to meter a fifth. It is PART MOVE: 19 of the 53 lines are the root's own by
+  identity and `crates/busbar/src/root/units_llm.rs`'s `usage_record` is DELETED in the same commit
+  (-24 surface lines of walk; the four `busbar_api::UNIT_*` names and the empty-record fallback stay
+  in the root, read off `busbar_unit_cost::RESERVED_CLASSES`). Fourteen further lines of convenience
+  over public fields (`CanonicalClass::new`, which had no caller outside the crate's proofs, and
+  `Folded::whole`, a predicate restating `undeclared.is_empty()`) were DRAINED rather than declared:
+  a unit is charged for what a reader has to hold, and a helper with no caller is surface nobody
+  reads. 100 % (non-equivalent)
   mutation floor: Teller loop, WAL/group-commit, recovery, slice/lease, cost, usage, ledger.
 
 **Four crates the list did not name** (owner rulings, 2026-09-08; each is measured, not proposed —

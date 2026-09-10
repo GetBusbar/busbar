@@ -751,11 +751,11 @@ fn priced_posting(
     // every class the report carries; this record can only carry a class somebody DECLARED. A
     // report that carried one nobody declared would otherwise settle here for less than it accrued
     // there, silently and by exactly that class's quantity — which is the dual book, and the one
-    // direction a money defect must never go. Nothing on the llm path reports an undeclared class
-    // today, and the whole point of saying so is that the day one does, it is a line in the log and
-    // not a discrepancy somebody finds in a month's reconciliation.
+    // direction a money defect must never go. Nothing this leg is handed reports an undeclared
+    // class today, and the whole point of saying so is that the day one does, it is a line in the
+    // log and not a discrepancy somebody finds in a month's reconciliation.
     let folded = fold_report(token, &report.usage);
-    if !folded.whole() {
+    if !folded.undeclared.is_empty() {
         tracing::warn!(
             lane = %report.lane,
             provider = %report.provider,

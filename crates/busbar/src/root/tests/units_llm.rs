@@ -2484,8 +2484,8 @@ fn report(units: &[(&str, u64)]) -> busbar_substrate::billing::Usage {
 fn the_two_books_hold_the_same_report() {
     // THE RECORDED FIXTURES. The first four are what a token-metered delivery reports; the fifth is
     // a delivery metered in a unit that is not a token, which the neutral report is open for and the
-    // rate card is open for (`busbar_unit_cost::LaneRates`'s open classes) and which every
-    // non-llm plane's meter step produces.
+    // rate card is open for (`busbar_unit_cost::LaneRates`'s open classes) and which a meter step
+    // on a served path other than this leg's produces.
     let recorded = [
         ("plain delivery", report(&[("input", 11), ("output", 7)])),
         (

@@ -412,10 +412,10 @@ caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3511
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14933
+unit_total_ceiling = 14988
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23825
+union_ceiling = 23880
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -1422,3 +1422,78 @@ key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "RELAY onto FACE busbar_unit_cost::LaneRates::reserved_units_nanos: cost.rs adds derive_spend_minor_units and derive_spend_micros_units to the one pub(crate) use line that is the engine's seam onto the cost unit, and deletes its own reserved-four fold, its own divide to cents, its own fee multiply, its own floor and the private lane helper with them. Four spellings on one seam line in place of a second answer to what a bucket has spent, with every reader inside the crate going through that seam rather than naming the unit itself; the edge dies with busbar-core"
+
+# THE ONE FOLD, busbar_unit_usage::{report_from_units, CanonicalClass, Folded}
+# (keep-llm-usage-to-unit). One delivered response was turned into lines by THREE walks that did not
+# agree, and two of them were on the same served path: the previous release's budget cell folds the
+# name-keyed report WHOLE and skips only the zeros, while the composition root's `usage_record`
+# walked a hard-coded list of four token class names and dropped everything else. A delivery metered
+# in seconds landed as {input, output, seconds} on one book and {input, output} on the other. That is
+# not a widening away: the previous release's book is keyed by an OPEN `String` and a usage line is
+# keyed by `MeterClassId`, a `&'static str`, so a class must be DECLARED before a line can exist for
+# it and no expression mints one from a name read out of a map at runtime. The fold therefore hands
+# back what it cannot hold (`Folded::undeclared`) instead of losing it, which is the half the two
+# books needed and the reason this is a face rather than a lift.
+#
+# MEASURED at 55 surface lines, net: accrual.rs 53 + 2 lines of module wiring in that crate's lib.rs
+# (`pub mod accrual;` and the one `pub use`). Of accrual.rs's 53, NINETEEN ARE THE ROOT'S OWN LINES
+# BY IDENTITY — the signature, the accumulator, the walk, the zero skip, the five-field line build,
+# the loop close and the `Usage::report` tail of `usage_record`, deleted in the same commit
+# (crates/busbar/src/root/units_llm.rs, -24 surface lines of walk; the four hard-coded
+# `busbar_api::UNIT_*` names and the empty-record fallback are the five that stayed in the root, now
+# read off `busbar_unit_cost::RESERVED_CLASSES`). The remaining 34 are the FACE: the declared-table
+# vocabulary the walk no longer hard-codes (`CanonicalClass` and its `counted` constructor, 16), the
+# hand-back contract (`Folded`, 5, plus the 7-line filter that computes `undeclared` and the 3 lines
+# that return it), the `declared` parameter (1) and the two `use` lines a file the root did not have
+# needs (2). Root lines are in neither of these unions, so the whole 55 is declared here rather than
+# netted against a fall the ceiling cannot see.
+#
+# DRAINED rather than declared, before these numbers were written: 14 lines of convenience over
+# public fields. `CanonicalClass::new` (8) had no caller outside the crate's own proofs and the three
+# fields are `pub`, so the evidence cell names them; `Folded::whole` (6, with its `impl` block) was a
+# one-expression predicate restating `undeclared.is_empty()`, and its one caller and four assertions
+# read the field. A unit is charged for surface a reader has to hold, and a helper with no caller is
+# surface nobody reads.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 55
+because = "FACE busbar_unit_usage::{report_from_units, CanonicalClass, Folded} — THE ONE FOLD from a delivered unit's name-keyed report to the record the books settle against, measured at 53 surface lines in accrual.rs plus 2 lines of module wiring in busbar-unit-usage/src/lib.rs, and 0 anywhere else under the glob. 19 of the 53 are crates/busbar/src/root/units_llm.rs's own lines by identity: usage_record's signature, accumulator, walk, zero skip, five-field line build and Usage::report tail are DELETED in the same commit (-24 surface lines of walk in the root; the four hard-coded busbar_api::UNIT_* names and the empty-record fallback stay in the root, now read off busbar_unit_cost::RESERVED_CLASSES). Root lines are not in this union, so the move cannot be netted against them and is declared. The other 34 are the face the two books needed: a declared table the fold does not hard-code (CanonicalClass + counted) and the Folded::undeclared hand-back, without which a class the previous release's budget cell accrues is dropped silently by exactly its quantity, which is the dual book and the one direction a money defect must never go. 14 further lines of convenience over public fields (CanonicalClass::new, Folded::whole) were drained rather than declared"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 55
+because = "the same FACE as the unit_total_ceiling raise, busbar_unit_usage::{report_from_units, CanonicalClass, Folded}: +55 surface lines in busbar-unit-usage (accrual.rs 53 + 2 lines of lib.rs module wiring) and nothing in busbar-caps, busbar-contract or busbar-kernel, so the union rises by exactly the unit rise. accrual.rs defines no function the Teller loop's name-match reaches, so it is not counted a second time on the kernel line and kernel_ceiling does not move. The 24 surface lines the composition root gives up with usage_record are not in this union, and the 14 convenience lines drained from the fold are already out of the 55"
+
+# kind-isolation cell: crate `busbar`, kind `unit` — the composition root NAMES the fold where it
+# used to carry its own copy of the walk. Six spellings in crates/busbar/src/root/units_llm.rs
+# (`busbar_unit_usage::CanonicalClass` twice, `busbar_unit_usage::Folded` twice,
+# `busbar_unit_usage::report_from_units`, `busbar_unit_cost::RESERVED_CLASSES`), the manifest row
+# that declares the edge, and the byte-identity cell in root/tests/units_llm.rs that holds the two
+# books against each other by name. This is the GRANTED class — ARCHITECTURE.md 1.1/3.1, the
+# composition root is the one thing that may name all three axes — so what the row holds is the
+# COUNT, and the count it buys is the deletion of a second walk that disagreed with the book beside
+# it. The same commit takes `busbar` x `api` DOWN 121 -> 117 (the four busbar_api::UNIT_* constants
+# leave the money path) and `busbar` x `caps` DOWN 302 -> 300 (the root no longer builds usage lines
+# by hand); those falls are re-pinned in qa/kind-isolation.toml rather than left as slack, and they
+# are not netted against this rise because the matrix holds each cell exactly.
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 16
+because = "FACE busbar_unit_usage::{report_from_units, CanonicalClass, Folded}, the one fold: the composition root names the usage unit's fold, its declared-class type and its hand-back record in root/units_llm.rs where it used to carry its own hard-coded four-name walk, names busbar_unit_cost::RESERVED_CLASSES for the classes its card reserves in place of the previous release's busbar_api::UNIT_* key vocabulary, declares the edge in its manifest, and holds the byte-identity cell against both books in root/tests/units_llm.rs. 1177 -> 1193 on this cell; the 8 already declared beneath it are the CostModel face and are a different landing. The granted class per ARCHITECTURE.md 1.1/3.1 — a composition root may name all three axes — so the ratchet holds the number, not the permission, and the number buys the deletion of usage_record"
+
+# kind-isolation cell: crate `busbar-unit-usage`, kind `caps` — the fold names the capability crate
+# whose record it produces. Three spellings, all of them `use` lines: `accrual.rs` takes
+# `busbar_caps::{MeterClassId, QuantitySource, Usage, UsageError, UsageLine, UsageToken}` on one
+# line, and the six proofs beside it take `busbar_caps::step::MeterClassId` and
+# `busbar_caps::QuantitySource` on the two lines this crate's own files (`meter.rs`,
+# `tests/mod.rs`) already spell them on. A unit naming the capability crate is the unit rule
+# working rather than bending — ARCHITECTURE.md 1.1: a unit takes facts and the kernel's clock, and
+# `Usage`, `UsageLine` and `UsageToken` ARE the record and the token this fold exists to produce.
+# The edge is `unit -> caps`, which the matrix already carries at fifteen other unit crates.
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-usage.caps.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "FACE busbar_unit_usage::{report_from_units, CanonicalClass, Folded}, the one fold: accrual.rs names busbar_caps::{MeterClassId, QuantitySource, Usage, UsageError, UsageLine, UsageToken} on a single use line, and the six proofs beside it name busbar_caps::step::MeterClassId and busbar_caps::QuantitySource on the two separate lines this crate's meter.rs and tests/mod.rs already use for the same pair. 19 -> 22. The record a book settles against and the token it is minted under are busbar-caps' types and there is no other way to produce one; the unit -> caps edge is granted by ARCHITECTURE.md 1.1 and stands at fifteen other unit crates already"

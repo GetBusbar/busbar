@@ -51,7 +51,7 @@ fn lines_come_out_in_the_declared_order_and_not_the_maps() {
         .map(|line| line.class.as_str())
         .collect();
     assert_eq!(classes, vec![INPUT, OUTPUT, CACHE_READ]);
-    assert!(folded.whole(), "every class was declared");
+    assert!(folded.undeclared.is_empty(), "every class was declared");
 }
 
 /// A zero-quantity line is not a fact about anything. Both books on either side of the fold skip
@@ -68,7 +68,7 @@ fn a_zero_quantity_is_not_a_line_and_is_not_undeclared_either() {
     assert_eq!(folded.usage.lines().len(), 1, "only the reported class");
     assert_eq!(folded.usage.lines()[0].quantity, 11);
     assert!(
-        folded.whole(),
+        folded.undeclared.is_empty(),
         "a class reported at zero was not consumed, so nothing went unheld"
     );
 }
@@ -84,7 +84,10 @@ fn an_undeclared_class_comes_back_by_name_rather_than_vanishing() {
     let folded = report_from_units(&token(), &reported, &declared(&[INPUT, OUTPUT]))
         .expect("two lines fit any record");
 
-    assert!(!folded.whole(), "one class could not be carried");
+    assert!(
+        !folded.undeclared.is_empty(),
+        "one class could not be carried"
+    );
     assert_eq!(folded.undeclared, units(&[(SECONDS, 42)]));
 
     // The identity: lines plus undeclared equals the report, class for class and figure for figure.
@@ -108,7 +111,15 @@ fn each_line_carries_the_evidence_its_class_declared() {
         ptr: crate::LocatorPtr::new(INPUT),
     };
     let table = vec![
-        CanonicalClass::new(MeterClassId::new(INPUT), locator.clone(), true),
+        // The fields are public and the evidence is stated by naming them: a class whose figure is
+        // the node's own floor read at a locator is not the ordinary case and has no constructor of
+        // its own, because a constructor with no caller is surface a unit is charged for and nobody
+        // reads.
+        CanonicalClass {
+            class: MeterClassId::new(INPUT),
+            source: locator.clone(),
+            estimated: true,
+        },
         CanonicalClass::counted(MeterClassId::new(OUTPUT)),
     ];
     let folded = report_from_units(&token(), &units(&[(INPUT, 11), (OUTPUT, 7)]), &table)
@@ -130,5 +141,5 @@ fn an_empty_report_folds_to_an_empty_record() {
     let folded = report_from_units(&token(), &BTreeMap::new(), &declared(&[INPUT, OUTPUT]))
         .expect("no lines fit any record");
     assert!(folded.usage.lines().is_empty());
-    assert!(folded.whole());
+    assert!(folded.undeclared.is_empty());
 }
