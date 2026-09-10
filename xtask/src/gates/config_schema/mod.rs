@@ -64,8 +64,11 @@ pub const DEFAULT_BASELINE_REF: &str = "HEAD";
 /// The regen command, spelled once so every row that suggests it suggests the same thing.
 const REGEN: &str = "cargo xtask gate config-schema --write";
 
-/// The FLOOR under the tracked source set. The set is a fixed list of eleven entries today, two of
-/// them directories; a render built from a handful of files is a render that lost most of the
+/// The FLOOR under the tracked source set. The set is eleven entries today: eight fixed paths, the
+/// two plane grammar directories `plane_dir` resolves, and one grammar directory per core-kind
+/// crate that [`schema::core_roots`] censuses — so the count RISES as the config layer is carved
+/// out of `busbar-core`, and can never fall below what one core crate contributed. A render built
+/// from a handful of files is a render that lost most of the
 /// config grammar, and "no delta" is the passing answer to every question this gate asks. The floor
 /// is deliberately far below today's count — it catches a collapse, not a refactor.
 const MIN_TRACKED_FILES: usize = 8;
