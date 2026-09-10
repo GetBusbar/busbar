@@ -10,7 +10,7 @@
 //! the plane names this crate in exactly that one binding line and nowhere else.
 
 use super::TestApp;
-use busbar_api::{AuditRecord, MeteringRow, Store, VirtualKey};
+use busbar_contract::store::{AuditRecord, MeteringRow, Store, VirtualKey};
 use busbar_substrate::governance::signing::TokenSigner;
 use busbar_substrate::governance::NewKeySpec;
 use busbar_substrate::plane::calllog::CallRecorded;

@@ -11,9 +11,6 @@
 //! - **hooks** — the [`RoutingPolicy`] trait (decide/transform/notify + configure/describe) and
 //!   the read-only projections it is invoked with — owned by `busbar-contract` now and re-exported
 //!   here while this crate drains.
-//! - **store** — the [`Store`] trait a `db` plugin implements, plus the durable-store records
-//!   ([`VirtualKey`], [`UsageLedger`], [`CredentialMeta`], [`CredentialSecret`], …) it reads and
-//!   writes.
 //! - **secret** - the [`SecretModule`] trait a `kind: secret` plugin implements (a config secret
 //!   reference's `settings` map in, the secret bytes out; fail-closed).
 //!
@@ -65,13 +62,3 @@ pub use busbar_secret_grammar::{
 // The signal catalog is the CONTRACT's now (it moved with the hooks-kind face); re-exported here
 // while busbar-api drains, so every reader keeps its spelling and resolves to one definition.
 pub use busbar_contract::{Signal, SignalBag, SignalValue};
-// THE STORE-KIND FACE IS THE CONTRACT'S (`busbar_contract::store`): the records and the replay
-// face the store plugins and the loader are written against moved there verbatim. Re-exported
-// here while this crate drains; the drain line is the reader: every `busbar_api::<name>` below
-// becomes `busbar_contract::store::<name>`, and this block goes with the crate.
-pub use busbar_contract::store::{
-    register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,
-    ModelTokens, ModelTokensDelta, PlaneDisposition, PlaneRecord, PlaneRequestCtx, PlaneSelector,
-    ScopeRef, SecretForm, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
-    RESERVED_UNITS, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
-};

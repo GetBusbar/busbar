@@ -18,7 +18,7 @@
 //! a path) so the bytes that were hash/signature-checked are byte-for-byte the bytes loaded — closing
 //! the time-of-check/time-of-use gap a `verify(path)` + `dlopen(path)` pair would leave open.
 
-use busbar_api::{
+use busbar_contract::store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneRecord,
     PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };

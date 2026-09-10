@@ -24,7 +24,7 @@
 //! outside those four has no column in a 1.5.x store and is dropped on the way out — the caller
 //! warns once when that actually happens, so the loss is never silent.
 
-use busbar_api::{
+use busbar_contract::store::{
     ModelTokens, ModelTokensDelta, UsageDelta, UsageLedger, RESERVED_UNITS, UNIT_CACHE_READ,
     UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
 };

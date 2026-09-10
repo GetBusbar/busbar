@@ -10,7 +10,7 @@
 
 use crate::mcp::client::catalogue::{ServerCatalogue, ToolDef, TransportPin};
 use crate::mcp::client::identity::{ServerId, ToolKey};
-use busbar_api::{ScopeRef, VirtualKey};
+use busbar_contract::store::{ScopeRef, VirtualKey};
 
 /// A server id that is known-good, so a test asserting something else does not fail on a name.
 pub(super) fn sid(id: &str) -> ServerId {

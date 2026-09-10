@@ -55,7 +55,8 @@ use super::client::pool::McpConnectionPool;
 use super::client::ssrf::SsrfPolicy;
 use super::client::wire::{TransportError, WireLeg};
 use super::inputreq::{Ask, Round};
-use busbar_api::{Redacted, VirtualKey};
+use busbar_api::Redacted;
+use busbar_contract::store::VirtualKey;
 use std::sync::Arc;
 use std::time::Duration;
 

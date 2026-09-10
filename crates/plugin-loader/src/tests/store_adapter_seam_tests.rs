@@ -4,7 +4,7 @@
 //! What the migration's head read does with a store that will not answer.
 
 use super::*;
-use busbar_api::{
+use busbar_contract::store::{
     AuditRecord, MeteringDelta, MeteringRow, Store as AbiStore, StoreError, StoreResult,
     UsageLedger, VirtualKey,
 };

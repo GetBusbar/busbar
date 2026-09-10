@@ -10,7 +10,7 @@
 //! single filter disabled would all still be green.
 
 use super::*;
-use busbar_api::{ScopeRef, VirtualKey};
+use busbar_contract::store::{ScopeRef, VirtualKey};
 use busbar_substrate::trust::Observation;
 use serde_json::json;
 use std::collections::BTreeMap;

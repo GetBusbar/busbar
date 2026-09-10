@@ -45,7 +45,7 @@ use super::upstream_support::{
 use crate::mcp::test_engine::*;
 use crate::record::{McpCallRecord, KIND_CALL};
 use crate::testkit::TestAppMcpExt;
-use busbar_api::{PlaneSelector, Store};
+use busbar_contract::store::{PlaneSelector, Store};
 use busbar_substrate::audit::vocab::{OUTCOME_DISPATCHED, OUTCOME_REFUSED, REASON_UPSTREAM_FAILED};
 use busbar_substrate::plane::calllog::CallRecorded;
 use std::path::PathBuf;

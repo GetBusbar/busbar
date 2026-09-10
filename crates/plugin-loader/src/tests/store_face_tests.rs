@@ -7,7 +7,6 @@
 
 use crate::store_adapter::StoreAdapter;
 use crate::store_face::{StoreFace, LEGACY_CODE};
-use busbar_api::{Store as AbiStore, StoreError, StoreResult};
 use busbar_contract::error::ErrorClass;
 use busbar_contract::ids::{PrincipalId, RecordSchemaId, Registration, SessionId};
 use busbar_contract::kinds::{RecordBytes, SliceGrant, Store as Face};
@@ -15,6 +14,7 @@ use busbar_contract::plugin::{Kind, Plugin};
 use busbar_contract::store::{
     AuditRecord, MeteringDelta, MeteringRow, PlaneRecord, PlaneSelector, UsageLedger, VirtualKey,
 };
+use busbar_contract::store::{Store as AbiStore, StoreError, StoreResult};
 use std::sync::{Arc, Mutex};
 
 /// A 1.5.5 store that remembers what it was asked, so a test can assert on the ARGUMENTS the

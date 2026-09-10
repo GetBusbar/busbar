@@ -8,7 +8,6 @@ description = "The default in-memory (RAM) backend for busbar's durable governan
 license = "Apache-2.0"
 
 [dependencies]
-busbar-api = { path = "../api" }
 # The record half of the store protocol. `busbar_contract::kinds::Store` declares `record_put`,
 # `record_get` and `record_scan` for a plane's kernel-held durable records, and this backend answers
 # them at the contract's own spelling. A plugin-kind crate may name the contract freely (the

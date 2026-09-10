@@ -6,7 +6,7 @@
 //! tests-in-their-own-file convention.
 
 use super::*;
-use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::store::{PlaneRecord, PlaneSelector, StoreResult};
 
 // The LEGACY v1 (pipe-join) GENESIS event and its successor, frozen — typed `TaskEventRow` JSON
 // bodies EXACTLY as a pre-fix deployment persisted them: no `digest_version` field, so serde

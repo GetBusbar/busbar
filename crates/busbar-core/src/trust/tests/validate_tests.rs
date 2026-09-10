@@ -23,7 +23,7 @@ use crate::trust::validate::{
 };
 use crate::trust::Observation;
 use crate::trust::{Approval, PinnedArtifact, Sighting, TrustState};
-use busbar_api::{ScopeRef, VirtualKey};
+use busbar_contract::store::{ScopeRef, VirtualKey};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::time::Duration;

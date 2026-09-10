@@ -41,7 +41,8 @@ use crate::store::{
 };
 use crate::trust::validate::{Lapsed, Standing};
 use crate::trust::TrustState;
-use busbar_api::{AuthPrincipal, IdentityRefusal, PlaneRequestCtx, VirtualKey};
+use busbar_api::{AuthPrincipal, IdentityRefusal};
+use busbar_contract::store::{PlaneRequestCtx, VirtualKey};
 use busbar_plugin::hot::{AdmissionId, Signal};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};

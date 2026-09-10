@@ -10,7 +10,7 @@
 //! anti-enumeration contract is carried up from the engine unchanged; this module only stamps the
 //! session's `(owner, id)` into the row and drives open → bump → close.
 
-use busbar_api::{PlaneDisposition, PlaneRecord, StoreResult};
+use busbar_contract::store::{PlaneDisposition, PlaneRecord, StoreResult};
 use busbar_substrate::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, Mutation, RehydrateCounts,
     RehydrateOutcome, ScopedMutateError, SealedEvent, SubmitRecord, SweepBounds,

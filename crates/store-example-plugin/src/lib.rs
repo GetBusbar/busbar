@@ -32,7 +32,7 @@
 //! whole point of the durable mode is that the rows are on disk, and a plugin that quietly opens a
 //! RAM store because it could not parse the line naming the file has taken that away silently.
 
-use busbar_api::{
+use busbar_contract::store::{
     MeteringDelta, MeteringRow, PlaneDisposition, PlaneRecord, PlaneSelector, Store, StoreError,
     StoreResult, UsageLedger, VirtualKey,
 };

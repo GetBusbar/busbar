@@ -6,7 +6,7 @@
 //! credential is lost on restart; configure a durable backend (e.g. `store-sqlite`/`store-postgres`)
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 
-use busbar_api::{
+use busbar_contract::store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger,
     VirtualKey,

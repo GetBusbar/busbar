@@ -24,7 +24,7 @@ use crate::runtime::scope::rehydrate_sessions;
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, SessionHandle, VoiceRuntime};
 use crate::topology::telephony::{begin_telephony, g711_config};
 use crate::topology::SessionBudget;
-use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::store::{PlaneRecord, PlaneSelector, StoreResult};
 use busbar_plugin::cold::http_endpoint::{RouteAuth, RouteMethod};
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;
 use busbar_substrate::plane::registry::{BuildCtx, CardIssuer, PlaneBootCtx, RestoredSummary};

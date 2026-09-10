@@ -18,7 +18,7 @@
 //! not belong inside the src-level unit-test file, per the repo's test-locality convention
 //! (`docs/code-layout.md`).
 
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store, VirtualKey};
+use busbar_contract::store::{PlaneDisposition, PlaneRecord, PlaneSelector, Store, VirtualKey};
 use busbar_store_memory::MemoryStore;
 
 fn plane_record(kind: &str, id: &str, seq: u64, body: Vec<u8>) -> PlaneRecord {
@@ -55,7 +55,7 @@ fn key(id: &str, created_at: u64) -> VirtualKey {
 /// returned verbatim": empty, large (bigger than any plausible inline-optimization threshold),
 /// invalid-UTF-8 (0xFF/0xFE are never valid UTF-8 lead bytes), a NUL byte in the middle, and a
 /// multi-byte UTF-8 string. `Vec<u8>` is the store's actual data model for a plane record's value
-/// (see `busbar_api::store::PlaneRecord::body` and `Store::get_plane_record`'s doc: "the neutral
+/// (see `busbar_contract::store::PlaneRecord::body` and `Store::get_plane_record`'s doc: "the neutral
 /// `get_task`") — this is the store's real binary-value path, not `CredentialSecret::secret` or
 /// `VirtualKey` fields, which are `String` (UTF-8 only) by the trait's own type signature.
 #[test]

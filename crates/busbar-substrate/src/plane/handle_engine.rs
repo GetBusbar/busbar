@@ -74,7 +74,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::plane::store::PlaneStore;
-use busbar_api::{PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::store::{PlaneRecord, PlaneSelector, StoreError, StoreResult};
 
 /// The NEUTRAL projection of a plane row the engine reads to run its mechanics WITHOUT decoding the
 /// plane's opaque body: who the handle belongs to (the anti-enumeration scope key), when it last

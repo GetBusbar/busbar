@@ -19,6 +19,10 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-api = { path = "../api" }
+# THE STORE-KIND FACE, NAMED WHERE IT LIVES. `busbar_contract::store` holds the records and the
+# 1.5.5 replay face this crate reads and writes; `busbar-api` re-exported them while it drained and
+# this line is the drain arriving. No new closure: `busbar-api` already links `busbar-contract`.
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin-sdk = { path = "../plugin-sdk" }
 # NO SIBLING INSTANCE. This crate is the copy-me template for `kind: store`, so it names no other
 # store — its in-process backend is its own (`src/ram.rs`). See PLUGIN-TREE.md §4.

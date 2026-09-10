@@ -55,7 +55,9 @@ use indexmap::IndexMap;
 
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord};
 use crate::plane::store::{decode, encode, PlaneStore};
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult};
+use busbar_contract::store::{
+    PlaneDisposition, PlaneRecord, PlaneSelector, StoreError, StoreResult,
+};
 
 /// A RECORD A JOURNAL CAN PERSIST. A plane's chained record type implements this to say TWO things
 /// the generic journal cannot know: which neutral store `kind` its rows are tagged with, and how one

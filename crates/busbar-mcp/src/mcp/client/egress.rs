@@ -46,7 +46,8 @@
 //! boundary rather than a habit.
 
 use super::identity::{ServerId, ToolKey};
-use busbar_api::{Redacted, VirtualKey};
+use busbar_api::Redacted;
+use busbar_contract::store::VirtualKey;
 use busbar_substrate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};
 
 /// How ONE upstream server is authenticated to. Per server, never a plane-wide default: every MCP

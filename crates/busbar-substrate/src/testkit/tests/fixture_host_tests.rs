@@ -10,7 +10,7 @@
 
 use super::{FixtureHost, LedgerUsage};
 use crate::plane_host::AdmissionHost;
-use busbar_api::{PlaneRequestCtx, VirtualKey};
+use busbar_contract::store::{PlaneRequestCtx, VirtualKey};
 use std::sync::Arc;
 
 const PROTO: &str = "test-proto";

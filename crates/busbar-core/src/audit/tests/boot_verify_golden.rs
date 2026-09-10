@@ -40,7 +40,7 @@
 //! failing is the tripwire working.
 
 use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
-use busbar_api::{AuditRecord, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::store::{AuditRecord, PlaneRecord, PlaneSelector, StoreResult};
 
 /// The one field this golden reads back off a frozen `call`-stream body — the tail digest. Decoded
 /// through a NEUTRAL local shape (matching the on-disk field name) so this core test names no plane

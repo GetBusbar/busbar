@@ -445,7 +445,6 @@ dependencies = [
 name = "busbar-a2a-codec"
 version = "1.6.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "serde",
  "serde_json",
@@ -888,7 +887,6 @@ dependencies = [
 name = "busbar-plugin-testkit"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "serde",
  "serde_json",
@@ -918,6 +916,7 @@ name = "busbar-store-example-plugin"
 version = "1.5.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin-sdk",
  "busbar-plugin-testkit",
  "libc",
@@ -929,7 +928,6 @@ dependencies = [
 name = "busbar-store-memory"
 version = "1.5.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "busbar-plugin-testkit",
 ]
@@ -1291,7 +1289,6 @@ dependencies = [
 name = "busbar-voice-codec"
 version = "1.6.0"
 dependencies = [
- "busbar-api",
  "busbar-contract",
  "busbar-substrate-values",
  "bytes",

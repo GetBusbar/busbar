@@ -39,7 +39,7 @@ use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, LiveHostFactory, PlaneSlots};
 use crate::store::BreakerState;
 use crate::trust::validate::GovResolve;
-use busbar_api::{AuditRecord, MeteringRow, Store, VirtualKey};
+use busbar_contract::store::{AuditRecord, MeteringRow, Store, VirtualKey};
 use busbar_plugin::hot::GuardClass;
 use std::any::Any;
 use std::collections::BTreeMap;

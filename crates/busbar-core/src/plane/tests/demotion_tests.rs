@@ -25,7 +25,7 @@
 use crate::plane::quarantine::{DemotionRecord, DemotionRow};
 use crate::plane::store::{decode, KIND_DEMOTION};
 use crate::test_support::plugin_store::{durable_cfg, open_plugin};
-use busbar_api::{PlaneSelector, Store, StoreResult};
+use busbar_contract::store::{PlaneSelector, Store, StoreResult};
 
 /// TEST-ONLY named-vocabulary demotion-store extension — the demotion twin of the call-log test-ext,
 /// kept beside the battery that uses it now that the neutral `StoreNamedTestExt` is gone. It reads the

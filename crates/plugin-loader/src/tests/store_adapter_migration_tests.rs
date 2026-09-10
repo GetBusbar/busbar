@@ -21,7 +21,7 @@
 use super::store_adapter_tests::cached_published_sqlite_tarball;
 use super::*;
 use crate::store_adapter::{LegacyReadPlan, StoreAdapter, BILLABLE_REQUESTS_CLASS};
-use busbar_api::{
+use busbar_contract::store::{
     AuditRecord, MeteringDelta, MeteringRow, ModelTokens, Store as AbiStore, StoreError,
     StoreResult, UsageLedger, VirtualKey,
 };

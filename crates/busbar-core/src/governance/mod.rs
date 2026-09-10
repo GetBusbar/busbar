@@ -966,9 +966,9 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 
 // `Store` and `VirtualKey` were re-exported `pub` for the extracted A2A plane's in-test store
 // doubles and the relocated LLM engine's pool-credential lowering. Neither reaches this path any
-// more — every caller outside busbar-core names `busbar_api::{Store, VirtualKey}` directly — so the
+// more — every caller outside busbar-core names `busbar_contract::store::{Store, VirtualKey}` directly — so the
 // two join the crate-internal list below rather than standing as a second public name for one type.
-pub(crate) use busbar_api::{
+pub(crate) use busbar_contract::store::{
     CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, SecretForm, Store, StoreError,
     StoreResult, UsageDelta, VirtualKey,
 };

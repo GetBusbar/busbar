@@ -27,7 +27,7 @@
 //! usage ledger does not), and a monotonic `revision` so incremental hydration works. Those three
 //! are what a copied template must carry; the rest a real backend supplies itself.
 
-use busbar_api::{
+use busbar_contract::store::{
     MeteringDelta, MeteringRow, Store, StoreError, StoreResult, UsageDelta, UsageLedger, VirtualKey,
 };
 use std::collections::HashMap;

@@ -9,15 +9,11 @@ description = "Shared kind-level contract test helpers for every first-party bus
 license = "Apache-2.0"
 
 [dependencies]
-# OPTIONAL, and off by default: only the `store`-kind plugins need it, and pulling `busbar-api`
-# into every plugin's dev tree (hook/auth/secret alike) for a module they never call would be a
-# gratuitous compile cost. No cycle — `busbar-api` depends on nothing in this crate.
-busbar-api = { path = "../api", optional = true }
 # THE STORE-KIND FACE, NAMED WHERE IT LIVES. `busbar_contract::store` holds the records and the
 # 1.5.5 replay face the conformance suite is written against; `busbar-api` re-exported them while
-# it drained and this line is the drain arriving. OPTIONAL for the same reason `busbar-api` above
-# is: the suite it feeds is behind `store`, and a hook or auth plugin's dev tree must not pay to
-# compile a module it never calls.
+# it drained and this line is the drain arriving — the `busbar-api` edge it replaces is deleted
+# here. OPTIONAL for the reason that one was: the suite it feeds is behind `store`, and a hook or
+# auth plugin's dev tree must not pay to compile a module it never calls.
 busbar-contract = { path = "../busbar-contract", optional = true }
 # Needed only by the neutral plane-record conformance helpers, which serialize a typed row into the
 # opaque `PlaneRecord` body exactly as core does — off unless the `store` feature is on.
@@ -28,4 +24,4 @@ serde_json = { workspace = true, optional = true }
 default = []
 # The `Store` contract conformance suite (`store_conformance`). A store plugin turns this on in its
 # `[dev-dependencies]`.
-store = ["dep:busbar-api", "dep:busbar-contract", "dep:serde", "dep:serde_json"]
+store = ["dep:busbar-contract", "dep:serde", "dep:serde_json"]
