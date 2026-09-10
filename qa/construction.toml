@@ -130,6 +130,101 @@ contract_caps = 3478
 grammar = 388
 contract_transport = 845
 
+# ── declared raises: the A3+ TRIAGE stack (docs/design/1.6.0-a3plus-triage.md) ────────────────────
+# Fourteen matrix cells rise on this branch, and every one of them is the composition root or a
+# transport — the two kinds `WIRE_PERMITTED_KINDS` permits to NAME what they compose. A root that
+# boots one more unit, and a transport that states one more wire shape, are the only two places in
+# this tree where naming another kind is the job rather than the leak. Each entry states the file,
+# the exact path, both numbers, and WHICH kept commits compose what. Each expires by itself the
+# moment the base carries the number; a stale entry is refused by the row that reads this table.
+#
+# The eight cells that rise in crates NOT on that permitted list are NOT declared here. They are
+# carried RED and named in the hand-back: a rise in a crate that may not name another kind is drain
+# work or a dropped commit, never a declaration.
+[gate.ceiling_raises."cell.1.count"]
+file = "qa/kind-isolation.toml"
+from = 122
+to = 149
+because = "busbar × api: the root's own boot and its root-leg batteries name the api kind 27 more times — 65d4d4a75 (the busbar-mcp root-leg meter gap is NAMED at the root instead of failing blind), c60f56061 (the opening-balance migration and its battery), fb4f9938e (the flat fee decided at the door). The root composes these legs; naming what it composes is the composition root's job"
+
+[gate.ceiling_raises."cell.3.count"]
+file = "qa/kind-isolation.toml"
+from = 302
+to = 315
+because = "busbar × caps: 13 more caps names, all from the root composing units it did not compose before — b0d63200a (the transport-key unit provisions the configured listeners at boot), 2a49cdd77 (the end of an abandoned unit is carried to the book that settles it), 334579bb3/1e677cba1 (a posting and its record name the card that priced them). The root holds the caps its units are handed"
+
+[gate.ceiling_raises."cell.6.count"]
+file = "qa/kind-isolation.toml"
+from = 1063
+to = 1105
+because = "busbar × control: 42 more control names in the root's admin arm — 7cd960a6e (the admin loop says who admits an operator today, and main says which arm it takes), 2da0b718c (the admin wrap stamps an arrival off the node's clock), b2959d310 (a node with no store says so). The admin arm is composed AT the root, and the root is permitted to name it"
+
+[gate.ceiling_raises."cell.8.count"]
+file = "qa/kind-isolation.toml"
+from = 158
+to = 159
+because = "busbar × kernel: one more kernel name — 2a49cdd77 hands the abandoned unit's end to the kernel's settle seam from the root. One composition site, one name"
+
+[gate.ceiling_raises."cell.9.count"]
+file = "qa/kind-isolation.toml"
+from = 98
+to = 101
+because = "busbar × legacy: 3 more legacy names at the root, all in the root's LLM leg — fb4f9938e's units_llm door-side fee and its battery still reach the legacy llm walk while that crate lives. This is the ONE raise here that deletion-first should shrink rather than declare, and it is declared only because the legacy crate is still in the graph; it retires with busbar-llm"
+
+[gate.ceiling_raises."cell.10.count"]
+file = "qa/kind-isolation.toml"
+from = 1798
+to = 1861
+because = "busbar × plane: 63 more plane names at the root — b25dc4eef/f71a43645/55f3e0a61/78a22da0d/1e677cba1/334579bb3 (the voice session's end, its reservation give-back, the two units under one key, and the card that priced them, all proved from the root's units_voice battery) and c896c4f28 (the node's one book ships through the configured store). The root mounts the planes; it may name them"
+
+[gate.ceiling_raises."cell.11.count"]
+file = "qa/kind-isolation.toml"
+from = 28
+to = 30
+because = "busbar × plugin-tooling: 2 more plugin-tooling names — c60f56061's migration leg and the cli_validate battery it extends. The root is the only place a plugin is composed into a node"
+
+[gate.ceiling_raises."cell.12.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 8
+because = "busbar × secret: 3 more secret names — b0d63200a provisions the configured listeners at boot and so names the transport-key unit's secret slot in root/transports.rs, and the migration corpus battery follows it. Boot-time secret resolution is the root's own"
+
+[gate.ceiling_raises."cell.15.count"]
+file = "qa/kind-isolation.toml"
+from = 939
+to = 1014
+because = "busbar × transport: 75 more transport names — 35662c252 (the boot check reads the stack the transports DECLARE, so the root's transport_composed_over_consistency battery names every declared wire), b0d63200a (the listeners provisioned at boot), d4f2bad96 (the two-listener hazard is a test). Naming what it composes is exactly what WIRE_PERMITTED_KINDS permits the root to do"
+
+[gate.ceiling_raises."cell.16.count"]
+file = "qa/kind-isolation.toml"
+from = 1169
+to = 1198
+because = "busbar × unit: 29 more unit names — 7cd960a6e/b2959d310 (the admin arm's units), b0d63200a (the transport-key unit), 2a49cdd77 (the settling unit's end). Every one is a unit the ROOT composes into the node"
+
+[gate.ceiling_raises."cell.259.count"]
+file = "qa/kind-isolation.toml"
+from = 12
+to = 13
+because = "busbar-transport-tcp × transport: one more — 9c767e284 names the tcp close cell for the close it proves, since tcp has no half-close. A transport stating its own wire's shape is the permitted case"
+
+[gate.ceiling_raises."cell.261.count"]
+file = "qa/kind-isolation.toml"
+from = 33
+to = 39
+because = "busbar-transport-tls × contract-transport: 6 more — dc466bbe3 gives up on an upstream that never answers the connect, which is stated through the contract-transport dial shape. The transport names the wire contract it implements"
+
+[gate.ceiling_raises."cell.264.count"]
+file = "qa/kind-isolation.toml"
+from = 63
+to = 78
+because = "busbar-transport-tls × transport: 15 more, all in the crate's own battery — 597ae56e9 (every transport cell that awaits is BOUNDED, so a park-forever is red) and 3b62dcf22 (guards that no cell could distinguish now have cells that go red when they are deleted). A transport proving its own wire is the permitted case"
+
+[gate.ceiling_raises."cell.268.count"]
+file = "qa/kind-isolation.toml"
+from = 165
+to = 179
+because = "busbar-transport-ws × transport: 14 more, all in the crate's own battery — 597ae56e9 (bounded awaits), b5bdcdaf6 (timing bounds are wall-clock literals, not the constant under test compared with itself) and 3b62dcf22. A transport proving its own wire is the permitted case"
+
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
 why = """Exactly one function in the workspace may send the egress request for a unit. Two twins \
