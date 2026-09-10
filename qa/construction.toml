@@ -135,31 +135,62 @@ busbar-voice = ["busbar-voice-codec"]
 # striking one `[[cell]]` renumbers every later row. `because` is at least 80 characters and names
 # the face.
 
-# NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting:
-# every entry that ever stood here was struck once the base carried it.
+# HISTORY. `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47
+# calibration while the commit that needed it was in flight. That commit LANDED: the base carried
+# 47, the rise the row was written to excuse no longer existed, and `ceiling-rose` refused the
+# declaration as stale -- which is the expiry working exactly as the paragraph above describes it.
+#
+# THE SECOND LEGITIMATE RAISE, ruled by the owner for 1.6.0: a NEW-ARCHITECTURE FACE. The contract
+# pair's surface is pinned at zero slack, and a face the architecture names cannot be paid for out
+# of a surface that has nothing deletable in it. So each such face lands with a declaration here
+# that names the FACE and its MEASURED lines, and ARCHITECTURE.md section 1.1 is amended in the
+# same commit to the new total. The ratchet stays: nothing else rises, and the entry expires the
+# way every entry does -- the moment a later commit re-pins the ceiling below the base, it is
+# struck.
 
 # THE HOOKS-KIND FACE MOVED INTO THE CONTRACT (busbar-api -> busbar-contract, Track 4's hooks
 # step pulled forward so the hook policy engine is written against the contract and never against
 # the crate being deleted). `hooks.rs` + `signal.rs` are 291 surface lines the contract did not
 # carry at the base; the three ceilings that count the contract rise by exactly that, and by
-# nothing else. Each declaration is one edit and expires the moment it lands: the base then carries
-# the new number and `ceiling-rose` refuses the entry as stale. THE STRIKE IS OWED by the next
-# commit on the integration line after this one lands ("strike the three
-# `[gate.ceiling_raises]` entries below; re-pin nothing, the numbers are already exact").
-[gate.ceiling_raises."gate.surface_ceilings.contract_caps"]
-from = 3478
-to = 3769
-because = "the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now: 291 surface lines moved in from busbar-api, verbatim, so the plugin-visible surface of the contract pair is measured at 3769 and pinned there"
+# nothing else. Each entry is one delta and expires the moment it lands.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 291
+because = "the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now: 291 surface lines moved in from busbar-api, verbatim, so the plugin-visible surface of the contract pair is measured with them and pinned there"
 
-[gate.ceiling_raises."rules.loc-ceilings.caps_contract_ceiling"]
-from = 3480
-to = 3774
-because = "the same move under the loc-ceilings counting rule: busbar-caps 1153 + busbar-contract 2621 = 3774, the contract having taken the hooks-kind face from busbar-api"
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 294
+because = "the same move under the loc-ceilings counting rule: busbar-contract took the hooks-kind face from busbar-api, 294 lines as that rule counts them (the surface script reads 291 of the same lines)"
 
-[gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
-from = 23465
-to = 23759
-because = "the union row sums caps/contract; it rises by the same 294 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged)"
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 294
+because = "the union row sums caps/contract; it rises by the same 294 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged by the hooks-kind face move)"
+
+# The virtual-key directory face (`busbar_contract::kinds::{KeyScope, KeyFacts,
+# VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
+# posture, the revocation denylist and the operator credential digest, inside the loop. It
+# measures 19 surface lines (`scripts/loc-surface.py`), and the three entries below are the SAME
+# nineteen lines counted three times -- once by the surface script, once by the loc-ceilings
+# rule's own counter, and once more in the kernel + contract + unit union that the loc-ceilings
+# rule sums. The face moved home from the composition root
+# (`crates/busbar/src/root/auth_bindings.rs`), where it was a port declared in the one place the
+# design does not list as a home for one.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 19
+because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: 19 surface lines measured by scripts/loc-surface.py, moved home from the composition root and widened to the key's posture"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 19
+because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: the same 19 surface lines as the surface-ceiling raise, as the loc-ceilings rule counts them"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 19
+because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 19 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms"
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -167,7 +198,7 @@ because = "the union row sums caps/contract; it rises by the same 294 lines the 
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3769
+contract_caps = 3788
 grammar = 388
 contract_transport = 845
 
@@ -388,12 +419,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3774
+caps_contract_ceiling = 3793
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23759
+union_ceiling = 23778
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -562,7 +593,7 @@ plane_file = "crates/busbar-contract/src/plane.rs"
 transport_file = "crates/busbar-contract/src/transport.rs"
 traits = [
   "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
-  "Plane", "SessionPlane", "Transport",
+  "Plane", "SessionPlane", "Transport", "VirtualKeyDirectory",
 ]
 max_defaulted = 0
 
