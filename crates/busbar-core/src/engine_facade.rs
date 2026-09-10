@@ -66,7 +66,9 @@ pub use crate::proxy::{
 // no longer surfaces them on the DOWN facade.
 pub use crate::proxy::build_egress_client;
 // ── the outbound credential resolve + boot prebuild + SSRF posture (egress_auth) ─────────────────
-pub use crate::egress_auth::{prebuild_auth, resolve, CredentialProvider, MetadataSsrfPolicy};
+pub use busbar_substrate::egress_auth::{
+    prebuild_auth, resolve, CredentialProvider, MetadataSsrfPolicy,
+};
 // ── the per-shard upstream client fan-out (state) ────────────────────────────────────────────────
 // `ProbeSchedule` (the active-probe schedule) RELOCATED with the engine + `health.rs` into
 // `busbar-llm` (1.6.0 money-path Phase 3-4 C): the plane names its OWN schedule, so core no longer

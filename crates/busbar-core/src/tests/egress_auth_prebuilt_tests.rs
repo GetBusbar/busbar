@@ -9,8 +9,8 @@
 //! deliberately DIFFERENT contexts — and proves the converse for the signers (bedrock SigV4, the
 //! OAuth minters) by asserting they refuse to prebuild at all.
 
-use crate::egress_auth::{prebuild_auth, resolve};
 use crate::proto::{convert_headers, SigningContext};
+use busbar_substrate::egress_auth::{prebuild_auth, resolve};
 
 /// Seed the core-test built-in `ProtocolDecl`s into the shared substrate registry the relocated
 /// `resolve` reads. `resolve` now lives in `busbar_substrate::egress_auth` and calls substrate's
