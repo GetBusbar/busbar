@@ -8,6 +8,7 @@ use busbar_contract::ids::{
     AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
 };
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::wire::StatusAt;
 
 use crate::{claims, facts, ops, records, McpPlane};
 
@@ -153,6 +154,14 @@ impl PlaneMeta for McpPlane {
     // Nothing paces this plane's write path. Events are written as fast as they are produced, which
     // is what the codec does and what this crate must not change.
     const EGRESS_PACING_FACT: Option<&'static str> = None;
+    // WHERE THIS DIALECT REPORTS THE STATUS OF A UNIT. A JSON-RPC exchange says whether it was
+    // answered on the FIRST frame that comes back — the reply document, or the first event of a
+    // tool call's stream — and both bindings of this protocol agree about that, which is why one
+    // declaration covers both transports this plane claims: where the status is reported is a fact
+    // about the dialect, and the wire is only how the frame gets there. A tool call that dies
+    // part-way through its stream contradicts a first frame that already said otherwise, and that
+    // contradiction is the kernel's to settle, not this plane's to hide.
+    const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }
 

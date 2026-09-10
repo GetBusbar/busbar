@@ -14,6 +14,7 @@ use busbar_contract::ids::{
     AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
 };
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::wire::StatusAt;
 
 use crate::claims;
 use crate::VoicePlane;
@@ -302,5 +303,11 @@ impl PlaneMeta for VoicePlane {
     // downlink audio must be paced against playback position.
     const INTERRUPT_FACT: Option<&'static str> = Some(FACT_INTERRUPT_AUDIO_PLAYED_MS);
     const EGRESS_PACING_FACT: Option<&'static str> = Some(EGRESS_PACING_FACT_KEY);
+    // WHERE THIS DIALECT REPORTS THE STATUS OF A UNIT. A duplex session says whether it was opened
+    // on the FIRST frame the caller gets back, and everything after that is the conversation that
+    // open session carries. A session that dies after it was opened contradicts that frame — the
+    // caller connected, the leg was dialled, and the answer began — and the contradiction is the
+    // kernel's to settle rather than this plane's to resolve by calling the whole session an error.
+    const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }

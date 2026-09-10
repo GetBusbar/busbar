@@ -8,6 +8,7 @@ use busbar_contract::ids::{
     AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
 };
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::wire::StatusAt;
 
 use crate::claims;
 use crate::LlmPlane;
@@ -204,5 +205,12 @@ impl PlaneMeta for LlmPlane {
     // fact that never arrives.
     const INTERRUPT_FACT: Option<&'static str> = None;
     const EGRESS_PACING_FACT: Option<&'static str> = None;
+    // WHERE THIS DIALECT REPORTS THE STATUS OF A UNIT. Every dialect here answers a request with a
+    // response whose FIRST frame already says whether the request was answered: the head of a
+    // buffered completion, the first event of a stream. Nothing later can make that first frame
+    // untrue — a stream that dies after it was still answered at the moment it started — so the
+    // frame the client SAW is the status leg, and the plane's own finish is the second reading the
+    // kernel reconciles it against.
+    const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }

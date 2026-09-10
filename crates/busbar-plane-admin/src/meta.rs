@@ -5,6 +5,7 @@
 
 use busbar_contract::ids::{AdminVerbId, MeterClassDecl, OpClassId, RecordSchemaId};
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::wire::StatusAt;
 
 use crate::claims;
 use crate::verbs::{OP_READ, OP_WRITE};
@@ -82,5 +83,11 @@ impl PlaneMeta for AdminPlane {
     // writes to an upstream at all — see `route`/`encode_egress`).
     const INTERRUPT_FACT: Option<&'static str> = None;
     const EGRESS_PACING_FACT: Option<&'static str> = None;
+    // WHERE THIS DIALECT REPORTS THE STATUS OF A UNIT. Every admin unit is a one-shot request and
+    // answer, and the answer's head is what says whether the verb ran. There is no later frame that
+    // could revise it. Declared like every other plane's, and for the same reason: what a control
+    // surface goes on to POST is zero because it selects no upstream, never because it declined to
+    // say where its status is.
+    const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }
