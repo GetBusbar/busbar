@@ -1136,14 +1136,21 @@ fn the_runtimes_port_reaches_the_nodes_own_table() {
 /// wall is the plane's declared `TOOL_REPLY_DEADLINE_SECS` read rather than restated — not one
 /// millisecond early, and the unit that was waiting exits `Failed(Route, DeadlineExceeded)`
 /// rather than settling as though the answer had arrived.
-#[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+#[cfg(all(
+    feature = "root-voice",
+    feature = "plane-voice",
+    any(feature = "root-admin", feature = "root-llm")
+))]
 #[test]
 fn the_served_composition_has_no_ungoverned_session_left_in_it() {
     use busbar_voice::runtime::{Carrier, MeteringPort, SessionCore};
 
     // (1) THE ROOT'S OWN COMPOSITION. First writer wins on the plane's side, so this cell is the
-    // one place in the crate that writes it, and it writes it the way `main()` does.
-    crate::compose_voice_governed_calls();
+    // one place in the crate that writes it, and it writes it the way `main()` does — over a
+    // shipper this CELL supplies, because the boot path composes the node out of the deployment's
+    // configured store and a cell has no store. The null shipper is the double, and it is here, in
+    // the test, which is the one place a double belongs.
+    crate::compose_voice_governed_calls(Box::new(busbar_unit_wal::NullShipper::new()));
     let bound = busbar_voice::mount::served_governed_session()
         .expect("after the root has mounted, every session the door opens is bound to a table");
     let next = busbar_voice::mount::served_governed_session()

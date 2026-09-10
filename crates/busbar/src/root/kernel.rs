@@ -399,7 +399,7 @@ impl busbar_substrate::rate_apply::RateApply for CardRepricer {
                 rates.present,
                 node_currency(),
             ),
-            busbar_substrate::store::now_ms(),
+            busbar_substrate_values::store::now_ms(),
         );
     }
 }

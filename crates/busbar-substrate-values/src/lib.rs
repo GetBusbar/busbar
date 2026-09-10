@@ -149,3 +149,21 @@ mod test_support {
 #[cfg(test)]
 #[path = "tests/lib.rs"]
 mod warn_capture_gate_tests;
+
+/// THE METERING TIME BASE the whole tree floors an epoch to. The CUT: the rest of
+/// `busbar-substrate`'s `governance` module names the signed-token crypto and the mint-parameter
+/// struct, while these two are pure arithmetic over a `u64` — no `App`, no `Store`, no engine reach
+/// — that a composition root and a plane crate both read. So the time base crossed into the values
+/// crate and the mint-shaped remainder stayed there; `busbar_substrate::governance::metering_bucket`
+/// and `…::METERING_BUCKET_SECS` both resolve unchanged off the re-export.
+pub mod governance {
+    /// Seconds in a metering day bucket. Metering is a TIME SERIES in fixed UTC-day buckets —
+    /// deliberately decoupled from the per-key budget windows the enforcement counters use, so
+    /// per-model aggregation ACROSS keys has one well-defined time base.
+    pub const METERING_BUCKET_SECS: u64 = 86_400;
+
+    /// Floor an epoch to its UTC-day metering bucket start.
+    pub fn metering_bucket(now: u64) -> u64 {
+        now - (now % METERING_BUCKET_SECS)
+    }
+}
