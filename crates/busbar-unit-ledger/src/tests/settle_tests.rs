@@ -271,3 +271,98 @@ fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold()
         through_posting.book().get(&k, 1)
     );
 }
+
+/// **THE LENT DOOR MOVES THE BOOKS THE OWNED DOOR MOVES.** One posting's figures, two ledgers, and
+/// the four columns compared — because the whole reason the lent door exists is that a plane behind
+/// a mount has to settle without giving up its end, and the moment the two doors post differently
+/// the mounted path bills something other than the one beside it.
+///
+/// They cannot in fact differ, because both call one private function; this cell is what keeps that
+/// true the day somebody adds an arm to one of them.
+#[test]
+fn a_posting_settled_from_a_lend_moves_the_same_books_as_one_settled_by_value() {
+    use busbar_caps::{ExitToken, KernelSeal, Outcome, Posted, UnitEnd};
+
+    let seal = KernelSeal::acquire_for_kernel();
+    let exit = ExitToken::mint(&seal);
+    let token = ledger_token();
+    let k = key("b");
+
+    let books_after = |lent: bool| {
+        let mut ledger = Ledger::new();
+        ledger.record_draw(&k, 1, 1_000);
+        ledger.record_hold_opened(&k, 1, 600);
+        ledger.record_slice_spent(&k, 1, 600);
+        let posted = Posted::settle(hold("alice", 600), 450, &usage("tokens", 450), &token);
+        if lent {
+            // The mounted shape: the posting stays in the end, and the end survives to be handed on.
+            let mut end = UnitEnd::seal(&exit, Outcome::Completed, Ok(posted));
+            let borrow = end.lend_posting().expect("the end carries a posting");
+            let booked = ledger.post_lent(&k, 1, borrow);
+            assert_eq!(booked.released, 150);
+            assert!(booked.overdraft.is_none());
+            assert_eq!(
+                end.posted().map(Posted::settled),
+                Ok(450),
+                "the end still accounts for the unit after it settled"
+            );
+        } else {
+            let settlement = ledger.post(&k, 1, posted);
+            assert_eq!(settlement.released, 150);
+            assert!(settlement.overdraft.is_none());
+        }
+        let f = ledger.book().get(&k, 1);
+        (
+            f.open_holds,
+            f.settled,
+            f.open_slice_remainders,
+            f.overdraft_carried_out,
+        )
+    };
+
+    assert_eq!(books_after(false), books_after(true));
+}
+
+/// An overdrawing posting leaves the same note through either door, including the note's own
+/// figures — the carry into the next window is what a replay adds up, and a lent settlement that
+/// carried a different one would be a mounted plane quietly forgiving its own overdrafts.
+#[test]
+fn an_overdrawing_posting_leaves_the_same_note_through_either_door() {
+    use busbar_caps::{ExitToken, KernelSeal, Outcome, Posted, UnitEnd};
+
+    let seal = KernelSeal::acquire_for_kernel();
+    let exit = ExitToken::mint(&seal);
+    let token = ledger_token();
+    let k = key("b");
+
+    let mut owned = Ledger::new();
+    let by_value = owned.post(
+        &k,
+        1,
+        Posted::settle(hold("alice", 100), 250, &usage("tokens", 250), &token),
+    );
+
+    let mut borrowed = Ledger::new();
+    let mut end = UnitEnd::seal(
+        &exit,
+        Outcome::Completed,
+        Ok(Posted::settle(
+            hold("alice", 100),
+            250,
+            &usage("tokens", 250),
+            &token,
+        )),
+    );
+    let by_lend = borrowed.post_lent(
+        &k,
+        1,
+        end.lend_posting().expect("the end carries a posting"),
+    );
+
+    assert_eq!(by_value.overdraft, by_lend.overdraft);
+    assert_eq!(by_value.released, by_lend.released);
+    assert_eq!(
+        owned.book().get(&k, 1).overdraft_carried_out,
+        borrowed.book().get(&k, 1).overdraft_carried_out
+    );
+}
