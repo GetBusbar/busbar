@@ -796,10 +796,6 @@ pub struct TestApp {
     login_methods: Option<crate::auth::token::LoginMethods>,
     /// busbar's public base origin (`public_url:`) for the built App.
     public_url: Option<String>,
-    /// The built authorization server (`oauth_as:`). `None` (the default) = this deployment is not
-    /// one, which is what every pre-existing test expects and what the gating proof in
-    /// `oauth_as::tests::mount_tests` asserts costs nothing.
-    oauth_as: Option<std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
     mcp_durable_store: Option<std::sync::Arc<dyn busbar_api::Store>>,
     role_bindings: Option<crate::config::RoleBindings>,
     /// The resolved token-mint policy (`auth.policy:`) for the built App. `None` (default) = the empty
@@ -946,7 +942,6 @@ impl TestApp {
             admin_modules: None,
             login_methods: None,
             public_url: None,
-            oauth_as: None,
             role_bindings: None,
             mint_policy: None,
             governance: None,
@@ -1267,24 +1262,6 @@ impl TestApp {
     /// Set the built App's `public_url:` (the hosted-login base origin).
     pub fn public_url(mut self, url: &str) -> Self {
         self.public_url = Some(url.to_string());
-        self
-    }
-
-    /// Make the built App an OAuth 2.1 AUTHORIZATION SERVER, from the same `oauth_as:` config shape
-    /// an operator writes.
-    ///
-    /// Takes the CONFIG and runs the real `AsIdentity::from_cfg` validation and the real
-    /// `AsPlane::build`, for the same reason [`TestApp::mcp`] does: a test that hand-assembled the
-    /// plane could mount a combination boot refuses, and would then be asserting against a
-    /// deployment that cannot exist. The signing key is left unset, so the plane generates the
-    /// ephemeral one — the tests that use this builder assert about the MOUNTED SURFACE, and the
-    /// surface does not depend on which key signs.
-    pub fn oauth_as(mut self, cfg: &crate::oauth_as::config::OauthAsCfg) -> Self {
-        let identity = crate::oauth_as::config::AsIdentity::from_cfg(cfg)
-            .expect("test oauth_as config must be valid");
-        let plane = crate::oauth_as::plane::AsPlane::build(identity, None, Vec::new())
-            .expect("test oauth_as plane must build");
-        self.oauth_as = Some(std::sync::Arc::new(plane));
         self
     }
 
@@ -1808,10 +1785,6 @@ impl TestApp {
             m
         };
         let app = std::sync::Arc::new(crate::state::App {
-            // No authorization server unless a test asked for one with `TestApp::oauth_as`, which is
-            // the production default and is what keeps every existing test's route table unchanged
-            // by this plane's arrival.
-            oauth_as: self.oauth_as.clone(),
             // The type-erased `agents:` handle: the A2A test-kit erases its own `AgentsCfg` and hands
             // it via `set_plane_defs_any` KEYED by its plane; `build()` reads it under the decl key of
             // the plane that owns the `agents:` section (resolved from the registry, never a literal),

@@ -390,12 +390,6 @@ pub struct App {
     /// `base_url` (verbatim, no `/v1`). `None` ⇒ no hosted login (config_validate requires it when
     /// any `browser_login` method is configured). Rebuilt on every apply/reload.
     pub(crate) public_url: Option<String>,
-    /// THE AUTHORIZATION SERVER (`oauth_as:`), or `None` when this deployment is not one.
-    ///
-    /// `None` is the whole zero-cost-when-off property: nothing is constructed, nothing is
-    /// allocated, no signing key exists, no sweeper runs and no route is mounted. See
-    /// `crate::oauth_as`.
-    pub(crate) oauth_as: Option<Arc<crate::oauth_as::plane::AsPlane>>,
     // THE MCP PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (`crate::mcp::McpRuntime`, which now also
     // carries the verify-on-call coalescer that was the former flat `mcp_verify` field) is no longer a
     // flat `App` field: it lives in `plane_slots` under `runtime_slot_key(<mcp decl key>)`, reached by the plane

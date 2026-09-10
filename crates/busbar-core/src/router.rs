@@ -10,9 +10,9 @@ use axum::Router;
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
     core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
-    handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, oauth_as,
-    observability, operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store,
-    telemetry, tls, transport, trust,
+    handlers, hooks, ingress, ir, json, limits, lossless, media, metrics, net_guard, observability,
+    operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store, telemetry, tls,
+    transport, trust,
 };
 
 /// Response header name for the W3C Server-Timing field.
@@ -301,13 +301,12 @@ pub fn build_router_with_limits(
     // plugin route table is: the mount is decided ONCE, from this generation's config, and a route
     // set is not something a later hot-swap can rewrite. Each plane's `mount` reads its own slot.
     let plane_slots = app.plane_slots.clone();
-    let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // TEST-ONLY combined router: mount the Admin API v1 onto the DATA route table so one router
     // exercises the whole surface. Production never does this — `build_split_routers_with_limits`
     // mounts admin on its OWN router served on a separate listener. Both planes' plugin routes are
     // mounted here (the combined router IS both listeners).
-    let (router, core_routes) = base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
+    let (router, core_routes) = base_data_router(&plugin_routes, &plane_slots);
     let router = admin::transport::mount(router, &admin::JsonV1);
     let router = crate::plugin_routes::mount_plugin_routes(router, &plugin_routes, true);
     let router = apply_common_layers(
@@ -333,7 +332,6 @@ pub(crate) fn base_data_router(
         &'static str,
         std::sync::Arc<dyn std::any::Any + Send + Sync>,
     >,
-    oauth_as: Option<&std::sync::Arc<crate::oauth_as::plane::AsPlane>>,
 ) -> (
     Router<std::sync::Arc<state::AppHandle>>,
     crate::core_routes::CoreRouteTable,
@@ -450,10 +448,6 @@ pub(crate) fn base_data_router(
     // `plane_slots` the non-WS loop reads, so an unconfigured plane mounts nothing.
     #[cfg(feature = "duplex-ws")]
     let router = mount_ws_arrivals(router, plane_slots);
-    // THE AUTHORIZATION SERVER'S ROUTES, or none of them. Same posture as the two planes above: a
-    // deployment that is not an authorization server carries no `/authorize`, no `/token`, no
-    // metadata document and nothing in the route table.
-    let router = crate::oauth_as::routes::mount(router, oauth_as);
     // PLUGIN HTTP ROUTES: the collision-checked, namespace-confined `none`/`key`-auth
     // routes an export/hook plugin declared. Reserved HERE — BEFORE the catch-all fallback below —
     // because `ingress::protocol_dispatch` claims every unclaimed path by construction, so a plugin
@@ -750,12 +744,10 @@ pub fn build_split_routers_with_limits(
     // Capture the plugin route table before `app` moves into the handle.
     let plugin_routes = app.plugin_routes.clone();
     let plane_slots = app.plane_slots.clone();
-    let oauth_as = app.oauth_as.clone();
     let handle = std::sync::Arc::new(state::AppHandle::new(app));
     // DATA plane: protocols + health/metrics/stats + the `none`/`key`-auth plugin routes, NO admin
     // mount and NO admin-auth plugin routes (those are physically absent from the data listener).
-    let (data, data_core_routes) =
-        base_data_router(&plugin_routes, &plane_slots, oauth_as.as_ref());
+    let (data, data_core_routes) = base_data_router(&plugin_routes, &plane_slots);
     let data = apply_common_layers(
         data,
         data_core_routes,

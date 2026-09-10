@@ -1379,6 +1379,37 @@ pub fn build_app_from_config(
         |p| p.boot_route_paths.clone(),
     );
 
+    // THE AUTHORIZATION SERVER'S SECRET, RESOLVED HERE AND HANDED ACROSS THE SEAM. The surface
+    // itself is no longer core's: it is the CONTROL-kind `busbar-control-tokenmint` crate, mounted
+    // by a registry row the composition root owns (`root::control_tokenmint`). What stays core's is
+    // this — reading the operator's secret — because the one place that reads operator secrets is
+    // the config layer, and a row that is handed a resolved `&str` cannot reach a second secret.
+    //
+    // Resolved BEFORE the slot map below rather than after it, which is the only ordering change:
+    // the row's `build` runs inside that fold and needs the material in its hand.
+    let control_secret = match cfg
+        .oauth_as
+        .as_ref()
+        .map(crate::oauth_as::config::AsIdentity::signing_key)
+    {
+        None | Some(None) => {
+            if cfg.oauth_as.is_some() {
+                diag_warn!(
+                    OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                    "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
+                     generated. Every token this deployment issues stops verifying when the \
+                     process restarts. Set `oauth_as.signing_key` for anything but a trial."
+                );
+            }
+            None
+        }
+        Some(Some(reference)) => Some(
+            secret_resolver
+                .resolve_string(reference)
+                .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
+        ),
+    };
+
     // THE PLANE SLOT MAP (Step 2.3's app-state seam): every registered plane's runtime object for
     // THIS config generation, built ONCE via its own decl's `build` fn and type-erased into
     // `Arc<dyn Any + Send + Sync>`. Built here, ahead of the `App` literal below. Each plane's object
@@ -1418,11 +1449,15 @@ pub fn build_app_from_config(
             // verify-on-call gate and boot-resolved card transports off the prior `A2aPlane`) — the
             // same neutral `&dyn PlaneSlots` the MCP runtime's `build_runtime` receives below.
             prior: prior.map(|p| p as &dyn busbar_substrate::plane_host::PlaneSlots),
-            // THE NEUTRAL SECTION SLOTS. Nothing fills them on this commit: the seam is added
-            // here, on its own, so the row that reads it lands against a vocabulary that is
-            // already in the substrate rather than arriving with it.
-            resolved_section: None,
-            resolved_secret: None,
+            // THE NEUTRAL SECTION SLOTS, filled for the row that reads them: the issuer's
+            // validated identity, type-erased so this seam names no row's config type, and the
+            // secret its section named, already resolved above. `None` when `oauth_as:` is absent,
+            // which is the whole of the surface's cost when nobody asked for it.
+            resolved_section: cfg
+                .oauth_as
+                .as_ref()
+                .map(|identity| identity as &dyn std::any::Any),
+            resolved_secret: control_secret.as_deref(),
         };
         crate::plane::registry::plane_decls()
             .iter()
@@ -1542,68 +1577,6 @@ pub fn build_app_from_config(
             plane_slots.insert(llm_runtime_key, slot);
         }
     }
-
-    // THE AUTHORIZATION SERVER, built ONCE, and only when the operator asked for one. Everything
-    // this plane costs hangs off this `Option`: absent, nothing below runs, `App::oauth_as` is
-    // `None`, `oauth_as::routes::mount` returns the router untouched, and no sweeper exists.
-    //
-    // The RFC 8707 `allowed_resources` list is busbar's OWN protected resources and nothing else.
-    // Left unset, `oauth-as` would mint a token carrying whatever `resource` a client asked for in
-    // its `aud`, which any resource server verifying against our JWKS would then honour — so the
-    // list is derived here, from the planes this deployment actually serves, rather than configured
-    // separately where it could disagree with them.
-    let oauth_as_plane = match cfg.oauth_as.as_ref() {
-        None => None,
-        Some(identity) => {
-            let key_material = match identity.signing_key() {
-                None => {
-                    diag_warn!(
-                        OAUTH_AS_EPHEMERAL_SIGNING_KEY,
-                        "oauth_as: no signing_key configured, so an EPHEMERAL ES256 key was \
-                         generated. Every token this deployment issues stops verifying when the \
-                         process restarts. Set `oauth_as.signing_key` for anything but a trial."
-                    );
-                    None
-                }
-                Some(reference) => Some(
-                    secret_resolver
-                        .resolve_string(reference)
-                        .map_err(|e| format!("oauth_as.signing_key: {e}"))?,
-                ),
-            };
-            // busbar's OWN protected resource is its MCP endpoint's canonical URI, read back through
-            // the mcp plane's `admission` seam — a `PlaneAdmission::audience` IS that canonical URI —
-            // so appbuild names no `crate::mcp` resource type. Empty when `mcp:` is absent or the MCP
-            // plane is compiled out (no built-in decl, hence no admission, so the deployment protects
-            // no MCP audience).
-            let protected_resources: Vec<String> = cfg
-                .endpoint_resources
-                .get(busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2])
-                .and_then(|slot| {
-                    crate::plane::registry::plane_decl_for_config_section(
-                        busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
-                    )
-                    .and_then(|d| (d.admission)(slot.as_ref()))
-                })
-                .map(|adm| adm.audience)
-                .into_iter()
-                .collect();
-            let plane = crate::oauth_as::plane::AsPlane::build(
-                identity.clone(),
-                key_material.as_deref(),
-                protected_resources,
-            )
-            .map_err(|e| e.to_string())?;
-            let plane = Arc::new(plane);
-            // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and
-            // it runs when it is called and never otherwise. Spawned here, once per generation.
-            crate::oauth_as::plane::spawn_sweeper(
-                Arc::clone(plane.server()),
-                std::time::Duration::from_secs(60),
-            );
-            Some(plane)
-        }
-    };
 
     // The generation's hook CONTENT ceiling, installed once here and read on the hook seam with a
     // single relaxed load — never recomputed per request, and never consulted at all on a
@@ -1822,7 +1795,6 @@ pub fn build_app_from_config(
         // is moved into `App` on the line just above; the MCP plane reads its runtime back through
         // `crate::mcp::runtime`, which downcasts that slot inside the plane.
         plane_slots,
-        oauth_as: oauth_as_plane.clone(),
         // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
         // approval already spent is evidence, not intent, and a config apply that forgot it would
         // hand every outstanding confirmation back to whoever still holds it.

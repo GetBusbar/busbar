@@ -597,7 +597,7 @@ pub(crate) fn plane_decl_for(key: &str) -> Option<&'static PlaneDecl> {
 /// without naming the plane. Resolves through [`plane_decls`] (installed + built-ins, canonically
 /// ordered) rather than the built-ins alone, so an EXTRACTED plane the composition root installed
 /// (the MCP plane after B2) is found on the same footing as a still-built-in one.
-pub(crate) fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
+pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl> {
     plane_decls()
         .iter()
         .copied()
