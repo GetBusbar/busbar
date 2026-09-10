@@ -9,8 +9,10 @@
 //! stylistic preference: what the mount does, it does for ANY plane, and a battery driving a real
 //! one through it would prove only that it works for that one.
 //!
-//! Three questions:
+//! Four questions:
 //!
+//! * the wire the acceptor mounts is the one the boot seal REGISTERED — the same allocation, not a
+//!   second composition of a key the registry seals exactly one of;
 //! * a plane that declares a duplex route gets its sessions served on the node's existing listener,
 //!   with no second address and no configuration key;
 //! * a stop that arrives while the acceptor is WAITING opens nothing and cuts nothing;
@@ -20,15 +22,17 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::transport::facts as tfacts;
 use busbar_contract::transport::session::{
-    SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
+    SessionBudgets, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
+    SessionReply,
 };
 use busbar_contract::transport::surface::{
     check_surface, Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
 };
 use busbar_contract::transport::Outcome;
 use busbar_contract::Transport;
-use busbar_transport_ws::mount::SessionBudgets;
-use busbar_transport_ws::WsTransport;
+use busbar_kernel::registry::{Plugin, PluginKind};
+
+use crate::root::registry::{seal, BootRegistry};
 
 use super::{serve_until, Accepted, Mounted, NeverStops, Stop};
 
@@ -138,30 +142,35 @@ impl Stop for Latch {
 
 // ── the node's one listener ─────────────────────────────────────────────────────────────────────
 
-/// A `ws` over `http` listener on an ephemeral port — the node's ONE address.
+/// THE NODE'S OWN BOOT SEAL, and a listener bound on the wire that seal REGISTERED.
 ///
-/// There is no second bind anywhere in this file, and no key naming one. The duplex sessions below
-/// arrive on the very listener a request/answer path would be served on, because an upgrade is an
-/// HTTP request.
-async fn listening() -> (Arc<WsTransport>, busbar_contract::wire::Listener) {
+/// Nothing here is constructed for the test. The composition root seals its transports once, and
+/// what this returns is that seal and a listener taken off the instance inside it — because a
+/// battery that built its own wire would prove the acceptor works against a transport this node
+/// never registered, which is the one thing an acceptor must not be doing. There is exactly one
+/// registration of the duplex key in this process, and the cell below says so directly.
+///
+/// One address, too. There is no second bind anywhere in this file and no key naming one: the
+/// duplex sessions below arrive on the very listener a request/answer path would be served on,
+/// because an upgrade is an HTTP request.
+async fn listening() -> (BootRegistry, busbar_contract::wire::Listener) {
     struct Seal;
     impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {
             "test"
         }
     }
-    let http = Arc::new(busbar_transport_http::HttpTransport::new(
-        busbar_transport_http::ClientSettings::default(),
-    ));
-    let ws = Arc::new(WsTransport::over(http));
-    let listener = ws
+    let sealed = seal(busbar_transport_http::ClientSettings::default()).expect("the node boots");
+    let listener = sealed
+        .transports
+        .ws
         .listen(
             &busbar_transport_ws::StaticConfig::bind_to("127.0.0.1:0"),
             &busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test"),
         )
         .await
         .expect("the listener binds");
-    (ws, listener)
+    (sealed, listener)
 }
 
 // ── the questions ───────────────────────────────────────────────────────────────────────────────
@@ -179,9 +188,31 @@ async fn listening() -> (Arc<WsTransport>, busbar_contract::wire::Listener) {
 /// with, given the wire's own registry key — so the route this acceptor will serve is a route this
 /// acceptor's wire can find, and finding it needed no second address, no second bind and no
 /// configuration key naming either.
+/// THE WIRE THE ACCEPTOR MOUNTS IS THE ONE REGISTRATION, NOT A SECOND COMPOSITION OF THE SAME KEY.
+///
+/// The cell that makes the generic signature worth having. The registry seals by key, so exactly one
+/// duplex transport may register; an acceptor that constructed its own would be a second live
+/// instance of a key the root promised there was one of — same allocation or the promise is
+/// rhetorical. Asked by identity rather than by count, because two instances of one type answer a
+/// count identically and differ in the only way that matters here.
+#[tokio::test]
+async fn the_acceptor_mounts_the_registered_wire_and_not_a_second_one() {
+    let (sealed, _listener) = listening().await;
+    let registered = sealed
+        .registry
+        .resolve(PluginKind::Transport, "ws")
+        .expect("the root registered the duplex key exactly once");
+    let mounted = Arc::clone(&sealed.transports.ws) as Arc<dyn Plugin>;
+    assert!(
+        Arc::ptr_eq(&registered, &mounted),
+        "the acceptor's wire and the registry's entry are the same allocation, or the seal's \
+         one-registration promise is a word rather than a fact"
+    );
+}
+
 #[tokio::test]
 async fn any_declared_duplex_surface_is_mountable_on_the_one_listener() {
-    let (_ws, listener) = listening().await;
+    let (_sealed, listener) = listening().await;
     assert!(
         !listener.local_addr().is_empty(),
         "the node has ONE bound address, and the sessions below arrive on it"
@@ -202,14 +233,14 @@ async fn any_declared_duplex_surface_is_mountable_on_the_one_listener() {
 /// nobody is listening for them any more.
 #[tokio::test]
 async fn a_stop_while_waiting_ends_the_acceptor_with_nothing_open() {
-    let (ws, listener) = listening().await;
+    let (sealed, listener) = listening().await;
     let driver = Arc::new(ScriptedDriver::default());
     let stop = Arc::new(Latch::default());
     stop.pull();
 
     let ended = serve_until(
         Mounted {
-            wire: &ws,
+            wire: sealed.transports.ws.as_ref(),
             listener: &listener,
             surface: &SURFACE,
             driver: driver.as_ref(),
