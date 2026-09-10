@@ -406,6 +406,18 @@ fn finish_of(end: &UnitEnd, streaming: bool) -> FinishClass {
 }
 
 impl Plane for McpPlane {
+    fn probe_request<'u>(
+        &self,
+        _dest: &VerifiedDestination,
+        _ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>> {
+        // No probe. MCP has a `ping`, but it is a request on an INITIALISED session — a probe would have to
+        // open a session, initialise it and tear it down to ask, which measures this node's ability to
+        // open a session rather than the server's health, and leaves a server that leaks sessions worse
+        // off for having been asked. Passive only.
+        None
+    }
+
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,

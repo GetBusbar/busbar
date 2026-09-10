@@ -101,6 +101,16 @@ fn draft_verb(u: &Unit<'_>) -> Option<&'static str> {
 }
 
 impl Plane for AdminPlane {
+    fn probe_request<'u>(
+        &self,
+        _dest: &VerifiedDestination,
+        _ctx: &Ctx<'u>,
+    ) -> Option<EgressBody<'u>> {
+        // No probe, and never one. The admin plane dials no upstream at all — its destinations are this
+        // node's own verbs — so there is nothing whose liveness a request could report.
+        None
+    }
+
     fn decode_ingress<'u>(
         &self,
         frames: &mut FrameCursor<'u>,
