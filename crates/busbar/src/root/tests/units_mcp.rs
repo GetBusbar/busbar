@@ -13,7 +13,10 @@ use busbar_unit_trust::{
 };
 // The implementation file stopped naming it when the boot seal moved out; the group-table fixture
 // below still builds one, so the import belongs where the construction is.
-use busbar_api::{MeteringDelta, MeteringRow, ScopeRef, StoreResult, UsageLedger, VirtualKey};
+use busbar_api::{
+    MeteringDelta, MeteringRow, ScopeRef, Store as AbiStore, StoreResult, UsageLedger, VirtualKey,
+};
+use busbar_plugin_loader::store_adapter::StoreAdapter;
 use busbar_unit_admission::{budget_window, window::WINDOW_DAY, GroupTable};
 use busbar_unit_ledger::legacy::RecordingRows;
 use std::collections::BTreeMap;
