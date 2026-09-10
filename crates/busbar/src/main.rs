@@ -1462,6 +1462,73 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
 
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    //   THE ONE COMPOSITION STEP: every plane the sealed registry carries a mount row for is
+    //   mounted onto the data listener, here, and NOT ONE OF THEM IS NAMED.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    //
+    // Before this line the three mounts had NO caller. A serving switch could be default-ON and the
+    // shipped binary still answered every one of that plane's addresses from the legacy router —
+    // the switch compiled a leg nothing composed, and the only thing that said so was a grep. A
+    // conformance rig pointed at this binary was therefore judging the legacy path while the tree
+    // read as though the mounted one had shipped.
+    //
+    // What fixes it is not a call per plane. It is that a mount is DATA now: `registry::mount_rows`
+    // carries one row per plane, each declared in that plane's own file beside the leg it builds,
+    // and `plane_mount::compose_mounts` folds them. A plane joins the shipped serving path by
+    // adding a row — never by a line here, in `plane_mount`, or in `transports`.
+    //
+    // A row that cannot assemble its leg composes NO WRAP, so that plane's claimed addresses stay
+    // on the surface underneath exactly as they are today, and the report says which source it had
+    // no boot answer for. That is the whole switch-over rule: the mounted path is the shipped path
+    // wherever a mount exists, and the legacy leg is what is left where one does not.
+    #[cfg(any(
+        feature = "root-llm-serve",
+        feature = "root-a2a-serve",
+        feature = "root-mcp-serve"
+    ))]
+    let data_router = {
+        let (mounted, report) = root::plane_mount::compose_mounts(
+            data_router,
+            &root::registry::MountInputs {
+                // THE DEPLOYMENT'S OWN INGRESS SOURCE, sealed once and shared by every mounted leg
+                // on this node. The engine host is the boot generation's — the same one the probers
+                // hold — and the credential resolution is the data plane's own, written in the file
+                // that owns what a mounted arrival is made of rather than here.
+                ingress: std::sync::Arc::new(root::mount_ingress::boot_ingress(
+                    busbar_core::plane_host::engine_host(&app_handle.load()),
+                    app_handle.load().governance.clone(),
+                )),
+                // THE PROCESS'S ONE BOOK, the same handle the administrative views read and the
+                // driven path's node was bound to one line above. A mount that opened its own would
+                // post onto books nothing serves.
+                book: std::sync::Arc::clone(&book.durability),
+                // The operator's own ingress cap — the SAME figure the router below the wrap was
+                // built with, because the wrap reads the body before that router's limit can.
+                request_body_max_bytes: req_body_max,
+            },
+        );
+        // WHAT THIS NODE ACTUALLY SERVES, said out loud at boot. A deployment where a plane's mount
+        // did not compose looks exactly like one where it did — same addresses, same answers, a
+        // different code path deciding the money — so the difference is stated rather than left to
+        // be discovered from a ledger that reconciles because it is empty.
+        for plane in &report {
+            match plane.absent {
+                None => tracing::info!(
+                    plane = plane.plane,
+                    "plane mounted: its declared surface is served through the kernel's loop"
+                ),
+                Some(absent) => tracing::warn!(
+                    plane = plane.plane,
+                    source = absent.source,
+                    "plane NOT mounted: the boot resolves no source for it, so its addresses are \
+                     served by the surface underneath"
+                ),
+            }
+        }
+        mounted
+    };
+
     // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
     // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
     // same configured `rate_card:` and `per_request_fee:` the usage projection derives its spend

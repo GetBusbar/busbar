@@ -135,6 +135,51 @@ pub fn presented_secret(credential: &str) -> Option<&str> {
     (!secret.is_empty()).then_some(secret)
 }
 
+/// **THE DEPLOYMENT'S OWN INGRESS SOURCE, sealed from what the boot holds.**
+///
+/// The composition step calls this and nothing else: the resolution below is the DATA PLANE'S own,
+/// and writing it out at the call site would put this node's credential rule in the file that
+/// composes routers rather than in the file that owns what a mounted arrival is made of.
+///
+/// **THE RESOLUTION IS THE DATA PLANE'S, NOT A SECOND ONE.** A presented credential is verified
+/// against this node's governance state at the audience boundary the data plane uses — no expected
+/// audience — which is the same verification the driven path's chain reaches for the same
+/// credential. A resolution invented here would be a second answer to who a caller is, and the two
+/// would disagree the first time an operator rotated a key.
+///
+/// It is SYNCHRONOUS because a leg asks it per arrival, inside a walk. That is not a shortcut: the
+/// verification of a signed credential IS synchronous — a signature check, a revocation read and an
+/// index lookup — and the asynchronous half of the driven path's chain is the modules that dial out,
+/// none of which resolve a busbar-minted key.
+///
+/// **NO GOVERNANCE STATE IS NO KEY**, which is the ungoverned posture this deployment already
+/// serves: a node with no governance configured enforces nothing on the driven path either, and
+/// answering with an invented identity would be worse than answering with none.
+#[must_use]
+pub fn boot_ingress(
+    host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    governance: Option<Arc<busbar_core::governance::GovState>>,
+) -> BootIngress {
+    BootIngress::new(host, move |credential| busbar_api::PlaneRequestCtx {
+        key: credential
+            .and_then(presented_secret)
+            .zip(governance.clone())
+            .and_then(|(secret, gov)| gov.verify_token(secret, now_secs(), None)),
+    })
+}
+
+/// This node's wall clock, in whole seconds, for the freshness half of a credential check.
+///
+/// The wall clock and not the node's monotonic one: an expiry is a statement about a moment in the
+/// world, and a counter that started when this process did cannot answer it. A clock before the
+/// epoch is not a time this deployment runs at, and it reads as zero rather than panicking on a
+/// request path.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 #[cfg(test)]
 #[path = "tests/mount_ingress.rs"]
 mod tests;
