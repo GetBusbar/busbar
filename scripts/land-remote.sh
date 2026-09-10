@@ -16,8 +16,8 @@
 # `push HEAD` leaves the box with a batch it cannot cherry-pick. Every hash the batch mentions is
 # pushed under refs/proof/<ref>/<hash>, which both transfers the object and keeps it alive against
 # the box's gc.
-set -uo pipefail
 # shellcheck disable=SC2154   # R_* are assigned by fanout_parse_request in ci-remote-lib.sh
+set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 # shellcheck source=scripts/ci-remote-lib.sh
