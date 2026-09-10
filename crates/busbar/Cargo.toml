@@ -153,7 +153,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
 # `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
 # bytes and their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm", "root-llm-serve"]
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-mcp-serve", "root-a2a", "root-voice", "root-llm", "root-llm-serve"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -288,7 +288,15 @@ root-mcp = []
 # that guarantees the inner surface answers exactly as it did. It costs the shipped binary nothing —
 # `root-admin` is in `default` and already carries the same edge — and a build with none of the
 # three drops it.
-root-mcp-serve = ["dep:tower"]
+#
+# It IMPLIES `root-mcp` AND `plane-mcp`, both of which it always needed and did not say. Everything
+# the serving path is composed from — the leg, the mount, the boot composition — reaches into the
+# MCP plane's units, which are behind `root-mcp`; and the boot composition reads the `tools:`
+# registrations and the `mcp:` endpoint block off the sections THIS PLANE declares, which are behind
+# `plane-mcp`. A build asking to serve the plane without compiling it did not compile at all, so the
+# two implications make the manifest state what the compiler already enforced rather than adding a
+# new dependency. Neither is a change to the shipped feature set: `default` already carries both.
+root-mcp-serve = ["root-mcp", "plane-mcp", "dep:tower"]
 # THE LLM PLANE'S OWN LEG AND MOUNT, NOW DEFAULT ON. The third of the same shape, and it is the same
 # three switches: `proto-llm` decides whether this binary speaks the protocol, `root-llm` decides
 # whether the plane's units are compiled and driven, and this one decides whether the plane is
@@ -335,6 +343,27 @@ auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-core/loom-model"]
+
+# ── SERVING SWITCHES HELD OFF `default`, AND WHAT EACH ONE WAITS ON ─────────────────────────────
+# A `root-<plane>-serve` feature is the switch that decides whether the root's leg for that plane is
+# on the request path OF THE BINARY AN OPERATOR RUNS. A plane whose crate is in `default`, whose
+# bindings are in `default`, and whose SERVING switch is not, ships as a plane this binary knows how
+# to answer and does not: every rig judges the leg, and none of them judge the binary, because the
+# binary never reaches the leg. Default-off is an ORDERING — the leg is built before it is switched
+# on — and an ordering that nothing retires is indistinguishable from a leg that was never finished.
+#
+# So the ordering is written down. `every_serving_switch_is_shipped_or_declares_its_blocker`
+# (tests/plane_isomorphism.rs) reads the `[features]` section, finds every `root-<plane>-serve`, and
+# requires each to be EITHER in `default` OR to have a row here naming the thing it waits on. It
+# names no plane and this table is data, so a plane that grows a serving switch tomorrow is held to
+# the same rule without a line of Rust changing. A row whose switch no longer exists is red too: a
+# hold that outlives its switch is a hold nobody retired.
+#
+# THIS TABLE ONLY SHRINKS. Every row is a line somebody has to delete, which is the point.
+[package.metadata.busbar.serving-switches-held-off]
+"root-a2a-serve" = """
+the A2A leg's own cut is in flight on the plane-extraction line; the switch flips with that cut and \
+not ahead of it."""
 
 [dev-dependencies]
 # The root's own llm tests install the plane's seams.

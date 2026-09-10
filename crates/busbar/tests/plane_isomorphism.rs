@@ -577,3 +577,108 @@ fn selftest_a_token_reason_is_red() {
     let err = verify(&m, &ledger, &allow, &cols, 15, 1).expect_err("a token reason must be red");
     assert!(err.contains("real"), "got: {err}");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE SHIPPED BINARY SERVES WHAT IT SPEAKS
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// EVERY SERVING SWITCH THE MANIFEST CARRIES IS IN `default`, OR DECLARES WHAT IT WAITS ON.
+///
+/// A `root-<plane>-serve` feature decides whether the root's leg for that plane is on the request
+/// path of THE BINARY AN OPERATOR RUNS. A plane whose crate is in `default`, whose bindings are in
+/// `default`, and whose serving switch is not, ships as a plane the binary knows how to answer and
+/// does not: every rig in this repository builds its subject with `cargo build --bin busbar` —
+/// default features — so every verdict such a plane has ever recorded judged something that is not
+/// the shipped path. Both instruments read green and neither was pointed at the thing.
+///
+/// Default-off is an ORDERING: the leg is built before it is switched on. The ordering is legitimate
+/// and it is also invisible, and an ordering that nothing retires is indistinguishable from a leg
+/// that was never finished. So the ordering has to be WRITTEN DOWN — that is the second arm. A
+/// switch out of `default` must have a row in `[package.metadata.busbar.serving-switches-held-off]`
+/// naming the thing it waits on, and that row is a line somebody has to delete.
+///
+/// It is asked over the MANIFEST rather than over a list restated here, and no plane is named in
+/// this file: a plane that grows a serving switch tomorrow is held to the same rule without a line
+/// of Rust changing. That is the whole reason this is data and not `cfg!`.
+#[test]
+fn every_serving_switch_is_shipped_or_declares_its_blocker() {
+    let manifest = std::fs::read_to_string(repo_root().join("crates/busbar/Cargo.toml"))
+        .expect("the binary's manifest must be readable");
+
+    // Each section is read from its own header to the next one. Reading the whole file would let a
+    // `[dependencies]` key that happens to end in `-serve` be mistaken for a switch, and would let
+    // a held-off row be found in a section that is not the one the rule is about.
+    fn section<'m>(manifest: &'m str, header: &str) -> Option<&'m str> {
+        let body = manifest.split_once(&format!("\n{header}\n"))?.1;
+        Some(body.split_once("\n[").map_or(body, |(head, _)| head))
+    }
+
+    let features = section(&manifest, "[features]")
+        .expect("the binary's manifest declares a `[features]` section");
+
+    let mut switches: Vec<&str> = Vec::new();
+    let mut default: Option<&str> = None;
+    for line in features.lines() {
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name == "default" {
+            default = Some(value);
+        } else if name.starts_with("root-") && name.ends_with("-serve") {
+            switches.push(name);
+        }
+    }
+    let default = default.expect("the binary's manifest declares a `default` feature set");
+
+    assert!(
+        !switches.is_empty(),
+        "no `root-<plane>-serve` switch was found in the manifest's `[features]` section. This \
+         test is the only thing that keeps a serving switch from shipping off, so a reading that \
+         finds none is this test having stopped asking rather than the rule holding."
+    );
+
+    // The declared holds, by the switch they are about. A key is quoted in this table because a
+    // Cargo feature name is not a bare TOML key.
+    let held_body = section(
+        &manifest,
+        "[package.metadata.busbar.serving-switches-held-off]",
+    )
+    .unwrap_or_default();
+    let held: Vec<&str> = held_body
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix('"'))
+        .filter_map(|rest| rest.split_once('"'))
+        .map(|(name, _)| name)
+        .collect();
+
+    for switch in &switches {
+        let shipped = default.contains(&format!("\"{switch}\""));
+        let declared = held.contains(switch);
+        assert!(
+            shipped || declared,
+            "`{switch}` is a serving switch, it is NOT in the binary's `default` feature set, and \
+             it declares no blocker. So the shipped binary carries the plane, carries its leg, and \
+             does not put the leg on the request path — every rig judges the leg and none of them \
+             judge the binary. Put it in `default`, or give it a row in \
+             `[package.metadata.busbar.serving-switches-held-off]` naming what it waits on. \
+             Serving switches in the manifest: {switches:?}"
+        );
+        assert!(
+            !(shipped && declared),
+            "`{switch}` is in `default` AND still has a held-off row naming a blocker it no longer \
+             waits on. The hold outlived the ordering it recorded; delete the row."
+        );
+    }
+
+    for row in &held {
+        assert!(
+            switches.contains(row),
+            "`{row}` has a held-off row and is not a `root-<plane>-serve` switch in the \
+             `[features]` section. A hold that outlives its switch is a hold nobody retired. \
+             Serving switches in the manifest: {switches:?}"
+        );
+    }
+
+    println!("SERVING SWITCHES: {switches:?}; held off `default`: {held:?}");
+}
