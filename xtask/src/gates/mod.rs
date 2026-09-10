@@ -124,16 +124,6 @@ pub const REPORT_ONLY: &[Posture] = &[
               `--all` on the dev line is not. Same standing as the ship twin it reads.",
         excuse: Excused::ReleaseTime,
     },
-    Posture {
-        name: "design-bindings",
-        why: "PB-0 cites `scripts/inventory-coverage.sh`, and that file is not in this tree — the \
-              shell retired without the gate being converted, so the binding names a check that \
-              settles nothing. That is a real finding and it is why the gate is red BY NAME. It is \
-              not a finding `--all` can act on, and it is the only one: this excuse holds ONLY \
-              while every non-PASS row of the gate names that absent path, so a design binding \
-              that breaks for any other reason is scored here like any other red.",
-        excuse: Excused::OnlyAbout("scripts/inventory-coverage.sh"),
-    },
 ];
 
 /// THE CONSTRUCTION GATE'S STANDING REDS, BY NAME.
@@ -1622,11 +1612,16 @@ mod posture_tests {
         Verdict::of(rows)
     }
 
-    /// The whole point of the narrow excuse: the standing red is excused, and one more red row
-    /// about anything else is scored. Without this, `--all` would have gone on being a switch that
-    /// is off for every future design-bindings break as well as for the known one.
+    /// DESIGN-BINDINGS HAS NO EXCUSE AT ALL ANY MORE, WHICH IS THE STRONGEST FORM OF THE OLD ONE.
+    ///
+    /// The entry that used to sit here excused the gate while every non-PASS row named
+    /// `scripts/inventory-coverage.sh` -- a file the tree did not have, cited by PB-0, because the
+    /// shell retired without its gate being converted. `cargo xtask gate inventory-coverage` is
+    /// registered and PB-0 cites it, so there is no standing red left to forgive and the entry is
+    /// struck rather than reworded. This test pins the consequence: the KNOWN red is now scored
+    /// exactly like the unknown one, because neither is excused.
     #[test]
-    fn a_design_binding_that_breaks_for_a_new_reason_is_scored() {
+    fn a_design_binding_that_breaks_is_scored_however_it_broke() {
         let cx = Ctx::workspace().expect("the workspace opens");
         let known = Row::fail(
             "PB-0",
@@ -1635,8 +1630,9 @@ mod posture_tests {
              gate:scripts/inventory-coverage.sh",
         );
         assert!(
-            excused_from_all("design-bindings", &cx, &verdict(vec![known.clone()])).is_some(),
-            "the standing red PB-0 names the absent check and is what the entry was written for"
+            excused_from_all("design-bindings", &cx, &verdict(vec![known.clone()])).is_none(),
+            "the red the struck excuse was written for is scored like any other now that the \
+             check it named exists"
         );
         let fresh = Row::fail(
             "PB-7",
@@ -1645,8 +1641,7 @@ mod posture_tests {
         );
         assert!(
             excused_from_all("design-bindings", &cx, &verdict(vec![known, fresh])).is_none(),
-            "a second red about anything else is a regression, and an excuse that covered it would \
-             be a switch nobody could see was off"
+            "a red about anything else was never excused and still is not"
         );
     }
 
