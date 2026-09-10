@@ -2777,21 +2777,6 @@ kind = "unit"
 count = "51"
 
 [[cell]]
-crate = "busbar-unit-egress-auth"
-kind = "caps"
-count = "7"
-
-[[cell]]
-crate = "busbar-unit-egress-auth"
-kind = "transport"
-count = "3"
-
-[[cell]]
-crate = "busbar-unit-egress-auth"
-kind = "unit"
-count = "4"
-
-[[cell]]
 crate = "busbar-unit-ledger"
 kind = "caps"
 count = "17"
@@ -3388,16 +3373,6 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-unit-egress: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-unit-egress-auth"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-unit-egress-auth: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
@@ -4721,16 +4696,6 @@ why     = "busbar-unit-egress names busbar-contract-transport: declared normal i
 drain   = "delete the busbar-contract-transport dependency from busbar-unit-egress's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
-from    = "busbar-unit-egress-auth"
-to      = "busbar-caps"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
-why     = "busbar-unit-egress-auth names busbar-caps: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
 from    = "busbar-unit-ledger"
 to      = "busbar-caps"
 half    = "shipped"
@@ -5543,11 +5508,6 @@ kind = "dialect"
 count = "3"
 
 [[cell]]
-crate = "busbar-unit-egress-auth"
-kind = "dialect"
-count = "63"
-
-[[cell]]
 crate = "busbar-unit-ledger"
 kind = "dialect"
 count = "2"
@@ -5717,11 +5677,6 @@ note = "segment scanner 2, window scanner 3. The two read the vendor spellings d
 crate = "busbar-unit-auth"
 kind = "dialect"
 note = "segment scanner 89, window scanner 94. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
-
-[[disagreement]]
-crate = "busbar-unit-egress-auth"
-kind = "dialect"
-note = "segment scanner 59, window scanner 63. The two read the vendor spellings differently: a vendor name run together with the word beside it (`OpenaiResponses`, `anthropic_responses`) opens a segment for one scanner and reads as one window for the other. The scored count is the higher, never the lower, and it falls to zero with the hits."
 
 [[disagreement]]
 crate = "busbar-voice"

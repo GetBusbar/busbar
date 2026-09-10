@@ -78,7 +78,6 @@ busbar-unit-auth = { path = "../busbar-unit-auth", features = ["sha256"] }
 busbar-unit-breaker = { path = "../busbar-unit-breaker" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
 busbar-unit-egress = { path = "../busbar-unit-egress" }
-busbar-unit-egress-auth = { path = "../busbar-unit-egress-auth" }
 busbar-unit-ledger = { path = "../busbar-unit-ledger" }
 busbar-unit-scope = { path = "../busbar-unit-scope" }
 busbar-unit-transport-key = { path = "../busbar-unit-transport-key" }

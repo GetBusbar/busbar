@@ -2634,58 +2634,6 @@
    ]
   },
   {
-   "id": "crates/busbar-unit-egress-auth/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-unit-egress-auth/src"
-   ],
-   "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
-   "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-   "round": 6,
-   "result": "in_progress",
-   "counts": {},
-   "report": "the signer's canonicalization and key derivation were checked against the published algorithm and matched; the conformance reading covered a fifth of the scope, so this is a sample",
-   "auditor": "opus-units-auditor-b",
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-unit-egress-auth/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 5,
-     "result": "findings",
-     "auditor": "opus",
-     "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-     "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
-     "counts": {
-      "HIGH": 1,
-      "MEDIUM": 6,
-      "LOW": 5,
-      "NIT": 3
-     },
-     "report": "findings against units+caps+contract; the reading's detail was not carried into the register"
-    },
-    {
-     "round": 5,
-     "result": "in_progress",
-     "auditor": "round-5 finder fleet",
-     "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-     "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
-     "counts": {},
-     "report": "in flight; no reading recorded against this scope yet"
-    },
-    {
-     "round": 6,
-     "result": "in_progress",
-     "auditor": "opus-units-auditor-b",
-     "audited_at": "0a1b07851c25e47f8ccc833e88c18d3773241b25",
-     "tree_hash": "5939aeb6ef5fe59187b98ee0f9eab60b152abdfabc47f9d749bcb3871ede0fe4",
-     "counts": {},
-     "report": "the signer's canonicalization and key derivation were checked against the published algorithm and matched; the conformance reading covered a fifth of the scope, so this is a sample"
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-unit-ledger/src",
    "kind": "production",
    "paths": [

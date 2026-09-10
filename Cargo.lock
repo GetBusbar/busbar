@@ -364,7 +364,6 @@ dependencies = [
  "busbar-unit-breaker",
  "busbar-unit-cost",
  "busbar-unit-egress",
- "busbar-unit-egress-auth",
  "busbar-unit-ledger",
  "busbar-unit-scope",
  "busbar-unit-transport-key",
@@ -1159,16 +1158,6 @@ dependencies = [
  "busbar-contract-transport",
  "busbar-unit-breaker",
  "futures",
-]
-
-[[package]]
-name = "busbar-unit-egress-auth"
-version = "1.6.0"
-dependencies = [
- "busbar-caps",
- "hex",
- "hmac",
- "sha2 0.11.0",
 ]
 
 [[package]]

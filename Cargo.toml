@@ -35,7 +35,6 @@ members = [
     "crates/busbar-unit-usage",
     "crates/busbar-unit-scope",
     "crates/busbar-unit-egress",
-    "crates/busbar-unit-egress-auth",
     "crates/busbar-unit-transport-key",
     "crates/busbar-unit-breaker",
     "crates/busbar-unit-wal",
