@@ -1477,7 +1477,7 @@ count = "122"
 [[cell]]
 crate = "busbar"
 kind = "auth"
-count = "25"
+count = "26"
 
 [[cell]]
 crate = "busbar"
@@ -1497,12 +1497,12 @@ count = "63"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1068"
+count = "1091"
 
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "576"
+count = "593"
 
 [[cell]]
 crate = "busbar"
@@ -1517,12 +1517,12 @@ count = "176"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "95"
+count = "96"
 
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1774"
+count = "1793"
 
 [[cell]]
 crate = "busbar"
@@ -1547,7 +1547,7 @@ count = "9"
 [[cell]]
 crate = "busbar"
 kind = "transport"
-count = "1022"
+count = "1042"
 
 [[cell]]
 crate = "busbar"
@@ -3202,7 +3202,7 @@ count = "17"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "681"
+count = "683"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3212,7 +3212,7 @@ count = "11"
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "802"
+count = "804"
 
 [[cell]]
 crate = "busbar-voice"
@@ -5301,6 +5301,16 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-substrate"
+half    = "test"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
+why     = "busbar names busbar-substrate: declared dev in the test graph, 1 declaration(s) at this commit. The shipped edge of the same pair is already declared above and is unchanged; this is the TEST half, and it exists because `tests/streams_served_session.rs` mints the AUDIENCE-BOUND token the streams plane's RFC 8707 claim demands and the substrate's signing seam is the only place that claim can be constructed — the mint is test-only and the admin key API has no audience field, so a rig that could not name it could not get past the plane's own door. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

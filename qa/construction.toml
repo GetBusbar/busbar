@@ -232,6 +232,38 @@ file = "qa/kind-isolation.toml"
 by = 5
 because = "busbar-voice \u00d7 dialect (busbar-voice, dialect): the same conformance leg, counted again in the dialect kind's vocabulary because the declared names it now looks up ARE dialect names \u2014 the binding whose mount it reads is the Gemini Live dialect's own, and the leg says so by name instead of by a URL somebody typed. A leg that avoided the word would be back to holding its own copy of the string, which is the coupling that was actually expensive. Read-lines over declared data in a harness, not a dialect in an engine (676 -> 681)"
 
+# ── declared raises: THE SERVED SESSION IS OBSERVED ON A WIRE. A cell in the composition root drives the
+# streams plane's browser-sideband leg against the SHIPPED BINARY over a real socket — the only instrument that
+# can tell "the composition holds together" apart from "the door put a byte on the wire". Every raise below is
+# that one file, counted once per kind whose vocabulary a session-on-a-socket unavoidably names. Each expires
+# when the base carries the number.
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 20
+because = "busbar × transport (busbar, transport): `crates/busbar/tests/streams_served_session.rs` — the cell that drives a SESSION against the shipped binary over a real socket, and the words it costs are the words that make it a session rather than a status code. The streams plane was compiled in, configured and mounted and served no byte; nothing in the tree could observe that, because the only instrument pointed at this plane drives the composition in-process and binds no socket. This cell boots the binary, mints the key, gets past the plane's RFC 8707 door and reads the frames: an upgrade with the RFC6455 sample key, a first `session.created`, a `response.create` answered by a terminal, a close — plus the ordering 1.5.5 pins for every plane, on a node that mounts none of it. Prose that only restated the design note was moved OUT of the file before this number was written down (the measured pair fell by 2, 3, 2 and 1 across the four largest rows), and what remains is the vocabulary a reader needs to know why each assertion is where it is. A WebSocket session is transport vocabulary by construction — upgrade, socket, frame, opcode, close — and a cell that read frames without naming them would be a cell that could not say which frame it read (1,022 -> 1,042)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 23
+because = "busbar × control (busbar, control): `crates/busbar/tests/streams_served_session.rs` — the cell that drives a SESSION against the shipped binary over a real socket, and the words it costs are the words that make it a session rather than a status code. The streams plane was compiled in, configured and mounted and served no byte; nothing in the tree could observe that, because the only instrument pointed at this plane drives the composition in-process and binds no socket. This cell boots the binary, mints the key, gets past the plane's RFC 8707 door and reads the frames: an upgrade with the RFC6455 sample key, a first `session.created`, a `response.create` answered by a terminal, a close — plus the ordering 1.5.5 pins for every plane, on a node that mounts none of it. Prose that only restated the design note was moved OUT of the file before this number was written down (the measured pair fell by 2, 3, 2 and 1 across the four largest rows), and what remains is the vocabulary a reader needs to know why each assertion is where it is. The rig mints its own credentials through the admin surface — a key bound to a group, a scopeless sibling, the admin token that mints both — because a cell that took its keys from a fixture would be proving something about the fixture. Those are control-kind nouns and they are the rig's scaffolding, not the subject (1,068 -> 1,091)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.auth.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "busbar × auth (busbar, auth): `crates/busbar/tests/streams_served_session.rs` — the cell that drives a SESSION against the shipped binary over a real socket, and the words it costs are the words that make it a session rather than a status code. The streams plane was compiled in, configured and mounted and served no byte; nothing in the tree could observe that, because the only instrument pointed at this plane drives the composition in-process and binds no socket. This cell boots the binary, mints the key, gets past the plane's RFC 8707 door and reads the frames: an upgrade with the RFC6455 sample key, a first `session.created`, a `response.create` answered by a terminal, a close — plus the ordering 1.5.5 pins for every plane, on a node that mounts none of it. Prose that only restated the design note was moved OUT of the file before this number was written down (the measured pair fell by 2, 3, 2 and 1 across the four largest rows), and what remains is the vocabulary a reader needs to know why each assertion is where it is. One word: the signing seam the audience-bound token is minted through, which is the only door past the plane's RFC 8707 claim and is test-only in the tree (25 -> 26)"
+
+# ── NO RAISE DECLARED, and the reason is the arithmetic. THE SIDEBAND LEG SERVES: the leg that dials nobody
+# stops being handed the downlink-facing plane — which read the browser's own client→server frames with a
+# server→client reader and therefore answered every one of them with silence — and gets the client-facing half
+# plus the first server event it had no upstream to relay. That moves `busbar-voice × plane` (802 -> 804) and
+# `busbar-voice × dialect` (681 -> 683), and `busbar × plane` / `busbar × dialect` / `busbar × legacy` with the
+# cell that drives it. Every one of those is still BELOW what the merge-base carries, so nothing rose against
+# the ceiling these rows are ratcheted from and there is no raise to declare: the counts are re-pinned to
+# today's measurement, which is what `ceiling-slack` reads them for. A `by` written here anyway would be a
+# declaration of a rise that did not happen, and the gate says so by name.
 # ── declared raise: the streams line — a plane and a wire DECLARE a duplex surface as data. The
 # plane (busbar-plane-streams) writes its duplex route in the transport contract's vocabulary, the wire
 # (busbar-transport-ws) implements the DuplexWire face, and the contract names its own transport

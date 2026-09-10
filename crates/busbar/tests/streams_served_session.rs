@@ -3,31 +3,21 @@
 
 //! THE BROWSER SIDEBAND SERVES A SESSION — driven against the SHIPPED BINARY over a real socket.
 //!
-//! The streams plane is 1.6.0 surface: the published 1.5.5 binary answers 404 on every realtime URL
-//! and has no `streams:` grammar, so nothing here is judged by byte-identity to it. What IS judged
-//! by 1.5.5 is the ORDER the two questions are asked in, and the second test below is that order.
+//! The subject is a SESSION: an upgrade, a first server event, a client event, a terminal, a close.
+//! Every one of those is a byte a browser sees, and each of the three doors between a configured
+//! plane and a served byte sits on a different side of a seam an in-process fixture would stand in
+//! for. A harness driving the composition in-process answers "does the composition hold together";
+//! it cannot answer "did the shipped door put a byte on the wire", which is the question that was
+//! open. The measurement behind these two cells is `VT7-design-served-session.md`; what is repeated
+//! here is only what a reader needs to know why each assertion is where it is.
 //!
-//! ## Why this is a socket and not a unit test
-//!
-//! The thing under test is a SESSION: an upgrade, a first server event, a client event, a terminal,
-//! a close. Every one of those is a byte on a wire that a deployment's browser sees, and each of the
-//! three doors between a configured plane and a served frame — the dispatch slot the router mounts
-//! from, the RFC 8707 audience the verifier demands, and the leg's own served behaviour — is on a
-//! different side of a seam an in-process fixture would have to stand in for. A conformance harness
-//! driving the composition in-process answers "does the composition hold together"; it cannot answer
-//! "did the shipped door put a byte on the wire", which is the question that was open.
-//!
-//! ## The three doors, and which one each test stands behind
-//!
-//! 1. NO `public_url` ⇒ `PLANE_DECL.build` yields no dispatch slot ⇒ the core router's WS-arrival
-//!    loop skips every installed `WsArrivalSpec` and the two one-shot HTTP passes with it. Nothing
-//!    is mounted, and the path falls through to the catch-all: an admitted caller is told 404, an
-//!    anonymous one is told nothing at all. That is `admission_runs_before_route_lookup`.
-//! 2. `public_url` set ⇒ the plane mounts and CLAIMS its region, so the verifier demands a token
-//!    whose RFC 8707 audience is `<public_url>/v1/realtime`. No production path mints one — the
-//!    audience-bound mint is test-only — so the rig mints it here, against the deployment's own
-//!    signing key, exactly as `busbar-core`'s plane-boundary integration test does.
-//! 3. The socket upgrades. What it then does is the subject of `sideband_serves_a_session`.
+//! THE THREE DOORS. (1) With no `public_url` the plane builds no dispatch slot, so the router mounts
+//! none of its arrivals and every one of its URLs is a path that does not exist — which is what
+//! `admission_runs_before_route_lookup` stands behind, and the one ordering 1.5.5 pins for every
+//! plane. (2) With one, the plane claims its region and the verifier demands a token carrying that
+//! RFC 8707 audience; nothing in a shipped build mints one, so the rig mints it against the
+//! deployment's own signing key to get past a door that was hiding the next one. (3) The socket
+//! upgrades, and what it does after that is `sideband_serves_a_session`.
 //!
 //! GATED ON `plane-voice` as a whole file: a build with the streams plane compiled out has no
 //! realtime surface to serve or to refuse, and the deletion gate builds exactly that binary.
