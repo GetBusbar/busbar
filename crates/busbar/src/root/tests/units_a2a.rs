@@ -420,8 +420,7 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
         auth.resolve(
             &auth_request(&d, 100),
             seams.cache(),
-            seams.keys(),
-            seams.revocations(),
+            seams.directory(),
             None,
             &UnitToken::mint(&seal),
         )
@@ -451,8 +450,7 @@ fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
         .resolve(
             &auth_request(&elsewhere, 100),
             seams.cache(),
-            seams.keys(),
-            seams.revocations(),
+            seams.directory(),
             None,
             &UnitToken::mint(&seal),
         )
