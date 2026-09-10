@@ -126,30 +126,38 @@ impl busbar_contract::kinds::Secret for EchoSecret {
     fn resolve(
         &self,
         r: &busbar_contract::kinds::SecretRef,
-    ) -> Result<busbar_contract::kinds::SecretValue, busbar_contract::kinds::SecretError> {
+    ) -> Result<busbar_contract::kinds::SecretValue, busbar_contract::PluginError> {
         let settings: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&r.0)
-            .map_err(|_| busbar_contract::kinds::SecretError::Malformed)?;
+            .map_err(|_| {
+                busbar_contract::PluginError::new(
+                    busbar_contract::ErrorClass::Malformed,
+                    "echo.not_an_object",
+                )
+            })?;
         match settings.get("name").and_then(|v| v.as_str()) {
             Some(n) => Ok(busbar_contract::kinds::SecretValue::new(
                 format!("resolved:{n}").into_bytes(),
             )),
-            None => Err(busbar_contract::kinds::SecretError::Malformed),
+            None => Err(busbar_contract::PluginError::new(
+                busbar_contract::ErrorClass::Malformed,
+                "echo.name_missing",
+            )
+            .with_message("no string `name` in the reference")),
         }
     }
 
     fn watch(
         &self,
         _r: &busbar_contract::kinds::SecretRef,
-    ) -> Result<Option<u64>, busbar_contract::kinds::SecretError> {
+    ) -> Result<Option<u64>, busbar_contract::PluginError> {
         Ok(None)
     }
 
-    fn sign(
-        &self,
-        _key: &str,
-        _bytes: &[u8],
-    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
-        Err(busbar_contract::kinds::SecretError::Unknown)
+    fn sign(&self, _key: &str, _bytes: &[u8]) -> Result<Vec<u8>, busbar_contract::PluginError> {
+        Err(busbar_contract::PluginError::new(
+            busbar_contract::ErrorClass::NotFound,
+            "echo.not_on_the_face",
+        ))
     }
 
     fn seal(
@@ -157,8 +165,11 @@ impl busbar_contract::kinds::Secret for EchoSecret {
         _key: &str,
         _context: &[u8],
         _plaintext: &[u8],
-    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
-        Err(busbar_contract::kinds::SecretError::Unknown)
+    ) -> Result<Vec<u8>, busbar_contract::PluginError> {
+        Err(busbar_contract::PluginError::new(
+            busbar_contract::ErrorClass::NotFound,
+            "echo.not_on_the_face",
+        ))
     }
 
     fn unseal(
@@ -166,8 +177,11 @@ impl busbar_contract::kinds::Secret for EchoSecret {
         _key: &str,
         _context: &[u8],
         _sealed: &[u8],
-    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
-        Err(busbar_contract::kinds::SecretError::Unknown)
+    ) -> Result<Vec<u8>, busbar_contract::PluginError> {
+        Err(busbar_contract::PluginError::new(
+            busbar_contract::ErrorClass::NotFound,
+            "echo.not_on_the_face",
+        ))
     }
 }
 
@@ -184,7 +198,7 @@ impl busbar_contract::kinds::Secret for RecordingSecret {
     fn resolve(
         &self,
         r: &busbar_contract::kinds::SecretRef,
-    ) -> Result<busbar_contract::kinds::SecretValue, busbar_contract::kinds::SecretError> {
+    ) -> Result<busbar_contract::kinds::SecretValue, busbar_contract::PluginError> {
         *self.0.lock().unwrap() = Some(r.0.clone());
         Ok(busbar_contract::kinds::SecretValue::new(
             b"observed".to_vec(),
@@ -194,16 +208,15 @@ impl busbar_contract::kinds::Secret for RecordingSecret {
     fn watch(
         &self,
         _r: &busbar_contract::kinds::SecretRef,
-    ) -> Result<Option<u64>, busbar_contract::kinds::SecretError> {
+    ) -> Result<Option<u64>, busbar_contract::PluginError> {
         Ok(None)
     }
 
-    fn sign(
-        &self,
-        _key: &str,
-        _bytes: &[u8],
-    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
-        Err(busbar_contract::kinds::SecretError::Unknown)
+    fn sign(&self, _key: &str, _bytes: &[u8]) -> Result<Vec<u8>, busbar_contract::PluginError> {
+        Err(busbar_contract::PluginError::new(
+            busbar_contract::ErrorClass::NotFound,
+            "echo.not_on_the_face",
+        ))
     }
 
     fn seal(
@@ -211,8 +224,11 @@ impl busbar_contract::kinds::Secret for RecordingSecret {
         _key: &str,
         _context: &[u8],
         _plaintext: &[u8],
-    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
-        Err(busbar_contract::kinds::SecretError::Unknown)
+    ) -> Result<Vec<u8>, busbar_contract::PluginError> {
+        Err(busbar_contract::PluginError::new(
+            busbar_contract::ErrorClass::NotFound,
+            "echo.not_on_the_face",
+        ))
     }
 
     fn unseal(
@@ -220,8 +236,11 @@ impl busbar_contract::kinds::Secret for RecordingSecret {
         _key: &str,
         _context: &[u8],
         _sealed: &[u8],
-    ) -> Result<Vec<u8>, busbar_contract::kinds::SecretError> {
-        Err(busbar_contract::kinds::SecretError::Unknown)
+    ) -> Result<Vec<u8>, busbar_contract::PluginError> {
+        Err(busbar_contract::PluginError::new(
+            busbar_contract::ErrorClass::NotFound,
+            "echo.not_on_the_face",
+        ))
     }
 }
 
@@ -263,32 +282,39 @@ fn the_reference_reaches_the_module_and_the_advisory_deadline_does_not() {
     );
 }
 
-/// THE FACE ERROR → WIRE TOKEN MAP, every variant, on the side that SENDS one.
+/// THE CLASS → WIRE TOKEN MAP, every class, on the side that SENDS one.
 ///
 /// It is not the loader's map read backwards and cannot be: the loader's map sends both `not_found`
-/// and `internal` to `Unknown`, so no inverse exists and the choice has to be made and stated. Four
-/// of the five round-trip exactly; `NotAuthentic` is the lossy one, and it is lossy because
-/// `SECRET_ABI_VERSION` 1 predates sealing and inventing a token would change a signed wire.
+/// and `internal` to a class of its own, so no inverse exists and the projection has to be made and
+/// stated. Ten classes onto five frozen tokens is LOSSY by design — `SECRET_ABI_VERSION` 1 predates
+/// the taxonomy and inventing tokens would change a signed wire — and the structured error rides
+/// beside the token for a host that can read more.
 #[test]
-fn every_face_error_sends_the_wire_token_a_host_can_map_back() {
-    use busbar_contract::kinds::SecretError as Face;
+fn every_class_sends_the_wire_token_a_host_can_map_back() {
+    use busbar_contract::ErrorClass as Class;
     use busbar_plugin::cold::SecretErrorKind as Wire;
     let map = [
-        (Face::Unknown, Wire::NotFound),
-        (Face::Unavailable, Wire::Unavailable),
-        (Face::Denied, Wire::Denied),
-        (Face::Malformed, Wire::Invalid),
-        (Face::NotAuthentic, Wire::Internal),
+        (Class::NotFound, Wire::NotFound),
+        (Class::Unavailable, Wire::Unavailable),
+        (Class::Timeout, Wire::Unavailable),
+        (Class::Exhausted, Wire::Unavailable),
+        (Class::Denied, Wire::Denied),
+        (Class::Malformed, Wire::Invalid),
+        (Class::Rejected, Wire::Invalid),
+        (Class::Conflict, Wire::Internal),
+        (Class::Integrity, Wire::Internal),
+        (Class::Internal, Wire::Internal),
     ];
-    for (face, wire) in map {
+    assert_eq!(map.len(), Class::ALL.len(), "every class is mapped");
+    for (class, wire) in map {
         assert_eq!(
-            crate::wire_error_kind(&face),
+            crate::wire_token_for(class),
             wire,
-            "the face error {face:?} sends {wire:?}"
+            "the class {class:?} sends {wire:?}"
         );
     }
     assert_ne!(
-        crate::wire_error_kind(&Face::Denied),
+        crate::wire_token_for(Class::Denied),
         Wire::NotFound,
         "a denial must not leave the plugin looking like a miss"
     );
@@ -323,7 +349,8 @@ fn secret_dispatch_resolves_and_fails_closed() {
         },
     )
     .unwrap_err();
-    assert_eq!(err, busbar_contract::kinds::SecretError::Malformed);
+    assert_eq!(err.class, busbar_contract::ErrorClass::Malformed);
+    assert_eq!(err.code, "echo.name_missing");
 }
 
 /// SECRET glue: the FFI path (open -> call -> close) round-trips a resolve and surfaces a
@@ -383,13 +410,23 @@ fn secret_ffi_roundtrip_open_call_close() {
             serde_json::from_slice(std::slice::from_raw_parts(out, out_len)).unwrap();
         free_impl(out, out_len);
         match resp {
-            busbar_plugin::cold::SecretResponse::Error { kind, message } => {
+            busbar_plugin::cold::SecretResponse::Error {
+                kind,
+                message,
+                error,
+            } => {
                 assert_eq!(kind, busbar_plugin::cold::SecretErrorKind::Invalid);
-                // The face's error IS the taxonomy and has no message field, so the wire's message
-                // channel now carries the taxonomy's own name rather than a module's prose. More
-                // than the untyped STATUS_ERR path ever gave; less than 1.5.x's message, and named
-                // as such rather than left for a reader to notice.
-                assert_eq!(message, "Malformed", "got {message}");
+                // The frozen pair carries the class's wire token and the developer message; the
+                // structured error rides beside them, whole, for a host that can read it.
+                assert_eq!(
+                    message, "no string `name` in the reference",
+                    "got {message}"
+                );
+                let e: busbar_contract::PluginError =
+                    serde_json::from_value(error.expect("the structured error rides beside"))
+                        .unwrap();
+                assert_eq!(e.class, busbar_contract::ErrorClass::Malformed);
+                assert_eq!(e.code, "echo.name_missing");
             }
             other => panic!("expected Error, got {other:?}"),
         }
