@@ -50,7 +50,7 @@ use super::{
 /// which is the false green the shell gate was burned by; the shell pinned its floor at 68 across
 /// its classifier, generator and coverage arms, and the floor only ever rises. The generator and
 /// coverage arms live in `xtask/tests/config_schema.rs` and carry their own floor.
-pub const CASE_FLOOR: usize = 44;
+pub const CASE_FLOOR: usize = 46;
 
 // ── THE ANCHORS ──────────────────────────────────────────────────────────────────────────────────
 // Real types from the real frozen surface, chosen because the shell's own coverage assertions
@@ -263,6 +263,57 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
         &[ROW_TRACKED_SOURCES],
         ov,
         &["unsupported"],
+    ));
+
+    // ── THE CORE-KIND ROOT CENSUS ────────────────────────────────────────────────────────────────
+    // The tracked set used to name ONE core crate by a hardcoded path. The config layer is being
+    // carved out of `busbar-core` into `busbar-core-config`, and under a hardcoded root every file
+    // that leaves takes its grammar out of the fingerprint with it: the fresh render loses the
+    // types, and the additive rule reads the loss as a BREAK. That is a MOVE being reported as a
+    // deletion, which is the one thing this gate must not say — the operator-visible grammar did
+    // not change by a byte.
+    //
+    // These two cases are a matched pair, and neither is worth anything without the other: the
+    // first says a type that MOVED between two core-kind roots is not a break, the second says a
+    // type that VANISHED from every core-kind root still is. A census that only knew how to say
+    // "fine" would pass both halves of that pair and gate nothing.
+    let moved = "crates/busbar-core/src/config/overlay.rs";
+    let manifest =
+        "[package]\nname = \"busbar-core-config\"\nversion = \"0.0.0\"\nedition = \"2021\"\n";
+
+    let mut ov = Overlay::new();
+    ov.set(
+        "Cargo.toml",
+        cx.read("Cargo.toml").unwrap_or_default().replace(
+            "\"crates/busbar-core\",",
+            "\"crates/busbar-core\",\n    \"crates/busbar-core-config\",",
+        ),
+    );
+    ov.set("crates/busbar-core-config/Cargo.toml", manifest);
+    ov.set(
+        "crates/busbar-core-config/src/overlay.rs",
+        cx.read(moved).unwrap_or_default(),
+    );
+    ov.remove(moved);
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a grammar type that MOVED from busbar-core to another core-kind crate is NOT a break",
+        &[ROW_TRACKED_SOURCES, ROW_SNAPSHOT_DRIFT, ROW_ADDITIVE_ONLY],
+        ov,
+    ));
+
+    // THE SAME DELETION WITHOUT THE ARRIVAL. No second core crate, no re-home: the types are gone
+    // from the tracked set entirely. The census must not have turned a removal into a shrug.
+    let mut ov = baseline_with_waivers(cx, "# no waivers\n", |_| {});
+    ov.remove(moved);
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a grammar type that VANISHED from every core-kind root is still a BREAK",
+        &[ROW_ADDITIVE_ONLY],
+        ov,
+        &["OverlayDoc"],
     ));
 
     // ══ :snapshot-drift ══════════════════════════════════════════════════════════════════════════
