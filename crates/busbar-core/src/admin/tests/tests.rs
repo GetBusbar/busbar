@@ -10468,7 +10468,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits()
     let dir = std::env::temp_dir().join(format!(
         "busbar-settings-limits-persist-fail-{}-{}",
         std::process::id(),
-        crate::store::now()
+        busbar_substrate::store::now()
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let providers_path = dir.join("providers.yaml");
