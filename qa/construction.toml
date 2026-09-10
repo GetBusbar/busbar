@@ -933,7 +933,12 @@ ceiling = 92
 prefix = "busbar_core::"
 exclude = []
 because = "the 1.5.5 engine being emptied; every symbol here is a piece of it the root still needs"
-figure = 49
+# RE-PINNED DOWN, 49 -> 27, to the figure the tree measures. A marker with 22 of spare in it is not
+# a drift marker: it reads as "this is where we were" while the truth is that twenty-two of those
+# symbols already moved, so the next reader budgets against a debt that was paid. The aggregate
+# ceiling above is the gate and it is untouched at 92, which is exactly what the tree measures, so
+# this re-pin buys no slack anywhere and takes 22 of false slack out of the worklist.
+figure = 27
 
 [rules.legacy-reach.prefixes.busbar_llm]
 prefix = "busbar_llm::"
