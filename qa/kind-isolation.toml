@@ -176,11 +176,11 @@ reason = "the hook-dispatch surface being carved out of busbar-core; core kind, 
 # ONCE MEANS ONCE. A [[minted]] row the merge-base already carries admits nothing more — the crate's
 # rows are history and every ceiling after that moves through `ceiling-rose`, in a commit that says
 # which number went up. Two [[minted]] rows for one crate are two admissions and are refused.
-
-[[minted]]
-crate = "busbar-core-config"
-commit = "468bad131"
-cells = "0"
+#
+# THE TABLE IS EMPTY TODAY, AND THAT IS THE POINT: a crate mints its rows on the branch that CREATES
+# it, so the row and the crate land together. Writing one ahead of the crate would spend the crate's
+# one admission on the branch that did not need it — the landing would then be a SECOND mint and
+# refused, which is the rule working exactly as written and against the wrong branch.
 
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
@@ -956,13 +956,6 @@ to = "codec"
 cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A codec name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
 why = "crates of kind root naming codec vocabulary: codec package names in any spelling, the kind-qualified id (codec-<id>), and — where codec is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the per-codec wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the codec itself."
-
-[[edge]]
-from = "root"
-to = "core"
-cite = "ARCHITECTURE.md 1.1 — three blind axes and one small kernel, assembled by a composition root that names EVERY axis. The root already names `legacy`, and `core` is the carve-out of the crate it names there: busbar-core-config and busbar-core-hooks are cut out of busbar-core, so the day the carve-out lands the root's dependency moves from the old crate to the new one and nothing about what the root knows changes. The class is stated before the crates exist for the same reason `[[announced]]` exists — the branch that lands the crate must not have to open the class in the same edit."
-why = "crates of kind root naming core vocabulary: core package names in any spelling, the kind-qualified id (core-<id>), and — where core is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the root is the thing that assembles the tree; the row exists so a NEW root -> core coupling is visible on the landing that adds it, and so the carve-out has a class to land in. It falls when the root mounts the core crates off the registry rather than by name."
 
 [[edge]]
 from = "root"
