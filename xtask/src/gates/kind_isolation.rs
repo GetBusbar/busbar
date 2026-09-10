@@ -555,6 +555,13 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "substrate"),
     ("root", "transport"),
     ("root", "unit"),
+    // A PLUGIN KIND NAMES THE CONTRACT AND THAT IS HOW IT IS WRITTEN AT ALL — ARCHITECTURE.md 1.2's
+    // manifest allow-list is `busbar-contract` (+`busbar-grammar`) and reviewed third-party. The
+    // store row has been here since the audit because a store plugin was the one kind already
+    // written against the contract; `secret` joins it as the first kind the 1.6.0 busbar-api
+    // retirement moves. The two rows say the same thing about two kinds, and the ones that follow
+    // (auth, hooks, export) will be the same sentence again.
+    ("secret", "contract"),
     ("store", "contract"),
     ("substrate", "contract"),
     ("transport", "contract"),
