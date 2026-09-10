@@ -248,6 +248,66 @@ key = "cell.busbar.kernel.count"
 by = 2
 because = "FACE: the Teller ending's encoded frame — the root reads the kernel Ending's frame in root/transports.rs; 2 more namings of kernel vocabulary"
 file = "qa/kind-isolation.toml"
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_files.teller.ceiling"
+by = 3
+because = "FACE: the Route leg (ARCHITECTURE.md, a PlaneRecord is reached only through Route legs; the trust token lent to Verify) — the Teller loop lends its trust token to a leg assembled before the loop; 3 lines measured in busbar-kernel/src/teller.rs"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.kernel_ceiling"
+by = 3
+because = "FACE: the Route leg — the same 3 teller.rs lines, counted once more by the kernel's own-files row"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 3
+because = "FACE: the Route leg — the same 3 kernel lines, counted once more by the union row"
+file = "qa/construction.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+by = 13
+because = "FACE: the Route leg — the root's driver walks an arrival against a leg, not against the node's units by name (root/transports.rs); 13 more namings of caps vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+by = 8
+because = "FACE: the Route leg — the leg the driver walks is assembled over the transport-facing contract (root/transports.rs and its tests); 8 more namings"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+by = 4
+because = "FACE: the Route leg — 4 more namings of control vocabulary where the root assembles the leg"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+by = 14
+because = "FACE: the Route leg — the root assembles the leg the kernel's trust token is lent to, before the loop (root/transports.rs); 14 more namings of kernel vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+by = 31
+because = "FACE: the Route leg — the leg names the plane it routes to instead of the node's units by name (root/transports.rs and its tests); 31 more namings of plane vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+by = 5
+because = "FACE: the Route leg — the driver's leg walk over the transport (root/transports.rs); 5 more namings of transport vocabulary"
+file = "qa/kind-isolation.toml"
+[[gate.ceiling_raises]]
+key = "cell.busbar-kernel.caps.count"
+by = 2
+because = "FACE: the Route leg — the kernel's own tests lend the trust token to a leg assembled before the loop (busbar-kernel/tests); 2 more namings of caps vocabulary"
+file = "qa/kind-isolation.toml"
+
+
 
 
 
@@ -467,7 +527,7 @@ identical counting rule to busbar-caps + busbar-contract once their proof tables
 this rule's own `loc-ceilings:caps-contract` row is not that row and is not removed by it -- the two \
 are expected to converge once the move lands, not to be reconciled here."""
 kernel_crate = "busbar-kernel"
-kernel_ceiling = 5487
+kernel_ceiling = 5490
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
 caps_contract_ceiling = 3480
@@ -475,7 +535,7 @@ unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23573
+union_ceiling = 23576
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -484,7 +544,7 @@ teller_files = ["teller.rs"]
 [rules.loc-ceilings.kernel_files.teller]
 label = "Teller loop"
 patterns = ["teller.rs"]
-ceiling = 612
+ceiling = 615
 
 [rules.loc-ceilings.kernel_files.pump]
 label = "pump/scheduler"
