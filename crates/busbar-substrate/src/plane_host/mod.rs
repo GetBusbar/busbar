@@ -1146,6 +1146,44 @@ pub trait IdentityHost: Send + Sync {
         resource: String,
     ) -> Result<(AuthPrincipal, PlaneRequestCtx), IdentityRefusal>;
 
+    /// **THE SAME QUESTION, ASKED ABOUT THE WHOLE ARRIVAL** — who is calling, given everything the
+    /// caller sent rather than the credential alone.
+    ///
+    /// [`identity_admit`](Self::identity_admit) carries a credential STRING, which is the whole of
+    /// what a caller presents on a transport that has nothing else to present: a stdio session binds
+    /// once, at boot, off one value. It is NOT the whole of what a caller presents on a request
+    /// wire, and for one family of credentials it is not even most of it — a credential can be a
+    /// SIGNATURE OVER THE ARRIVAL, binding the method, the request target, a declared subset of the
+    /// headers and a hash of the body. Handed only the string, a verifier has nothing to verify
+    /// against and the resolution fails closed, which refuses callers the driven path admits.
+    ///
+    /// So this is the widened form of the one question, for the callers that arrive on a request:
+    /// everything the wire carried, and the host decides — over the SAME configured chain and the
+    /// SAME one verdict resolution — which of its arms answers. WHICH credential families are
+    /// recognised, and how, is entirely the host's: this seam names no scheme, no header and no
+    /// algorithm, for the same reason the credential form names none.
+    ///
+    /// - `credential` is what the transport called the caller's credential, as presented.
+    /// - `method` and `target` are the request line: the target is the path AND query TOGETHER,
+    ///   exactly as it arrived, because a signature over an arrival covers both and a caller who
+    ///   sent a query signed it.
+    /// - `headers` is every header that arrived, in arrival order, lowercased names — not a subset,
+    ///   because which headers a credential covers is the credential's statement and a seam that
+    ///   curated them would be deciding it here.
+    /// - `body` is the bytes as received. A payload-binding credential is verified against THESE
+    ///   bytes and not against what a downstream reader later makes of them.
+    ///
+    /// Borrowed rather than owned: nothing here outlives the call, and a mounted request wire hands
+    /// this seam the bytes it already holds instead of copying a body per arrival.
+    async fn identity_admit_arrival(
+        &self,
+        credential: Option<&str>,
+        method: &str,
+        target: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<(AuthPrincipal, PlaneRequestCtx), IdentityRefusal>;
+
     /// RE-ASK a [`Standing`] permission against the LIVE governance registry: hand back the principal
     /// AS IT IS NOW, or the [`Lapsed`] reason it no longer stands. Injects the host's `GovState`
     /// (through the `GovResolve` seam) INTERNALLY, so the plane holds only the `Standing`. Identical to

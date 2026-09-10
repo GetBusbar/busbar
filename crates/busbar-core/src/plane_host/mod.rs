@@ -283,6 +283,58 @@ pub async fn identity_admit_over(
     .unwrap_or(Err(crate::auth::IdentityRefusal::Denied))
 }
 
+/// Resolve INBOUND data-plane identity for a WHOLE ARRIVAL — the widened form of
+/// [`identity_admit_over`], for a surface that answers in FRONT of the HTTP auth middleware and so
+/// carries more about a caller than a credential string.
+///
+/// TWO ARMS AND NO THIRD ANSWER, and neither is written here:
+///
+/// - A credential that is a SIGNATURE OVER THE ARRIVAL is resolved by
+///   [`crate::auth::signed_arrival_identity`] — the middleware's own fork, its own predicates and
+///   its own verifier, feeding the one verdict resolution. It is SYNCHRONOUS (the verification is
+///   arithmetic over the bytes in hand; it dials nobody), so there is nothing to bridge and no
+///   `HostCtx` to mint: the answer needs the governance store and this side already holds it.
+/// - EVERYTHING ELSE is the configured chain, and this hands straight to
+///   [`identity_admit_over`] — the wired vtable slot, unchanged — rather than running one. So a
+///   deployment's own identity provider decides on a mounted surface exactly as it does on a driven
+///   one, and there is still ONE chain admission in the tree.
+///
+/// NO C-ABI SLOT of its own, and that is not a shortcut: the slot exists for `identity_admit`
+/// because the RESOLVED identity cannot cross a `#[repr(C)]` boundary (hence the opaque
+/// `IdentityId` handle). This seam's chain arm crosses that slot unchanged, and its signature arm
+/// is a pre-step that runs BEFORE and OUTSIDE the chain on the driven path too. The precedent on
+/// this same trait is `CompletionHost::synthesize_completion`: the host drives a native core async
+/// fn, no slot, no `spawn_blocking`.
+///
+/// NO EXPECTED AUDIENCE, for the reason the caller passes none: this is the DATA-plane boundary and
+/// a dialect surface has no resource canonical URI to bind against.
+pub async fn identity_admit_arrival_over(
+    app: &Arc<App>,
+    credential: Option<&str>,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Result<
+    (
+        crate::auth::AuthPrincipal,
+        crate::governance::PlaneRequestCtx,
+    ),
+    crate::auth::IdentityRefusal,
+> {
+    if let Some(resolved) = crate::auth::signed_arrival_identity(app, method, target, headers, body)
+    {
+        return resolved;
+    }
+    identity_admit_over(
+        Arc::clone(app),
+        credential.map(str::to_string),
+        String::new(),
+        String::new(),
+    )
+    .await
+}
+
 /// Read the host wall clock in whole SECONDS through the wired [`clock_now`](vtable) seam — the
 /// host-driven form of a plane's [`busbar_substrate::store::now`]. The slot's ABI unit is Unix NANOSECONDS
 /// (see [`vtable`]'s `clock_now`, which scales the host milliseconds clock up), so this scales it
@@ -969,6 +1021,18 @@ impl busbar_substrate::plane_host::IdentityHost for EngineHostImpl {
         // blocking thread; this only awaits the join, so no `HostCtx` crosses the `.await` and the
         // future stays `Send`.
         identity_admit_over(Arc::clone(&self.app), token, audience, resource).await
+    }
+
+    async fn identity_admit_arrival(
+        &self,
+        credential: Option<&str>,
+        method: &str,
+        target: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> Result<(busbar_api::AuthPrincipal, busbar_api::PlaneRequestCtx), busbar_api::IdentityRefusal>
+    {
+        identity_admit_arrival_over(&self.app, credential, method, target, headers, body).await
     }
 
     fn principal_standing(

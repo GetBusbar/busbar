@@ -1595,20 +1595,18 @@ pub(crate) async fn auth_middleware(
     // below. The "which protocol uses SigV4" decision is a DECLARED protocol fact
     // (`ProtocolDecl::ingress_auth`), NOT a `proto == "bedrock"` name-branch — and reading it no
     // longer costs the reader/writer pair the old vtable predicate had to allocate to ask.
-    let ingress_uses_sigv4 = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
-        ingress_for_path(&app, &path),
-    ))
-    .is_some_and(|d| d.uses_sigv4_ingress_auth());
     // The SigV4 pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An
     // audience-bound plane admits bearer tokens only: SigV4 signs a request with a busbar key's
     // secret and produces an identity with no audience anywhere in it, so allowing it here would be
     // a second door into the MCP plane that the RFC 8707 check does not stand behind. MCP has no
     // SigV4 dialect to be compatible with, so nothing is lost by closing it.
-    let verdict = if admission.is_none()
-        && app.auth.keys_in_chain
-        && ingress_uses_sigv4
-        && has_sigv4_authorization(&req)
-    {
+    //
+    // The four conditions are ASKED THROUGH `sigv4_ingress_applies` rather than written out here,
+    // because this is no longer the only arrival that has to ask them: a MOUNTED surface sits in
+    // front of this middleware and its leg reaches the same decision through the plane-host ABI's
+    // whole-arrival admission. One predicate, two callers — the alternative is two statements about
+    // which arrivals authenticate by signature, and one of them silently going stale.
+    let verdict = if sigv4_ingress_applies(&app, &path, admission.is_some(), req.headers()) {
         // STRUCTURAL GATE, before buffering: require the Authorization header to actually parse
         // as SigV4 (`has_sigv4_authorization` only checked the algorithm-token prefix) and the
         // `x-amz-content-sha256`/`x-amz-date` headers to be present. This is a HOIST of work
@@ -1620,15 +1618,7 @@ pub(crate) async fn auth_middleware(
         // AccessKeyId is valid — gating on that would leak validity through a read/no-read signal
         // and reintroduce the enumeration oracle `verify_sigv4_ingress_credential` spends a dummy secret to
         // avoid.
-        let auth_value = req
-            .headers()
-            .get(AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let structurally_valid = crate::sigv4::parse_authorization_header(auth_value).is_ok()
-            && req.headers().contains_key(X_AMZ_CONTENT_SHA256)
-            && req.headers().contains_key(X_AMZ_DATE);
-        if !structurally_valid {
+        if !sigv4_structurally_valid(req.headers()) {
             return Err(unauthorized_response(&app, &path));
         }
         // BODY INTEGRITY: a SigV4 signature only binds the payload if we re-hash the actual bytes
@@ -1818,12 +1808,139 @@ pub(crate) fn resolve_data_plane_identity(
 /// pre-check so the SigV4 verify path is entered ONLY for genuine SigV4 requests; everything else
 /// (bearer, x-api-key, x-goog-api-key, or no Authorization) takes the unchanged token path. The full
 /// structural parse/validation happens inside the verifier — this only gates entry.
-fn has_sigv4_authorization(req: &Request<Body>) -> bool {
-    req.headers()
+fn has_sigv4_authorization(headers: &axum::http::HeaderMap) -> bool {
+    headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .map(|v| v.trim_start().starts_with(SIGV4_ALGORITHM))
         .unwrap_or(false)
+}
+
+/// **DOES THIS ARRIVAL AUTHENTICATE BY SIGNATURE AT ALL?** — the four conditions, in one place.
+///
+/// Lifted out of [`auth_middleware`] unchanged when the mounted surfaces gained a leg that has to
+/// ask the same question: a mount answers in FRONT of this middleware, so the arrival never reaches
+/// the code that decides this, and the plane-host ABI's whole-arrival admission asks here instead.
+/// One predicate with two callers, rather than two statements about which arrivals sign.
+///
+/// - `audience_bound` — the pre-step is CONFINED TO THE RESIDUAL PLANE. An audience-bound plane
+///   admits bearer tokens only: a signature over a request produces an identity with no audience
+///   anywhere in it, so allowing it there would be a second door the RFC 8707 check does not stand
+///   behind.
+/// - `keys_in_chain` — a busbar-minted SigV4 credential IS a `keys` credential, so an open
+///   `chain: []` stays open even for a signature-shaped arrival (pure anonymous).
+/// - the DECLARED protocol fact `ProtocolDecl::ingress_auth`, resolved off the path the way the
+///   ingress tables resolve it — never a dialect name-branch.
+/// - and the algorithm token actually being on the wire.
+fn sigv4_ingress_applies(
+    app: &crate::state::App,
+    path: &str,
+    audience_bound: bool,
+    headers: &axum::http::HeaderMap,
+) -> bool {
+    if audience_bound || !app.auth.keys_in_chain {
+        return false;
+    }
+    let ingress_uses_sigv4 = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
+        ingress_for_path(app, path),
+    ))
+    .is_some_and(|d| d.uses_sigv4_ingress_auth());
+    ingress_uses_sigv4 && has_sigv4_authorization(headers)
+}
+
+/// The STRUCTURAL gate: the Authorization header parses as SigV4 and the two headers a signature
+/// over a payload must carry are present. Lifted out of [`auth_middleware`] beside
+/// [`sigv4_ingress_applies`] and for the same reason.
+///
+/// Every condition is attacker-known and none of them depends on whether an AccessKeyId is valid,
+/// so this is a HOIST of work [`verify_sigv4_ingress_credential`] repeats and never an enumeration
+/// oracle — which is what lets the driven path run it BEFORE buffering a body while the mounted
+/// path, which already holds its bytes, runs it in line.
+fn sigv4_structurally_valid(headers: &axum::http::HeaderMap) -> bool {
+    let auth_value = headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    crate::sigv4::parse_authorization_header(auth_value).is_ok()
+        && headers.contains_key(X_AMZ_CONTENT_SHA256)
+        && headers.contains_key(X_AMZ_DATE)
+}
+
+/// **WHO IS CALLING, GIVEN THE WHOLE ARRIVAL** — the resolution behind the plane-host ABI's
+/// `IdentityHost::identity_admit_arrival`, for a surface that answers in FRONT of
+/// [`auth_middleware`] and therefore never reaches it.
+///
+/// It is the SAME FORK, over the SAME predicates and the SAME verifier, feeding the SAME one
+/// verdict resolution — not a second admission:
+///
+/// - [`sigv4_ingress_applies`] decides whether this arrival authenticates by signature, exactly as
+///   the middleware asks it.
+/// - [`sigv4_structurally_valid`] then [`verify_sigv4_ingress_credential`] answer it, over a request
+///   RECONSTITUTED from what the transport published — which is the request, byte for byte: the
+///   method, the target the request line carried whole, and every header that arrived. The verifier
+///   is untouched, so a signature admitted here is admitted for the identical reasons.
+/// - anything else is the CHAIN, and this fn does not run one: it hands back `None`, and the caller
+///   asks the credential-shaped seam so the configured chain has one implementation too.
+///
+/// A failure is the SINGLE opaque `Denied`, as on the driven path: which of "unknown key",
+/// "bad signature", "tampered body", "revoked credential" it was is the operator's diagnostic and
+/// never the caller's.
+pub(crate) fn signed_arrival_identity(
+    app: &crate::state::App,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Option<Result<(AuthPrincipal, crate::governance::GovCtx), IdentityRefusal>> {
+    // The header map the arrival carried. A name or value that will not make a header again is left
+    // off rather than mangled — it cannot happen for anything a request transport published (they
+    // all came off a `HeaderMap`), and a fact that some other transport wrote would be visible
+    // rather than silently reshaped.
+    let mut map = axum::http::HeaderMap::new();
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::try_from(*name),
+            axum::http::HeaderValue::try_from(*value),
+        ) {
+            map.append(name, value);
+        }
+    }
+    // The path WITHOUT its query, because that is what the canonical URI is built from and the
+    // canonical query string is built from the other half; the target carries both, as the request
+    // line did.
+    let (path, _) = target.split_once('?').unwrap_or((target, ""));
+    // An arrival is never audience-bound here: an audience-bound plane admits bearer tokens only,
+    // and a mounted dialect surface has no resource canonical URI to bind against — the same
+    // `expected_aud: None` boundary the credential-shaped seam is asked at.
+    if !sigv4_ingress_applies(app, path, false, &map) {
+        return None;
+    }
+    if !sigv4_structurally_valid(&map) {
+        return Some(Err(IdentityRefusal::Denied));
+    }
+    let mut builder = Request::builder().method(method).uri(target);
+    if let Some(existing) = builder.headers_mut() {
+        *existing = map;
+    }
+    let Ok(req) = builder.body(Body::from(body.to_vec())) else {
+        // A method or a target the http types will not take is not a request anybody can verify a
+        // signature over. Fail closed, with the same opaque refusal every other failure gets.
+        return Some(Err(IdentityRefusal::Denied));
+    };
+    // Governance is always constructed (RAM by default); if somehow absent there is no store to
+    // resolve the credential against → fail closed, exactly as the driven path does.
+    let Some(gov) = app.governance.as_deref() else {
+        return Some(Err(IdentityRefusal::Denied));
+    };
+    let verdict = match verify_sigv4_ingress_credential(gov, &req, body) {
+        Ok(key) => ChainVerdict::Identified {
+            module: crate::config::KEYS_MODULE.to_string(),
+            principal: principal_from_vkey(&key),
+            resolved: Some(std::sync::Arc::new(key)),
+        },
+        Err(()) => return Some(Err(IdentityRefusal::Denied)),
+    };
+    Some(resolve_data_plane_identity(app, verdict))
 }
 
 /// Canonicalize the request query string for SigV4: split into key=value pairs, sort by (encoded)

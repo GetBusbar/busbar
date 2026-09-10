@@ -2547,15 +2547,15 @@ fn test_has_sigv4_authorization_detects_scheme() {
         )
         .body(Body::empty())
         .unwrap();
-    assert!(has_sigv4_authorization(&yes));
+    assert!(has_sigv4_authorization(yes.headers()));
     let bearer = Request::builder()
         .uri("/x")
         .header(AUTHORIZATION, "Bearer tok")
         .body(Body::empty())
         .unwrap();
-    assert!(!has_sigv4_authorization(&bearer));
+    assert!(!has_sigv4_authorization(bearer.headers()));
     let none = Request::builder().uri("/x").body(Body::empty()).unwrap();
-    assert!(!has_sigv4_authorization(&none));
+    assert!(!has_sigv4_authorization(none.headers()));
 }
 
 #[test]

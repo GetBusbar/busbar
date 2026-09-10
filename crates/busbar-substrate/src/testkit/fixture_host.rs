@@ -600,6 +600,19 @@ impl IdentityHost for FixtureHost {
     ) -> Result<(AuthPrincipal, PlaneRequestCtx), IdentityRefusal> {
         Err(IdentityRefusal::Denied)
     }
+    /// The fixture has no chain and no governance, so the whole-arrival form refuses for the same
+    /// reason the credential form does — and refusing is the honest fixture answer: a door that
+    /// cannot ask anybody admits nobody.
+    async fn identity_admit_arrival(
+        &self,
+        _credential: Option<&str>,
+        _method: &str,
+        _target: &str,
+        _headers: &[(&str, &str)],
+        _body: &[u8],
+    ) -> Result<(AuthPrincipal, PlaneRequestCtx), IdentityRefusal> {
+        Err(IdentityRefusal::Denied)
+    }
     fn principal_standing(
         &self,
         _standing: &Standing,
