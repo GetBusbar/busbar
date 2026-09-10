@@ -33,12 +33,15 @@ if [ "${1:-}" = "--selftest" ]; then
   _ok() { printf '  ok   %s\n' "$1"; }; _fail() { printf '  FAIL %s\n' "$1"; fails=$((fails + 1)); }
   echo "land-remote selftest: this file"
   bash -n "${BASH_SOURCE[0]}" && _ok "parses (bash -n)" || _fail "parses (bash -n)"
-  grep -qF -- '"+refs/heads/$REF:$BASEREF"' "${BASH_SOURCE[0]}" && _ok "the integration base is a refspec on the checkout's fetch" || _fail "the integration base is a refspec on the checkout's fetch"
-  grep -qE -- 'BASEREF="\$3"; SHARDS="\$4"; shift 4' "${BASH_SOURCE[0]}" && _ok "the box unpacks REF CEIL BASEREF SHARDS, in that order" || _fail "the box unpacks REF CEIL BASEREF SHARDS"
-  grep -qF -- 'rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS"' "${BASH_SOURCE[0]}" && _ok "...and this side sends them in that order" || _fail "this side sends REF CEIL BASEREF SHARDS"
-  grep -qF -- 'git rev-parse --verify --quiet "$BASEREF"' "${BASH_SOURCE[0]}" && _ok "the base is verified on the box before land.sh runs" || _fail "the base is verified on the box"
+  grep -qF -- '"+refs/heads/$REF-base:$BASEREF"' "${BASH_SOURCE[0]}" && _ok "the integration base is a refspec on the checkout's fetch, from \$REF-base" || _fail "the integration base is a refspec on the checkout's fetch"
+  grep -qE -- '^git fetch .*\+refs/heads/\$REF:\$BASEREF' "${BASH_SOURCE[0]}" && _fail "the base must never be the pushed tip (\$REF)" || _ok "the base is never the pushed tip"
+  grep -qF -- 'rev-parse --verify --quiet "$LAND_BASE_BRANCH"' "${BASH_SOURCE[0]}" && _ok "the base is resolved HERE from refs/heads/integration/oracle-phase0" || _fail "the base is resolved here"
+  grep -qE -- 'BASEREF="\$3"; SHARDS="\$4"; BASESHA="\$5"; shift 5' "${BASH_SOURCE[0]}" && _ok "the box unpacks REF CEIL BASEREF SHARDS BASESHA, in that order" || _fail "the box unpacks REF CEIL BASEREF SHARDS BASESHA"
+  grep -qF -- 'rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "$BASE_SHA_LOCAL"' "${BASH_SOURCE[0]}" && _ok "...and this side sends them in that order" || _fail "this side sends REF CEIL BASEREF SHARDS BASESHA"
+  grep -qF -- '[ "$BASE_SHA" = "$BASESHA" ] ||' "${BASH_SOURCE[0]}" && _ok "the box refuses a base that differs from the laptop's" || _fail "the box refuses a differing base"
   # The shard launcher's .rc line: written after the group, from the variable, by the same shell.
   # An `exit` inside the group is exactly the form that lost every shard's verdict once.
+  grep -qF -- 'rsh "$HOST" mv -f "$2.tmp" "$2"' "${BASH_SOURCE[0]}" && _ok "a delivered file is renamed into place, never written in place" || _fail "delivery is atomic"
   grep -qF -- 'echo "$rc" >target/shard.rc' "${BASH_SOURCE[0]}" && _ok "the shard launcher writes its .rc after the group, from \$rc" || _fail "the shard launcher writes its .rc after the group"
   grep -qE -- 'exit \$rc; \} >target/shard.log' "${BASH_SOURCE[0]}" && _fail "the shard launcher must not exit from inside the group" || _ok "the shard launcher does not exit from inside the group"
   bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
@@ -184,10 +187,23 @@ RRC="busbar-prove/target/land-remote-$REF.rc"
 # that name in the box's checkout by the same fetch that brings the tree (a second refspec on the
 # `git fetch prove` line below), verified with `rev-parse --verify`, and printed into the landing log
 # so a reader of the log can see what the ceilings were judged against.
+# THE BASE IS THE INTEGRATION BRANCH AS THIS REPOSITORY HOLDS IT, NEVER THE TIP BEING PROVEN. The
+# first form of this pinned `$REF` — the pushed HEAD — under the base's name, which is right for the
+# runner (its HEAD IS the integration branch) and silently wrong for a slot proving its own branch:
+# ceilings judged against themselves, a rise invisible, a silent green (audit, 2026-09-09). So the
+# base is `refs/heads/integration/oracle-phase0` RESOLVED HERE, in $REPO, pushed to the box under its
+# own name, fetched into the checkout under the origin name the gate reads, and checked on the box
+# against the sha this side resolved — by this script and again by land.sh — before anything runs.
 LAND_BASE_REF="${LAND_BASE_REF:-refs/remotes/origin/integration/oracle-phase0}"
-rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "${RARGS[@]}" <<'RUN'
+LAND_BASE_BRANCH="${LAND_BASE_BRANCH:-refs/heads/integration/oracle-phase0}"
+BASE_SHA_LOCAL="$(git -C "$REPO" rev-parse --verify --quiet "$LAND_BASE_BRANCH")" \
+  || rdie "no $LAND_BASE_BRANCH in $REPO to judge the ceilings against — a landing needs the integration branch, not only a tip"
+remote_push_sha "$HOST" "$REPO" "$REF-base" "$BASE_SHA_LOCAL" || rdie "could not push the integration base $(printf '%.9s' "$BASE_SHA_LOCAL") to $HOST"
+rlog "integration base $(printf '%.9s' "$BASE_SHA_LOCAL") ($LAND_BASE_BRANCH here) pushed as $REF-base"
+rsh_script "$HOST" "$REF" "${XTASK_GATE_CEILING_SECS:-3600}" "$LAND_BASE_REF" "$SHARDS" "$BASE_SHA_LOCAL" "${RARGS[@]}" <<'RUN'
 set -uo pipefail
-REF="$1"; CEIL="$2"; BASEREF="$3"; SHARDS="$4"; shift 4
+REF="$1"; CEIL="$2"; BASEREF="$3"; SHARDS="$4"; BASESHA="$5"; shift 5
+export LAND_BASE_REF="$BASEREF" LAND_BASE_SHA="$BASESHA"
 # THE FAN-OUT MODE, when shards were allocated: land.sh writes a REQUEST per leg and waits for what
 # this script delivers (land.sh's header has the protocol). With SHARDS=0 neither variable is set
 # and land.sh runs exactly what it ran before.
@@ -207,10 +223,9 @@ export LAND_REMOTE_INNER=1
 # The box may be running four proofs at once; the recorder's fixed port block would collide.
 export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
 cd "$HOME/busbar-prove" || { echo "no ~/busbar-prove — ./scripts/prove-remote.sh --setup $(hostname)"; exit 2; }
-# The runner's tip is fetched under the INTEGRATION BASE's name as well (see LAND_BASE_REF above):
-# `ceilings::base_ref` takes the merge-base of HEAD with it, so the whole batch is judged against
-# the tip the picks went onto rather than HEAD~1 or a stale seed.
-git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/heads/$REF:$BASEREF" "+refs/proof/$REF/*:refs/proof/$REF/*" "+refs/audit-pins/*:refs/audit-pins/*" || exit 2
+# The integration base the laptop resolved comes in under the origin name the gate reads (see
+# LAND_BASE_REF above): `ceilings::base_ref` takes the merge-base of HEAD with it.
+git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/heads/$REF-base:$BASEREF" "+refs/proof/$REF/*:refs/proof/$REF/*" "+refs/audit-pins/*:refs/audit-pins/*" || exit 2
 git checkout -q -f "$REF" || exit 2
 git clean -qffdx -e target -e .cargo -e node_modules
 mkdir -p target
@@ -218,7 +233,8 @@ LOG="target/land-remote-$REF.log"; RC="target/land-remote-$REF.rc"
 rm -f "$RC"
 echo "remote tree: $(git rev-parse --short HEAD)  on $(hostname)" >"$LOG"
 BASE_SHA="$(git rev-parse --verify --quiet "$BASEREF")" || { echo "integration base $BASEREF does not resolve on $(hostname) — the ceiling rows would judge against HEAD~1" | tee -a "$LOG"; exit 2; }
-echo "integration base: $BASEREF = $BASE_SHA (the runner's tip; ceilings are diffed against it)" >>"$LOG"
+echo "integration base: $BASEREF = $BASE_SHA on $(hostname); the laptop resolved $BASESHA (ceilings are diffed against it)" >>"$LOG"
+[ "$BASE_SHA" = "$BASESHA" ] || { echo "integration base MISMATCH: the box holds $BASE_SHA, the laptop resolved $BASESHA — refusing to judge" | tee -a "$LOG"; exit 2; }
 # The landed tip is published to the bare repo under refs/heads/<ref>-landed the moment land.sh
 # returns, whatever its status: a partially green batch has a tip too, and the local side
 # fast-forwards to exactly what the box proved.
@@ -244,6 +260,13 @@ RUN
 SERVED=""            # request refs already launched
 LAUNCHED=()          # "seq|k|host|jobref|primary-dir|t0" per launched shard, until delivered
 DELIVERED=()         # "seq|k|host|secs" per delivered shard
+# DELIVERY IS ATOMIC ON THE PRIMARY. scp creates the file and then writes it; the primary polls with
+# `[ -f ]` every 20 s and once read a .rc that existed and was still empty — and judged the shard
+# "never reported" in the same second this side logged the delivery (measured, first real landing).
+# So each file lands under a temporary name and is renamed into place, log first, then .rc.
+deliver() { # $1 = local file  $2 = remote path
+  rcp_to "$HOST" "$1" "$2.tmp" && rsh "$HOST" mv -f "$2.tmp" "$2" </dev/null >/dev/null 2>&1
+}
 shard_launch() { # $1 = sibling host  $2 = job ref  $3 = gate  $4 = k/n  $5 = CEIL=VALUE  $6 = ceiling secs
   rsh_script "$1" "$2" "$3" "$4" "$5" "$6" <<'SHARD'
 set -uo pipefail
@@ -311,7 +334,7 @@ serve_requests() {
         # ends with a reason rather than a deadline.
         { echo "land.sh: shard $k/$R_n of $R_gate: the laptop could not start it on $sib"; tail -5 "$FANDIR/$seq/transport.log"; } >"$FANDIR/$seq/shard-$k.log"
         echo 2 >"$FANDIR/$seq/shard-$k.rc"
-        rcp_to "$HOST" "$FANDIR/$seq/shard-$k.log" "$dir/shard-$k.log" && rcp_to "$HOST" "$FANDIR/$seq/shard-$k.rc" "$dir/shard-$k.rc"
+        deliver "$FANDIR/$seq/shard-$k.log" "$dir/shard-$k.log" && deliver "$FANDIR/$seq/shard-$k.rc" "$dir/shard-$k.rc"
         DELIVERED+=("$seq|$k|$sib|0")
         rlog "fan-out: shard $k/$R_n could not be started on $sib — delivered RED"
       fi
@@ -341,7 +364,7 @@ EOF
       rsh "$sib" rm -rf "busbar-shards/$job" </dev/null >/dev/null 2>&1 || true
     fi
     secs=$(( $(date +%s) - t0 ))
-    if rcp_to "$HOST" "$FANDIR/$seq/shard-$k.log" "$dir/shard-$k.log" && rcp_to "$HOST" "$FANDIR/$seq/shard-$k.rc" "$dir/shard-$k.rc"; then
+    if deliver "$FANDIR/$seq/shard-$k.log" "$dir/shard-$k.log" && deliver "$FANDIR/$seq/shard-$k.rc" "$dir/shard-$k.rc"; then
       rlog "fan-out: shard $k of request $seq on $sib: rc $rec, ${secs}s launch-to-verdict — delivered to $HOST"
     else
       rlog "fan-out: shard $k of request $seq on $sib: rc $rec, but it could NOT be delivered to $HOST (the primary will report it missing)"
