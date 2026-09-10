@@ -25,7 +25,7 @@
 //! # WHY THIS IS ITS OWN CRATE, AND WHAT IT MAY NOT NAME
 //!
 //! Owner ruling, 2026-09-08 (Q3 of the R5 hand-back): the hook ENGINE is a CORE crate of its own,
-//! `busbar-core-hooks`. The kernel SEATS a hook plugin after Admit; deciding WHICH hook runs, with
+//! `busbar-core-policy`. The kernel SEATS a hook plugin after Admit; deciding WHICH hook runs, with
 //! WHICH grants, on WHICH terminal, from WHICH pool's configuration, is POLICY — and policy is
 //! core's, not the kernel's and not a plane's. Those are two different jobs and they were sharing
 //! one crate only because busbar-core was the only place there was.

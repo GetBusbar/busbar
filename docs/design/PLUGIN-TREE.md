@@ -172,7 +172,7 @@ scope, as the manifest allow-list already is.
 | control | `busbar-core-contract` (+ `busbar-core-capabilities` where the contract needs it) | any transport, any plane, any dialect, any unit, **any other control crate**, kernel, core, substrate | a control surface answers out of node state; the moment it links a wire or a plane it is on the metered path |
 | transport | `busbar-core-contract`, `busbar-core-contract-transport`, **lower** `busbar-transport-*` only | any plane, any dialect, any unit, capabilities, kernel | wires compose over wires; `busbar-transport-tls → busbar-unit-transport-key` is the one live breach (§9 row 6) |
 | unit *(core)* | `busbar-core-contract`, `busbar-core-capabilities`, `busbar-core-contract-transport` | any plane, dialect, transport, store/auth/secret/hook/export crate | units take facts + principal + clock and nothing else |
-| core policy engine — today `busbar-core-hooks` | `busbar-api`, `busbar-substrate`(+`-values`), `busbar-plugin-loader`, `busbar-plugin-sign`, and the hook plugin it may call **through the contract** (`hooks-ranking`, optional) | **any plane, any dialect, any transport**, and `busbar-core` | it decides WHICH plugin runs with WHICH grants; the kernel then seats it. A policy that could name a plane would be a policy with a protocol branch in it, which is the thing this kind exists to make unspellable |
+| core policy engine — today `busbar-core-policy` | `busbar-api`, `busbar-substrate`(+`-values`), `busbar-plugin-loader`, `busbar-plugin-sign`, and the hook plugin it may call **through the contract** (`hooks-ranking`, optional) | **any plane, any dialect, any transport**, and `busbar-core` | it decides WHICH plugin runs with WHICH grants; the kernel then seats it. A policy that could name a plane would be a policy with a protocol branch in it, which is the thing this kind exists to make unspellable |
 | store / auth / egress-auth / secret / hook / export | `busbar-core-contract` (+ the reviewed third-party list) | every other kind's crate, capabilities, kernel, core, substrate, another instance of its own kind | one kind, one crate, no siblings |
 | kernel | contract, capabilities, contract-transport, grammar | any plugin crate of any kind | core → plugin, never plugin → core |
 | root (`busbar`) | everything | — | naming both axes is the composition root's job |
@@ -254,7 +254,7 @@ kind from segment two, so directory name and `package.name` must agree.
 
 | Old | New | Note |
 |---|---|---|
-| `busbar-core` | *deleted* | Track R5 — and "deleted" is reached by DRAINING it, one owned thing at a time, into a crate that already conforms to this rule. `busbar-core-hooks` (the hook policy engine, owner ruling 2026-09-08) is the first; each such crate is named `busbar-core-<name>` on landing, so the rename column never has a row for it |
+| `busbar-core` | *deleted* | Track R5 — and "deleted" is reached by DRAINING it, one owned thing at a time, into a crate that already conforms to this rule. `busbar-core-policy` (the hook policy engine, owner ruling 2026-09-08) is the first; each such crate is named `busbar-core-<name>` on landing, so the rename column never has a row for it |
 | `busbar-kernel` | `busbar-core-kernel` | |
 | `busbar-caps` | `busbar-core-capabilities` | owner ruling |
 | `busbar-contract` | `busbar-core-contract` | |

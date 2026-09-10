@@ -49,7 +49,7 @@ fn uninstalled_accessors_return_historical_defaults() {
     assert_eq!(rate_sweep_interval(), DEFAULT_RATE_SWEEP_INTERVAL);
     assert_eq!(default_probe_interval_secs(), DEFAULT_PROBE_INTERVAL_SECS);
     assert_eq!(default_probe_timeout_secs(), DEFAULT_PROBE_TIMEOUT_SECS);
-    // `default_policy_timeout_ms` is asserted where it now lives, in `busbar_core_hooks::limits`.
+    // `default_policy_timeout_ms` is asserted where it now lives, in `busbar_core_policy::limits`.
     // It reads the SAME process-global slot every accessor above reads, so the property this line
     // used to check — uninstalled reads the historical default — is unchanged and is checked there.
     // 1.5.3: no `webhook_delivery_timeout_secs()` accessor exists any more — the deadline is PER
