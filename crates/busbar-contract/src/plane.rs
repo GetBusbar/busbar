@@ -3,6 +3,8 @@
 //! facts and locators only — never an amount, a decision, a credential, a price or a scheme
 //! outside its claim. Pure over its inputs; no default bodies (see `docs/design/contract-notes.md`).
 
+pub mod registry;
+
 use crate::bounded::{ArenaBytes, Facts, Ir};
 use crate::dest::{EgressBody, RoutePlan, VerifiedDestination};
 use crate::grammar::Claim;
