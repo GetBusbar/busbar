@@ -265,6 +265,60 @@ impl Catalog {
         find(locale).or_else(|| find(&self.default_locale))
     }
 
+    /// A code rendered for a reader: the template for this locale with the error's own parameters
+    /// put into its holes. `None` only when the code is not declared at all, exactly as
+    /// [`Catalog::template`] is.
+    ///
+    /// This is the half of the seam that was missing. A catalog could always FIND the words for a
+    /// code, and nothing could finish them: a template reached its reader with `{key}` still in it,
+    /// which is a message that names its own defect. So the host renders a code by READING data,
+    /// which is the whole point of shipping the catalog as data — the plugin is never called back
+    /// to format anything, and a plugin that panics or blocks cannot do it while a client waits.
+    ///
+    /// A hole with no parameter behind it is LEFT AS IT IS, rather than blanked. Both are wrong,
+    /// and this one is wrong visibly: `{key}` in an operator's log says a parameter is missing,
+    /// where an empty string says the value was empty and hides the bug in a plausible sentence.
+    ///
+    /// Substitution is ONE left-to-right pass and never re-reads what it wrote, so a parameter
+    /// whose value contains braces is data and not a template. A plugin supplies both the codes and
+    /// the parameters; a second pass would let it write a template hole into a value and have the
+    /// host expand it, which is a plugin choosing what the host interpolates.
+    #[must_use]
+    pub fn render(&self, error: &PluginError, locale: &str) -> Option<String> {
+        Some(Self::fill(
+            self.template(&error.code, locale)?,
+            &error.params,
+        ))
+    }
+
+    /// One left-to-right pass, filling `{key}` from `params` and leaving unmatched holes alone.
+    fn fill(template: &str, params: &Params) -> String {
+        let mut out = String::with_capacity(template.len());
+        let mut rest = template;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let after = &rest[open + 1..];
+            // A `{` with no `}` after it is not a hole; it is a brace, and it stays one.
+            let Some(close) = after.find('}') else {
+                out.push_str(&rest[open..]);
+                return out;
+            };
+            let key = &after[..close];
+            match params.as_slice().iter().find(|p| p.key == key) {
+                Some(param) => match &param.value {
+                    ParamValue::Str(v) => out.push_str(v),
+                    ParamValue::Int(v) => out.push_str(&v.to_string()),
+                    ParamValue::Bool(v) => out.push_str(if *v { "true" } else { "false" }),
+                },
+                // No parameter for this hole: keep it, so the gap is visible rather than plausible.
+                None => out.push_str(&rest[open..open + 1 + close + 1]),
+            }
+            rest = &after[close + 1..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// Whether this catalog is well-formed: a non-empty default locale, no duplicate or empty
     /// code, and every code templated in the default locale. The one check a host runs before
     /// it accepts the plugin.

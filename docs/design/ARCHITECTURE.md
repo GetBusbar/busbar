@@ -68,8 +68,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ceiling): `busbar-kernel`
   ≤ 8k — Teller loop 1.5k · pump/scheduler 1.5k · in-flight/sessions 1k · recovery 0.8k · slice/lease
   0.8k · registry + generations 0.8k · grammars incl. JSON span scanner 0.8k · Ticks/drain/fleet 0.5k ·
-  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,902** **of plugin-visible SURFACE**
-  (3,900 as `scripts/loc-surface.py` counts it, 3,902 as `loc-ceilings:caps-contract` does; the two
+  arena/masking 0.3k; `busbar-caps` + `busbar-contract` ≤ **3,933** **of plugin-visible SURFACE**
+  (3,931 as `scripts/loc-surface.py` counts it, 3,933 as `loc-ceilings:caps-contract` does; the two
   differ by two lines of counting rule and are pinned as one decision) — raised from 3.5k on
   2026-09-09, and each face below is pinned at its MEASURED size with zero slack. (1) THE DIALECT
   KIND'S CONTRACT FACE, 51 lines: `Kind::{Dialect, Control}` with their sealed markers and
@@ -105,14 +105,20 @@ them). Each axis is blind to the other two; only the kernel composes them.
   existed in prose in two places and in code as two hand-kept booleans threaded through
   `busbar-core`'s `finish_inner`; because `refund_request` is a blind decrement, the two spellings
   drifting is how a refund lands on a request that was never charged and erodes another principal's
-  window. A future face raises this figure by its own declared,
+  window. (5) **THE CATALOG RENDERER**, 31 lines: `Catalog::render`, the half of (3) that was missing
+  — the catalog could FIND a code's words in a locale and nothing could FILL its `{param}` holes, so
+  a template reached its reader with the braces still in it. Substitution is ONE left-to-right pass
+  that never re-reads what it wrote, so a parameter whose value carries braces is data and not a
+  template: a plugin supplies both the codes and the parameters, and a second pass would let it
+  choose what the host interpolates. A hole with no parameter is left visible rather than blanked.
+  A future face raises this figure by its own declared,
   measured amount (`[gate.ceiling_raises]` in `qa/construction.toml`) and amends this sentence;
   nothing else moves
   it. Surface is non-blank, non-comment code lines under each crate's `src/`, excluding
   `#[cfg(test)]` modules and `src/tests/`; the proofs (overlap totality over the selector-form
   pairs, the lint symbol lists, the compile-fail fixtures and their positive companions, the honesty
   tables) are not surface and live in each crate's `tests/` or `fixtures/`. Measured and gated by
-  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3900`), which the construction
+  `scripts/loc-surface.py` (`--ceiling busbar-contract,busbar-caps=3931`), which the construction
   gate runs as `surface-ceiling:contract+caps`. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,

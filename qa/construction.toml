@@ -358,6 +358,25 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 100
 because = "The same face seen through the union, which sums caps/contract in with the kernel (5379, unmoved) and the units (14718, unmoved): the settlement column lands in busbar-contract/src/unit.rs and busbar-caps/src/decision.rs and in no kernel or unit crate, so the +100 here is the caps/contract +100 by arithmetic."
 
+# E1'S CATALOG RENDERER (Track 5, T5-1). The seam E1 landed could find a code's words and not finish
+# them. The renderer is the missing half, and it lands UNWIRED on the money path on purpose: the
+# refusal wire is the admin plane's ratified table and each dialect's own, and this branch's
+# byte-identity argument depends on neither of them moving.
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 31
+because = "busbar_contract::error::Catalog::render -- the half of E1's catalog seam that was missing. E1 landed the catalog as data and Catalog::template, which FINDS a code's words in a locale; nothing in the tree FILLED the {param} holes, so a template reached its reader with the braces still in it and every caller of template() in the tree was a plugin test asserting is_some(). render() is template() plus one left-to-right substitution pass that never re-reads what it wrote, so a parameter whose value carries braces is data and not a template -- a plugin supplies both the codes and the parameters, and a second pass would let it choose what the host interpolates. A hole with no parameter is left visible rather than blanked, because an empty string hides a missing parameter inside a plausible sentence. MEASURED by scripts/loc-surface.py: busbar-contract 2736 -> 2767 (+31), busbar-caps 1164 unchanged, total 3900 -> 3931. This is the one commit Track 5 owed E1; it renders no money-path bytes and is deliberately left unwired on the refusal path, whose wire stays the admin plane's ratified table and the dialect's own."
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 31
+because = "The same renderer seen as plugin-visible SURFACE, the same +31 by arithmetic: `Catalog::render` is `pub` and the substitution pass behind it is private, so a plugin author reads one new method. scripts/loc-surface.py measures busbar-contract 2736 -> 2767 and busbar-caps 1164 unchanged; the ten cases that prove it -- including the shipped secret-example catalog, the brace-carrying value and the developer message never reaching a client -- live in busbar-contract/tests/ and are not surface."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 31
+because = "The same renderer seen through the union, which sums caps/contract in with the kernel (5379, unmoved) and the units (14718, unmoved): it lands in busbar-contract/src/error.rs and in no kernel or unit crate, so the +31 here is the caps/contract +31 by arithmetic."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
@@ -371,7 +390,7 @@ because = "The same face seen through the union, which sums caps/contract in wit
 # number, because `ceiling-slack` says a ceiling above its measurement is room nobody voted for.
 # 3478 + 116 + 206 = 3800. `grammar` and `contract_transport` are NOT part of either ruling and keep
 # the figures the integration line measured them at.
-contract_caps = 3900
+contract_caps = 3931
 grammar = 388
 contract_transport = 845
 
@@ -596,7 +615,7 @@ contract_crate = "busbar-contract"
 # same reason: 3480 + 116 (dialect face + upstream status table) + 206 (the plugin structured-error
 # seam) = 3802. Raising one of the pair and not the other would leave the ceiling at whichever
 # number is smaller while the larger one reads as the ruling.
-caps_contract_ceiling = 3902
+caps_contract_ceiling = 3933
 unit_crate_glob = "busbar-unit-*"
 # 14606 + 165 (busbar-unit-cost::CostModel and the group projection it owns) - 53 (the units' own
 # copies of the upstream status class and its disposition, deleted once the contract owns the one
@@ -605,7 +624,7 @@ unit_total_ceiling = 14718
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
 # caps/contract 3802 + kernel 5379 (unmoved) + units 14718 = 23899.
-union_ceiling = 23999
+union_ceiling = 24030
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
