@@ -3002,3 +3002,57 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
         "the keys engine arm must NOT cache vkey verdicts (revocation window unchanged)"
     );
 }
+
+/// `admin::rate::MutationLimiter::check`'s window-sweep fix (RATE-1: `*w >= window` instead of
+/// `*w == window`, closing a clock-regression budget-reset bypass) touches ONLY which entries the
+/// opportunistic sweep drops between requests — it must not move a single served byte of what a
+/// client that is genuinely over budget, in-window, gets back. Pins the exact `rate_limited_response`
+/// wire shape (status, `Retry-After`, body) for the 11th CONFIG-class mutation in one window
+/// (CONFIG's budget is 10/min), so any future change to the limiter or the response builder trips
+/// this test the moment it changes what a rate-limited client is served.
+#[test]
+fn rate_limited_response_bytes_are_pinned_for_an_in_window_denial() {
+    let limiter = crate::admin::rate::MutationLimiter::new();
+    let now = 1_700_000_000u64;
+    for _ in 0..10 {
+        assert!(
+            matches!(
+                limiter.check("op", crate::admin::rate::MutationClass::Config, now),
+                crate::admin::rate::RateCheck::Admitted
+            ),
+            "the first 10 CONFIG mutations in the window must be admitted"
+        );
+    }
+    assert!(
+        matches!(
+            limiter.check("op", crate::admin::rate::MutationClass::Config, now),
+            crate::admin::rate::RateCheck::Denied { .. }
+        ),
+        "the 11th CONFIG mutation in the window is limited"
+    );
+
+    let resp = rate_limited_response();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .expect("Retry-After header must be present"),
+        "60"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(CONTENT_TYPE)
+            .expect("content-type header must be present"),
+        "application/json"
+    );
+    let body = decode_body(resp);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "error": {
+                "code": "rate_limited",
+                "message": "admin mutation rate limit exceeded; retry next minute",
+            }
+        })
+    );
+}
