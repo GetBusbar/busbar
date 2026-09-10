@@ -268,3 +268,116 @@ fn a_short_write_after_a_reset_shows_nothing_of_the_last_frame() {
         "the tail of the span leaked the last frame"
     );
 }
+
+// ── The contract-facing per-unit arena ───────────────────────────────────────────────────────────
+//
+// The kernel's own `Arena` above is a span allocator: it takes `&mut self` and answers with an
+// offset, which is the shape the loop wants and the shape a plugin cannot use. The contract's
+// `Arena` is the other shape — `&self` in, a borrowed slice out — and until now NOTHING in the tree
+// implemented it for real. Every implementor was a double that leaked its allocations with a
+// comment saying so, which meant no serving path could build a `Ctx` and no plane could be served
+// through the loop at all.
+//
+// These are the proofs that the shipping one is real: it copies, it refuses at its own ceiling
+// rather than growing, and it hands back nothing that outlives the unit it was carved for.
+
+use busbar_contract::bounded::Arena as ContractArena;
+use busbar_kernel::arena::{ArenaSpace, UnitArena, ARENA_SPANS};
+
+/// A unit arena copies bytes and hands back a borrow of its own space, not of the caller's input.
+#[test]
+fn the_unit_arena_copies_what_it_is_given() {
+    let mut space = ArenaSpace::new();
+    let arena = UnitArena::new(&mut space);
+
+    let src = b"the bytes a plane produced".to_vec();
+    let held = arena.alloc_bytes(&src).expect("the arena has room");
+    assert_eq!(held.as_slice(), src.as_slice());
+    assert!(
+        !std::ptr::eq(held.as_slice().as_ptr(), src.as_ptr()),
+        "the arena handed back the caller's own bytes instead of a copy"
+    );
+
+    let text = arena.alloc_str("a declared pointer").expect("room");
+    assert_eq!(text, "a declared pointer");
+}
+
+/// The arena is fixed size. An over-capacity request is the contract's refusal, never a growth.
+#[test]
+fn the_unit_arena_refuses_rather_than_grows() {
+    let mut space = ArenaSpace::new();
+    let arena = UnitArena::new(&mut space);
+    assert_eq!(arena.remaining(), ARENA_BYTES);
+
+    let half = vec![b'x'; ARENA_BYTES / 2];
+    arena.alloc_bytes(&half).expect("half fits");
+    assert_eq!(arena.remaining(), ARENA_BYTES - half.len());
+
+    let rest = vec![b'y'; ARENA_BYTES];
+    let refused = arena
+        .alloc_bytes(&rest)
+        .expect_err("a request past the ceiling is refused");
+    assert_eq!(refused.wanted, ARENA_BYTES);
+    assert_eq!(refused.remaining, ARENA_BYTES - half.len());
+
+    // A refusal costs the arena nothing: the next request that DOES fit still succeeds.
+    assert_eq!(arena.remaining(), ARENA_BYTES - half.len());
+    arena
+        .alloc_bytes(&vec![b'z'; ARENA_BYTES - half.len()])
+        .expect("exactly what is left still fits");
+    assert_eq!(arena.remaining(), 0);
+    arena
+        .alloc_bytes(b"one more")
+        .expect_err("an empty arena refuses");
+}
+
+/// A span table is allocated out of the same unit arena, and its pointers are copies too.
+#[test]
+fn the_unit_arena_allocates_a_span_table() {
+    let mut space = ArenaSpace::new();
+    let arena = UnitArena::new(&mut space);
+
+    let table = arena
+        .alloc_spans(&[("/method", Span::new(0, 4)), ("/params", Span::new(6, 11))])
+        .expect("two pointers fit");
+    assert_eq!(table.len(), 2);
+    assert_eq!(table[0], ("/method", Span::new(0, 4)));
+    assert_eq!(table[1], ("/params", Span::new(6, 11)));
+
+    // The pair region has a ceiling of its own, and it refuses rather than growing.
+    let wide: Vec<(&str, Span)> = (0..=ARENA_SPANS).map(|_| ("/p", Span::new(0, 1))).collect();
+    arena
+        .alloc_spans(&wide)
+        .expect_err("a table past the pair ceiling is refused");
+}
+
+/// The one property the leaking doubles never had: nothing survives the unit.
+///
+/// The space is the unit's, on the unit's own stack, and the arena borrows it. When the unit ends
+/// the space is dropped and every borrow it handed out is already dead — proved here by the
+/// compiler, since a `held` that outlived `space` would not build. The next unit's arena starts
+/// full again over its own space, which is what "reset per unit" means when nothing leaks.
+#[test]
+fn nothing_the_unit_arena_hands_out_survives_the_unit() {
+    for _ in 0..4 {
+        let mut space = ArenaSpace::new();
+        let arena = UnitArena::new(&mut space);
+        assert_eq!(arena.remaining(), ARENA_BYTES);
+        arena.alloc_bytes(&vec![b'q'; 1024]).expect("room");
+        assert_eq!(arena.remaining(), ARENA_BYTES - 1024);
+    }
+}
+
+/// The shipping arena is the one a `Ctx` can be built from — which is the whole point.
+#[test]
+fn the_unit_arena_is_what_a_context_is_built_from() {
+    let mut space = ArenaSpace::new();
+    let arena = UnitArena::new(&mut space);
+    let handle: &dyn ContractArena = &arena;
+    assert_eq!(handle.remaining(), ARENA_BYTES);
+    assert_eq!(
+        handle.alloc_str("v").expect("room"),
+        "v",
+        "the trait object allocates the same way the value does"
+    );
+}
