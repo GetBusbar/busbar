@@ -14,6 +14,10 @@ use crate::error::PluginError;
 use crate::grammar::ArrivalLocation;
 use crate::ids::{LaneId, PrincipalId, RecordSchemaId, SchemeAlt, SessionId};
 use crate::plugin::Plugin;
+use crate::store::{
+    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, UsageDelta, UsageLedger,
+    VirtualKey,
+};
 use crate::unit::{Clock, ConfigView, Step, Unit};
 use crate::wire::{ArrivalRecord, Frame};
 use core::fmt;
@@ -461,6 +465,218 @@ pub trait Store: Plugin + Send + Sync + 'static {
 
     /// Drop everything older than a sequence, under the retention the operator set.
     fn purge_before(&self, stream: &str, seq: u64) -> Result<u64, PluginError>;
+
+    // ── THE ENFORCEMENT HALF OF THE STORE FACE ────────────────────────────────────────────────
+    //
+    // The twenty-two verbs above are the journal, the fleet directory and the record half. The
+    // twenty-three below are the enforcement half: the virtual-key directory, the token ledger and
+    // the metering book, row-looked-up credentials, the revocation denylist, and the two record
+    // verbs the record half was missing. They are declared HERE, with their real semantics, rather
+    // than folded onto `record_put`: `usage_add` accumulates atomically where `record_put` sets
+    // absolutely, and `key_put`'s tombstone guard is a test-and-write only a backend can make
+    // atomic. Forcing either through the record verbs would change what the money and the
+    // revocation paths mean, which is the one thing this face may not do.
+    //
+    // Every verb is bodiless, like every other verb on every kind trait here. The accept-and-keep-
+    // nothing and fail-closed DEFAULTS the 1.5.5 replay trait carried are compatibility behaviour,
+    // not face behaviour, so they live in the loader's adapter and are answered there on a legacy
+    // artifact's behalf.
+
+    /// UPSERT a virtual key by its id — the mint path and every in-place update (rename,
+    /// enable/disable, regroup, rotate).
+    ///
+    /// ONE precondition, and it is the FACE's rather than the caller's: a `key_put` whose
+    /// `deleted_at` is `None` MUST NOT overwrite a stored row whose `deleted_at` is `Some(_)`.
+    /// Answer `Conflict` instead. The tombstone is permanent and the id is never reissued, so
+    /// silently clearing one resurrects a key an operator revoked. A caller cannot close this: its
+    /// check is a read-then-write, and a `key_revoke` committing in between slips straight through.
+    /// Only the backend can make the test and the write one operation. Writing a row that CARRIES a
+    /// tombstone is unaffected — hydration and fixtures legitimately do it.
+    ///
+    /// Otherwise an ABSOLUTE set, not a compare-and-set: no expected revision is taken, so two
+    /// concurrent writers are last-writer-wins on the whole row. Said here so the tombstone guard is
+    /// not mistaken for general optimistic concurrency, which this is not.
+    fn key_put(&self, key: &VirtualKey) -> Result<(), PluginError>;
+
+    /// Read one virtual key by id; `None` for an id this store has never held.
+    fn key_get(&self, id: &str) -> Result<Option<VirtualKey>, PluginError>;
+
+    /// EVERY virtual key, live or tombstoned — deliberately UNFILTERED. A caller that wants a
+    /// live-only view filters at the point it renders one; [`Store::keys_since`] needs tombstones to
+    /// be visible here for the eviction its own doc describes. A backend must not filter.
+    fn key_list(&self) -> Result<Vec<VirtualKey>, PluginError>;
+
+    /// TOMBSTONE a virtual key: the row is NOT removed. Atomically destroy every credential row for
+    /// the key (secret material must not outlive it), set it disabled with the deletion stamped, and
+    /// leave the naming and grouping fields untouched so anything that attributes by id — metering
+    /// rows, audit records — keeps resolving forever.
+    ///
+    /// Idempotent on an already-tombstoned id. An id that names NO ROW is a loud `NotFound`, and
+    /// that is a DIFFERENT case: "already revoked" means the operator's intent is satisfied and the
+    /// evidence is on disk, while "no such id" means it is not and the likeliest cause is a stale id
+    /// or a typo. Collapsing them tells an operator a key was revoked when nothing was touched.
+    ///
+    /// Erasing the key's personal data is a separate, explicit operation — see
+    /// [`Store::key_scrub`] — so "this key is gone" and "this key's personal data is gone" stay
+    /// independently auditable.
+    fn key_revoke(&self, id: &str) -> Result<(), PluginError>;
+
+    /// PII erasure ONLY: null the naming fields on an ALREADY-tombstoned key. Every other field, and
+    /// every attribution that reads the row by id, is untouched — this satisfies "erase the personal
+    /// data" without touching financial evidence, which is what a right-to-erasure request actually
+    /// needs. `NotFound` for an unknown id; `Rejected` for a key that is still live, because
+    /// scrubbing an active principal would be silent, un-auditable data loss.
+    fn key_scrub(&self, id: &str) -> Result<(), PluginError>;
+
+    /// Every virtual key with a revision above `since` — the INCREMENTAL hydration delta, taken
+    /// instead of a full reload on each staleness tick. `since = 0` returns every key.
+    ///
+    /// UNLIKE [`Store::key_list`] this must NOT filter tombstones, and the reason is a security one:
+    /// a hydrator learns that a key was revoked only by seeing its deletion stamp appear here, and
+    /// that is what tells it to evict the key's cached credentials. See
+    /// [`Store::credentials_since`] for why that eviction cannot wait on a credential-row delta.
+    fn keys_since(&self, since: u64) -> Result<Vec<VirtualKey>, PluginError>;
+
+    /// The TOKEN LEDGER for one bucket and window. The bucket is a key's own budget bucket or a
+    /// budget-group bucket — the same shape either way. An untouched pair reads as the EMPTY ledger,
+    /// never `NotFound`. NO money field crosses this seam: spend is derived at read time from the
+    /// ledger against the rate card, so a store never holds a price.
+    fn usage_get(&self, bucket: &str, window_start: u64) -> Result<UsageLedger, PluginError>;
+
+    /// ABSOLUTE set of a bucket's window ledger — replaces the whole requests-plus-per-model-token
+    /// record. SINGLE-WRITER ONLY: with several nodes sharing one store an absolute overwrite loses
+    /// the other nodes' accruals, which is why the fleet flush path uses [`Store::usage_add`].
+    fn usage_put(
+        &self,
+        bucket: &str,
+        window_start: u64,
+        ledger: &UsageLedger,
+    ) -> Result<(), PluginError>;
+
+    /// ATOMIC ADDITIVE accumulate of a bucket's window ledger: add the signed requests delta and
+    /// each per-model, per-tier token delta — possibly negative, a refund — to the durable record,
+    /// with counters floored at zero.
+    ///
+    /// This is the FLEET-HONEST flush primitive, and it is the reason the enforcement half is
+    /// declared rather than folded onto the record verbs. `record_put` is an absolute set; N nodes
+    /// each flushing their delta-since-last-flush through an absolute set is last-writer-wins, and
+    /// the fleet total is simply wrong. A backend implements this with whatever its storage makes
+    /// atomic. No money field crosses here either — only counts.
+    fn usage_add(
+        &self,
+        bucket: &str,
+        window_start: u64,
+        delta: &UsageDelta,
+    ) -> Result<(), PluginError>;
+
+    /// Accumulate one completed response's RAW consumption into its metering row, keyed by key,
+    /// bucket, model and provider, counting one more request. Metering is OBSERVABILITY:
+    /// best-effort, and never consulted for enforcement.
+    fn metering_add(&self, delta: &MeteringDelta) -> Result<(), PluginError>;
+
+    /// Every metering row accumulated in a metering bucket, for the by-model and by-key
+    /// aggregations the usage read renders.
+    fn metering_list(&self, bucket: u64) -> Result<Vec<MeteringRow>, PluginError>;
+
+    /// RETENTION sweep of the token ledger: drop every window that starts before this, and say how
+    /// many went. A background sweeper on the operator's interval is the only caller — never the
+    /// request path.
+    fn usage_purge_before(&self, before: u64) -> Result<u64, PluginError>;
+
+    /// RETENTION purge of the durable metering book. Unlike [`Store::usage_purge_before`] this must
+    /// NEVER be wired to an automatic sweeper: metering rows are billing evidence, and evidence is
+    /// purged only when an operator explicitly asks, exactly as a key is tombstoned rather than
+    /// removed and for the same reason. An explicit, audited operator action is the only thing that
+    /// may reach it.
+    fn metering_purge_before(&self, bucket: &str) -> Result<u64, PluginError>;
+
+    /// Persist a row-looked-up credential. UPSERTs on the key, kind and slot the credential names.
+    /// Minting into an occupied LIVE slot — one not yet revoked — MUST fail rather than destroy a
+    /// working credential in the middle of an overlap window: an explicit slot pointed at a live
+    /// credential is almost certainly an operator mistake, not an intended rotation.
+    fn credential_put(&self, secret: &CredentialSecret) -> Result<(), PluginError>;
+
+    /// ATOMIC key-and-credential mint: persist the key row AND its paired credential row together,
+    /// or neither. A caller cannot compose this out of [`Store::key_put`] and
+    /// [`Store::credential_put`] — a failure between them leaves a key that can never be used or a
+    /// credential owned by nothing — which is why it is its own verb.
+    fn key_put_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> Result<(), PluginError>;
+
+    /// Every credential row for a key, METADATA ONLY — never the secret. The listing surface an
+    /// operator reads. [`Store::credential_lookup`] is the one verb that returns material.
+    fn credential_list(&self, key_id: &str) -> Result<Vec<CredentialMeta>, PluginError>;
+
+    /// Resolve a credential kind and public id to its full secret material — the verify-path and
+    /// hydration lookup. An unknown pair is `None` and NEVER an error: an unrecognized public id is
+    /// a normal, expected outcome of an admit path, not a store failure, and reporting it as one
+    /// would turn every probe into an incident.
+    fn credential_lookup(
+        &self,
+        kind: &str,
+        public_id: &str,
+    ) -> Result<Option<CredentialSecret>, PluginError>;
+
+    /// Revoke ONE credential by id, independently of the key that owns it. The reason is operator
+    /// metadata for the audit trail and is never a secret.
+    ///
+    /// Idempotent on an already-revoked id; an id that names NO ROW is an error. A backend must
+    /// therefore read the row count its write actually affected, or check for the row first: a
+    /// statement that matched nothing looks identical to one that matched, and this is precisely the
+    /// case where those two must not be confused — an operator who is told a leaked credential was
+    /// killed must not find it still live.
+    fn credential_revoke(&self, id: &str, reason: &str) -> Result<(), PluginError>;
+
+    /// Every credential row above a revision, SECRET INCLUDED — the incremental hydration delta for
+    /// the in-process verify cache, which must never make a synchronous store call and so needs the
+    /// material in hand rather than metadata. `since = 0` returns every row.
+    ///
+    /// A CONTRACT THE CONSUMER OWES, not just this verb: a revision delta CANNOT observe a deletion
+    /// — a row that is gone simply stops appearing. [`Store::key_revoke`] destroys every credential
+    /// row for its key, so a consumer that reacts ONLY to credential deltas would keep serving a
+    /// revoked key's credential from cache forever, which is an authentication bypass. Whenever
+    /// [`Store::keys_since`] shows a key newly tombstoned, the consumer MUST evict that key's
+    /// credentials itself rather than wait for a delta that will never come.
+    fn credentials_since(&self, since: u64) -> Result<Vec<CredentialSecret>, PluginError>;
+
+    /// Add a subject to the REVOCATION DENYLIST. A minted signed credential is stateless, so
+    /// revoking one means recording its subject here; the verify path refuses any credential whose
+    /// subject is present. Idempotent. The reason is operator metadata for the audit trail, never a
+    /// secret.
+    fn denylist_add(&self, subject: &str, reason: &str) -> Result<(), PluginError>;
+
+    /// Every denied subject, for the boot hydrate of the in-memory denylist.
+    fn denylist_list(&self) -> Result<Vec<String>, PluginError>;
+
+    /// DELETE the record a schema and key identify; absent is a no-op. The record half declares
+    /// `record_put`, `record_get` and `record_scan` and no way to remove one, so a plane that keeps
+    /// durable rows could create and read them but never retire one outside the retention sweep.
+    fn record_delete(&self, schema: RecordSchemaId, key: &[u8]) -> Result<(), PluginError>;
+
+    /// IS THIS CAPABILITY STILL LIVE? A MULTI-USE, time-and-state-bounded check, and deliberately
+    /// NOT [`Store::claim_key`]'s single-use claim.
+    ///
+    /// Answer `true` while the record the schema and key identify is present, still active, and
+    /// `now` has not passed `expires_at`. It SPENDS NOTHING: asking twice answers the same both
+    /// times, because what this expresses is "the work this names is still in flight", not "nobody
+    /// has used this yet". A callback a counterparty makes several times for one piece of work is
+    /// the case it exists for — a claim would refuse every honest call after the first, and a check
+    /// that answered `true` forever would let a captured capability replay after the work finished.
+    ///
+    /// The answer for a store that keeps no such record is `false`, and that is the whole point. For
+    /// a READ, "this store remembers nothing" and "there is nothing to remember" are the same
+    /// answer. For a CAPABILITY CHECK they are opposites: a store that cannot say whether a
+    /// capability is live must never be read as saying that it is.
+    fn record_live(
+        &self,
+        schema: RecordSchemaId,
+        key: &[u8],
+        expires_at: u64,
+        now: u64,
+    ) -> Result<bool, PluginError>;
 }
 
 // ── secret ───────────────────────────────────────────────────────────────────────────────────

@@ -286,6 +286,38 @@ file = "qa/kind-isolation.toml"
 by = 29
 because = "busbar-contract x plane. operation.rs's header is the table that derives the six shapes from the protocols' request/response shapes -- it says which shape `tools/call`, `resources/read`, `message/send` and `tasks/get` are, and a classification of protocols names the protocols it classifies. 29 hits, every one of them a doc line moved from busbar-api x plane (36 -> 7), none written; they fall when the table is rewritten in terms of the shapes alone, which is a doc rewrite and not this move."
 
+# THE STORE KIND'S FACE IS COMPLETED (busbar_contract::kinds::Store, 22 -> 45 verbs). The kind had
+# TWO faces in one crate: this one, the ARCHITECTURE section 1.4 row, with ZERO implementors and zero
+# callers; and the 1.5.5 replay trait `busbar_contract::store::Store`, with every implementor and
+# every caller. They share NOT ONE method name, and 23 of the replay trait's 33 verbs have no face
+# verb at all, so the "collapse" STORE-1 designed was not available: the ABI-2 store window does not
+# close in 1.6.0 (ARCHITECTURE:246's parity clause is a promise), so the replay trait is DEMOTED to
+# the loader's adapter face later on this line rather than deleted, and the face is COMPLETED here.
+# The 23 verbs are declared with their REAL semantics and deliberately not folded onto `record_put`:
+# `usage_add` is an atomic additive accrual and `record_put` is an absolute set, so N nodes flushing
+# through it would be last-writer-wins and the fleet's money would simply be wrong; `key_put`'s
+# tombstone guard is a test-and-write only a backend can make atomic, and a caller's read-then-write
+# loses to a revoke landing in between. Every verb is BODILESS, so the accept-and-keep-nothing and
+# fail-closed defaults the 1.5.5 trait carried do not come with them -- those are compatibility
+# behaviour and belong to the adapter, which is also what makes this face's surface measurable for
+# the first time (SEAMS.md:202: "that default-ness ... makes the trait's real surface unmeasurable").
+# The payback is REAL but arrives later on this same line, not here: demoting the replay trait takes
+# 135 surface lines and the 16 `control` hits out of busbar-contract, so the line nets about -79.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 51
+because = "the store kind's completed face: 23 bodiless verbs on busbar_contract::kinds::Store (the virtual-key directory key_put/key_get/key_list/key_revoke/key_scrub/keys_since, the token ledger usage_get/usage_put/usage_add and the metering book metering_add/metering_list plus their two retention verbs, row-looked-up credentials credential_put/key_put_with_credential/credential_list/credential_lookup/credential_revoke/credentials_since, the revocation denylist denylist_add/denylist_list, and the two record verbs the record half was missing record_delete/record_live) and the one `use crate::store::{...}` line they need. scripts/loc-surface.py measures the contract pair 4754 -> 4805 and busbar-caps 1151 unmoved; the trait block itself measures 51 -> 98 for 22 -> 45 verbs"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 51
+because = "the same 23 verbs under the loc-ceilings counting rule: busbar-contract 3603 -> 3654 for the enforcement half of kinds.rs and the record-type import it names, busbar-caps 1151 unmoved"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 51
+because = "the union row sums caps/contract; it rises by the same 51 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14590 are unchanged by completing the store face)"
+
 # ONE KIND-ISOLATION CELL WAS RAISED BY IDENTITY ON M4's LINE AND NEITHER IS OWED HERE. This
 # series was re-picked onto the line that had already moved the Operation axis and the secret
 # grammar, so both MOVE-form declarations it carried describe rises this tree does not have:
@@ -301,7 +333,7 @@ because = "busbar-contract x plane. operation.rs's header is the table that deri
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 4754
+contract_caps = 4805
 grammar = 388
 contract_transport = 845
 # THE HOOK POLICY ENGINE (`busbar-core-policy`, kind core) — not a plugin-author budget but the
@@ -527,12 +559,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 4757
+caps_contract_ceiling = 4808
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14590
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24726
+union_ceiling = 24777
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
