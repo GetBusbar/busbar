@@ -144,9 +144,35 @@ busbar-voice = ["busbar-voice-codec"]
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3478
+contract_caps = 3479
 grammar = 388
-contract_transport = 845
+contract_transport = 1022
+
+# ── declared raises: the streams line's SURFACE — the duplex session seam and the DUPLEX dispatch kind
+# are contract-transport surface, and the root's one route to that seam is one line of busbar-contract.
+# The measurement is the remainder after the drain (K3): the flat re-export lists nobody consumed,
+# `DetachedSession` (a test double, now the ws battery's own), `SessionBudgets::within` and
+# `Dispatch::is_duplex` (sugar, spelled by their callers) are gone; what stands is what a plane
+# declares and a wire reads. Each entry expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_transport"
+by = 177
+because = "FACE busbar-contract-transport::session + surface::Dispatch::Duplex — the seam a duplex wire hands a session across (SessionDriver open/drive/close; SessionOpen, SessionHandle, SessionFrame, SessionReply and its three constructors, Cut, SessionEnd, SessionBudgets) and the face an acceptor reaches a wire through (DuplexWire serve_upgrade/pump_session): session.rs 94 surface lines; the Duplex dispatch kind a plane declares a session as data with, its bar, its two boot-check refusals (NoDuplexMount, DuplexNotStreaming) and their Display, the address sentinel, the check_surface arm, and the one walk every duplex wire addresses an upgrade with (duplex_binding_at over duplex_bar): surface.rs +77; the three reserved fact keys a session's upgrade and a request carry about themselves (CREDENTIAL, ACCEPTS, MEDIA), published by the wires and read by no header: registry.rs +5; `pub mod session`: lib.rs +1. 94+77+5+1 = 177, measured by scripts/loc-surface.py at 1022 against 845 at the base"
+
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 1
+because = "FACE busbar_contract::transport::session — the ONE line the composition root reaches the duplex session seam through: the root's manifest names busbar-contract and not busbar-contract-transport (ARCHITECTURE section 1.2), exactly as the one-shot `driver` seam beside it is reached, so the two seams arrive by one route. The flat item list that rode with it was consumed by nobody and is gone: +1 surface line in busbar-contract/src/transport.rs, measured 3479 against 3478"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 1
+because = "the same FACE as the gate.surface_ceilings.contract_caps raise — `pub use busbar_contract_transport::session;`, the root's one route to the duplex session seam through busbar-contract — read by this rule's own counter: +1 line in busbar-contract, measured 3481 against 3480"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "the same FACE as the rules.loc-ceilings.caps_contract_ceiling raise — the root's one route to the duplex session seam, one line in busbar-contract — and busbar-contract is in this union, so the union rises by exactly that line and not one more: measured 23466 against 23465"
 
 # ── declared raises: the streams line — a plane and a wire DECLARE a duplex surface as data. The
 # plane (busbar-plane-voice) writes its duplex route in the transport contract's vocabulary, the wire
@@ -156,8 +182,8 @@ contract_transport = 845
 [[gate.ceiling_raises]]
 key = "cell.busbar-contract.contract-transport.count"
 file = "qa/kind-isolation.toml"
-by = 3
-because = "busbar-contract × contract-transport (busbar-contract, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
+by = 2
+because = "busbar-contract × contract-transport (busbar-contract, contract-transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire. Was 3; the K3 drain removed the flat `session::{…}` re-export nobody consumed, and the remainder — the module re-export and its doc — measures 2 (16 -> 18)"
 
 [[gate.ceiling_raises]]
 key = "cell.busbar-contract-transport.transport.count"
@@ -431,12 +457,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3480
+caps_contract_ceiling = 3481
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23466
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

@@ -81,7 +81,12 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `surface-ceiling:grammar`; `busbar-contract-transport` — the transport-facing contract: the
   connection and listener handles, the detached stream, the closed transport failure and close
   codes, the arrival record, the upstream address, the reserved transport fact keys, the kind's ABI
-  generation and the composition check — ≤ **1k**, gated as `surface-ceiling:contract-transport`.
+  generation, the composition check, the one-shot driver seam and the duplex session seam (the
+  `SessionDriver` a wire hands a session across once and frames across many times, the `DuplexWire`
+  face an acceptor reaches any wire through, and the `Duplex` dispatch kind a plane declares a
+  session as data with, boot-checked with the rest of the surface) — ≤ **1.1k** (1,022 measured
+  and pinned exact, 2026-09-09: the duplex seam is +177 over the 845 the crate held before it),
+  gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,
   slice/lease, cost, usage, ledger.
