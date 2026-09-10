@@ -43,4 +43,7 @@ busbar-contract = { path = "../busbar-contract" }
 # The object notation the admin wire speaks. Used only in tests, to read the pinned openapi fixture
 # and assert this plane's table against it; the codec itself never parses a whole document; it scans
 # spans by hand (see `scan.rs`) over the arena-free, borrowed body bytes.
+# The previous release's flat audit row is still on disk in every deployment that ran it. The
+# record declaration recognises that shape so those chains verify here without a re-seal.
+serde = { workspace = true }
 serde_json = { workspace = true }

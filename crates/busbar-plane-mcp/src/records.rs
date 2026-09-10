@@ -117,6 +117,113 @@ pub fn operations_for(schema: RecordSchemaId) -> &'static [&'static str] {
     }
 }
 
+// ── THE CALL RECORD'S OWN BYTES ─────────────────────────────────────────────────────────────────
+//
+// A plane declares its record, and a record is a schema plus the bytes one instance of it frames
+// to. The schema is above; the bytes are here. Nothing else in the tree may spell them: the digest
+// a deployed store sealed is over exactly this byte stream, so a second speller is a second answer
+// to "what happened" waiting for one of them to be edited.
+
+/// THE CALL RECORD'S PRE-FRAMED CONTENT SUFFIX: the chained fields AFTER the chain's own prelude.
+///
+/// Seven fields, length-prefixed — `len:u64-be ⧺ bytes`, an integer carried as its eight big-endian
+/// bytes in one such field — in the order `ts, server, tool, outcome, reason, tool_digest,
+/// pin_generation`. Every field self-delimits, so the prelude and this suffix byte-concatenate with
+/// no separator and the concatenation is the digest input.
+///
+/// The request id is DELIBERATELY ABSENT. It is a join key, it is legitimately empty on every path
+/// with no inbound request, and a field that is sometimes absent must not be able to make an
+/// otherwise-intact chain unverifiable.
+///
+/// A pure function of seven scalars: it names no store, no host and no engine, which is what lets
+/// the record be the plane's while the chain around it belongs to the audit unit.
+#[must_use]
+pub fn call_suffix(
+    ts: u64,
+    server: &str,
+    tool: &str,
+    outcome: &str,
+    reason: &str,
+    tool_digest: &str,
+    pin_generation: u64,
+) -> Vec<u8> {
+    fn text(out: &mut Vec<u8>, s: &str) {
+        out.extend_from_slice(&(s.len() as u64).to_be_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+    fn num(out: &mut Vec<u8>, v: u64) {
+        let b = v.to_be_bytes();
+        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+        out.extend_from_slice(&b);
+    }
+    let mut out = Vec::new();
+    num(&mut out, ts);
+    text(&mut out, server);
+    text(&mut out, tool);
+    text(&mut out, outcome);
+    text(&mut out, reason);
+    text(&mut out, tool_digest);
+    num(&mut out, pin_generation);
+    out
+}
+
+/// The seven fields of one call record, read back out of its suffix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallFields {
+    /// Unix seconds the call was recorded at.
+    pub ts: u64,
+    /// Which registered server the call was routed to.
+    pub server: String,
+    /// Which tool was asked for.
+    pub tool: String,
+    /// The stable outcome token.
+    pub outcome: String,
+    /// The stable reason token, empty where the outcome needs none.
+    pub reason: String,
+    /// The digest of the tool definition the call was admitted against.
+    pub tool_digest: String,
+    /// Which pin generation was in force.
+    pub pin_generation: u64,
+}
+
+/// Read one call suffix back into its seven fields — the exact inverse of [`call_suffix`].
+///
+/// Fails CLOSED on a truncated or oversized field rather than reading past the buffer: this decodes
+/// bytes a store handed back, and a store is exactly the thing that may have been tampered with.
+#[must_use]
+pub fn parse_call_suffix(content: &[u8]) -> Option<CallFields> {
+    fn take<'a>(content: &'a [u8], off: &mut usize) -> Option<&'a [u8]> {
+        let end = off.checked_add(8)?;
+        if end > content.len() {
+            return None;
+        }
+        let len = u64::from_be_bytes(content[*off..end].try_into().ok()?) as usize;
+        let field_end = end.checked_add(len)?;
+        if field_end > content.len() {
+            return None;
+        }
+        *off = field_end;
+        Some(&content[end..field_end])
+    }
+    fn num(content: &[u8], off: &mut usize) -> Option<u64> {
+        let b: [u8; 8] = take(content, off)?.try_into().ok()?;
+        Some(u64::from_be_bytes(b))
+    }
+    fn text(content: &[u8], off: &mut usize) -> Option<String> {
+        Some(String::from_utf8_lossy(take(content, off)?).into_owned())
+    }
+    let mut off = 0usize;
+    Some(CallFields {
+        ts: num(content, &mut off)?,
+        server: text(content, &mut off)?,
+        tool: text(content, &mut off)?,
+        outcome: text(content, &mut off)?,
+        reason: text(content, &mut off)?,
+        tool_digest: text(content, &mut off)?,
+        pin_generation: num(content, &mut off)?,
+    })
+}
+
 #[cfg(test)]
 #[path = "tests/records.rs"]
 mod tests;

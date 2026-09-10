@@ -384,6 +384,7 @@ dependencies = [
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "socket2",
@@ -758,6 +759,7 @@ name = "busbar-plane-admin"
 version = "1.6.0"
 dependencies = [
  "busbar-contract",
+ "serde",
  "serde_json",
 ]
 

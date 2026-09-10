@@ -70,6 +70,11 @@ busbar-contract = { path = "../busbar-contract" }
 # root and by nothing else on this path: a plane may not hold a store and a unit may not know a
 # schema, so the mapping from one to the other belongs to the composition and lives in `src/root/`.
 busbar-api = { path = "../api" }
+# The neutral envelope a kernel-held chained record persists as. The root frames it, because the
+# root is the one kind entitled to name a store, a unit and a plane together; the shape is a wire
+# fact of every deployment that has written one of these streams.
+serde = { workspace = true }
+serde_json = { workspace = true }
 # The fourteen units. Eight are facades reached as free functions; six carry a long-lived object the
 # root owns and holds in `ProductionUnits`.
 busbar-unit-admission = { path = "../busbar-unit-admission" }

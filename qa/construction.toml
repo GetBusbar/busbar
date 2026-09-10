@@ -183,6 +183,45 @@ key = "rules.loc-ceilings.kernel_ceiling"
 by = 2
 because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketView}: two lines of MODULE WIRING, not two lines of kernel. busbar-unit-admission/src/lib.rs is in the kernel's call-graph name-match set, so `pub mod cache;` and `pub use cache::{BucketView, Chain, ChainCache};` spend kernel budget; cache.rs itself is not name-matched and none of its 136 lines are counted here."
 
+# THE KERNEL-HELD RECORD LEG, and its store reach: `crates/busbar/src/root/records.rs` and the
+# boot-verify golden beside it. A plane declares its record; the audit unit frames the bytes; the
+# kernel admits the leg; the composition root lands it on the published store protocol. That last
+# sentence is the rise: the root is the ONE kind entitled to name a store, a unit, a kernel and a
+# plane in the same file, and the five cells below are what naming all four of them costs. Every one
+# of them is the root composing what it mounts — none is a new dependency edge, and none of it is
+# reachable from anything but `src/root/`. It is paid for twice over by the two files it retires,
+# `busbar-core/src/calllog.rs` and `busbar-core/src/plane/auditlog.rs`, whose 1853 lines carried the
+# same chain over a foreign-function seam that no other stream will ever register on again.
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 15
+because = "the kernel-held record leg's STORE REACH: the root binds `busbar_api::Store` and maps the operation a plane spelled onto the store verb that performs it (PlaneRecord, PlaneSelector, PlaneDisposition, StoreError), plus the frozen-bytes fixture store the boot-verify golden replays the persisted chains through. A plane may not hold a store and a unit may not know a schema, so this mapping belongs to the composition and to nothing else."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 9
+because = "the admin mutation log's record declaration, named by the composition that mounts it: `busbar_plane_admin::records` (the schema, its two operations, the suffix its five fields frame to, and the previous release's flat row), plus the scope constant `admin` that the frozen boot-verify fixtures were persisted under and still carry inside their own bytes."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "the ONE runner of a record leg: `busbar_kernel::pump::{run_record_leg, RecordSchemas, RecordStore, RecordKey, RecordAnswer, RecordRefusal}`. The three checks a leg is admitted by — the schema is declared, the operation is within it, the body is within the record ceiling — are made in the one place a leg is run, and the root calls onto that rather than repeating them."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = "the call log's record declaration, named by the composition that mounts it: `busbar_plane_mcp::records` (the call schema, its append-and-scan operation table, and the seven-field length-prefixed suffix its record frames to), plus the boot-verify golden that replays that plane's frozen persisted chain through the leg."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 8
+because = "the audit unit's chain, named by the composition that drives it: `busbar_unit_audit::legacy::{Chain, ChainedRecord, ChainBreak, ChainLabels, Digest, Framing, frame_prelude, verify_chain}`. The prelude, the digest, the sequence authority and the verifier are the unit's and are not re-implemented here; what the root adds is the position it holds and the store it lands on."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

@@ -7,6 +7,7 @@ use busbar_contract::ids::{AdminVerbId, MeterClassDecl, OpClassId, RecordSchemaI
 use busbar_contract::plane::PlaneMeta;
 
 use crate::claims;
+use crate::records;
 use crate::verbs::{OP_READ, OP_WRITE};
 use crate::AdminPlane;
 
@@ -72,10 +73,11 @@ impl PlaneMeta for AdminPlane {
     const METER_CLASSES: &'static [MeterClassDecl] = METER_CLASSES;
     const SESSION_FACTS: &'static [&'static str] = SESSION_FACTS;
     const CONTENT_FACTS: &'static [&'static str] = CONTENT_FACTS;
-    // This plane keeps no kernel-held durable records of its own: the design's admin row lists no
-    // Records for this plane (mutating plane-record writes are the `plane_record_write` KERNEL VERB,
-    // executed by `busbar-unit-verbs` against ANOTHER plane's declared schema — never this plane's).
-    const RECORD_SCHEMAS: &'static [RecordSchemaId] = &[];
+    // ONE kernel-held durable record, and it is the one thing this plane has to remember across
+    // units: what was changed, by whom, and whether it took. A mutating write against ANOTHER
+    // plane's schema is still the `plane_record_write` KERNEL VERB executed by `busbar-unit-verbs`
+    // and is not this — this is the admin mutation log's own append-and-read stream.
+    const RECORD_SCHEMAS: &'static [RecordSchemaId] = records::RECORD_SCHEMAS;
     const INTROSPECTION_VERBS: &'static [AdminVerbId] = INTROSPECTION_VERBS;
     // No admin frame ever supersedes an open one (there is no open unit to supersede: every admin
     // unit is `OneShot`), and nothing on this plane paces an outbound write path (this plane never

@@ -66,6 +66,9 @@ pub mod policy;
 /// The composition root's one write into both protocol seams, moved verbatim out of
 /// `busbar-core::proto::registry`: the boot installers belong to the root that calls them.
 pub mod proto_install;
+/// The kernel-held record leg, and the reach onto the published store protocol that lands it: the
+/// composition root's half of a plane's durable state.
+pub mod records;
 pub mod registry;
 pub mod transports;
 #[cfg(feature = "root-a2a")]

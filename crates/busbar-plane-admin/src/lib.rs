@@ -47,6 +47,7 @@ pub mod claims;
 pub mod codec;
 pub mod generated;
 pub mod meta;
+pub mod records;
 pub mod refusal;
 #[cfg(test)]
 mod tests;
