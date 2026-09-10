@@ -115,10 +115,18 @@ impl Breaker for BreakerAdapter {
                 }
                 busbar_unit_breaker::LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
                 busbar_unit_breaker::LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
-                // `try_admit` only errs on a non-`Ready` state; the breaker unit tracks no
-                // administrative "Dead" fact of its own (that is the egress/config layer's, per
-                // `ports.rs`'s own doc comment on `Unavailable::Dead`), so `Ready` never reaches
-                // this arm in practice.
+                busbar_unit_breaker::LaneState::Dead => Unavailable::Dead,
+                busbar_unit_breaker::LaneState::AtCapacity { drain_hint_ms } => {
+                    Unavailable::AtCapacity { drain_hint_ms }
+                }
+                // This port has no name for inbound backpressure, and correctly so: shedding happens
+                // before selection runs, so an admission never answers with it. The wait a caller
+                // would have read off the reason still crosses, through the nearest reason this port
+                // does name.
+                busbar_unit_breaker::LaneState::Shedding => Unavailable::AtCapacity {
+                    drain_hint_ms: Some(busbar_unit_breaker::SHED_RETRY_FLOOR_MS),
+                },
+                // `try_admit` only errs on a non-`Ready` state, so `Ready` never reaches this arm.
                 busbar_unit_breaker::LaneState::Ready => {
                     unreachable!("BreakerUnit::try_admit does not return Err(Ready)")
                 }

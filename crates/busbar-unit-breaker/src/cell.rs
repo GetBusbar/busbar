@@ -689,12 +689,19 @@ impl BreakerCell {
     /// caller can gate a trip-count metric on a LOGICAL trip rather than re-counting a persistently
     /// dead cell on every recovery-probe cycle.
     pub fn hard_down(&self, now_time: u64, hard_down_cooldown_secs: u64) -> bool {
+        self.open_until(now_time.saturating_add(hard_down_cooldown_secs))
+    }
+
+    /// Park this cell Open with an EXPLICIT deadline, releasing any in-flight probe — 1.5.5's
+    /// `force_open_in` (`busbar-substrate/src/store.rs:620`), and the primitive
+    /// [`Self::hard_down`] is the sticky-cooldown spelling of.
+    ///
+    /// Returns `true` IFF the cell was Closed beforehand, i.e. this was a genuine fresh trip: a
+    /// persistently dead cell must not re-count on every recovery-probe cycle.
+    pub fn open_until(&self, cooldown_until: u64) -> bool {
         let _tx = lock_recover(&self.transition_lock);
         let was_closed = self.breaker_state.load(Ordering::Acquire) == ST_CLOSED;
-        self.cooldown_until.store(
-            now_time.saturating_add(hard_down_cooldown_secs),
-            Ordering::Release,
-        );
+        self.cooldown_until.store(cooldown_until, Ordering::Release);
         self.breaker_state.store(ST_OPEN, Ordering::Release);
         self.probe_in_flight.store(false, Ordering::Release);
         was_closed

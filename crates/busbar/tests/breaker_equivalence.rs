@@ -135,22 +135,11 @@ fn from_legacy(r: Result<(), Unavailable>) -> Avail {
 }
 
 fn from_unit(s: LaneState) -> Avail {
-    match s {
-        LaneState::Ready => Avail {
-            name: "available",
-            until: None,
-        },
-        LaneState::Suppressed { until } => Avail {
-            name: "breaker_open",
-            until: Some(until),
-        },
-        LaneState::ProbeInFlight => Avail {
-            name: "probe_in_flight",
-            until: None,
-        },
-        LaneState::BudgetExhausted => Avail {
-            name: "budget_exhausted",
-            until: None,
+    Avail {
+        name: s.variant_name(),
+        until: match s {
+            LaneState::Suppressed { until } => Some(until),
+            _ => None,
         },
     }
 }
@@ -862,37 +851,30 @@ mod shim {
 
     /// Park a cell Open with an explicit deadline (the legacy's `force_open_in`), so a cell can be
     /// put in the state a test needs without walking the FSM to it.
-    ///
-    /// GAP: the unit exposes no such admin verb; the closest is a hard-down, which arms its own
-    /// sticky cooldown rather than the requested one.
-    pub fn force_open(u: &BreakerUnit, _pool: &str, dest: DestinationId, until: u64) {
-        let _ = u.hard_down_all(dest, until);
+    pub fn force_open(u: &BreakerUnit, pool: &str, dest: DestinationId, until: u64) {
+        u.force_open(pool, dest, until);
     }
 
     /// Admission, with the concurrency permit peeked BEFORE the probe CAS.
-    ///
-    /// GAP (difference 7): the unit has no permit concept, so `has_permit` cannot be honoured — the
-    /// admission wins the recovery probe and then has nowhere to dispatch it.
     pub fn try_admit(
         u: &BreakerUnit,
         pool: &str,
         dest: DestinationId,
         now: u64,
-        _has_permit: bool,
+        has_permit: bool,
     ) -> Result<Option<u64>, LaneState> {
-        u.try_admit(pool, dest, now).map(|a| a.probe_epoch)
+        u.try_admit_gated(pool, dest, now, || has_permit.then_some(()))
+            .map(|(a, ())| a.probe_epoch)
     }
 
     /// The queue path's admission: re-check the breaker, never take a second permit.
-    ///
-    /// GAP (difference 7): the unit has no `try_admit_breaker`; `try_admit` is the only door.
     pub fn try_admit_breaker(
         u: &BreakerUnit,
         pool: &str,
         dest: DestinationId,
         now: u64,
     ) -> Result<Option<u64>, LaneState> {
-        u.try_admit(pool, dest, now).map(|a| a.probe_epoch)
+        u.try_admit_breaker(pool, dest, now)
     }
 
     /// The lane-global availability the best-of fold produces.
@@ -918,30 +900,27 @@ mod shim {
         None
     }
 
-    /// The unit's own name for a legacy `Unavailable` variant.
-    ///
-    /// GAP (difference 9): `LaneState` has four states against the taxonomy's six.
+    /// The unit's own name for a legacy `Unavailable` variant. Asked by NAME, so the two taxonomies
+    /// are compared on the vocabulary an operator actually reads rather than on arm order.
     pub fn lane_state_named(name: &str, until: u64) -> Option<LaneState> {
-        match name {
-            "available" => Some(LaneState::Ready),
-            "budget_exhausted" => Some(LaneState::BudgetExhausted),
-            "breaker_open" => Some(LaneState::Suppressed { until }),
-            "probe_in_flight" => Some(LaneState::ProbeInFlight),
-            _ => None,
-        }
+        [
+            LaneState::Ready,
+            LaneState::Dead,
+            LaneState::Suppressed { until },
+            LaneState::ProbeInFlight,
+            LaneState::BudgetExhausted,
+            LaneState::AtCapacity {
+                drain_hint_ms: None,
+            },
+            LaneState::Shedding,
+        ]
+        .into_iter()
+        .find(|s| s.variant_name() == name)
     }
 
     /// When could this plausibly serve again, in ms.
-    ///
-    /// GAP (difference 9): the unit has no `recovery_hint_ms`; the answer is derived here, which is
-    /// precisely the second definition the one-function rule exists to prevent.
     pub fn recovery_hint_ms(s: LaneState, now: u64) -> Option<u64> {
-        match s {
-            LaneState::Ready => None,
-            LaneState::BudgetExhausted => None,
-            LaneState::Suppressed { until } => Some(until.saturating_sub(now).saturating_mul(1000)),
-            LaneState::ProbeInFlight => Some(1_000),
-        }
+        s.recovery_hint_ms(now)
     }
 
     /// Hard-down every cell for the destination, recording why.

@@ -71,10 +71,22 @@ pub const DEFAULT_HARD_DOWN_COOLDOWN_SECS: u64 = 1800;
 /// `DEFAULT_MAX_HONORED_RETRY_AFTER_SECS`).
 pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 
-/// Why a `(pool, destination)` cannot admit right now, from the BREAKER's own point of view —
-/// deliberately narrower than the egress unit's lane-availability taxonomy (`Unavailable` in
-/// 1.5.5's substrate), which also carries `AtCapacity`/`Shedding`/`Dead`: those are concurrency and
-/// operator-declaration facts the egress/admission units own, not this one.
+/// The recovery hint for a lost single-flight probe race: the peer's probe resolves the cell within
+/// one request, so the wait is "next tick" (1.5.5's `PROBE_RETRY_FLOOR_MS`).
+const PROBE_RETRY_FLOOR_MS: u64 = 250;
+
+/// The honest floor under an at-capacity wait when there is no drain estimate to give — capacity has
+/// no scheduled recovery the way a breaker does (1.5.5's `AT_CAPACITY_RECOVERY_FLOOR_MS`).
+pub const AT_CAPACITY_RECOVERY_FLOOR_MS: u64 = 2_000;
+
+/// The floor under a shed request's wait (1.5.5's `SHED_RETRY_FLOOR_MS`).
+pub const SHED_RETRY_FLOOR_MS: u64 = 1_000;
+
+/// Why a `(pool, destination)` cannot admit right now — THE one taxonomy every consumer speaks:
+/// selection (exclude), least-bad (rank), `Retry-After` (hint), `/stats` and `/metrics` (render),
+/// the queue (budget). Moved from 1.5.5's `Unavailable` (`busbar-substrate/src/store.rs:47-88`)
+/// whole, because a narrower one is those five consumers quietly disagreeing: a reason a caller
+/// cannot name is a reason it cannot rank, budget or render, and it renders SOMETHING regardless.
 ///
 /// A member in any non-`Ready` state is EXCLUDED from the walk, never "ordered last and
 /// attempted" — the egress unit's selection filter is expected to drop anything this reports as
@@ -83,6 +95,9 @@ pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 pub enum LaneState {
     /// Would admit a request right now.
     Ready,
+    /// Administratively down (see [`BreakerUnit::set_dead`]). Does not self-recover: the operator's
+    /// declaration is what put it here and only a config apply takes it back out.
+    Dead,
     /// Breaker-suppressed (Open, or Closed inside a pending soft cooldown) until the deadline.
     Suppressed {
         /// The cooldown deadline, in Unix seconds.
@@ -92,6 +107,52 @@ pub enum LaneState {
     ProbeInFlight,
     /// The destination's lifetime request budget is spent. Does not self-recover.
     BudgetExhausted,
+    /// Every concurrency permit is held.
+    AtCapacity {
+        /// How long until a slot plausibly frees, in ms. An ESTIMATE, never exact — capacity has no
+        /// scheduled recovery the way a breaker does. `None` when there is no basis to estimate, in
+        /// which case the hint falls back to [`AT_CAPACITY_RECOVERY_FLOOR_MS`].
+        drain_hint_ms: Option<u64>,
+    },
+    /// Inbound backpressure shed this request before selection ever ran.
+    Shedding,
+}
+
+impl LaneState {
+    /// THE single definition of "when could this plausibly serve again", in ms from `now` —
+    /// 1.5.5's `Unavailable::recovery_hint_ms` (`busbar-substrate/src/store.rs:74-88`). `None` means
+    /// no self-recovery: nothing this unit will do brings it back.
+    ///
+    /// One function, because `Retry-After`, least-bad ranking, queue budgeting and the `/stats`
+    /// gauge ALL consume it, and four consumers deriving it separately is four answers.
+    #[must_use]
+    pub fn recovery_hint_ms(&self, now: u64) -> Option<u64> {
+        match self {
+            // Nothing to wait for: one is admitting already, the other two do not self-recover.
+            LaneState::Ready | LaneState::Dead | LaneState::BudgetExhausted => None,
+            LaneState::Suppressed { until } => Some(until.saturating_sub(now).saturating_mul(1000)),
+            LaneState::ProbeInFlight => Some(PROBE_RETRY_FLOOR_MS), // ~one request
+            LaneState::AtCapacity { drain_hint_ms } => {
+                Some(drain_hint_ms.unwrap_or(AT_CAPACITY_RECOVERY_FLOOR_MS))
+            }
+            LaneState::Shedding => Some(SHED_RETRY_FLOOR_MS),
+        }
+    }
+
+    /// The stable, snake_case name of this state — the SINGLE rendering `/stats` and any
+    /// operator-facing surface read, derived from the same taxonomy routing dispatches on.
+    #[must_use]
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            LaneState::Ready => "available",
+            LaneState::Dead => "dead",
+            LaneState::Suppressed { .. } => "breaker_open",
+            LaneState::ProbeInFlight => "probe_in_flight",
+            LaneState::BudgetExhausted => "budget_exhausted",
+            LaneState::AtCapacity { .. } => "at_capacity",
+            LaneState::Shedding => "shedding",
+        }
+    }
 }
 
 fn lane_state_from_verdict(v: BreakerVerdict) -> LaneState {
@@ -210,6 +271,9 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::
     /// destination is touched.
     pools_by_destination: RwLock<HashMap<DestinationId, Vec<String>>>,
     budgets: RwLock<HashMap<DestinationId, Arc<LifetimeBudget>>>,
+    /// Which destinations an operator has declared administratively down (see [`Self::set_dead`]).
+    /// Absent is alive, which is 1.5.5's default for a lane nobody said anything about.
+    dead: RwLock<HashMap<DestinationId, bool>>,
     /// Each destination's declared operator `error_map` override (see [`Self::set_error_map`]).
     /// Undeclared is an EMPTY map — HTTP-status classification alone still applies, matching
     /// 1.5.5's "empty error_map is valid".
@@ -268,6 +332,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             cells: RwLock::new(HashMap::new()),
             pools_by_destination: RwLock::new(HashMap::new()),
             budgets: RwLock::new(HashMap::new()),
+            dead: RwLock::new(HashMap::new()),
             error_maps: RwLock::new(HashMap::new()),
             hard_down_cooldown_secs: DEFAULT_HARD_DOWN_COOLDOWN_SECS,
             max_honored_retry_after_secs: DEFAULT_MAX_HONORED_RETRY_AFTER_SECS,
@@ -563,16 +628,68 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         destination: DestinationId,
         now: u64,
     ) -> Result<Admit, LaneState> {
+        self.try_admit_gated(pool, destination, now, || Some(()))
+            .map(|(admit, ())| admit)
+    }
+
+    /// [`Self::try_admit`] with the caller's CONCURRENCY PERMIT taken before the probe CAS.
+    ///
+    /// `acquire` is the caller's own permit source — this unit owns no semaphore and takes no
+    /// runtime dependency to hold one — and the permit it yields is handed straight back, so the
+    /// caller holds the slot for exactly as long as it holds the admission. `None` means the
+    /// destination is saturated.
+    ///
+    /// The ORDER is the whole point, and it is 1.5.5's
+    /// (`busbar-core/src/store/in_memory/availability.rs:277-287`, whose comment names the
+    /// regression it fixed). A cell whose Open cooldown has expired is probe-winnable; if it is also
+    /// at capacity, taking the probe first wins the single-flight recovery and then immediately
+    /// reverts it when no permit can be had — every attempt, forever — so a tripped-and-saturated
+    /// destination never observes a real dispatch outcome and never recovers. Peeking capacity FIRST
+    /// returns `AtCapacity` without ever touching the probe, so the probe is preserved for the
+    /// moment a permit is actually available. On a Closed-ready cell the CAS is a pure no-op, so the
+    /// earlier acquisition is byte-for-byte identical to the breaker-first order; and a permit taken
+    /// for an admission the CAS then refuses is dropped rather than held, because a slot nothing
+    /// will dispatch to is a slot taken from a caller who would have.
+    pub fn try_admit_gated<P>(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        acquire: impl FnOnce() -> Option<P>,
+    ) -> Result<(Admit, P), LaneState> {
+        // The destination-global gates, read SEPARATELY, exactly as 1.5.5 reads them: an
+        // administratively-dead destination is not a budget fact and neither is a breaker fact.
+        if self.is_dead(destination) {
+            return Err(LaneState::Dead);
+        }
         if self.budget_exhausted(destination) {
             return Err(LaneState::BudgetExhausted);
         }
         let cell = self.cell(pool, destination);
+        // The SINGLE verdict decoder, consumed BEFORE the mutating CAS below, so the failure
+        // taxonomy is decided without re-deriving "is the breaker open".
+        match cell.verdict(now) {
+            BreakerVerdict::Open { until } => return Err(LaneState::Suppressed { until }),
+            BreakerVerdict::HalfOpen => return Err(LaneState::ProbeInFlight),
+            BreakerVerdict::Ready | BreakerVerdict::ProbeWinnable => {}
+        }
+        let Some(permit) = acquire() else {
+            return Err(LaneState::AtCapacity {
+                drain_hint_ms: None,
+            });
+        };
         match cell.acquire(now) {
             // The refusal's own reason, not a second look at a cell a peer may have moved: a
             // caller is entitled to read a refusal as "this would not have admitted".
-            ProbeAdmit::Denied(DeniedBy::Cooling { until }) => Err(LaneState::Suppressed { until }),
-            ProbeAdmit::Denied(DeniedBy::ProbeInFlight) => Err(LaneState::ProbeInFlight),
-            ProbeAdmit::ReadyNoProbe => Ok(Admit { probe_epoch: None }),
+            ProbeAdmit::Denied(DeniedBy::Cooling { until }) => {
+                drop(permit);
+                Err(LaneState::Suppressed { until })
+            }
+            ProbeAdmit::Denied(DeniedBy::ProbeInFlight) => {
+                drop(permit);
+                Err(LaneState::ProbeInFlight)
+            }
+            ProbeAdmit::ReadyNoProbe => Ok((Admit { probe_epoch: None }, permit)),
             ProbeAdmit::ProbeWon(epoch) => {
                 self.journal.record(ProbeEvent::Won {
                     pool: pool.to_string(),
@@ -580,11 +697,66 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
                     epoch,
                     now,
                 });
-                Ok(Admit {
-                    probe_epoch: Some(epoch),
-                })
+                Ok((
+                    Admit {
+                        probe_epoch: Some(epoch),
+                    },
+                    permit,
+                ))
             }
         }
+    }
+
+    /// The QUEUE path's admission: re-check the breaker and win the single-flight probe, but take
+    /// NO permit — a caller parked on the destination's own semaphore already holds one. 1.5.5's
+    /// `try_admit_breaker` (`availability.rs:324-359`).
+    ///
+    /// The re-check is load-bearing and is the reason this verb exists at all: the breaker may have
+    /// tripped, or a peer may have taken the probe, while the caller was queued, and this is what
+    /// stops the queue ever dispatching onto a now-Open destination. `Some(epoch)` transfers probe
+    /// ownership to the caller under the same owner-checked release discipline
+    /// [`Self::try_admit`] uses; `None` is a plain Closed-ready admit that owns nothing.
+    pub fn try_admit_breaker(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+    ) -> Result<Option<u64>, LaneState> {
+        self.try_admit(pool, destination, now)
+            .map(|admit| admit.probe_epoch)
+    }
+
+    /// Park ONE `(pool, destination)` cell Open until `cooldown_until` — 1.5.5's `force_open_in`
+    /// (`busbar-substrate/src/store.rs:620`), the admin/deadline verb that benches a member without
+    /// walking the state machine to the bench.
+    ///
+    /// Per cell, and deliberately not the destination-wide fan-out: `force_open_in` is an operator
+    /// or deadline benching ONE route, where a hard-down is a fact about the shared upstream. The
+    /// two reach different sets and the difference is the point — a per-cell trip that fanned out
+    /// would bench routes nobody asked to bench.
+    pub fn force_open(&self, pool: &str, destination: DestinationId, cooldown_until: u64) {
+        let _ = self.cell(pool, destination).open_until(cooldown_until);
+    }
+
+    /// Declare a destination administratively DOWN, or bring it back. An operator's declaration,
+    /// replaced wholesale on a config apply exactly as [`Self::set_budget`] and
+    /// [`Self::set_error_map`] are — never a thing the state machine decides for itself, which is
+    /// why a hard-down is a sticky cooldown and NOT this (1.5.5:
+    /// "hard-down is RECOVERABLE ... do NOT set `dead` (that would block recovery)").
+    pub fn set_dead(&self, destination: DestinationId, dead: bool) {
+        self.dead
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(destination, dead);
+    }
+
+    fn is_dead(&self, destination: DestinationId) -> bool {
+        self.dead
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Release a probe won by [`Self::try_admit`] but never dispatched (owner-checked: a stale,
@@ -699,6 +871,10 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
         now: u64,
         _token: &UnitToken<Route>,
     ) -> LaneState {
+        // The destination-global gates, read SEPARATELY and in 1.5.5's own order.
+        if self.is_dead(destination) {
+            return LaneState::Dead;
+        }
         if self.budget_exhausted(destination) {
             return LaneState::BudgetExhausted;
         }

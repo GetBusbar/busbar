@@ -284,6 +284,21 @@ impl Breaker for BreakerAdapter {
                 }
                 busbar_unit_breaker::LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
                 busbar_unit_breaker::LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
+                // The three the breaker unit gained with the rest of the refusal taxonomy. They
+                // cross unchanged: the two enums are the same vocabulary, and the whole point of
+                // moving it whole was that a refusal keeps its name all the way to the renderer.
+                busbar_unit_breaker::LaneState::Dead => Unavailable::Dead,
+                busbar_unit_breaker::LaneState::AtCapacity { drain_hint_ms } => {
+                    Unavailable::AtCapacity { drain_hint_ms }
+                }
+                // The egress port has no name for inbound backpressure, and correctly so: shedding
+                // happens BEFORE selection runs, so an admission never answers with it. The arm is
+                // written anyway rather than wildcarded, and it carries the one thing a caller
+                // would have read off the reason — the wait — through the nearest reason this port
+                // does name, so a hint cannot be lost at a narrowing.
+                busbar_unit_breaker::LaneState::Shedding => Unavailable::AtCapacity {
+                    drain_hint_ms: Some(busbar_unit_breaker::SHED_RETRY_FLOOR_MS),
+                },
                 // The unit refuses only from a state that would not have admitted, so this arm
                 // does not arise. It still answers with a refusal rather than by aborting: a
                 // routing step holding a dispatch open is the wrong place to discover that an
