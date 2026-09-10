@@ -570,6 +570,7 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
         ));
     }
 
+    r.append(base_seam_cases(gate, cx, base, &based, &text));
     r.append(declared_raise_cases(gate, cx, base, &based, &text, cfg));
     r.append(kind_row_identity_cases(gate, cx, base, &based, &text));
 
@@ -962,6 +963,84 @@ fn declared_raise_cases(
         expected: Expect::Green,
         got,
     });
+    r
+}
+
+/// THE BASE SEAM — `BUSBAR_GATE_BASE_REF`, driven through the row that reads the base.
+///
+/// The seam has exactly three arms and each is a different claim, so each gets a case:
+///
+/// * SET, IT IS THE BASE. The variable names a ref; that ref's copy of the ceilings file is what
+///   this tree is compared against, and no merge-base is computed at all.
+/// * UNSET, NOTHING MOVED. The same overlay, the same tree, the variable absent — and the answer
+///   is the merge-base's, which is what every run before this seam existed got. The two cases share
+///   one overlay deliberately: the ONLY difference between them is the variable, so a green here
+///   beside the red above is the seam doing exactly one thing.
+/// * NAMED AND ABSENT, IT REFUSES BY NAME. A ref the repository has not got is the state a shallow
+///   clone or a missing fetch is in. Falling back to the merge-base there would measure the branch
+///   against a commit the operator did not name and report it as though they had, so the row is RED
+///   and the detail says which variable and which ref.
+///
+/// The planted base is a SYNTHETIC ref — `git-ref:` says it resolves, `git-show:` says what it
+/// carries — because a case that had to write a commit into the repository would be a case that
+/// mutates the tree the developer is standing in.
+fn base_seam_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, based: &str, text: &str) -> Report {
+    let mut r = Report::new();
+    const NAMED: &str = "refs/busbar-selftest/base-seam";
+    const ABSENT: &str = "refs/busbar-selftest/no-such-base";
+    let (table, key) = ("rules.legacy-reach", "ceiling");
+    let Some(lowered) = ceilings::set_int(text, table, key, 0) else {
+        r.note_infra_failure(format!(
+            "[{table}] carries no `{key}` to lower at a planted base, so the base seam is unproven \
+             rather than passing"
+        ));
+        return r;
+    };
+    let mut ov = on(base);
+    ov.set_command(format!("git-ref:{NAMED}"), "1");
+    ov.set_command(format!("git-show:{NAMED}:{CEILINGS}"), lowered);
+    // THE REAL BASE IS PLANTED WITH THIS TREE'S OWN FILE, so the unset arm is green because no
+    // ceiling rose and not because of whatever the developer's actual merge-base happens to hold.
+    // Without this the pair would be comparing the seam against the state of somebody's checkout.
+    ov.set_command(format!("git-show:{based}:{CEILINGS}"), text.to_string());
+
+    r.push(prove_rows_red(
+        &cx.clone().with_base_ref(Some(NAMED.to_string())),
+        gate,
+        format!(
+            "{}=<ref> IS the base: the ceilings file is compared against that ref's copy",
+            ceilings::BASE_REF_ENV
+        ),
+        &[ceilings::ROW_ROSE],
+        ov.clone(),
+        &[&format!("{CEILINGS} {table}.{key}: 0 ->")],
+    ));
+    r.push(prove_rows_green(
+        &cx.clone().with_base_ref(None),
+        gate,
+        format!(
+            "with {} unset the base is the merge-base, on the same overlay that the named base \
+             reddens",
+            ceilings::BASE_REF_ENV
+        ),
+        &[ceilings::ROW_ROSE],
+        ov,
+    ));
+    r.push(prove_rows_red(
+        &cx.clone().with_base_ref(Some(ABSENT.to_string())),
+        gate,
+        format!(
+            "{}=<a ref this repository has not got> is refused by name, never fallen back from",
+            ceilings::BASE_REF_ENV
+        ),
+        &[ceilings::ROW_ROSE],
+        on(base),
+        &[
+            ceilings::BASE_REF_ENV,
+            ABSENT,
+            "names no commit this repository can resolve",
+        ],
+    ));
     r
 }
 

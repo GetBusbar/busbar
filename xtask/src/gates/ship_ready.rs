@@ -286,10 +286,12 @@ fn mutants_row(cx: &Ctx, repo: &str) -> Row {
                 .to_string(),
         );
     }
-    let base = cx
-        .git(&["merge-base", "HEAD", ceilings::INTEGRATION_REF])
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+    // THE BASE COMES FROM THE ONE RESOLVER. This row used to compute its own merge-base, in its
+    // own words, beside `ceilings::base_ref` computing the same thing in different ones — so a run
+    // pointed at a base (`BUSBAR_GATE_BASE_REF`) moved every ceiling ratchet and left this row
+    // still asking about the integration line. Two answers to "what is the base" in one binary is
+    // two ratchets disagreeing about what they ratchet from while both stay green.
+    let base = ceilings::base_ref(cx).unwrap_or_default();
 
     let mut tried: Vec<String> = Vec::new();
     for sha in [head.clone(), base].into_iter().filter(|s| !s.is_empty()) {

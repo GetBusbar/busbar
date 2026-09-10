@@ -43,6 +43,25 @@ pub const KIND_CEILINGS: &str = "qa/kind-isolation.toml";
 /// The line the branch is measured against. The merge-base with it is the BASE.
 pub const INTEGRATION_REF: &str = "origin/integration/oracle-phase0";
 
+/// THE ONE VARIABLE THAT MOVES THE BASE, for every ratchet in this binary at once.
+///
+/// It exists because the base was a DERIVATION and not a seam: `ceilings::base_ref` computed the
+/// merge-base with [`INTEGRATION_REF`], `ship_ready` computed it a second time in its own words,
+/// and `scripts/gate-mutants.sh` computed it a third from `GATE_MUTANTS_BASE` — so a run that
+/// needed to be measured against a different commit (a landing runner proving a pick off a base
+/// that is not the integration tip; a fork whose integration line has another name) had three
+/// places to persuade and only one of them was persuadable. Three answers to "what is the base"
+/// is how two ratchets come to disagree about which commit they are ratcheting from while both
+/// stay green.
+///
+/// Set, it IS the base — no merge-base is computed and no `HEAD~1` is fallen back to. Unset,
+/// nothing about this resolver changes, which is the property the self-test holds it to.
+///
+/// A REF THAT DOES NOT RESOLVE IS A REFUSAL, NEVER A FALLBACK. "The operator named a base and this
+/// repository has not got it" is the state a shallow clone or a missing fetch is in, and quietly
+/// measuring against the merge-base instead would answer a question nobody asked — with a green.
+pub const BASE_REF_ENV: &str = "BUSBAR_GATE_BASE_REF";
+
 pub const ROW_ROSE: &str = "ceiling-rose";
 pub const ROW_SLACK: &str = "ceiling-slack";
 
@@ -336,7 +355,32 @@ pub fn set_int(text: &str, table: &str, key: &str, value: i64) -> Option<String>
 /// The merge-base with the integration line, because that is the commit the branch's own edits are
 /// diffed from; and `HEAD~1` when the merge-base IS `HEAD`, which is the case on the integration
 /// line itself, where "what this branch changed" is what the last commit changed.
+///
+/// UNLESS [`BASE_REF_ENV`] NAMES ONE, in which case that commit is the base and neither the
+/// merge-base nor `HEAD~1` is consulted. This is the ONE seam: `ship_ready`'s mutation row and
+/// `kind_isolation`'s provenance both reach history through this function, so moving it moves
+/// every ratchet in the binary together rather than one of them apart from the others.
 pub fn base_ref(cx: &Ctx) -> Result<String, String> {
+    if let Some(want) = cx.env().gate_base_ref.clone() {
+        if !cx.git_ref_resolves(&want) {
+            return Err(format!(
+                "{BASE_REF_ENV}=`{want}` names no commit this repository can resolve. A named \
+                 base that is not here is not the merge-base and it is not \"no base\": falling \
+                 back would measure this branch against a commit the operator did not name, and \
+                 report the answer as though they had. Fetch the ref, or unset {BASE_REF_ENV}."
+            ));
+        }
+        // The SHA when git can spell one, and the ref's own name when it cannot — which is the
+        // self-test's planted ref, resolvable by declaration and carrying no object. Nothing
+        // downstream needs a SHA: the base is used to read files out of history and to name
+        // itself in a report, and a ref does both.
+        return Ok(cx
+            .git(&["rev-parse", &format!("{want}^{{commit}}")])
+            .map(|s| s.trim().to_string())
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(want));
+    }
     let head = cx.git(&["rev-parse", "HEAD"])?.trim().to_string();
     if cx.git_ref_resolves(INTEGRATION_REF) {
         if let Ok(mb) = cx.git(&["merge-base", "HEAD", INTEGRATION_REF]) {

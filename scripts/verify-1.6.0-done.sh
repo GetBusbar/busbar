@@ -318,6 +318,10 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #   * CONFIG_SCHEMA_BASELINE_REF repoints the config-stability gate's additive-only baseline. That
 #     gate's whole content is the diff against the baseline; pointing it at HEAD, or at any ref
 #     carrying an older snapshot, makes every non-additive change additive.
+#   * BUSBAR_GATE_BASE_REF repoints THE BASE — the one commit `ceiling-rose`, `ceiling-slack`'s
+#     siblings, kind-isolation's provenance rules and `ship-ready:gate-mutants` all measure this
+#     branch against. Set it to the tip and every ratchet compares the tree to itself: no ceiling
+#     rose, no row was minted, no edge was introduced, all green, nothing measured.
 #   * CONFIG_SCHEMA_BOOTSTRAP is that gate's declared one-run escape from having no baseline at all.
 #     It exists so a missing baseline announces itself rather than passing silently — which makes it
 #     exactly the kind of thing a DONE run must refuse.
@@ -334,7 +338,8 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 assert_bless_env_empty() {
   local v bad=0
   for v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
-           SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
+           SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
+           BUSBAR_GATE_BASE_REF; do
     if [ -n "${!v:-}" ]; then echo "regen/repoint env var $v is SET ('${!v}') — the comparison would be against something the operator chose, not the pinned reference"; bad=1; fi
   done
   return "$bad"
@@ -358,7 +363,8 @@ if [ "$SELFTEST" -eq 1 ]; then
     st_fail=1
   fi
   for st_v in UPDATE_OPENAPI BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
-              SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
+              SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP \
+              BUSBAR_GATE_BASE_REF; do
     # A subshell so the plant cannot leak, driving the REAL assert_bless_env_empty — not a copy of
     # its rule, which would prove only that the copy agrees with itself.
     if ( export "$st_v=planted"; assert_bless_env_empty ) >/dev/null 2>&1; then

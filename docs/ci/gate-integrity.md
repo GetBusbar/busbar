@@ -32,6 +32,44 @@ drift hides.
 `ship-ready` is the row that says both halves are true at the same time, on a tree that is asking to
 be promoted.
 
+### The base every ratchet is measured against
+
+Every rule above is a comparison, and a comparison needs a left-hand side. That commit is **the
+base**, and there is exactly one thing in `xtask` that decides what it is:
+`xtask/src/gates/construction/ceilings.rs::base_ref`. `ceiling-rose` reads it (and `--write`'s
+strike of the declared raises the base carries reads it with them), `kind-isolation`'s provenance
+rules (`[[dep]]`, `minted-row`, `second-mint`) read it, and `ship-ready:gate-mutants` reads it — the
+last of which used to compute its own merge-base in its own words, which is two answers to one
+question in one binary.
+
+By default the base is the **merge-base with `origin/integration/oracle-phase0`**, and `HEAD~1` when
+that merge-base *is* `HEAD` (which is the state the integration line itself is in, where "what this
+branch changed" is what the last commit changed).
+
+**`BUSBAR_GATE_BASE_REF` moves it, everywhere, at once.**
+
+| the variable | what the base is |
+| --- | --- |
+| unset (or empty) | the merge-base, exactly as before — nothing about the default path changes |
+| set to a ref this repository resolves | **that commit**; no merge-base is computed and no `HEAD~1` is fallen back to |
+| set to a ref this repository has not got | every rule that reads the base is **RED**, naming the variable and the ref |
+
+The third row is the point. "The operator named a base and it is not here" is the state a shallow
+clone or a missing fetch is in, and falling back to the merge-base there would measure the branch
+against a commit nobody named and report the answer as though they had — a green, quietly, for the
+wrong comparison. So it refuses, by name.
+
+It exists for the landing runner, which proves a pick against the base it is actually being landed
+on rather than against whatever the integration tip happens to be at that second, and for forks
+whose integration line has another name. It is a **repointing** variable in exactly the sense
+`CONFIG_SCHEMA_BASELINE_REF` is, so `scripts/verify-1.6.0-done.sh` refuses a DONE run that sets it:
+a DONE run means "this tree was measured against something outside itself", and a base of the
+operator's choosing is a different claim.
+
+`scripts/gate-mutants.sh` keeps its own `GATE_MUTANTS_BASE`, because it computes a *merge-base with*
+the ref it is given rather than taking the ref as the base; its default is spelled to match
+`INTEGRATION_REF` so that one branch has one base.
+
 ## What CI holds mechanically
 
 | check | what it is | required on |

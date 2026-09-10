@@ -260,6 +260,20 @@ pub struct Env {
     /// `CONFIG_SCHEMA_BOOTSTRAP` — that gate's declared, one-run escape from having no baseline at
     /// all. Declared, never inferred; it announces itself and it is not a pass.
     pub config_bootstrap: bool,
+    /// `BUSBAR_GATE_BASE_REF` — THE ONE VARIABLE THAT SAYS WHICH COMMIT IS "THE BASE".
+    ///
+    /// Every ratchet in this binary that asks history a question asks it of ONE resolver,
+    /// [`crate::gates::construction::ceilings::base_ref`], and this is the only thing that moves
+    /// it. Captured here on exactly the terms `config_baseline_ref` is captured on: a variable a
+    /// gate reads straight out of the process environment is one no runner can see it reading, and
+    /// `scripts/verify-1.6.0-done.sh` refuses a DONE run that sets it for the same reason it
+    /// refuses the other repointing variables — a run pointed at a base of the operator's choosing
+    /// is not a run measured against the pinned reference.
+    ///
+    /// Empty is UNSET rather than "the empty ref": an exported-but-blank variable in a CI shell is
+    /// the ordinary way a variable is not set, and reading it as a ref would make every such run
+    /// refuse for a reason nobody wrote down.
+    pub gate_base_ref: Option<String>,
 }
 
 impl Env {
@@ -273,6 +287,10 @@ impl Env {
                 .ok()
                 .filter(|s| !s.is_empty()),
             config_bootstrap: std::env::var("CONFIG_SCHEMA_BOOTSTRAP").as_deref() == Ok("1"),
+            gate_base_ref: std::env::var("BUSBAR_GATE_BASE_REF")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string()),
         }
     }
 }
@@ -353,6 +371,16 @@ impl Ctx {
 
     pub fn write_mode(mut self, yes: bool) -> Ctx {
         self.env.write = yes;
+        self
+    }
+
+    /// A FRESH context whose base is the one named here, as `BUSBAR_GATE_BASE_REF` would have
+    /// named it. This is how the self-test drives the base seam: the variable is captured once, in
+    /// [`Env::capture`], so a case that wants a different base cannot set it in the process — two
+    /// cases running in the same binary would then be reading each other's environment — and asks
+    /// for a context instead.
+    pub fn with_base_ref(mut self, r: Option<String>) -> Ctx {
+        self.env.gate_base_ref = r;
         self
     }
 
