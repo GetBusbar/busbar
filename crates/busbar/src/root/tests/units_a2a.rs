@@ -1051,40 +1051,51 @@ fn draft(op: OpClassId) -> A2aDraft {
 /// store that keeps no governance rows does.
 macro_rules! no_governance_rows {
     () => {
-        fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+        fn put_key(
+            &self,
+            _key: &busbar_contract::store::VirtualKey,
+        ) -> busbar_contract::store::StoreResult<()> {
             Ok(())
         }
-        fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        fn get_key(
+            &self,
+            _id: &str,
+        ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
             Ok(None)
         }
-        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        fn list_keys(
+            &self,
+        ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
             Ok(Vec::new())
         }
-        fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+        fn delete_key(&self, _id: &str) -> busbar_contract::store::StoreResult<()> {
             Ok(())
         }
         fn get_usage(
             &self,
             _bucket_id: &str,
             _window_start: u64,
-        ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
-            Ok(busbar_api::UsageLedger::default())
+        ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
+            Ok(busbar_contract::store::UsageLedger::default())
         }
         fn put_usage(
             &self,
             _bucket_id: &str,
             _window_start: u64,
-            _ledger: &busbar_api::UsageLedger,
-        ) -> busbar_api::StoreResult<()> {
+            _ledger: &busbar_contract::store::UsageLedger,
+        ) -> busbar_contract::store::StoreResult<()> {
             Ok(())
         }
-        fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        fn add_metering(
+            &self,
+            _delta: &busbar_contract::store::MeteringDelta,
+        ) -> busbar_contract::store::StoreResult<()> {
             Ok(())
         }
         fn list_metering(
             &self,
             _bucket: u64,
-        ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
             Ok(Vec::new())
         }
     };
@@ -1116,20 +1127,30 @@ impl RecordingStore {
     }
 }
 
-impl busbar_api::Store for RecordingStore {
+impl busbar_contract::store::Store for RecordingStore {
     no_governance_rows!();
 
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.note("put", &record.kind);
         Ok(())
     }
 
-    fn get_plane_record(&self, kind: &str, _id: &str) -> busbar_api::StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(
+        &self,
+        kind: &str,
+        _id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<Vec<u8>>> {
         self.note("get", kind);
         Ok(None)
     }
 
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.note("append", &record.kind);
         Ok(())
     }
@@ -1137,13 +1158,17 @@ impl busbar_api::Store for RecordingStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        _selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        _selector: &busbar_contract::store::PlaneSelector,
+    ) -> busbar_contract::store::StoreResult<Vec<Vec<u8>>> {
         self.note("scan", kind);
         Ok(Vec::new())
     }
 
-    fn delete_plane_record(&self, kind: &str, _id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_plane_record(
+        &self,
+        kind: &str,
+        _id: &str,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.note("delete", kind);
         Ok(())
     }
@@ -1154,7 +1179,7 @@ impl busbar_api::Store for RecordingStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> busbar_api::StoreResult<bool> {
+    ) -> busbar_contract::store::StoreResult<bool> {
         self.note("redeem", kind);
         Ok(true)
     }
@@ -1165,7 +1190,7 @@ impl busbar_api::Store for RecordingStore {
         _token: &str,
         _expires_at: u64,
         _now: u64,
-    ) -> busbar_api::StoreResult<bool> {
+    ) -> busbar_contract::store::StoreResult<bool> {
         self.note("verify_live", kind);
         Ok(true)
     }
@@ -1174,14 +1199,14 @@ impl busbar_api::Store for RecordingStore {
 /// A store that refuses everything, so a failure on the record path is a testable event.
 struct RefusingStore;
 
-impl busbar_api::Store for RefusingStore {
+impl busbar_contract::store::Store for RefusingStore {
     no_governance_rows!();
 
     fn upsert_plane_record(
         &self,
-        _record: &busbar_api::PlaneRecord,
-    ) -> busbar_api::StoreResult<()> {
-        Err(busbar_api::StoreError(
+        _record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
+        Err(busbar_contract::store::StoreError(
             "the store is unavailable".to_string(),
         ))
     }
@@ -1197,7 +1222,7 @@ impl busbar_api::Store for RefusingStore {
 /// columns were supposed to carry.
 #[derive(Default)]
 struct CapabilityStore {
-    tokens: Mutex<Vec<(String, busbar_api::PlaneDisposition)>>,
+    tokens: Mutex<Vec<(String, busbar_contract::store::PlaneDisposition)>>,
     /// Every task body this store was asked to write, in order.
     ///
     /// Kept so a refusal can be asserted to have changed NOTHING, which is the half of "the
@@ -1209,10 +1234,10 @@ struct CapabilityStore {
 impl CapabilityStore {
     /// Register a live callback token, the way the create-push-config plan does.
     fn register(&self, id: &str) {
-        self.tokens
-            .lock()
-            .expect("tokens lock")
-            .push((id.to_string(), busbar_api::PlaneDisposition::Active));
+        self.tokens.lock().expect("tokens lock").push((
+            id.to_string(),
+            busbar_contract::store::PlaneDisposition::Active,
+        ));
     }
 
     fn holds(&self, id: &str) -> bool {
@@ -1228,10 +1253,13 @@ impl CapabilityStore {
     }
 }
 
-impl busbar_api::Store for CapabilityStore {
+impl busbar_contract::store::Store for CapabilityStore {
     no_governance_rows!();
 
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         if record.kind == records::SCHEMA_PUSH_CONFIG.as_str() {
             let mut tokens = self.tokens.lock().expect("tokens lock");
             match tokens.iter_mut().find(|(t, _)| *t == record.id) {
@@ -1250,12 +1278,12 @@ impl busbar_api::Store for CapabilityStore {
 
     fn append_plane_record(
         &self,
-        _record: &busbar_api::PlaneRecord,
-    ) -> busbar_api::StoreResult<()> {
+        _record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
 
-    fn delete_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_plane_record(&self, kind: &str, id: &str) -> busbar_contract::store::StoreResult<()> {
         if kind == records::SCHEMA_PUSH_CONFIG.as_str() {
             self.tokens
                 .lock()
@@ -1271,7 +1299,7 @@ impl busbar_api::Store for CapabilityStore {
         token: &str,
         expires_at: u64,
         now: u64,
-    ) -> busbar_api::StoreResult<bool> {
+    ) -> busbar_contract::store::StoreResult<bool> {
         if kind != records::SCHEMA_PUSH_CONFIG.as_str() {
             return Ok(false);
         }
@@ -1281,7 +1309,9 @@ impl busbar_api::Store for CapabilityStore {
             .expect("tokens lock")
             .iter()
             .any(|(t, d)| {
-                t == token && matches!(d, busbar_api::PlaneDisposition::Active) && now <= expires_at
+                t == token
+                    && matches!(d, busbar_contract::store::PlaneDisposition::Active)
+                    && now <= expires_at
             }))
     }
 }
@@ -1469,7 +1499,7 @@ fn a_callback_token_past_its_deadline_is_refused() {
 /// than assumed to agree.
 #[test]
 fn the_default_liveness_answer_is_a_refusal() {
-    use busbar_api::Store as _;
+    use busbar_contract::store::Store as _;
 
     let store = RefusingStore;
     assert!(

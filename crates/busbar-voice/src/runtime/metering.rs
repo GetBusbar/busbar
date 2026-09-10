@@ -39,7 +39,7 @@ pub struct TurnMeter {
     /// The live engine host — the one seam every plane meters through.
     host: Arc<dyn EngineHost>,
     /// The presenting virtual key the turn's spend is attributed to (owned; cloned at open).
-    key: busbar_api::VirtualKey,
+    key: busbar_contract::store::VirtualKey,
     /// The pool label for the metering series (the voice front-door pool).
     pool: &'static str,
     /// The provider label for the per-(key, model, provider) metering series.
@@ -51,7 +51,7 @@ impl TurnMeter {
     #[must_use]
     pub(crate) fn new(
         host: Arc<dyn EngineHost>,
-        key: busbar_api::VirtualKey,
+        key: busbar_contract::store::VirtualKey,
         pool: &'static str,
         provider: &'static str,
     ) -> Self {
@@ -112,7 +112,7 @@ pub fn cap_nanos_from_buckets(buckets: &[busbar_api::BudgetBucketState]) -> Opti
 #[must_use]
 pub fn principal_cap_nanos(
     host: &Arc<dyn EngineHost>,
-    key: Option<&busbar_api::VirtualKey>,
+    key: Option<&busbar_contract::store::VirtualKey>,
     now: u64,
 ) -> Option<u64> {
     let key = key?;

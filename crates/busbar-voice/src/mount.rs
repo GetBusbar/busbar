@@ -102,7 +102,7 @@ const SESSION_SCOPE_KIND: &str = "session";
 /// store's wildcard and is granted every kind, exactly as it is on every other plane; a key that
 /// carries a list must have this entry in it.
 #[must_use]
-pub fn session_scope_allowed(key: &busbar_api::VirtualKey) -> bool {
+pub fn session_scope_allowed(key: &busbar_contract::store::VirtualKey) -> bool {
     key.scope_allowed(SESSION_SCOPE_KIND, FRONT_DOOR_POOL)
 }
 
@@ -644,7 +644,7 @@ pub(crate) struct GovernedOpen<'a> {
     pub call_id: String,
     /// The resolved presenting virtual key (audience-checked key chain), or `None` ungoverned. The
     /// hook gate reads its `(id, name)`; the Meter step lands each turn's usage on this key's ledger.
-    pub vkey: Option<busbar_api::VirtualKey>,
+    pub vkey: Option<busbar_contract::store::VirtualKey>,
     pub body: Bytes,
     pub headers: axum::http::HeaderMap,
     pub now: u64,

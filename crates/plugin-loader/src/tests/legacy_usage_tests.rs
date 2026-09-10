@@ -20,7 +20,9 @@ use crate::legacy_usage::{
     delta_to_legacy, ledger_from_legacy, ledger_to_legacy, needs_legacy_usage_wire,
     LegacyModelTokens, LegacyUsageLedger, TierTokens, UNIT_MAP_ABI,
 };
-use busbar_api::{ModelTokens, ModelTokensDelta, UNIT_CACHE_READ, UNIT_INPUT, UNIT_OUTPUT};
+use busbar_contract::store::{
+    ModelTokens, ModelTokensDelta, UNIT_CACHE_READ, UNIT_INPUT, UNIT_OUTPUT,
+};
 
 /// The request bytes the last `capture_call` saw — the JSON a plugin would have to decode.
 static LAST_REQUEST: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
@@ -214,7 +216,7 @@ fn the_four_priced_tiers_round_trip_through_the_1_5_5_shape() {
         billable_requests: 4,
         models: vec![ModelTokens {
             model: "m".to_string(),
-            usage_units: busbar_api::RESERVED_UNITS
+            usage_units: busbar_contract::store::RESERVED_UNITS
                 .iter()
                 .enumerate()
                 .map(|(i, u)| (u.to_string(), (i as u64 + 1) * 10))

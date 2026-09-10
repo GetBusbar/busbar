@@ -118,7 +118,7 @@ pub fn assert_missing_required_field_rejected<T>(
 #[path = "tests/lib_tests.rs"]
 mod tests;
 
-/// The [`busbar_api::Store`] contract conformance suite — see the module doc. Behind the `store`
+/// The [`busbar_contract::store::Store`] contract conformance suite — see the module doc. Behind the `store`
 /// feature so only store plugins pay for the `busbar-api` dependency.
 #[cfg(feature = "store")]
 pub mod store_conformance;

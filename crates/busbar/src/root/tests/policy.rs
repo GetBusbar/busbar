@@ -332,9 +332,9 @@ fn a_metric_written_twice_keeps_the_tighter_amount() {
 #[test]
 fn a_pool_scoped_limit_gets_its_own_row() {
     let mut cheap = limit(LimitMetric::Budget, 500, Some(LimitWindow::Month));
-    cheap.scope = Some(busbar_api::ScopeRef::pool("value"));
+    cheap.scope = Some(busbar_contract::store::ScopeRef::pool("value"));
     let mut dear = limit(LimitMetric::Budget, 500, Some(LimitWindow::Month));
-    dear.scope = Some(busbar_api::ScopeRef::pool("frontier"));
+    dear.scope = Some(busbar_contract::store::ScopeRef::pool("frontier"));
     let groups = BTreeMap::from([configured("team", vec![cheap, dear])]);
     let table = group_table(&groups, &BTreeMap::new());
     let buckets = &table.groups()[0].buckets;

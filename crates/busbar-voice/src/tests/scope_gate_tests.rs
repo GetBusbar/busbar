@@ -27,8 +27,11 @@ const VOICE_POOL: &str = "voice-server";
 
 /// A key carrying an EXPLICIT scope list. An explicit list is exhaustive across kinds: whatever is
 /// not in it is not granted.
-fn key_scoped(id: &str, scopes: Vec<busbar_api::ScopeRef>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key_scoped(
+    id: &str,
+    scopes: Vec<busbar_contract::store::ScopeRef>,
+) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: id.to_string(),
         name: id.to_string(),
         allowed_scopes: Some(scopes),
@@ -36,8 +39,8 @@ fn key_scoped(id: &str, scopes: Vec<busbar_api::ScopeRef>) -> busbar_api::Virtua
     }
 }
 
-fn session_scope(value: &str) -> busbar_api::ScopeRef {
-    busbar_api::ScopeRef {
+fn session_scope(value: &str) -> busbar_contract::store::ScopeRef {
+    busbar_contract::store::ScopeRef {
         kind: "session".to_string(),
         value: value.to_string(),
     }
@@ -51,7 +54,7 @@ fn runtime() -> VoiceRuntime {
     )
 }
 
-async fn open_as(key: Option<busbar_api::VirtualKey>) -> axum::http::StatusCode {
+async fn open_as(key: Option<busbar_contract::store::VirtualKey>) -> axum::http::StatusCode {
     let rt = runtime();
     open_governed(GovernedOpen {
         rt: &rt,
@@ -73,7 +76,7 @@ async fn open_as(key: Option<busbar_api::VirtualKey>) -> axum::http::StatusCode 
 fn the_grant_is_read_off_the_keys_own_scope_list() {
     // A wildcard principal (no scope list at all) is granted every kind — the store's own semantic,
     // and the most common key shape in a small deployment.
-    let wildcard = busbar_api::VirtualKey {
+    let wildcard = busbar_contract::store::VirtualKey {
         id: "vk-wildcard".to_string(),
         ..Default::default()
     };
@@ -93,7 +96,7 @@ fn the_grant_is_read_off_the_keys_own_scope_list() {
     assert!(
         !session_scope_allowed(&key_scoped(
             "vk-pool-only",
-            vec![busbar_api::ScopeRef::pool("fast")]
+            vec![busbar_contract::store::ScopeRef::pool("fast")]
         )),
         "a model-plane key is not thereby granted a voice session"
     );
@@ -114,7 +117,7 @@ fn the_grant_is_read_off_the_keys_own_scope_list() {
 async fn a_key_without_session_scope_is_refused_at_the_door() {
     let refused = open_as(Some(key_scoped(
         "vk-no-session",
-        vec![busbar_api::ScopeRef::pool("fast")],
+        vec![busbar_contract::store::ScopeRef::pool("fast")],
     )))
     .await;
     assert_eq!(

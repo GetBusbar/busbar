@@ -5,7 +5,7 @@
 
 use super::*;
 use boundary::{call_boundary, close_boundary, free_boundary, open_boundary, BoundaryOutcome};
-use busbar_api::VirtualKey;
+use busbar_contract::store::VirtualKey;
 use busbar_plugin::cold::{STATUS_ERR, STATUS_OK, STATUS_PROTOCOL, STATUS_UNSUPPORTED};
 use busbar_store_memory::MemoryStore;
 use std::os::raw::c_void;
@@ -837,7 +837,7 @@ fn outbuf_commit_null_out_drops_without_leaking_or_writing() {
 /// the ADDITIVE variants are wired end-to-end without breaking the existing dispatch.
 #[test]
 fn dispatch_handles_audit_variants() {
-    use busbar_api::AuditRecord;
+    use busbar_contract::store::AuditRecord;
     let store = MemoryStore::new();
     let rec = AuditRecord {
         seq: 1,
@@ -874,7 +874,7 @@ fn dispatch_handles_audit_variants() {
 /// `Unit` and the read that follows it finds the row, a purge and a redeem answer their counts.
 #[test]
 fn dispatch_handles_neutral_plane_variants() {
-    use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector};
+    use busbar_contract::store::{PlaneDisposition, PlaneRecord, PlaneSelector};
 
     let store = MemoryStore::new();
 
@@ -1180,10 +1180,10 @@ fn verify_only_module_defaults_begin_login_reject() {
 /// [`dispatch`] reconstituted from the wire. Every non-plane method is a stub: nothing here reads them.
 #[derive(Default)]
 struct RecordingStore {
-    written: std::sync::Mutex<Vec<busbar_api::PlaneRecord>>,
+    written: std::sync::Mutex<Vec<busbar_contract::store::PlaneRecord>>,
 }
 
-impl busbar_api::Store for RecordingStore {
+impl busbar_contract::store::Store for RecordingStore {
     fn put_key(&self, _key: &VirtualKey) -> Result<(), StoreError> {
         Ok(())
     }
@@ -1200,31 +1200,43 @@ impl busbar_api::Store for RecordingStore {
         &self,
         _bucket: &str,
         _window: u64,
-    ) -> Result<busbar_api::UsageLedger, StoreError> {
-        Ok(busbar_api::UsageLedger::default())
+    ) -> Result<busbar_contract::store::UsageLedger, StoreError> {
+        Ok(busbar_contract::store::UsageLedger::default())
     }
     fn put_usage(
         &self,
         _bucket: &str,
         _window: u64,
-        _ledger: &busbar_api::UsageLedger,
+        _ledger: &busbar_contract::store::UsageLedger,
     ) -> Result<(), StoreError> {
         Ok(())
     }
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> Result<(), StoreError> {
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::store::MeteringDelta,
+    ) -> Result<(), StoreError> {
         Ok(())
     }
-    fn list_metering(&self, _bucket: u64) -> Result<Vec<busbar_api::MeteringRow>, StoreError> {
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> Result<Vec<busbar_contract::store::MeteringRow>, StoreError> {
         Ok(Vec::new())
     }
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> Result<(), StoreError> {
+    fn upsert_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> Result<(), StoreError> {
         self.written
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .push(record.clone());
         Ok(())
     }
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> Result<(), StoreError> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> Result<(), StoreError> {
         self.written
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1235,7 +1247,7 @@ impl busbar_api::Store for RecordingStore {
 
 /// Decode `json` as a request and dispatch it against a recording store, returning the ONE envelope
 /// the store was handed — i.e. exactly what a plugin behind the ABI would persist.
-fn envelope_from_wire(json: serde_json::Value) -> busbar_api::PlaneRecord {
+fn envelope_from_wire(json: serde_json::Value) -> busbar_contract::store::PlaneRecord {
     let store = RecordingStore::default();
     let req: StoreRequest =
         serde_json::from_slice(&serde_json::to_vec(&json).unwrap()).expect("request decodes");
@@ -1283,7 +1295,7 @@ fn upserted_plane_record_keeps_its_disposition_across_the_wire() {
     assert_eq!(rec.ts, 2_000, "the upsert wire must carry `ts`");
     assert_eq!(
         rec.disposition,
-        busbar_api::PlaneDisposition::Terminal,
+        busbar_contract::store::PlaneDisposition::Terminal,
         "the upsert wire must carry `disposition`"
     );
 }
@@ -1297,12 +1309,18 @@ fn a_sidecar_less_request_still_decodes_at_the_neutral_defaults() {
         "UpsertPlaneRecord": { "kind": "task", "id": "task-abc", "body": [1] }
     }));
     assert_eq!(rec.ts, 0);
-    assert_eq!(rec.disposition, busbar_api::PlaneDisposition::Active);
+    assert_eq!(
+        rec.disposition,
+        busbar_contract::store::PlaneDisposition::Active
+    );
 
     let rec = envelope_from_wire(serde_json::json!({
         "AppendPlaneRecord": { "kind": "call", "parent": "p", "seq": 1, "body": [1] }
     }));
     assert_eq!(rec.ts, 0);
-    assert_eq!(rec.disposition, busbar_api::PlaneDisposition::Active);
+    assert_eq!(
+        rec.disposition,
+        busbar_contract::store::PlaneDisposition::Active
+    );
     assert_eq!(rec.id, "", "no id on the wire is an empty child id");
 }

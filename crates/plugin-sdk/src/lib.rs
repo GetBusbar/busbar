@@ -3,7 +3,7 @@
 
 //! SDK for writing a busbar **store plugin** in Rust.
 //!
-//! Writing a plugin is: implement [`busbar_api::Store`] for your backend, write a constructor
+//! Writing a plugin is: implement [`busbar_contract::store::Store`] for your backend, write a constructor
 //! `fn(&str) -> Result<Box<dyn Store>, String>` (the `&str` is the JSON config the operator set),
 //! call [`export_store_plugin!`] with it, and build the crate as a `cdylib`. The macro emits the
 //! six `extern "C-unwind"` symbols the engine's loader resolves (`busbar_abi`, `busbar_plugin_kind`,
@@ -14,7 +14,7 @@
 //!
 //! ```ignore
 //! use busbar_plugin_sdk::export_store_plugin;
-//! fn open(cfg: &str) -> Result<Box<dyn busbar_api::Store>, String> {
+//! fn open(cfg: &str) -> Result<Box<dyn busbar_contract::store::Store>, String> {
 //!     Ok(Box::new(MyStore::new(cfg)?))
 //! }
 //! export_store_plugin!(open);
@@ -24,7 +24,7 @@
 //! `MyStore` directly — the C ABI is only the *dynamic* delivery path. That is how a build can bake
 //! a plugin in (e.g. Postgres compiled straight into a custom binary) without any `cfg` sprawl.
 
-use busbar_api::{Store, StoreError};
+use busbar_contract::store::{Store, StoreError};
 use busbar_plugin::cold::{StoreRequest, StoreResponse, ABI_VERSION};
 use std::os::raw::c_void;
 
@@ -35,7 +35,7 @@ pub use boundary::BoundaryOutcome;
 // depending on `busbar-api` directly. `export_store_plugin!` does NOT use this alias (it expands
 // to `store_dispatch`/`StoreHandle`, never `StoreTrait`) — this is frozen SDK surface kept for
 // callers outside this repo, not for anything internal to the macro.
-pub use busbar_api::Store as StoreTrait;
+pub use busbar_contract::store::Store as StoreTrait;
 
 /// The "decision observability" signal catalog: a plugin author references
 /// `busbar_plugin_sdk::Signal::CandidateBreakerState` (etc.) at compile time to declare which
@@ -156,7 +156,7 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
         // durable-plane surface now (the fourteen protocol-named arms are deleted, `ABI_VERSION` was
         // raised to 3 in 1.6.0 for that, then to 4 in 1.7.0 when the plane-record types relocated;
         // see `busbar_plugin::cold::ABI_VERSION`). Upsert and append reconstitute a
-        // [`busbar_api::PlaneRecord`] from the request and
+        // [`busbar_contract::store::PlaneRecord`] from the request and
         // NOTHING else, which is why the write verbs carry the whole typed sidecar: `ts` and
         // `disposition` are the two columns a retention sweep reads and the two it cannot recover
         // from an opaque body, so a wire that dropped them would hand every backend behind this ABI
@@ -175,7 +175,7 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             disposition,
             body,
         } => {
-            store.upsert_plane_record(&busbar_api::PlaneRecord {
+            store.upsert_plane_record(&busbar_contract::store::PlaneRecord {
                 kind,
                 id,
                 parent: None,
@@ -196,7 +196,7 @@ pub fn dispatch(store: &dyn Store, req: StoreRequest) -> Result<StoreResponse, S
             disposition,
             body,
         } => {
-            store.append_plane_record(&busbar_api::PlaneRecord {
+            store.append_plane_record(&busbar_contract::store::PlaneRecord {
                 kind,
                 id,
                 parent: Some(parent),

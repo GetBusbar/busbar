@@ -24,9 +24,9 @@ use std::sync::Arc;
 
 /// A governed fixture: a host with governance ON and a virtual key presenting to it — so the host
 /// `meter_ledger` seam the voice session drives writes to the very ledger this test reads back.
-fn governed_fixture() -> (Arc<FixtureHost>, busbar_api::VirtualKey) {
+fn governed_fixture() -> (Arc<FixtureHost>, busbar_contract::store::VirtualKey) {
     let host = Arc::new(FixtureHost::new().governed());
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::store::VirtualKey {
         id: "vk-voice-caller".to_string(),
         name: "voice-caller".to_string(),
         ..Default::default()
@@ -39,10 +39,10 @@ fn governed_fixture() -> (Arc<FixtureHost>, busbar_api::VirtualKey) {
 fn turn_usage(input: u64, output: u64) -> busbar_substrate::billing::Usage {
     let mut usage_units = BTreeMap::new();
     if input != 0 {
-        usage_units.insert(busbar_api::UNIT_INPUT.to_string(), input);
+        usage_units.insert(busbar_contract::store::UNIT_INPUT.to_string(), input);
     }
     if output != 0 {
-        usage_units.insert(busbar_api::UNIT_OUTPUT.to_string(), output);
+        usage_units.insert(busbar_contract::store::UNIT_OUTPUT.to_string(), output);
     }
     busbar_substrate::billing::Usage { usage_units }
 }
@@ -93,7 +93,7 @@ fn an_ungoverned_voice_turn_meters_nobody_without_panicking() {
     // No governance configured: `host.governance()` is `None`, so `record_turn` no-ops cleanly (a
     // voice session on an ungoverned deployment opens and runs, it simply attributes to no ledger).
     let host = FixtureHost::new().into_host();
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::store::VirtualKey {
         id: "anon".to_string(),
         ..Default::default()
     };

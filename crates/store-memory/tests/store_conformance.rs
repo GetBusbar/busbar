@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The shared [`busbar_api::Store`] contract conformance suite (`busbar-plugin-testkit`).
+//! The shared [`busbar_contract::store::Store`] contract conformance suite (`busbar-plugin-testkit`).
 //!
 //! Core's own reference backend runs it alongside every plugin backend on purpose: these checks
 //! exist because the fleet had silently disagreed with itself about all four behaviours, and a suite

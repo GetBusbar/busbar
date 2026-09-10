@@ -48,7 +48,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
 use busbar_caps::{
     Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
     ReasonCode, Refusal, TrustToken, UnitToken, UsageToken, Verify,
@@ -56,6 +55,7 @@ use busbar_caps::{
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::plane::{Plane, PlaneMeta};
+use busbar_contract::store::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
 use busbar_contract::VirtualKeyDirectory;
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::Evidence;
@@ -1093,7 +1093,7 @@ impl Records {
             });
         }
         let kind = leg.schema.as_str();
-        let map = |e: busbar_api::StoreError| RecordRefusal::Store(e.0);
+        let map = |e: busbar_contract::store::StoreError| RecordRefusal::Store(e.0);
         match leg.op {
             records::OP_GET => self
                 .store

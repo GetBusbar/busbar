@@ -432,7 +432,7 @@ fn load_store_from_bytes_loads_the_given_bytes() {
         id: "vk_b".into(),
         generation_hash: "h".into(),
         name: "b".into(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+        allowed_scopes: Some(vec![busbar_contract::store::ScopeRef::pool("p")]),
         enabled: true,
         created_at: 1,
         group: None,
@@ -599,11 +599,11 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
     if let Some(p) = &old_path {
         assert!(p.is_file(), "OLD's staged backing must exist while alive");
     }
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::store::VirtualKey {
         id: "vk_old".into(),
         generation_hash: "h".into(),
         name: "old".into(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+        allowed_scopes: Some(vec![busbar_contract::store::ScopeRef::pool("p")]),
         enabled: true,
         created_at: 1,
         group: None,
@@ -659,11 +659,11 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
     }
 
     // The NEW instance keeps serving with no restart — its library was untouched by the old drop.
-    new.put_key(&busbar_api::VirtualKey {
+    new.put_key(&busbar_contract::store::VirtualKey {
         id: "vk_new".into(),
         generation_hash: "h".into(),
         name: "new".into(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+        allowed_scopes: Some(vec![busbar_contract::store::ScopeRef::pool("p")]),
         enabled: true,
         created_at: 2,
         group: None,
@@ -1516,7 +1516,7 @@ fn load_and_exercise_export_example_plugin() {
 /// in-tree workspace member that `cargo test --workspace` always builds, so its absence means a
 /// broken pipeline — and a silent skip here would restore exactly the situation this test exists to
 /// end: a green run that proved nothing about durability.
-use busbar_api::PlaneDisposition;
+use busbar_contract::store::PlaneDisposition;
 
 // ── the loader test speaks LOCAL STAND-IN rows; the ABI speaks NEUTRAL kind-tagged plane records ──
 //
@@ -1624,17 +1624,20 @@ fn call_record(c: &SampleCall) -> PlaneRecord {
     }
 }
 
-fn n_get_task(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Option<SampleTask>> {
+fn n_get_task(s: &dyn busbar_contract::store::Store, id: &str) -> StoreResult<Option<SampleTask>> {
     Ok(s.get_plane_record("task", id)?
         .map(|b| serde_json::from_slice(&b).unwrap()))
 }
-fn n_list_tasks(s: &dyn busbar_api::Store) -> StoreResult<Vec<SampleTask>> {
+fn n_list_tasks(s: &dyn busbar_contract::store::Store) -> StoreResult<Vec<SampleTask>> {
     Ok(s.list_plane_records("task", &PlaneSelector::All)?
         .iter()
         .map(|b| serde_json::from_slice(b).unwrap())
         .collect())
 }
-fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<SampleEvent>> {
+fn n_list_task_events(
+    s: &dyn busbar_contract::store::Store,
+    id: &str,
+) -> StoreResult<Vec<SampleEvent>> {
     Ok(
         s.list_plane_records("task_event", &PlaneSelector::Parent(id.into()))?
             .iter()
@@ -1642,7 +1645,10 @@ fn n_list_task_events(s: &dyn busbar_api::Store, id: &str) -> StoreResult<Vec<Sa
             .collect(),
     )
 }
-fn n_list_mcp_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<SampleCall>> {
+fn n_list_mcp_calls(
+    s: &dyn busbar_contract::store::Store,
+    p: &str,
+) -> StoreResult<Vec<SampleCall>> {
     Ok(
         s.list_plane_records("call", &PlaneSelector::Parent(p.into()))?
             .iter()
@@ -1650,7 +1656,7 @@ fn n_list_mcp_calls(s: &dyn busbar_api::Store, p: &str) -> StoreResult<Vec<Sampl
             .collect(),
     )
 }
-fn n_list_call_principals(s: &dyn busbar_api::Store) -> StoreResult<Vec<String>> {
+fn n_list_call_principals(s: &dyn busbar_contract::store::Store) -> StoreResult<Vec<String>> {
     s.list_plane_record_parents("call")
 }
 

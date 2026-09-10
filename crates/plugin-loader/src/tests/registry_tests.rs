@@ -629,11 +629,11 @@ fn end_to_end_open_store_from_signed_tarball() {
     let store = reg
         .open_store("sqlite", r#"{"db_path": ":memory:"}"#)
         .expect("open the real store through the full pipeline");
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::store::VirtualKey {
         id: "vk_pipeline".into(),
         generation_hash: "h".into(),
         name: "pipeline".into(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef::pool("p")]),
+        allowed_scopes: Some(vec![busbar_contract::store::ScopeRef::pool("p")]),
         enabled: true,
         created_at: 1,
         group: Some("growth".into()),
@@ -648,7 +648,7 @@ fn end_to_end_open_store_from_signed_tarball() {
     assert_eq!(got.group.as_deref(), Some("growth"));
     assert_eq!(
         got.allowed_scopes,
-        Some(vec![busbar_api::ScopeRef::pool("p")])
+        Some(vec![busbar_contract::store::ScopeRef::pool("p")])
     );
     drop(store);
     let _ = std::fs::remove_dir_all(&dir);

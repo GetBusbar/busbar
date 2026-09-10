@@ -78,7 +78,7 @@ async fn opening_a_session_reserves_on_the_hosts_own_lease() {
         Arc::new(LocalMeteringPort),
         Arc::new(EchoToolExecutor),
     );
-    let key = busbar_api::VirtualKey {
+    let key = busbar_contract::store::VirtualKey {
         id: "vk-voice-session".to_string(),
         name: "voice-session".to_string(),
         ..Default::default()
@@ -111,8 +111,8 @@ async fn opening_a_session_reserves_on_the_hosts_own_lease() {
     // And the turn that follows settles onto the same key's ledger through the core meter seam — the
     // ledger a voice session's spend shows up on, exactly like a model call's.
     let mut usage_units = BTreeMap::new();
-    usage_units.insert(busbar_api::UNIT_INPUT.to_string(), 120u64);
-    usage_units.insert(busbar_api::UNIT_OUTPUT.to_string(), 80u64);
+    usage_units.insert(busbar_contract::store::UNIT_INPUT.to_string(), 120u64);
+    usage_units.insert(busbar_contract::store::UNIT_OUTPUT.to_string(), 80u64);
     TurnMeter::new(
         Arc::clone(&host) as Arc<dyn busbar_substrate::plane_host::EngineHost>,
         key.clone(),

@@ -40,19 +40,27 @@ fn seam() -> NetSeam<'static> {
 struct SilentStore;
 
 impl AbiStore for SilentStore {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    fn put_key(
+        &self,
+        _key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
 
-    fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        _id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         Ok(None)
     }
 
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         Ok(Vec::new())
     }
 
-    fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, _id: &str) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
 
@@ -60,24 +68,30 @@ impl AbiStore for SilentStore {
         &self,
         _bucket_id: &str,
         _window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
+        Ok(busbar_contract::store::UsageLedger::default())
     }
 
     fn put_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-        _ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        _ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
 
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        _delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         Ok(())
     }
 
-    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        _bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         Ok(Vec::new())
     }
 }

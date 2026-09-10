@@ -674,10 +674,10 @@ fn usage_record(
     usage: &busbar_substrate::billing::Usage,
 ) -> busbar_caps::Usage {
     let lines = [
-        busbar_api::UNIT_INPUT,
-        busbar_api::UNIT_OUTPUT,
-        busbar_api::UNIT_CACHE_READ,
-        busbar_api::UNIT_CACHE_WRITE,
+        busbar_contract::store::UNIT_INPUT,
+        busbar_contract::store::UNIT_OUTPUT,
+        busbar_contract::store::UNIT_CACHE_READ,
+        busbar_contract::store::UNIT_CACHE_WRITE,
     ]
     .into_iter()
     .filter_map(|class| {
@@ -1665,7 +1665,7 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
     };
     let arrival = WalkArrival {
         host: Arc::clone(&payload.host),
-        gov: busbar_api::PlaneRequestCtx {
+        gov: busbar_contract::store::PlaneRequestCtx {
             key: payload.gov.key.clone(),
         },
         proto,
@@ -1743,7 +1743,7 @@ async fn path_arrival(
     };
     let arrival = WalkArrival {
         host: Arc::clone(&payload.host),
-        gov: busbar_api::PlaneRequestCtx {
+        gov: busbar_contract::store::PlaneRequestCtx {
             key: payload.gov.key.clone(),
         },
         proto,

@@ -87,17 +87,26 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
     };
     let usage = u.to_billing_usage();
     assert_eq!(
-        usage.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        usage
+            .usage_units
+            .get(busbar_contract::store::UNIT_INPUT)
+            .copied(),
         Some(20 + 5 - 11),
         "audio_in + text_in fold onto `input`, less the cached subset"
     );
     assert_eq!(
-        usage.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        usage
+            .usage_units
+            .get(busbar_contract::store::UNIT_OUTPUT)
+            .copied(),
         Some(3 + 7),
         "audio_out + text_out fold onto `output`"
     );
     assert_eq!(
-        usage.usage_units.get(busbar_api::UNIT_CACHE_READ).copied(),
+        usage
+            .usage_units
+            .get(busbar_contract::store::UNIT_CACHE_READ)
+            .copied(),
         Some(11),
         "cached folds onto `cache_read`"
     );
@@ -119,11 +128,16 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
         ..IrDuplexUsage::default()
     }
     .to_billing_usage();
-    assert_eq!(all_cached.usage_units.get(busbar_api::UNIT_INPUT), None);
     assert_eq!(
         all_cached
             .usage_units
-            .get(busbar_api::UNIT_CACHE_READ)
+            .get(busbar_contract::store::UNIT_INPUT),
+        None
+    );
+    assert_eq!(
+        all_cached
+            .usage_units
+            .get(busbar_contract::store::UNIT_CACHE_READ)
             .copied(),
         Some(40)
     );
@@ -134,7 +148,10 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
         ..IrDuplexUsage::default()
     }
     .to_billing_usage();
-    assert_eq!(over.usage_units.get(busbar_api::UNIT_INPUT), None);
+    assert_eq!(
+        over.usage_units.get(busbar_contract::store::UNIT_INPUT),
+        None
+    );
     // An empty turn keys nothing (no zero components ever price).
     assert!(IrDuplexUsage::default()
         .to_billing_usage()

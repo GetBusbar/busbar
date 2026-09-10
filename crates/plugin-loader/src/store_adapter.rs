@@ -17,7 +17,7 @@
 //! `release`, `heads`, `session_put`, `session_remove`, `sessions_for`, `record_put`, `record_get`,
 //! `record_scan`).
 //!
-//! - **The published operations pass through unchanged.** They are [`busbar_api::Store`] calls on
+//! - **The published operations pass through unchanged.** They are [`busbar_contract::store::Store`] calls on
 //!   the loaded plugin, reached through [`StoreAdapter::store`] — the same handle the ledger's
 //!   legacy-rows dual write uses. Nothing in this module touches their wire; the oracle's
 //!   store-persist cell is what proves it (`testing/shadow-oracle/scripts/store-persist.sh`: mint,
@@ -76,9 +76,11 @@
 //! database is the previous release's supported shape and must keep booting.
 
 use crate::DynStore;
-use busbar_api::Store as AbiStore;
-use busbar_api::{StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_caps::AdminToken;
+use busbar_contract::store::Store as AbiStore;
+use busbar_contract::store::{
+    StoreError, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
+};
 use busbar_kernel::slice::{Epoch, SliceError, SliceGrant, SliceId, SliceRequest, SliceStore};
 use busbar_unit_ledger::legacy::{LegacyHead, LegacyMigrationSource};
 use busbar_unit_ledger::migration::{

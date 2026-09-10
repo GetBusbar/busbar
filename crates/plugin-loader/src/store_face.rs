@@ -2,7 +2,7 @@
 //!
 //! [`busbar_contract::kinds::Store`] is the store kind's one face and carries all forty-five verbs.
 //! A store artifact this binary can load speaks the 1.5.5 vocabulary
-//! ([`busbar_api::Store`], thirty-three verbs at payload schema 2..=4) and nothing else. This module
+//! ([`busbar_contract::store::Store`], thirty-three verbs at payload schema 2..=4) and nothing else. This module
 //! is the translator between the two, and it is the ONLY place in the tree that knows both.
 //!
 //! # Why a new module rather than another `impl` on `StoreAdapter`
@@ -28,7 +28,7 @@
 //!
 //! # THE FIDELITY LIMIT, and it binds the readers too
 //!
-//! The 1.5.5 wire carries its failures as [`busbar_api::StoreError`] — one string, no class. The
+//! The 1.5.5 wire carries its failures as [`busbar_contract::store::StoreError`] — one string, no class. The
 //! face returns [`PluginError`] over a CLOSED ten-class taxonomy. An ABI-2/4 artifact's failures
 //! therefore **cannot be classified**: [`legacy_error`] maps every one of them to
 //! [`ErrorClass::Internal`] under the single code [`LEGACY_CODE`], with the 1.5.5 string preserved
@@ -43,12 +43,12 @@
 //! face existed, and that is what keeps the money and refusal bytes identical across the window.
 
 use crate::store_adapter::{StoreAdapter, REPLAY_TTL_SECS};
-use busbar_api::Store as AbiStore;
-use busbar_api::StoreError;
 use busbar_contract::error::{ErrorClass, PluginError};
 use busbar_contract::ids::{PrincipalId, RecordSchemaId, Registration, SessionId};
 use busbar_contract::kinds::{Head, RecordBytes, SliceGrant, Store as StoreFaceTrait};
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
+use busbar_contract::store::Store as AbiStore;
+use busbar_contract::store::StoreError;
 use busbar_contract::store::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
     PlaneRecord, PlaneSelector, UsageDelta, UsageLedger, VirtualKey,

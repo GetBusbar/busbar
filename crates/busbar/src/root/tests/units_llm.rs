@@ -131,7 +131,7 @@ fn unique(prefix: &str) -> String {
 /// One deployment: a governed key, a one-lane pool, and a scripted upstream.
 struct Rig {
     app: Arc<busbar_core::state::App>,
-    key: Arc<busbar_api::VirtualKey>,
+    key: Arc<busbar_contract::store::VirtualKey>,
     /// The BEARER the deployment's own door will resolve back to [`Rig::key`]. Minted rather
     /// than synthesized, so a fixture that presents it is presenting the thing a client sends.
     token: String,
@@ -192,12 +192,12 @@ async fn rig(fixture: Fixture) -> Rig {
 
     let store = Arc::new(busbar_core::governance::MemoryStore::new());
     if let Some(requests) = fixture.seeded_group_requests() {
-        use busbar_api::Store as _;
+        use busbar_contract::store::Store as _;
         store
             .put_usage(
                 &format!("group:{group}@total"),
                 0,
-                &busbar_api::UsageLedger {
+                &busbar_contract::store::UsageLedger {
                     requests,
                     billable_requests: requests,
                     models: vec![],
@@ -259,8 +259,8 @@ async fn rig(fixture: Fixture) -> Rig {
 }
 
 impl Rig {
-    fn gov(&self) -> busbar_api::PlaneRequestCtx {
-        busbar_api::PlaneRequestCtx {
+    fn gov(&self) -> busbar_contract::store::PlaneRequestCtx {
+        busbar_contract::store::PlaneRequestCtx {
             key: Some(self.key.clone()),
         }
     }
@@ -390,7 +390,7 @@ async fn observe(rig: &Rig, resp: Response) -> Observed {
     fields.push(("ledger_tokens", derived.tokens.to_string()));
     fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
     gov.flush_metering();
-    let mut rows: Vec<busbar_api::MeteringRow> = gov
+    let mut rows: Vec<busbar_contract::store::MeteringRow> = gov
         .metering_for(busbar_substrate::governance::metering_bucket(
             rig.charged_at,
         ))
@@ -721,7 +721,7 @@ fn report_of(output: u64) -> LateReport {
     LateReport {
         usage: busbar_substrate::billing::Usage {
             usage_units: std::collections::BTreeMap::from([(
-                busbar_api::UNIT_OUTPUT.to_string(),
+                busbar_contract::store::UNIT_OUTPUT.to_string(),
                 output,
             )]),
         },
@@ -1014,7 +1014,7 @@ async fn drive_to_end<'n>(
     rig: &Rig,
     node: &'n LlmNode,
     fixture: Fixture,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::store::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
 ) -> Ended {
     drive_keeping_the_unit(rig, node, fixture, gov, seats)
@@ -1031,7 +1031,7 @@ async fn drive_keeping_the_unit<'n>(
     rig: &Rig,
     node: &'n LlmNode,
     fixture: Fixture,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::store::PlaneRequestCtx,
     seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
 ) -> (LlmUnit<'n>, Ended) {
     let arrival = WalkArrival {
@@ -1901,7 +1901,10 @@ impl Credential {
 /// THE DOOR, asked exactly as a transport asks it: the deployment's configured auth chain plus
 /// the one verdict resolution the HTTP middleware runs, over this rig's live governance state.
 /// No audience is expected, because the data-plane boundary expects none.
-async fn admit(rig: &Rig, cred: Credential) -> Result<busbar_api::PlaneRequestCtx, String> {
+async fn admit(
+    rig: &Rig,
+    cred: Credential,
+) -> Result<busbar_contract::store::PlaneRequestCtx, String> {
     rig.host()
         .identity_admit(Some(cred.present(rig)), String::new(), String::new())
         .await
@@ -1914,7 +1917,10 @@ async fn admit(rig: &Rig, cred: Credential) -> Result<busbar_api::PlaneRequestCt
 /// on, and the posting the exit path hands back carries it. Nothing else on this plane reads
 /// that answer — the walk keeps its own context for the money and the record — so this is the
 /// one observation that is about step 2 and about nothing else.
-async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> String {
+async fn principal_the_loop_settled_on(
+    rig: &Rig,
+    gov: busbar_contract::store::PlaneRequestCtx,
+) -> String {
     let node = LlmNode::new();
     let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
     let Ended::Settled { end, .. } = ended else {
@@ -1928,7 +1934,7 @@ async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestC
 }
 
 /// LEG 1 — the shipped entry point, driven with a context the DOOR produced.
-async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
+async fn leg_legacy_as(rig: &Rig, gov: busbar_contract::store::PlaneRequestCtx) -> Observed {
     let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
         host: rig.host(),
         gov,
@@ -1947,7 +1953,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed 
 }
 
 /// LEG 2 — the loop, driven with the same context the door produced.
-async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
+async fn leg_loop_as(rig: &Rig, gov: busbar_contract::store::PlaneRequestCtx) -> Observed {
     let node = LlmNode::new();
     let arrival = WalkArrival {
         host: rig.host(),
@@ -2071,7 +2077,7 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 // is invent one: driven with the context the middleware leaves when it binds no
                 // key, both legs attribute the anonymous actor and leave the refused key's
                 // chain empty.
-                let open = busbar_api::PlaneRequestCtx { key: None };
+                let open = busbar_contract::store::PlaneRequestCtx { key: None };
                 let anonymous = busbar_api::AuthPrincipal(None).actor_id().to_string();
                 if authenticate::principal_id(&open).as_str() != anonymous {
                     failures.push(format!(

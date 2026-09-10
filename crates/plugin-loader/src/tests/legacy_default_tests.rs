@@ -32,7 +32,7 @@ fn record(kind: &str, id: &str) -> PlaneRecord {
         parent: Some("parent-1".to_string()),
         seq: 7,
         ts: 1_700_000_000,
-        disposition: busbar_api::PlaneDisposition::Active,
+        disposition: busbar_contract::store::PlaneDisposition::Active,
         body: b"{\"opaque\":true}".to_vec(),
     }
 }

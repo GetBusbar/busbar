@@ -60,6 +60,10 @@ busbar-voice-codec = { path = "../busbar-voice-codec" }
 # The plugin contracts crate, named ahead of use (the `ProtocolDecl::verbs` field is a
 # `busbar_api::operation::Operation` slice), exactly as busbar-mcp names it.
 busbar-api = { path = "../api" }
+# THE STORE-KIND FACE, NAMED WHERE IT LIVES. `busbar_contract::store` holds the records and the
+# 1.5.5 replay face this crate reads and writes; `busbar-api` re-exported them while it drained and
+# this line is the drain arriving. No new closure: `busbar-api` already links `busbar-contract`.
+busbar-contract = { path = "../busbar-contract" }
 # `axum::http::StatusCode` appears in the `ProtocolDecl` field set (quota / auth-failure statuses).
 axum = { workspace = true }
 # The plane's OWN media-frame carrier: `IrAudioFrame.media` is opaque `bytes::Bytes` (`plane4-duplex-session.md` §2.4 identity IR).

@@ -1248,8 +1248,11 @@ fn budget_bucket(id: &str, remaining: Option<i64>) -> busbar_api::BudgetBucketSt
 }
 
 /// A key carrying an EXPLICIT scope list (exhaustive across kinds — whatever is absent is not granted).
-fn key_with_scopes(id: &str, scopes: Vec<busbar_api::ScopeRef>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn key_with_scopes(
+    id: &str,
+    scopes: Vec<busbar_contract::store::ScopeRef>,
+) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: id.to_string(),
         name: id.to_string(),
         allowed_scopes: Some(scopes),
@@ -1696,18 +1699,18 @@ fn probe_metering_lease() -> (&'static str, String) {
 /// K-gap 3 — the plane's declared `session` scope kind is enforced at session open. Without this, any
 /// key valid for the voice audience opens a session, and the declared vocabulary is inert.
 fn probe_session_scope() -> (&'static str, String) {
-    let pool_scope = busbar_api::ScopeRef::pool("fast");
-    let session_here = busbar_api::ScopeRef {
+    let pool_scope = busbar_contract::store::ScopeRef::pool("fast");
+    let session_here = busbar_contract::store::ScopeRef {
         kind: "session".to_string(),
         value: "voice-server".to_string(),
     };
-    let session_elsewhere = busbar_api::ScopeRef {
+    let session_elsewhere = busbar_contract::store::ScopeRef {
         kind: "session".to_string(),
         value: "some-other-pool".to_string(),
     };
 
     // A wildcard principal (no list at all) is granted every kind, as on every other plane.
-    let wildcard = busbar_api::VirtualKey {
+    let wildcard = busbar_contract::store::VirtualKey {
         id: "vk-wildcard".to_string(),
         ..Default::default()
     };

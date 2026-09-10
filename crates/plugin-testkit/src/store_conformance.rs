@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Contract conformance for [`busbar_api::Store`] — the checks every backend must pass identically.
+//! Contract conformance for [`busbar_contract::store::Store`] — the checks every backend must pass identically.
 //!
 //! These exist because an audit found the fleet disagreeing with itself: the same input produced a
 //! different outcome depending on which store an operator had deployed. `revoke_credential` on an
@@ -38,7 +38,7 @@
 //! }
 //! ```
 
-use busbar_api::{
+use busbar_contract::store::{
     AuditRecord, CredentialMeta, CredentialSecret, PlaneDisposition, PlaneRecord, PlaneSelector,
     SecretForm, Store, VirtualKey,
 };

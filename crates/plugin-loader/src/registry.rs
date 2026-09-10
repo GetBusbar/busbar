@@ -183,7 +183,7 @@ impl PluginRegistry {
         &self,
         name_or_alias: &str,
         cfg_json: &str,
-    ) -> Result<Box<dyn busbar_api::Store>, String> {
+    ) -> Result<Box<dyn busbar_contract::store::Store>, String> {
         let Some(p) = self.resolve(name_or_alias) else {
             return Err(match self.unresolved_reason(name_or_alias) {
                 Some(s) => format!(

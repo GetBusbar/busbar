@@ -4,7 +4,7 @@
 //! Tests for `crates/store-memory/src/lib.rs`.
 
 use super::*;
-use busbar_api::SecretForm;
+use busbar_contract::store::SecretForm;
 
 fn key(id: &str) -> VirtualKey {
     VirtualKey {
@@ -47,11 +47,11 @@ fn ledger(requests: u64, model: &str, input: u64, output: u64) -> UsageLedger {
     UsageLedger {
         requests,
         billable_requests: requests,
-        models: vec![busbar_api::ModelTokens {
+        models: vec![busbar_contract::store::ModelTokens {
             model: model.to_string(),
             usage_units: [
-                (busbar_api::UNIT_INPUT, input),
-                (busbar_api::UNIT_OUTPUT, output),
+                (busbar_contract::store::UNIT_INPUT, input),
+                (busbar_contract::store::UNIT_OUTPUT, output),
             ]
             .into_iter()
             .filter(|(_, v)| *v != 0)
@@ -87,12 +87,12 @@ fn add_usage_accumulates_per_model() {
     let d = UsageDelta {
         requests: 1,
         billable_requests: 1,
-        models: vec![busbar_api::ModelTokensDelta {
+        models: vec![busbar_contract::store::ModelTokensDelta {
             model: "gpt-5".to_string(),
             usage_units: std::collections::BTreeMap::from([
-                (busbar_api::UNIT_INPUT.to_string(), 10i64),
-                (busbar_api::UNIT_OUTPUT.to_string(), 5),
-                (busbar_api::UNIT_CACHE_READ.to_string(), 1),
+                (busbar_contract::store::UNIT_INPUT.to_string(), 10i64),
+                (busbar_contract::store::UNIT_OUTPUT.to_string(), 5),
+                (busbar_contract::store::UNIT_CACHE_READ.to_string(), 1),
             ]),
         }],
     };
