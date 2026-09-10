@@ -176,7 +176,7 @@ const LIVE_EXP: u64 = 4_000_000_000;
 const DEAD_EXP: u64 = 1_000_000_000;
 
 async fn rig(fixture: Fixture) -> Rig {
-    busbar_llm::testkit::install_test_seams();
+    crate::root::mount_ingress::tests::install_seams();
     init_metrics();
 
     let state = Arc::new(MockServerState::new());

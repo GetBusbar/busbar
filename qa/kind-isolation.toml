@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "603"
+count = "606"
 
 [[cell]]
 crate = "busbar-core"

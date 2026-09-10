@@ -223,7 +223,7 @@ async fn mounted(streamed: bool) -> Mounted {
 
 /// Compose one deployment, resolving every caller to `caller` where one is handed in.
 async fn deployment(streamed: bool, caller: Option<Arc<VirtualKey>>) -> Deployment {
-    busbar_llm::testkit::install_test_seams();
+    crate::root::mount_ingress::tests::install_seams();
     init_metrics();
     priced();
 

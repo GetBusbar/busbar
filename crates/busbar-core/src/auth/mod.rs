@@ -5,7 +5,7 @@ use std::fmt;
 
 use axum::{
     body::Body,
-    http::{header::AUTHORIZATION, Request, StatusCode},
+    http::{header::AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, Request, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -1808,7 +1808,7 @@ pub(crate) fn resolve_data_plane_identity(
 /// pre-check so the SigV4 verify path is entered ONLY for genuine SigV4 requests; everything else
 /// (bearer, x-api-key, x-goog-api-key, or no Authorization) takes the unchanged token path. The full
 /// structural parse/validation happens inside the verifier — this only gates entry.
-fn has_sigv4_authorization(headers: &axum::http::HeaderMap) -> bool {
+fn has_sigv4_authorization(headers: &HeaderMap) -> bool {
     headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -1836,7 +1836,7 @@ fn sigv4_ingress_applies(
     app: &crate::state::App,
     path: &str,
     audience_bound: bool,
-    headers: &axum::http::HeaderMap,
+    headers: &HeaderMap,
 ) -> bool {
     if audience_bound || !app.auth.keys_in_chain {
         return false;
@@ -1856,7 +1856,7 @@ fn sigv4_ingress_applies(
 /// so this is a HOIST of work [`verify_sigv4_ingress_credential`] repeats and never an enumeration
 /// oracle — which is what lets the driven path run it BEFORE buffering a body while the mounted
 /// path, which already holds its bytes, runs it in line.
-fn sigv4_structurally_valid(headers: &axum::http::HeaderMap) -> bool {
+fn sigv4_structurally_valid(headers: &HeaderMap) -> bool {
     let auth_value = headers
         .get(AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -1896,12 +1896,10 @@ pub(crate) fn signed_arrival_identity(
     // off rather than mangled — it cannot happen for anything a request transport published (they
     // all came off a `HeaderMap`), and a fact that some other transport wrote would be visible
     // rather than silently reshaped.
-    let mut map = axum::http::HeaderMap::new();
+    let mut map = HeaderMap::new();
     for (name, value) in headers {
-        if let (Ok(name), Ok(value)) = (
-            axum::http::HeaderName::try_from(*name),
-            axum::http::HeaderValue::try_from(*value),
-        ) {
+        if let (Ok(name), Ok(value)) = (HeaderName::try_from(*name), HeaderValue::try_from(*value))
+        {
             map.append(name, value);
         }
     }
@@ -1923,7 +1921,7 @@ pub(crate) fn signed_arrival_identity(
         *existing = map;
     }
     let Ok(req) = builder.body(Body::from(body.to_vec())) else {
-        // A method or a target the http types will not take is not a request anybody can verify a
+        // A method or a target the request types will not take is not a request anybody can verify a
         // signature over. Fail closed, with the same opaque refusal every other failure gets.
         return Some(Err(IdentityRefusal::Denied));
     };

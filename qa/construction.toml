@@ -150,6 +150,31 @@ file = "qa/kind-isolation.toml"
 by = 21
 because = "llm URL-reading face: the plane's `url` module — what the request line says for the two dialects that keep their model there — moved out of the engine's host-bound arrival so a MOUNTED leg, which holds no arrival host, can read it. The twenty-one are the WIRE ITSELF and not a wire this plane names: the query pair `alt=sse` that one dialect's clients send to choose the event framing over the JSON-array framing, and the identifier of the function that recognises it. The crate gained no dependency in this landing and depends on no transport crate; the prose spellings were drained to zero in the same commit (cell.busbar-plane-llm.plane.count is back at its base 5). Files: crates/busbar-plane-llm/src/url.rs, crates/busbar-plane-llm/tests/url.rs"
 
+# THE PLANE-HOST ABI's WHOLE-ARRIVAL ADMISSION FACE (keep-llm-leg-steps, L5). A mounted surface
+# answers in FRONT of the request-path auth middleware, so its leg asks the deployment's own door
+# through the plane-host ABI. `IdentityHost::identity_admit` carries a credential STRING, and one
+# family of credentials cannot be answered from one: a signature over the arrival binds the method,
+# the target, the headers it names and a hash of the body. `identity_admit_arrival` is the widened
+# form of that one question, and core's impl of it is what this row measures.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.api.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "plane-host ABI face `IdentityHost::identity_admit_arrival`: the whole-arrival form of the identity question, so a mounted leg admits a caller whose credential is a SIGNATURE OVER THE ARRIVAL the way the driven middleware does, over the same fork and the same untouched verifier. The three are the neutral types core's impl of the face names in its own signature — `busbar_api::{AuthPrincipal, PlaneRequestCtx, IdentityRefusal}`, one line each, exactly as the sibling `identity_admit` impl beside it names them. Nothing else in this landing raises a cell: busbar x plane fell 2957 -> 2952 and busbar x contract-transport 105 -> 104 in the same commit. File: crates/busbar-core/src/plane_host/mod.rs"
+
+# THE MOUNTED LEG'S OWN IDENTITY DOOR (keep-llm-leg-steps, L4), declared here because the landing
+# that made it is the landing that has to say so. The root's reach into the retiring crates is a
+# ratchet on DISTINCT SYMBOLS, and the leg's refusal arm spells three it did not spell before.
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.prefixes.busbar_substrate.figure"
+by = 3
+because = "llm-leg identity face: the mounted leg asks the deployment's OWN door instead of holding a credential rule of its own, and answers a refused caller in that caller's own dialect. Three distinct symbols, one per thing the root now needs: `plane_host::EngineHost` (the door the boot hands the ingress seam, held once where the mint is held), and `proxy::auth_failure_status_and_kind` + `proto::vendor_auth_failure_message` — the two CANONICAL declarations the driven path's own refusal shaper dispatches through, so a mounted refusal and a driven one cannot differ on the same dialect (bedrock answers 403 and never 401; gemini answers 400 and never 401). Files: crates/busbar/src/root/mount_ingress.rs, crates/busbar/src/root/units_llm_leg.rs"
+
+[[gate.ceiling_raises]]
+key = "rules.legacy-reach.ceiling"
+by = 1
+because = "llm-leg identity face: the same three symbols (`plane_host::EngineHost`, `proxy::auth_failure_status_and_kind`, `proto::vendor_auth_failure_message`), summed into the ONE gating total across the retiring crates. NET ONE against the base 91, not three: the same branch drained two the other way — the root names the retiring engine once per IMPORT rather than once per call (91 -> 89, keep-llm-parse-to-plane) — and this figure is the total, so what it may rise by is what the tree rose by after that cut is counted."
+
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.kernel_files.teller.ceiling"
 by = 3
@@ -1077,7 +1102,8 @@ while the total falls is that intermediate step, visible and not fatal."""
 scope_globs = ["crates/busbar/src/root/*.rs", "crates/busbar/src/main.rs"]
 # THE ONE GATING FIGURE: distinct symbols named through every prefix below, summed. Calibrated to
 # the tree it was written against; it may only go down.
-ceiling = 89
+# 89 -> 92 on the llm-leg identity face, declared in delta shape above.
+ceiling = 92
 
 # Each sub-row below GATES, in both directions. `figure` is the per-crate count PINNED TO TODAY'S
 # MEASUREMENT: above it is that row's own FAIL, below it is `ceiling-slack`. It was informational --
@@ -1110,7 +1136,8 @@ because = "the substrate seams the root installs; each moves onto the ABI as the
 # regression: nothing ever held this number. So it is calibrated ONCE, to what the tree measures
 # today, and it ratchets down from here like every other figure in this file. It may only go down;
 # `ceiling-slack` holds it from below and this row holds it from above.
-figure = 47
+# 47 -> 50 on the llm-leg identity face, declared in delta shape above.
+figure = 50
 
 # ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
 [rules.no-test-doubles-in-production]

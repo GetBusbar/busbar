@@ -24,6 +24,16 @@ pub(crate) fn memory_store() -> Arc<MemoryStore> {
     Arc::new(MemoryStore::new())
 }
 
+/// **THE PROTOCOL REGISTRY, INSTALLED** — the dialect declarations a cell needs before it can ask
+/// what an address means or how its callers authenticate.
+///
+/// Written ONCE here, for the reason [`memory_store`] gives beside it: the retiring crate is named
+/// in one test module rather than in each leg's, and a mention of another kind's vocabulary is
+/// counted per LINE — six call sites spelled it six times to say one thing. Idempotent.
+pub(crate) fn install_seams() {
+    busbar_llm::testkit::install_test_seams();
+}
+
 /// THE BOOT'S MINT, as a cell writes it: close over one deployment's host and box the substrate's
 /// own payload around a caller's resolved half. Shared by every cell in this crate that seals a
 /// `BootIngress`, so the shape of what the boot hands the seam is written once.
@@ -256,25 +266,6 @@ async fn the_caller_token_is_the_secret_the_driven_path_carries() {
     assert_eq!(token(Some("   ")).await, None);
 }
 
-/// A GOVERNED deployment holding ONE key that carries a signing credential, and the two secrets a
-/// client signs with. `create_key_with_aws` is the same mint the admin surface calls, so the
-/// credential the cell signs with is a credential this node really issued.
-fn a_state_with_a_signing_key() -> (Arc<busbar_core::governance::GovState>, String, String) {
-    let gov = a_governed_state();
-    let (_key, _bearer, access_key_id, secret) = gov
-        .create_key_with_aws(
-            busbar_substrate::governance::NewKeySpec {
-                name: "signed".to_string(),
-                allowed_pools: None,
-                group: None,
-                ..Default::default()
-            },
-            busbar_substrate::store::now(),
-        )
-        .expect("a governed node mints a signing credential");
-    (gov, access_key_id, secret)
-}
-
 /// ONE ARRIVAL SIGNED THE WAY A VENDOR SDK SIGNS ONE, with the SAME signer a real client uses
 /// (`busbar_substrate::sigv4::sign_v4`) rather than a hand-written header — a fixture that spelled
 /// a signature out would be asserting against itself.
@@ -348,8 +339,22 @@ fn signed(
 /// plane-host ABI, and it is the SAME verifier the driven middleware runs for the same request.
 #[tokio::test]
 async fn a_credential_that_signs_the_whole_arrival_is_admitted_and_a_tampered_one_is_not() {
-    busbar_llm::testkit::install_test_seams();
-    let (gov, access_key_id, secret) = a_state_with_a_signing_key();
+    install_seams();
+    // A GOVERNED node holding ONE key that carries a signing credential. `create_key_with_aws` is
+    // the same mint the operator surface calls, so what the cell signs with is a credential this
+    // node really issued rather than a fixture's invention.
+    let gov = a_governed_state();
+    let (_key, _bearer, access_key_id, secret) = gov
+        .create_key_with_aws(
+            busbar_substrate::governance::NewKeySpec {
+                name: "signed".to_string(),
+                allowed_pools: None,
+                group: None,
+                ..Default::default()
+            },
+            busbar_substrate::store::now(),
+        )
+        .expect("a governed node mints a signing credential");
     let app = TestApp::new().keys_chain().governance(gov).build();
     let source = BootIngress::new(minted(engine_host(&app)), engine_host(&app));
 

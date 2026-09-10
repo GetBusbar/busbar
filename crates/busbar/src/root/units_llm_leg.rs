@@ -55,6 +55,11 @@ use std::sync::Arc;
 use busbar_llm::arrival::PathModelFacts;
 use busbar_llm::unit::walk::WalkArrival;
 
+// THE RESERVED FACT KEYS, under ONE spelling for the reason the engine import above carries one: a
+// mention of another kind's vocabulary is counted per LINE, and a leg that reads five facts through
+// five fully-qualified paths names the transport contract five times to say one thing.
+use busbar_contract::transport::facts;
+
 use crate::root::mount_ingress::{Admitted, ArrivalSource, Presented};
 // The payload the substrate declares, under the ONE spelling this plane's root module already
 // carries: the leg reads a sealed context by downcasting to it, as the driven path's readers do.
@@ -212,16 +217,12 @@ impl LlmLeg {
         // nothing new crosses.
         let headers = plane_mount::header_pairs(arrival);
         let presented = Presented {
-            credential: arrival.fact(busbar_contract::transport::facts::CREDENTIAL),
-            method: arrival
-                .fact(busbar_contract::transport::facts::METHOD)
-                .unwrap_or_default(),
+            credential: arrival.fact(facts::CREDENTIAL),
+            method: arrival.fact(facts::METHOD).unwrap_or_default(),
             // THE TARGET WHOLE — path and query together, as the request line carried them and as
             // the mount published them. The ladder is asked about the path alone (see `path_of`);
             // a signature is over both.
-            target: arrival
-                .fact(busbar_contract::transport::facts::PATH)
-                .unwrap_or_default(),
+            target: arrival.fact(facts::PATH).unwrap_or_default(),
             headers: &headers,
             body: arrival.body,
         };
@@ -341,7 +342,7 @@ fn url_model(
 /// published for the half — and both halves are read from the one string the request line held.
 fn query_of<'a>(arrival: &'a busbar_contract::transport::Arrival<'a>) -> Option<&'a str> {
     arrival
-        .fact(busbar_contract::transport::facts::PATH)
+        .fact(facts::PATH)
         .and_then(|target| target.split_once('?').map(|(_, query)| query))
 }
 
@@ -356,9 +357,7 @@ fn query_of<'a>(arrival: &'a busbar_contract::transport::Arrival<'a>) -> Option<
 /// So the query is cut here, at the one place that asks the ladder a question, and the fact stays
 /// whole for everything else that reads it.
 fn path_of<'a>(arrival: &'a busbar_contract::transport::Arrival<'a>) -> &'a str {
-    let target = arrival
-        .fact(busbar_contract::transport::facts::PATH)
-        .unwrap_or_default();
+    let target = arrival.fact(facts::PATH).unwrap_or_default();
     target.split_once('?').map_or(target, |(path, _)| path)
 }
 

@@ -109,7 +109,7 @@ fn a_leg() -> LlmLeg {
     // THE PROTOCOL, IN THE PROCESS REGISTRY. The dialect's own `resolve_operation` is reached
     // through the registry the composition root installs at boot, so a cell that has not installed
     // it is asking a node that speaks no dialect at all. Idempotent.
-    busbar_llm::testkit::install_test_seams();
+    crate::root::mount_ingress::tests::install_seams();
     LlmLeg::assemble(
         LlmNode::new(),
         Arc::new(crate::root::mount_ingress::tests::AdmitsOneCaller::new(
@@ -129,7 +129,7 @@ fn a_leg() -> LlmLeg {
 /// are asserted equal over the shapes both dialects answer, in the one place that can see both.
 #[test]
 fn the_mounted_and_driven_readings_of_a_url_named_model_are_one_reading() {
-    busbar_llm::testkit::install_test_seams();
+    crate::root::mount_ingress::tests::install_seams();
     let driven = |dialect: &'static str, path: &str| {
         busbar_substrate::handlers::request_handler(dialect)
             .expect("the dialect is registered")
@@ -190,7 +190,7 @@ fn the_mounted_and_driven_readings_of_a_url_named_model_are_one_reading() {
 /// `effects.metrics` and `effects.usage` for these cells are both empty.
 #[tokio::test]
 async fn a_caller_the_door_refused_is_answered_in_their_own_dialect_and_no_unit_runs() {
-    busbar_llm::testkit::install_test_seams();
+    crate::root::mount_ingress::tests::install_seams();
     // A leg whose door REFUSES every caller — which is what this node's chain answers a credential
     // it never minted. The refusal is the door's; what this cell asserts is what the leg does with
     // one.

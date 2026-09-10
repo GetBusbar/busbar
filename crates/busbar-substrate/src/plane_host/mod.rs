@@ -1150,7 +1150,7 @@ pub trait IdentityHost: Send + Sync {
     /// caller sent rather than the credential alone.
     ///
     /// [`identity_admit`](Self::identity_admit) carries a credential STRING, which is the whole of
-    /// what a caller presents on a transport that has nothing else to present: a stdio session binds
+    /// what a caller presents on a transport that has nothing else to present: a console session binds
     /// once, at boot, off one value. It is NOT the whole of what a caller presents on a request
     /// wire, and for one family of credentials it is not even most of it — a credential can be a
     /// SIGNATURE OVER THE ARRIVAL, binding the method, the request target, a declared subset of the

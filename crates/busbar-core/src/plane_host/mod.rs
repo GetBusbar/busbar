@@ -284,8 +284,8 @@ pub async fn identity_admit_over(
 }
 
 /// Resolve INBOUND data-plane identity for a WHOLE ARRIVAL — the widened form of
-/// [`identity_admit_over`], for a surface that answers in FRONT of the HTTP auth middleware and so
-/// carries more about a caller than a credential string.
+/// [`identity_admit_over`], for a surface that answers in FRONT of the request-path auth
+/// middleware and so carries more about a caller than a credential string.
 ///
 /// TWO ARMS AND NO THIRD ANSWER, and neither is written here:
 ///

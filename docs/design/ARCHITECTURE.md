@@ -59,6 +59,14 @@ them). Each axis is blind to the other two; only the kernel composes them.
   kernel-held records reached only through Route legs (§2.3 `PlaneRecord`).
 - A **unit** takes facts + a principal + the kernel's clock and nothing else; it names no plane and no
   transport; it never calls another unit.
+- **WHO IS CALLING is asked about the WHOLE ARRIVAL, not about a credential**, wherever a surface
+  answers in front of the request-path auth middleware (a mount does). A credential is not always a
+  string a door can check on its own: it can be a SIGNATURE OVER THE ARRIVAL, binding the method,
+  the target, the headers it names and a hash of the body. So the plane-host ABI carries
+  `IdentityHost::identity_admit_arrival` beside `identity_admit`, and the FORK that decides which
+  arm answers — signature or configured chain — stays core-side, over one set of predicates and one
+  verifier that the driven middleware itself calls. No plane, no transport and no composition root
+  names an authentication scheme to reach it.
 - The **kernel** is the **registry** and the **Teller** plus what the loop needs: frame pump, sessions
   and scheduler, in-flight table, Ticks, recovery, slices/leases/fencing, drain, the closed grammars.
   The WAL, group commit and chains live in `busbar-unit-wal`; the kernel verbs live in
