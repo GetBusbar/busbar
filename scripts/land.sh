@@ -621,8 +621,12 @@ EOF
       if [ -n "$(land_xtask_touched "$touched")" ]; then
         (cd "$here" && cargo build -q -p xtask --locked >/dev/null 2>&1) \
           || { echo "land.sh: RED — the gate runner will not build" >&2; return 1; }
+        # THE SAME CEILING THE PER-GATE SELFTESTS GET. `xtask selftest` runs the kind-isolation
+        # self-test inside it, measured at 1642 s on an otherwise idle fleet box and past 1800 s on a
+        # box sharing its cores with CI; a hard-coded 1800 here turned every xtask-touching landing
+        # red as "hung" while the two per-gate legs below already say 3600.
         local xlog="$here/target/land-xselftest-$stamp.log"
-        (cd "$here" && XTASK_GATE_CEILING_SECS=1800 cargo xtask selftest >"$xlog" 2>&1) \
+        (cd "$here" && XTASK_GATE_CEILING_SECS="${XTASK_GATE_CEILING_SECS:-3600}" cargo xtask selftest >"$xlog" 2>&1) \
           || { tail -20 "$xlog" >&2; echo "land.sh: RED — xtask selftest (a registered gate can no longer prove itself; log: $xlog)" >&2; return 1; }
         (cd "$here" && cargo xtask full-gate --selftest >>"$xlog" 2>&1) \
           || { tail -20 "$xlog" >&2; echo "land.sh: RED — full-gate --selftest (the registry and ci.yml no longer name the same gates; log: $xlog)" >&2; return 1; }
