@@ -8,6 +8,7 @@ use busbar_contract::ids::{
     AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
 };
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::wire::StatusAt;
 
 use crate::{claims, facts, ops, records, A2aPlane};
 
@@ -113,6 +114,13 @@ impl PlaneMeta for A2aPlane {
     // Nothing paces this plane's write path. The event stream is written as fast as the answer
     // arrives, which is what the existing codec does and what this crate must not change.
     const EGRESS_PACING_FACT: Option<&'static str> = None;
+    // WHERE THIS DIALECT REPORTS THE STATUS OF A UNIT. A task exchange says whether it was accepted
+    // on the FIRST frame that comes back, on both bindings: the reply document over the document
+    // transport, the first message over the framed one. The framed binding also carries a trailer
+    // status of its own, but that is the TRANSPORT's leg and the transport declares it; this line is
+    // the dialect's, and the dialect decides at the first frame. A task lost mid-stream contradicts
+    // that frame, and a contradiction is the kernel's to settle.
+    const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
     const CONFIG_SCHEMA: &'static str = CONFIG_SCHEMA;
 }
 
