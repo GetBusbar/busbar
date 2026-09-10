@@ -77,6 +77,20 @@ declared is red — including one that falls inside an entry the file already na
 alone cannot see. **Fewer** gaps than declared is never red: a gap that closed is what the file
 exists to drive towards, and the run prints the instruction to lower `expected` behind it.
 
+`named-gaps.json` is **one file with two independent sections**, and `--named-gaps` and `--gaps`
+are two spellings of the same flag pointing at it:
+
+* `gaps` — the FAIL → named-gap list `validate.py` reads. An entry turns one *violation* the owner
+  has ruled the vendor's schema wrong about into a gap on its row, and only when it is the only
+  violation on that row.
+* `expected` / `accepted` — the SKIP ceiling `run.sh` reconciles the observed gaps against.
+
+Each section stands alone. A file that carries only the ceiling (no `gaps`) forgives no violation
+and loads — absence is an empty forgiveness list, which is the strict direction. A `gaps` key that
+is present but is not a list is refused with nothing judged, because a malformed section read as
+"no entries" is how a list of forgiven rows would go missing in silence. Selftest arm `(r)` holds
+both halves of that rule.
+
 The kinds of gap that arise:
 
 * **Gemini error bodies.** The discovery document does not describe error responses. They are

@@ -348,10 +348,20 @@ class NamedGaps:
                 doc = json.load(f)
         except (OSError, ValueError) as e:
             return NamedGaps([]), [f"{path}: not readable as JSON ({e})"]
-        if not isinstance(doc, dict) or not isinstance(doc.get("gaps"), list):
-            return NamedGaps([]), [f"{path}: must be an object with a `gaps` list"]
+        # ONE FILE, TWO INDEPENDENT SECTIONS (see run.sh's header): `gaps` is the FAIL -> named-gap
+        # list this loader reads, and `expected`/`accepted` is the SKIP ceiling run.sh reconciles.
+        # A file that carries only the ceiling is well-formed for the section it carries, so an
+        # ABSENT `gaps` is an empty forgiveness list, not a refusal — the absence forgives nothing,
+        # which is the safe direction, and a file that is bogus in the other section is still red
+        # there. `gaps` PRESENT but not a list stays a refusal: that is a malformed section, and a
+        # malformed section read as empty is how a list of forgiven rows would go quietly missing.
+        if not isinstance(doc, dict):
+            return NamedGaps([]), [f"{path}: must be a JSON object (with a `gaps` list, an `expected`/`accepted` ceiling, or both)"]
+        entries = doc.get("gaps", [])
+        if not isinstance(entries, list):
+            return NamedGaps([]), [f"{path}: `gaps` must be a list, got {type(entries).__name__}"]
         bad, seen, ok = [], set(), []
-        for i, g in enumerate(doc["gaps"]):
+        for i, g in enumerate(entries):
             where = f"{path}: gaps[{i}]"
             if not isinstance(g, dict):
                 bad.append(f"{where}: not an object")

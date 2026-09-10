@@ -42,6 +42,9 @@
 #   (k) the same gap where the row is clean        -> RED as stale, before the verdict
 #   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
 #   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
+#   (r) a file with the SKIP ceiling and no `gaps` -> LOADS, forgiving nothing (the two sections
+#                                           are independent); a `gaps` that is present but not a
+#                                           list -> REFUSED at load; nothing is judged
 #
 # And the side of 2xx a cell was answered on, which no schema can see:
 #
@@ -284,6 +287,23 @@ if [ "$rc" != 0 ] && grep -q 'carries a wildcard' "$W/m.log" \
   say PASS "(m) a wildcard cell in a gap -> REFUSED at load, nothing judged"
 else
   say FAIL "(m) wildcard gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m/ledger.tsv")"; tail -8 "$W/m.log"
+fi
+
+# (r) THE TWO SECTIONS ARE INDEPENDENT, AND ONLY ONE OF THEM IS OPTIONAL-BY-ABSENCE. A file that
+# carries the SKIP ceiling and no `gaps` list forgives no violation and must LOAD ((f)-(f3) above
+# run on exactly such a file). A file whose `gaps` is PRESENT but not a list is a malformed section,
+# and reading a malformed section as "no entries" is how a list of forgiven rows goes missing in
+# silence — so that one is still refused with nothing judged. Both arms, one case.
+g4="$(gapfile ceiling-only '{"expected":0,"accepted":[]}')"
+rc="$(run_gaps "$FIX" "$W/r1" "$FIX/cells.json" "$g4")"
+g5="$(gapfile gaps-not-a-list '{"gaps":{"id":"oops"},"expected":0,"accepted":[]}')"
+rc2="$(run_gaps "$W/b-rec" "$W/r2" "$W/b-rec/cells.json" "$g5")"
+if [ "$rc" = 0 ] && [ "$(count "$W/r1" FAIL)" = 0 ] \
+   && [ "$rc2" != 0 ] && grep -q '`gaps` must be a list' "$W/r2.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/r2/ledger.tsv")" = 0 ]; then
+  say PASS "(r) a ceiling-only gap file LOADS (forgiving nothing); a malformed \`gaps\` is still REFUSED"
+else
+  say FAIL "(r) sections rc=$rc fail=$(count "$W/r1" FAIL) rc2=$rc2 rows2=$(awk 'NF{n++} END{print n+0}' "$W/r2/ledger.tsv")"; tail -8 "$W/r1.log"; tail -8 "$W/r2.log"
 fi
 
 # ── THE SIDE OF 2xx THE OUTCOME ASKED FOR ───────────────────────────────────────────────────────
