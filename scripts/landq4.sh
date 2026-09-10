@@ -983,13 +983,36 @@ EOF
 # sat queued from 22:39 because slot-branch proof runs held every busbar-xl runner, and a push
 # deferred on "ci still running" would have kept every landing local for as long as that lasted.
 # Queued past 60 minutes reads as `none`: there is no verdict to wait for. `in_progress` still waits.
+# ...AND AN `in_progress` RUN ON THE PREVIOUS TIP IS NOT A REASON TO HOLD A PUSH THIS WORKFLOW IS
+# ABOUT TO CANCEL. The queued rule above has an escape (60 minutes); `in_progress` had none, so a
+# tip whose CI took two hours deferred every landing behind it for two hours — while .github/
+# workflows/ci.yml carries
+#
+#     concurrency:
+#       group: ci-${{ github.ref }}
+#       cancel-in-progress: true
+#
+# which means the push the runner is deferring would have CANCELLED that run anyway. The wait buys a
+# verdict that GitHub throws away the moment the wait ends. So the workflow is READ, on the tree, and
+# `in_progress` reads as "no verdict to wait for" exactly when the workflow says so: the group must be
+# keyed by the ref (a group that is not per-ref cancels somebody else's run, not this branch's) and
+# `cancel-in-progress` must be true. Anything else still waits, as it always did.
+LQ_CI_WORKFLOW="${LANDQ_CI_WORKFLOW:-.github/workflows/ci.yml}"
+lq_ci_cancels_in_progress() { # $1 = tree (default $W); 0 when a push to this branch cancels the run in progress on it
+  local tree="${1:-$W}" blk
+  blk="$(grep -A2 '^concurrency:' "$tree/$LQ_CI_WORKFLOW" 2>/dev/null)"
+  [ -n "$blk" ] || return 1
+  printf '%s\n' "$blk" | grep -qE '^[[:space:]]*cancel-in-progress:[[:space:]]*true[[:space:]]*$' || return 1
+  printf '%s\n' "$blk" | grep -qE '^[[:space:]]*group:.*(github\.ref|github\.head_ref)' || return 1
+  return 0
+}
 lq_epoch() { # $1 = ISO-8601 UTC stamp (2026-09-10T22:39:00Z); prints epoch seconds, or nothing
   # GNU date takes -d <stamp>; BSD date's -d is something else entirely (it would print NOW).
   if date --version >/dev/null 2>&1; then date -u -d "$1" +%s 2>/dev/null || true
   else date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null || true; fi
 }
-lq_ci_verdict() { # $1 = "<status> <conclusion> <createdAt>" as gh printed it, $2 = now (epoch; default: now)
-  local st con created now="${2:-$(date +%s)}" at age
+lq_ci_verdict() { # $1 = "<status> <conclusion> <createdAt>" as gh printed it, $2 = now (epoch; default: now), $3 = 1 when CI cancels its own in-progress run on this ref
+  local st con created now="${2:-$(date +%s)}" cancels="${3:-}" at age
   st="${1%% *}"; con="${1#* }"; con="${con%% *}"; created="${1##* }"
   [ "$created" = "$1" ] && created=""
   case "$st $con" in
@@ -997,6 +1020,11 @@ lq_ci_verdict() { # $1 = "<status> <conclusion> <createdAt>" as gh printed it, $
     "completed failure"|"completed timed_out") echo failure ;;
     "completed cancelled") echo cancelled ;;
     " "|"null null") echo none ;;
+    "in_progress "*)
+      # The push cancels it; there is nothing to wait for. Its own verdict, not `none`, so the
+      # ledger says WHY this push went over a run that was still going.
+      [ "$cancels" = 1 ] && { echo cancelled-in-progress; return 0; }
+      echo running ;;
     "queued "*)
       at="$(lq_epoch "$created")"
       if [ -n "$at" ]; then age=$(( now - at )); [ "$age" -gt 3600 ] && { echo none; return 0; }; fi
@@ -1004,11 +1032,12 @@ lq_ci_verdict() { # $1 = "<status> <conclusion> <createdAt>" as gh printed it, $
     *) echo running ;;
   esac
 }
-ci_conclusion() { # $1 = sha ; prints: success|failure|cancelled|running|none
-  local out
+ci_conclusion() { # $1 = sha ; prints: success|failure|cancelled|cancelled-in-progress|running|none
+  local out cancels=""
+  lq_ci_cancels_in_progress "$W" && cancels=1
   out="$(gh run list -R "$REPO" --workflow CI --commit "$1" --limit 1 \
         --json status,conclusion,createdAt --jq '.[0] | "\(.status) \(.conclusion) \(.createdAt)"' 2>/dev/null)"
-  lq_ci_verdict "$out"
+  lq_ci_verdict "$out" "" "$cancels"
 }
 
 try_push() {
@@ -1018,6 +1047,10 @@ try_push() {
   [ "$last" = "$head" ] && return 0
   c="$(ci_conclusion "$last")"
   case "$c" in
+    cancelled-in-progress)
+      lq_log "push over in_progress CI on $(printf '%.8s' "$last"): cancelled by CI's own concurrency"
+      git -C "$W" push -q origin "HEAD:$BR" \
+        && lq_log "pushed $(git -C "$W" rev-parse --short HEAD) (ci of $(printf '%.8s' "$last"): in_progress, cancelled by the push)" ;;
     success|none|cancelled)
       git -C "$W" push -q origin "HEAD:$BR" \
         && lq_log "pushed $(git -C "$W" rev-parse --short HEAD) (ci of $(printf '%.8s' "$last"): $c)" ;;
@@ -1719,6 +1752,42 @@ lq_selftest() {
   _t "the overlapped sweep proves from the prediction" 1 "$(grep -c '^    lq_preprove_sweep "\$LQ_PREDICT" "\$predicted" "\$batch"$' "$0")"
   _t "  ...and is skipped when there is no prediction" 1 "$(grep -c '^    lq_log "overlap: no prediction' "$0")"
   _t "the landed tree is checked against the predicted one" 1 "$(grep -c 'if lq_preproof_rekey "\$predicted" "\$predtree" "\$newtip" "\$W"; then' "$0")"
+
+
+  # ── AN `in_progress` RUN THE PUSH ITSELF CANCELS IS NOT A RUN TO WAIT FOR ─────────────────────
+  echo "landq4 selftest: in_progress on the previous tip, under a workflow that cancels it"
+  local wfroot="$root/wf"; mkdir -p "$wfroot/.github/workflows"
+  printf 'on: push\nconcurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\n\njobs: {}\n' >"$wfroot/.github/workflows/ci.yml"
+  _t "a per-ref group that cancels in progress"  0 "$(lq_ci_cancels_in_progress "$wfroot"; echo $?)"
+  printf 'on: push\nconcurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: false\n' >"$wfroot/.github/workflows/ci.yml"
+  _t "cancel-in-progress false still waits"      1 "$(lq_ci_cancels_in_progress "$wfroot"; echo $?)"
+  # A GROUP THAT IS NOT PER-REF cancels somebody else's run, not this branch's.
+  printf 'on: push\nconcurrency:\n  group: ci-global\n  cancel-in-progress: true\n' >"$wfroot/.github/workflows/ci.yml"
+  _t "a group that is not keyed by the ref waits" 1 "$(lq_ci_cancels_in_progress "$wfroot"; echo $?)"
+  # A JOB-LEVEL block is not the workflow's: `^concurrency:` is anchored on purpose.
+  printf 'on: push\njobs:\n  a:\n    concurrency:\n      group: ci-${{ github.ref }}\n      cancel-in-progress: true\n' >"$wfroot/.github/workflows/ci.yml"
+  _t "a job's own concurrency is not the workflow's" 1 "$(lq_ci_cancels_in_progress "$wfroot"; echo $?)"
+  printf 'on: push\njobs: {}\n' >"$wfroot/.github/workflows/ci.yml"
+  _t "no concurrency block at all waits"         1 "$(lq_ci_cancels_in_progress "$wfroot"; echo $?)"
+  _t "no workflow file at all waits"             1 "$(lq_ci_cancels_in_progress "$root/nosuchtree"; echo $?)"
+  # THIS TREE'S OWN CI, read as it stands: the measurement the rule rests on.
+  _t "this repository's CI does cancel in progress" 0 "$(lq_ci_cancels_in_progress "$(cd "$(dirname "$0")/.." && pwd)"; echo $?)"
+  # THE VERDICT.
+  _t "in_progress under a cancelling workflow is no wait" cancelled-in-progress \
+     "$(lq_ci_verdict "in_progress null 2026-09-10T22:00:00Z" "$now0" 1)"
+  _t "  ...and without one it still waits"       running "$(lq_ci_verdict "in_progress null 2026-09-10T22:00:00Z" "$now0")"
+  _t "  ...and an empty flag is not one"         running "$(lq_ci_verdict "in_progress null 2026-09-10T22:00:00Z" "$now0" "")"
+  # THE RULE IS ABOUT `in_progress` AND NOTHING ELSE. Every other status reads as it always did.
+  _t "queued under a cancelling workflow: unchanged" running "$(lq_ci_verdict "queued null 2026-09-10T23:50:00Z" "$now0" 1)"
+  _t "  ...and the 60-minute escape is unchanged"    none "$(lq_ci_verdict "queued null 2026-09-10T22:39:00Z" "$now0" 1)"
+  _t "completed success is unchanged"                success "$(lq_ci_verdict "completed success 2026-09-10T22:00:00Z" "$now0" 1)"
+  _t "completed failure is unchanged"                failure "$(lq_ci_verdict "completed failure 2026-09-10T22:00:00Z" "$now0" 1)"
+  _t "no run at all is unchanged"                    none "$(lq_ci_verdict "" "$now0" 1)"
+  # THE PUSH, AND ITS WORDS.
+  _t "ci_conclusion reads the workflow on the tree" 1 "$(grep -c '^  lq_ci_cancels_in_progress "\$W" && cancels=1$' "$0")"
+  _t "  ...and hands the flag to the verdict"       1 "$(grep -c '^  lq_ci_verdict "\$out" "" "\$cancels"$' "$0")"
+  _t "try_push pushes over it"                      1 "$(grep -c '^    cancelled-in-progress)$' "$0")"
+  _t "  ...and says why, in the log"                1 "$(grep -c '^      lq_log "push over in_progress CI on ' "$0")"
 
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
