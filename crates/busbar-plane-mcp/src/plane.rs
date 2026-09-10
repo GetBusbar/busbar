@@ -127,7 +127,7 @@ impl McpPlane {
     /// left to it was a second copy of this table beside the loop. The copy that drifts is the one
     /// nobody re-derived.
     ///
-    /// This is the same widening the sibling plane already carries as `A2aPlane::route_plan_for`,
+    /// This is the same widening the sibling plane already carries as its `route_plan_for`,
     /// with the same shape and for the same reason: the plan is a function of the operation class
     /// and of this deployment's registrations, and of nothing else a unit carries. The body is byte
     /// for byte the one `route` had, and `route` is now the one caller that starts from a unit.

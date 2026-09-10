@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "64"
+count = "65"
 
 [[cell]]
 crate = "busbar"
@@ -1359,7 +1359,7 @@ count = "1798"
 [[cell]]
 crate = "busbar"
 kind = "plugin-tooling"
-count = "28"
+count = "26"
 
 [[cell]]
 crate = "busbar"
@@ -1374,7 +1374,7 @@ count = "6"
 [[cell]]
 crate = "busbar"
 kind = "substrate"
-count = "9"
+count = "5"
 
 [[cell]]
 crate = "busbar"
@@ -1724,7 +1724,7 @@ count = "4"
 [[cell]]
 crate = "busbar-kernel"
 kind = "caps"
-count = "68"
+count = "63"
 
 [[cell]]
 crate = "busbar-kernel"
@@ -1879,7 +1879,7 @@ count = "57"
 [[cell]]
 crate = "busbar-mcp"
 kind = "plane"
-count = "3345"
+count = "3344"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -2059,7 +2059,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "codec"
-count = "33"
+count = "27"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -2739,7 +2739,7 @@ count = "4"
 [[cell]]
 crate = "busbar-unit-cost"
 kind = "caps"
-count = "12"
+count = "10"
 
 [[cell]]
 crate = "busbar-unit-cost"
@@ -2794,7 +2794,7 @@ count = "4"
 [[cell]]
 crate = "busbar-unit-ledger"
 kind = "caps"
-count = "17"
+count = "16"
 
 [[cell]]
 crate = "busbar-unit-ledger"

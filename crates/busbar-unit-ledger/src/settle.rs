@@ -209,7 +209,7 @@ impl Ledger {
     /// this door drivable from any borrow anybody happened to be holding, including one taken off an
     /// end that had already settled through it — and the exactly-once property, which the by-value
     /// door carries in its signature, would have nothing left holding it up. A
-    /// [`busbar_caps::PostingLent`] can only come out of `UnitEnd::lend_posting`, which hands out
+    /// [`PostingLent`] can only come out of `UnitEnd::lend_posting`, which hands out
     /// one per end and refuses the second. So a second settlement of one hold is not writable
     /// without a second lend, and a second lend is refused.
     ///

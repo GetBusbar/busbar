@@ -45,13 +45,13 @@
 //! restart; declaring them here is what makes that forgetting visible.
 
 use busbar_contract::ids::RecordSchemaId;
+use busbar_mcp_codec::{record::KIND_CALL, record::KIND_DEMOTION};
 
 /// The call log: what each caller asked for, and what they got.
-pub const SCHEMA_CALL: RecordSchemaId = RecordSchemaId::new(busbar_mcp_codec::record::KIND_CALL);
+pub const SCHEMA_CALL: RecordSchemaId = RecordSchemaId::new(KIND_CALL);
 
 /// The quarantine rows: which servers are not being advertised, and why.
-pub const SCHEMA_DEMOTION: RecordSchemaId =
-    RecordSchemaId::new(busbar_mcp_codec::record::KIND_DEMOTION);
+pub const SCHEMA_DEMOTION: RecordSchemaId = RecordSchemaId::new(KIND_DEMOTION);
 
 /// The tool catalogue: what each registered server was observed to offer.
 pub const SCHEMA_CATALOGUE: RecordSchemaId = RecordSchemaId::new("catalogue");

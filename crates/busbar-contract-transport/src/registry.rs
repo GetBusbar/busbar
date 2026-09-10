@@ -50,7 +50,7 @@ pub mod facts {
     /// to interpret, and one that stripped the wrong prefix would turn one caller's secret into a
     /// different string.
     ///
-    /// Transport-neutral by name, because every wire this tree carries has one: HTTP spells it in a
+    /// Transport-neutral by name, because every wire this tree carries has one: the web wire spells it in a
     /// header, the framed binding in metadata of the same name, and a session transport on the frame
     /// that opened it. A plane reads the fact and never the header.
     pub const CREDENTIAL: &str = "credential";

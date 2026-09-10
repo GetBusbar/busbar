@@ -7,6 +7,9 @@ use super::{
     TRANSPORT_STDIO,
 };
 use busbar_contract::grammar::Selector;
+use busbar_mcp_codec::{
+    codec::protected_resource_metadata_path, codec::PATH_MCP, PLANE_KEY, PROTO_DECL,
+};
 
 /// The default mount is the codec's own, and the discovery path is composed from it by the
 /// codec's own composer.
@@ -19,10 +22,10 @@ use busbar_contract::grammar::Selector;
 /// different strings.
 #[test]
 fn the_default_mount_is_the_codecs_own() {
-    assert_eq!(DEFAULT_MOUNT, busbar_mcp_codec::codec::PATH_MCP);
+    assert_eq!(DEFAULT_MOUNT, PATH_MCP);
     assert_eq!(
         DEFAULT_METADATA,
-        busbar_mcp_codec::codec::protected_resource_metadata_path(DEFAULT_MOUNT)
+        protected_resource_metadata_path(DEFAULT_MOUNT)
     );
 }
 
@@ -37,7 +40,7 @@ fn the_default_mount_is_the_codecs_own() {
 /// cause is worse than no note at all.
 #[test]
 fn the_mount_is_still_configured() {
-    let moved = busbar_mcp_codec::codec::protected_resource_metadata_path("/elsewhere");
+    let moved = protected_resource_metadata_path("/elsewhere");
     assert_ne!(moved, DEFAULT_METADATA);
     assert!(moved.ends_with("/elsewhere"));
 }
@@ -47,14 +50,11 @@ fn the_mount_is_still_configured() {
 fn the_plane_key_is_the_codecs_own() {
     assert_eq!(
         <crate::McpPlane as busbar_contract::plane::PlaneMeta>::KEY,
-        busbar_mcp_codec::PLANE_KEY
+        PLANE_KEY
     );
     // And the protocol declaration names the same thing, so the two halves of the codec agree
     // with the plane and with each other.
-    assert_eq!(
-        busbar_mcp_codec::PROTO_DECL.name,
-        busbar_mcp_codec::PLANE_KEY
-    );
+    assert_eq!(PROTO_DECL.name, PLANE_KEY);
 }
 
 /// Every claim names one of the three declared transports and nothing else.

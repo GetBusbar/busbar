@@ -555,8 +555,8 @@ pub trait Resolver {
 ///
 /// ## Why the one body lives beside the trait rather than in a plugin
 ///
-/// This was `busbar_a2a::a2a::transport::TokioResolver`, and being there made it unreachable from
-/// anything that is not the A2A plugin: the composition root binds a `Resolver` into the A2A plane's
+/// This was the agent plane's own `TokioResolver`, and being there made it unreachable from
+/// anything that is not that plugin: the composition root binds a `Resolver` into that plane's
 /// kernel bindings, and a root that reached into a plugin crate for one would be the kind-isolation
 /// rule broken by the very seam the guard exists to hold. Moved here, beside the trait it
 /// implements, there is exactly ONE name resolution in the tree — the plugin re-exports this type
@@ -575,7 +575,7 @@ impl SystemResolver {
     /// The same resolution, reachable WITHOUT naming the trait.
     ///
     /// The body is here rather than in the trait method, and that is not a style choice: the
-    /// composition root has to present this resolution to `busbar_unit_trust::net::Resolver`, a
+    /// composition root has to present this resolution to the trust unit's `net::Resolver`, a
     /// second, identically-shaped seam that this crate may not name and that may not name this
     /// crate. Reaching the body through the trait would make the root name TWO symbols of a retiring
     /// crate — the type and the trait — where one will do, and the ratchet that measures how much of

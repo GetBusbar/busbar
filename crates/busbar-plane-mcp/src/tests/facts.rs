@@ -5,6 +5,7 @@
 use super::{correlation_for, correlation_value, FACT_RPC_ID};
 use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Span};
 use busbar_contract::ids::CorrelationValue;
+use busbar_mcp_codec::{codec::META_CLIENT_CAPABILITIES, codec::META_PROTOCOL_VERSION};
 
 /// An arena that hands out leaked bytes, which is what a test arena is.
 struct TestArena;
@@ -195,14 +196,8 @@ fn the_correlation_carries_the_declared_key() {
 /// the integration tests.
 #[test]
 fn the_metadata_keys_are_the_codecs_own() {
-    assert_eq!(
-        super::META_PROTOCOL_VERSION,
-        busbar_mcp_codec::codec::META_PROTOCOL_VERSION
-    );
-    assert_eq!(
-        super::META_CLIENT_CAPABILITIES,
-        busbar_mcp_codec::codec::META_CLIENT_CAPABILITIES
-    );
+    assert_eq!(super::META_PROTOCOL_VERSION, META_PROTOCOL_VERSION);
+    assert_eq!(super::META_CLIENT_CAPABILITIES, META_CLIENT_CAPABILITIES);
 }
 
 /// Each quoted needle is its own key, in quotes, and nothing else.

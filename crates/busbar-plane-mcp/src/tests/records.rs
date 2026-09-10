@@ -5,6 +5,7 @@
 use super::{
     operations_for, OPERATIONS, RECORD_SCHEMAS, SCHEMA_APPROVAL, SCHEMA_CALL, SCHEMA_DEMOTION,
 };
+use busbar_mcp_codec::record::{KIND_CALL, KIND_DEMOTION};
 
 /// The two durable schemas carry the codec's own record kind names.
 ///
@@ -12,11 +13,8 @@ use super::{
 /// under a name nothing reads back.
 #[test]
 fn the_durable_schemas_are_the_codecs_own_kinds() {
-    assert_eq!(SCHEMA_CALL.as_str(), busbar_mcp_codec::record::KIND_CALL);
-    assert_eq!(
-        SCHEMA_DEMOTION.as_str(),
-        busbar_mcp_codec::record::KIND_DEMOTION
-    );
+    assert_eq!(SCHEMA_CALL.as_str(), KIND_CALL);
+    assert_eq!(SCHEMA_DEMOTION.as_str(), KIND_DEMOTION);
 }
 
 /// Every schema declares at least one operation, and every operation it declares is a known one.

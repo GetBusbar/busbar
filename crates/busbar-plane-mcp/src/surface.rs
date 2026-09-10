@@ -12,7 +12,7 @@
 //! protocol a crate.
 //!
 //! They are declared here, in the plane-agnostic vocabulary
-//! [`busbar_contract::transport::surface`] defines, and a transport mounts them without knowing what
+//! the contract's transport half (`surface`) defines, and a transport mounts them without knowing what
 //! protocol they belong to. Nothing here opens anything, holds anything or reads anything: it is a
 //! `const`.
 //!
@@ -32,7 +32,7 @@
 //! **They do not carry the same vocabulary, and that is the protocol's fact rather than this
 //! crate's convenience.** `initialize` and `ping` are the stateful-era verbs: they are meaningful
 //! only where a persistent connection exists, the codec's own dispatch table
-//! (`busbar_mcp_codec::codec::IMPLEMENTED_METHODS`) does not carry them, and the mounted surface
+//! (the codec's `IMPLEMENTED_METHODS`) does not carry them, and the mounted surface
 //! answers them `-32601` today. The published conformance suite asserts that it does. So they are
 //! declared on the console binding ALONE — which is exactly where the existing server answers them
 //! — and a surface that declared them on the document binding would be this crate turning a
@@ -51,7 +51,7 @@
 //! vocabulary does not carry is red too.
 
 use busbar_contract::transport::surface::{
-    Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
+    resolve_document, Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
 };
 
 use crate::{claims, ops};
@@ -306,7 +306,7 @@ pub fn binding_for(transport: &str) -> Option<&'static str> {
 #[must_use]
 pub fn row_on(method: &str, transport: &str) -> Option<&'static ops::MethodRow> {
     let binding = binding_for(transport)?;
-    busbar_contract::transport::surface::resolve_document(&SURFACE, binding, method)?;
+    resolve_document(&SURFACE, binding, method)?;
     ops::row_for(method)
 }
 

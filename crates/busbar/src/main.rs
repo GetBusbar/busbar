@@ -70,6 +70,7 @@ use busbar_core::{
 // unconditionally is an unused-import error there under `-D warnings`.
 #[cfg(not(target_env = "msvc"))]
 use busbar_core::REQUEST_ACTIVITY_TICKS;
+use busbar_plugin_loader::{inventory_tarballs, sweep_dead_staging};
 
 /// THE BUILD-PROVENANCE STAMP, as one machine-parseable line. Every field is baked at compile time
 /// by `build.rs` (see its header for what cargo does and does not expose) EXCEPT `debug-assertions`,
@@ -450,7 +451,7 @@ fn list_plugins_command() -> i32 {
         dir.display(),
         plugins_cfg.enabled
     );
-    let rows = busbar_plugin_loader::inventory_tarballs(&dir, &policy);
+    let rows = inventory_tarballs(&dir, &policy);
     if rows.is_empty() {
         println!("no plugin tarballs found");
         return 0;
@@ -1205,7 +1206,7 @@ async fn run(data_workers: usize) {
     // BOOT-TIME dead-pid sweep: remove any orphaned plugin staging directory a CRASHED prior busbar
     // left behind (a clean shutdown removes its own; a dead pid's files are unlocked). Runs even
     // when plugins are disabled — the orphan may predate a config change.
-    let swept = busbar_plugin_loader::sweep_dead_staging();
+    let swept = sweep_dead_staging();
     if swept > 0 {
         eprintln!(
             "[info] removed {swept} orphaned plugin staging dir(s) left by a crashed prior run"

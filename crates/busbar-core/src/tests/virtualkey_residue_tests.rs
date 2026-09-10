@@ -4,7 +4,7 @@
 //! How much of the legacy key is still in here, as a number that may only go down.
 //!
 //! Owner ruling 13:0x (6): the enforced key's one shape for 1.6.0 is `ResolvedKey` in
-//! `busbar-unit-auth`, and `VirtualKey` **dies with this crate**. That is a deliberate decision not
+//! the auth unit, and `VirtualKey` **dies with this crate**. That is a deliberate decision not
 //! to migrate these call sites: they are the retiring 1.5.5 engine's, they will be deleted rather
 //! than moved, and touching them would be churn against code with a deletion date.
 //!
@@ -101,7 +101,7 @@ fn the_legacy_keys_residue_in_this_crate_only_shrinks() {
         production <= PRODUCTION_CEILING,
         "busbar-core now names `VirtualKey` {production} times in production source, up from \
          {PRODUCTION_CEILING}. The legacy key dies with this crate (owner ruling 13:0x (6)) and \
-         the enforced key's one shape is `busbar_unit_auth::ResolvedKey`. A NEW production reader \
+         the enforced key's one shape is the auth unit's `ResolvedKey`. A NEW production reader \
          here is one more thing the deletion has to move: add it to `ResolvedKey` instead, or \
          argue for it and re-ratchet this number."
     );

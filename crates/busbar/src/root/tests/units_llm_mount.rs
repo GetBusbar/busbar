@@ -81,6 +81,7 @@ use crate::root::durability::Durability;
 use crate::root::mount_ingress::BootIngress;
 use crate::root::units_llm::LlmNode;
 use busbar_api::{operation::Operation, PlaneRequestCtx, VirtualKey};
+use busbar_substrate_values::store::now as store_now;
 
 /// The one dialect these cells speak, and the address its ladder rung names.
 const PROTO: &str = busbar_llm::proto_codec::PROTO_OPENAI;
@@ -507,11 +508,11 @@ fn caller_headers() -> axum::http::HeaderMap {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_request_through_either_door_leaves_one_chain_head_and_one_link() {
     for attempt in 0..8 {
-        let before = busbar_substrate_values::store::now();
+        let before = store_now();
         let Some((driven, mounted_leg, key)) = one_request_each_way().await else {
             continue;
         };
-        if busbar_substrate_values::store::now() != before {
+        if store_now() != before {
             continue;
         }
 

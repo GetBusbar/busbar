@@ -120,7 +120,10 @@
 //! number for a deployment with no hook in it** — a bench that silently measures the wrong cell is
 //! worse than one that stops.
 
-use busbar_plugin_sign::{HookNeeds, Manifest, NeedLevel};
+use busbar_plugin_loader::{
+    plugin_library_filename, supported_abi, tarball::package as package_tarball,
+};
+use busbar_plugin_sign::{sha256_hex, HookNeeds, Manifest, NeedLevel};
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -196,7 +199,7 @@ fn spawn_stub_upstream() -> u16 {
 fn hook_cdylib() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let profile_dir = exe.parent()?.parent()?;
-    let name = busbar_plugin_loader::plugin_library_filename("busbar_hook_test_plugin");
+    let name = plugin_library_filename("busbar_hook_test_plugin");
     [
         profile_dir.join(&name),
         profile_dir.join("deps").join(&name),
@@ -227,10 +230,7 @@ fn install_prompt_ro_hook(dir: &Path) {
         kind: "hook".into(),
         version: "1.6.0".into(),
         publisher: "busbar-bench".into(),
-        abi_version: *busbar_plugin_loader::supported_abi("hook")
-            .iter()
-            .max()
-            .unwrap(),
+        abi_version: *supported_abi("hook").iter().max().unwrap(),
         sha256: String::new(),
         signature: String::new(),
         description: String::new(),
@@ -244,8 +244,8 @@ fn install_prompt_ro_hook(dir: &Path) {
         schema_derived: false,
         host: None,
     };
-    m.sha256 = busbar_plugin_sign::sha256_hex(&lib);
-    let tarball = busbar_plugin_loader::tarball::package(&m, "lib.so", &lib).unwrap();
+    m.sha256 = sha256_hex(&lib);
+    let tarball = package_tarball(&m, "lib.so", &lib).unwrap();
     std::fs::write(dir.join("bench-hook.tar.gz"), tarball).unwrap();
 }
 

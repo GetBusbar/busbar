@@ -5,6 +5,7 @@
 
 use crate::legacy::{opening_balances, LegacyHead, LegacyPosting, RecordingRows};
 use crate::settle::Ledger;
+use busbar_caps::{ExitToken, KernelSeal, MeterClassId, Outcome, Posted, UnitEnd};
 
 use super::fixtures::{hold, key, ledger_token, pool_key, usage};
 
@@ -39,7 +40,6 @@ fn settling_moves_the_reservation_out_and_the_amount_in() {
 
 #[test]
 fn two_dimensions_on_one_bucket_are_two_independent_balances() {
-    use busbar_caps::MeterClassId;
     let mut ledger = Ledger::new();
     let token = ledger_token();
     let money = key("shared");
@@ -261,8 +261,7 @@ fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold()
 
     let mut through_posting = Ledger::new();
     through_posting.record_hold_opened(&k, 1, 600);
-    let posted =
-        busbar_caps::Posted::settle(hold("alice", 600), 450, &usage("tokens", 450), &token);
+    let posted = Posted::settle(hold("alice", 600), 450, &usage("tokens", 450), &token);
     let settlement = through_posting.post(&k, 1, posted);
     assert_eq!(settlement.released, 150);
 
@@ -281,8 +280,6 @@ fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold()
 /// true the day somebody adds an arm to one of them.
 #[test]
 fn a_posting_settled_from_a_lend_moves_the_same_books_as_one_settled_by_value() {
-    use busbar_caps::{ExitToken, KernelSeal, Outcome, Posted, UnitEnd};
-
     let seal = KernelSeal::acquire_for_kernel();
     let exit = ExitToken::mint(&seal);
     let token = ledger_token();
@@ -328,8 +325,6 @@ fn a_posting_settled_from_a_lend_moves_the_same_books_as_one_settled_by_value() 
 /// carried a different one would be a mounted plane quietly forgiving its own overdrafts.
 #[test]
 fn an_overdrawing_posting_leaves_the_same_note_through_either_door() {
-    use busbar_caps::{ExitToken, KernelSeal, Outcome, Posted, UnitEnd};
-
     let seal = KernelSeal::acquire_for_kernel();
     let exit = ExitToken::mint(&seal);
     let token = ledger_token();

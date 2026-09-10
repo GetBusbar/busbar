@@ -163,7 +163,7 @@ pub const METHODS: &[MethodRow] = &[
     // this node ANSWERS them; WHERE it answers them is the surface's declaration and not this
     // table's, and [`crate::surface`] declares both on the console binding alone. A reader who wants
     // to know whether the mounted request surface carries them reads that file, and the answer there
-    // is no — which is the same answer `busbar_mcp_codec::codec::IMPLEMENTED_METHODS` gives, pinned
+    // is no — which is the same answer the codec's `IMPLEMENTED_METHODS` gives, pinned
     // by a test below.
     MethodRow {
         method: "initialize",

@@ -302,7 +302,7 @@ impl std::error::Error for StoreError {}
 ///
 /// The narrow half of [`Store`], standing on its own because it is bound on its own. A record leg
 /// is run by the kernel and lands in these three verbs; the backend that answers them is a
-/// store-kind plugin, and a store-kind plugin may not name `busbar-kernel`. So the trait that names
+/// store-kind plugin, and a store-kind plugin may not name the kernel crate. So the trait that names
 /// the sink has to live HERE, in the contract both halves are allowed to name — a store implements
 /// it, and the composition root hands it to the kernel's runner. A second copy of these three verbs
 /// declared anywhere else would be a second protocol, and the node would have two answers to "what

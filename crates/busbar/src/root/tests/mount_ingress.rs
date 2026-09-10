@@ -8,11 +8,12 @@
 use super::*;
 use busbar_api::{PlaneRequestCtx, VirtualKey};
 use busbar_core::{governance::MemoryStore, plane_host::engine_host, test_support::TestApp};
+use busbar_substrate::{ingress::arrival::ArrivalPayload, plane_host::EngineHost};
 
 /// THE DEPLOYMENT's own engine host, minted over a bare test app exactly as the composition root
 /// mints one. Not a stub: what these cells assert about the host is that ONE of them reaches every
 /// arrival, and a stub would make that a property of the stub.
-pub(crate) fn a_host() -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
+pub(crate) fn a_host() -> Arc<dyn EngineHost> {
     engine_host(&TestApp::new().build())
 }
 
@@ -27,10 +28,10 @@ pub(crate) fn memory_store() -> Arc<MemoryStore> {
 /// own payload around a caller's resolved half. Shared by every cell in this crate that seals a
 /// `BootIngress`, so the shape of what the boot hands the seam is written once.
 pub(crate) fn minted(
-    host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    host: Arc<dyn EngineHost>,
 ) -> impl Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static {
     move |gov, caller_token| {
-        ArrivalCtx::new(busbar_substrate::ingress::arrival::ArrivalPayload {
+        ArrivalCtx::new(ArrivalPayload {
             host: Arc::clone(&host),
             gov,
             caller_token,
@@ -39,7 +40,7 @@ pub(crate) fn minted(
 }
 
 /// The payload a sealed context carries, read the way a leg reads it.
-fn payload(ctx: &ArrivalCtx) -> &busbar_substrate::ingress::arrival::ArrivalPayload {
+fn payload(ctx: &ArrivalCtx) -> &ArrivalPayload {
     ctx.downcast_ref()
         .expect("a sealed mount arrival carries the substrate's payload")
 }

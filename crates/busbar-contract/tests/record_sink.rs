@@ -6,7 +6,7 @@
 //! A plane's kernel-held durable records land in three verbs — `record_put`, `record_get`,
 //! `record_scan` — and those three used to be reachable only as part of the twenty-two-verb
 //! [`Store`] protocol. That made the sink a store backend answers and the sink the node BINDS two
-//! different shapes, and the only trait that named the narrow one lived in `busbar-kernel`: a crate
+//! different shapes, and the only trait that named the narrow one lived in the kernel crate: a crate
 //! a store-kind plugin may not name. The three verbs are their own trait here, and `Store` declares
 //! them by BEING one.
 //!

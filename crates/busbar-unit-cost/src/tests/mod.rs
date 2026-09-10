@@ -7,8 +7,7 @@
 //! the read-time derivation. The identity file is the one that ties the two readers together — the
 //! older release's derivation at a pinned card against the sum of the stored nano-units.
 
-use busbar_caps::step::MeterClassId;
-use busbar_caps::{KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
+use busbar_caps::{step::MeterClassId, KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
 
 use crate::{price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable};
 
@@ -116,7 +115,7 @@ pub(crate) fn card4(lane: &'static str, rates: [f64; 4], fee_cents: i64) -> Rate
 pub(crate) fn priced(
     card: &RateCard,
     lane: &str,
-    usage: &busbar_caps::Usage,
+    usage: &Usage,
     fee_count: u64,
     tier_bp: u32,
 ) -> Priced {
@@ -128,7 +127,7 @@ pub(crate) fn priced(
 pub(crate) fn priced_in(
     card: &RateCard,
     lane: &str,
-    usage: &busbar_caps::Usage,
+    usage: &Usage,
     fee_count: u64,
     tier_bp: u32,
     currency: CurrencyCode,

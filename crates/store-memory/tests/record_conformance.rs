@@ -254,7 +254,7 @@ fn the_record_verbs_do_not_disturb_the_published_kind_tagged_rows() {
 /// behind a pointer, by a caller that knows nothing else about it.
 ///
 /// The kernel runs a record leg into a sink and never into a store, and a store-kind plugin may not
-/// name `busbar-kernel`. The one shape both halves are allowed to name is the contract's, so if
+/// name the kernel crate. The one shape both halves are allowed to name is the contract's, so if
 /// these three verbs were merely inherent methods with the right spelling, the composition root
 /// would have to name `MemoryStore` by type to reach them and no second backend could take its
 /// place. Driving them through `&dyn RecordSink` is what proves the seam is a seam.
