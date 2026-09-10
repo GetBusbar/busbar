@@ -6884,7 +6884,6 @@ fn test_writer_open_tools_capped_in_entry_count() {
 //    whichever crate owns the enum.
 #[test]
 fn status_word_golden() {
-    use busbar_substrate_values::breaker::StatusClass;
     let golden: [(StatusClass, u16, &str); 9] = [
         (StatusClass::RateLimit, 429, "RESOURCE_EXHAUSTED"),
         (StatusClass::Overloaded, 503, "UNAVAILABLE"),

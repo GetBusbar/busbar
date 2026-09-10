@@ -68,16 +68,6 @@ impl BreakerAdapter {
     }
 }
 
-fn map_disposition(d: busbar_unit_breaker::classify::Disposition) -> Disposition {
-    use busbar_unit_breaker::classify::Disposition as BD;
-    match d {
-        BD::ClientFault => Disposition::ClientFault,
-        BD::TransientUpstream => Disposition::TransientUpstream,
-        BD::HardDown => Disposition::HardDown,
-        BD::ContextLength => Disposition::ContextLength,
-    }
-}
-
 fn map_outcome_to_breaker(o: Outcome) -> busbar_unit_breaker::Outcome {
     use busbar_unit_breaker::Outcome as BO;
     match o {
@@ -187,7 +177,7 @@ impl Breaker for BreakerAdapter {
             },
         );
         Classified {
-            disposition: map_disposition(classified.disposition),
+            disposition: classified.disposition,
             outcome: map_outcome_from_breaker(classified.outcome),
             label: classified.label,
         }

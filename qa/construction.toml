@@ -139,13 +139,14 @@ once. Zero slack; the next face declares its own raise."""
 
 [gate.ceiling_raises."rules.loc-ceilings.union_ceiling"]
 from = 23465
-to = 23530
-because = """The same 65 lines, counted a third time: the union row is kernel + caps/contract + \
-unit-*, and the caps/contract term is the only one that moved here (5379 + 3545 + 14606 = 23530). \
-No kernel and no unit line changes in this commit — the commit that deletes the three copies lowers \
-the unit term, and lowers this one with it, by measurement. Declared separately because it is a \
-separate integer `ceiling-rose` compares, and pinned at the measurement for the same reason the \
-pair is."""
+to = 23477
+because = """The same 65 lines, counted a third time and NET of the 53 this commit deletes: the \
+union row is kernel + caps/contract + unit-*, the caps/contract term rose by 65 (the upstream \
+status table), and the unit term FELL by 53 because busbar-unit-breaker and busbar-unit-egress \
+stopped declaring their own copies of the class and the disposition and now name the one table \
+(5379 + 3545 + 14553 = 23477; `unit_total_ceiling` re-pinned downward by measurement, 14606 -> \
+14553). Declared separately because it is a separate integer `ceiling-rose` compares, and pinned \
+at the measurement for the same reason the pair is."""
 
 [gate.ceiling_raises."cell.338.count"]
 file = "qa/kind-isolation.toml"
@@ -158,18 +159,6 @@ renderers they pin, and four of those calls spell a pre-split dialect's own func
 hits are the cell existing at all and not new coupling: no production line changes here and the crate \
 gains no dependency. The cells' own names carry no vendor word — each already sits in its dialect's \
 own module — which is why the rise is four and not nine. Pinned at the measurement, exactly."""
-
-[gate.ceiling_raises."cell.105.count"]
-file = "qa/kind-isolation.toml"
-from = 904
-to = 909
-because = """busbar-llm-codec x substrate. TRANSIENT, AND STRUCK TWO COMMITS LATER BY MEASUREMENT. \
-Five of the golden cells name `busbar_substrate_values::breaker::StatusClass` in a `use` line \
-because, at THIS commit, that is where the nine-way class is declared — pinning the bytes before the \
-move is the whole point of the cell, and a cell written against the table the move creates would be \
-re-pointed by the same commit it is supposed to judge. The commit that gives the class one owner \
-re-points these five imports at `busbar_contract::upstream` and `--write` puts this row back to 904, \
-at which point this entry describes no rise and is deleted. Pinned at the measurement, exactly."""
 
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
@@ -421,12 +410,13 @@ contract_crate = "busbar-contract"
 # next face comes with its own declared raise naming its own measured lines, never out of this one.
 caps_contract_ceiling = 3545
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14606
+unit_total_ceiling = 14553
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-# 23465 -> 23530: the caps/contract term above rose by 65 (the upstream status table) and nothing
-# else in the sum moved. Declared under `[gate.ceiling_raises]` with the pair.
-union_ceiling = 23530
+# 23465 -> 23477: the caps/contract term above rose by 65 (the upstream status table) and the unit
+# term fell by 53, because two units stopped declaring their own copies of the class and the
+# disposition. Declared under `[gate.ceiling_raises]` with the pair.
+union_ceiling = 23477
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
