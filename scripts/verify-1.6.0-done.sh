@@ -652,11 +652,15 @@ begin_group "INVENTORY-COVERAGE — every docs/design/inventory/*.md row id is b
 # Appendix B says every inventory row is a parity binding AND an oracle cell; this is the check that
 # was missing. qa/inventory-gaps.json names every row id with no citing cell yet, so a gap is a
 # visible, owned line item rather than a silent hole. DONE means no id has no cell and no name.
-if [ -f scripts/inventory-coverage.sh ]; then
-  step "inventory-coverage --selftest" bash scripts/inventory-coverage.sh --selftest
-  step "inventory-coverage --check"    bash scripts/inventory-coverage.sh --check
+# The bash wrapper and its Python were deleted at c8272b166; this reads the Rust gate that replaced
+# them, which is registered, run by ci.yml on every push, and cited by design binding PB-0. The
+# guard stays a guard -- it now asks whether the GATE is registered, not whether a file is on disk,
+# because that is what "the check can run" means for a gate that lives in a crate.
+if cargo xtask gate --list 2>/dev/null | grep -q '\binventory-coverage\b'; then
+  step "inventory-coverage --selftest" cargo xtask gate inventory-coverage --selftest
+  step "inventory-coverage --check"    cargo xtask gate inventory-coverage
 else
-  absent_step "inventory coverage gate" "scripts/inventory-coverage.sh"
+  absent_step "inventory coverage gate" "cargo xtask gate inventory-coverage"
 fi
 end_group
 
