@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::gitp;
@@ -283,6 +284,13 @@ pub struct Ctx {
     overlay: Option<Arc<Overlay>>,
     scratch: PathBuf,
     env: Env,
+    /// Which slice of a self-test's case list this context admits, when the run was sharded.
+    /// `None` is the whole list, which is every run that did not ask for a shard.
+    shard: Option<crate::gates::Shard>,
+    /// How many cases have been OFFERED to [`Ctx::shard_admits_next`] — the index the partition is
+    /// taken on. Shared by every context derived from this one (`with_overlay` clones the `Arc`),
+    /// because a plant is made from the base context and the index must not restart per plant.
+    offered: Arc<AtomicUsize>,
 }
 
 impl Ctx {
@@ -307,6 +315,8 @@ impl Ctx {
             overlay: None,
             scratch,
             env: Env::capture(),
+            shard: None,
+            offered: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -321,6 +331,8 @@ impl Ctx {
             overlay: None,
             scratch,
             env: Env::capture(),
+            shard: None,
+            offered: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -354,6 +366,31 @@ impl Ctx {
     pub fn write_mode(mut self, yes: bool) -> Ctx {
         self.env.write = yes;
         self
+    }
+
+    /// Run only the cases of `shard`. Affects SELF-TESTS ONLY: the gate's own rows are never
+    /// sharded, because a quarter of a gate is not a verdict on the tree.
+    pub fn sharded(mut self, shard: crate::gates::Shard) -> Ctx {
+        self.shard = Some(shard);
+        self
+    }
+
+    pub fn shard(&self) -> Option<crate::gates::Shard> {
+        self.shard
+    }
+
+    /// How many cases have been offered so far — the FULL case count once the self-test has run,
+    /// on every shard alike, because the counter advances for a case this shard skips exactly as
+    /// it does for one it runs. This is what lets a shard report `k/n: X of TOTAL` and lets the
+    /// caller check the union without ever running the unsharded list.
+    pub fn shard_offered(&self) -> usize {
+        self.offered.load(Ordering::Relaxed)
+    }
+
+    /// Whether the NEXT case is this shard's, advancing the index either way.
+    pub fn shard_admits_next(&self) -> bool {
+        let index = self.offered.fetch_add(1, Ordering::Relaxed);
+        self.shard.is_none_or(|s| s.owns(index))
     }
 
     /// A FRESH context with this overlay. The base is untouched.

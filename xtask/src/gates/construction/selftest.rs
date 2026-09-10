@@ -127,31 +127,39 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
     // ── the baseline ────────────────────────────────────────────────────────────────────────────
     // The same list `Gate::informational` declares, from the same derivation: these rows are
     // exercised here and are held to being measured rather than to going red, because they cannot.
-    let informational: Vec<String> = ConstructionGate::informational_ids(cx);
-    let verdict = execute(gate, &cx.with_overlay(on(&base)));
-    let leaked: Vec<String> = verdict
-        .rows
-        .iter()
-        .map(|row| format!("{} {}", row.id, row.detail))
-        .filter(|t| t.contains("zz_planted") || t.contains("planted_"))
-        .collect();
-    r.push(Case {
-        name: "the unplanted tree names no planted offender (this gate is RED BY DESIGN on HEAD, \
-               so its baseline is this, not green)"
-            .to_string(),
-        covers: informational.clone(),
-        expected: Expect::Green,
-        got: if leaked.is_empty() {
-            Expect::Green
-        } else {
-            Expect::Red { naming: leaked }
-        },
-    });
-    if verdict.rows.is_empty() {
-        r.note_infra_failure(
-            "the construction gate produced no rows at all over the real tree, so every plant \
-             below would be judged against nothing",
-        );
+    let baseline = "the unplanted tree names no planted offender (this gate is RED BY DESIGN on \
+                    HEAD, so its baseline is this, not green)";
+    // THE BASELINE IS A CASE LIKE ANY OTHER, so it is OFFERED to the shard like any other — the
+    // one case in this file built by hand rather than through a `prove_…` helper, and therefore
+    // the one that has to ask for itself. A hand-built case that skipped the question would run on
+    // EVERY shard, which is both the count going wrong and work being done four times.
+    if !cx.shard_admits_next() {
+        r.push(Case::out_of_shard(baseline));
+    } else {
+        let informational: Vec<String> = ConstructionGate::informational_ids(cx);
+        let verdict = execute(gate, &cx.with_overlay(on(&base)));
+        let leaked: Vec<String> = verdict
+            .rows
+            .iter()
+            .map(|row| format!("{} {}", row.id, row.detail))
+            .filter(|t| t.contains("zz_planted") || t.contains("planted_"))
+            .collect();
+        r.push(Case {
+            name: baseline.to_string(),
+            covers: informational,
+            expected: Expect::Green,
+            got: if leaked.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red { naming: leaked }
+            },
+        });
+        if verdict.rows.is_empty() {
+            r.note_infra_failure(
+                "the construction gate produced no rows at all over the real tree, so every plant \
+                 below would be judged against nothing",
+            );
+        }
     }
 
     r.append(shape_cases(gate, cx, &base));
@@ -1016,6 +1024,11 @@ fn vocabulary_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
                 &["zz_planted_clock.rs"],
             ));
         }
+        // The other arm of the same case, so it is offered to the shard on the same terms — see
+        // the baseline's note above.
+        None if !cx.shard_admits_next() => r.push(Case::out_of_shard(
+            "a unit crate reads the clock and cites a finding identifier",
+        )),
         None => r.push(Case {
             name: "a unit crate reads the clock and cites a finding identifier".to_string(),
             covers: strings(&["unit-no-wall-clock", "unit-no-finding-ids"]),

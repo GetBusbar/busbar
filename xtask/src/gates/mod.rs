@@ -51,6 +51,7 @@ pub mod tracing;
 pub mod workspace_deps;
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -661,6 +662,83 @@ pub enum Expect {
     /// The plant had nothing to plant (the rule's subject is absent from this tree). Visible in the
     /// report and counted — never silently green.
     Skipped,
+    /// THE CASE BELONGS TO ANOTHER SHARD, so no plant was made and no gate was run. This is not a
+    /// verdict and it is never stored: [`Report::push`] drops it and counts it, so a shard's report
+    /// holds exactly the cases that shard OWNS and its summary counts exactly those. It exists as a
+    /// value rather than as an early `continue` because the case list is built by a hundred and
+    /// sixty `report.push(prove_…(…))` call sites: a helper that returns this has skipped the WORK
+    /// while still being COUNTED as offered, which is what makes `owned + dropped == offered` an
+    /// invariant a shard can be refused on.
+    OutOfShard,
+}
+
+/// ONE SHARD of a self-test's case list: `k` of `n`, `k` counted from 1.
+///
+/// The partition is BY INDEX and nothing else — case `i` (from 0) belongs to shard `i % n + 1` —
+/// which is what makes the union of every shard the whole list by arithmetic rather than by
+/// bookkeeping, with no case in two shards and none in none. Round-robin rather than contiguous
+/// blocks on purpose: the cases are written in family order and a family's cases cost alike, so
+/// contiguous blocks would hand one box every dear case and the leg would be as slow as the
+/// unsharded run.
+///
+/// A shard NEVER makes the proof smaller. It makes the same case list run on more boxes: every
+/// shard must be green and the union must be the whole list, which the caller checks by comparing
+/// each shard's `cases` against the `of` total every shard reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shard {
+    k: usize,
+    n: usize,
+}
+
+impl Shard {
+    /// `k/n`. A malformed or out-of-range spec is an ERROR, never a silent whole run: a caller who
+    /// typed `--shard 5/4` and got the entire self-test back would believe four boxes had split it.
+    pub fn parse(spec: &str) -> Result<Shard, String> {
+        let (k, n) = spec
+            .split_once('/')
+            .ok_or_else(|| format!("--shard {spec}: expected k/n (1-based), e.g. --shard 1/4"))?;
+        let k: usize = k
+            .trim()
+            .parse()
+            .map_err(|_| format!("--shard {spec}: `{k}` is not a number"))?;
+        let n: usize = n
+            .trim()
+            .parse()
+            .map_err(|_| format!("--shard {spec}: `{n}` is not a number"))?;
+        if n == 0 {
+            return Err(format!("--shard {spec}: n must be at least 1"));
+        }
+        if k == 0 || k > n {
+            return Err(format!(
+                "--shard {spec}: k is 1-based and must be within 1..={n}"
+            ));
+        }
+        Ok(Shard { k, n })
+    }
+
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    /// Whether the case at `index` (from 0) is this shard's.
+    pub fn owns(&self, index: usize) -> bool {
+        index % self.n == self.k - 1
+    }
+
+    /// The indices this shard owns out of `total` cases.
+    pub fn indices(&self, total: usize) -> Vec<usize> {
+        (0..total).filter(|i| self.owns(*i)).collect()
+    }
+}
+
+impl fmt::Display for Shard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.k, self.n)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -673,6 +751,17 @@ pub struct Case {
 }
 
 impl Case {
+    /// A case this shard does not own. Carries nothing but its name, because nothing was measured:
+    /// [`Report::push`] drops it before any reader can mistake it for a verdict.
+    pub fn out_of_shard(name: impl Into<String>) -> Case {
+        Case {
+            name: name.into(),
+            covers: Vec::new(),
+            expected: Expect::Green,
+            got: Expect::OutOfShard,
+        }
+    }
+
     fn failure(&self) -> Option<String> {
         match (&self.expected, &self.got) {
             (Expect::Green, Expect::Green) => None,
@@ -712,6 +801,10 @@ pub struct Report {
     infra: Vec<String>,
     /// When the previous case finished. The work a case costs happens between two pushes.
     mark: std::time::Instant,
+    /// How many cases were OFFERED to this report and belonged to another shard. Counted rather
+    /// than stored, so `cases().len() + dropped()` is the number of cases the self-test walked and
+    /// a shard can be refused when that does not match what the context was asked for.
+    dropped: usize,
 }
 
 impl Default for Report {
@@ -721,6 +814,7 @@ impl Default for Report {
             took: Vec::new(),
             infra: Vec::new(),
             mark: std::time::Instant::now(),
+            dropped: 0,
         }
     }
 }
@@ -731,6 +825,14 @@ impl Report {
     }
 
     pub fn push(&mut self, case: Case) {
+        // A CASE THIS SHARD DOES NOT OWN IS COUNTED AND DROPPED. It ran nothing, so it has no time
+        // to charge and no verdict to print: leaving it in the list would put a case in a shard's
+        // report that the shard did not prove, which is the one thing sharding must not do.
+        if matches!(case.got, Expect::OutOfShard) {
+            self.dropped += 1;
+            self.mark = std::time::Instant::now();
+            return;
+        }
         self.took.push(self.mark.elapsed());
         self.mark = std::time::Instant::now();
         self.cases.push(case);
@@ -742,6 +844,7 @@ impl Report {
         self.cases.extend(other.cases);
         self.took.extend(other.took);
         self.infra.extend(other.infra);
+        self.dropped += other.dropped;
         self.mark = std::time::Instant::now();
     }
 
@@ -768,6 +871,11 @@ impl Report {
 
     pub fn cases(&self) -> &[Case] {
         &self.cases
+    }
+
+    /// Cases offered to this report that belonged to another shard.
+    pub fn dropped(&self) -> usize {
+        self.dropped
     }
 
     pub fn skipped(&self) -> usize {
@@ -1001,11 +1109,41 @@ pub fn execute_with_skips(gate: &dyn Gate, cx: &Ctx, skip_allow: &[&str]) -> Ver
 /// PASS by construction, so they are held to being exercised rather than to going red, and a
 /// declaration that no longer names an owed row is itself refused.
 pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>> {
+    verify_report_sharded(gate, report, None)
+}
+
+/// [`verify_report`] over ONE SHARD of the case list, and the two checks a shard cannot make.
+///
+/// The coverage reconciliation — every owed row covered by some RED case — is a claim about the
+/// WHOLE case list, and a shard holds a quarter of it. Making a shard answer it would be asking a
+/// quarter of the battery to prove all of it, which is only satisfiable by every shard running
+/// every case; that is not a shard. So under a shard the two whole-list checks are DEFERRED to the
+/// union, which the caller of the shards checks by arithmetic: every shard reports the same total,
+/// their owned counts sum to it, and every one of them is green. What is NOT deferred is anything
+/// a shard can answer for itself — each of its own cases' verdicts, its infra failures, the
+/// staleness of an `informational` declaration, and its share of the budget.
+pub fn verify_report_sharded(
+    gate: &dyn Gate,
+    report: &Report,
+    shard: Option<Shard>,
+) -> Result<(), Vec<String>> {
     let mut errs = report.failures();
 
     // THE BUDGET. See [`SELFTEST_BUDGETS`]: an unmeasured selftest is one that grows until the
     // runner kills it, and a killed job is neither green nor red.
-    let budget = selftest_budget(gate.name());
+    //
+    // A SHARD IS HELD TO ITS SHARE, not to the whole figure. The partition is round-robin over a
+    // list written in family order, so a shard that owns a quarter of the cases owns about a
+    // quarter of the cost; holding it to the full budget would make the guard four times looser on
+    // exactly the runs that will become the common ones, and a budget that cannot be exceeded is
+    // not a budget.
+    let offered = report.cases().len() + report.dropped();
+    let budget = match shard {
+        Some(_) if offered > 0 => {
+            selftest_budget(gate.name()) * (report.cases().len() as f64) / (offered as f64)
+        }
+        _ => selftest_budget(gate.name()),
+    };
     let spent = report.units();
     if spent > budget {
         let slowest = report
@@ -1020,10 +1158,11 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
         ));
     }
 
-    if !report
-        .cases
-        .iter()
-        .any(|c| matches!(c.expected, Expect::Red { .. }))
+    if shard.is_none()
+        && !report
+            .cases
+            .iter()
+            .any(|c| matches!(c.expected, Expect::Red { .. }))
     {
         errs.push(format!(
             "{}: no case in its selftest expects RED, so nothing proves this gate can still fail. \
@@ -1059,6 +1198,11 @@ pub fn verify_report(gate: &dyn Gate, report: &Report) -> Result<(), Vec<String>
     }
 
     for owed in owed {
+        // Deferred to the union — see this function's own note. Every other check above has
+        // already run against this shard's own cases.
+        if shard.is_some() {
+            break;
+        }
         if informational.contains(&owed) {
             if !exercised.contains(&owed) {
                 errs.push(format!(
@@ -1148,11 +1292,19 @@ pub fn prove_red(
     overlay: Overlay,
     naming: &[&str],
 ) -> Case {
+    let name = name.into();
+    // THIS SHARD'S CASE OR ANOTHER'S — asked BEFORE the plant is applied and the gate is run, which
+    // is the whole point: a shard is faster because the work of the cases it does not own never
+    // happens. The counter advances either way, so the index a case is partitioned by is the same
+    // index on every box.
+    if !cx.shard_admits_next() {
+        return Case::out_of_shard(name);
+    }
     let planted = cx.with_overlay(overlay);
     let verdict = execute(gate, &planted);
     let got = narrowed_got(&verdict, covers);
     Case {
-        name: name.into(),
+        name,
         covers: covers.iter().map(|s| (*s).to_string()).collect(),
         expected: Expect::Red {
             naming: naming.iter().map(|s| (*s).to_string()).collect(),
@@ -1177,10 +1329,18 @@ pub fn prove_rows_red(
     overlay: Overlay,
     naming: &[&str],
 ) -> Case {
+    let name = name.into();
+    // THIS SHARD'S CASE OR ANOTHER'S — asked BEFORE the plant is applied and the gate is run, which
+    // is the whole point: a shard is faster because the work of the cases it does not own never
+    // happens. The counter advances either way, so the index a case is partitioned by is the same
+    // index on every box.
+    if !cx.shard_admits_next() {
+        return Case::out_of_shard(name);
+    }
     let planted = cx.with_overlay(overlay);
     let verdict = execute(gate, &planted);
     Case {
-        name: name.into(),
+        name,
         covers: covers.iter().map(|s| (*s).to_string()).collect(),
         expected: Expect::Red {
             naming: naming.iter().map(|s| (*s).to_string()).collect(),
@@ -1208,6 +1368,14 @@ pub fn prove_rows_green(
     covers: &[&str],
     overlay: Overlay,
 ) -> Case {
+    let name = name.into();
+    // THIS SHARD'S CASE OR ANOTHER'S — asked BEFORE the plant is applied and the gate is run, which
+    // is the whole point: a shard is faster because the work of the cases it does not own never
+    // happens. The counter advances either way, so the index a case is partitioned by is the same
+    // index on every box.
+    if !cx.shard_admits_next() {
+        return Case::out_of_shard(name);
+    }
     let planted = cx.with_overlay(overlay);
     let verdict = execute(gate, &planted);
     let offenders: Vec<String> = verdict
@@ -1217,7 +1385,7 @@ pub fn prove_rows_green(
         .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
         .collect();
     Case {
-        name: name.into(),
+        name,
         covers: covers.iter().map(|s| (*s).to_string()).collect(),
         expected: Expect::Green,
         got: if offenders.is_empty() {
@@ -1250,6 +1418,13 @@ pub fn prove_rows_red_at(
     naming: &[&str],
 ) -> Case {
     let name = name.into();
+    // THIS SHARD'S CASE OR ANOTHER'S — asked BEFORE the plant is applied and the gate is run, which
+    // is the whole point: a shard is faster because the work of the cases it does not own never
+    // happens. The counter advances either way, so the index a case is partitioned by is the same
+    // index on every box.
+    if !cx.shard_admits_next() {
+        return Case::out_of_shard(name);
+    }
     let expected = Expect::Red {
         naming: naming.iter().map(|s| (*s).to_string()).collect(),
     };
@@ -1274,9 +1449,17 @@ pub fn prove_rows_red_at(
 /// The other arm: the unplanted tree must be GREEN, or every RED above proves only that the gate
 /// is broken.
 pub fn prove_green(cx: &Ctx, gate: &dyn Gate, name: impl Into<String>, covers: &[&str]) -> Case {
+    let name = name.into();
+    // THIS SHARD'S CASE OR ANOTHER'S — asked BEFORE the plant is applied and the gate is run, which
+    // is the whole point: a shard is faster because the work of the cases it does not own never
+    // happens. The counter advances either way, so the index a case is partitioned by is the same
+    // index on every box.
+    if !cx.shard_admits_next() {
+        return Case::out_of_shard(name);
+    }
     let verdict = execute(gate, cx);
     Case {
-        name: name.into(),
+        name,
         covers: covers.iter().map(|s| (*s).to_string()).collect(),
         expected: Expect::Green,
         got: if verdict.red {
@@ -1772,5 +1955,131 @@ mod posture_tests {
                 p.name
             );
         }
+    }
+}
+
+/// THE UNION CASE, and the refusals that keep a shard from lying about what it ran.
+///
+/// A shard is only allowed to exist because the union of every shard is the whole case list: no
+/// case in two shards, none in none, and each shard's own count summing to the total each of them
+/// reports. That is arithmetic over [`Shard::owns`], so it is proven here by arithmetic rather than
+/// by running the 152-case battery four times to compare the lists — which is the run sharding
+/// exists to avoid taking.
+#[cfg(test)]
+mod shard_tests {
+    use super::{Case, Expect, Report, Shard};
+    use crate::ctx::Ctx;
+
+    #[test]
+    fn every_shard_union_is_exactly_the_whole_case_list() {
+        for total in [0usize, 1, 2, 3, 7, 36, 126, 152] {
+            for n in 1usize..=8 {
+                let mut union: Vec<usize> = Vec::new();
+                for k in 1..=n {
+                    let shard = Shard::parse(&format!("{k}/{n}")).expect("k/n in range");
+                    for i in shard.indices(total) {
+                        assert!(
+                            !union.contains(&i),
+                            "case {i} of {total} is owned by more than one shard of {n}"
+                        );
+                        union.push(i);
+                    }
+                }
+                union.sort_unstable();
+                assert_eq!(
+                    union,
+                    (0..total).collect::<Vec<usize>>(),
+                    "the union of {n} shards is not the whole {total}-case list"
+                );
+            }
+        }
+    }
+
+    /// The same claim through the MECHANISM rather than through the arithmetic: a context carrying
+    /// a shard, the helpers' `shard_admits_next` question, and `Report::push` dropping what the
+    /// shard does not own. The union of the reports' case NAMES must be the unsharded name list.
+    #[test]
+    fn the_union_of_the_reports_is_the_unsharded_report() {
+        let names: Vec<String> = (0..152).map(|i| format!("case {i}")).collect();
+
+        let unsharded = walk(&cx(None), &names);
+        assert_eq!(unsharded.cases().len(), names.len());
+        assert_eq!(unsharded.dropped(), 0);
+
+        for n in 1usize..=8 {
+            let mut union: Vec<String> = Vec::new();
+            for k in 1..=n {
+                let shard = Shard::parse(&format!("{k}/{n}")).unwrap();
+                let cx = cx(Some(shard));
+                let report = walk(&cx, &names);
+                // Every shard sees the same total, which is the number the caller checks against.
+                assert_eq!(cx.shard_offered(), names.len());
+                assert_eq!(report.cases().len() + report.dropped(), names.len());
+                assert!(
+                    !report.cases().is_empty(),
+                    "shard {k}/{n} of 152 cases owns none"
+                );
+                union.extend(report.cases().iter().map(|c| c.name.clone()));
+            }
+            union.sort();
+            let mut want: Vec<String> = unsharded.cases().iter().map(|c| c.name.clone()).collect();
+            want.sort();
+            assert_eq!(
+                union, want,
+                "a case was lost or duplicated across {n} shards"
+            );
+        }
+    }
+
+    /// A shard that owns nothing is not a small proof, it is no proof, and the caller must be told
+    /// rather than handed a green. The CLI turns this count into its refusal.
+    #[test]
+    fn a_shard_beyond_the_case_list_owns_nothing() {
+        let names: Vec<String> = (0..3).map(|i| format!("case {i}")).collect();
+        let shard = Shard::parse("4/4").unwrap();
+        let report = walk(&cx(Some(shard)), &names);
+        assert!(report.cases().is_empty());
+        assert_eq!(report.dropped(), 3);
+    }
+
+    #[test]
+    fn a_spec_that_names_no_slice_is_refused() {
+        for bad in ["", "1", "0/4", "5/4", "1/0", "a/4", "1/b", "1/4/4"] {
+            assert!(
+                Shard::parse(bad).is_err(),
+                "`{bad}` was accepted as a shard; a bad spec must never read as the whole list"
+            );
+        }
+        assert_eq!(Shard::parse("1/4").unwrap().to_string(), "1/4");
+        assert_eq!(Shard::parse("4/4").unwrap().k(), 4);
+        assert_eq!(Shard::parse("4/4").unwrap().n(), 4);
+    }
+
+    fn cx(shard: Option<Shard>) -> Ctx {
+        let dir = std::env::temp_dir().join(format!("xtask-shard-test-{}", std::process::id()));
+        let cx = Ctx::at(&dir, &dir).expect("a context over a temp dir");
+        match shard {
+            Some(s) => cx.sharded(s),
+            None => cx,
+        }
+    }
+
+    /// What a self-test does, with the gate run taken out: offer every case in order, and do the
+    /// work only for the ones this context admits.
+    fn walk(cx: &Ctx, names: &[String]) -> Report {
+        let mut r = Report::new();
+        for name in names {
+            if !cx.shard_admits_next() {
+                r.push(Case::out_of_shard(name.clone()));
+                continue;
+            }
+            r.push(Case {
+                name: name.clone(),
+                covers: vec!["row".to_string()],
+                expected: Expect::Green,
+                got: Expect::Green,
+            });
+        }
+        r
     }
 }

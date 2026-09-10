@@ -14,7 +14,7 @@ use crate::selftest;
 
 const USAGE: &str = "\
 usage:
-  cargo xtask gate <name> [--selftest] [--report] [--strict] [--write] [--format=tsv]
+  cargo xtask gate <name> [--selftest [--shard k/n]] [--report] [--strict] [--write] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
@@ -94,6 +94,29 @@ fn gate(args: &[String]) -> i32 {
     let report_only = args.iter().any(|a| a == "--report");
     let want_selftest = args.iter().any(|a| a == "--selftest");
 
+    // `--shard k/n` — SELF-TESTS ONLY, and a refusal everywhere else.
+    //
+    // The gate's own rows are never sharded: a quarter of a gate is not a verdict on the tree, and
+    // a flag that quietly sharded a judging run would report green over three quarters of the
+    // rules. So an unconsumed `--shard` is an ERROR here for the same reason an unconsumed
+    // `--selftest` is one directly below — a flag that is accepted and ignored reports a proof
+    // that was never taken.
+    let shard = match shard_arg(args) {
+        Ok(s) => s,
+        Err(msg) => {
+            eprintln!("xtask gate: {msg}");
+            return 2;
+        }
+    };
+    if shard.is_some() && !want_selftest {
+        eprintln!(
+            "xtask gate: --shard partitions a SELF-TEST's case list and nothing else. A gate's own \
+             rows always run whole — a quarter of a gate is not a verdict on the tree."
+        );
+        eprintln!("  cargo xtask gate <name> --selftest --shard k/n");
+        return 2;
+    }
+
     // AN UNCONSUMED `--selftest` IS AN ERROR, NOT A NO-OP.
     //
     // `--list` and `--all` both `return` before `want_selftest` is ever read, so
@@ -101,7 +124,7 @@ fn gate(args: &[String]) -> i32 {
     // while the caller believed they had just self-tested the whole registry. That is the worst
     // possible shape for a flag: it reports success for a thing it did not do. The only "every
     // gate" self-test is the bare `cargo xtask selftest` subcommand, and this says so.
-    if want_selftest && args.iter().any(|a| a == "--list" || a == "--all") {
+    if (want_selftest || shard.is_some()) && args.iter().any(|a| a == "--list" || a == "--all") {
         eprintln!(
             "xtask gate: --selftest cannot be combined with --list or --all — neither runs a \
              self-test, and this used to be accepted and silently ignored, which reports a \
@@ -126,9 +149,15 @@ fn gate(args: &[String]) -> i32 {
     }
 
     let cx = match open_ctx() {
-        Ok(cx) => cx
-            .report_only(report_only)
-            .write_mode(args.iter().any(|a| a == "--write")),
+        Ok(cx) => {
+            let cx = cx
+                .report_only(report_only)
+                .write_mode(args.iter().any(|a| a == "--write"));
+            match shard {
+                Some(s) => cx.sharded(s),
+                None => cx,
+            }
+        }
         Err(code) => return code,
     };
 
@@ -391,8 +420,27 @@ fn gate(args: &[String]) -> i32 {
     i32::from(verdict.red)
 }
 
+/// `--shard k/n` or `--shard=k/n`, or nothing. A `--shard` with no value is an error rather than
+/// a whole run: see the refusal at the call site.
+fn shard_arg(args: &[String]) -> Result<Option<gates::Shard>, String> {
+    if let Some(spec) = args.iter().find_map(|a| a.strip_prefix("--shard=")) {
+        return gates::Shard::parse(spec).map(Some);
+    }
+    let Some(at) = args.iter().position(|a| a == "--shard") else {
+        return Ok(None);
+    };
+    let Some(spec) = args.get(at + 1).filter(|a| !a.starts_with("--")) else {
+        return Err("--shard takes a value: --shard k/n (1-based), e.g. --shard 1/4".to_string());
+    };
+    gates::Shard::parse(spec).map(Some)
+}
+
 fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
-    println!("xtask selftest {}", gate.name());
+    let shard = cx.shard();
+    match shard {
+        Some(s) => println!("xtask selftest {} --shard {s}", gate.name()),
+        None => println!("xtask selftest {}", gate.name()),
+    }
     // A SELFTEST GETS THE SAME CEILING AS A RUN. It plants fixtures and executes the gate over
     // each one, so every way a gate can wedge is a way a selftest can wedge — and it was a
     // `--selftest` sitting at seven minutes that made the deadlock visible in the first place.
@@ -408,10 +456,44 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
             gates::Expect::Green => "GREEN",
             gates::Expect::Red { .. } => "RED",
             gates::Expect::Skipped => "SKIPPED",
+            // Never reached: `Report::push` drops a case another shard owns rather than storing it.
+            gates::Expect::OutOfShard => "OTHER-SHARD",
         };
         println!("  {got:<7} {}", case.name);
     }
-    match gates::verify_report(gate, &report) {
+    // THE SHARD'S OWN ARITHMETIC, before its verdict is read.
+    //
+    // Two ways a shard lies, and both are refusals rather than a green:
+    //   * it lists NO cases — `n` is larger than the case list, or the gate's self-test built its
+    //     cases without offering them, so the caller believes a slice was proven and none was;
+    //   * a case reached the report WITHOUT passing the partition — that case then runs in every
+    //     shard, so the shards' counts no longer sum to the total and the union check the caller
+    //     makes would be checking arithmetic that does not hold.
+    let offered = cx.shard_offered();
+    if let Some(s) = shard {
+        if report.cases().is_empty() {
+            println!("xtask selftest {} --shard {s} REFUSED:", gate.name());
+            println!(
+                "  - this shard owns 0 of {offered} case(s). A shard that proves nothing must not \
+                 report that it did; n is larger than the case list."
+            );
+            return 2;
+        }
+        if report.cases().len() + report.dropped() != offered {
+            println!("xtask selftest {} --shard {s} REFUSED:", gate.name());
+            println!(
+                "  - {} owned + {} skipped = {} case(s), but {offered} were offered to the \
+                 partition. Some case was built without asking which shard owns it, so it runs in \
+                 EVERY shard and the union no longer sums to the whole list.",
+                report.cases().len(),
+                report.dropped(),
+                report.cases().len() + report.dropped()
+            );
+            return 2;
+        }
+    }
+
+    match gates::verify_report_sharded(gate, &report, shard) {
         Ok(()) => {
             let slowest = report
                 .slowest()
@@ -424,10 +506,20 @@ fn run_selftest(gate: &dyn gates::Gate, cx: &Ctx) -> i32 {
                 report.total().as_secs_f64(),
                 report.units()
             );
+            // THE LINE THE UNION IS CHECKED FROM, and the only machine-read line here. Every shard
+            // prints the same `of TOTAL`, so a caller that ran n shards can prove no case was lost
+            // by arithmetic alone — the counts sum to the total — without ever running the
+            // unsharded list, which is the run sharding exists to avoid.
+            if let Some(s) = shard {
+                println!("  shard {s}: {} of {offered} case(s)", report.cases().len());
+            }
             0
         }
         Err(errs) => {
-            println!("xtask selftest {} FAILED:", gate.name());
+            match shard {
+                Some(s) => println!("xtask selftest {} --shard {s} FAILED:", gate.name()),
+                None => println!("xtask selftest {} FAILED:", gate.name()),
+            }
             for e in &errs {
                 println!("  - {e}");
             }
