@@ -538,7 +538,7 @@ deleted only when their readers move:
 | what | where | what would let it go |
 |---|---|---|
 | `refund_request` | `crates/busbar-core/src/governance/state.rs:2050` | its one caller, `ingress/mod.rs:688`, moving to the unit path |
-| `refund_on_non_2xx` + `charged` as parameters | `crates/busbar-core/src/ingress/mod.rs` `finish_inner` / `finish_admitted` / `finish_rejected` | both wrappers collapsing into one `finish` that reads `Settlement::of(step, charged)` — which is why the column lands ahead of the readers rather than behind them |
+| `refund_on_non_2xx` + `charged` as parameters | `crates/busbar-core/src/ingress/mod.rs` `finish_inner` / `finish_admitted` / `finish_rejected` | both wrappers collapsing into one `finish` that reads `Settlement::of(under_hold, charged)` — which is why the column lands ahead of the readers rather than behind them |
 | `GovState::try_admit` + `LimitBlocked` | `crates/busbar-core/src/governance/state.rs`, `governance/mod.rs:282` | the SECOND copy of the admission algorithm. `busbar-unit-admission::Door::try_admit` is the first; the two are hand-kept in sync, and only the core one is on the live LLM path (`ingress/mod.rs:161`, `plane_host/govern.rs:99`). The unit twin is live for voice only (`busbar/src/root/units_voice.rs:790`) |
 
 **`legacy.rs` / `migration.rs` are NOT unblocked by this and were not moved.** They live in
