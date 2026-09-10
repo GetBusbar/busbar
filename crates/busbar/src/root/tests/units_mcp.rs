@@ -397,13 +397,18 @@ fn the_declared_schemes_are_the_claims_own() {
 /// principal that came back carrying that key's id.
 #[test]
 fn the_bound_form_authenticates_through_the_nodes_own_seams() {
-    use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+    use crate::root::kernel::auth_bindings::AuthBindings;
     use busbar_caps::{Authenticated, KernelSeal};
+    use busbar_contract::{KeyFacts, VirtualKeyDirectory};
     use busbar_unit_auth::{AuthChain, ChainVerdict};
 
     struct OneKey;
 
     impl VirtualKeyDirectory for OneKey {
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
+
         fn verify(
             &self,
             credential: &str,
@@ -417,10 +422,14 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
             (credential == "tok" && expected_aud == Some("mcp")).then(|| KeyFacts {
                 id: "key-mcp-1".to_string(),
                 name: "an approved key".to_string(),
+                scopes: None,
+                enabled: true,
+                expires_at: None,
+                deleted_at: None,
             })
         }
 
-        fn revoked(&self, _credential: &str) -> bool {
+        fn is_revoked(&self, _credential: &str) -> bool {
             false
         }
     }

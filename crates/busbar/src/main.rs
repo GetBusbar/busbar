@@ -1499,15 +1499,22 @@ async fn run(data_workers: usize) {
             // token and the bindings are the same governance state's directory, which is what makes
             // the revocation set the one this node actually keeps.
             match app_handle.load().governance.clone() {
-                Some(gov) => units
-                    .with_auth_chain(root::kernel::auth_bindings::admin_chain(
-                        std::sync::Arc::clone(&gov),
-                    ))
-                    .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
+                Some(gov) => {
+                    // ONE directory behind both: the chain's operator door and the bindings' key
+                    // verifier and denylist read the same face, so there is no second opinion
+                    // about which governance state this node's credentials are judged against.
+                    let directory: std::sync::Arc<dyn busbar_contract::VirtualKeyDirectory> =
                         std::sync::Arc::new(root::kernel::auth_bindings::GovernanceDirectory::new(
                             gov,
-                        )),
-                    )),
+                        ));
+                    units
+                        .with_auth_chain(root::kernel::auth_bindings::admin_chain(
+                            std::sync::Arc::clone(&directory),
+                        ))
+                        .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
+                            directory,
+                        ))
+                }
                 // No governance state is no directory and no configured token, which is the open
                 // administrative posture the previous release also has. Left as the assembly built
                 // it rather than wired to an authority that does not exist.
