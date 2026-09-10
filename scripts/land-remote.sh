@@ -40,17 +40,27 @@ remote_wrapper
 BATCH=""
 i=0
 while [ $i -lt ${#ARGS[@]} ]; do
-  [ "${ARGS[$i]}" = "--batch" ] && BATCH="${ARGS[$((i+1))]}"
+  if [ "${ARGS[$i]}" = "--batch" ]; then
+    BATCH="${ARGS[$((i+1))]}"
+    # THE BOX SEES A REPO-RELATIVE PATH. The queue runner hands land.sh an absolute path under the
+    # tree; the box's checkout is at a different absolute path, so the batch travels by its path
+    # RELATIVE TO THE REPO and the remote argv carries that. A path outside the repo is refused:
+    # there is nowhere on the box to put it that land.sh there would find.
+    case "$BATCH" in
+      "$REPO"/*) BATCH="${BATCH#"$REPO"/}"; ARGS[$((i+1))]="$BATCH" ;;
+      /*) rdie "--batch: $BATCH is outside the repository $REPO" ;;
+    esac
+  fi
   i=$((i+1))
 done
 
 REF="land-$(date -u +%Y%m%d-%H%M%S)-$$"
 HASHES=""
 if [ -n "$BATCH" ]; then
-  [ -f "$BATCH" ] || rdie "--batch: no such file: $BATCH"
+  [ -f "$REPO/$BATCH" ] || rdie "--batch: no such file: $REPO/$BATCH"
   # Every token that resolves to a commit in THIS repository. A token that does not resolve is not
   # this script's problem to diagnose — land.sh on the box will say so, in its own words.
-  for tok in $(tr -s ' \t' '\n\n' < "$BATCH" | grep -Eo '^[0-9a-f]{7,40}$' | sort -u); do
+  for tok in $(tr -s ' \t' '\n\n' < "$REPO/$BATCH" | grep -Eo '^[0-9a-f]{7,40}$' | sort -u); do
     git -C "$REPO" rev-parse -q --verify "$tok^{commit}" >/dev/null 2>&1 && HASHES="$HASHES $tok"
   done
 else
@@ -70,7 +80,7 @@ RBATCH=""
 if [ -n "$BATCH" ]; then
   RBATCH="busbar-prove/${BATCH#./}"
   rsh "$HOST" mkdir -p "$(dirname "$RBATCH")"
-  rcp_to "$HOST" "$BATCH" "$RBATCH" || rdie "could not copy $BATCH to $HOST"
+  rcp_to "$HOST" "$REPO/$BATCH" "$RBATCH" || rdie "could not copy $REPO/$BATCH to $HOST"
 fi
 
 # The remote argv is this one with the batch path rewritten to the box's copy.
@@ -153,15 +163,15 @@ END=$(date +%s)
 # <batch>.result and nothing else; if it is not here, the queue runner reads a landing that never
 # reported, which is worse than a red.
 if [ -n "$BATCH" ]; then
-  if rcp_back "$HOST" "$RBATCH.result" "$BATCH.result"; then
-    rlog "per-line outcomes: $BATCH.result"
-    sed 's/^/  /' "$BATCH.result" >&2
+  if rcp_back "$HOST" "$RBATCH.result" "$REPO/$BATCH.result"; then
+    rlog "per-line outcomes: $REPO/$BATCH.result"
+    sed 's/^/  /' "$REPO/$BATCH.result" >&2
   else
     rlog "WARNING: no $RBATCH.result on $HOST — the batch did not reach its reporting stage"
   fi
   # land.sh on the box appended its rows to the box's land-done.txt; they belong in ours.
-  rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$BATCH.remote-done" 2>/dev/null \
-    && { grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true; rm -f "$BATCH.remote-done"; }
+  rcp_back "$HOST" "busbar-prove/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" 2>/dev/null \
+    && { grep -F -v -x -f "$REPO/target/gate/land-done.txt" "$REPO/$BATCH.remote-done" >>"$REPO/target/gate/land-done.txt" 2>/dev/null || true; rm -f "$REPO/$BATCH.remote-done"; }
 fi
 
 # THE LANDED TIP COMES BACK TOO. What the box proved is what this tree must now be at: the local
