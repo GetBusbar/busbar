@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SERDE FENCE for [`Redacted`](crate::Redacted) — a compile-time pin that a secret VALUE can
+//! THE SERDE FENCE for [`Redacted`](crate::redacted::Redacted) — a compile-time pin that a secret VALUE can
 //! NEVER be serialized into an audit record, a wire payload, on-disk config, or a log line by
 //! construction. The single structural guarantee the whole secret-hygiene design rests on
 //! (`docs/design/1.6.0-secret-hygiene.md`, Part 2 §2.1(b) + Part 3, Check 3) is:

@@ -16,7 +16,7 @@
 #
 # THE ACCEPTANCE SCOPE (F4, owner-pinned):
 #   Ban DIALECT NAMES in PRODUCTION Rust code outside `busbar-llm`, EXCLUDING comments/doc-strings,
-#   tests, and the neutral `busbar-api` `Operation` enum (crates/api/src/operation.rs) — the generic
+#   tests, and the neutral `busbar-contract` `Operation` enum (crates/busbar-contract/src/operation.rs) — the generic
 #   op vocabulary (chat / embedding / rerank / …) is NEUTRAL and stays. Concretely:
 #
 #     NEUTRAL crates (busbar-core, busbar-substrate, busbar-api): ZERO occurrences (as substrings) of
@@ -47,7 +47,7 @@
 #       - test-support ITEMS / `pub use`: an item whose own `#[cfg(…)]` predicate names `test-support`
 #         (e.g. a `#[cfg(any(test, feature = "test-support"))] pub use …::{…};` re-export or a gated
 #         `pub fn`) is skipped for its whole span (brace- and `;`-terminated) inside the scanner.
-#   * the neutral `Operation` enum — crates/api/src/operation.rs is EXCLUDED wholesale: its variants
+#   * the neutral `Operation` enum — crates/busbar-contract/src/operation.rs is EXCLUDED wholesale: its variants
 #     (Chat/Embeddings/Moderation/…) are the generic, protocol-neutral op vocabulary the ABI carries as
 #     DATA, and are explicitly in-scope-neutral.
 #   * FROZEN-WIRE ALLOWLIST — a narrow, path-scoped list (token × path-prefix × optional SOURCE TEXT)
@@ -122,7 +122,7 @@ VOICE_ROOT="crates/busbar-voice/src crates/busbar-voice-codec/src"
 VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
 
 # The neutral Operation enum — generic op vocabulary, explicitly in-scope-neutral. Excluded whole.
-OPERATION_EXCLUDE="crates/api/src/operation.rs"
+OPERATION_EXCLUDE="crates/busbar-contract/src/operation.rs"
 
 # ── THE FROZEN-WIRE ALLOWLIST (path-scoped, never global) ──────────────────────────────────────────
 # One entry per line:  NEEDLE|PATH-PREFIX|TEXT   (TEXT empty = every line under the prefix).

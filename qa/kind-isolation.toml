@@ -1478,12 +1478,12 @@ count = "2"
 [[cell]]
 crate = "busbar-api"
 kind = "control"
-count = "7"
+count = "6"
 
 [[cell]]
 crate = "busbar-api"
 kind = "plane"
-count = "36"
+count = "7"
 
 [[cell]]
 crate = "busbar-api"
@@ -1573,7 +1573,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "114"
+count = "143"
 
 [[cell]]
 crate = "busbar-contract"

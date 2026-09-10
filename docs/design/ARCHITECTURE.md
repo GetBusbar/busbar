@@ -73,7 +73,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   `src/tests/`; the proofs (overlap totality over the selector-form pairs, the lint symbol lists, the
   compile-fail fixtures and their positive companions, the honesty tables) are not surface and live
   in each crate's `tests/` or `fixtures/`. Measured and gated by `scripts/loc-surface.py`
-  (`--ceiling busbar-contract,busbar-caps=4621`), which the construction gate runs as
+  (`--ceiling busbar-contract,busbar-caps=4775`), which the construction gate runs as
   `surface-ceiling:contract+caps`. **The plugin structured-error seam** (owner ruling, 2026-09-09;
   `busbar_contract::error`) is inside that number: every plugin kind's face fails with ONE
   `PluginError { class, code, params, developer_message, advisory }` — `class` the contract's
@@ -90,8 +90,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
   same commit — the hooks-kind face (`RoutingPolicy`, its projections, the signal catalog; 292
   lines, moved in from `busbar-api`) and the virtual-key directory face (`KeyScope`, `KeyFacts`,
   `VirtualKeyDirectory`; 19 lines) and the store-kind face (`busbar_contract::store`: the 1.5.5
-  records and the `Store` replay face, moved in from `busbar-api` verbatim; 626 lines) are the
-  ones so far, 3684 → 4621. Two crates carry their own surface ceilings beside it, because
+  records and the `Store` replay face, moved in from `busbar-api` verbatim; 626 lines) and the residue (`busbar_contract::operation`,
+  `::redacted`; 154 lines) are the ones so far, 3684 → 4775. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

@@ -140,10 +140,11 @@ busbar-voice = ["busbar-voice-codec"]
 # the new number, the rise disappeared, and `ceiling-rose` refused the declaration as stale -- which
 # is the expiry working exactly as the paragraph above describes it.
 #
-# FOURTEEN ENTRIES STAND TODAY: three are ONE seam seen by three rules, three are the hooks-kind
+# EIGHTEEN ENTRIES STAND TODAY: three are ONE seam seen by three rules, three are the hooks-kind
 # face seen by the same three rules, three are the virtual-key directory face seen by them again,
-# and five are the store-kind face: the same three rules plus the two cells its frozen wire and
-# its audit record carry with it.
+# five are the store-kind face (the same three rules plus the two cells its frozen wire and its
+# audit record carry with it), and four are the residue (the three rules plus the cell the
+# Operation shape table carries).
 #
 # The seam. Every plugin kind's face used to fail with its own enum -- `StoreError` with five
 # variants, `SecretError` with five others -- and neither carried the plugin's own code, its
@@ -254,13 +255,44 @@ file = "qa/kind-isolation.toml"
 by = 16
 because = "busbar-contract x control. The store-kind face carries the admin AUDIT record (`AuditRecord`, `Store::append_audit` / `list_audit` / `list_audit_tail`) and the admin-listing doc that says which record never carries a secret; the word `admin` is what the record IS. 16 hits, every one of them moved from busbar-api x control (23 -> 7), none written; they fall with the 1.5.5 store contract."
 
+# THE RESIDUE MOVED INTO THE CONTRACT (busbar-api -> busbar-contract, Track 4's last step before
+# the kinds): the `Operation` axis (`operation.rs`: `OpShape`, the closed shape tag, and
+# `Operation`, the shape plus the wire's word) and the secret carrier (`redacted.rs`: `Redacted`,
+# with the `constant_time_eq` its `PartialEq` is written on, which moved with it). Neither belongs
+# to a kind; the signal catalog, the third residue, was already the contract's since the hooks step.
+# Moved verbatim plus the fourteen one-line docs `deny(missing_docs)` demands, and two doc words
+# rephrased so the move adds no vocabulary the contract did not carry (`busbar_api::sha256_hex`,
+# "the admin token"). Three deltas for the three ceilings, and one for the cell the shape table
+# carries: `operation.rs`'s header CLASSIFIES the protocols' methods by shape, and a table that
+# says which shape `tools/call` and `message/send` are has to name the protocols it classifies.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 154
+because = "the residue (busbar_contract::operation: OpShape + Operation; busbar_contract::redacted: Redacted + constant_time_eq) moved in from busbar-api verbatim: scripts/loc-surface.py measures the contract pair 4621 -> 4775, and every one of those lines was plugin-visible surface one crate over"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 160
+because = "the same move under the loc-ceilings counting rule: busbar-contract 3477 -> 3637 for operation.rs and redacted.rs (verbatim, plus the fourteen docs deny(missing_docs) demands and constant_time_eq) and the two `pub mod` lines; busbar-caps 1153 unmoved"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 160
+because = "the union row sums caps/contract; it rises by the same 160 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged by the residue move)"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
+by = 29
+because = "busbar-contract x plane. operation.rs's header is the table that derives the six shapes from the protocols' request/response shapes -- it says which shape `tools/call`, `resources/read`, `message/send` and `tasks/get` are, and a classification of protocols names the protocols it classifies. 29 hits, every one of them a doc line moved from busbar-api x plane (36 -> 7), none written; they fall when the table is rewritten in terms of the shapes alone, which is a doc rewrite and not this move."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 4621
+contract_caps = 4775
 grammar = 388
 contract_transport = 845
 
@@ -481,12 +513,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 4630
+caps_contract_ceiling = 4790
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24615
+union_ceiling = 24775
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

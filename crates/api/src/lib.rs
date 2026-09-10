@@ -23,8 +23,6 @@
 
 mod auth;
 pub mod durable;
-pub mod operation;
-mod redacted;
 mod secret;
 pub mod usage_migration;
 
@@ -46,7 +44,13 @@ pub use busbar_contract::{
     PromptProjection, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
     TransformOutcome,
 };
-pub use redacted::Redacted;
+// THE RESIDUE IS THE CONTRACT'S TOO: the `Operation` axis (`operation`), the secret carrier
+// (`Redacted`) and the signal catalog belong to no kind and moved to busbar-contract. Re-exported
+// here while this crate drains; the drain line is the reader: `busbar_api::operation` becomes
+// `busbar_contract::operation`, `busbar_api::Redacted` becomes `busbar_contract::redacted::Redacted`,
+// and these lines go with the crate.
+pub use busbar_contract::operation;
+pub use busbar_contract::redacted::Redacted;
 pub use secret::{
     resolve_builtin, resolve_builtin_string, SecretError, SecretErrorKind, SecretModule,
     SecretResolve, SecretResult,

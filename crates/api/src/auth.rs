@@ -5,7 +5,7 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::redacted::Redacted;
+use busbar_contract::redacted::Redacted;
 
 /// The authenticated PRINCIPAL — who the caller IS, established at the auth stage and keyed to by
 /// everything downstream (governance, audit attribution, the hook `send_user` projection, admin
@@ -264,32 +264,10 @@ pub trait LoginModule: Send + Sync {
 pub trait AuthPlugin: AuthModule + LoginModule {}
 impl<T: AuthModule + LoginModule + ?Sized> AuthPlugin for T {}
 
-/// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
-/// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
-/// the accumulation loop into an early-exit branch (which would reintroduce a timing signal for the
-/// contents). The length check IS an early exit, and is only safe to apply to raw secret material
-/// when the material's length is not itself sensitive — which a raw token generally is NOT expected
-/// to be, but a caller comparing genuinely secret raw bytes directly (rather than through
-/// [`sha256_hex`] below) still leaks whether the two lengths matched. Prefer hashing both sides
-/// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
-/// does not guarantee that for its caller.
-#[inline(never)]
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a_bytes = a.as_bytes();
-    let b_bytes = b.as_bytes();
-
-    if a_bytes.len() != b_bytes.len() {
-        return false;
-    }
-
-    // XOR all bytes and OR the results together. If any bit differs, result > 0.
-    let mut result: u8 = 0;
-    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
-        result |= x ^ y;
-    }
-
-    std::hint::black_box(result) == 0
-}
+/// The constant-time comparison every credential comparison goes through. It lives beside
+/// [`Redacted`](busbar_contract::redacted::Redacted) in the contract, whose `PartialEq` is written
+/// on it; re-exported here so the auth face's callers keep their spelling while this crate drains.
+pub use busbar_contract::redacted::constant_time_eq;
 
 /// Lowercase hex SHA-256 of `data` — THE digest facility credentials are compared under (a module
 /// hashes both sides before [`constant_time_eq`]: every digest is 64 hex chars, so

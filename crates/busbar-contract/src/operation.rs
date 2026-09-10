@@ -190,6 +190,7 @@ impl OpShape {
 /// adds a `const` in ITS OWN module; it does not touch this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Operation {
+    /// The one variant: a closed shape and the wire's word for it.
     Verb {
         /// The shape the pipeline decides on.
         op: OpShape,
@@ -203,12 +204,19 @@ impl Operation {
     // ── THE LLM FAMILY'S SEVEN VERBS. All one shape (`Invoke`): name a model, hand it arguments,
     //    get content or an error back. They keep their published names to the letter, because those
     //    names are the metrics label and the `paths:` config key and a rename is a broken dashboard.
+    /// The chat-completion verb.
     pub const CHAT: Operation = Operation::named_invoke("chat");
+    /// The embeddings verb.
     pub const EMBEDDINGS: Operation = Operation::named_invoke("embeddings");
+    /// The moderation verb.
     pub const MODERATION: Operation = Operation::named_invoke("moderation");
+    /// The image-generation verb.
     pub const IMAGE: Operation = Operation::named_invoke("image");
+    /// The transcription (speech-to-text) verb.
     pub const TRANSCRIPTION: Operation = Operation::named_invoke("transcription");
+    /// The speech-synthesis verb.
     pub const SPEECH: Operation = Operation::named_invoke("speech");
+    /// The rerank verb.
     pub const RERANK: Operation = Operation::named_invoke("rerank");
 
     // ── THE PROTOCOL SURFACE'S SIX. One verb per shape today, carrying the shape's own word: MCP
@@ -216,15 +224,21 @@ impl Operation {
     //    `resolve_operation` maps onto these constants. When a cell needs to distinguish two verbs
     //    of one shape (`tools/list` from `prompts/list`), it adds a constant beside these with the
     //    SAME `op` and its own `name` — an addition in the protocol's vocabulary, not in the core's.
+    /// The bare `Invoke` shape under its own word.
     pub const INVOKE: Operation = Operation::of(OpShape::Invoke);
     #[cfg_attr(not(test), allow(dead_code))]
+    /// The bare `Catalogue` shape under its own word.
     pub const CATALOGUE: Operation = Operation::of(OpShape::Catalogue);
     #[cfg_attr(not(test), allow(dead_code))]
+    /// The bare `Fetch` shape under its own word.
     pub const FETCH: Operation = Operation::of(OpShape::Fetch);
     #[cfg_attr(not(test), allow(dead_code))]
+    /// The bare `Task` shape under its own word.
     pub const TASK: Operation = Operation::of(OpShape::Task);
+    /// The bare `Subscribe` shape under its own word.
     pub const SUBSCRIBE: Operation = Operation::of(OpShape::Subscribe);
     #[cfg_attr(not(test), allow(dead_code))]
+    /// The bare `Control` shape under its own word.
     pub const CONTROL: Operation = Operation::of(OpShape::Control);
 
     /// EVERY OPERATION THE CORE ITSELF OWNS — the six protocol-surface verbs, one per shape. This

@@ -4,7 +4,7 @@
 //! [`Redacted`] — the in-memory wrapper for a RESOLVED secret VALUE.
 //!
 //! Every secret busbar resolves at boot and then HOLDS in memory — a `SecretRef` resolved to its
-//! plaintext, an egress bearer/client-credentials/sigv4 secret, the admin token, a provider api_key,
+//! plaintext, an egress bearer/client-credentials/sigv4 secret, the operator token, a provider api_key,
 //! the browser-login `client_secret`, and (1.5.2) a submitted credential password — is wrapped in
 //! `Redacted<T>` so that:
 //!
@@ -85,17 +85,44 @@ impl<T: Zeroize + Clone> Clone for Redacted<T> {
 /// ordinary `==` on the plaintext (or a derived `PartialEq` on a struct that embeds a `Redacted`
 /// field — e.g. `ExchangeRequest`, `CompleteLogin`) would compare byte-by-byte with a data-dependent
 /// early exit, leaking through timing how long a common prefix two secrets share. Routing through the
-/// crate's [`constant_time_eq`](crate::constant_time_eq) — the same primitive the auth path uses to
+/// [`constant_time_eq`] below — the same primitive the auth path uses to
 /// compare credentials — closes that channel for every secret comparison, structurally. The bound is
 /// `AsRef<str>` (satisfied by `String`, the only `T` any secret is wrapped in) so the comparison can
 /// go through that str-based primitive.
 impl<T: Zeroize + AsRef<str>> PartialEq for Redacted<T> {
     fn eq(&self, other: &Self) -> bool {
-        crate::auth::constant_time_eq(self.0.as_ref(), other.0.as_ref())
+        constant_time_eq(self.0.as_ref(), other.0.as_ref())
     }
 }
 
 impl<T: Zeroize + AsRef<str>> Eq for Redacted<T> {}
+
+/// Constant-time comparison of the CONTENTS once lengths already match, to avoid leaking how much
+/// of a token matches via timing. `#[inline(never)]` + `black_box` keep the optimizer from turning
+/// the accumulation loop into an early-exit branch (which would reintroduce a timing signal for the
+/// contents). The length check IS an early exit, and is only safe to apply to raw secret material
+/// when the material's length is not itself sensitive — which a raw token generally is NOT expected
+/// to be, but a caller comparing genuinely secret raw bytes directly (rather than through
+/// a digest first) still leaks whether the two lengths matched. Prefer hashing both sides
+/// first so length never enters the comparison at all; this primitive alone
+/// does not guarantee that for its caller.
+#[inline(never)]
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+
+    // XOR all bytes and OR the results together. If any bit differs, result > 0.
+    let mut result: u8 = 0;
+    for (x, y) in a_bytes.iter().zip(b_bytes.iter()) {
+        result |= x ^ y;
+    }
+
+    std::hint::black_box(result) == 0
+}
 
 #[cfg(test)]
 #[path = "tests/redacted_tests.rs"]
