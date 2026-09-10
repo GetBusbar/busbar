@@ -37,15 +37,12 @@ pub struct NewKeySpec {
     pub binding_mode: Option<String>,
 }
 
-/// Seconds in a metering day bucket. Metering is a TIME SERIES in fixed UTC-day buckets —
-/// deliberately decoupled from the per-key budget windows the enforcement counters use, so
-/// per-model aggregation ACROSS keys has one well-defined time base.
-pub const METERING_BUCKET_SECS: u64 = 86_400;
-
-/// Floor an epoch to its UTC-day metering bucket start.
-pub fn metering_bucket(now: u64) -> u64 {
-    now - (now % METERING_BUCKET_SECS)
-}
+/// THE METERING TIME BASE, re-exported at its historical path. THE CUT: the rest of this module is
+/// the signed-token crypto and the mint-parameter struct, while these two are pure arithmetic over a
+/// `u64` that a composition root reads as readily as a plane does. So the time base crossed into the
+/// values crate and the mint-shaped remainder stayed here;
+/// `busbar_substrate::governance::metering_bucket` resolves unchanged.
+pub use busbar_substrate_values::governance::{metering_bucket, METERING_BUCKET_SECS};
 
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
 /// the token ledger x the current rate card at the moment of the read - never stored.

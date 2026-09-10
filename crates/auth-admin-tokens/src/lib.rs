@@ -84,7 +84,7 @@ pub fn authenticate_admin_tokens(
 ///
 /// The test has to run in this direction, because the other direction has no answer. There is no
 /// minted admin-token form to match against: the operator admin token is an opaque secret the
-/// DEPLOYMENT supplies through a `token:` secret ref, and the only thing the boot path ever asserts
+/// DEPLOYMENT supplies through a `token:` reference, and the only thing the boot path ever asserts
 /// about its value is that it is not blank (`resolve_admin_token`). Nothing in the binary generates
 /// one, so it has no prefix, no length and no charset — the shipped configs and docs carry only
 /// `{ env: BUSBAR_ADMIN_TOKEN }` and placeholders like `your-admin-token`. This module also
