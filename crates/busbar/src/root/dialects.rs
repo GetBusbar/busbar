@@ -35,9 +35,9 @@ use busbar_plane_llm::registry::DialectEntry;
 /// The dialects of the `llm` plane this build carries.
 ///
 /// One row per dialect crate, and adding one is adding ONE LINE. `busbar-plane-llm-openai` was the
-/// first of the six the plane's ladder was written for, `busbar-plane-llm-responses` the second,
-/// `busbar-plane-llm-anthropic` the third and `busbar-plane-llm-gemini` the fourth; the two rows
-/// that remain are still the plane's own and move here, one row at a time, as each is cut out.
+/// first of the six the plane's ladder was written for and `busbar-plane-llm-responses` the second;
+/// the third and fourth rows below name themselves, and the two rows that remain are still the
+/// plane's own and move here, one row at a time, as each is cut out.
 ///
 /// The first two rows are one vendor's two request surfaces, and they are two rows for the same
 /// reason they are two crates: the boot has no way to tell "a vendor" from "a wire vocabulary", and

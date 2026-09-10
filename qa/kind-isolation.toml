@@ -167,6 +167,22 @@ crate = "busbar-plane-llm-responses"
 kind = "dialect"
 reason = "the OpenAI Responses dialect of the LLM plane, extracted from busbar-plane-llm (R6); the second crate of the dialect kind, announced so the vault door can mint its rows"
 
+# THE THIRD AND FOURTH DIALECT CRATES, ANNOUNCED BEFORE THEY LAND — the door used the way it was
+# built to be used. D36 section 7 names the order (anthropic, then gemini); these rows are the first
+# signature, on their own commit, and the [[minted]] rows that follow are the second. Each mints ZERO
+# cells: a dialect crate that names only its plane and the contract, and no sibling and no other
+# plane, has no vocabulary of another kind in it — which is the kind's rule measured rather than
+# asserted, and the number the first two crates' rows could not show because each names its sibling.
+[[announced]]
+crate = "busbar-plane-llm-anthropic"
+kind = "dialect"
+reason = "the Anthropic Messages dialect of the LLM plane, extracted from busbar-plane-llm (R6, D36 section 7 order); the third crate of the dialect kind and the first detected by header rung"
+
+[[announced]]
+crate = "busbar-plane-llm-gemini"
+kind = "dialect"
+reason = "the Google Gemini dialect of the LLM plane, extracted from busbar-plane-llm (R6, D36 section 7 order); the fourth crate of the dialect kind and the first whose model rides the request target"
+
 # ------------------------------------------------------------------------------------------------
 # THE FOUR DIALECT CRATES OF R6, ANNOUNCED — AND NOTHING ELSE IN THIS COMMIT
 # ------------------------------------------------------------------------------------------------
