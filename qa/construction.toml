@@ -1193,3 +1193,35 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# THREE DECLARED RAISES — POSITIONAL, NEVER A REAL COUPLING GROWTH.
+#
+# `cargo xtask gate kind-isolation:matrix` requires that a `[[cell]]` row whose measured count is
+# zero be STRUCK, never merely zeroed (`dead-cell`) — the row this commit struck four of, once the
+# two `no_plane_names.rs` twins that were the sole source of their `caps`/`kernel` hits were
+# deleted (the twins' own refusal lists spelled those names as string literals, which is what the
+# text scan was counting). `qa/kind-isolation.toml`'s `[[cell]]` array has no stable per-row key
+# for `ceiling-rose`'s base comparison — it reads `cell.<N>.count` by raw array position — so
+# striking a row in the middle necessarily reassigns every later row's position by one. Swapping
+# each struck row with the array's last entry before popping it (rather than a plain removal)
+# confines that reassignment to exactly as many positions as rows were struck, instead of every
+# row after the strike point. These three entries are the residue: the crate/kind pair now sitting
+# at each position is unrelated to the one there at the base, and its own count is unrelated too —
+# not a widened coupling, a relabelled slot. Strike these three once the base carries the deletion.
+[gate.ceiling_raises."cell.237.count"]
+from = 3
+to = 257
+because = "positional reassignment from striking 4 dead cell rows (no_plane_names.rs twins removed): this slot now holds busbar-voice x dialect, not the struck busbar-transport-grpc x caps row."
+file = "qa/kind-isolation.toml"
+
+[gate.ceiling_raises."cell.239.count"]
+from = 6
+to = 335
+because = "positional reassignment from striking 4 dead cell rows (no_plane_names.rs twins removed): this slot now holds busbar-voice-codec x dialect, not the struck busbar-transport-grpc x kernel row."
+file = "qa/kind-isolation.toml"
+
+[gate.ceiling_raises."cell.242.count"]
+from = 3
+to = 7
+because = "positional reassignment from striking 4 dead cell rows (no_plane_names.rs twins removed): this slot now holds busbar-unit-usage x dialect, not the struck busbar-transport-http x caps row."
+file = "qa/kind-isolation.toml"

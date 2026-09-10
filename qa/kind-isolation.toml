@@ -1209,11 +1209,11 @@ why = "crates of kind transport naming control vocabulary: control package names
 drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
 
 [[edge]]
-from = "transport"
-to = "kernel"
-cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
-why = "crates of kind transport naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "nothing to drain while the crate is a plugin of its kind; the row exists so that a NEW transport -> kernel coupling is visible on the landing that adds it. It falls when the crate stops naming the face outside its ABI-facing modules."
+from = "unit"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind unit has no clause that lets it name a vendor. Every hit is a coupling to delete."
+why = "crates of kind unit naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the vendor name from the unit crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "transport"
@@ -2492,44 +2492,44 @@ kind = "transport"
 count = "1"
 
 [[cell]]
-crate = "busbar-transport-grpc"
-kind = "caps"
-count = "3"
+crate = "busbar-voice-codec"
+kind = "dialect"
+count = "257"
 
 [[cell]]
 crate = "busbar-transport-grpc"
 kind = "contract-transport"
-count = "63"
+count = "61"
 
 [[cell]]
-crate = "busbar-transport-grpc"
-kind = "kernel"
-count = "6"
+crate = "busbar-voice"
+kind = "dialect"
+count = "335"
 
 [[cell]]
 crate = "busbar-transport-grpc"
 kind = "plane"
-count = "47"
+count = "15"
 
 [[cell]]
 crate = "busbar-transport-grpc"
 kind = "transport"
-count = "132"
+count = "126"
 
 [[cell]]
-crate = "busbar-transport-http"
-kind = "caps"
-count = "3"
+crate = "busbar-unit-usage"
+kind = "dialect"
+count = "7"
 
 [[cell]]
 crate = "busbar-transport-http"
 kind = "contract-transport"
-count = "46"
+count = "44"
 
 [[cell]]
-crate = "busbar-transport-http"
-kind = "kernel"
-count = "6"
+crate = "busbar-unit-trust"
+kind = "dialect"
+count = "5"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -2539,12 +2539,12 @@ count = "2"
 [[cell]]
 crate = "busbar-transport-http"
 kind = "plane"
-count = "35"
+count = "3"
 
 [[cell]]
 crate = "busbar-transport-http"
 kind = "transport"
-count = "93"
+count = "87"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -5552,26 +5552,6 @@ crate = "busbar-unit-ledger"
 kind = "dialect"
 count = "2"
 
-[[cell]]
-crate = "busbar-unit-trust"
-kind = "dialect"
-count = "5"
-
-[[cell]]
-crate = "busbar-unit-usage"
-kind = "dialect"
-count = "7"
-
-[[cell]]
-crate = "busbar-voice"
-kind = "dialect"
-count = "335"
-
-[[cell]]
-crate = "busbar-voice-codec"
-kind = "dialect"
-count = "257"
-
 [[edge]]
 from = "api"
 to = "dialect"
@@ -5655,13 +5635,6 @@ to = "dialect"
 cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind transport has no clause that lets it name a vendor. Every hit is a coupling to delete."
 why = "crates of kind transport naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the vendor name from the transport crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
-
-[[edge]]
-from = "unit"
-to = "dialect"
-cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind unit has no clause that lets it name a vendor. Every hit is a coupling to delete."
-why = "crates of kind unit naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "delete the vendor name from the unit crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[disagreement]]
 crate = "busbar"
