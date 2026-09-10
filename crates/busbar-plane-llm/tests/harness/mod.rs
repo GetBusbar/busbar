@@ -310,6 +310,55 @@ pub const RESPONSES_LADDER: &[LadderClaim] = &[LadderClaim {
     claim: claim(Selector::PathSuffix("/v1/responses")),
 }];
 
+/// The `anthropic` row and rungs, AS A TEST FIXTURE, for the same reason the rows above are.
+///
+/// It is the first fixture with HEADER rungs — two and four — and the first whose row carries
+/// `requires_max_response: true`, so the plane's cases that cross INTO this dialect exercise the
+/// ceiling fill through a registered row rather than a declared one. Both facts are copied from the
+/// real crate's declarations, and a copy that drifted would stop reproducing the frozen cells whose
+/// egress is this dialect.
+pub const ANTHROPIC: Dialect = Dialect {
+    name: "anthropic",
+    model_location: Location::Arrival(ArrivalLocation::FirstFrameJsonPointer("/model")),
+    max_response_pointers: &["/max_tokens"],
+    input_pointer: "/messages",
+    tokens_in_pointer: "/usage/input_tokens",
+    tokens_out_pointer: "/usage/output_tokens",
+    cache_read_pointer: Some("/usage/cache_read_input_tokens"),
+    cache_write_pointer: Some("/usage/cache_creation_input_tokens"),
+    scheme_alt: "api-key",
+    egress_scheme: "bearer",
+    requires_max_response: true,
+};
+
+/// The fixture's rungs, at the numbers the real crate declares them.
+///
+/// Two, four and eleven: the two header rungs sit above every path rung in the ladder, and the
+/// path rung is the loosest evidence this dialect accepts. A fixture registered at other numbers
+/// would have the plane's cases winning and losing contests the shipped tree does not.
+pub const ANTHROPIC_LADDER: &[LadderClaim] = &[
+    LadderClaim {
+        rung: 2,
+        dialect: "anthropic",
+        claim: claim(Selector::HeaderPresent("anthropic-version")),
+    },
+    LadderClaim {
+        rung: 2,
+        dialect: "anthropic",
+        claim: claim(Selector::HeaderPresent("anthropic-beta")),
+    },
+    LadderClaim {
+        rung: 4,
+        dialect: "anthropic",
+        claim: claim(Selector::HeaderPresent("x-api-key")),
+    },
+    LadderClaim {
+        rung: 11,
+        dialect: "anthropic",
+        claim: claim(Selector::PathContains("/v1/messages")),
+    },
+];
+
 /// Every carved-out dialect this crate's battery registers, as a boot would.
 ///
 /// The order is the order the root's own table declares them in, because registration order is what
@@ -324,6 +373,10 @@ pub const REGISTERED: &[DialectEntry] = &[
     DialectEntry {
         locations: RESPONSES,
         ladder: RESPONSES_LADDER,
+    },
+    DialectEntry {
+        locations: ANTHROPIC,
+        ladder: ANTHROPIC_LADDER,
     },
 ];
 
