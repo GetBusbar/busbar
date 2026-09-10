@@ -158,6 +158,8 @@ impl PlaneMeta for FixturePlane {
     const INTROSPECTION_VERBS: &'static [AdminVerbId] = &[];
     const INTERRUPT_FACT: Option<&'static str> = None;
     const EGRESS_PACING_FACT: Option<&'static str> = None;
+    // The fixture speaks over the fixture transport, which reports its status on the first frame.
+    const STATUS_LEG: Option<StatusAt> = Some(StatusAt::FirstFrame);
     const CONFIG_SCHEMA: &'static str = "{}";
 }
 
