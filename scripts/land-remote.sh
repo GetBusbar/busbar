@@ -47,6 +47,31 @@ if [ "${1:-}" = "--selftest" ]; then
   grep -qF -- 'rsh "$HOST" mv -f "$2.tmp" "$2"' "${BASH_SOURCE[0]}" && _ok "a delivered file is renamed into place, never written in place" || _fail "delivery is atomic"
   grep -qF -- 'echo "$rc" >target/shard.rc' "${BASH_SOURCE[0]}" && _ok "the shard launcher writes its .rc after the group, from \$rc" || _fail "the shard launcher writes its .rc after the group"
   grep -qE -- 'exit \$rc; \} >target/shard.log' "${BASH_SOURCE[0]}" && _fail "the shard launcher must not exit from inside the group" || _ok "the shard launcher does not exit from inside the group"
+  # THE LANDED-REF CHECK, by mode. The two arms below are the whole of T0-D5's defect: a pre-proof
+  # whose box said GREEN was re-scored rc 2 by the ABSENCE of a ref a pre-proof never needed.
+  grep -qF -- 'if [ "$PREPROVE" = 1 ]; then' "${BASH_SOURCE[0]}" && _ok "the no-landed-ref arm asks the mode first" || _fail "the no-landed-ref arm asks the mode first"
+  grep -qF -- 'rlog "ERROR: a landing with no landed tip cannot fast-forward this tree — refusing"' "${BASH_SOURCE[0]}" && _ok "a LANDING with no landed tip is still a refusal" || _fail "a landing with no landed tip is still a refusal"
+  grep -qF -- 'rlog "pre-proof: INFORMATIONAL' "${BASH_SOURCE[0]}" && _ok "a PRE-PROOF with no landed tip is informational, not a verdict" || _fail "a pre-proof with no landed tip is informational"
+  grep -qF -- 'OUTCOME="$REPO/$BATCH.result"' "${BASH_SOURCE[0]}" && _ok "the per-line outcome file is remembered as the pre-proof's verdict" || _fail "the per-line outcome file is remembered"
+  grep -qF -- '2>"$FETCH_WHY"; then' "${BASH_SOURCE[0]}" && _ok "the landed-ref fetch keeps its reason (never 2>/dev/null)" || _fail "the landed-ref fetch keeps its reason"
+  # The arms are exercised, not just spelled: a stub script carrying the same two arms is run in
+  # each mode with no ref and a GREEN outcome file, and its RC is read.
+  _arm() { # $1 = PREPROVE  $2 = outcome file ('' = none); prints the resulting RC
+    PREPROVE="$1" OUTCOME="$2" RC=0 bash -c '
+      rlog() { :; }
+      if [ "$PREPROVE" = 1 ]; then
+        if [ -n "$OUTCOME" ] && [ -s "$OUTCOME" ]; then :; else [ "$RC" = 0 ] && RC=2; fi
+      else
+        [ "$RC" = 0 ] && RC=2
+      fi
+      echo "$RC"'
+  }
+  _st="$(mktemp "${TMPDIR:-/tmp}/land-remote-selftest.XXXXXX")"
+  printf 'GREEN\t--prove --tests xtask 6d5bba552 4b6e3e40c 8d48b75ab\n' >"$_st"
+  [ "$(_arm 1 "$_st")" = 0 ] && _ok "  ...pre-proof + GREEN outcome + no ref = exit 0" || _fail "pre-proof + GREEN outcome + no ref = exit 0"
+  [ "$(_arm 1 "")"    = 2 ] && _ok "  ...pre-proof + no outcome at all + no ref = exit 2" || _fail "pre-proof + no outcome + no ref = exit 2"
+  [ "$(_arm 0 "$_st")" = 2 ] && _ok "  ...LANDING + GREEN outcome + no ref = exit 2 (cannot fast-forward)" || _fail "landing + no ref = exit 2"
+  rm -f "$_st"
   bash "$HERE/ci-remote-lib.sh" --selftest || fails=$((fails + 1))
   if [ "$fails" = 0 ]; then echo "land-remote selftest: GREEN"; exit 0; fi
   echo "land-remote selftest: RED ($fails failure(s))" >&2; exit 1
@@ -446,10 +471,12 @@ fi
 # THE RESULT FILE COMES BACK TO THE PATH THE LOCAL RUNNER ALREADY READS. target/gate/landq3.sh reads
 # <batch>.result and nothing else; if it is not here, the queue runner reads a landing that never
 # reported, which is worse than a red.
+OUTCOME=""          # the per-line outcome file, once it is here
 if [ -n "$BATCH" ]; then
   if rcp_back "$HOST" "$RBATCH.result" "$REPO/$BATCH.result"; then
     rlog "per-line outcomes: $REPO/$BATCH.result"
     sed 's/^/  /' "$REPO/$BATCH.result" >&2
+    OUTCOME="$REPO/$BATCH.result"
   else
     rlog "WARNING: no $RBATCH.result on $HOST — the batch did not reach its reporting stage"
   fi
@@ -461,7 +488,19 @@ fi
 # THE LANDED TIP COMES BACK TOO. What the box proved is what this tree must now be at: the local
 # HEAD was the base the box started from, so a fast-forward is the only honest move — anything
 # else means the tree here and the tree proved there have diverged, and that is a refusal.
-if GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST/~/$REMOTE_BARE" "+refs/heads/$REF-landed:refs/remotes/landed/$REF" 2>/dev/null; then
+# WHY THE REF CAN BE ABSENT WITHOUT A SINGLE THING BEING WRONG (measured, sweep at 76f1887af,
+# line 3 on i-0b0e1585e8567d01a): the box's bare repo is re-fetched by the fleet's periodic
+# `prove-remote.sh --setup` refresh, and that refresh mirrors origin with `--prune` over
+# refs/heads/*. A refresh that lands between the box's `push HEAD:refs/heads/$REF-landed` and this
+# fetch DELETES the ref — the run's `-base` and `$REF` go with it, while refs/proof/$REF/* (outside
+# the refspec) survive, which is the signature that named the cause. That pre-proof was GREEN on the
+# box, its per-line outcome file said so, and 7950 s of proof were thrown away by this check alone.
+# So: the reason is CAPTURED (it was thrown at /dev/null and every failure read as "no ref"), and on
+# a PRE-PROOF the check is INFORMATIONAL — a pre-proof publishes nothing and moves no tree, so the
+# ref's absence cannot make a green line red. On a LANDING it is still a refusal: there the tree
+# here must become the tree proved there, and with no ref there is nothing to fast-forward to.
+FETCH_WHY="$REPO/target/land-remote-$REF.fetch-err"; mkdir -p "$(dirname "$FETCH_WHY")"
+if GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST/~/$REMOTE_BARE" "+refs/heads/$REF-landed:refs/remotes/landed/$REF" 2>"$FETCH_WHY"; then
   landed="$(git -C "$REPO" rev-parse "refs/remotes/landed/$REF")"
   if [ "$PREPROVE" = 1 ]; then
     if [ "$landed" = "$(git -C "$REPO" rev-parse HEAD)" ]; then
@@ -478,8 +517,21 @@ if GIT_SSH_COMMAND="$SSH_WRAP" git -C "$REPO" fetch -q "ssh://$REMOTE_USER@$HOST
   fi
   git -C "$REPO" update-ref -d "refs/remotes/landed/$REF" 2>/dev/null || true
 else
-  rlog "WARNING: no landed tip came back from $HOST (refs/heads/$REF-landed)"
-  [ "$RC" = 0 ] && RC=2
+  why="$(tr -d '\r' <"$FETCH_WHY" 2>/dev/null | grep -v '^$' | tail -1 | cut -c1-200)"
+  rlog "WARNING: no landed tip came back from $HOST (refs/heads/$REF-landed)${why:+ — $why}"
+  if [ "$PREPROVE" = 1 ]; then
+    rlog "pre-proof: INFORMATIONAL — a pre-proof publishes nothing and this tree is not moved; the verdict is the per-line outcome file${OUTCOME:+ ($OUTCOME)}"
+    if [ -n "$OUTCOME" ] && [ -s "$OUTCOME" ]; then
+      sed 's/^/  outcome: /' "$OUTCOME" >&2
+    else
+      rlog "pre-proof: and NO per-line outcome file came back either — there is no verdict to read"
+      [ "$RC" = 0 ] && RC=2
+    fi
+  else
+    rlog "ERROR: a landing with no landed tip cannot fast-forward this tree — refusing"
+    [ "$RC" = 0 ] && RC=2
+  fi
 fi
+rm -f "$FETCH_WHY"
 rlog "host $HOST   exit $RC   wall $(( END - START ))s"
 exit "$RC"

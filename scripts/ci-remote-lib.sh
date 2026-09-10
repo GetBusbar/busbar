@@ -196,7 +196,26 @@ if [ ! -d "$BARE" ]; then
   git -C "$BARE" config gc.auto 256
 fi
 # Kept current for the same reason: a bare repo a week behind makes the next push a week of objects.
-git -C "$BARE" fetch -q --prune origin "+refs/heads/*:refs/heads/*" 2>/dev/null || true
+# WITHOUT --prune, AND THIS IS THE WHOLE OF IT. `--prune` over `+refs/heads/*:refs/heads/*` deletes
+# every ref under refs/heads that origin does not have — which is exactly the set a live landing
+# owns: `land-<stamp>-<pid>`, its `-base`, and the `-landed` tip the box publishes when land.sh
+# returns. The fleet refresh runs on a timer against every box, so it lands inside other people's
+# runs by construction. Measured (sweep at 76f1887af, line 3, i-0b0e1585e8567d01a): a refresh at
+# 14:33:12Z between the box's push and the laptop's fetch took the `-landed` ref; refs/proof/* —
+# outside this refspec, and so outside the prune — survived, which is the fingerprint. The laptop
+# read "no landed tip came back", scored exit 2, and a GREEN 7950 s pre-proof was parked as RED.
+# Stale mirrors are the smaller cost, and they are bounded below: run refs carry a UTC stamp in
+# their NAME, so a run older than a day is provably nobody's and is the only thing swept here.
+git -C "$BARE" fetch -q origin "+refs/heads/*:refs/heads/*" 2>/dev/null || true
+CUT="$(date -u -d '24 hours ago' +%Y%m%d-%H%M%S 2>/dev/null || date -u -v-24H +%Y%m%d-%H%M%S 2>/dev/null || true)"
+if [ -n "$CUT" ]; then
+  git -C "$BARE" for-each-ref --format='%(refname)' 'refs/heads/land-*' 'refs/proof/land-*' 2>/dev/null \
+  | while read -r r; do
+      st="$(printf '%s' "$r" | sed -n 's|.*/land-\([0-9]\{8\}-[0-9]\{6\}\).*|\1|p')"
+      [ -n "$st" ] || continue
+      [ "$st" \< "$CUT" ] && git -C "$BARE" update-ref -d "$r" 2>/dev/null || true
+    done
+fi
 if [ ! -d "$WORK/.git" ]; then
   # Cloned from the bare repo (which the block above has just seeded), so the box downloads the
   # history once and the checkout is a local hardlink copy. The objects and the warm target/ are the
@@ -257,6 +276,22 @@ _lib_selftest() {
   local root fails=0
   root="$(mktemp -d "${TMPDIR:-/tmp}/ci-remote-lib-selftest.XXXXXX")"
   _t() { if [ "$2" = "$3" ]; then printf '  ok   %-52s\n' "$1"; else printf '  FAIL %-52s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
+  echo "ci-remote-lib selftest: the box's bare repo is refreshed WITHOUT pruning a live run's refs"
+  _t "the refresh does not prune refs/heads" 0 "$(grep -c 'fetch -q --prune origin "+refs/heads/\*:refs/heads/\*"' "${BASH_SOURCE[0]}")"
+  _t "  ...it mirrors origin plainly"        1 "$(grep -c 'fetch -q origin "+refs/heads/\*:refs/heads/\*"' "${BASH_SOURCE[0]}")"
+  # The age rule itself, over the names the fleet really writes: today's run stays, yesterday's goes,
+  # a name with no stamp is never touched. The comparison is the one the setup script runs.
+  _age() { # $1 = refname  $2 = cutoff; prints KEEP or SWEEP
+    local st; st="$(printf '%s' "$1" | sed -n 's|.*/land-\([0-9]\{8\}-[0-9]\{6\}\).*|\1|p')"
+    [ -n "$st" ] || { echo KEEP; return 0; }
+    if [ "$st" \< "$2" ]; then echo SWEEP; else echo KEEP; fi
+  }
+  _t "a live run's -landed ref is kept"      KEEP  "$(_age refs/heads/land-20260910-122102-15256-landed 20260909-143312)"
+  _t "  ...as is its -base"                  KEEP  "$(_age refs/heads/land-20260910-122102-15256-base 20260909-143312)"
+  _t "  ...as is its proof namespace"        KEEP  "$(_age refs/proof/land-20260910-122102-15256/4b6e3e40c 20260909-143312)"
+  _t "yesterday's run is swept"              SWEEP "$(_age refs/heads/land-20260908-112641-43934-landed 20260909-143312)"
+  _t "a branch with no run stamp is untouched" KEEP "$(_age refs/heads/keep-land-engine-4 20260909-143312)"
+
   printf 'box-a\nbox-b\nbox-c\nbox-d\nbox-e\nbox-f\n# a comment\n' >"$root/fleet"
   # The stub: box-a load 4.5, box-b unprepared (prints nothing), box-c load 1.0, box-d hangs, box-e load 2.0,
   # box-f is running a landing (BUSY) at load 0.5 — the lowest load on the list, and never chosen.

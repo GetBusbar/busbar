@@ -715,9 +715,28 @@ lq_base_state_red() { # $1 = log path, $2 = tree; 0 when this RED is the base's
   grep -qiE "$LQ_BASE_STATE_RE" "$1" 2>/dev/null || return 1
   lq_tip_has_raises "$2"
 }
-lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log; prints GREEN, RED, or NONE:<why>
+# THE BOX'S OWN PER-LINE OUTCOME OUTRANKS THE TRANSPORT'S EXIT STATUS. land.sh writes one row per
+# line — `GREEN<TAB><the line>` or `RED<TAB><the line>` — and land-remote.sh copies that file back
+# beside the line's log as `line-N.batch.result`. It is the proof's verdict; rc is the TRANSPORT's,
+# and the transport has its own ways to fail after the proof is over. Measured (sweep at 76f1887af,
+# line 3): 7950 s, `GREEN --prove --tests xtask 6d5bba552 4b6e3e40c 8d48b75ab` in the outcome file,
+# and rc 2 from a landed-ref that the fleet's own bare-repo refresh had pruned out from under the
+# fetch — a log naming no tree-moved guard, so this function scored RED and parked a valid green.
+# It never happens again in either direction: an outcome file that is not wholly GREEN cannot make
+# a red green, and an absent one leaves the rc rules exactly as they were.
+lq_outcome_green() { # $1 = per-line outcome file; 0 when it exists, has rows, and EVERY row is GREEN
+  local f="${1:-}" rows bad
+  [ -n "$f" ] && [ -s "$f" ] || return 1
+  rows="$(grep -cE '^GREEN[[:space:]]' "$f" 2>/dev/null || true)"
+  [ "${rows:-0}" -ge 1 ] || return 1
+  bad="$(grep -vE '^[[:space:]]*$' "$f" 2>/dev/null | grep -cvE '^GREEN[[:space:]]' || true)"
+  [ "${bad:-1}" = 0 ]
+}
+
+lq_preproof_verdict() { # $1 = rc ('' = never reported), $2 = log, $3 = per-line outcome file (optional)
   [ -n "$1" ] || { echo "NONE:never-reported"; return 0; }
   [ "$1" = 0 ] && { echo GREEN; return 0; }
+  if lq_outcome_green "${3:-}"; then echo GREEN; return 0; fi
   if grep -qiE "$LQ_BASE_STATE_RE" "$2" 2>/dev/null; then echo "NONE:base"; return 0; fi
   if grep -qE 'not a fast-forward of this tree|this tree is NOT moved|tip (has )?moved' "$2" 2>/dev/null; then echo "NONE:moved"; return 0; fi
   echo RED
@@ -905,7 +924,7 @@ EOF
   while [ "$j" -le "$i" ]; do
     local rc; rc="$(cat "$dir/line-$j.rc" 2>/dev/null || true)"
     local text; text="$(head -n1 "$dir/line-$j.batch")"
-    case "$(lq_preproof_verdict "$rc" "$dir/line-$j.log")" in
+    case "$(lq_preproof_verdict "$rc" "$dir/line-$j.log" "$dir/line-$j.batch.result")" in
       GREEN) printf 'GREEN%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
       RED)   printf 'RED%s%s%s%s%s%s\n' "$TAB" "$key" "$TAB" "$dir/line-$j.log" "$TAB" "$text" >>"$PP" ;;
       NONE:never-reported) lq_log "pre-prove: line $j never reported; no record written (log: $dir/line-$j.log)" ;;
@@ -1459,7 +1478,27 @@ lq_selftest() {
   _t "  ...as is ROSE since the base"          "NONE:base" "$(lq_preproof_verdict 1 "$root/pl2.log")"
   _t "the tree-moved guard's red is NONE (re-queued)" "NONE:moved" "$(lq_preproof_verdict 2 "$root/pl3.log")"
   _t "an ordinary red is RED"                  RED "$(lq_preproof_verdict 1 "$root/pl4.log")"
-  _t "the sweep records through the verdict"   1 "$(grep -c 'case "\$(lq_preproof_verdict "\$rc" "\$dir/line-\$j.log")" in' "$0")"
+  _t "the sweep records through the verdict"   1 "$(grep -c 'case "\$(lq_preproof_verdict "\$rc" "\$dir/line-\$j.log" "\$dir/line-\$j.batch.result")" in' "$0")"
+
+  # T0-D5, THE DEFECT ITSELF, in the shape it really arrived: the box's per-line outcome says GREEN,
+  # the log's last two lines are the pruned landed-ref warning and the exit, no tree-moved guard is
+  # named anywhere, and rc is 2. That is a GREEN line, and it was parked #RED-preproof for 2.2 h of
+  # fleet time. The fixture is the tail of line-3.log of the sweep at 76f1887af, verbatim.
+  printf 'land.sh: === GREEN lines 1 — proven by: cargo test (xtask ); kind-isolation green;\n' >"$root/pl5.log"
+  printf 'land.sh: PRE-PROVE — published nothing; tree back at 76f1887af (proven against 76f1887af)\n' >>"$root/pl5.log"
+  printf '[remote 14:33:41] WARNING: no landed tip came back from i-0b0e1585e8567d01a (refs/heads/land-20260910-122102-15256-landed)\n' >>"$root/pl5.log"
+  printf '[remote 14:33:41] host i-0b0e1585e8567d01a   exit 2   wall 7950s\n' >>"$root/pl5.log"
+  printf 'GREEN\t--prove --tests xtask 6d5bba552 4b6e3e40c 8d48b75ab\n' >"$root/pl5.batch.result"
+  printf 'RED\t--prove --tests xtask 6d5bba552 4b6e3e40c 8d48b75ab\n' >"$root/pl6.batch.result"
+  printf 'GREEN\t--prove one\nRED\t--prove two\n' >"$root/pl7.batch.result"
+  : >"$root/pl8.batch.result"
+  _t "rc 2, no guard named, outcome GREEN = GREEN" GREEN "$(lq_preproof_verdict 2 "$root/pl5.log" "$root/pl5.batch.result")"
+  _t "  ...and without the outcome file it was RED" RED  "$(lq_preproof_verdict 2 "$root/pl5.log")"
+  _t "a RED outcome cannot green a red rc"        RED   "$(lq_preproof_verdict 1 "$root/pl4.log" "$root/pl6.batch.result")"
+  _t "a mixed outcome is not GREEN"               RED   "$(lq_preproof_verdict 1 "$root/pl4.log" "$root/pl7.batch.result")"
+  _t "an empty outcome file rules nothing"        RED   "$(lq_preproof_verdict 1 "$root/pl4.log" "$root/pl8.batch.result")"
+  _t "a missing outcome file rules nothing"       "NONE:base" "$(lq_preproof_verdict 1 "$root/pl1.log" "$root/nope.result")"
+  _t "  ...and the tree-moved guard still wins over no outcome" "NONE:moved" "$(lq_preproof_verdict 2 "$root/pl3.log" "$root/nope.result")"
 
   echo "landq4 selftest: a CI run queued for over an hour is no verdict to wait for"
   local now0; now0="$(lq_epoch 2026-09-11T00:00:00Z)"
