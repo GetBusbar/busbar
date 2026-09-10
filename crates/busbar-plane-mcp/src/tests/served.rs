@@ -29,7 +29,8 @@
 use busbar_contract::ids::OpClassId;
 
 use super::{
-    cache_hints, initialize_result, instructions, ping_result, prompts_list_result, reads,
+    cache_hints, completion_result, initialize_result, instructions, ping_result,
+    prompt_get_result, prompts_list_result, reads, resource_read_result,
     resource_templates_list_result, resources_list_result, task_ack_result, task_get_result,
     tool_call_result, tools_list_result, Reads, ANSWERED, CACHE_SCOPE, CACHE_TTL_MS,
     PROTOCOL_VERSION, SERVER_NAME,
@@ -192,19 +193,28 @@ fn every_answered_class_is_declared_and_read() {
     }
     assert_eq!(
         ANSWERED.len(),
-        10,
-        "the four that were first through the loop, the three listings, and the three task verbs"
+        13,
+        "every class this mount can carry: the six the mount cannot are named in the deletion list"
     );
 }
 
-/// A class this stage does not answer says so, rather than being read as reading nothing.
+/// A class this plane does not answer says so, rather than being read as reading nothing.
+///
+/// The six below are not "not yet". Each of them arrives somewhere the mounted request surface is
+/// not — a bodyless address, a provider-opened round on an outbound hop, a run of events, or a
+/// message that obliges no answer — so a reading written for any of them would be a declaration
+/// nothing ever reaches. They are enumerated in the MCP deletion list beside the seam each waits on,
+/// and this cell is what keeps that list honest: the day one of them gains a reading without gaining
+/// a seam, this goes red.
 #[test]
 fn an_unanswered_class_has_no_reading() {
     for op in [
         ops::OP_DISCOVER,
-        ops::OP_RESOURCE_READ,
         ops::OP_NOTIFICATION,
         ops::OP_SAMPLING,
+        ops::OP_ROOTS_LIST,
+        ops::OP_ELICITATION,
+        ops::OP_SUBSCRIPTIONS_LISTEN,
     ] {
         assert_eq!(reads(op), None, "{op} has a reading this stage cannot run");
     }
@@ -400,4 +410,101 @@ fn the_task_acks_are_the_empty_document() {
         .as_object()
         .expect("an ack is a document")
         .is_empty());
+}
+
+/// The two verbs that name ONE catalogue entry read exactly that, and read no demotion row.
+///
+/// The difference from [`Reads::ServerRegistry`] is the whole cell: a call resolves an entry AND
+/// asks whether the server behind it has been taken out of service, because a call reaches that
+/// server. Rendering a prompt or reading a resource is answered from what was approved, and the
+/// plan for both says so — the demotion row is not on it, so a reading that named one would be an
+/// answer assembled from a record the unit never read.
+#[test]
+fn the_named_reads_read_one_catalogue_entry() {
+    for op in [ops::OP_PROMPT_GET, ops::OP_RESOURCE_READ] {
+        assert_eq!(
+            reads(op),
+            Some(Reads::CatalogueEntry),
+            "{op} names one entry and is not read as naming one"
+        );
+    }
+    let named: Vec<(&str, &str)> = Reads::CatalogueEntry
+        .legs()
+        .iter()
+        .map(|(schema, op)| (schema.as_str(), *op))
+        .collect();
+    assert_eq!(
+        named,
+        vec![(records::SCHEMA_CATALOGUE.as_str(), records::OP_GET)]
+    );
+    assert_ne!(Reads::CatalogueEntry, Reads::ServerRegistry);
+}
+
+/// A rendered prompt carries its description and its messages, and carries NO caching hint.
+///
+/// The absence is the assertion. A rendered prompt is composed from the caller's own arguments
+/// substituted into the operator's template, so two callers sending different arguments get
+/// different documents from one entry — and a hint inviting either of them to keep it would invite
+/// them to reuse the other's.
+#[test]
+fn a_rendered_prompt_carries_its_description_and_messages() {
+    let messages = vec![serde_json::json!({"role": "user", "content": "hi"})];
+    let answered = prompt_get_result(Some("what it does"), messages.clone());
+    assert_eq!(answered["description"], "what it does");
+    assert_eq!(answered["messages"], serde_json::json!(messages));
+    assert!(answered.get("cacheScope").is_none());
+    assert!(answered.get("ttlMs").is_none());
+    assert_eq!(
+        answered
+            .as_object()
+            .expect("a rendered prompt is a document")
+            .len(),
+        2,
+        "a rendered prompt carries a member the server half does not write"
+    );
+    // A prompt registered without a description says so with `null`, and does not drop the member:
+    // a client reading an absent member cannot tell it from a member this build forgot to write.
+    let undescribed = prompt_get_result(None, Vec::new());
+    assert_eq!(undescribed["description"], serde_json::Value::Null);
+    assert_eq!(undescribed["messages"], serde_json::json!([]));
+}
+
+/// A resource's contents come back under `contents`, as a LIST, with the cacheable pair.
+///
+/// The list is the shape even for the one resource a read names, because the protocol declares it
+/// that way and a client that unwrapped a single object would break on the day a resource is
+/// answered in two parts.
+#[test]
+fn a_resource_read_answers_a_list_of_contents() {
+    let one = vec![serde_json::json!({"uri": "file:///a", "text": "x"})];
+    let answered = resource_read_result(one.clone());
+    assert_eq!(answered["contents"], serde_json::json!(one));
+    assert_eq!(answered["cacheScope"], CACHE_SCOPE);
+    assert_eq!(answered["ttlMs"], CACHE_TTL_MS);
+    assert_eq!(answered.as_object().expect("a read is a document").len(), 3);
+}
+
+/// Completion is answered from NOTHING, and the answer is the empty set stated in full.
+///
+/// Two assertions in one cell because they are one fact. The reading is [`Reads::Nothing`] and the
+/// answer is a constant, and both are true for the same reason: a completion is a set of candidate
+/// VALUES for a named argument, and the only place this node could get one is an operator declaring
+/// it — which no registration does. So the honest answer is "there are no suggestions", spelled
+/// out with `hasMore` and `total` rather than left as an omission, because a caller reading a bare
+/// empty array cannot tell a complete answer from a truncated one.
+///
+/// The request's refs are deliberately not read. A completion naming a prompt the caller may not
+/// see would otherwise answer differently from one naming a prompt that does not exist, and the
+/// difference is a probe for what is behind the grant.
+#[test]
+fn completion_reads_nothing_and_answers_the_empty_set() {
+    assert_eq!(reads(ops::OP_COMPLETION), Some(Reads::Nothing));
+    let answered = completion_result();
+    assert_eq!(
+        answered,
+        serde_json::json!({
+            "completion": { "values": [], "hasMore": false, "total": 0 },
+        })
+    );
+    assert!(answered.get("cacheScope").is_none());
 }

@@ -99,6 +99,15 @@ pub enum Reads {
     /// over a caller's task. What an answer is COMPOSED FROM is a read; what it goes on to do is the
     /// plan's, and the plan already has both.
     TaskRecord,
+    /// The ONE catalogue entry the request names, and nothing beside it.
+    ///
+    /// Distinct from [`Reads::ServerRegistry`] by the demotion row, and the difference is the whole
+    /// of it. A call resolves an entry AND asks whether the server behind that entry has been taken
+    /// out of service, because a call goes on to reach that server. Rendering a prompt or reading a
+    /// resource is answered from what the operator approved, and the plan for both says so — the
+    /// demotion row is not on it, so naming one here would be an answer assembled from a record the
+    /// unit never read.
+    CatalogueEntry,
 }
 
 impl Reads {
@@ -122,6 +131,7 @@ impl Reads {
                 (records::SCHEMA_DEMOTION, records::OP_GET),
             ],
             Reads::TaskRecord => &[(records::SCHEMA_TASK, records::OP_GET)],
+            Reads::CatalogueEntry => &[(records::SCHEMA_CATALOGUE, records::OP_GET)],
         }
     }
 }
@@ -134,7 +144,11 @@ impl Reads {
 #[must_use]
 pub fn reads(op: OpClassId) -> Option<Reads> {
     match op {
-        ops::OP_INITIALIZE | ops::OP_PING => Some(Reads::Nothing),
+        // The three answers composed from no record at all. The two console-era verbs are functions
+        // of this build; completion is a function of the registry HAVING no candidate values to
+        // offer, which no registration declares — so all three are the same reading for three
+        // different reasons, and each reason is written on its own answer below.
+        ops::OP_INITIALIZE | ops::OP_PING | ops::OP_COMPLETION => Some(Reads::Nothing),
         // THE FOUR LISTINGS, one reading. A listing of this protocol is the same sentence four
         // times over — what was approved, minus what is quarantined — and the member it is rendered
         // under is the whole of what makes them four answers rather than one.
@@ -146,6 +160,9 @@ pub fn reads(op: OpClassId) -> Option<Reads> {
         // THE THREE TASK VERBS, one reading. All three name one task and answer about that task,
         // and the two that go on to write it back declare that write on the plan rather than here.
         ops::OP_TASK_GET | ops::OP_TASK_UPDATE | ops::OP_TASK_CANCEL => Some(Reads::TaskRecord),
+        // The two that name ONE entry and answer about it. Both go on to reach the server behind
+        // that entry, and both declare that hop on the plan rather than as a reading.
+        ops::OP_PROMPT_GET | ops::OP_RESOURCE_READ => Some(Reads::CatalogueEntry),
         _ => None,
     }
 }
@@ -172,6 +189,9 @@ pub const ANSWERED: &[OpClassId] = &[
     ops::OP_TASK_GET,
     ops::OP_TASK_UPDATE,
     ops::OP_TASK_CANCEL,
+    ops::OP_PROMPT_GET,
+    ops::OP_RESOURCE_READ,
+    ops::OP_COMPLETION,
 ];
 
 /// Add the caching hints to a result that is CACHEABLE.
@@ -300,6 +320,66 @@ pub fn resource_templates_list_result(templates: Vec<serde_json::Value>) -> serd
 #[must_use]
 pub fn tool_call_result(upstream: serde_json::Value) -> serde_json::Value {
     upstream
+}
+
+/// The `prompts/get` answer: one rendered prompt, with the description it was registered under.
+///
+/// NOT cached, and the absence is deliberate: a rendered prompt is the operator's template with the
+/// CALLER's own arguments substituted into it, so two callers sending different arguments get
+/// different documents out of one entry — and a hint inviting either to keep it would invite them to
+/// reuse the other's.
+///
+/// The description is `Option` and is written as `null` rather than omitted where there is none. A
+/// client reading an absent member cannot tell a prompt registered without a description from a
+/// build that forgot to write one.
+///
+/// **The substitution and the markup strip are not here and must not be.** Both read the caller's
+/// own bytes and both are performed before this is called; what this owns is the shape the two
+/// halves are handed back in, which is a wire fact.
+#[must_use]
+pub fn prompt_get_result(
+    description: Option<&str>,
+    messages: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "description": description,
+        "messages": messages,
+    })
+}
+
+/// The `resources/read` answer: what the named resource holds, as a LIST.
+///
+/// A list even for the one resource a read names, because the protocol declares it that way: a
+/// client that unwrapped a single object would break on the day a resource is answered in two
+/// parts, and this build not having that day yet is not a licence to publish a shape that forbids
+/// it.
+#[must_use]
+pub fn resource_read_result(contents: Vec<serde_json::Value>) -> serde_json::Value {
+    cache_hints(serde_json::json!({ "contents": contents }))
+}
+
+/// The `completion/complete` answer: the empty candidate set, stated in full.
+///
+/// **The empty set is a fact about the registry and not a stub.** A completion is a set of candidate
+/// VALUES for a named argument, and the only place this node could get one is an operator declaring
+/// it — a prompt is registered with a description and a template, and neither states a value set.
+/// There is nothing to ask an upstream for either: a completion is answered from the catalogue this
+/// node itself serves, so asking an upstream would be asking it to complete an argument of a prompt
+/// this node composed.
+///
+/// So the honest answer is "there are no suggestions", spelled with `hasMore` and `total` rather
+/// than left as a bare empty array — a caller reading one of those cannot tell a complete answer
+/// from a truncated one.
+///
+/// **It takes no argument, and that is the security property rather than an economy.** The
+/// request's refs are deliberately not resolved against the catalogue: a completion naming a prompt
+/// the caller may not see would otherwise answer differently from one naming a prompt that does not
+/// exist, and the difference between those two answers is a probe for what is behind the grant.
+#[must_use]
+pub fn completion_result() -> serde_json::Value {
+    serde_json::json!({
+        "completion": { "values": [], "hasMore": false, "total": 0 },
+    })
 }
 
 /// The `tasks/get` answer: the task, as the record this plane keeps it in says it is.
