@@ -1,26 +1,59 @@
-//! A minimal Twilio Media Streams wire reader/writer, written independently for this crate.
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! THE TWILIO MEDIA STREAMS DIALECT of the streams plane — a wire's VOCABULARY, as a crate.
 //!
-//! Twilio's Media Streams protocol is a JSON-framed message-per-WS-frame wire: lifecycle events
+//! ## What this crate is, and what it is not
+//!
+//! It is a DIALECT: one carrier's event vocabulary, its JSON envelope, its stream identity and its
+//! G.711 payload. It is NOT a transport. Twilio Media Streams arrives as an HTTP upgrade and then
+//! as WebSocket frames, and `busbar-transport-ws` already carries every byte of wire it has —
+//! framing, the upgrade, keepalive, the close budget. Measured against `WsTransport`'s own
+//! `TransportMeta`, the only column the architecture's old `twilio-media` transport row held that
+//! `ws` does not is the FRAMES column, and a frames column that names an envelope is a vocabulary,
+//! which is what a dialect is. That row is deleted by the commit that mints this crate; no
+//! transport crate is minted for this carrier, here or later.
+//!
+//! ## The three things it implements
+//!
+//! [`ENVELOPE`] is this crate's implementation of the plane's own dialect face
+//! (`busbar_plane_streams::dialect::Envelope`): read one arriving frame, relay one arriving frame
+//! onward, render one downlink audio frame. [`TWILIO_MEDIA_STREAMS`] is the row those three hang
+//! off, and it declares the two facts that used to be `match` arms in the plane — that this dialect
+//! METERS ITS OWN UPLINK (what the caller spoke is µ-law on this carrier's wire, priced before any
+//! transform widens it) and that it LOCKS a G.711 session posture (the leg is µ-law end to end and
+//! nothing may resample it).
+//!
+//! ## The direction, and how the plane ever sees this
+//!
+//! The dialect names its plane; the plane never names a dialect. This crate depends on
+//! `busbar-plane-streams`; nothing depends on this crate except the COMPOSITION ROOT, which calls
+//! `busbar_plane_streams::dialect::register(&TWILIO_MEDIA_STREAMS)` at boot. That is why
+//! `scripts/plane-delete-test.sh` can remove this directory and get an honest "the dialect is
+//! absent" from a node that still boots and still serves the other dialects, rather than a link
+//! error.
+//!
+//! ## The wire, and why this reader was written rather than adapted
+//!
+//! Twilio's Media Streams protocol is a JSON-framed message-per-frame wire: lifecycle events
 //! (`connected`, `start`, `mark`, `dtmf`, `stop`) and a per-chunk `media` event whose `payload` is
-//! base64 8 kHz G.711 µ-law audio — `{"event":"media","media":{"payload":"<base64>"},"streamSid":"..."}`.
+//! base64 8 kHz G.711 µ-law audio — `{"event":"media","media":{"payload":"<base64>"},"streamSid":"…"}`.
+//! A second, older Twilio-shaped module exists in `busbar_voice_codec::topology`, behind that
+//! crate's `runtime` feature, which was never turned on anywhere this code could reach; so the tree
+//! carried this envelope twice, in two crates of two different kinds, neither able to name the
+//! other. This reader is the one that was written from the wire shape and the one that is live.
+//! The duplicate is a separate deletion, on the legacy crate's own line.
 //!
-//! `busbar-voice` has no dialect codec for this wire (it is not one of its two duplex dialects), and
-//! the one Twilio-shaped module that exists in that crate's source tree
-//! (`busbar_voice_codec::topology::twilio`) is gated behind busbar-voice's `runtime` cargo feature, which
-//! this crate's manifest never turns on — so it is not in this crate's dependency closure at all,
-//! and cannot be named from here. This module is therefore written from the wire shape alone
-//! (confirmed against `docs/design/plane4-voice-dialect-landscape.md` and the public Twilio Media
-//! Streams reference, both cited in this crate's design notes) rather than adapted from that
-//! runtime-gated module; any structural resemblance is the two independently converging on the same
-//! public wire format, not a copy.
-//!
-//! The events this module models onto the shared [`busbar_voice_codec::ir`] vocabulary: a `media`
-//! event becomes an [`IrAudioFrame`] (direction `Up`, format [`AudioFormat::G711Ulaw`]) carrying
-//! the base64-decoded µ-law bytes
-//! verbatim — the µ-law↔PCM16 transform happens at the plane's `encode_ingress_frame` seam
-//! ([`crate::plane`]), never here. The lifecycle events carry no audio and are surfaced as their own
-//! variant so the plane can track (or ignore) them without guessing at a synthetic IR event for a
-//! wire message with no IR home.
+//! A `media` event becomes an [`busbar_voice_codec::ir::media::IrAudioFrame`] (direction `Up`,
+//! format `G711Ulaw`) carrying the base64-decoded µ-law bytes verbatim — the µ-law↔PCM16 transform
+//! happens at the relay seam, never at decode. The lifecycle events carry no audio and are
+//! surfaced as their own variant so the plane can track (or ignore) them without a synthetic IR
+//! event for a wire message with no IR home.
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+
+pub mod ulaw;
 
 use bytes::Bytes;
 
@@ -213,7 +246,7 @@ fn is_bare_json_string(s: &str) -> bool {
 /// Encode a named playback-position mark for a given `stream_sid`.
 ///
 /// Used as the provisional wire rendering for a server event this dialect's own vocabulary has no
-/// audio-bearing counterpart for (see `crate::plane`'s `encode_response` documentation) — an
+/// audio-bearing counterpart for (see the plane's own `encode_response` documentation) — an
 /// acknowledged no-op frame rather than silently dropping the event.
 #[must_use]
 pub fn encode_mark(stream_sid: &str, name: &str) -> Vec<u8> {
@@ -317,8 +350,8 @@ use busbar_voice_codec::ir::{
     media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown},
 };
 
-use crate::dialect::{Dialect, Envelope};
-use crate::session::VoiceSessionState;
+use busbar_plane_streams::dialect::{Dialect, Envelope};
+use busbar_plane_streams::session::VoiceSessionState;
 
 /// The carrier's own name for itself, which is also the name of the crate that will own this file.
 pub const NAME: &str = "twilio-media-streams";
@@ -401,7 +434,14 @@ fn decode_ingress<'u>(
                 .arena()
                 .alloc_bytes(&payload)
                 .map_err(|_| Decode::Oversize)?;
-            crate::plane::open_or_relay(state, SELF_ROW, arena_bytes, None, Some(ms), ctx)
+            busbar_plane_streams::plane::open_or_relay(
+                state,
+                SELF_ROW,
+                arena_bytes,
+                None,
+                Some(ms),
+                ctx,
+            )
         }
         TwilioEvent::Mark { .. } => Ok(Ingress::Discard {
             reason: DiscardCode::Unsupported,
@@ -441,7 +481,7 @@ fn relay_ingress(
             // caller spoke is µ-law on this dialect's wire.
             let ms = AudioFormat::G711Ulaw.bytes_to_ms(payload.len() as u64);
             state.turn.audio_ms_in = state.turn.audio_ms_in.saturating_add(ms);
-            let pcm = crate::ulaw::decode_frame(&payload);
+            let pcm = ulaw::decode_frame(&payload);
             Ok(Some(IrClientEvent::AudioFrame(IrAudioFrame {
                 dir: UpDown::Up,
                 seq: state.codec.next_up_seq(),
@@ -461,9 +501,12 @@ fn relay_ingress(
 /// Taken and handed straight back, because the identifier beside it is borrowed from the same
 /// state.
 fn render_downlink_audio(state: &mut VoiceSessionState, media: &[u8]) {
-    let mulaw = crate::ulaw::encode_frame(media);
+    let mulaw = ulaw::encode_frame(media);
     let mut out = core::mem::take(&mut state.render_buf);
     let sid = state.envelope_id.as_deref().unwrap_or_default();
     encode_media_into(&mut out, sid, &mulaw);
     state.render_buf = out;
 }
+
+#[cfg(test)]
+mod tests;

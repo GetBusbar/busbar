@@ -147,18 +147,6 @@ crate = "busbar-plane-admin"
 kind = "control"
 reason = "the admin CONTROL surface — an unmetered served surface on the control path. R7 renames it to busbar-control-admin, at which point its name says `control` and this row must be struck"
 
-# THE FIRST CRATE OF THE `dialect` KIND. `dialect` is a PENDING kind (`PENDING_KINDS` in
-# `xtask/src/gates/kind_isolation.rs`) and this row is what opens the window for the crate that
-# makes it live: a crate under `crates/` that resolves to no live kind is RED, so the announcement
-# has to be in the MERGE-BASE before the mint commit lands, which is why it is a commit of its own
-# and lands ahead of the branch that writes the crate. The mint is the commit that strikes the
-# pending entry — a kind cannot be both pending and live — and drops this row, which expires the
-# moment the crate's own name resolves to `dialect`.
-[[announced]]
-crate = "busbar-plane-streams-twilio"
-kind = "dialect"
-reason = "the carrier's event vocabulary is an instance of the dialect kind on the streams plane. Twilio Media Streams is a JSON envelope, an event roster and a G.711 payload over a WebSocket the tree already carries (busbar-transport-ws): the wire is `ws` and the only new thing is vocabulary, which is what a dialect IS. It is named for the INSTANCE and not for a generic — `telephony` reads neutral while delivering one vendor's envelope, and that euphemism is what let the instance dispatch in this plane survive review. Four segments exactly: the wire name is three words (`twilio-media-streams`) and stays a `NAME` constant inside the crate, because a crate name that grew a fifth and sixth segment to spell a vendor's product would be the naming scheme bending around one vendor's marketing"
-
 [[announced]]
 crate = "busbar-control-oauth2"
 kind = "control"
@@ -349,6 +337,13 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "codec"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind codec has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind codec naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `codec -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `codec -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "codec"
 to = "grammar"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind codec naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -412,6 +407,13 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "contract"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind contract has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind contract naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `contract -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `contract -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "contract"
 to = "grammar"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind contract naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -458,6 +460,13 @@ to = "control"
 cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
 why = "crates of kind contract-transport naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "contract-transport"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind contract-transport has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind contract-transport naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `contract-transport -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `contract-transport -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "contract-transport"
@@ -514,6 +523,34 @@ to = "unit"
 cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
 why = "crates of kind control naming unit vocabulary: unit package names in any spelling, the kind-qualified id (unit-<id>), and — where unit is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "dialect"
+to = "codec"
+cite = "ARCHITECTURE.md 1.1 — the pre-split dialect half of a plane is that plane's own; the plane-to-codec edge is already in the measured graph for the same reason, and this is the same edge one level down."
+why = "crates of kind dialect naming codec vocabulary: the shared duplex IR this dialect reads and writes — the audio-frame, event and session-config types every dialect of this plane meets in. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "the codec half is PRE-SPLIT. When busbar-voice-codec splits into its plane's dialect crates, this edge is re-expressed against whatever the split leaves; until then it is the same edge the plane itself already carries."
+
+[[edge]]
+from = "dialect"
+to = "plane"
+cite = "ARCHITECTURE.md 1.1 / xtask/src/gates/kind_isolation.rs — the dialect names its plane; the plane never names a dialect. This is the kind's defining edge, in the one direction it runs."
+why = "crates of kind dialect naming plane vocabulary: the plane this is a dialect OF, its dialect FACE and its session state. A dialect naming a SIBLING plane is the same fusion one level down and is refused by the instance rule, not by this class."
+drain = "none: draining this would be deleting the dialect. What it may never grow into is a SECOND plane's name."
+
+[[edge]]
+from = "dialect"
+to = "transport"
+cite = "none. ARCHITECTURE.md 6 — wire is not dialect. A dialect names no transport crate and reaches no transport code; the number here is the carrier's own product name (`twilio-media-streams`) colliding with the `twilio-media` row ARCHITECTURE.md 5 used to carry, plus the copied test harness's `ws` stack."
+why = "crates of kind dialect naming transport vocabulary: transport package names in any spelling, the kind-qualified id and the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "most of it goes with the `twilio-media` transport row this commit deletes from ARCHITECTURE.md 5: the carrier is not a wire and the tree stops claiming it is. The remainder is the copied test harness naming the `ws` stack it opens a session on, and falls when a shared harness exists that is not a crate of its own."
+
+[[edge]]
+from = "export"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind export has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind export naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `export -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `export -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "export"
@@ -587,6 +624,13 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "kernel"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind kernel has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind kernel naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `kernel -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `kernel -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "kernel"
 to = "grammar"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — grammar is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind kernel naming grammar vocabulary: grammar package names in any spelling, the kind-qualified id (grammar-<id>), and — where grammar is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -640,6 +684,13 @@ to = "control"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind legacy naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "legacy"
+to = "dialect"
+cite = "none. The retiring 1.5.x crates predate the plane/dialect split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crates do."
+why = "crates of kind legacy naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `legacy -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement."
 
 [[edge]]
 from = "legacy"
@@ -755,6 +806,13 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "plane"
+to = "dialect"
+cite = "none, and this is the DIRECTION RULE ITSELF: the dialect names its plane and the plane never names a dialect (xtask/src/gates/kind_isolation.rs). The number here is not a plane naming a dialect crate — it is a plane's own instance word being attributed to the dialect kind, because a dialect's instance IS its plane. No plane in this tree names a dialect crate, and the ledger's [[dep]] half is where that is proven."
+why = "crates of kind plane naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `plane -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing to drain: the hits are each plane naming ITSELF. The row falls if the gate ever stops modelling a dialect's instance as its plane's."
+
+[[edge]]
+from = "plane"
 to = "kernel"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind plane naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -794,6 +852,13 @@ to = "control"
 cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
 why = "crates of kind plugin-abi naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "plugin-abi"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind plugin-abi has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind plugin-abi naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `plugin-abi -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `plugin-abi -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "plugin-abi"
@@ -857,6 +922,13 @@ to = "control"
 cite = "none. PLUGIN-TREE.md 1 admits control as its own kind (owner, 2026-09-08): a control surface is an UNMETERED served surface and a plane is the metered path, and neither may name the other. busbar-plane-admin is registered as control until R7 renames it, so this number is the rename measured rather than asserted."
 why = "crates of kind plugin-tooling naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "R7. The admin surface becomes busbar-control-admin with its route table declared as data; every hit here is one line of that rename, and the row falls when the surface stops being named from outside itself."
+
+[[edge]]
+from = "plugin-tooling"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind plugin-tooling has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind plugin-tooling naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `plugin-tooling -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `plugin-tooling -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[edge]]
 from = "plugin-tooling"
@@ -962,6 +1034,13 @@ to = "control"
 cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A control name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
 why = "crates of kind root naming control vocabulary: control package names in any spelling, the kind-qualified id (control-<id>), and — where control is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the per-control wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the control itself."
+
+[[edge]]
+from = "root"
+to = "dialect"
+cite = "ARCHITECTURE.md 1.1 / 3.1 — the composition root is the one thing that names all three axes, and it is the ONLY place a dialect instance may be named: the root registers a dialect with its plane at boot, which is what a composition root is for."
+why = "crates of kind root naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `root -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "none for the registration itself: it is one declaration and the root is where a declaration belongs. The rest of the number is the streams plane's own word, and falls with the `root -> plane` row it duplicates."
 
 [[edge]]
 from = "root"
@@ -1168,6 +1247,13 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "substrate"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind substrate has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind substrate naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `substrate -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `substrate -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "substrate"
 to = "hooks"
 cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind substrate has no clause that lets it name hooks vocabulary. Every hit is a coupling to delete."
 why = "crates of kind substrate naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1273,6 +1359,13 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "transport"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind transport has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind transport naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `transport -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `transport -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "transport"
 to = "kernel"
 cite = "ARCHITECTURE.md 3.1 (crate graph, bounded types) — kernel is a CORE FACE a plugin kind is written against, and naming the face is what being a plugin of a kind means. What the clause does NOT grant is naming an INSTANCE of another plugin kind, which is why this class still carries a number."
 why = "crates of kind transport naming kernel vocabulary: kernel package names in any spelling, the kind-qualified id (kernel-<id>), and — where kernel is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1343,6 +1436,13 @@ drain = "R7. The admin surface becomes busbar-control-admin with its route table
 
 [[edge]]
 from = "unit"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — a crate of kind unit has no clause that lets it name a dialect. The number is not an allowance: it is the streams plane's own instance word, counted under a second kind because the dialect kind went live, and it falls with the plane hits it duplicates."
+why = "crates of kind unit naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — a dialect is of the PLANE family, so its bare instance id counts too, and a dialect's instance IS ITS PLANE. Every number in this column is therefore the SAME hits the `unit -> plane` row already counts for the streams plane, attributed a second time now that a crate of the dialect kind exists to give the kind a column. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "drain the `unit -> plane` row for the streams plane and this row drains with it: they count one set of hits. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "unit"
 to = "legacy"
 cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
 why = "crates of kind unit naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1401,6 +1501,11 @@ count = "1068"
 
 [[cell]]
 crate = "busbar"
+kind = "dialect"
+count = "566"
+
+[[cell]]
+crate = "busbar"
 kind = "hooks"
 count = "5"
 
@@ -1417,7 +1522,7 @@ count = "95"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1780"
+count = "1762"
 
 [[cell]]
 crate = "busbar"
@@ -1468,6 +1573,11 @@ count = "40"
 crate = "busbar-a2a"
 kind = "control"
 count = "172"
+
+[[cell]]
+crate = "busbar-a2a"
+kind = "dialect"
+count = "32"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1636,6 +1746,11 @@ count = "20"
 
 [[cell]]
 crate = "busbar-contract"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-contract"
 kind = "grammar"
 count = "7"
 
@@ -1671,6 +1786,11 @@ count = "5"
 
 [[cell]]
 crate = "busbar-contract-transport"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-contract-transport"
 kind = "plane"
 count = "8"
 
@@ -1698,6 +1818,11 @@ count = "4"
 crate = "busbar-core"
 kind = "control"
 count = "5200"
+
+[[cell]]
+crate = "busbar-core"
+kind = "dialect"
+count = "279"
 
 [[cell]]
 crate = "busbar-core"
@@ -1743,6 +1868,11 @@ count = "2117"
 crate = "busbar-core"
 kind = "unit"
 count = "10"
+
+[[cell]]
+crate = "busbar-export-example-plugin"
+kind = "dialect"
+count = "3"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -1796,6 +1926,11 @@ count = "24"
 
 [[cell]]
 crate = "busbar-kernel"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-kernel"
 kind = "grammar"
 count = "5"
 
@@ -1833,6 +1968,11 @@ count = "25"
 crate = "busbar-llm"
 kind = "control"
 count = "88"
+
+[[cell]]
+crate = "busbar-llm"
+kind = "dialect"
+count = "27"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1886,6 +2026,11 @@ count = "78"
 
 [[cell]]
 crate = "busbar-llm-codec"
+kind = "dialect"
+count = "130"
+
+[[cell]]
+crate = "busbar-llm-codec"
 kind = "legacy"
 count = "60"
 
@@ -1928,6 +2073,11 @@ count = "42"
 crate = "busbar-mcp"
 kind = "control"
 count = "153"
+
+[[cell]]
+crate = "busbar-mcp"
+kind = "dialect"
+count = "7"
 
 [[cell]]
 crate = "busbar-mcp"
@@ -2026,6 +2176,11 @@ count = "13"
 
 [[cell]]
 crate = "busbar-plane-a2a"
+kind = "dialect"
+count = "5"
+
+[[cell]]
+crate = "busbar-plane-a2a"
 kind = "kernel"
 count = "2"
 
@@ -2096,6 +2251,11 @@ count = "12"
 
 [[cell]]
 crate = "busbar-plane-llm"
+kind = "dialect"
+count = "5"
+
+[[cell]]
+crate = "busbar-plane-llm"
 kind = "kernel"
 count = "1"
 
@@ -2157,7 +2317,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "codec"
-count = "28"
+count = "21"
 
 [[cell]]
 crate = "busbar-plane-streams"
@@ -2171,13 +2331,33 @@ count = "12"
 
 [[cell]]
 crate = "busbar-plane-streams"
+kind = "dialect"
+count = "1"
+
+[[cell]]
+crate = "busbar-plane-streams"
 kind = "plane"
 count = "43"
 
 [[cell]]
 crate = "busbar-plane-streams"
 kind = "transport"
-count = "112"
+count = "101"
+
+[[cell]]
+crate = "busbar-plane-streams-twilio"
+kind = "codec"
+count = "8"
+
+[[cell]]
+crate = "busbar-plane-streams-twilio"
+kind = "plane"
+count = "6"
+
+[[cell]]
+crate = "busbar-plane-streams-twilio"
+kind = "transport"
+count = "29"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2188,6 +2368,11 @@ count = "58"
 crate = "busbar-plugin"
 kind = "control"
 count = "34"
+
+[[cell]]
+crate = "busbar-plugin"
+kind = "dialect"
+count = "29"
 
 [[cell]]
 crate = "busbar-plugin"
@@ -2233,6 +2418,11 @@ count = "6"
 crate = "busbar-plugin-loader"
 kind = "control"
 count = "50"
+
+[[cell]]
+crate = "busbar-plugin-loader"
+kind = "dialect"
+count = "34"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -2308,6 +2498,11 @@ count = "61"
 crate = "busbar-plugin-sdk"
 kind = "control"
 count = "1"
+
+[[cell]]
+crate = "busbar-plugin-sdk"
+kind = "dialect"
+count = "20"
 
 [[cell]]
 crate = "busbar-plugin-sdk"
@@ -2456,6 +2651,11 @@ count = "352"
 
 [[cell]]
 crate = "busbar-substrate"
+kind = "dialect"
+count = "26"
+
+[[cell]]
+crate = "busbar-substrate"
 kind = "hooks"
 count = "2"
 
@@ -2516,6 +2716,11 @@ count = "121"
 
 [[cell]]
 crate = "busbar-substrate-values"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-substrate-values"
 kind = "legacy"
 count = "134"
 
@@ -2566,6 +2771,11 @@ count = "63"
 
 [[cell]]
 crate = "busbar-transport-grpc"
+kind = "dialect"
+count = "22"
+
+[[cell]]
+crate = "busbar-transport-grpc"
 kind = "kernel"
 count = "6"
 
@@ -2588,6 +2798,11 @@ count = "3"
 crate = "busbar-transport-http"
 kind = "contract-transport"
 count = "46"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "dialect"
+count = "10"
 
 [[cell]]
 crate = "busbar-transport-http"
@@ -2623,6 +2838,11 @@ count = "5"
 crate = "busbar-transport-sse"
 kind = "contract-transport"
 count = "31"
+
+[[cell]]
+crate = "busbar-transport-sse"
+kind = "dialect"
+count = "3"
 
 [[cell]]
 crate = "busbar-transport-sse"
@@ -2701,6 +2921,11 @@ count = "115"
 
 [[cell]]
 crate = "busbar-transport-ws"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-transport-ws"
 kind = "plane"
 count = "2"
 
@@ -2738,6 +2963,11 @@ count = "23"
 crate = "busbar-unit-audit"
 kind = "control"
 count = "87"
+
+[[cell]]
+crate = "busbar-unit-audit"
+kind = "dialect"
+count = "6"
 
 [[cell]]
 crate = "busbar-unit-audit"
@@ -2971,13 +3201,18 @@ count = "17"
 
 [[cell]]
 crate = "busbar-voice"
+kind = "dialect"
+count = "676"
+
+[[cell]]
+crate = "busbar-voice"
 kind = "legacy"
 count = "11"
 
 [[cell]]
 crate = "busbar-voice"
 kind = "plane"
-count = "811"
+count = "795"
 
 [[cell]]
 crate = "busbar-voice"
@@ -3001,13 +3236,18 @@ count = "9"
 
 [[cell]]
 crate = "busbar-voice-codec"
+kind = "dialect"
+count = "94"
+
+[[cell]]
+crate = "busbar-voice-codec"
 kind = "legacy"
 count = "1"
 
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "plane"
-count = "117"
+count = "114"
 
 [[cell]]
 crate = "busbar-voice-codec"
@@ -3282,6 +3522,36 @@ verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-plane-mcp: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-plane-streams-twilio"
+to      = "busbar-contract"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 — the plugin-kind section grants a dialect busbar-contract and its own plane, and nothing else."
+why     = "the first crate of the dialect kind names the contract: 1 declaration(s) at this commit. The class `dialect -> contract` was in NEITHER the granted table nor the pending list before this commit, while the architecture grants it in words — the mint adds the class and states the disagreement rather than waiving the instance. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "none: ARCHITECTURE.md grants this class to every kind in the tree. What this row holds is the NUMBER."
+
+[[dep]]
+from    = "busbar-plane-streams-twilio"
+to      = "busbar-plane-streams"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 / xtask/src/gates/kind_isolation.rs — the dialect names its plane; the plane never names a dialect, and the plane-to-dialect edge never can be."
+why     = "the dialect names the plane it is a dialect OF, and names its dialect FACE and session state: 1 declaration(s) at this commit. This is the direction rule itself, in the one direction it runs. The registry that puts this crate's row in front of the plane is filled at boot BY THE COMPOSITION ROOT, so no edge runs the other way and `scripts/plane-delete-test.sh` can remove this crate physically."
+drain   = "none: this is the kind's defining edge. Draining it would be deleting the dialect."
+
+[[dep]]
+from    = "busbar-plane-streams-twilio"
+to      = "busbar-voice-codec"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.1 — the pre-split dialect half of a plane is that plane's own, and the plane-to-codec edge is already in the measured graph for the same reason."
+why     = "the dialect reads and writes the shared duplex IR — the audio-frame, event and session-config vocabulary every dialect of this plane meets in: 1 declaration(s) at this commit. The class `dialect -> codec` was in neither table before this commit and is added by the mint, stated: a dialect that could not name its plane's IR would restate the audio and session vocabulary its plane already speaks, which is two opinions about one wire. It is granted toward this dialect's OWN plane's codec half; a sibling plane's codec is the same fusion one level down and is refused by the instance rule."
+drain   = "the codec half is PRE-SPLIT. When busbar-voice-codec is split into its plane's dialect crates, this edge is re-expressed against whatever the split leaves; until then it is the same edge the plane itself already carries."
 
 [[dep]]
 from    = "busbar"

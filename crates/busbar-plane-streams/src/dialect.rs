@@ -31,10 +31,12 @@
 //!
 //! ## What is in the table today, and what is deliberately not
 //!
-//! The three duplex dialects of this plane are rows here. Two of them are still declared BY this
-//! crate because no crate of their own exists yet; that is a stated remainder, not a design — each
-//! becomes its own dialect crate and its row leaves this file the way the carrier's does, by
-//! [`register`].
+//! Two rows are still declared BY this crate — `openai-realtime` and `gemini-live` — because
+//! neither has a crate of its own yet. That is a stated remainder, not a design: each becomes its
+//! own dialect crate and its row leaves this file the way the carrier's already has. The third
+//! duplex dialect, the carrier, is not here at all: it lives in its own crate and reaches this
+//! table through [`register`], which is what the direction rule requires and what lets the delete
+//! test remove it and get an honest absence.
 //!
 // The two one-shot operations are NOT rows here and are not dialects of this plane's duplex
 // sessions: they are single request/response operations that leave this crate in a later pass.
@@ -160,11 +162,7 @@ pub static GEMINI_LIVE: Dialect = Dialect {
 };
 
 /// The rows this crate declares itself, in claim-declaration order.
-static DECLARED: &[&Dialect] = &[
-    &OPENAI_REALTIME,
-    &GEMINI_LIVE,
-    &crate::twilio::TWILIO_MEDIA_STREAMS,
-];
+static DECLARED: &[&Dialect] = &[&OPENAI_REALTIME, &GEMINI_LIVE];
 
 /// The rows a composition root registered at boot, in registration order.
 ///

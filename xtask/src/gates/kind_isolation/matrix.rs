@@ -90,7 +90,7 @@
 //! `qa/kind-isolation.toml` is a record of what 1.6.0 still has to delete, not a shape it is
 //! allowed to keep.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, WalkSpec};
 use crate::ledger::Row;
@@ -784,6 +784,41 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     let renamed_to: BTreeMap<&str, &str> =
         reg.base_names().into_iter().map(|(k, v)| (v, k)).collect();
     let mut out = Vec::new();
+    // A KIND THAT HAD NO CRATE AT THE BASE HAS NO COLUMN AT THE BASE, and its whole column is a
+    // FIRST MEASUREMENT rather than a set of raises.
+    //
+    // This is the one transition [`super::PENDING_KINDS`] exists to describe, and until this
+    // line the gate had no way to carry it out. `dialect` was a pending kind: no crate of it
+    // existed, so `X × dialect` was measured for NOBODY. The day the first crate of the kind
+    // lands, every crate in the tree acquires that cell at once — twenty-eight of them on the
+    // commit that minted the first dialect — and not one of those numbers is a coupling the
+    // landing grew: `busbar-core`'s text is byte-identical across that commit. What changed is
+    // that a word it already carried is now ATTRIBUTABLE to a kind. Calling that a `0 -> N`
+    // raise would make "strike the pending entry" impossible to do, which would make the
+    // pending table a promise the gate refuses to let anyone keep.
+    //
+    // The escape is self-limiting and fires exactly once per kind, ever: the predicate is read
+    // off the BASE's own ledger, so the day after the column exists, every row in it is an
+    // ordinary ratchet again and every rise in it is a rise.
+    let base_kinds: BTreeSet<String> =
+        super::base::row_keys(&base.registry, "cell", &["crate", "kind"])
+            .into_iter()
+            .filter_map(|k| k.split_once(" \u{d7} ").map(|(_, kind)| kind.to_string()))
+            .collect();
+    // AND A CRATE THE BASE ITSELF ANNOUNCED carries its own identity cells, for the same
+    // window `[[announced]]` opens everywhere else in this gate: a crate with no rows at the
+    // base because it did not EXIST at the base is not a crate whose couplings grew.
+    //
+    // READ OFF THE BASE, NOT OFF THE BRANCH, and that is the whole discipline. An announcement
+    // expires the instant the crate's own name resolves to its kind, so the commit that MINTS
+    // the crate is the commit that must drop the row — which means the branch's own copy of
+    // the ledger cannot be the thing that opens the window. The base's can, and only if the
+    // announcement LANDED FIRST, on its own commit, ahead of the mint. That ordering is not a
+    // convention here; it is the only sequence in which this predicate is ever true.
+    let announced: BTreeSet<String> =
+        super::base::row_keys(&base.registry, "announced", &["crate"])
+            .into_iter()
+            .collect();
     for (table, ids, what) in [
         (
             "cell",
@@ -806,6 +841,29 @@ fn minted_rows(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         for key in super::base::row_keys(&now, table, ids) {
             if was.contains(&key) {
                 continue;
+            }
+            match table {
+                "cell" | "disagreement" => {
+                    if let Some((krate, kind)) = key.split_once(" \u{d7} ") {
+                        if !base_kinds.contains(kind) || announced.contains(krate) {
+                            continue;
+                        }
+                    }
+                }
+                // AN EDGE CLASS IS KEYED BY TWO KINDS, and the same rule reads it from both ends: a
+                // class that names a kind with no column at the base could not have been written at
+                // the base either. Sixteen of them arrive at once with the first dialect — every
+                // kind that already spelled the streams plane's own word now spells a dialect's
+                // instance, because a dialect's instance IS its plane. Not one of those hits is new
+                // text.
+                "edge" => {
+                    if let Some((from, to)) = key.split_once(" \u{d7} ") {
+                        if !base_kinds.contains(from) || !base_kinds.contains(to) {
+                            continue;
+                        }
+                    }
+                }
+                _ => {}
             }
             out.push(format!(
                 "minted-row\t[[{table}]] {key}\tthis row is in no copy of {LEDGER} at the \

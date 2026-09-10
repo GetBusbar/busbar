@@ -1,0 +1,53 @@
+# busbar-plane-streams-twilio — ONE CARRIER'S EVENT VOCABULARY, AND NOTHING ELSE.
+#
+# THE KIND IS `dialect`, and this is the first crate of that kind in the tree. The name is the
+# four-segment dialect form `busbar-plane-<plane>-<dialect>` and nothing else; a fifth segment is
+# refused outright by the gate, which is why the fourth segment is the carrier's name and not the
+# carrier's PRODUCT name. The wire name is three words (`twilio-media-streams`) and is declared
+# once, as `NAME` in this crate's own source, on the dialect row that carries it. A crate name that
+# grew to six segments to spell a vendor's product would be the naming scheme bending around one
+# vendor's marketing, which is the drift the segment cap exists to stop.
+#
+# WHY THERE IS NO TRANSPORT CRATE BESIDE IT. The carrier leg is a WebSocket. `busbar-transport-ws`
+# carries every byte of wire it has; the only new thing is a JSON envelope, an event roster and a
+# G.711 payload, which are vocabulary, which is the dialect kind. ARCHITECTURE.md's `twilio-media`
+# transport row is deleted by the commit that mints this crate, and no vendor is registered as a
+# wire.
+[package]
+name = "busbar-plane-streams-twilio"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The Twilio Media Streams dialect of the busbar streams plane: the carrier's JSON event vocabulary, its stream identity and its G.711 payload."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_streams_twilio"
+path = "src/lib.rs"
+
+# NO FEATURES. A dialect compiled two ways is two dialects speaking one name.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate any plugin manifest may name without argument, and the one the
+# architecture's plugin-kind section grants a dialect by name.
+busbar-contract = { path = "../busbar-contract" }
+# THE PLANE THIS IS A DIALECT OF. The direction the kind gate fixes: the dialect names its plane and
+# the plane never names a dialect. What is named is the plane's own dialect FACE and its session
+# state — never a second plane, and never a sibling dialect.
+busbar-plane-streams = { path = "../busbar-plane-streams" }
+# THE SHARED DUPLEX IR. The audio-frame, event and session-config vocabulary every dialect of this
+# plane meets in; this crate reads it and writes it and edits none of it. It is the PRE-SPLIT
+# dialect half of the same plane, which is why the `dialect -> codec` edge class is declared in the
+# gate by the same commit that mints this crate rather than assumed.
+busbar-voice-codec = { path = "../busbar-voice-codec" }
+# The object notation this carrier's envelope is written in. One parser, named rather than written
+# a second time.
+serde_json = { workspace = true }
+# THE MEDIA-FRAME CARRIER. The IR's audio payloads are `bytes::Bytes`; this crate builds them at the
+# same seam rather than converting through an owned `Vec<u8>` at the boundary.
+bytes = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

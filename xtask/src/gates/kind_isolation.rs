@@ -398,24 +398,20 @@ const PLANE_ALIASES: &[(&str, &str, &str)] = &[("streams", "voice", "busbar-voic
 /// Kinds the target scheme defines that the tree does not carry YET, each with its reason. The
 /// dead-kind rule skips these — and the ratchet runs the other way: the day a crate of one of them
 /// exists, the entry must be struck, or a kind would be both pending and live.
-const PENDING_KINDS: &[(&str, &str)] = &[(
-    "dialect",
-    "the four-segment `busbar-plane-<plane>-<dialect>` form. The pre-split dialects are today's \
-     `*-codec` crates; the rename that splits them is what creates the first crate of this kind.",
-)];
+/// THE DIALECT ENTRY IS STRUCK. `busbar-plane-streams-twilio-media-streams` is the first crate of
+/// the kind and it is on disk, so `dialect` is LIVE. A kind cannot be both pending and live, and
+/// the ratchet this table documents is exactly that: the day a crate of a pending kind exists, the
+/// entry goes. The pre-split dialects (the `*-codec` crates) are still pre-split and still their
+/// own kind; what changed is that the four-segment form now has an instance.
+const PENDING_KINDS: &[(&str, &str)] = &[];
 
 /// Edge classes the TARGET scheme has and the tree does not yet. They are allowed without being
 /// scored as dead — a class that cannot exist until the rename lands cannot be a stale allowance.
 const PENDING_EDGES: &[(&str, &str)] = &[
-    // THE GATE AND THE ARCHITECTURE DISAGREED, AND THE ARCHITECTURE WINS. `ARCHITECTURE.md`'s
-    // plugin-kind section says a dialect's dependencies are `busbar-contract` plus its own plane;
-    // this list carried the plane edge and four more, and did not carry the contract edge at all —
-    // so the first dialect crate ever written would have been refused for naming the one crate
-    // every kind in the tree is granted. The class is added rather than the crate bent around a
-    // gate that was short a line, and the disagreement is stated here rather than smuggled in as a
-    // per-instance allowance.
-    ("dialect", "contract"),
-    ("dialect", "plane"),
+    // THE THREE THE FIRST DIALECT CRATE ACTUALLY HAS — `contract`, `plane` and `codec` — LEFT THIS
+    // LIST for [`ARCHITECTURE_ALLOWED`] on the commit that minted it. They are measured classes
+    // now, not classes the design grants ahead of the tree, and the ship twin has to read them.
+    // These four are still ahead of the tree: no dialect crate reaches any of them yet.
     ("dialect", "grammar"),
     ("dialect", "substrate"),
     ("dialect", "api"),
@@ -544,6 +540,24 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
 /// same kind of statement made about a crate that does not exist yet.
 const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("caps", "contract"),
+    // THE DIALECT KIND'S THREE SINKS, promoted out of [`PENDING_EDGES`] by the mint of the first
+    // crate of the kind.
+    //
+    // `contract` is the one every kind is granted — and the gate did NOT have this class while
+    // [`PENDING_EDGES`] carried five others, so the first dialect crate ever written would have
+    // been refused for naming the one crate the architecture grants everybody. The line is added
+    // and the disagreement is stated rather than smuggled in as a per-instance allowance.
+    ("dialect", "contract"),
+    // `plane` is the direction rule itself: the dialect names its plane, and the plane never names
+    // a dialect.
+    ("dialect", "plane"),
+    // `codec` is the PRE-SPLIT half of the same plane — the shared duplex IR every dialect of that
+    // plane meets in. It was in neither list. It is a real class and not a convenience: a dialect
+    // that could not name the IR would have to restate the audio-frame and session vocabulary its
+    // plane already speaks, which is two opinions about one wire. It is granted only toward the
+    // dialect's OWN plane's codec half; a dialect reaching a SIBLING plane's codec is the same
+    // fusion one level down and is refused by the instance rule, not by this class.
+    ("dialect", "codec"),
     // The pre-split dialects: a codec is written on the closed span grammar the contract re-exports.
     ("codec", "grammar"),
     ("contract", "contract-transport"),

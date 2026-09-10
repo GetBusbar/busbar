@@ -24,16 +24,11 @@ use crate::surface::{BINDING_GEMINI_LIVE, BINDING_OPENAI_REALTIME, MEDIA_JSON, S
 /// A NAME, not a row: two of the five names this plane claims are one-shot operations with no
 /// dialect row at all, and a binding is matched against the claim table, which is keyed by name.
 fn dialect_of(binding: &str) -> &'static str {
-    [
-        dialect::NAME_OPENAI_REALTIME,
-        dialect::NAME_GEMINI_LIVE,
-        crate::twilio::NAME,
-        claims::TRANSCRIBE,
-        claims::TTS,
-    ]
-    .into_iter()
-    .find(|name| *name == binding)
-    .unwrap_or_else(|| panic!("the binding `{binding}` is not one of this plane's dialects"))
+    claims::DIALECT_CLAIMS
+        .iter()
+        .map(|c| c.dialect)
+        .find(|name| *name == binding)
+        .unwrap_or_else(|| panic!("the binding `{binding}` is not one of this plane's dialects"))
 }
 
 /// THE BOOT CHECK THE MOUNT RUNS, RUN HERE FIRST.

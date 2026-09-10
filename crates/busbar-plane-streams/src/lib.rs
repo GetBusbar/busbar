@@ -8,18 +8,11 @@
 //! (`docs/design/plane4-duplex-session.md`, the four-layer IR section). No wire format for those two dialects is written
 //! twice.
 //!
-//! Two things this crate DOES write itself, because nothing upstream provides them and the task this
-//! crate exists for names them explicitly:
-//!
-//! * A minimal Twilio Media Streams JSON reader/writer ([`twilio`]) — `busbar-voice` has no dialect
-//!   codec for Twilio's own wire, and the one Twilio-shaped module in that crate
-//!   (`busbar_voice_codec::topology::twilio`) is gated behind its `runtime` cargo feature, which this crate
-//!   never turns on (see the crate-root dependency note below). So this crate's Twilio reader/writer
-//!   is written from the wire shape alone, independently, and is NOT a copy of that module.
-//! * A standard G.711 µ-law ↔ PCM16 transform ([`ulaw`]) — `busbar-voice` only carries the byte-rate
-//!   bookkeeping for the format (`busbar_voice_codec::ir::media::AudoFormat`), not an actual sample
-//!   transcoder; its own doc comments call the transcode an unimplemented "seam...armed only when a
-//!   lane declares it." This crate is the lane that declares it.
+//! It writes NO wire shape of its own any more. The Twilio Media Streams envelope and the G.711
+//! µ-law transform used to live here, as `twilio.rs` and `ulaw.rs` plus their cells; they are one
+//! carrier's vocabulary and one carrier's sample format, which is the DIALECT kind, and they left
+//! for `busbar-plane-streams-twilio` on the commit that minted it. What stays is the
+//! FACE they implement ([`dialect`]) and the registry the composition root fills.
 //!
 //! ## What this crate is not
 //!
@@ -62,8 +55,6 @@ pub mod plane;
 pub mod session;
 pub mod surface;
 pub mod tools;
-pub mod twilio;
-pub mod ulaw;
 
 #[cfg(test)]
 mod tests;

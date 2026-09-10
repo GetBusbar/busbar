@@ -30,6 +30,7 @@ members = [
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-admin",
     "crates/busbar-plane-streams",
+    "crates/busbar-plane-streams-twilio",
     "crates/busbar-unit-admission",
     "crates/busbar-unit-cost",
     "crates/busbar-unit-usage",

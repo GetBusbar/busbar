@@ -51,36 +51,6 @@ fn opened(dialect: &'static crate::dialect::Dialect) -> PlaneSessionState {
     PlaneSessionState::new(VoiceSessionState::for_dialect(dialect))
 }
 
-/// THE CARRIER LEG opens on the µ-law lock, byte for byte.
-///
-/// The whole of the hook wire's payload for a carrier open is these bytes. Equality is against the
-/// shared constructor rather than against a hand-written literal, because a literal here would be a
-/// second opinion about the lock and the two would drift apart silently.
-#[test]
-fn a_carrier_session_projects_the_mu_law_lock_byte_for_byte() {
-    let arena = LeakArena;
-    let cfg = EmptyConfig;
-    let stack = WsStack::new("/telephony/call-1");
-    let labels = Labels::default();
-    let c = ctx(&arena, &cfg, &stack, &labels);
-
-    let mut st = opened(&crate::twilio::TWILIO_MEDIA_STREAMS);
-    let params =
-        SessionPlane::session_params(&plane(), &mut st, &c).expect("a carrier leg projects");
-
-    assert_eq!(
-        params.declared,
-        serde_json::to_vec(&config::g711_config()).unwrap(),
-        "a carrier session's declared parameters must be the µ-law lock BYTE FOR BYTE — this is the \
-         payload an operator's configured gate matches on"
-    );
-    assert_eq!(
-        (params.container, params.operation),
-        ("streams", "session.open"),
-        "the container and the method name are the hook wire's own, not this plane's operation class"
-    );
-}
-
 /// EVERY OTHER DIALECT opens on the deployment's declared defaults, and on the section default when
 /// a deployment declares none.
 #[test]
