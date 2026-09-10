@@ -166,7 +166,8 @@ pub const TEXT_EVENT_STREAM: &str = "text/event-stream";
 
 /// Metric-label values for the `disposition` dimension on `UPSTREAM_FAILURES_TOTAL` and the
 /// `reason` dimension on `FAILOVERS_TOTAL`.
-pub const DISPOSITION_TRANSIENT: &str = "transient_upstream";
+pub const DISPOSITION_TRANSIENT: &str =
+    busbar_contract::upstream::Disposition::TransientUpstream.label();
 
 /// Bounded `pool` metric-label sentinel used for every pre-routing failure (malformed body,
 /// unresolved model, governance rejection) so the label space stays finite (metrics.rs).
@@ -238,8 +239,9 @@ pub const ERR_DEGRADED_NON2XX: &str = "degraded-non2xx";
 //    failure-classification names them without reaching into `busbar-core`.
 /// A single attempt's budget-clamped transport timeout fired (retryable within the request).
 pub const DISPOSITION_ATTEMPT_TIMEOUT: &str = "attempt_timeout";
-pub const DISPOSITION_HARD_DOWN: &str = "hard_down";
-pub const DISPOSITION_CONTEXT_LENGTH: &str = "context_length";
+pub const DISPOSITION_HARD_DOWN: &str = busbar_contract::upstream::Disposition::HardDown.label();
+pub const DISPOSITION_CONTEXT_LENGTH: &str =
+    busbar_contract::upstream::Disposition::ContextLength.label();
 
 // ── The two `x-busbar-*` TRANSPARENCY response-header NAMES stamped when a non-default routing policy
 //    chose the target lane, the operator opt-in gate, and the per-request upstream-RTT task-local the
