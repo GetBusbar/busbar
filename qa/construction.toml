@@ -178,6 +178,42 @@ key = "cell.busbar-contract.kernel.count"
 by = 1
 because = "FACE: the per-unit arena — busbar-contract/src/bounded.rs drops its Sync clause and says which kernel arena replaces it; one more naming of kernel vocabulary"
 file = "qa/kind-isolation.toml"
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+by = 10
+because = "FACE: the per-unit plane-call context (ARCHITECTURE.md, Ctx: the one context a plane call is given, carrying the caps it may spend) — the composition root builds it for real in root/plane_ctx.rs; 10 more namings of caps vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+by = 7
+because = "FACE: the per-unit plane-call context — the root's driver reads the arrival with the plane and writes the answer with the plane over the transport-facing contract (root/transports.rs, plane_ctx.rs); 7 more namings"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+by = 7
+because = "FACE: the per-unit plane-call context — the three arrival facts the loop's own context still invented are now named by the root (root/transports.rs); 7 more namings of control vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+by = 9
+because = "FACE: the per-unit plane-call context — the root assembles the kernel's Ctx (arena, trust, arrival facts) for each plane call in root/plane_ctx.rs and hands it to the driver; 9 more namings of kernel vocabulary (on top of the arena face's 2)"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+by = 43
+because = "FACE: the per-unit plane-call context — root/plane_ctx.rs (167 lines) and the driver in root/transports.rs read with the plane and write with the plane instead of the loop's own stand-ins; 43 more namings of plane vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+by = 11
+because = "FACE: the per-unit plane-call context — the driver's read/write legs over the transport in root/transports.rs; 11 more namings of transport vocabulary"
+file = "qa/kind-isolation.toml"
+
 
 
 
