@@ -256,6 +256,23 @@ impl UnitEnd {
     /// every caller of it settles and then drops. A driver that must hand the end ON after settling
     /// cannot use this door at all — settling through it destroys the thing it still owes — and
     /// reaches for [`UnitEnd::lend_posting`] instead.
+    ///
+    /// ## THE RESIDUAL HOLE, NAMED RATHER THAN DISCOVERED
+    ///
+    /// One end can be settled TWICE: lend the posting, settle through the borrow, drop the witness,
+    /// then call this and settle again by value. The `lent` flag knows it happened and this door
+    /// cannot say so, because its return type has exactly two arms and neither is "already settled"
+    /// — the `Err` arm is a `DurabilityLost`, a record of an observed write failure, and minting one
+    /// here would be a lie about what happened to the money.
+    ///
+    /// It is not reachable today: nothing in this tree lends and then takes, the one path that lends
+    /// is a plane's exit arm which hands the end straight on, and the callers of this door all
+    /// settle and drop. It is written down because a hole that nobody has named is a hole the next
+    /// caller walks into.
+    ///
+    /// Closing it means widening this signature — `Option<Result<…>>`, or a second by-value door
+    /// with a refusal arm and this one retired — which is a change to every call site and a review
+    /// of its own rather than a line squeezed into a slot about a mount.
     pub fn into_posted(self) -> Result<Posted, DurabilityLost> {
         self.posted
     }
