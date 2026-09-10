@@ -461,25 +461,25 @@ mod mounts {
     /// is present exactly when its crate edge is: a row for a mount this binary does not compile would
     /// be the root declaring a surface no request could reach.
     #[must_use]
-    // A `vec![]` of the three would be shorter and cannot be written: each element is gated on its
-    // own plane's two switches, and a `#[cfg]` does not attach to an element of that macro. The
-    // transport rows above take the same shape for the same reason — build the list, then push what
-    // this build carries — and `unused_mut` is the one-row build's honest state.
-    #[allow(clippy::vec_init_then_push, unused_mut)]
     pub fn mount_rows() -> Vec<MountRow> {
-        let mut rows: Vec<MountRow> = Vec::new();
+        // ONE LITERAL, with each row present exactly when its switches are. A `#[cfg]` attaches to an
+        // element of an array expression, so the list is written as the data it is rather than built
+        // by pushing onto an empty one — a build that carries no mount is the empty literal, and a
+        // build that carries one is that one row, with nothing to allow on either.
+        //
         // BOTH SWITCHES ON EVERY ROW, not just the serving one. A serving switch implies its plane's —
         // `root-llm-serve = ["root-llm", …]` — so one of the two would compile identically; it is spelled
         // out because the root's own escape lint reads the gate over the LINE, and a module declared
         // under `root-llm` that is named under `root-llm-serve` alone is exactly the shape that lint
         // exists to catch. A gate that is true by implication is still a gate a reader has to derive.
-        #[cfg(all(feature = "root-llm", feature = "root-llm-serve"))]
-        rows.push(crate::root::units_llm_mount::MOUNT_ROW);
-        #[cfg(all(feature = "root-mcp", feature = "root-mcp-serve"))]
-        rows.push(crate::root::units_mcp_mount::MOUNT_ROW);
-        #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
-        rows.push(crate::root::units_a2a_mount::MOUNT_ROW);
-        rows
+        Vec::from([
+            #[cfg(all(feature = "root-llm", feature = "root-llm-serve"))]
+            crate::root::units_llm_mount::MOUNT_ROW,
+            #[cfg(all(feature = "root-mcp", feature = "root-mcp-serve"))]
+            crate::root::units_mcp_mount::MOUNT_ROW,
+            #[cfg(all(feature = "root-a2a", feature = "root-a2a-serve"))]
+            crate::root::units_a2a_mount::MOUNT_ROW,
+        ])
     }
 }
 
