@@ -105,8 +105,8 @@ them). Each axis is blind to the other two; only the kernel composes them.
   ratchet on a CORE crate whose whole claim is that it stayed one thing: `busbar-core-policy`, the
   hook POLICY engine (which hook runs, with which grants, on which terminal, from which pool's
   configuration — the kernel SEATS a hook after Admit, but choosing is policy and policy is core's)
-  — ≤ **2k**, gated as `surface-ceiling:core-hooks`, measured at 1,672 the day it was extracted from
-  `busbar-core` (owner ruling, 2026-09-08). It names **no plane, no dialect and no transport**, and
+  — ≤ **2k**, gated as `surface-ceiling:core-policy` and PINNED at its measurement (1,732 at
+  [M4c], 2026-09-10; 1,672 the day it was extracted from `busbar-core`, owner ruling 2026-09-08). It names **no plane, no dialect and no transport**, and
   that is readable from its manifest rather than promised: its vocabulary is the hook contract
   (`RoutingPolicy` and its read-only projections, `busbar_substrate::hooks::wire`) plus the config
   leaf structs the operator wrote, and a request reaches its gate as an `IrFacts` projection and as
@@ -122,7 +122,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
 | crate | kind | what it holds | ceiling |
 |---|---|---|---|
 | `busbar-core-config` | core | the config document root, loader, env interpolation, migrator, overlay, named-map validator, the byte-identity prepass, the validator and the secret resolver — the product's config grammar, which had **no** replacement anywhere and could not be cut leaf-first (the layer reaches up into ten modules at 65 sites) | its own row, against a measured **20,050** surface lines |
-| `busbar-core-policy` | core | the hook POLICY engine — resolution, gates, rewrites, singleflight, scrape — which the plain-data hook carriers in the substrate are not and never were. The kernel seats hook PLUGINS; this seats their policies | its own row (1,662 surface today) |
+| `busbar-core-policy` | core | the hook POLICY engine — resolution, gates, rewrites, singleflight, scrape — which the plain-data hook carriers in the substrate are not and never were. The kernel seats hook PLUGINS; this seats their policies. Its manifest names `busbar-contract` and `busbar-substrate` and nothing else; a hook plugin is reached through its own port (`HookSeat`), bound by the composition | its own row, `surface-ceiling:core-policy`, pinned at 1,732 ([M4c]) |
 | `busbar-control-admin` | control | the admin surface. `busbar-plane-admin` until **R7** renames it; registered as `control` by an explicit row until then | none (control carries no §1.1 union row) |
 | `busbar-control-oauth2` | control | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer — which had no crate and no kind. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface | none |
 

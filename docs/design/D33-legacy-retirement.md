@@ -401,6 +401,16 @@ fusion `kind-isolation:name` refuses. Renamed by what it is — the POLICY engin
 contract + substrate + substrate-values + timing. It may NOT name `busbar-api` (Track 4 deletes
 it); the hooks-kind face moved `busbar-api -> busbar-contract` first, as a [SEAM].
 
+**Measured ([M4c], 2026-09-10):** the manifest names `busbar-contract` and `busbar-substrate` and
+nothing else — neither `-values` nor `timing` turned out to be needed. Surface **1,732** lines,
+pinned as `surface-ceiling:core-policy` (owner ceiling 2k). The ledger is closed: two shipped and two
+test `[[dep]]` edges out of the engine, one shipped and one test edge from `busbar-core` into it
+(the `busbar_core::hooks` re-export + seat adapter, admitted by the `[[transitional]]` row and
+gone with the crate), five `[[edge]]` classes out of `core` (control 20, hooks 2, plane 36, secret
+17, transport 2 — each with its deleting line) and `legacy -> core` (36, the size of the re-export).
+The eight `× legacy` mentions it landed with were drained; the engine's prose never names the crate
+it came from.
+
 ### 7.4 The scoped chained-record journal → `busbar-unit-audit::journal`
 
 `audit/` is 627 lines (`journal.rs` 352, `mod.rs` 275). The chain itself is already in
