@@ -141,14 +141,14 @@ use busbar_caps::{
     PrincipalId, ReasonCode, Refusal, Route, StepName, TrustToken, UnitToken, UsageToken,
     VerifiedDestination, Verify,
 };
-use busbar_contract::bounded::{Labels, SlabBytes};
+use busbar_contract::bounded::{Ir, Labels, SlabBytes};
 use busbar_contract::dest::VerifiedDestination as PlaneDestination;
-use busbar_contract::ids::{SessionId, StreamId};
+use busbar_contract::ids::{OpClassId, SessionId, StreamId};
 use busbar_contract::plane::{Ingress, PlaneSessionState, SessionPlane, UnitDraft};
 use busbar_contract::transport::driver::Outcome;
 use busbar_contract::transport::facts as tfacts;
 use busbar_contract::transport::session::{
-    SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
+    EgressLease, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
 };
 use busbar_contract::transport::surface::{Answering, Bar, Dispatch, WireSurface};
 use busbar_contract::unit::{
@@ -156,7 +156,7 @@ use busbar_contract::unit::{
 };
 use busbar_contract::wire::{CloseReason, Direction, Frame, FrameCursor, FrameMeta};
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, UnitCtx, Units};
+use busbar_kernel::teller::{AccrualMeter, Ended, Evidence, UnitCtx, UnitIdentity, Units};
 
 use crate::root::arena::{ArenaSpace, UnitArena};
 use crate::root::transports::outcome_of;
@@ -392,6 +392,57 @@ impl SessionUnits for crate::root::kernel::ProductionUnits {
 
 // ── what one open session is ────────────────────────────────────────────────────────────────────
 
+/// WHAT THE SESSION'S UNITS SEALED, before there is a socket for it.
+///
+/// A leg is decided by a unit and OPENED by the composition, and those are two different moments on
+/// two different sides of the driver seam: the unit runs inside a synchronous `drive`, and dialling
+/// is an await. So what the unit decided is parked here, where the thing that CAN await
+/// ([`crate::root::leg_dial::LegDialing`]) reads it between frames, and the leg replaces it.
+///
+/// It carries the identity as well as the address because the identity is the unit's too: the leg's
+/// writes are that unit's writes, and a key minted later would file them as somebody else's.
+struct PendingLeg {
+    /// Where the session's units sealed the leg to.
+    dest: PlaneDestination,
+    /// Whose writes the leg's frames are.
+    unit: UnitIdentity,
+    /// The class that priced the unit whose relay this is.
+    op: OpClassId,
+}
+
+/// THE UPSTREAM LEG OF ONE RELAYED SESSION: the plane's half, the offering half, and whose it is.
+///
+/// Three things and no socket, which is the division this whole line exists for. The SOCKET is the
+/// composition's — dialled on the accept task, drained by a future the root spawned — and what
+/// reaches a synchronous `drive` is a bounded [`EgressLease`] it can hand a frame to without
+/// suspending. The plane's upstream codec state is here for the same reason its client half is: the
+/// contract's rule is that cross-frame codec state lives in exactly one place, and this is that
+/// place for the leg.
+struct UpstreamLeg {
+    /// The plane's own codec state for the upstream half, opened once when the leg was attached.
+    state: PlaneSessionState,
+    /// The offering end. Bounded and refusing: see [`EgressLease`].
+    lease: Box<dyn EgressLease>,
+    /// Whose writes these are — the half of a unit only the kernel seals.
+    unit: UnitIdentity,
+    /// Where the leg goes, as the encoders take it.
+    dest: PlaneDestination,
+    /// The class that priced the unit whose relay this is.
+    op: OpClassId,
+}
+
+/// WHEN AND WHERE an ending on the leg runs, gathered so the ending's own call reads as one.
+///
+/// Three values that always travel together — the session an ending belongs to, the facts its unit
+/// is judged against and the clock reading the whole frame was taken at. Gathered rather than passed
+/// separately for the reason [`busbar_kernel::teller::UnitIdentity`] is: a caller assembling them
+/// positionally is a caller who can pass last frame's clock with this frame's facts.
+struct LegMoment<'a> {
+    session: u64,
+    facts: &'a [(String, String)],
+    clock: Clock,
+}
+
 /// Everything one open session holds, and the only thing that outlives a frame.
 struct Open {
     /// The facts the mount published at the upgrade, OWNED so they outlive the upgrade.
@@ -412,9 +463,15 @@ struct Open {
     /// The plane's client half of this session's codec state — the ONLY place cross-frame codec
     /// state may live, by the contract's own rule, opened by the plane at the upgrade.
     state: PlaneSessionState,
-    /// The plane's upstream half, once the session's units have sealed a leg and the plane opened
-    /// its codec state for it. See the module header on where the upstream half's line is.
-    upstream: Option<PlaneSessionState>,
+    /// A leg the session's units have sealed and nothing has dialled yet.
+    ///
+    /// Set inside `drive`, taken by [`SessionLoopDriver::pending_leg`] on the accept task, and
+    /// replaced by `upstream` when [`SessionLoopDriver::attach_leg`] lands the socket's offering
+    /// end. It is `Option` in both directions on purpose: a session whose units seal no destination
+    /// never has one, and a session whose leg is open no longer does.
+    pending: Option<PendingLeg>,
+    /// The session's upstream leg, once it has been dialled and attached.
+    upstream: Option<UpstreamLeg>,
 }
 
 /// The session, as the plane is allowed to see it.
@@ -526,6 +583,43 @@ fn rendered<'u>(
         .unwrap_or_default()
 }
 
+/// THE ONE MAPPING from a sealed end to the ending a plane is asked to WRITE.
+///
+/// The loop's ending and the plane's are the same fact in two vocabularies, and this is the only
+/// place either is translated into the other — a `match` rather than a cast, so an outcome added to
+/// either side fails to compile here rather than being written as its neighbour. It is the exact
+/// counterpart of [`rendered`] beside it: that one renders a refusal for the CLIENT half, this one
+/// renders the whole ending for the UPSTREAM half, and both read the same sealed end.
+///
+/// `Failed` and `TimedOut` both arrive as `FailureReason::Transport` on a relayed session and that
+/// is deliberate rather than lossy: what the far side of a leg is entitled to know is that this node
+/// could not carry the exchange on, and which of this node's steps broke is an internal fact a
+/// relayed peer has no standing to be told.
+fn ending_of<'u>(
+    end: &busbar_caps::UnitEnd,
+    draft: &UnitDraft<'u>,
+) -> busbar_contract::unit::UnitEnd<'u> {
+    use busbar_caps::Outcome as Ends;
+    use busbar_contract::unit::{AbortBy, FailureReason, UnitEnd as End};
+    match end.outcome() {
+        Ends::Completed => End::Completed,
+        Ends::Refused(step, reason) => End::Refused(PlaneRefusal {
+            step: step_of(step),
+            reason: reason.into(),
+            retry_after_secs: None,
+            stream: None,
+            correlates: draft.correlates,
+        }),
+        Ends::Failed(step, _) | Ends::TimedOut(step) => End::Failed {
+            step: step_of(step),
+            reason: FailureReason::Transport,
+        },
+        // The client went away. `AbortBy::Client` is the same statement the one-shot path makes,
+        // and the leg's far side is told the exchange ended rather than why this node's caller left.
+        Ends::Aborted(_) => End::Aborted(AbortBy::Client),
+    }
+}
+
 // ── the driver a duplex acceptor hands each open session to ─────────────────────────────────────
 
 /// WHAT RUNS A DECLARED SESSION'S FRAMES, on the root's side of the duplex transport seam.
@@ -624,6 +718,183 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
         self.open.lock().ok()?.get(&session.0).cloned()
     }
 
+    /// RELAY ONE FRAME onto the session's upstream leg, under the open unit's own view.
+    ///
+    /// The plane decides what goes out: [`SessionPlane::encode_ingress_frame`] is handed the unit as
+    /// the kernel seals it, the frame, the destination the leg was sealed to and the leg's own codec
+    /// state, and it answers with the bytes or with nothing. `None` is a real answer and not a
+    /// failure — a plane that buffers a partial message upstream has written nothing yet — and the
+    /// session carries on.
+    ///
+    /// A REFUSING LEASE ENDS THE SESSION, and the two refusals are told apart because they mean
+    /// different things to the caller. At depth, the leg has fallen behind and the honest word is
+    /// `CapacityExhausted` — nothing is wrong with the caller and the same session opened later may
+    /// well run. Over, the leg is gone and it is `TransportFailed`. Carrying on past either would be
+    /// a relayed session that silently stopped relaying, which is the one outcome worse than ending.
+    fn relay(
+        &self,
+        leg: &mut UpstreamLeg,
+        for_: Option<busbar_contract::ids::CorrelationRef<'_>>,
+        relay: &[u8],
+        facts: &busbar_contract::bounded::Facts<'_>,
+        ctx: &Ctx<'_>,
+    ) -> SessionReply {
+        let draft = UnitDraft {
+            op: leg.op,
+            body_ir: Ir::new(relay, &[]),
+            correlates: for_,
+            correlation_out: None,
+            facts: *facts,
+        };
+        let view = self.kernel.unit_view(&leg.unit, &draft);
+        let frame = Frame {
+            direction: Direction::Outbound,
+            stream: StreamId(0),
+            bytes: SlabBytes::new(Arc::from(relay)),
+            meta: FrameMeta::default(),
+        };
+        let encoded =
+            self.plane
+                .encode_ingress_frame(&view, &frame, &leg.dest, Some(&mut leg.state), ctx);
+        match encoded {
+            Ok(None) => SessionReply::quiet(Outcome::Completed),
+            Ok(Some(bytes)) => offered(leg.lease.offer(bytes.as_slice())),
+            // The plane could not write it. Nothing went out and nothing is going to, because the
+            // next frame of this exchange is read against a state this one did not advance.
+            Err(_) => SessionReply::ending(Outcome::Unavailable, CloseReason::TransportFailed),
+        }
+    }
+
+    /// END THE OPEN UNIT ON THE LEG: settle it, write what the plane makes of the ending, finish.
+    ///
+    /// The ending runs through the LOOP, because an ending nothing settled is a hold nothing
+    /// released — and the sealed [`busbar_caps::UnitEnd`] the loop hands back is the one thing
+    /// [`SessionPlane::encode_end`] takes. The view it is encoded against is the OPEN unit's, not
+    /// the settling one's: the unit that ends is the unit the far side has been talking to.
+    ///
+    /// `finish` goes out whatever the plane wrote, including nothing. The leg is over either way,
+    /// and a leg left un-finished would hold the drain, the socket and the task for the life of the
+    /// process.
+    fn end_leg(
+        &self,
+        leg: &mut UpstreamLeg,
+        for_: Option<busbar_contract::ids::CorrelationRef<'_>>,
+        facts: &busbar_contract::bounded::Facts<'_>,
+        at: &LegMoment<'_>,
+        ctx: &Ctx<'_>,
+    ) -> SessionReply {
+        let draft = UnitDraft {
+            op: leg.op,
+            body_ir: Ir::new(&[], &[]),
+            correlates: for_,
+            correlation_out: None,
+            facts: *facts,
+        };
+        let ended = self.run(
+            self.next_unit(),
+            &SessionRead {
+                session: at.session,
+                draft: Some(&draft),
+                facts: at.facts,
+                clock: at.clock,
+            },
+        );
+        let outcome = outcome_of(&ended);
+        let Ended::Settled { end, .. } = &ended else {
+            // The sweep settled it first, so there is no end of this call's to encode and nothing
+            // it may write on the unit's behalf. The leg still finishes: the exchange is over.
+            leg.lease.finish();
+            return SessionReply::quiet(outcome);
+        };
+        let view = self.kernel.unit_view(&leg.unit, &draft);
+        let written =
+            self.plane
+                .encode_end(&view, &ending_of(end, &draft), Some(&mut leg.state), ctx);
+        let reply = match written {
+            Ok(Some(bytes)) => offered(leg.lease.offer(bytes.as_slice())),
+            Ok(None) => SessionReply::quiet(outcome),
+            Err(_) => SessionReply::ending(Outcome::Unavailable, CloseReason::TransportFailed),
+        };
+        leg.lease.finish();
+        reply
+    }
+
+    /// WHAT THE SESSION'S UNITS SEALED AND NOTHING HAS DIALLED, if anything.
+    ///
+    /// Synchronous, because everything on this side of the driver seam is, and because the whole
+    /// point is that the thing that CAN await asks. It answers the address only — the identity
+    /// stays here, where it was minted, so that a caller could not attach a leg under a unit of its
+    /// own choosing.
+    #[must_use]
+    pub fn pending_leg(&self, session: SessionHandle) -> Option<PlaneDestination> {
+        let slot = self.slot(session)?;
+        let guard = slot.lock().ok()?;
+        guard.pending.as_ref().map(|p| p.dest.clone())
+    }
+
+    /// ATTACH THE DIALLED LEG to the session that asked for it, and open the plane's half of it.
+    ///
+    /// Takes the OFFERING end and nothing else: the socket, its inbound half and the drain are the
+    /// composition's, and a driver that held any of the three would be a driver that could await.
+    ///
+    /// `false` for a session that has gone, one whose pending leg somebody else took, and one that
+    /// never sealed a destination. All three are the same answer to the caller — there is no leg
+    /// here to attach — and on none of them has anything been half-installed.
+    pub fn attach_leg(&self, session: SessionHandle, lease: Box<dyn EgressLease>) -> bool {
+        let Some(slot) = self.slot(session) else {
+            return false;
+        };
+        let Ok(mut guard) = slot.lock() else {
+            return false;
+        };
+        let Open {
+            facts,
+            transport,
+            chain,
+            pending,
+            upstream,
+            ..
+        } = &mut *guard;
+        let Some(leg) = pending.take() else {
+            return false;
+        };
+        // THE PLANE'S UPSTREAM CODEC STATE, opened once, on a space of this call's own. The client
+        // half was opened the same way at the upgrade; the contract's rule that cross-frame state
+        // lives in exactly one place is what says the leg gets its own rather than sharing.
+        let mut space = ArenaSpace::new();
+        let arena = UnitArena::new(&mut space);
+        let labels = Labels::new();
+        let clock = self.clock();
+        let view_transport = SlotTransport {
+            key: transport,
+            chain,
+            facts,
+        };
+        let view_session = SlotSession {
+            id: SessionId(session.0),
+            facts,
+            bound: true,
+            upstreams: 0,
+        };
+        let ctx = Ctx::new(
+            clock,
+            self.config,
+            Some(&view_session),
+            &view_transport,
+            &labels,
+            &arena,
+        );
+        let state = self.plane.open_upstream(&leg.dest, &ctx);
+        *upstream = Some(UpstreamLeg {
+            state,
+            lease,
+            unit: leg.unit,
+            dest: leg.dest,
+            op: leg.op,
+        });
+        true
+    }
+
     /// THE LOOP, over the unit the composed units say this moment is.
     ///
     /// THE SAME LOOP the one-shot driver runs, and deliberately so: a session's frame is an ordinary
@@ -632,10 +903,9 @@ impl<'n, U: SessionUnits + ?Sized> SessionLoopDriver<'n, U> {
     /// SESSION identity, because it has one. `None` there would file every frame of every session as
     /// an unrelated one-off, which is the audit chain broken at every link and the posting
     /// attributed to nobody.
-    fn run(&self, read: &SessionRead<'_, '_>) -> Ended {
+    fn run(&self, key: busbar_caps::UnitKey, read: &SessionRead<'_, '_>) -> Ended {
         let unit = self.units.unit(read);
         let units = Borrowed(&*unit);
-        let key = self.next_unit();
         let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
             &self.kernel.admit_token(),
             busbar_caps::PrincipalId::new(""),
@@ -735,12 +1005,15 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
         // ending. It runs BEFORE the table is touched, so a session whose opening unit did not
         // complete leaves nothing behind but its own audit record — the plane's half above drops
         // with this stack frame.
-        let ended = self.run(&SessionRead {
-            session: id,
-            draft: None,
-            facts: &facts,
-            clock,
-        });
+        let ended = self.run(
+            self.next_unit(),
+            &SessionRead {
+                session: id,
+                draft: None,
+                facts: &facts,
+                clock,
+            },
+        );
         let outcome = outcome_of(&ended);
         if outcome != Outcome::Completed {
             self.units.closed(id);
@@ -754,6 +1027,7 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
             media,
             seq: 0,
             state,
+            pending: None,
             upstream: None,
         };
         // The table is the LAST thing touched, so every path that refuses above leaves it untouched.
@@ -790,6 +1064,7 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
             chain,
             media,
             state,
+            pending,
             upstream,
             ..
         } = &mut *guard;
@@ -849,34 +1124,99 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
         };
         let draft = match &read {
             Ingress::Open(draft) | Ingress::OneShot(draft) | Ingress::Handshake(draft) => draft,
-            // The four readings that open no unit. See this module's header: two are not yet a
-            // unit or never one, and two are the upstream half's. Consumed, and honestly.
-            Ingress::NeedMore
-            | Ingress::Frame { .. }
-            | Ingress::Close { .. }
-            | Ingress::Discard { .. } => {
+            // THE RELAY. A frame of an already-open unit, which is not a new unit and must not be
+            // walked as one — the unit it belongs to was judged when it opened, and running the
+            // steps again would price one exchange twice. What it is instead is a WRITE, on the
+            // upstream half of the session the open unit sealed, and the whole of what this arm
+            // does is spell it: the plane encodes the relay against the unit's view, and the
+            // bytes go to the lease.
+            Ingress::Frame {
+                for_,
+                relay,
+                facts: read_facts,
+            } => {
+                let Some(leg) = upstream.as_mut() else {
+                    // The plane read a relay for a session with no leg. Nothing to relay ONTO, and
+                    // inventing a destination is the one thing this driver may never do — so the
+                    // frame is consumed and the session carries on, exactly as it did before a leg
+                    // was something a session could have.
+                    return SessionReply::quiet(Outcome::Completed);
+                };
+                return self.relay(leg, *for_, relay.as_slice(), read_facts, &ctx);
+            }
+            // THE END OF AN OPEN UNIT, which is an ending and therefore a unit's business: an
+            // ending nothing settled is a hold nothing released. So the loop runs, and what it
+            // SEALS is what the plane encodes upstream.
+            Ingress::Close {
+                for_,
+                facts: read_facts,
+            } => {
+                let Some(leg) = upstream.as_mut() else {
+                    return SessionReply::quiet(Outcome::Completed);
+                };
+                return self.end_leg(
+                    leg,
+                    *for_,
+                    read_facts,
+                    &LegMoment {
+                        session: session.0,
+                        facts,
+                        clock,
+                    },
+                    &ctx,
+                );
+            }
+            // The three readings that open no unit and write nothing: two are not yet a unit or
+            // never one, and one is the plane saying so outright. Consumed, and honestly.
+            Ingress::NeedMore | Ingress::Discard { .. } => {
                 return SessionReply::quiet(Outcome::Completed);
             }
         };
 
         // THE UNIT, judged by the same steps as every other unit on this node, carrying this
         // session's identity.
-        let ended = self.run(&SessionRead {
-            session: session.0,
-            draft: Some(draft),
-            facts,
-            clock,
-        });
+        let key = self.next_unit();
+        let ended = self.run(
+            key,
+            &SessionRead {
+                session: session.0,
+                draft: Some(draft),
+                facts,
+                clock,
+            },
+        );
         let outcome = outcome_of(&ended);
         let frames = rendered(self.plane, &ended, Some(draft), state, &ctx);
 
-        // THE UPSTREAM HALF OF THE CODEC STATE, opened the moment the session's units say where
-        // its leg was sealed to, on this frame's arena and once per session. The socket the leg
-        // is written on is not this driver's — see the header — so what is held is the plane's
-        // state for it and nothing else.
-        if upstream.is_none() && outcome == Outcome::Completed {
+        // THE LEG THE UNIT SEALED, parked for the thing that can dial it. The moment the session's
+        // units say where the leg goes is inside this synchronous call, and a dial is an await, so
+        // what is recorded here is the DECISION and not the socket — see [`PendingLeg`]. The
+        // identity is recorded with it because the leg's writes are THIS unit's writes: a key
+        // minted at dial time would file them as somebody else's.
+        if upstream.is_none() && pending.is_none() && outcome == Outcome::Completed {
             if let Some(dest) = self.units.destination(session.0) {
-                *upstream = Some(self.plane.open_upstream(&dest, &ctx));
+                *pending = Some(PendingLeg {
+                    dest,
+                    unit: UnitIdentity {
+                        key: busbar_contract::ids::UnitKey::new(key.get()),
+                        // The frames this leg carries are the CLIENT's, forwarded. A leg whose
+                        // origin said otherwise would be a unit the origin rules judged as
+                        // something the node raised itself.
+                        origin: busbar_contract::unit::Origin::Client,
+                        session: Some(SessionId(session.0)),
+                        stream: Some(StreamId(0)),
+                        // Outbound: this is the half that leaves this node.
+                        direction: Direction::Outbound,
+                        // THE ONE FIELD THIS DRIVER CANNOT YET ANSWER. The principal the
+                        // authenticate step resolved lives on the unit that ran, and the session's
+                        // units do not publish it back across this seam. `None` is the honest
+                        // answer rather than a guess — a view that named the wrong principal would
+                        // be worse than one that names none — and closing it is a `SessionUnits`
+                        // question, recorded in the deletion list.
+                        principal: None,
+                    },
+                    op: draft.op,
+                });
             }
         }
 
@@ -902,6 +1242,23 @@ impl<U: SessionUnits + ?Sized> SessionDriver for SessionLoopDriver<'_, U> {
         // Dropping the slot is what releases the session: it is owned, and nothing else holds a
         // handle to it once the table has given it up. The plane's two halves go with it.
         let _ = (slot, end);
+    }
+}
+
+/// WHAT A LEASE'S ANSWER MEANS FOR THE SESSION, in the eight words.
+///
+/// Two refusals and they are not the same refusal. At depth the leg has fallen behind and nothing is
+/// wrong with the caller — `CapacityExhausted`, which the ws wire spells 1013, "try again later".
+/// Over is the leg gone, which is this node's carrier giving out: `TransportFailed`. Either way the
+/// SESSION ends, because a relayed session that stopped relaying and said nothing is the one outcome
+/// worse than an ending.
+fn offered(answer: Result<(), busbar_contract::TransportError>) -> SessionReply {
+    match answer {
+        Ok(()) => SessionReply::quiet(Outcome::Completed),
+        Err(busbar_contract::TransportError::Backpressure) => {
+            SessionReply::ending(Outcome::Unavailable, CloseReason::CapacityExhausted)
+        }
+        Err(_) => SessionReply::ending(Outcome::Unavailable, CloseReason::TransportFailed),
     }
 }
 

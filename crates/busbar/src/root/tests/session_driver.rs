@@ -32,7 +32,7 @@
 //! * close releases exactly once, tells the units exactly once, and a second close does neither;
 //! * the root's own unit set, with no session units composed, refuses a declared run as unclaimed.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
@@ -41,7 +41,9 @@ use busbar_caps::{
     Verify,
 };
 use busbar_contract::bounded::{ArenaBytes, Facts, Ir};
-use busbar_contract::dest::{DestinationFacts, EgressBody};
+use busbar_contract::dest::{
+    DestinationFacts, EgressBody, VerifiedDestination as PlaneDestination,
+};
 use busbar_contract::plane::{
     Ingress, Plane, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
@@ -155,6 +157,10 @@ const MADE_UP_OP: OpClassId = OpClassId::new("made-up");
 /// The three words the made-up reader knows.
 const OPENS_A_UNIT: &[u8] = b"open";
 const NOT_YET_A_UNIT: &[u8] = b"noise";
+/// A frame of an already-open unit: not a new unit, a WRITE on the leg the open one sealed.
+const RELAYS_A_FRAME: &[u8] = b"relay";
+/// The end of the open unit, which is what finishes the leg.
+const ENDS_THE_UNIT: &[u8] = b"end";
 
 /// A plane whose reader knows three words and whose refusal encoder writes the reason.
 ///
@@ -205,6 +211,15 @@ impl Plane for MadeUpPlane {
                 facts: Facts::new(),
             }))),
             NOT_YET_A_UNIT => Ok(Ingress::NeedMore),
+            RELAYS_A_FRAME => Ok(Ingress::Frame {
+                for_: None,
+                relay: ArenaBytes::new(RELAYS_A_FRAME),
+                facts: Box::new(Facts::new()),
+            }),
+            ENDS_THE_UNIT => Ok(Ingress::Close {
+                for_: None,
+                facts: Box::new(Facts::new()),
+            }),
             _ => Err(busbar_contract::wire::Decode::UnsupportedOperation),
         }
     }
@@ -219,15 +234,36 @@ impl Plane for MadeUpPlane {
         Err(busbar_contract::wire::Encode::Unrepresentable)
     }
 
+    /// The relay, as this made-up plane spells it: the unit's key and the bytes it was handed.
+    ///
+    /// The KEY is in the output on purpose. What the cells beside this are holding is that the view
+    /// the driver builds carries the identity of the unit that SEALED the leg — not a fresh one
+    /// minted at write time — and the only way to observe that from outside the kernel is to have
+    /// the plane write it down.
     fn encode_ingress_frame<'u>(
         &self,
-        _u: &Unit<'u>,
-        _f: &Frame,
+        u: &Unit<'u>,
+        f: &Frame,
         _dest: &busbar_contract::dest::VerifiedDestination,
-        _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        st: Option<&mut PlaneSessionState>,
+        ctx: &Ctx<'u>,
     ) -> Result<Option<ArenaBytes<'u>>, busbar_contract::wire::Encode> {
-        Ok(None)
+        // The upstream half's state is the leg's own, and a plane handed a fresh one per frame
+        // would be a composition that kept none.
+        let opened = st
+            .and_then(|s| s.get_mut::<Opened>())
+            .ok_or(busbar_contract::wire::Encode::Unrepresentable)?;
+        opened.frames += 1;
+        let spelled = format!(
+            "up:{}:{}:{}",
+            u.key().get(),
+            opened.frames,
+            String::from_utf8_lossy(f.bytes.as_slice())
+        );
+        ctx.arena()
+            .alloc_bytes(spelled.as_bytes())
+            .map(Some)
+            .map_err(|_| busbar_contract::wire::Encode::ArenaExhausted)
     }
 
     fn decode_response<'u>(
@@ -266,12 +302,16 @@ impl Plane for MadeUpPlane {
 
     fn encode_end<'u>(
         &self,
-        _u: &Unit<'u>,
-        _end: &UnitEnd,
+        u: &Unit<'u>,
+        end: &UnitEnd,
         _st: Option<&mut PlaneSessionState>,
-        _ctx: &Ctx<'u>,
+        ctx: &Ctx<'u>,
     ) -> Result<Option<ArenaBytes<'u>>, busbar_contract::wire::Encode> {
-        Ok(None)
+        let spelled = format!("end:{}:{end:?}", u.key().get());
+        ctx.arena()
+            .alloc_bytes(spelled.as_bytes())
+            .map(Some)
+            .map_err(|_| busbar_contract::wire::Encode::ArenaExhausted)
     }
 
     fn authenticate<'u>(
@@ -395,6 +435,9 @@ struct RecordingUnits {
     seen: Mutex<Vec<Option<busbar_caps::SessionId>>>,
     /// How many times the driver said a session was over.
     closed: Mutex<Vec<u64>>,
+    /// Where this session's units seal their leg to, once a unit has completed. `None` is a session
+    /// that relays nothing, which is every session the driver served before this line.
+    dest: Option<PlaneDestination>,
 }
 
 impl RecordingUnits {
@@ -442,6 +485,10 @@ impl SessionUnits for RecordingUnits {
             log: self,
             refuse: self.refuse || (self.refuse_after_open && read.draft.is_some()),
         })
+    }
+
+    fn destination(&self, _session: u64) -> Option<PlaneDestination> {
+        self.dest.clone()
     }
 
     fn closed(&self, session: u64) {
@@ -1140,4 +1187,272 @@ fn the_roots_own_units_with_nothing_composed_refuse_a_declared_run() {
         "the root's arrival step refuses a unit no plane claimed, and that is the upgrade's answer"
     );
     assert_eq!(driver.open_sessions(), 0);
+}
+
+// ── the upstream leg: relayed under the open unit's view, refused, and never dialled ─────────────
+
+/// A lease that is nobody's: it records what it was offered and answers what it was told to.
+struct FakeLease {
+    offers: Arc<Mutex<Vec<Vec<u8>>>>,
+    finished: Arc<Mutex<bool>>,
+    answer: Option<busbar_contract::TransportError>,
+}
+
+impl busbar_contract::transport::session::EgressLease for FakeLease {
+    fn offer(&mut self, frame: &[u8]) -> Result<(), busbar_contract::TransportError> {
+        if let Some(error) = self.answer {
+            return Err(error);
+        }
+        self.offers.lock().expect("the log").push(frame.to_vec());
+        Ok(())
+    }
+
+    fn finish(&mut self) {
+        *self.finished.lock().expect("the log") = true;
+    }
+}
+
+/// A dialler that is nobody's: it hands back the lease it was built with, or refuses.
+struct FakeDialler {
+    offers: Arc<Mutex<Vec<Vec<u8>>>>,
+    finished: Arc<Mutex<bool>>,
+    /// What the LEASE answers an offer with, once it is attached.
+    lease_answer: Option<busbar_contract::TransportError>,
+    /// What the DIAL itself answers, where it refuses.
+    dial_answer: Option<busbar_contract::TransportError>,
+    dials: Arc<Mutex<usize>>,
+}
+
+impl crate::root::leg_dial::LegDialer for FakeDialler {
+    fn dial<'a>(
+        &'a self,
+        _dest: &'a PlaneDestination,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<
+                        crate::root::leg_dial::DialledLeg,
+                        busbar_contract::TransportError,
+                    >,
+                > + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            *self.dials.lock().expect("the log") += 1;
+            if let Some(error) = self.dial_answer {
+                return Err(error);
+            }
+            let lease = FakeLease {
+                offers: Arc::clone(&self.offers),
+                finished: Arc::clone(&self.finished),
+                answer: self.lease_answer,
+            };
+            let drain: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
+                Box::pin(async {});
+            Ok((
+                Box::new(lease) as Box<dyn busbar_contract::transport::session::EgressLease>,
+                drain,
+            ))
+        })
+    }
+}
+
+/// A source that is nobody's: the frames a client would have sent, then the orderly end.
+struct Scripted(std::collections::VecDeque<&'static [u8]>);
+
+impl busbar_transport_ws::mount::FrameSource for Scripted {
+    async fn next_frame(&mut self) -> Option<Result<Vec<u8>, busbar_contract::TransportError>> {
+        self.0.pop_front().map(|f| Ok(f.to_vec()))
+    }
+}
+
+/// A destination sealed by the node's own kernel, which is the only thing that may seal one.
+///
+/// Through `transport_key_token`, a token this kernel already mints for the composition, rather
+/// than through a forged seal of this file's own: the construction gate counts every crate that
+/// implements the contract's sealing marker, and a battery that added one would be adding to the
+/// exact number that rule exists to hold down.
+fn sealed_leg(kernel: &busbar_kernel::teller::Kernel) -> PlaneDestination {
+    PlaneDestination::seal(
+        &kernel.transport_key_token(),
+        DestinationFacts::Upstream {
+            transport: "ws",
+            address: busbar_contract::dest::UpstreamAddress::socket("ws://made.up/leg"),
+            lane: busbar_contract::LaneId::new("made-up-lane"),
+        },
+        "ws",
+        None,
+    )
+}
+
+/// THE RELAY: a frame of an already-open unit is a WRITE on the leg, under the unit's own view.
+///
+/// Everything the line exists for is in this one cell. A relay frame opens NO unit — the exchange
+/// was priced when it opened, and walking the steps again would price it twice — so the moments the
+/// units saw are the opening one and nothing more. What happens instead is that the plane is handed
+/// the unit as the KERNEL seals it and asked what goes upstream, and what it writes reaches the
+/// lease. The key in the plane's output is the key of the unit that SEALED the leg, which is the
+/// half of the identity no composition may write for itself.
+///
+/// The ending is the other half: the plane is handed the sealed end, writes it, and the lease is
+/// FINISHED — a leg left un-finished would hold its drain, its socket and its task for the life of
+/// the process.
+#[tokio::test]
+async fn a_relayed_frame_goes_out_under_the_open_units_own_view() {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+
+    let offers = Arc::new(Mutex::new(Vec::new()));
+    let finished = Arc::new(Mutex::new(false));
+    let dialler = FakeDialler {
+        offers: Arc::clone(&offers),
+        finished: Arc::clone(&finished),
+        lease_answer: None,
+        dial_answer: None,
+        dials: Arc::new(Mutex::new(0)),
+    };
+
+    // The unit that seals the leg.
+    assert_eq!(
+        driver.drive(session, frame(0, OPENS_A_UNIT)).outcome,
+        Outcome::Completed
+    );
+
+    // BETWEEN FRAMES: the decorator dials what the unit parked, before the next read.
+    let mut source = crate::root::leg_dial::LegDialing::new(
+        Scripted(
+            [RELAYS_A_FRAME, ENDS_THE_UNIT]
+                .into_iter()
+                .collect::<std::collections::VecDeque<_>>(),
+        ),
+        &driver,
+        session,
+        &dialler,
+    );
+    let relayed = busbar_transport_ws::mount::FrameSource::next_frame(&mut source)
+        .await
+        .expect("the client spoke")
+        .expect("the read did not fail");
+    assert_eq!(
+        driver.drive(session, frame(1, RELAYS_A_FRAME)).outcome,
+        Outcome::Completed,
+        "a relay is not an ending"
+    );
+    assert_eq!(relayed, RELAYS_A_FRAME.to_vec());
+
+    assert_eq!(
+        node.moments(),
+        vec![(1, false), (1, true)],
+        "the opening unit at the upgrade and the unit the client's first frame opened, and NOTHING \
+         for the relay: a relayed frame belongs to a unit that was already priced, and walking the \
+         steps again would price one exchange twice"
+    );
+    let written = offers.lock().expect("the log").clone();
+    assert_eq!(
+        written,
+        vec![b"up:2:1:relay".to_vec()],
+        "the plane wrote the relay against the view of the unit that SEALED the leg — key 2, the \
+         unit the client's first frame opened (key 1 was the opening unit at the upgrade) — and \
+         not a key minted at write time"
+    );
+
+    // The ending: the plane writes the sealed end and the leg finishes.
+    let _ = busbar_transport_ws::mount::FrameSource::next_frame(&mut source).await;
+    let reply = driver.drive(session, frame(2, ENDS_THE_UNIT));
+    assert_eq!(reply.outcome, Outcome::Completed);
+    let written = offers.lock().expect("the log").clone();
+    assert_eq!(written.len(), 2, "the ending went out too");
+    assert!(
+        written[1].starts_with(b"end:2:"),
+        "the ending is encoded against the OPEN unit's view: {}",
+        String::from_utf8_lossy(&written[1])
+    );
+    assert!(
+        *finished.lock().expect("the log"),
+        "the leg is finished, so its drain, its socket and its task can end with the exchange"
+    );
+}
+
+/// A LEASE THAT REFUSES ENDS THE SESSION, and the word says which refusal it was.
+///
+/// At depth the leg has fallen behind and nothing is wrong with the caller, so the answer is
+/// `CapacityExhausted` — the same session opened later may well run. Carrying on instead would be a
+/// relayed session that silently stopped relaying, for as long as the client kept talking, which is
+/// the one outcome worse than an ending.
+#[tokio::test]
+async fn a_refusing_lease_ends_the_session() {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    let dialler = FakeDialler {
+        offers: Arc::new(Mutex::new(Vec::new())),
+        finished: Arc::new(Mutex::new(false)),
+        lease_answer: Some(busbar_contract::TransportError::Backpressure),
+        dial_answer: None,
+        dials: Arc::new(Mutex::new(0)),
+    };
+    driver.drive(session, frame(0, OPENS_A_UNIT));
+
+    let mut source = crate::root::leg_dial::LegDialing::new(
+        Scripted([RELAYS_A_FRAME].into_iter().collect()),
+        &driver,
+        session,
+        &dialler,
+    );
+    let _ = busbar_transport_ws::mount::FrameSource::next_frame(&mut source).await;
+
+    let reply = driver.drive(session, frame(1, RELAYS_A_FRAME));
+    assert_eq!(reply.outcome, Outcome::Unavailable);
+    assert_eq!(
+        reply.close,
+        Some(CloseReason::CapacityExhausted),
+        "a leg at depth is 'try again later' and not the caller's fault"
+    );
+}
+
+/// A DIAL THAT FAILS ENDS THE SESSION, and it ends it on the READ rather than on a later frame.
+///
+/// The pump reads the decorator's `Err` as the session's end, which is the earliest moment the
+/// failure can be answered at all. The alternative is what a composition without this decorator
+/// would do: read the next frame, find no leg, relay nothing, and carry on — a session that stopped
+/// relaying and told nobody.
+#[tokio::test]
+async fn a_failed_dial_ends_the_session_before_the_next_frame_is_read() {
+    let mut node = Node::new();
+    node.units.dest = Some(sealed_leg(&node.kernel));
+    let driver = node.driver();
+    let session = driver
+        .open(upgrade(OPEN_BINDING, Bar::Open, &[]), &OPEN_SURFACE)
+        .expect("the declared mount opens");
+    let dials = Arc::new(Mutex::new(0));
+    let dialler = FakeDialler {
+        offers: Arc::new(Mutex::new(Vec::new())),
+        finished: Arc::new(Mutex::new(false)),
+        lease_answer: None,
+        dial_answer: Some(busbar_contract::TransportError::AddressRefused),
+        dials: Arc::clone(&dials),
+    };
+    driver.drive(session, frame(0, OPENS_A_UNIT));
+
+    let mut source = crate::root::leg_dial::LegDialing::new(
+        Scripted([RELAYS_A_FRAME].into_iter().collect()),
+        &driver,
+        session,
+        &dialler,
+    );
+    let read = busbar_transport_ws::mount::FrameSource::next_frame(&mut source).await;
+    assert_eq!(
+        read,
+        Some(Err(busbar_contract::TransportError::AddressRefused)),
+        "the read is where a failed dial is answered, and the pump ends the session on it"
+    );
+    assert_eq!(*dials.lock().expect("the log"), 1, "dialled once, not spun");
 }
