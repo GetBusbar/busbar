@@ -6,7 +6,7 @@
 //! * `scripts/plane-purity-lint.sh` owns the dialect/plane-noun vocabulary and the frozen-wire
 //!   allow-list. `neutral-no-dialect` counts its DIALECT/KEY rows and decides nothing itself.
 //! * `scripts/loc-surface.py` owns the surface-line counting rule the section 1.1 ceilings are
-//!   expressed in. The three `surface-ceiling:*` rows turn its exit status into ledger rows.
+//!   expressed in. The four `surface-ceiling:*` rows turn its exit status into ledger rows.
 //! * `cargo xtask denylist` owns the TRANSITIVE dependency closure, which no text scan can see.
 //!   Here it is called IN PROCESS rather than as a subprocess: the Python had to spawn it, and had
 //!   to tell "asked, nothing found" apart from "never asked" across a process boundary that could

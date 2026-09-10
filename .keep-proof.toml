@@ -5,19 +5,18 @@
 # something specific instead of "everything, slowly". The INTEGRATION tree carries no such file —
 # it is a keep-branch artefact, and this branch is a keep branch.
 #
-#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the DEPENDENCY
-#              side of the kind-isolation gate: one manifest reader, a census that walks the whole
-#              repository, an instance-level dependency ledger, three new rows and a `--write` arm.
-#              It changes no crate's behaviour, no wire byte and no plane/transport source — every
-#              edit is in `xtask/`, `qa/kind-isolation.toml`, `qa/construction.toml` and
-#              `docs/design/xtask-gates.md`. The honest scope is therefore `documented`: the claims
-#              the docs make about the gate, which is the one family this branch edits. `neutrality`
-#              is not in scope on purpose — this branch touches no plane and no transport source, so
-#              replaying that family would be a claim about code it did not change. An unfiltered
-#              replay is the better part of half an hour and would be a claim about twenty-six
-#              families this branch does not touch.
-#   tests    — `xtask` and nothing else. Every rule, every reader, every ledger row and all
-#              ninety-five self-test cases live in that package; no other crate's test binary
-#              contains a line this branch changed.
-families = '^documented([|.]|$)'
-tests = ["xtask"]
+#   families — a regex handed to the shadow oracle's `--id-filter`. This branch is the hook POLICY
+#              ENGINE's home (`busbar-core-policy`): the engine moved out of busbar-core body for
+#              body, its plugin port was inverted (`HookSeat`), the config secret resolver and the
+#              per-session substrate came down into busbar-substrate verbatim, and `SignalBag`
+#              is one slot per catalog entry now. Every one of those is a claim about HOOK behaviour
+#              — which hook runs, with which grants, what it is handed — so `hooks` is the family
+#              that can move; `documented` rides along because the kind-isolation gate and its
+#              ledger changed and the docs make claims about both. `neutrality` is out of scope on
+#              purpose: no plane and no transport source changed.
+#   tests    — the crates a line this branch changed lives in: the engine, the retiring crate that
+#              re-exports it, the contract (SignalBag), the substrate (secret/session), the api
+#              crate (one re-export line), the llm engine (the upsert call sites) and xtask (the
+#              gate seam and its selftest cases).
+families = '^(hooks|documented)([|.]|$)'
+tests = ["busbar-core-policy", "busbar-core", "busbar-contract", "busbar-substrate", "busbar-api", "busbar-llm", "xtask"]

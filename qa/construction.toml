@@ -233,6 +233,11 @@ because = "MOVE by identity: config::secret came down busbar-core -> busbar-subs
 contract_caps = 3865
 grammar = 388
 contract_transport = 845
+# THE HOOK POLICY ENGINE (`busbar-core-policy`, kind core) — not a plugin-author budget but the
+# ratchet ARCHITECTURE.md 1.1 puts on a core crate whose whole claim is that it stayed one thing:
+# owner ceiling 2k, PINNED at the measurement (1,732 at [M4c], 2026-09-10; 1,672 the day it was
+# extracted) so it can only go down. `--write` re-pins it like every other ratchet.
+core_policy = 1732
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
