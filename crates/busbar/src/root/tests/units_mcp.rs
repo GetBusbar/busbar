@@ -3,6 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
+use busbar_unit_admission::ChainWalk;
 
 /// A resolver that answers every name with one public address.
 ///

@@ -136,7 +136,7 @@ use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units}
 use busbar_kernel::Millis;
 use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
-use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
+use busbar_unit_admission::{Admission as _, ChainWalk, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
 use busbar_unit_trust::net::GuardPolicy;
