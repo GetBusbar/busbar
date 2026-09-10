@@ -105,6 +105,10 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
   CI failure. **The one exception, and the only cross-crate edge in the whole plugin tree:** a
   DIALECT crate `busbar-plane-<p>-<d>` names its own plane `busbar-plane-<p>`, for the plane's IR
   type and nothing else; naming any other plane, any dialect, or a transport is a CI failure.
+  **Before that rename, the same edge runs the other way and is granted the same way:** a PLANE
+  names the pre-split codec crate of its own dialect (`busbar-<p>-codec`) — the wire form the codec
+  split moved out of the plane — and nothing else; naming another plane's codec is a CI failure,
+  and once the rename lands the edge inverts and a plane names no dialect at all.
 - **Source denylist** (transitive via `cargo metadata`), scoped to the **pure kinds**: plane, hook,
   static auth schemes that are pure, egress-auth-scheme, and the FFI transform crate: any path under
   `std::{net, fs, process, os, env}`, `tokio::{net, fs, process}`, `async_std::*`, `libc`, `reqwest`,

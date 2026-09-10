@@ -541,6 +541,18 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("kernel", "contract"),
     ("kernel", "grammar"),
     ("legacy", "contract"),
+    // A PLANE READS ITS WIRE THROUGH THE CODEC OF ITS OWN KIND'S DIALECT, AND NOTHING ELSE. The
+    // codec split took the wire form OUT of the plane crate and left the plane naming the crate it
+    // moved into; that edge is the point of the split rather than debt against it, and it was the
+    // one functional edge a pure plane has that the architecture's graph did not speak — so the
+    // ship twin refused the shape the split was for.
+    //
+    // THE GRANT IS THE CLASS AND NEVER THE INSTANCE. `cross-instance` still refuses a plane naming
+    // ANOTHER plane's codec, every pair still owes its `[[dep]]` row and its exact count, and the
+    // POST-rename direction is refused by `plane-names-dialect`: once `busbar-<p>-codec` becomes
+    // `busbar-plane-<p>-<d>` the edge inverts and the dialect names the plane. This line is about
+    // the pre-split `codec` kind, which is why it is not `("plane", "dialect")`.
+    ("plane", "codec"),
     ("plane", "contract"),
     // The composition root is the one thing that names all three axes — that is what a root IS.
     ("root", "api"),
@@ -6106,6 +6118,38 @@ impl Gate for KindIsolationGate {
             &["cross-instance", "busbar-plane-llm"],
         ));
 
+        // …AND THE CLASS GRANT IS NOT AN INSTANCE GRANT. `("plane", "codec")` is in
+        // `ARCHITECTURE_ALLOWED` — a plane reads its wire through the codec of its own dialect —
+        // so `verdict_for` now says `allowed` for the class this plant makes, and a well-formed
+        // ledger row for the pair spells `allowed` too. Neither admits it: the grant is the class
+        // and the PAIR is still named, row by row, so the instance stays refused by
+        // `cross-instance`. Without this case the grant reads as "a plane may name any codec".
+        let mut ov = manifest_plant(
+            "crates/busbar-plane-llm",
+            "busbar-plane-llm",
+            &["busbar-contract", "busbar-mcp-codec"],
+        );
+        ov.set(
+            REGISTRY_FILE,
+            format!(
+                "{}\n\n[[dep]]\nfrom    = \"busbar-plane-llm\"\nto      = \
+                 \"busbar-mcp-codec\"\nhalf    = \"shipped\"\ncount   = \"1\"\nverdict = \
+                 \"allowed\"\ncite    = \"ARCHITECTURE.md 1.2 — the plane/codec class the \
+                 architecture grants.\"\nwhy     = \"a row written as if the class grant covered \
+                 this pair, which is the claim this case refuses.\"\ndrain   = \"none: the class \
+                 is granted.\"\n",
+                cx.read(REGISTRY_FILE).unwrap_or_default().trim_end()
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "the plane/codec class grant does not admit one plane naming another plane's codec",
+            &[ROW_DEPS],
+            ov,
+            &["cross-instance", "busbar-plane-llm"],
+        ));
+
         // …AND THE DIALECT DIRECTION, WHICH IS THE ONE THE SPLIT DEPENDS ON. `cross-instance` reads
         // the two crates' INSTANCES and says nothing when they match, so a plane reaching back into
         // its OWN dialect walked through it: same instance, same family, no finding. That edge is
@@ -8390,6 +8434,38 @@ mod verdict_tests {
     #[test]
     fn the_composition_root_may_name_the_core_kind() {
         assert_eq!(verdict_for(&class("root", "core")), "allowed");
+    }
+
+    /// A PLANE READS ITS WIRE THROUGH THE CODEC OF ITS OWN DIALECT. The codec split moved the wire
+    /// form out of the plane crate and left the plane naming where it went — the one functional
+    /// edge a pure plane has, and the architecture's graph did not speak it, so the ship twin
+    /// refused the very shape the split was for.
+    #[test]
+    fn a_plane_may_name_the_codec_of_its_own_dialect() {
+        assert_eq!(verdict_for(&class("plane", "codec")), "allowed");
+    }
+
+    /// …AND THE CLASS WAS GRANTED IN ONE DIRECTION AND OVER ONE KIND. A plane still names no
+    /// transport, no kernel, no unit and no other plane, and it names no `dialect` either: the
+    /// rename that makes a codec a `busbar-plane-<p>-<d>` inverts the edge, and after it a plane
+    /// names no dialect at all.
+    #[test]
+    fn granting_plane_to_codec_opens_nothing_else_out_of_a_plane() {
+        for sink in [
+            "dialect",
+            "transport",
+            "kernel",
+            "unit",
+            "plane",
+            "store",
+            "substrate",
+        ] {
+            assert_eq!(
+                verdict_for(&class("plane", sink)),
+                "not-allowed",
+                "plane -> {sink}"
+            );
+        }
     }
 
     /// …AND NOTHING ELSE MOVED WITH IT. `core`'s own sinks are the neutral spine and no more, so a
