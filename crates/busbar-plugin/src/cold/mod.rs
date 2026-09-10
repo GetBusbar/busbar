@@ -44,7 +44,7 @@
 
 use busbar_api::{
     AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
-    PlaneSelector, UsageDelta, UsageLedger, VirtualKey,
+    PlaneSelector, SecretErrorKind as LegacySecretErrorKind, UsageDelta, UsageLedger, VirtualKey,
 };
 use serde::{Deserialize, Serialize};
 use std::os::raw::c_void;
@@ -605,6 +605,65 @@ pub enum SecretRequest {
     },
 }
 
+/// The taxonomy a secret `call`'s typed failure carries ON THE WIRE — five snake_case tokens
+/// (`not_found`, `unavailable`, `denied`, `invalid`, `internal`) that an installed third-party
+/// `kind: secret` plugin already emits under `SECRET_ABI_VERSION` 1.
+///
+/// It lives HERE, in the crate that owns the wire, because that is what a wire enum is. It used to
+/// be declared in the retiring 1.5.5 plugin-contract crate — an in-process error taxonomy doing
+/// double duty as the serialized wire tag — and the 1.6.0 retirement of that crate would have
+/// silently changed a SIGNED wire had the enum gone with it. The move is a namespacing change and
+/// nothing else: same five variants, same order, same `rename_all`, and the byte-identity cells in
+/// this module's tests serialise every variant through both spellings and require equal bytes. For
+/// that reason `SECRET_ABI_VERSION` does NOT move.
+///
+/// The distinction the five draw is the one an operator acts on: a configuration problem they must
+/// fix (`NotFound`, `Invalid`, `Denied`) versus an outage they must wait out (`Unavailable`).
+/// `Internal` is the catch-all, and is what an untyped string failure has always become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretErrorKind {
+    /// The referenced secret does not exist at the source (wrong key/path/name) — a config error.
+    NotFound,
+    /// The source could not be reached (network, auth-to-the-backend, timeout) — an outage.
+    Unavailable,
+    /// The caller is not permitted to read this secret — a config/policy error.
+    Denied,
+    /// The request itself is malformed (bad settings shape) — a config error.
+    Invalid,
+    /// Anything else, including every error that predates this taxonomy.
+    Internal,
+}
+
+/// TRANSITIONAL, both directions — the variant-for-variant bridge to the legacy taxonomy this enum
+/// replaces. It exists only while the retiring 1.5.5 plugin-contract crate still has a copy: the
+/// loader and the SDK are still written against the old spelling on the commit that re-homes the
+/// wire, and a total map is the honest way to say "these are the same five" while both names are in
+/// the tree. Both impls go with that copy, on the commit that deletes it.
+impl From<LegacySecretErrorKind> for SecretErrorKind {
+    fn from(k: LegacySecretErrorKind) -> Self {
+        match k {
+            LegacySecretErrorKind::NotFound => Self::NotFound,
+            LegacySecretErrorKind::Unavailable => Self::Unavailable,
+            LegacySecretErrorKind::Denied => Self::Denied,
+            LegacySecretErrorKind::Invalid => Self::Invalid,
+            LegacySecretErrorKind::Internal => Self::Internal,
+        }
+    }
+}
+
+impl From<SecretErrorKind> for LegacySecretErrorKind {
+    fn from(k: SecretErrorKind) -> Self {
+        match k {
+            SecretErrorKind::NotFound => Self::NotFound,
+            SecretErrorKind::Unavailable => Self::Unavailable,
+            SecretErrorKind::Denied => Self::Denied,
+            SecretErrorKind::Invalid => Self::Invalid,
+            SecretErrorKind::Internal => Self::Internal,
+        }
+    }
+}
+
 /// The success payload for a secret `call`. A TRANSPORT-level failure (the plugin panicked, or
 /// explicitly signals a status the loader treats as an error) still returns `STATUS_ERR` with a
 /// UTF-8 message in the out buffer (which must never carry secret material) — that path is
@@ -619,7 +678,7 @@ pub enum SecretResponse {
     Bytes(Vec<u8>),
     /// `resolve` failed at the module level (not the transport level) with a known taxonomy.
     Error {
-        kind: busbar_api::SecretErrorKind,
+        kind: SecretErrorKind,
         message: String,
     },
 }
