@@ -1197,3 +1197,68 @@ export = 1
 transport = 7
 loader = 1
 abi = 1
+
+# ── ceiling_raises ────────────────────────────────────────────────────────────────────────────────
+#
+# THE FOUR ENTRIES BELOW ARE NOT RAISES. They are `ceiling-rose` reading a POSITIONAL key across a
+# STRUCK ROW, and they exist because two rules of this tree meet here and one of them has to give.
+#
+# `kind-isolation:matrix` reports a `[[cell]]` whose measurement has fallen to zero as a DEAD CELL
+# and instructs: "Strike it — an allowance that outlives what it allowed is a hole nobody re-reads."
+# The commit that emptied `busbar-unit-auth x dialect` struck it, as instructed.
+#
+# `ceiling-rose` keys every number in a ceilings file by its DOTTED PATH, and an array-of-tables
+# entry's path is its INDEX (`cell.348.count`). Striking one `[[cell]]` shifts every later row up by
+# one index, so each surviving row is compared against its NEIGHBOUR at the base rather than against
+# itself. The four below are the four neighbour pairs where the shift happens to read upward:
+#
+#   index  held at the base                     holds now                            reads as
+#   348    busbar-unit-breaker x dialect     3  busbar-unit-egress-auth x dialect 34   3 -> 34
+#   350    busbar-unit-ledger x dialect      2  busbar-unit-trust x dialect        5   2 -> 5
+#   351    busbar-unit-trust x dialect       5  busbar-unit-usage x dialect        7   5 -> 7
+#   352    busbar-unit-usage x dialect       7  busbar-voice x dialect           335   7 -> 335
+#
+# Index 349 shifted too and is silent, because there the neighbour it landed on happens to be
+# LOWER (busbar-unit-egress-auth's 34 -> busbar-unit-ledger's 2). Which of the shifted rows speak
+# is decided by their neighbours' sizes and by nothing else, which is the tell that this is an
+# artefact of the key and not a fact about the tree.
+#
+# NOT ONE MEASUREMENT MOVED UPWARD ON THIS BRANCH. `kind-isolation` is 11/11 green at this tip,
+# which is the row that actually reads these cells and compares each to its own crate's count; every
+# number this branch moved went DOWN (busbar-unit-auth x dialect 4 -> struck, busbar-llm-codec x
+# dialect 11200 -> 11196, loc-ceilings unit-total 14476 -> 14433, union 23335 -> 23292).
+#
+# THE ENTRIES EXPIRE BY THEMSELVES, which is the mechanism's own guarantee and the reason declaring
+# is right here rather than silencing: once this branch lands, the base carries the struck file, the
+# apparent rise is gone, and `ceiling-rose` REFUSES all four as stale declarations naming a ceiling
+# that never moved. Strike this whole block on the commit after the landing.
+#
+# THE UNDERLYING DEFECT, recorded because a waiver that hides one is worse than the rise it excuses:
+# positional keys mean `ceiling-rose` cannot tell "a row was struck" from "a number went up", so
+# EVERY dead-cell strike `kind-isolation:matrix` demands will red this row and need a block like
+# this one. Keying an array entry by its identity (crate + kind) rather than its index would close
+# it, and would cost nothing else.
+
+[gate.ceiling_raises."cell.348.count"]
+file = "qa/kind-isolation.toml"
+from = 3
+to = 34
+because = "index shift, not a rise: the struck busbar-unit-auth x dialect cell moved every later row up one index, so this position now holds busbar-unit-egress-auth's own unchanged count. kind-isolation is 11/11 green at this tip."
+
+[gate.ceiling_raises."cell.350.count"]
+file = "qa/kind-isolation.toml"
+from = 2
+to = 5
+because = "index shift, not a rise: the struck busbar-unit-auth x dialect cell moved every later row up one index, so this position now holds busbar-unit-trust's own unchanged count. kind-isolation is 11/11 green at this tip."
+
+[gate.ceiling_raises."cell.351.count"]
+file = "qa/kind-isolation.toml"
+from = 5
+to = 7
+because = "index shift, not a rise: the struck busbar-unit-auth x dialect cell moved every later row up one index, so this position now holds busbar-unit-usage's own unchanged count. kind-isolation is 11/11 green at this tip."
+
+[gate.ceiling_raises."cell.352.count"]
+file = "qa/kind-isolation.toml"
+from = 7
+to = 335
+because = "index shift, not a rise: the struck busbar-unit-auth x dialect cell moved every later row up one index, so this position now holds busbar-voice's own unchanged count. kind-isolation is 11/11 green at this tip."
