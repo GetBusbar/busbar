@@ -1951,8 +1951,8 @@ fn draft_for(plane: &McpPlane, body: &str) -> McpDraft {
     use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
 
-    let mut space = ArenaSpace::new();
-    let arena = UnitArena::new(&mut space);
+    let mut space = crate::root::arena::ArenaSpace::new();
+    let arena = crate::root::arena::UnitArena::new(&mut space);
     let config = CellConfig;
     let transport = CellTransport;
     let labels = Labels::new();
