@@ -92,7 +92,7 @@ pub struct AxisException {
 /// own units, against a tree that can pass them. A row here is one line when that day comes.
 pub fn table(a: &Addresses) -> Vec<AxisRow> {
     let mut op_allowed = vec![
-        "crates/api/src/operation.rs".to_string(),
+        "crates/busbar-contract/src/operation.rs".to_string(),
         format!("{}/proto/", a.core),
         format!("{}/handlers/", a.core),
     ];
