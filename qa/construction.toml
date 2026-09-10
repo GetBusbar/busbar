@@ -321,9 +321,52 @@ file = "qa/kind-isolation.toml"
 by = 9
 because = """R6 dialect face, second crate: busbar-plane-llm-responses is the second crate of the dialect kind and the first copy of the D36 pattern, so the census contributes its package name to the dialect column's needle list on top of the first crate's. Every hit counted here already stood in the tree and is counted by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar x plane: 1826 -> 1835)"""
 
-# TWENTY-SIX ENTRIES STAND HERE TODAY (K7 re-key). Three describe ONE rise measured three ways: the dialect
-# kind's contract face (51 lines) as the contract pair's surface, as the pair's LOC row, and as the
-# term it adds to the union. They expire together the moment this commit is the base. The previous
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 65
+because = """The SURFACE-measured twin of the two rulings that raise \
+`rules.loc-ceilings.caps_contract_ceiling`, pinned at the figure `scripts/loc-surface.py` MEASURES on \
+this tree (3594) and not at a round number above it: 3478 + 51 (the dialect kind's face) + 65 (the \
+upstream status table). The 51: `dialect.rs` (48: `DialectMeta`'s ten declaration constants and \
+`Dialect`'s four codec methods), `plugin.rs` (`Kind::{Dialect, Control}`, their sealed markers, \
+`DIALECT_ABI`/`CONTROL_ABI`, net +4 after the marker macro took one invocation), `lib.rs` (+2 \
+re-exports), `ids.rs` (-3, `TransportId` deleted). The 65: `upstream.rs` (64: the nine-row \
+`StatusClass` and four-row `Disposition` tables and the two macros that make them data) and one \
+`lib.rs` module line. The two rows are one decision counted two ways and raising one without the \
+other leaves the pair capped at whichever is smaller."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 65
+because = """Two faces, each at its MEASURED size, declared once because `ceiling-rose` compares \
+one integer: 3480 + 51 + 65 = 3596 is what `loc-ceilings:caps-contract` counts on this tree. \
+FACE ONE, the dialect kind (51), audited line by line against the kind table of PLUGIN-TREE.md \
+section 1 (normative) and ARCHITECTURE.md 1.1/1.2: `Kind::Dialect` and `Kind::Control` with their \
+markers and ABI generations are the two kinds 1.1 names crates for and the closed set could not \
+spell; `DialectMeta`'s ten constants are, name for name, the dialect row's declaration column; \
+`Dialect`'s four methods are the kind's codec surface at the span-`Ir` seam. No line is a plane's \
+or a dialect's convenience. FACE TWO, `upstream::{StatusClass, Disposition}` (65): the nine-way \
+reading of an upstream's answer and the four-way disposition it carries, which a plane's dialect \
+reads off vendor bytes and renders back, and which the egress side of the loop and the breaker \
+act on. Units may name only the contract and the capabilities; planes and dialects only the \
+contract; so the one crate both sides can point at is this one, and the table was being declared \
+three times (busbar-substrate-values, busbar-unit-breaker, busbar-unit-egress) because it had no \
+owner both could name. It is a TABLE — rows are data, the tokens, labels and dispositions are \
+columns, one match site each — so a tenth class fails to compile at every renderer at once. \
+Zero slack; the next face declares its own raise."""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 65
+because = """The same 116 lines, counted a third time: the union row is kernel + caps/contract + \
+unit-* and the caps/contract term is the one that moved (5379 + 3596 + 14606 = 23581). No kernel \
+or unit line changed. Declared separately because it is a separate integer `ceiling-rose` compares, \
+and pinned at the measurement for the same reason the pair is."""
+
+# TWENTY-NINE ENTRIES STAND HERE TODAY (K7 re-key). Twenty-six are the dialect column, keyed by
+# row identity. The other three describe ONE rise measured three ways: two contract
+# faces — the dialect kind's (51 lines) and the upstream status table's (65) — as the contract
+# pair's surface, as the pair's LOC row, and as the term they add to the union. They expire together the moment this commit is the base. The previous
 # occupant — `rules.legacy-reach.prefixes.busbar_substrate.figure`, the one-time 26 -> 47
 # calibration — LANDED, the base carried 47, `ceiling-rose` refused the declaration as stale, and it
 # was struck: the expiry working exactly as the paragraph above describes it.
@@ -334,16 +377,17 @@ because = """R6 dialect face, second crate: busbar-plane-llm-responses is the se
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-# 3478 -> 3529 with `[rules.loc-ceilings].caps_contract_ceiling`, and in the same commit, because
+# 3478 -> 3594 with `[rules.loc-ceilings].caps_contract_ceiling`, and in the same commit, because
 # the two rows are ONE owner decision measured two ways. Raising one and not the other would leave
 # the pair's ceiling at whichever number is smaller while the larger one reads as the ruling — a
-# ceiling that has been raised in name only. 3529 is what `scripts/loc-surface.py` measures with the
-# dialect kind's face in the tree, and the audit of what that face is lives beside the other number;
+# ceiling that has been raised in name only. 3594 is what `scripts/loc-surface.py` measures with the
+# dialect kind's face and the upstream status table in the tree, and the audit of what those faces
+# are lives beside the other number;
 # see `[rules.loc-ceilings]`. `grammar` and `contract_transport` are NOT part of the ruling and keep
 # the figures the integration line measured them at: the dialect kind's trait is contract surface,
 # and nothing it adds is grammar or transport surface, so raising those two would be spending a
 # ruling on rows it was not written for.
-contract_caps = 3529
+contract_caps = 3594
 grammar = 388
 contract_transport = 845
 
@@ -564,8 +608,9 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-# RAISED ONCE, 3480 -> 3531, for the dialect kind's contract face, and pinned at what that face
-# MEASURES rather than at the 3630 the owner ruling of 2026-09-08 first bought: the ruling paid for
+# RAISED TWICE ON ONE BRANCH, 3480 -> 3531 -> 3596, for the dialect kind's contract face and then
+# the upstream status table, each pinned at what it MEASURES rather than at the 3630 the owner
+# ruling of 2026-09-08 first bought: the ruling paid for
 # ONE trait and its declarations, the tree now carries exactly those, and `ceiling-slack` says a
 # ceiling above its measurement is room nobody voted for. What was measured before it moved: every
 # `pub` item in busbar-contract and busbar-caps, counted against implementors and callers across the
@@ -576,17 +621,18 @@ contract_crate = "busbar-contract"
 # the tree, and a queued branch that makes `RecordSink` its supertrait and writes `&dyn Store` into a
 # test. So the dialect kind's ONE trait could not be paid for out of dead surface, because there is
 # almost none, and the choice was between the raise and shipping a kind the contract cannot name.
-# What the 51 lines are, audited against PLUGIN-TREE.md section 1 (the normative kind table), is
-# written in the declared raise above. The next face — a kind's trait, a plane-neutral table —
-# comes with its own declared raise naming its own measured lines, never out of this one.
-caps_contract_ceiling = 3531
+# What the 51 lines are, audited against PLUGIN-TREE.md section 1 (the normative kind table), and
+# what the 65 are (the one owner of the upstream status class and its disposition, which three
+# crates had each declared), is written in the declared raise above. The next face comes with its
+# own declared raise naming its own measured lines, never out of this one.
+caps_contract_ceiling = 3596
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-# 23465 -> 23516: the caps/contract term above rose by 51 (the dialect kind's face) and nothing
-# else in the sum moved. Declared under `[gate.ceiling_raises]` with the pair.
-union_ceiling = 23516
+# 23465 -> 23581: the caps/contract term above rose by 116 (the dialect kind's face, then the
+# upstream status table) and nothing else in the sum moved. Declared under `[gate.ceiling_raises]` with the pair.
+union_ceiling = 23581
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
