@@ -109,7 +109,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
 | `busbar-core-config` | core | the config document root, loader, env interpolation, migrator, overlay, named-map validator, the byte-identity prepass, the validator and the secret resolver — the product's config grammar, which had **no** replacement anywhere and could not be cut leaf-first (the layer reaches up into ten modules at 65 sites) | its own row, against a measured **20,050** surface lines |
 | `busbar-core-hooks` | core | the hook POLICY engine — resolution, gates, rewrites, singleflight, scrape — which the plain-data hook carriers in the substrate are not and never were. The kernel seats hook PLUGINS; this seats their policies | its own row (1,662 surface today) |
 | `busbar-control-admin` | control | the admin surface. `busbar-plane-admin` until **R7** renames it; registered as `control` by an explicit row until then | none (control carries no §1.1 union row) |
-| `busbar-control-oauth2` | control | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer — which had no crate and no kind. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface | none |
+| `busbar-control-tokenmint` | control | the OAuth 2.1 authorization server — metadata document, `/authorize`, `/token`, login, consent, its own signer — which had no crate and no kind. Verification is a step and stays in `busbar-unit-auth`; an authorization SERVER is a served surface | none |
 
 ### 1.2 Core → plugin. Never plugin → core.
 

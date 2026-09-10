@@ -7,7 +7,7 @@
 //! What `oauth-as` answers on the wire is NOT here: those bytes are fixed by the RFCs and forwarded
 //! unchanged. What is here is what busbar itself refuses — the consent screen's four refusals, the
 //! `oauth_as:` block's five boot refusals, and the three ways the running server fails to build —
-//! each a [`PluginError`] under an `oauth2.*` code the host renders by READING a template, never by
+//! each a [`PluginError`] under an `tokenmint.*` code the host renders by READING a template, never by
 //! calling into this crate.
 
 use busbar_contract::bounded::BoundedVec;
@@ -18,31 +18,32 @@ pub const LOCALE: &str = "en";
 
 // ── consent ───────────────────────────────────────────────────────────────────────────────────
 /// The consent screen was reached with no pending authorization request (a bookmark, a refresh).
-pub const CONSENT_NO_REQUEST: &str = "oauth2.consent.no_request";
+pub const CONSENT_NO_REQUEST: &str = "tokenmint.consent.no_request";
 /// The approval was submitted without a live session cookie.
-pub const CONSENT_NO_SESSION: &str = "oauth2.consent.no_session";
+pub const CONSENT_NO_SESSION: &str = "tokenmint.consent.no_session";
 /// The platform RNG failed, so no session could be opened.
-pub const CONSENT_NO_ENTROPY: &str = "oauth2.consent.no_entropy";
+pub const CONSENT_NO_ENTROPY: &str = "tokenmint.consent.no_entropy";
 /// The operator's `issuer` path cannot be expressed as a `Set-Cookie` header value.
-pub const CONSENT_NOT_REPRESENTABLE: &str = "oauth2.consent.not_representable";
+pub const CONSENT_NOT_REPRESENTABLE: &str = "tokenmint.consent.not_representable";
 // ── the `oauth_as:` block ─────────────────────────────────────────────────────────────────────
 /// `issuer` is empty.
-pub const CONFIG_MISSING_ISSUER: &str = "oauth2.config.missing_issuer";
+pub const CONFIG_MISSING_ISSUER: &str = "tokenmint.config.missing_issuer";
 /// `issuer` is not an absolute `http(s)` URL.
-pub const CONFIG_ISSUER_NOT_ABSOLUTE: &str = "oauth2.config.issuer_not_absolute";
+pub const CONFIG_ISSUER_NOT_ABSOLUTE: &str = "tokenmint.config.issuer_not_absolute";
 /// `issuer` carries a query or a fragment.
-pub const CONFIG_ISSUER_HAS_QUERY_OR_FRAGMENT: &str = "oauth2.config.issuer_has_query_or_fragment";
+pub const CONFIG_ISSUER_HAS_QUERY_OR_FRAGMENT: &str =
+    "tokenmint.config.issuer_has_query_or_fragment";
 /// `issuer` ends in `/`.
-pub const CONFIG_ISSUER_HAS_TRAILING_SLASH: &str = "oauth2.config.issuer_has_trailing_slash";
+pub const CONFIG_ISSUER_HAS_TRAILING_SLASH: &str = "tokenmint.config.issuer_has_trailing_slash";
 /// `default_grant` names something that is not an RFC 6749 §3.3 scope token.
-pub const CONFIG_SCOPE_NOT_A_TOKEN: &str = "oauth2.config.scope_not_a_token";
+pub const CONFIG_SCOPE_NOT_A_TOKEN: &str = "tokenmint.config.scope_not_a_token";
 // ── build ─────────────────────────────────────────────────────────────────────────────────────
 /// The configured signing key could not be loaded.
-pub const BUILD_SIGNING_KEY: &str = "oauth2.build.signing_key";
+pub const BUILD_SIGNING_KEY: &str = "tokenmint.build.signing_key";
 /// The signing key material did not decode as base64 PKCS#8.
-pub const BUILD_SIGNING_KEY_MATERIAL: &str = "oauth2.build.signing_key_material";
+pub const BUILD_SIGNING_KEY_MATERIAL: &str = "tokenmint.build.signing_key_material";
 /// `oauth-as` refused to build its service.
-pub const BUILD_SERVICE: &str = "oauth2.build.service";
+pub const BUILD_SERVICE: &str = "tokenmint.build.service";
 
 /// One refusal, classed and coded, with the crate's own words for the log.
 #[must_use]
@@ -131,7 +132,7 @@ mod tests {
         c.check().expect("well-formed");
         assert_eq!(c.entries.as_slice().len(), ENTRIES.len());
         for (code, _) in ENTRIES {
-            assert!(code.starts_with("oauth2."), "{code}");
+            assert!(code.starts_with("tokenmint."), "{code}");
             assert!(
                 c.template(code, "de").is_some(),
                 "{code} falls back to the default locale"

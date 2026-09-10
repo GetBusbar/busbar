@@ -1,4 +1,4 @@
-# busbar-control-oauth2 — busbar's OAuth 2.1 authorization server, as a CONTROL-kind crate.
+# busbar-control-tokenmint — busbar's OAuth 2.1 authorization server, as a CONTROL-kind crate.
 #
 # WHAT A CONTROL CRATE MAY NAME, and why this list is short. A control surface is an unmetered way
 # of reaching busbar's controls and obtaining a credential; it is not a data plane and runs none of
@@ -9,7 +9,7 @@
 # substrate or core. `kind-isolation` measures that: this crate's only busbar edge is
 # `busbar-contract`.
 [package]
-name = "busbar-control-oauth2"
+name = "busbar-control-tokenmint"
 version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
@@ -18,7 +18,7 @@ description = "busbar as an OAuth 2.1 authorization server: the control-kind cra
 license = "Apache-2.0"
 
 [lib]
-name = "busbar_control_oauth2"
+name = "busbar_control_tokenmint"
 path = "src/lib.rs"
 
 [dependencies]

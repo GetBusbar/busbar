@@ -7,7 +7,7 @@
 //! ## What is here and what is NOT
 //!
 //! No router, no extractor, no engine handle. The composition builds a [`Request`] from whatever
-//! arrived, hands it to [`OAuth2Control::answer`] with the row's [`Handler`], and sends the
+//! arrived, hands it to [`TokenMint::answer`] with the row's [`Handler`], and sends the
 //! [`Response`] back. `oauth-as` also ships an `axum` feature that hands back a ready-made router,
 //! and busbar does not use it: that router is a single `fallback`, so its paths would enter the
 //! tree with NO entry in the composition's route table.
@@ -33,7 +33,7 @@ use http::{HeaderValue, StatusCode};
 
 use crate::catalog;
 use crate::claims::Handler;
-use crate::surface::OAuth2Control;
+use crate::surface::TokenMint;
 
 /// A parsed request with its body already buffered. The composition's body-size cap has fired
 /// before this is built.
@@ -41,7 +41,7 @@ pub type Request = http::Request<Bytes>;
 /// A complete response; the composition frames it.
 pub type Response = http::Response<Bytes>;
 
-impl OAuth2Control {
+impl TokenMint {
     /// Answer ONE request on the row whose handler is `handler`.
     pub async fn answer(&self, handler: Handler, request: Request) -> Response {
         match handler {
@@ -57,7 +57,7 @@ impl OAuth2Control {
 /// The whole of busbar's OAuth wire surface is this function. Nothing is inspected, rewritten or
 /// re-decided on the way through: the RFCs define these responses down to the header, and a gateway
 /// that "improves" one of them fails a conformance suite for a reason nobody can find.
-pub async fn forward(surface: &OAuth2Control, request: Request) -> Response {
+pub async fn forward(surface: &TokenMint, request: Request) -> Response {
     // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one call
     // site — cold relative to the data planes, and boxing keeps the caller's future small.
     Box::pin(
@@ -70,7 +70,7 @@ pub async fn forward(surface: &OAuth2Control, request: Request) -> Response {
 }
 
 /// `GET {issuer}/consent` — the screen that names the client and the scopes and asks the operator.
-pub fn consent_screen(surface: &OAuth2Control, request: &Request) -> Response {
+pub fn consent_screen(surface: &TokenMint, request: &Request) -> Response {
     // The SAME decode the framework's `Query` extractor performed, and the same rejection when it
     // fails, so a query this deployment used to accept is one it still accepts.
     let query =
@@ -159,7 +159,7 @@ pub fn session_cookies(identity: &crate::config::Identity, id: &str) -> [String;
 /// The approval is staked against the exact client and scope set the pending request carries,
 /// read out of the `return` URL rather than from the form: a form field naming the scope would be a
 /// value the browser could change between being shown one thing and approving another.
-pub fn consent_submit(surface: &OAuth2Control, request: &Request) -> Response {
+pub fn consent_submit(surface: &TokenMint, request: &Request) -> Response {
     // THE SAME `Form` READ the framework extractor performed, rejection for rejection: a wrong
     // content type is a `415` and a malformed body a `400`, each with the extractor's own text.
     if !is_form_content_type(request) {

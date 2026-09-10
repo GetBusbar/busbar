@@ -3,8 +3,8 @@
 
 //! THE RUNNING AUTHORIZATION SERVER: what exists only when `oauth_as:` is configured.
 //!
-//! Everything expensive on this surface is reachable from [`OAuth2Control`], and [`OAuth2Control`]
-//! is built in exactly one place — [`OAuth2Control::build`], called once, from the composition's
+//! Everything expensive on this surface is reachable from [`TokenMint`], and [`TokenMint`]
+//! is built in exactly one place — [`TokenMint::build`], called once, from the composition's
 //! boot path, only when the operator wrote the config block. That is the whole of the
 //! zero-cost-when-off property: the composition holds an `Option`, and `None` allocates nothing,
 //! spawns nothing, and mounts nothing.
@@ -43,7 +43,7 @@ pub type AsServer = AuthorizationServer<AsStore, SystemClock>;
 pub type AsService = oauth_as::http::AuthorizationService<AsStore, SystemClock>;
 
 /// EVERYTHING THIS SURFACE ALLOCATES. Absent unless `oauth_as:` is configured.
-pub struct OAuth2Control {
+pub struct TokenMint {
     identity: Identity,
     service: AsService,
     server: Arc<AsServer>,
@@ -84,7 +84,7 @@ impl std::fmt::Display for AsBuildError {
     }
 }
 
-impl OAuth2Control {
+impl TokenMint {
     /// Build the plane. Called ONCE, from the boot path, only when `oauth_as:` is present.
     ///
     /// `key_material` is the resolved secret, already read from wherever the `SecretRef` pointed;
@@ -291,7 +291,7 @@ pub fn spawn_sweeper(
     });
 }
 
-/// The build refusal as the contract's one structured error, under an `oauth2.build.*` code.
+/// The build refusal as the contract's one structured error, under an `tokenmint.build.*` code.
 impl From<AsBuildError> for PluginError {
     fn from(e: AsBuildError) -> Self {
         let (class, code) = match &e {

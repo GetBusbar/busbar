@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! # busbar-control-oauth2 — busbar as an OAuth 2.1 authorization server, as a CONTROL-kind crate
+//! # busbar-control-tokenmint — busbar as an OAuth 2.1 authorization server, as a CONTROL-kind crate
 //!
 //! ## What this crate is for
 //!
@@ -23,7 +23,7 @@
 //!   handler and the path SEGMENTS as [`busbar_contract::grammar::PathSeg::Lit`], so a gate that
 //!   never links this crate can read what it serves;
 //! * every refusal the crate itself makes is ONE [`busbar_contract::error::PluginError`] under an
-//!   `oauth2.*` code, and the [`catalog`] beside the claims templates every one of them; what
+//!   `tokenmint.*` code, and the [`catalog`] beside the claims templates every one of them; what
 //!   `oauth-as` answers on the wire is forwarded unchanged — the RFCs fix those bytes;
 //! * the bodies ([`answer`]) are written over the `http` vocabulary and nothing else: no router,
 //!   no extractor, no engine handle. The composition hands a request across and takes a response
@@ -31,12 +31,12 @@
 //!
 //! ## It costs nothing when it is not configured
 //!
-//! The composition holds an `Option<`[`OAuth2Control`]`>`: `None` constructs no server, allocates
+//! The composition holds an `Option<`[`TokenMint`]`>`: `None` constructs no server, allocates
 //! no store, generates or reads no signing key, spawns no sweeper and mounts no route.
 //!
 //! ## The three registration mechanisms: ALL THREE ON, NO TOGGLES
 //!
-//! Pre-registration ([`OAuth2Control::server`]), RFC 7591 DCR ([`policy`], confined by a ceiling
+//! Pre-registration ([`TokenMint::server`]), RFC 7591 DCR ([`policy`], confined by a ceiling
 //! the registrant cannot move) and Client ID Metadata Documents ([`cimd`]) are on whenever the
 //! crate is. The CIMD FETCH is not this crate's: the URL is attacker-supplied and the
 //! resolve-then-pin guard that makes it safe belongs to the node, so the fetch is a seam
@@ -48,7 +48,7 @@
 //! tokens and registered clients are lost on restart. Closing that means implementing
 //! `oauth_as::store::Storage` over the contract's `Store` face, whose `take_*` methods have to be
 //! the face's atomic `claim_key` or refresh tokens double-spend across nodes — recorded in
-//! `docs/design/control-oauth2-rebuild.md` as the seam still owed.
+//! `docs/design/control-tokenmint-rebuild.md` as the seam still owed.
 
 #![forbid(unsafe_code)]
 #![deny(rustdoc::broken_intra_doc_links)]
@@ -67,4 +67,4 @@ pub use answer::{Request, Response};
 pub use catalog::catalog;
 pub use cimd::CimdFetch;
 pub use config::{Identity, Section};
-pub use surface::{spawn_sweeper, OAuth2Control, SweepFault};
+pub use surface::{spawn_sweeper, SweepFault, TokenMint};
