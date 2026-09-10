@@ -507,6 +507,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "busbar-control-oauth2"
+version = "1.6.0"
+dependencies = [
+ "base64 0.23.1",
+ "busbar-contract",
+ "bytes",
+ "http",
+ "oauth-as",
+ "ring",
+ "serde",
+ "serde_json",
+ "serde_urlencoded",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "busbar-core"
 version = "1.6.0"
 dependencies = [
