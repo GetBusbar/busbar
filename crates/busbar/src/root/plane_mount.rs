@@ -828,21 +828,36 @@ fn arrival_over<'a>(
 /// The recognition question is a plain function call and wants the short spelling; the walk is a
 /// future and cannot use it. Both compose through [`arrival_over`], so there is still one arrival
 /// shape and not two.
-/// ONE ARRIVAL OVER ONE REQUEST, exactly as the mount composes one, for a cell that has to ask a leg
-/// a question the mount would have asked it.
+/// THE MOUNT'S OWN COMPOSITION OF ONE ARRIVAL, for a cell that has to ask a leg a question the mount
+/// would have asked it.
 ///
 /// Test-only and `pub(crate)`, so a plane's own cells reach the mount's composition rather than
-/// hand-building a fact set beside it. The alternative is the thing this whole file exists against:
-/// a second spelling of what a mounted arrival carries, in a test, drifting away from the one the
-/// mount actually publishes — and a leg asserted against the copy would pass while failing on the
-/// wire.
+/// hand-build a fact set beside it. The alternative is the thing this whole file exists against: a
+/// second spelling of what a mounted arrival carries, in a test, drifting away from the one the
+/// mount publishes — and a leg asserted against the copy would pass while failing on the wire.
+///
+/// Three names rather than one closure-taking helper, because the arrival borrows the pairs and the
+/// pairs borrow the facts: a caller that has to hold an arrival ACROSS AN AWAIT — which is every
+/// caller asking a leg whose walk is asynchronous — needs both to live on its own frame, and a
+/// closure's cannot.
 #[cfg(test)]
-pub(crate) fn arrival_of_request<T>(
-    parts: &axum::http::request::Parts,
-    body: &[u8],
-    f: impl FnOnce(&busbar_contract::transport::Arrival<'_>) -> T,
-) -> T {
-    with_arrival(&mount_facts(parts), body, f)
+pub(crate) fn test_facts(parts: &axum::http::request::Parts) -> Vec<(String, String)> {
+    mount_facts(parts)
+}
+
+/// The pairs one arrival borrows, for the caller of [`test_facts`].
+#[cfg(test)]
+pub(crate) fn test_pairs(facts: &[(String, String)]) -> Vec<(&str, &str)> {
+    fact_pairs(facts)
+}
+
+/// The arrival itself, over the pairs the caller is holding.
+#[cfg(test)]
+pub(crate) fn test_arrival<'a>(
+    pairs: &'a [(&'a str, &'a str)],
+    body: &'a [u8],
+) -> busbar_contract::transport::Arrival<'a> {
+    arrival_over(pairs, body)
 }
 
 fn with_arrival<T>(

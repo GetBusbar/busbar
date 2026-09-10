@@ -436,3 +436,219 @@ async fn an_unclaimed_route_goes_around_the_loop_to_the_surface_underneath() {
     );
     rig.server.shutdown().await;
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE PAIRING: ONE REQUEST, TWO DOORS, ONE SET OF BYTES
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+/// The head of one book's chain, in hexadecimal.
+///
+/// The HEAD and not the record count, because two chains with the same head hold the same bytes in
+/// the same order — which is what "identical ledger bytes" means and what a count cannot say.
+fn head(book: &Arc<Mutex<Durability>>) -> String {
+    book.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .journal
+        .head_hex()
+}
+
+/// The link one unit left on the principal's chain, as the four fields an operator reads.
+fn links(key: &busbar_api::VirtualKey) -> Vec<(String, String, String, u16)> {
+    busbar_core::proxy::reqlog::REQUESTS
+        .records_for(&key.id)
+        .into_iter()
+        .map(|r| (r.pool, r.outcome, r.reason, r.status))
+        .collect()
+}
+
+/// The headers a caller of this dialect sends. ONE spelling, handed to both legs, because a
+/// difference here would be a difference in the request rather than in the door.
+fn caller_headers() -> axum::http::HeaderMap {
+    let mut h = axum::http::HeaderMap::new();
+    h.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    h.insert(
+        axum::http::header::AUTHORIZATION,
+        axum::http::HeaderValue::from_static("Bearer sk-mounted"),
+    );
+    h
+}
+
+/// **ONE REQUEST, THROUGH BOTH DOORS, LEAVING ONE SET OF BYTES.**
+///
+/// The cell this slot is for. The plane's driven path and the plane's MOUNTED path are two ways into
+/// one walk, and what must be true of them is not that they behave similarly — it is that a unit
+/// costs the same and leaves the same record whichever way it came in. Anything less is a deployment
+/// where turning a mount on re-prices the traffic.
+///
+/// Two deployments, ONE caller, the same bytes. Each has its own book, so the two chains are compared
+/// rather than summed, and each is seeded by nothing — the head after one unit is the head of exactly
+/// that unit's records.
+///
+/// Three readings, and the last decides:
+///
+/// - the link on the principal's chain — pool, outcome, reason, status — which is what the unit SAYS
+///   about itself to an operator;
+/// - how many records each book took, which is what it settled;
+/// - and the chain HEAD, which is every byte of every record in order.
+///
+/// ## Why the clock is read either side
+///
+/// A posting is DATED in whole seconds: the window it is billed in and the stamp it is entered under
+/// both come off one `Arrived::secs()`. Two legs driven either side of a second boundary therefore
+/// date their postings one second apart, and their chains differ for a reason that is the FIXTURE's
+/// clock and not the door. That is not a property to assert on, so it is retried: the clock is read
+/// before and after, and a reading that straddled a tick is taken again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_request_through_either_door_leaves_one_chain_head_and_one_link() {
+    for attempt in 0..8 {
+        let before = busbar_substrate_values::store::now();
+        let Some((driven, mounted_leg, key)) = one_request_each_way().await else {
+            continue;
+        };
+        if busbar_substrate_values::store::now() != before {
+            continue;
+        }
+
+        let seen = links(&key);
+        assert_eq!(seen.len(), 2, "one unit each way, one link each");
+        assert_eq!(
+            seen[0], seen[1],
+            "the mounted unit says exactly what the driven one says"
+        );
+        assert_eq!(
+            journalled(&driven),
+            journalled(&mounted_leg),
+            "and settles exactly as many times"
+        );
+        assert_eq!(
+            head(&driven),
+            head(&mounted_leg),
+            "IDENTICAL LEDGER BYTES: two chains, one head (attempt {attempt})"
+        );
+        return;
+    }
+    panic!("the wall clock ticked on every attempt; the pairing was never read within one second");
+}
+
+/// Drive the same request through the driven door and through the mounted one, on two deployments
+/// that resolve the SAME caller, and hand back their two books.
+///
+/// `None` where either deployment did not answer, which is not a comparison to make.
+#[allow(clippy::type_complexity)]
+async fn one_request_each_way() -> Option<(
+    Arc<Mutex<Durability>>,
+    Arc<Mutex<Durability>>,
+    Arc<busbar_api::VirtualKey>,
+)> {
+    // LEG 1 — THE DRIVEN DOOR. The arrival this plane's own body-model ingress composes, walked
+    // through `LlmNode::answer`, which is the entry point the switched-over ingress table installs.
+    let driven = deployment(false, None).await;
+    let key = Arc::clone(&driven.key);
+    let response = driven
+        .node
+        .answer(
+            busbar_llm::unit::walk::WalkArrival {
+                host: busbar_core::plane_host::engine_host(&driven.app),
+                gov: busbar_api::PlaneRequestCtx {
+                    key: Some(Arc::clone(&key)),
+                },
+                proto: PROTO,
+                operation: busbar_api::operation::Operation::CHAT,
+                caller_token: Some("sk-mounted".to_string()),
+                headers: caller_headers(),
+                body: axum::body::Bytes::from(chat_body(false)),
+                path: None,
+            },
+            None,
+        )
+        .await;
+    let answered = response.status() == 200;
+    // DRAINED, because the late arm fires on the last frame: a book read before the body finished is
+    // a book read at a different moment, and the comparison would be of two moments.
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+    driven.server.shutdown().await;
+    if !answered {
+        return None;
+    }
+
+    // LEG 2 — THE MOUNTED DOOR. The same bytes, at the same address, through the composed router.
+    let second = deployment(false, Some(Arc::clone(&key))).await;
+    let resolved = Arc::clone(&key);
+    let leg = LlmLeg::assemble(
+        second.node,
+        Arc::new(BootIngress::new(
+            busbar_core::plane_host::engine_host(&second.app),
+            move |_| busbar_api::PlaneRequestCtx {
+                key: Some(Arc::clone(&resolved)),
+            },
+        )),
+    );
+    let router = mount(
+        a_surface_underneath(),
+        Arc::new(leg),
+        busbar_kernel::teller::Kernel::new(),
+        1024 * 1024,
+    );
+    let response = through(router, chat_body(false)).await;
+    let answered = response.status() == 200;
+    let _ = axum::body::to_bytes(response.into_body(), usize::MAX).await;
+    second.server.shutdown().await;
+    answered.then_some((driven.book, second.book, key))
+}
+
+/// **AND THE ENDING THE MOUNT IS HANDED IS THE KERNEL'S OWN.**
+///
+/// The half the paired cell cannot see, because a router hands back a response and not an ending.
+/// `AlreadySettled` here would compile and would be a lie — it tells the mount the kernel settled
+/// this unit at its own exit, which is the one thing that did not happen — and a mount that believed
+/// it would render a refusal for the wrong reason on the one path where the answer is absent.
+///
+/// So the leg is asked directly, and what it hands back still carries its posting: settled from a
+/// LEND, which is the whole of what this slot's seam commits bought.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_posting() {
+    let d = deployment(false, None).await;
+    let resolved = Arc::clone(&d.key);
+    let leg = LlmLeg::assemble(
+        d.node,
+        Arc::new(BootIngress::new(
+            busbar_core::plane_host::engine_host(&d.app),
+            move |_| busbar_api::PlaneRequestCtx {
+                key: Some(Arc::clone(&resolved)),
+            },
+        )),
+    );
+
+    let body = chat_body(false);
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri(CHAT)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .header(axum::http::header::AUTHORIZATION, "Bearer sk-mounted")
+        .body(axum::body::Body::empty())
+        .expect("builds");
+    let (parts, _) = request.into_parts();
+    // The mount's own composition, on THIS frame, because the arrival is borrowed across the leg's
+    // await exactly as it is inside the mount.
+    let facts = crate::root::plane_mount::test_facts(&parts);
+    let pairs = crate::root::plane_mount::test_pairs(&facts);
+    let arrival = crate::root::plane_mount::test_arrival(&pairs, &body);
+    let (ended, response) = leg.serve(&arrival).await;
+    d.server.shutdown().await;
+
+    assert_eq!(
+        response.status(),
+        200,
+        "the unit ran and the answer is the plane's own"
+    );
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("a unit that ran ends Settled; `AlreadySettled` here would be a lie");
+    };
+    assert!(
+        end.posted().is_ok(),
+        "and the ending still carries the posting it settled from a lend"
+    );
+}

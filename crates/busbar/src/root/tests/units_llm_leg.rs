@@ -24,7 +24,9 @@ fn probe<T>(
         .body(axum::body::Body::empty())
         .expect("the probe always builds");
     let (parts, _) = request.into_parts();
-    plane_mount::arrival_of_request(&parts, body, f)
+    let facts = plane_mount::test_facts(&parts);
+    let pairs = plane_mount::test_pairs(&facts);
+    f(&plane_mount::test_arrival(&pairs, body))
 }
 
 /// **THE LADDER IS WHAT NAMES THE DIALECT, and it names it off a HEADER.**
