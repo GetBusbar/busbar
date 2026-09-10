@@ -192,7 +192,7 @@ pub(super) struct Admitted {
 /// admitted path by the size of a response nobody on it will ever carry.
 fn admit(
     host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::store::VirtualKey,
     agent_id: &str,
     shape: &super::registry::TaskShape,
     now_secs: u64,
@@ -301,7 +301,7 @@ fn admit(
 /// has an unambiguous address for it, `POST /a2a/agents/{id}`, which the refusal names.
 fn select(
     host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::store::VirtualKey,
     shape: &super::registry::TaskShape,
 ) -> Result<String, Box<Response>> {
     let Some(plane) = crate::a2a::runtime_arc_of(host) else {
@@ -867,7 +867,7 @@ impl busbar_substrate::plane_host::GauntletPlane for A2aInvokePlane {
 #[allow(clippy::too_many_arguments)] // plumbing: each arg is an independent request input
 pub(super) async fn invoke(
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::store::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
     wire: Wire,
@@ -925,7 +925,7 @@ pub(super) async fn invoke(
 /// will one day be missing from the thirteenth.
 async fn invoke_inner(
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::store::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
     wire: Wire,
@@ -1019,7 +1019,7 @@ async fn invoke_inner(
 #[allow(clippy::too_many_arguments)]
 async fn admitted(
     engine_host: Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    gov: busbar_api::PlaneRequestCtx,
+    gov: busbar_contract::store::PlaneRequestCtx,
     principal: busbar_api::AuthPrincipal,
     target: Target,
     a2a_version: &'static str,

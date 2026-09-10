@@ -1184,42 +1184,59 @@ impl ChainSink {
     }
 }
 
-impl busbar_api::Store for ChainSink {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::store::Store for ChainSink {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
     // ── The neutral kind-tagged verbs, delegating to the named task-event methods above ──────────
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         match record.kind.as_str() {
             crate::record::KIND_TASK_EVENT => {
                 let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
@@ -1235,24 +1252,29 @@ impl busbar_api::Store for ChainSink {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::store::PlaneSelector,
+    ) -> busbar_contract::store::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::record::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
-                .events
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .filter(|(id, _)| id == p)
-                .map(|(_, body)| body.clone())
-                .collect()),
+            (crate::record::KIND_TASK_EVENT, busbar_contract::store::PlaneSelector::Parent(p)) => {
+                Ok(self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .filter(|(id, _)| id == p)
+                    .map(|(_, body)| body.clone())
+                    .collect())
+            }
             _ => Ok(Vec::new()),
         }
     }
 }
 
 impl ChainSink {
-    fn list_task_events(&self, task_id: &str) -> busbar_api::StoreResult<Vec<crate::TaskEventRow>> {
+    fn list_task_events(
+        &self,
+        task_id: &str,
+    ) -> busbar_contract::store::StoreResult<Vec<crate::TaskEventRow>> {
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())

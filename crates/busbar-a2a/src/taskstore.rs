@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use crate::record::{DIGEST_VERSION_LEN_PREFIXED, KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
-use busbar_api::{PlaneSelector, StoreError, StoreResult};
+use busbar_contract::store::{PlaneSelector, StoreError, StoreResult};
 use busbar_substrate::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleEngineError, HandleMeta, MutateError, Mutation,
     RehydrateOutcome, SealedEvent, SubmitRecord, SweepBounds,
@@ -962,7 +962,7 @@ pub struct TaskTestHarness {
 #[cfg(any(test, feature = "test-support"))]
 impl TaskTestHarness {
     /// Fresh isolated harness over `store` (the durable sink).
-    pub fn over(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn over(store: Arc<dyn busbar_contract::store::Store>) -> Self {
         let reg = TaskRegistry::new();
         reg.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
             store,
@@ -972,7 +972,7 @@ impl TaskTestHarness {
 
     /// Re-open a harness over `store` — a RESTART: the durable store is unchanged and a new registry
     /// (empty working set) is returned for the rehydrate to fill.
-    pub fn restart(store: Arc<dyn busbar_api::Store>) -> Self {
+    pub fn restart(store: Arc<dyn busbar_contract::store::Store>) -> Self {
         Self::over(store)
     }
 }
@@ -986,7 +986,7 @@ impl TaskTestHarness {
 /// over this blanket impl, while a bare `dyn Store` resolves here.
 #[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // a complete named-vocabulary surface; not every method is exercised by every suite
-pub trait TaskStoreTestExt: busbar_api::Store {
+pub trait TaskStoreTestExt: busbar_contract::store::Store {
     fn put_task(&self, task: &TaskRow) -> StoreResult<()> {
         self.upsert_plane_record(&task.to_plane_record()?)
     }
@@ -1016,7 +1016,7 @@ pub trait TaskStoreTestExt: busbar_api::Store {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl<T: busbar_api::Store + ?Sized> TaskStoreTestExt for T {}
+impl<T: busbar_contract::store::Store + ?Sized> TaskStoreTestExt for T {}
 
 /// THE READ-BACK HALF, shared by every battery that asserts on this chain — the durable-sink test
 /// double, relocated here with the task subsystem so the batteries that attach it to the process-wide

@@ -376,13 +376,13 @@ fn the_durable_handle_engine_and_its_rows_survive_erase_into_a_core_box_dyn_any_
                         terminal: false,
                         cursor: 0,
                     },
-                    row_record: busbar_api::PlaneRecord {
+                    row_record: busbar_contract::store::PlaneRecord {
                         kind: "witness".to_string(),
                         id: row.id.clone(),
                         parent: None,
                         seq: 0,
                         ts: 1,
-                        disposition: busbar_api::PlaneDisposition::Active,
+                        disposition: busbar_contract::store::PlaneDisposition::Active,
                         body: row.body.clone().into_bytes(),
                     },
                     // Chainless: this witness is about type survival, not the provenance chain.

@@ -1290,47 +1290,68 @@ async fn a_delete_whose_durable_clear_fails_keeps_the_config_and_returns_the_err
     /// every other, so the failure is deterministic without disturbing any concurrent test that
     /// writes through the same process-global registry while the sink is attached.
     struct RefuseOneTaskRow(busbar_store_memory::MemoryStore);
-    impl busbar_api::Store for RefuseOneTaskRow {
-        fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    impl busbar_contract::store::Store for RefuseOneTaskRow {
+        fn put_key(
+            &self,
+            key: &busbar_contract::store::VirtualKey,
+        ) -> busbar_contract::store::StoreResult<()> {
             self.0.put_key(key)
         }
-        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        fn get_key(
+            &self,
+            id: &str,
+        ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>>
+        {
             self.0.get_key(id)
         }
-        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        fn list_keys(
+            &self,
+        ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
             self.0.list_keys()
         }
-        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
             self.0.delete_key(id)
         }
-        fn get_usage(&self, b: &str, w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        fn get_usage(
+            &self,
+            b: &str,
+            w: u64,
+        ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
             self.0.get_usage(b, w)
         }
         fn put_usage(
             &self,
             b: &str,
             w: u64,
-            l: &busbar_api::UsageLedger,
-        ) -> busbar_api::StoreResult<()> {
+            l: &busbar_contract::store::UsageLedger,
+        ) -> busbar_contract::store::StoreResult<()> {
             self.0.put_usage(b, w, l)
         }
-        fn add_metering(&self, d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        fn add_metering(
+            &self,
+            d: &busbar_contract::store::MeteringDelta,
+        ) -> busbar_contract::store::StoreResult<()> {
             self.0.add_metering(d)
         }
-        fn list_metering(&self, b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        fn list_metering(
+            &self,
+            b: u64,
+        ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
             self.0.list_metering(b)
         }
         fn upsert_plane_record(
             &self,
-            record: &busbar_api::PlaneRecord,
-        ) -> busbar_api::StoreResult<()> {
+            record: &busbar_contract::store::PlaneRecord,
+        ) -> busbar_contract::store::StoreResult<()> {
             if record.id == "push-delfail" {
-                return Err(busbar_api::StoreError("disk is full".to_string()));
+                return Err(busbar_contract::store::StoreError(
+                    "disk is full".to_string(),
+                ));
             }
             self.0.upsert_plane_record(record)
         }
     }
-    let refusing: std::sync::Arc<dyn busbar_api::Store> =
+    let refusing: std::sync::Arc<dyn busbar_contract::store::Store> =
         std::sync::Arc::new(RefuseOneTaskRow(busbar_store_memory::MemoryStore::new()));
     TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
         refusing,

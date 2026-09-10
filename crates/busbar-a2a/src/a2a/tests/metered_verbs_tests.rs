@@ -27,7 +27,7 @@
 use super::relay_harness::*;
 
 /// Every metering row this plane wrote in the current bucket.
-async fn a2a_rows(h: &Harness) -> Vec<busbar_api::MeteringRow> {
+async fn a2a_rows(h: &Harness) -> Vec<busbar_contract::store::MeteringRow> {
     h.gov.flush_metering();
     h.gov
         .store()

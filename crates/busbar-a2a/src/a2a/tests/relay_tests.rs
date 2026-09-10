@@ -40,14 +40,14 @@ use crate::a2a::relay::{ChunkFlow, StreamHead};
 
 /// A key with exactly these `agent` grants. `None` is the WILDCARD principal — an omitted list, not
 /// an empty one, and the difference is the whole of `scope_allowed`'s fail-closed cross-kind rule.
-fn a_key(id: &str, agents: Option<&[&str]>) -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn a_key(id: &str, agents: Option<&[&str]>) -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: id.to_string(),
         generation_hash: String::new(),
         name: id.to_string(),
         allowed_scopes: agents.map(|list| {
             list.iter()
-                .map(|a| busbar_api::ScopeRef {
+                .map(|a| busbar_contract::store::ScopeRef {
                     kind: crate::a2a::inbound::SCOPE_KIND_AGENT.to_string(),
                     value: (*a).to_string(),
                 })

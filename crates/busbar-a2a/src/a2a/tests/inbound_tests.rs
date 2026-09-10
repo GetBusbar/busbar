@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::a2a::registry::AgentRegistration;
-use busbar_api::ScopeRef;
+use busbar_contract::store::ScopeRef;
 use busbar_substrate::trust::{Observation, Sighting};
 use std::collections::BTreeMap;
 

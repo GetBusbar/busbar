@@ -71,7 +71,7 @@
 // against a real registration.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use busbar_api::VirtualKey;
+use busbar_contract::store::VirtualKey;
 
 use busbar_api::SecretRef;
 use busbar_substrate::egress_auth::gate::{EgressRefusal, EgressSubject, Requirement};

@@ -20,7 +20,7 @@
 //!
 //! ## The read-back is the assertion, and it cannot be skipped
 //!
-//! `busbar_api::Store`'s task methods are DEFAULTED to accept-and-keep-nothing, so a write's
+//! `busbar_contract::store::Store`'s task methods are DEFAULTED to accept-and-keep-nothing, so a write's
 //! `Ok(())` is worthless as evidence and the shipped memory store answers every read with an empty
 //! list. Every chain battery therefore attaches `EventLedger` as the registry's sink for the
 //! duration (`relay_harness::with_ledger`), so an empty read-back is a FAILURE and is asserted as

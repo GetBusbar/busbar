@@ -91,7 +91,7 @@ pub(super) fn select_member(
     engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     scope: &busbar_substrate::plane_host::DispatchScope,
     plane: &super::plane::A2aPlane,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::store::VirtualKey,
     kind: &'static str,
     admitted_agent: &str,
     generation: u64,
@@ -265,7 +265,7 @@ fn member_facts(
 pub(super) fn hop_facts<'a>(
     engine_host: &dyn busbar_substrate::plane_host::EngineHost,
     plane: &super::plane::A2aPlane,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::store::VirtualKey,
     admitted: &'a super::receive::Admitted,
     target: &'a str,
     grant: super::creds::EgressGrant<'a>,
@@ -388,7 +388,7 @@ pub(super) fn render_pin_mismatch(
 /// whatever shape was invented.
 pub(super) fn extended_agent_card(
     engine_host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
-    key: &busbar_api::VirtualKey,
+    key: &busbar_contract::store::VirtualKey,
     rpc_id: &serde_json::Value,
 ) -> Response {
     let Some(plane) = crate::a2a::runtime_arc_of(engine_host) else {

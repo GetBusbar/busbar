@@ -73,48 +73,69 @@ impl DurableTaskStore {
     }
 }
 
-impl busbar_api::Store for DurableTaskStore {
-    fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+impl busbar_contract::store::Store for DurableTaskStore {
+    fn put_key(
+        &self,
+        key: &busbar_contract::store::VirtualKey,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_key(key)
     }
-    fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>> {
         self.inner.get_key(id)
     }
-    fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         self.inner.list_keys()
     }
-    fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+    fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
         self.inner.delete_key(id)
     }
     fn get_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-    ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+    ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
         self.inner.get_usage(bucket_id, window_start)
     }
     fn put_usage(
         &self,
         bucket_id: &str,
         window_start: u64,
-        ledger: &busbar_api::UsageLedger,
-    ) -> busbar_api::StoreResult<()> {
+        ledger: &busbar_contract::store::UsageLedger,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.put_usage(bucket_id, window_start, ledger)
     }
-    fn add_metering(&self, delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::store::MeteringDelta,
+    ) -> busbar_contract::store::StoreResult<()> {
         self.inner.add_metering(delta)
     }
-    fn list_metering(&self, bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         self.inner.list_metering(bucket)
     }
     // ── The neutral kind-tagged verbs, delegating to the named task methods above ────────────────
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         match record.kind.as_str() {
             crate::record::KIND_TASK => self.put_task(&TaskRow::from_body(&record.body)?),
             _ => Ok(()),
         }
     }
-    fn get_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(
+        &self,
+        kind: &str,
+        id: &str,
+    ) -> busbar_contract::store::StoreResult<Option<Vec<u8>>> {
         match kind {
             crate::record::KIND_TASK => self
                 .get_task(id)?
@@ -123,7 +144,10 @@ impl busbar_api::Store for DurableTaskStore {
             _ => Ok(None),
         }
     }
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         match record.kind.as_str() {
             crate::record::KIND_TASK_EVENT => self.append_event_body(record),
             _ => Ok(()),
@@ -132,26 +156,32 @@ impl busbar_api::Store for DurableTaskStore {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
-    ) -> busbar_api::StoreResult<Vec<Vec<u8>>> {
+        selector: &busbar_contract::store::PlaneSelector,
+    ) -> busbar_contract::store::StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::record::KIND_TASK, busbar_api::PlaneSelector::All) => self
+            (crate::record::KIND_TASK, busbar_contract::store::PlaneSelector::All) => self
                 .list_tasks()?
                 .iter()
                 .map(|r| r.to_plane_record().map(|rec| rec.body))
                 .collect(),
-            (crate::record::KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
-                .events
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .filter(|((id, _), _)| id == p)
-                .map(|(_, body)| body.clone())
-                .collect()),
+            (crate::record::KIND_TASK_EVENT, busbar_contract::store::PlaneSelector::Parent(p)) => {
+                Ok(self
+                    .events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .iter()
+                    .filter(|((id, _), _)| id == p)
+                    .map(|(_, body)| body.clone())
+                    .collect())
+            }
             _ => Ok(Vec::new()),
         }
     }
-    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+    fn purge_plane_records_before(
+        &self,
+        kind: &str,
+        before: u64,
+    ) -> busbar_contract::store::StoreResult<u64> {
         match kind {
             crate::record::KIND_TASK => self.purge_tasks_before(before),
             _ => Ok(0),
@@ -160,7 +190,7 @@ impl busbar_api::Store for DurableTaskStore {
 }
 
 impl DurableTaskStore {
-    fn put_task(&self, task: &TaskRow) -> busbar_api::StoreResult<()> {
+    fn put_task(&self, task: &TaskRow) -> busbar_contract::store::StoreResult<()> {
         self.tasks
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -168,7 +198,7 @@ impl DurableTaskStore {
         Ok(())
     }
 
-    fn get_task(&self, task_id: &str) -> busbar_api::StoreResult<Option<TaskRow>> {
+    fn get_task(&self, task_id: &str) -> busbar_contract::store::StoreResult<Option<TaskRow>> {
         Ok(self
             .tasks
             .lock()
@@ -177,7 +207,7 @@ impl DurableTaskStore {
             .cloned())
     }
 
-    fn list_tasks(&self) -> busbar_api::StoreResult<Vec<TaskRow>> {
+    fn list_tasks(&self) -> busbar_contract::store::StoreResult<Vec<TaskRow>> {
         Ok(self
             .tasks
             .lock()
@@ -187,7 +217,7 @@ impl DurableTaskStore {
             .collect())
     }
 
-    fn purge_tasks_before(&self, before: u64) -> busbar_api::StoreResult<u64> {
+    fn purge_tasks_before(&self, before: u64) -> busbar_contract::store::StoreResult<u64> {
         let mut tasks = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         let before_count = tasks.len();
         // The contract: TERMINAL rows only. An interrupt waiting on a human is exactly the row that
@@ -204,7 +234,10 @@ impl DurableTaskStore {
 
     /// Persist ONE task-event body VERBATIM, keyed by `(task_id, seq)` from the record's `parent`/`seq`
     /// — the opaque neutral envelope a real backend keeps, no decode on the write path.
-    fn append_event_body(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+    fn append_event_body(
+        &self,
+        record: &busbar_contract::store::PlaneRecord,
+    ) -> busbar_contract::store::StoreResult<()> {
         let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
         self.events
             .lock()
@@ -220,7 +253,7 @@ fn durable() -> Arc<DurableTaskStore> {
 
 /// The SHIPPED RAM default, which implements none of the task methods and therefore drops
 /// everything. Used to prove the durability assertions are not vacuous.
-fn ram_default() -> Arc<dyn busbar_api::Store> {
+fn ram_default() -> Arc<dyn busbar_contract::store::Store> {
     Arc::new(busbar_store_memory::MemoryStore::new())
 }
 
@@ -228,7 +261,7 @@ fn ram_default() -> Arc<dyn busbar_api::Store> {
 
 /// "Process 1": submit two tasks, take one to `working`, interrupt the other on `auth-required`
 /// with a real artifact cursor. Returns the registry so a caller can inspect it before dropping it.
-fn process_one(store: Arc<dyn busbar_api::Store>) -> TaskTestHarness {
+fn process_one(store: Arc<dyn busbar_contract::store::Store>) -> TaskTestHarness {
     let h = TaskTestHarness::over(store);
     let reg = &h.reg;
     reg.submit(
@@ -274,7 +307,9 @@ fn process_one(store: Arc<dyn busbar_api::Store>) -> TaskTestHarness {
 /// Restart over the SAME durable `store` and REHYDRATE — the "process 2" half every restart test runs.
 /// Opens a fresh registry (empty working set) over the unchanged durable store, reads the persisted
 /// rows back, and returns the fresh harness + the rehydrate report.
-fn restart_and_restore(store: Arc<dyn busbar_api::Store>) -> (TaskTestHarness, Rehydrated) {
+fn restart_and_restore(
+    store: Arc<dyn busbar_contract::store::Store>,
+) -> (TaskTestHarness, Rehydrated) {
     let h = TaskTestHarness::restart(store.clone());
     let out = h
         .reg
@@ -294,7 +329,7 @@ fn restart_and_restore(store: Arc<dyn busbar_api::Store>) -> (TaskTestHarness, R
 #[test]
 fn in_flight_tasks_survive_a_restart_over_a_durable_backend() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
 
     {
         let h1 = process_one(handle.clone());
@@ -375,7 +410,7 @@ fn the_ram_default_loses_every_in_flight_task_and_the_registry_says_so() {
 #[test]
 fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     process_one(handle.clone());
 
     let seq_before = handle.list_task_events("t-paused").unwrap().len() as u64;
@@ -420,7 +455,7 @@ fn an_interrupt_resumes_after_a_restart_and_its_chain_continues() {
 #[test]
 fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
 
     // GREEN first: the untouched chain verifies, and it verified over a chain with real length.
@@ -475,7 +510,7 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
     // decides whether it belongs in the digest.
     {
         let store = durable();
-        let handle: Arc<dyn busbar_api::Store> = store.clone();
+        let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
         process_one(handle);
         store.tamper_event("t-paused", 2, |e| {
             let TaskEventRow {
@@ -500,7 +535,7 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
 
     fn perturbation_breaks(edit: fn(&mut TaskEventRow)) -> bool {
         let store = durable();
-        let handle: Arc<dyn busbar_api::Store> = store.clone();
+        let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
         let h = process_one(handle.clone());
         store.tamper_event("t-paused", 2, edit);
         h.reg
@@ -552,7 +587,7 @@ fn the_task_event_digest_covers_every_content_field_and_excludes_the_join_key() 
 #[test]
 fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     process_one(handle.clone());
     store.tamper_event("t-paused", 1, |e| e.principal = "someone-else".to_string());
 
@@ -576,7 +611,7 @@ fn a_tampered_chain_is_reported_on_restore_and_the_task_is_still_restored() {
 #[test]
 fn a_caller_can_never_read_another_tenants_task_and_cannot_probe_for_it() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle);
     let reg = &h.reg;
 
@@ -621,7 +656,7 @@ fn a_caller_can_never_read_another_tenants_task_and_cannot_probe_for_it() {
 #[test]
 fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
     reg.transition(
@@ -662,7 +697,7 @@ fn compaction_collects_terminal_tasks_and_never_an_interrupt() {
 fn the_submit_time_sweep_evicts_an_expired_terminal_task_and_its_journal_footprint() {
     let (ttl_secs, _cap) = TaskRegistry::retention_bounds();
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
     reg.transition(
@@ -731,7 +766,7 @@ fn the_submit_time_sweep_evicts_an_expired_terminal_task_and_its_journal_footpri
 fn the_cap_evicts_only_terminal_tasks_and_never_a_live_one() {
     let (ttl_secs, cap) = TaskRegistry::retention_bounds();
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
     // Far past every TTL, so the fill also proves age ALONE never evicts a live task.
@@ -799,7 +834,7 @@ fn the_cap_evicts_only_terminal_tasks_and_never_a_live_one() {
 #[test]
 fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     {
         let h1 = process_one(handle.clone());
         h1.reg
@@ -831,7 +866,7 @@ fn a_terminal_task_is_counted_on_restore_and_deliberately_not_loaded() {
 #[test]
 fn an_unreadable_row_is_counted_rather_than_silently_dropped() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     process_one(handle.clone());
     // A row written by a hypothetical newer engine carrying a state this binary does not know.
     let mut row = handle.get_task("t-work").unwrap().unwrap();
@@ -852,51 +887,72 @@ fn an_unreadable_row_is_counted_rather_than_silently_dropped() {
 fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
     /// A store whose task writes always fail (a full disk, a dead connection).
     struct RefusingStore(busbar_store_memory::MemoryStore);
-    impl busbar_api::Store for RefusingStore {
-        fn put_key(&self, key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+    impl busbar_contract::store::Store for RefusingStore {
+        fn put_key(
+            &self,
+            key: &busbar_contract::store::VirtualKey,
+        ) -> busbar_contract::store::StoreResult<()> {
             self.0.put_key(key)
         }
-        fn get_key(&self, id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        fn get_key(
+            &self,
+            id: &str,
+        ) -> busbar_contract::store::StoreResult<Option<busbar_contract::store::VirtualKey>>
+        {
             self.0.get_key(id)
         }
-        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+        fn list_keys(
+            &self,
+        ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::VirtualKey>> {
             self.0.list_keys()
         }
-        fn delete_key(&self, id: &str) -> busbar_api::StoreResult<()> {
+        fn delete_key(&self, id: &str) -> busbar_contract::store::StoreResult<()> {
             self.0.delete_key(id)
         }
-        fn get_usage(&self, b: &str, w: u64) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+        fn get_usage(
+            &self,
+            b: &str,
+            w: u64,
+        ) -> busbar_contract::store::StoreResult<busbar_contract::store::UsageLedger> {
             self.0.get_usage(b, w)
         }
         fn put_usage(
             &self,
             b: &str,
             w: u64,
-            l: &busbar_api::UsageLedger,
-        ) -> busbar_api::StoreResult<()> {
+            l: &busbar_contract::store::UsageLedger,
+        ) -> busbar_contract::store::StoreResult<()> {
             self.0.put_usage(b, w, l)
         }
-        fn add_metering(&self, d: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+        fn add_metering(
+            &self,
+            d: &busbar_contract::store::MeteringDelta,
+        ) -> busbar_contract::store::StoreResult<()> {
             self.0.add_metering(d)
         }
-        fn list_metering(&self, b: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+        fn list_metering(
+            &self,
+            b: u64,
+        ) -> busbar_contract::store::StoreResult<Vec<busbar_contract::store::MeteringRow>> {
             self.0.list_metering(b)
         }
         fn upsert_plane_record(
             &self,
-            record: &busbar_api::PlaneRecord,
-        ) -> busbar_api::StoreResult<()> {
+            record: &busbar_contract::store::PlaneRecord,
+        ) -> busbar_contract::store::StoreResult<()> {
             self.put_task(&TaskRow::from_body(&record.body)?)
         }
     }
 
     impl RefusingStore {
-        fn put_task(&self, _t: &TaskRow) -> busbar_api::StoreResult<()> {
-            Err(busbar_api::StoreError("disk is full".to_string()))
+        fn put_task(&self, _t: &TaskRow) -> busbar_contract::store::StoreResult<()> {
+            Err(busbar_contract::store::StoreError(
+                "disk is full".to_string(),
+            ))
         }
     }
 
-    let store: Arc<dyn busbar_api::Store> =
+    let store: Arc<dyn busbar_contract::store::Store> =
         Arc::new(RefusingStore(busbar_store_memory::MemoryStore::new()));
     let h = TaskTestHarness::over(store);
     let reg = &h.reg;
@@ -920,7 +976,7 @@ fn a_failed_durable_write_leaves_the_working_set_agreeing_with_the_store() {
 #[test]
 fn the_artifact_cursor_never_moves_backwards() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
     let before = handle.list_task_events("t-paused").unwrap().len();
 
@@ -947,7 +1003,7 @@ fn the_artifact_cursor_never_moves_backwards() {
 #[test]
 fn a_push_callback_survives_the_restart_with_its_task() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     {
         let h1 = process_one(handle.clone());
         h1.reg
@@ -996,7 +1052,7 @@ fn a_mutation_against_an_unknown_task_is_refused() {
 #[test]
 fn an_illegal_transition_writes_neither_a_row_nor_an_event() {
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
     h.reg
         .transition(
@@ -1049,7 +1105,7 @@ fn the_ssrf_floor_runs_a2a_side_and_the_engine_stores_what_it_is_handed() {
     // And the neutral engine persists whatever the floor already cleared — `None` for the hostile
     // one — making no security decision inline.
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle);
     let reg = &h.reg;
     let cleared = pushnotify::floor_callback("t-paused", Some(hostile.to_string()));
@@ -1077,7 +1133,7 @@ fn an_abandoned_active_task_is_cancelled_with_a_chained_event_and_then_ages_out(
     let (ttl_secs, _cap) = TaskRegistry::retention_bounds();
     let abandon = TaskRegistry::abandon_ceiling_secs();
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
     let view = busbar_substrate::plane::store::PlaneStoreView::narrow(handle.clone());
@@ -1177,7 +1233,7 @@ fn an_abandoned_active_task_is_cancelled_with_a_chained_event_and_then_ages_out(
 fn the_abandonment_ceiling_is_enforced_without_any_new_submission() {
     let abandon = TaskRegistry::abandon_ceiling_secs();
     let store = durable();
-    let handle: Arc<dyn busbar_api::Store> = store.clone();
+    let handle: Arc<dyn busbar_contract::store::Store> = store.clone();
     let h = process_one(handle.clone());
     let reg = &h.reg;
 

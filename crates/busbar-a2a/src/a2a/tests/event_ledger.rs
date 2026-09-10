@@ -22,7 +22,7 @@ use std::sync::Mutex;
 
 use crate::record::{KIND_TASK, KIND_TASK_EVENT};
 use crate::{TaskEventRow, TaskRow};
-use busbar_api::StoreResult;
+use busbar_contract::store::StoreResult;
 
 /// Holds task rows and chained task events for the life of one test process.
 #[derive(Default)]
@@ -53,16 +53,16 @@ impl EventLedger {
     }
 }
 
-impl busbar_api::Store for EventLedger {
-    fn put_key(&self, _key: &busbar_api::VirtualKey) -> StoreResult<()> {
+impl busbar_contract::store::Store for EventLedger {
+    fn put_key(&self, _key: &busbar_contract::store::VirtualKey) -> StoreResult<()> {
         Ok(())
     }
 
-    fn get_key(&self, _id: &str) -> StoreResult<Option<busbar_api::VirtualKey>> {
+    fn get_key(&self, _id: &str) -> StoreResult<Option<busbar_contract::store::VirtualKey>> {
         Ok(None)
     }
 
-    fn list_keys(&self) -> StoreResult<Vec<busbar_api::VirtualKey>> {
+    fn list_keys(&self) -> StoreResult<Vec<busbar_contract::store::VirtualKey>> {
         Ok(Vec::new())
     }
 
@@ -74,28 +74,28 @@ impl busbar_api::Store for EventLedger {
         &self,
         _bucket_id: &str,
         _window_start: u64,
-    ) -> StoreResult<busbar_api::UsageLedger> {
-        Ok(busbar_api::UsageLedger::default())
+    ) -> StoreResult<busbar_contract::store::UsageLedger> {
+        Ok(busbar_contract::store::UsageLedger::default())
     }
 
     fn put_usage(
         &self,
         _bucket_id: &str,
         _window_start: u64,
-        _ledger: &busbar_api::UsageLedger,
+        _ledger: &busbar_contract::store::UsageLedger,
     ) -> StoreResult<()> {
         Ok(())
     }
 
-    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> StoreResult<()> {
+    fn add_metering(&self, _delta: &busbar_contract::store::MeteringDelta) -> StoreResult<()> {
         Ok(())
     }
 
-    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> StoreResult<Vec<busbar_contract::store::MeteringRow>> {
         Ok(Vec::new())
     }
 
-    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
+    fn upsert_plane_record(&self, record: &busbar_contract::store::PlaneRecord) -> StoreResult<()> {
         if record.kind == KIND_TASK {
             self.tasks
                 .lock()
@@ -118,7 +118,7 @@ impl busbar_api::Store for EventLedger {
         Ok(None)
     }
 
-    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> StoreResult<()> {
+    fn append_plane_record(&self, record: &busbar_contract::store::PlaneRecord) -> StoreResult<()> {
         if record.kind == KIND_TASK_EVENT {
             let task_id = record.parent.clone().unwrap_or_else(|| record.id.clone());
             self.events
@@ -132,17 +132,17 @@ impl busbar_api::Store for EventLedger {
     fn list_plane_records(
         &self,
         kind: &str,
-        selector: &busbar_api::PlaneSelector,
+        selector: &busbar_contract::store::PlaneSelector,
     ) -> StoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (KIND_TASK, busbar_api::PlaneSelector::All) => self
+            (KIND_TASK, busbar_contract::store::PlaneSelector::All) => self
                 .tasks
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .values()
                 .map(|r| r.to_plane_record().map(|rec| rec.body))
                 .collect(),
-            (KIND_TASK_EVENT, busbar_api::PlaneSelector::Parent(p)) => Ok(self
+            (KIND_TASK_EVENT, busbar_contract::store::PlaneSelector::Parent(p)) => Ok(self
                 .events
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

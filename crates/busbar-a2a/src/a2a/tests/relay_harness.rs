@@ -478,7 +478,7 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
 /// ATTACH A DURABLE TASK-EVENT SINK FOR THE DURATION OF ONE TEST, and hold the lock that keeps two
 /// of these from interleaving on the process-wide registry. The caller drops the guard when done.
 ///
-/// Every chain claim in this suite has to read the events BACK, and `busbar_api::Store`'s task
+/// Every chain claim in this suite has to read the events BACK, and `busbar_contract::store::Store`'s task
 /// methods are defaulted to accept-and-keep-nothing — the shipped memory store this harness
 /// configures answers every read with an empty list. A test that read `h.gov.store()` therefore got
 /// an empty answer on every run, and any `if events.is_empty() { return; }` around the assertion
@@ -644,7 +644,8 @@ pub(super) async fn harness_full(
     use busbar_substrate::governance::NewKeySpec;
     engine().metrics_init();
 
-    let store: Arc<dyn busbar_api::Store> = Arc::new(busbar_store_memory::MemoryStore::new());
+    let store: Arc<dyn busbar_contract::store::Store> =
+        Arc::new(busbar_store_memory::MemoryStore::new());
     // Two handles on the SAME key material: one inside the governance registry (which consumes it)
     // and one for the test to mint the caller's audience-bound token with, so the verifier busbar
     // runs is verifying a token this test really minted.
@@ -679,7 +680,7 @@ pub(super) async fn harness_full(
     scoped.allowed_scopes = Some(
         granted
             .iter()
-            .map(|a| busbar_api::ScopeRef {
+            .map(|a| busbar_contract::store::ScopeRef {
                 kind: crate::a2a::inbound::SCOPE_KIND_AGENT.to_string(),
                 value: (*a).to_string(),
             })

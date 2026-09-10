@@ -36,12 +36,12 @@ fn registration_with(cred: Option<OutboundCredential>) -> AgentRegistration {
 /// There is no way to reach a mint without one, and that is the point of the type: the grant is the
 /// inbound principal's authority for THIS backend, and a mint that could be reached without it is
 /// busbar spending its own credential on behalf of a caller that never held the reach.
-fn a_caller() -> busbar_api::VirtualKey {
-    busbar_api::VirtualKey {
+fn a_caller() -> busbar_contract::store::VirtualKey {
+    busbar_contract::store::VirtualKey {
         id: "k-caller".to_string(),
         generation_hash: String::new(),
         name: "caller".to_string(),
-        allowed_scopes: Some(vec![busbar_api::ScopeRef {
+        allowed_scopes: Some(vec![busbar_contract::store::ScopeRef {
             kind: crate::a2a::inbound::SCOPE_KIND_AGENT.to_string(),
             value: "planner".to_string(),
         }]),
