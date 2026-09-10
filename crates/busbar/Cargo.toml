@@ -128,6 +128,10 @@ axum = { workspace = true }
 http-body = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
+# The export fan-out's payload type. The projection grammar builds a `serde_json::Value` per
+# distinct projection (`root::units_export`), and each sink is handed it by reference — the root
+# never re-parses and never re-serializes on the way in.
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 # THE THREAD-PER-CORE BOOT SEAM — the one unix data-plane topology (non-unix keeps the classic
 # runtime as a compile-time platform shape; no knob selects either). Binary-only deps — nothing on

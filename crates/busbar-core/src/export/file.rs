@@ -8,27 +8,33 @@
 //! `export.request-log-file`; absent ⇒ no file sink.
 
 use crate::config::ExportCfg;
-use crate::export::PayloadCache;
-use busbar_plugin::cold::export::projection::Projection;
+use crate::export::BuiltinPushSink;
 use busbar_plugin_loader::ExportStream;
 
 /// The streams THIS SINK carries. Its own declaration, in its own file — not an entry in a table
 /// somewhere else keyed on the name an operator happened to write in `module:`. This is the const
 /// that becomes `ExportHandler::streams()` when the sink becomes `busbar-export-file`.
 pub(crate) const STREAMS: &[ExportStream] = &[ExportStream::Logs];
-use crate::limits::admission::AdmissionGate;
+use serde_json::Value;
 use std::io::Write;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+use tokio::sync::OwnedSemaphorePermit;
 
 /// How many blocking append tasks ONE file sink may have in flight at once. Every append is a
 /// `spawn_blocking` holding an owned `String`, and they SERIALIZE on the sink's `Mutex` — so on a
 /// slow or stalled filesystem (a full disk, a hung NFS/EBS mount) an unbounded fan-out accumulates
-/// one blocked blocking-pool thread and one owned line per request, without limit. Bounded the same
-/// way the sibling webhook exporter is bounded (an [`AdmissionGate`]: shed the log, count the shed,
-/// never block the request path). Deliberately a compiled-in constant rather than a new setting: the
-/// file exporter's config surface is frozen for 1.5.3, and this is a resource FLOOR that no
-/// deployment has a reason to tune (the value matches the webhook exporter's default cap).
+/// one blocked blocking-pool thread and one owned line per request, without limit. THE SINK STATES
+/// the bound; the composition root ENFORCES it (shed the log, count the shed, never block the
+/// request path), because capacity is a property of the composition and not of a sink that knows
+/// nothing about what else is running beside it. Deliberately a compiled-in constant rather than a
+/// new setting: the file exporter's config surface is frozen for 1.5.3, and this is a resource
+/// FLOOR that no deployment has a reason to tune (the value matches the webhook exporter's default
+/// cap).
 const MAX_INFLIGHT_FILE_APPENDS: usize = 64;
+
+/// This sink's `busbar_admission_denied_total{gate="..."}` label, stated here and handed to the
+/// root with the rest of the sink's declaration — never a string the fan-out invented.
+const GATE: &str = "request-log-file";
 
 /// How many rotated archives ONE sink keeps (`<path>.1` .. `<path>.{ROTATE_ARCHIVE_LIMIT}`) before
 /// the oldest is dropped to make room for a new rotation. This is a RETENTION policy, not a
@@ -44,66 +50,47 @@ struct FileSink {
     path: String,
     rotate_bytes: Option<u64>,
     lock: Mutex<()>,
-    /// This sink's OWN in-flight append cap — one gate PER named instance, exactly as each named
-    /// webhook instance owns its own (a stalled audit-mount sink must not shed the local tail file's
-    /// lines, or vice versa).
-    gate: AdmissionGate,
-    /// This instance's PROJECTION — see the sibling webhook sink: the line this sink is handed is
-    /// built to exactly this, so an ungranted field is never written to disk.
-    projection: Projection,
 }
 
-/// Every configured `module: request-log-file` instance, in config order, set once at boot. Unset ⇒
-/// no file sink at all. 1.5.3: a `Vec` because `export:` is a NAMED map — two named file instances
-/// (e.g. a local tail file and an audit-mount file) are a legitimate configuration.
-static SINKS: OnceLock<Vec<FileSink>> = OnceLock::new();
-
-/// Configure the request-log file sinks from the resolved `export:` block — one per named
-/// `module: request-log-file` instance. No-op when none is configured.
-pub(crate) fn configure(cfg: &ExportCfg) {
-    if cfg.request_log_files.is_empty() {
-        return;
-    }
-    let _ = SINKS.set(
-        cfg.request_log_files
-            .iter()
-            .map(|f| FileSink {
+/// Declare this module's configured instances to the composition root — one [`BuiltinPushSink`]
+/// per named `module: request-log-file` instance, in config order. Empty when none is configured.
+///
+/// 1.5.3: `export:` is a NAMED map, so two file instances (e.g. a local tail file and an
+/// audit-mount file) are a legitimate configuration, and each gets its OWN capacity — a stalled
+/// audit-mount sink must not shed the local tail file's lines, or vice versa.
+pub(crate) fn sinks(cfg: &ExportCfg) -> Vec<BuiltinPushSink> {
+    cfg.request_log_files
+        .iter()
+        .map(|f| {
+            let sink = Arc::new(FileSink {
                 path: f.path.clone(),
                 rotate_bytes: f.rotate_mb.map(|mb| mb.saturating_mul(1024 * 1024)),
                 lock: Mutex::new(()),
-                gate: AdmissionGate::new(MAX_INFLIGHT_FILE_APPENDS, "request-log-file"),
+            });
+            BuiltinPushSink {
                 projection: f.projection,
-            })
-            .collect(),
-    );
+                max_inflight: MAX_INFLIGHT_FILE_APPENDS,
+                gate: GATE,
+                dropped_total: crate::metrics::FILE_LOGS_DROPPED_TOTAL,
+                ship: Box::new(move |payload: &Value, permit| {
+                    // Built to THIS sink's projection by the root (shared with any sibling holding
+                    // the identical one), so an ungranted field is never written to disk.
+                    append_one(sink.clone(), payload.to_string(), permit);
+                }),
+            }
+        })
+        .collect()
 }
 
 /// Append one request-log line to the JSONL file. No-op when unconfigured. Fire-and-forget: the blocking
 /// filesystem write is offloaded to the blocking pool so it never stalls the async request-finish path,
 /// and any I/O error is logged (once) rather than propagated — telemetry must not affect serving.
-/// BOUNDED per sink by [`MAX_INFLIGHT_FILE_APPENDS`]: a stalled filesystem sheds logs (counted on
-/// `busbar_file_logs_dropped_total` + `busbar_admission_denied_total{gate="request-log-file"}`)
-/// rather than accumulating tasks and owned lines without limit.
-pub(crate) fn deliver(cache: &mut PayloadCache<'_>) {
-    let Some(sinks) = SINKS.get() else {
-        return;
-    };
-    for sink in sinks {
-        // Built to THIS sink's projection (shared with any sibling holding the identical one).
-        append_one(sink, cache.get(sink.projection).to_string());
-    }
-}
-
-/// Append one already-serialized line to ONE sink, off the async path. Split out of [`deliver`] so
-/// the fan-out over named instances stays a plain loop.
-fn append_one(sink: &'static FileSink, line: String) {
-    // Take an append slot WITHOUT waiting; drop this log (counted) rather than block the request
-    // path or pile up an unbounded backlog of blocked blocking-pool tasks when the sink is saturated.
-    // Same posture — and the same mechanic — as the webhook exporter's shed.
-    let Some(permit) = sink.gate.try_enter() else {
-        metrics::counter!(crate::metrics::FILE_LOGS_DROPPED_TOTAL).increment(1);
-        return;
-    };
+/// BOUNDED per sink by [`MAX_INFLIGHT_FILE_APPENDS`], which the ROOT enforces before it calls
+/// here: a stalled filesystem sheds logs (counted on `busbar_file_logs_dropped_total` +
+/// `busbar_admission_denied_total{gate="request-log-file"}`) rather than accumulating tasks and
+/// owned lines without limit. The `permit` is that slot; it is moved into the blocking task and
+/// released by its `Drop` when the append ends.
+fn append_one(sink: Arc<FileSink>, line: String, permit: OwnedSemaphorePermit) {
     tokio::task::spawn_blocking(move || {
         let _permit = permit; // slot releases on task end via the owned permit's Drop.
         let _guard = sink.lock.lock().unwrap_or_else(|e| e.into_inner());

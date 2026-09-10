@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! `AdmissionGate`: the ONE non-blocking "try to get a slot, or don't" mechanic shared by every
-//! hand-rolled `tokio::sync::Semaphore` + `try_acquire` capacity gate in the gateway (the inbound
-//! request cap, the webhook-delivery cap, the tap-notification cap). Each such site is a distinct
-//! POLICY (what happens on denial — shed a 503, drop a log, skip a tap) wrapped around the SAME
-//! mechanic (acquire-or-count-and-tell-the-caller-no). `AdmissionGate` unifies only the mechanic;
-//! it deliberately does not know or care what a caller does with a `None`.
+//! `AdmissionGate`: the ONE non-blocking "try to get a slot, or don't" mechanic behind every
+//! hand-rolled `tokio::sync::Semaphore` + `try_acquire` capacity gate in the gateway. Each such site
+//! is a distinct POLICY (what happens on denial — shed a 503, drop a log, skip a tap) wrapped around
+//! the SAME mechanic (acquire-or-count-and-tell-the-caller-no). `AdmissionGate` unifies only the
+//! mechanic; it deliberately does not know or care what a caller does with a `None`.
+//!
+//! WHAT IS LEFT IN THIS FILE. The export sinks' gates are not here any more: the composition root
+//! sheds for them now (`busbar/src/root/units_export/admission.rs` carries the same twenty-four
+//! lines by identity), because capacity is a property of the composition and a sink of kind
+//! `export` may not name this crate at all. What remains below is the OUTERMOST inbound-concurrency
+//! cap — one `Layer`/`Service` pair whose only caller is `router.rs`, which is a different thing
+//! wearing the same mechanic and goes where that router goes. `busbar-substrate`'s
+//! `proxy_vocab::spawn_bounded_tap` is a third hand-copy; it dies with the substrate.
 //!
 //! Explicitly OUT of scope (left as-is; NOT admission control): the per-lane dispatch semaphore
 //! (`main.rs`'s `sem: Semaphore::new(max_concurrent)`), `proxy/engine/walk.rs`'s deadline-racing

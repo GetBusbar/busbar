@@ -72,6 +72,8 @@ pub mod transports;
 pub mod units_a2a;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;
+/// The export kind's fan-out: the root builds each sink's payload, sheds for it and calls it.
+pub mod units_export;
 #[cfg(feature = "root-llm")]
 pub mod units_llm;
 #[cfg(feature = "root-mcp")]

@@ -59,7 +59,7 @@ use std::time::Duration;
 
 use axum::Router;
 
-use busbar_core::{admin, config, config_validate, export, metrics, observability, tls};
+use busbar_core::{admin, config, config_validate, metrics, observability, tls};
 use busbar_core::{
     build_app_from_config, build_split_routers_with_limits, load_config_from_disk,
     preflight_plugins_and_secrets, validate_builtin_secrets_resolve, LoadedConfig,
@@ -1420,12 +1420,13 @@ async fn run(data_workers: usize) {
          re-learned from live traffic"
     );
 
-    // Configure the built-in request-log EXPORTERS (every named `request-log-webhook` /
-    // `request-log-file` instance) from the resolved `export:` block (the webhook
-    // exporter owns its delivery client). No-op when no request-log sink is configured (the default). The
+    // COMPOSE the PUSH export sinks (every named `request-log-webhook` / `request-log-file`
+    // instance) from the resolved `export:` block, and install the fan-out the engine's
+    // request-finish path calls through. The root owns the payload build and the shed; each sink
+    // owns only its own delivery. No-op when no request-log sink is configured (the default). The
     // recorder-installing `prometheus` exporter is wired separately (`metrics::configure` above +
     // the `/metrics` plugin route in `build_app_from_config`).
-    export::configure(&resolved_export);
+    root::units_export::install(&resolved_export);
 
     // Spawn the active health probers (one per lane with a probing mode). No-op when every lane is
     // `mode: none` / has no `health:` block. The composition root owns THIS generation's engine host

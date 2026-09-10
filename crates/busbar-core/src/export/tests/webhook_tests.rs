@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the built-in `request-log-webhook` exporter — the request-log delivery + SSRF guard +
-//! AdmissionGate relocated out of `observability`. 1.5.3: the separate
+//! Tests for the built-in `request-log-webhook` exporter — the request-log delivery + SSRF guard
+//! relocated out of `observability`. The SHED that used to sit here is the composition root's now
+//! (`busbar/src/root/units_export`), and so is its test; what this module measures is what the sink
+//! itself decides: which targets survive the guard, what capacity each named instance DECLARES, and
+//! that a delivery failure never leaks userinfo. 1.5.3: the separate
 //! `generic-webhook` exporter FOLDED into this one (its only extra, `auth_header:`, is now a setting
 //! here, and its other reason to exist — a SECOND target — is what the NAMED `export:` map provides).
 
@@ -13,9 +16,9 @@ use crate::export::test_logs_projection;
 /// [`Target`] rather than read from a process-global, so it is an argument here.
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// A stand-in per-instance in-flight delivery cap. 1.5.3: the cap is carried on each
-/// named instance's [`Target`] (one `AdmissionGate` PER INSTANCE, sized to that instance's own
-/// `settings.max_inflight_deliveries`), so it too is an argument here.
+/// A stand-in per-instance in-flight delivery cap. 1.5.3: the cap is DECLARED per named instance
+/// (sized to that instance's own `settings.max_inflight_deliveries`) and enforced by the root, one
+/// gate per instance, so it too is an argument here.
 const TEST_MAX_INFLIGHT: usize = 4;
 
 /// The SSRF guard + auth-header wiring is relocated INTO the exporter: [`push_target`] accepts a
@@ -42,8 +45,8 @@ fn push_target_validates_and_carries_auth_header() {
         1,
         "a valid external https target is accepted"
     );
-    assert_eq!(targets[0].url.as_str(), "https://logs.example.com/busbar");
-    assert!(targets[0].auth.is_none());
+    assert_eq!(targets[0].0.url.as_str(), "https://logs.example.com/busbar");
+    assert!(targets[0].0.auth.is_none());
 
     // The relocated SSRF guard drops a cloud-metadata target rather than adding it.
     push_target(
@@ -81,7 +84,7 @@ fn push_target_validates_and_carries_auth_header() {
         test_logs_projection(),
     );
     assert_eq!(targets.len(), 2);
-    let (name, value) = targets[1].auth.as_ref().expect("auth header carried");
+    let (name, value) = targets[1].0.auth.as_ref().expect("auth header carried");
     assert_eq!(name, "Authorization");
     assert_eq!(value, "Bearer sekret");
 }
@@ -181,54 +184,20 @@ fn build_request_log_shape() {
     assert_eq!(p["latency_ms"], 42_u64);
 }
 
-/// Delivering with NO webhook configured is a harmless no-op — the allocation-guarded default path
-/// EVERY request-finish takes on an unconfigured deployment.
-///
-/// This test used to call `deliver_logs` and assert NOTHING, so the no-op it claims to
-/// prove was unmeasured — deleting the `TARGETS` guard left it green. The no-op is now asserted on
-/// what it OBSERVABLY means: no webhook is configured, and the call spawns NO delivery task. Neuter
-/// the guard (make the unset `TARGETS` read fall through to a delivery, e.g. via `.expect`) and this
-/// test fails instead of passing.
-#[tokio::test]
-async fn deliver_logs_is_noop_when_unconfigured() {
-    // The precondition this test measures against: TARGETS is an unset process-global (no
-    // `configure` with a valid URL runs anywhere in this binary).
-    assert!(
-        TARGETS.get().is_none(),
-        "this test measures the UNCONFIGURED path; something configured a webhook sink"
-    );
-    let rt = tokio::runtime::Handle::current();
-    let tasks_before = rt.metrics().num_alive_tasks();
-
-    let facts = crate::export::RequestLogFacts {
-        ts: 0,
-        ingress_protocol: "openai",
-        pool: "p",
-        outcome: "ok",
-        latency_ms: 1,
-    };
-    deliver_logs(&mut crate::export::PayloadCache::new(&facts));
-
-    // Yield once so a spawned task would have been polled (and, if it completed, still counted at
-    // spawn time — `num_alive_tasks` rises the moment `tokio::spawn` runs).
-    tokio::task::yield_now().await;
-    assert_eq!(
-        rt.metrics().num_alive_tasks(),
-        tasks_before,
-        "an unconfigured deliver_logs must not spawn a delivery task"
-    );
-}
-
-/// ONE ADMISSION GATE PER NAMED INSTANCE, sized to THAT instance's own configured cap.
+/// EACH NAMED INSTANCE DECLARES ITS OWN CAP, and the declaration reaches the root intact.
 /// Two named webhook sinks (the documented "app logs + SIEM" shape) are two independent delivery
 /// budgets: a stalled SIEM must not consume the permits an operator capped low on the fast sink, and
 /// the low cap must actually be enforced on the instance that declares it.
 ///
-/// Pre-fix there was ONE process-global `webhook_inflight()` gate, sized (via
-/// `LimitsResolved`) to the MAXIMUM `max_inflight_deliveries` across instances — so `Target` had no
-/// `gate` for this test to reach at all, and the cap-1 sink below was in fact admitting 3.
-#[tokio::test]
-async fn each_webhook_instance_gets_its_own_admission_gate() {
+/// Pre-1.5.3 there was ONE process-global `webhook_inflight()` gate, sized (via `LimitsResolved`) to
+/// the MAXIMUM `max_inflight_deliveries` across instances — so the cap-1 sink below was in fact
+/// admitting 3. THE ENFORCEMENT now lives in the composition root, which builds one
+/// `AdmissionGate` per declaration; that half is measured at the root
+/// (`busbar/src/root/units_export`'s `fan_out_gates_each_sink_at_its_own_declared_cap`). What is
+/// measured HERE is that this module hands over the instance's own number and never a reconciled
+/// one.
+#[test]
+fn each_webhook_instance_declares_its_own_inflight_cap() {
     let mut targets = Vec::new();
     push_target(
         &mut targets,
@@ -247,32 +216,9 @@ async fn each_webhook_instance_gets_its_own_admission_gate() {
         test_logs_projection(),
     );
     assert_eq!(targets.len(), 2);
-
-    // Each gate is sized to ITS OWN instance's cap, not to the max across instances.
-    assert_eq!(targets[0].gate.available_permits(), 1);
-    assert_eq!(targets[1].gate.available_permits(), 3);
-
-    // Saturating the slow sink leaves the fast sink's budget untouched (no cross-instance starving).
-    let held: Vec<_> = (0..3)
-        .map(|_| targets[1].gate.try_enter().expect("its own 3 slots"))
-        .collect();
-    assert!(
-        targets[1].gate.try_enter().is_none(),
-        "the slow sink is saturated at ITS cap"
-    );
     assert_eq!(
-        targets[0].gate.available_permits(),
-        1,
-        "a saturated sibling must not consume this instance's budget"
+        (targets[0].1, targets[1].1),
+        (1, 3),
+        "each instance carries ITS OWN cap, not the max across instances"
     );
-    let permit = targets[0]
-        .gate
-        .try_enter()
-        .expect("the fast sink still admits its own delivery");
-
-    // And every permit returns its slot on Drop (the fire-and-forget task holds an owned permit).
-    drop(held);
-    drop(permit);
-    assert_eq!(targets[1].gate.available_permits(), 3);
-    assert_eq!(targets[0].gate.available_permits(), 1);
 }

@@ -83,7 +83,8 @@ pub(crate) fn upstream_error_body_max_bytes() -> usize {
 
 // 1.5.3: there is deliberately NO process-global webhook-delivery-CONCURRENCY accessor
 // here either. Each NAMED `export:` webhook instance owns its `settings.max_inflight_deliveries` and
-// its own `AdmissionGate` (`export::webhook::Target::gate`), so one saturated sink can never consume
+// its own gate — DECLARED by the sink (`export::BuiltinPushSink::max_inflight`) and enforced by the
+// composition root, one `AdmissionGate` per instance — so one saturated sink can never consume
 // the budget an operator capped on another. `LimitsResolved::max_inflight_webhook_deliveries` (the
 // MAX across instances) survives only as the bound `config_validate` range-checks.
 
