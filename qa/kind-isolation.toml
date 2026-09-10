@@ -150,6 +150,47 @@ kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
 # ------------------------------------------------------------------------------------------------
+# THE FOUR DIALECT CRATES OF R6, ANNOUNCED — AND NOTHING ELSE IN THIS COMMIT
+# ------------------------------------------------------------------------------------------------
+#
+# An announcement is the FIRST of two signatures and it admits NOTHING on its own: not a [[cell]],
+# not an [[edge]], not a column. What it does is give the second signature something to be checked
+# against — `[[minted]]` and `[[minted_kind]]` refuse any row whose crate (or whose kind, through a
+# crate) is not named by an [[announced]] row IN THE MERGE-BASE'S COPY of this file.
+#
+# THIS COMMIT EXISTS BECAUSE THAT SENTENCE MAKES IT IMPOSSIBLE FOR A LANDING LINE TO SIGN BOTH.
+# `ceilings::base_ref` resolves the base as `git merge-base HEAD origin/integration/oracle-phase0`,
+# so the announcement must already be on the INTEGRATION LINE before the branch that mints against
+# it is measured. Measured on the R6 dialect track (K7, all five re-keyed lines): four
+# `unannounced-mint`, one `unannounced-kind-mint`, and thirteen `minted-row` findings that no
+# amount of correct data on the landing branch can clear, because the door is not reading the
+# landing branch. A crate cannot announce itself.
+#
+# So this lands ALONE, ahead of R6, and it is qa/*.toml only by design: nothing here compiles,
+# nothing here measures, and the runner can pop it as a base fix without a proof of any crate.
+# It is a promise about what is coming, and the ship twin reds an announced row whose crate has
+# landed, which is the ratchet that strikes all four once each mint is history.
+[[announced]]
+crate = "busbar-plane-llm-openai"
+kind = "dialect"
+reason = "the OpenAI chat-completions dialect of the LLM plane, extracted from busbar-plane-llm (R6); the first crate of the dialect kind, announced so the vault door can mint its rows"
+
+[[announced]]
+crate = "busbar-plane-llm-responses"
+kind = "dialect"
+reason = "the OpenAI Responses dialect of the LLM plane, extracted from busbar-plane-llm (R6); the second crate of the dialect kind, announced so the vault door can mint its rows"
+
+[[announced]]
+crate = "busbar-plane-llm-anthropic"
+kind = "dialect"
+reason = "the Anthropic Messages dialect of the LLM plane, extracted from busbar-plane-llm (R6, D36 section 7 order); the third crate of the dialect kind and the first detected by header rung"
+
+[[announced]]
+crate = "busbar-plane-llm-gemini"
+kind = "dialect"
+reason = "the Google Gemini dialect of the LLM plane, extracted from busbar-plane-llm (R6, D36 section 7 order); the fourth crate of the dialect kind and the first whose model rides the request target"
+
+# ------------------------------------------------------------------------------------------------
 # [[minted]] — THE ROWS A CRATE THAT DID NOT EXIST BRINGS WITH IT
 # ------------------------------------------------------------------------------------------------
 #
