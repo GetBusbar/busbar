@@ -189,9 +189,11 @@ because = "chain cache face busbar_unit_admission::{ChainCache, Chain, BucketVie
 # sentence is the rise: the root is the ONE kind entitled to name a store, a unit, a kernel and a
 # plane in the same file, and the five cells below are what naming all four of them costs. Every one
 # of them is the root composing what it mounts — none is a new dependency edge, and none of it is
-# reachable from anything but `src/root/`. It is paid for twice over by the two files it retires,
-# `busbar-core/src/calllog.rs` and `busbar-core/src/plane/auditlog.rs`, whose 1853 lines carried the
-# same chain over a foreign-function seam that no other stream will ever register on again.
+# reachable from anything but `src/root/`. The leg is built for TWO streams and one of them is
+# retired in the commit after this one: `busbar-core/src/plane/auditlog.rs` and its battery, 1375
+# lines that carried the admin chain over a foreign-function seam. The other, the per-call log, has
+# its bytes replayed through the leg here and its engine still standing; the line that retires it
+# takes this cost the rest of the way down.
 [[gate.ceiling_raises]]
 key = "cell.busbar.api.count"
 file = "qa/kind-isolation.toml"
