@@ -50,7 +50,7 @@
 //! added to the vocabulary and not declared here is red, and a row here naming a method the
 //! vocabulary does not carry is red too.
 
-use busbar_contract::transport::surface::{
+use busbar_contract::surface::{
     resolve_document, Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
 };
 

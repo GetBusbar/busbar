@@ -2,7 +2,7 @@
 //! implementation and nothing else; still a direct child module, so `use super::*` reaches the
 //! private items it always did.
 
-use busbar_contract::transport::surface::{
+use busbar_contract::surface::{
     check_surface, resolve_document, resolve_target, Answering, Bar, Dispatch,
 };
 

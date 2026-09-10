@@ -80,14 +80,21 @@ them). Each axis is blind to the other two; only the kernel composes them.
   and its measured lines, this figure amended in the same commit — the per-unit arena face
   (`bounded::Arena: Send`, the unsatisfiable `Sync` clause struck so a shipping implementor can
   exist; `docs/design/1.6.0-per-unit-arena.md`) measured 0 lines and declared nothing. THE MOUNT
-  CHAIN AMENDS THE PAIR TO **3,502** on two named faces, each declared and each counted exactly:
+  CHAIN AMENDS THE PAIR TO **3,506** on three named faces, each declared and each counted exactly:
   `busbar-caps::UnitEnd::lend_posting` / `PostingLent` — a unit's end LENDS its posting for one
   settlement and refuses the second, so an exit arm can settle from a lend instead of being handed
   the posting outright (22 lines, `unit_end.rs` + the re-export in `lib.rs`); and
   `busbar-contract::RecordSink` — the three record verbs become a trait of their own that `Store`
   IS, because the kernel's record runner and a store-kind plugin may not name each other and the
   contract is the only crate both are allowed to name (2 lines net in `kinds.rs`; the verbs MOVED
-  off `Store`'s inherent half rather than being added). Two crates carry their own surface ceilings beside it, because
+  off `Store`'s inherent half rather than being added); and `busbar-contract::surface::{WireSurface,
+  BindingDecl, Operation, Dispatch, Answering, Bar, Capture, SurfaceError, check_surface,
+  match_target, binding_at, resolve_target, resolve_service, resolve_document}` — a plane's SERVED
+  SURFACE, offered on the plugin-visible root under the name of the thing being declared, because a
+  plane that declares which operations it answers and how each is addressed had no path to the
+  vocabulary that did not make it spell the wire kind's crate name, and the blindness rule is not a
+  rule a spelling may break (4 lines in `surface.rs`; the types are re-exported, not added, so
+  `busbar-contract-transport`'s own ceiling is unmoved). Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

@@ -9,7 +9,7 @@
 //! those was written inside the protocol's own server, which is what made a wire protocol a crate.
 //!
 //! They are declared here, in the plane-agnostic vocabulary
-//! [`busbar_contract::transport::surface`] defines, and a transport mounts them without knowing what
+//! [`busbar_contract::surface`] defines, and a transport mounts them without knowing what
 //! protocol they belong to. Nothing here opens anything, holds anything or reads anything: it is a
 //! `const`.
 //!
@@ -48,9 +48,7 @@
 //! `const` can borrow. Every one of them is PINNED against the codec's own table by the tests, and a
 //! copy that is checked is not a second opinion.
 
-use busbar_contract::transport::surface::{
-    Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
-};
+use busbar_contract::surface::{Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface};
 
 use crate::ops;
 

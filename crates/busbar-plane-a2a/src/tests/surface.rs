@@ -6,7 +6,7 @@
 //! that answers `UNIMPLEMENTED` look, from outside, like a protocol that never had them.
 
 use super::*;
-use busbar_contract::transport::surface as sfc;
+use busbar_contract::surface as sfc;
 
 /// Every path template and mount this surface declares is the codec's own constant, joined the one
 /// way the codec joins it.
