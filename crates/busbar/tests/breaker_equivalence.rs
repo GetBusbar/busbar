@@ -832,18 +832,12 @@ mod shim {
     }
 
     /// Is this destination due for a health probe?
-    ///
-    /// GAP (difference 6): the unit has no destination-wide reader. The closest it can do is ask its
-    /// default cell, which is exactly the "recovers in zero pools" shape the cell is about.
     pub fn needs_probe(u: &BreakerUnit, dest: DestinationId, now: u64) -> bool {
-        !matches!(u.state("", dest, now, &super::tok()), LaneState::Ready)
+        u.needs_probe(dest, now)
     }
 
     /// A failed out-of-band probe, recorded against every cell for the destination, each against its
     /// own pool's resolved config.
-    ///
-    /// GAP (difference 6): there is no fan-out verb, and no per-pool `resolve_cfg` seam to call it
-    /// with. The closest is the default cell alone.
     pub fn probe_failure_all(
         u: &BreakerUnit,
         dest: DestinationId,
@@ -851,32 +845,19 @@ mod shim {
         resolve_cfg: &dyn Fn(&str) -> UnitCfg,
         retry_after: Option<u64>,
     ) {
-        let _ = u.observe(
-            "",
+        u.record_probe_failure_all(
             dest,
-            Outcome::Transient { retry_after },
-            &resolve_cfg(""),
             now,
             busbar_unit_breaker::clock::unix_time_nanos(),
-            &super::tok(),
+            resolve_cfg,
+            retry_after,
         );
     }
 
     /// A successful out-of-band probe: the destination is demonstrably healthy, so every cell
     /// naming it recovers.
-    ///
-    /// GAP (difference 6): `Outcome::Success` recovers the ONE cell it is addressed to. This is the
-    /// difference itself — a probe that recovers a lane everywhere today recovers it nowhere here.
     pub fn probe_success_all(u: &BreakerUnit, dest: DestinationId, now: u64) {
-        let _ = u.observe(
-            "",
-            dest,
-            Outcome::Success,
-            &UnitCfg::default(),
-            now,
-            busbar_unit_breaker::clock::unix_time_nanos(),
-            &super::tok(),
-        );
+        u.record_probe_success_all(dest, now);
     }
 
     /// Park a cell Open with an explicit deadline (the legacy's `force_open_in`), so a cell can be

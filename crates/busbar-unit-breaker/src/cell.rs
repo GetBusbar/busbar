@@ -284,6 +284,31 @@ impl BreakerCell {
         )
     }
 
+    /// Whether this cell is SUPPRESSED right now: not Closed, or Closed inside a pending cooldown.
+    ///
+    /// The out-of-band prober's filter — 1.5.5's `lane_needs_probe` closure
+    /// (`busbar-core/src/store/in_memory/availability.rs:684-691`) — and deliberately WIDER than
+    /// [`Self::ready`]. An expired-Open cell would admit, because it is probe-winnable; it is also
+    /// exactly the cell a scheduled probe exists to resolve, so that the resolving is not paid for
+    /// by whichever caller happens to arrive next.
+    pub fn suppressed(&self, now: u64) -> bool {
+        !matches!(self.verdict(now), BreakerVerdict::Ready)
+    }
+
+    /// A successful out-of-band probe's recovery close, pre-filter and all. Returns whether the
+    /// cell was actually closed.
+    ///
+    /// The lock-free pre-read is BOTH a fast path and the snapshot: it skips the transition lock
+    /// for the common already-healthy cell, and the cooldown it observed is what
+    /// [`Self::close_if_recoverable`] re-validates against under the lock. That is what keeps a
+    /// hard-down landing between the two from having its just-armed sticky cooldown clobbered by a
+    /// probe that was answering an older question.
+    pub fn recover(&self, now: u64) -> bool {
+        let observed = self.cooldown_until.load(Ordering::Acquire);
+        let suppressed = self.breaker_state.load(Ordering::Acquire) != ST_CLOSED || observed > now;
+        suppressed && self.close_if_recoverable(now, observed)
+    }
+
     /// The cell's current [`BreakerState`], for observability.
     pub fn state(&self) -> BreakerState {
         match self.breaker_state.load(Ordering::Acquire) {

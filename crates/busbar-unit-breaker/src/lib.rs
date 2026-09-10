@@ -438,9 +438,31 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     /// the failing attempt happened to run through. Returns `true` IFF the default cell's trip was
     /// fresh (it was Closed beforehand), for a trip-count metric.
     pub fn hard_down_all(&self, destination: DestinationId, now: u64) -> bool {
-        let default_cell = self.cell("", destination);
+        let mut cells = self.cells_for(destination).into_iter();
+        // The default cell is always the first of the fan-out, and its freshness is the answer.
+        let (_, default_cell) = cells
+            .next()
+            .expect("the fan-out always yields the default cell");
         let default_was_fresh = default_cell.hard_down(now, self.hard_down_cooldown_secs);
+        for (_, cell) in cells {
+            let _ = cell.hard_down(now, self.hard_down_cooldown_secs);
+        }
+        default_was_fresh
+    }
 
+    /// EVERY existing cell naming this destination — the default `""` cell first, then each named
+    /// pool's — which is the reach every destination-wide verb on this unit has.
+    ///
+    /// A destination is a shared upstream. A hard-down is a fact about it (a bad key is bad in
+    /// every pool), and so is a health probe's answer: 1.5.5's `record_hard_down_all_cells`,
+    /// `recover_lane`, `record_probe_success_all_cells` and `record_probe_failure_all_cells` all
+    /// walk exactly this set, and they walk it because a fact recorded in one pool's cell alone
+    /// leaves the other pools' traffic routing against an upstream that has already answered.
+    ///
+    /// Existing cells only, as 1.5.5 iterated: a cell not yet created inherits health lazily on
+    /// first access. The default cell is created if it is missing, because in 1.5.5 it IS the lane
+    /// and therefore always exists.
+    fn cells_for(&self, destination: DestinationId) -> Vec<(String, Arc<BreakerCell>)> {
         let pools: Vec<String> = self
             .pools_by_destination
             .read()
@@ -448,14 +470,87 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             .get(&destination)
             .cloned()
             .unwrap_or_default();
+        let mut out = vec![(String::new(), self.cell("", destination))];
         for pool in pools {
             if pool.is_empty() {
-                continue; // already tripped above
+                continue; // the default cell, already first
             }
             let cell = self.cell(&pool, destination);
-            let _ = cell.hard_down(now, self.hard_down_cooldown_secs);
+            out.push((pool, cell));
         }
-        default_was_fresh
+        out
+    }
+
+    /// Is this destination due for an out-of-band health probe? True when ANY cell naming it is
+    /// suppressed — 1.5.5's `lane_needs_probe`
+    /// (`busbar-core/src/store/in_memory/availability.rs:684-691`).
+    ///
+    /// This is the filter `ProbeMode::Dead` reads, and the one PROBE-1's `probes_due(now)`
+    /// composes on: the schedule says WHEN, this says WHETHER.
+    #[must_use]
+    pub fn needs_probe(&self, destination: DestinationId, now: u64) -> bool {
+        self.cells_for(destination)
+            .iter()
+            .any(|(_, cell)| cell.suppressed(now))
+    }
+
+    /// A SUCCESSFUL out-of-band health probe: the shared upstream is demonstrably alive, so every
+    /// cell naming it recovers — 1.5.5's `recover_lane` followed by
+    /// `record_probe_success_all_cells` (`availability.rs:595` and `:434`), which is the pair
+    /// `engine/health.rs:398,:407` calls on a 2xx.
+    ///
+    /// Recovering only the cell the probe happened to run through is the difference that made this
+    /// verb necessary: a lane recovered today across N pools would, without the fan-out, recover in
+    /// zero of them, and organic traffic would stay benched against an upstream that had just
+    /// answered. The recovery close comes first and the success outcome second, in that order,
+    /// exactly as the prober calls them — the close clears the window the outcome then seeds.
+    pub fn record_probe_success_all(&self, destination: DestinationId, now: u64) {
+        let mut recovered = false;
+        for (_, cell) in self.cells_for(destination) {
+            recovered |= cell.recover(now);
+            // Pushes the success outcome and runs the HalfOpen->Closed CAS, so a peer that won the
+            // probe between the close above and this push still gets its terminal record.
+            recovered |= cell.record_success(now);
+        }
+        if recovered {
+            self.journal.record(ProbeEvent::Succeeded {
+                pool: String::new(),
+                destination,
+                now,
+            });
+        }
+    }
+
+    /// A FAILED out-of-band health probe: record a transient against every cell naming the
+    /// destination, each evaluated against ITS OWN pool's resolved configuration — 1.5.5's
+    /// `record_probe_failure_all_cells` with its per-pool `resolve_cfg` callback
+    /// (`availability.rs:641-682`).
+    ///
+    /// The callback is the load-bearing part and not a convenience: organic traffic is selected
+    /// against the per-pool cells, and a probe failure evaluated against one default ladder would
+    /// trip a pool whose operator declared a laxer threshold and spare one who declared a stricter.
+    /// It is called with `""` for the default cell and with each pool's own name.
+    ///
+    /// The trip bool every cell returns is deliberately discarded: the out-of-band prober does not
+    /// emit the trip counter, which is reserved for the organic request path.
+    pub fn record_probe_failure_all(
+        &self,
+        destination: DestinationId,
+        now: u64,
+        now_nanos: u128,
+        resolve_cfg: &dyn Fn(&str) -> BreakerCfg,
+        retry_after: Option<u64>,
+    ) {
+        for (pool, cell) in self.cells_for(destination) {
+            let cfg = resolve_cfg(&pool);
+            let _ = cell.record_failure(
+                now,
+                now_nanos,
+                &cfg,
+                retry_after,
+                self.max_honored_retry_after_secs,
+            );
+        }
     }
 
     /// Mutating admission attempt: wins-or-loses the single-flight probe, checking the destination's
