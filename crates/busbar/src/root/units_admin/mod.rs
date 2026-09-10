@@ -1379,8 +1379,7 @@ pub(crate) fn authenticate(
             new_unit: true,
         },
         bindings.cache(),
-        bindings.keys(),
-        bindings.revocations(),
+        bindings.directory(),
         // No challenge is ever pending on this plane: the administrative claim declares no
         // handshake, so there is no earlier round for one to have come from.
         None,

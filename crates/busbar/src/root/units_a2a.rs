@@ -1122,18 +1122,13 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // The chain's answer is the chain's, and a decision has no reader on it by design — the only
         // thing that opens one is the loop, with the kernel's seal. So the principal the audit and
         // the settlement need is recorded at the next step, which is handed it.
-        // The three seams the chain cannot own, from the node's one set. The revocation view is
+        // The two seams the chain cannot own, from the node's one set. The directory's denylist is
         // what the `new_unit` answer above is FOR: an unbound session asks it every unit, a bound
         // one never does, and neither question could be asked at all while the argument was absent.
         let seams = self.bindings.auth_bindings;
-        self.bindings.auth.resolve(
-            &request,
-            seams.cache(),
-            seams.keys(),
-            seams.revocations(),
-            None,
-            token,
-        )
+        self.bindings
+            .auth
+            .resolve(&request, seams.cache(), seams.directory(), None, token)
     }
 
     fn verify(
