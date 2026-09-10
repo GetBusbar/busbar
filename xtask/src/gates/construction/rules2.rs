@@ -1528,30 +1528,51 @@ pub fn one_pricing_site(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
             .collect::<Vec<_>>()
             .join("|"),
     )?;
-    let readers: Vec<String> = tree
-        .grep(&fee_rx, true, None)
-        .into_iter()
-        .filter(|(rel, _)| !fee_crates.contains(&tree.crate_of(rel)))
-        .map(|(rel, l)| format!("{rel}:{}", l.no))
-        .collect();
+    let all_hits = tree.grep(&fee_rx, true, None);
     let mut sorted_crates = fee_crates.clone();
     sorted_crates.sort();
-    let detail = format!(
-        "{} production read(s) of {} outside {} (ceiling {max_fee}): {}",
-        readers.len(),
-        py_list(&fee_fields),
-        py_list(&sorted_crates),
-        join_or_none(&readers)
-    );
-    rows.push(plain(
-        "one-pricing-site:fee-fields",
-        readers.len() as i64 <= max_fee,
-        "the per-request fee is read only where the card lives",
-        detail,
-        readers.len() as i64,
-        max_fee,
-        readers,
-    ));
+    if all_hits.is_empty() {
+        // Zero hits for every spelling this rule knows means the rule is BLIND, not that the fee
+        // is priced nowhere: a field rename can silently retire every spelling in `fee_fields`
+        // while the rule keeps reporting whatever count it last saw. Zero is only ever read as
+        // "I cannot see the fee" — it is always a FAIL, independent of `max_fee_readers`.
+        rows.push(plain(
+            "one-pricing-site:fee-fields",
+            false,
+            "the per-request fee is read only where the card lives",
+            format!(
+                "0 production read(s) anywhere in the tree of any of {} — the rule cannot see the \
+                 fee (a spelling in `fee_fields` may no longer match the field the card uses), not \
+                 evidence that the fee is priced nowhere",
+                py_list(&fee_fields)
+            ),
+            0,
+            max_fee,
+            Vec::new(),
+        ));
+    } else {
+        let readers: Vec<String> = all_hits
+            .into_iter()
+            .filter(|(rel, _)| !fee_crates.contains(&tree.crate_of(rel)))
+            .map(|(rel, l)| format!("{rel}:{}", l.no))
+            .collect();
+        let detail = format!(
+            "{} production read(s) of {} outside {} (ceiling {max_fee}): {}",
+            readers.len(),
+            py_list(&fee_fields),
+            py_list(&sorted_crates),
+            join_or_none(&readers)
+        );
+        rows.push(plain(
+            "one-pricing-site:fee-fields",
+            readers.len() as i64 <= max_fee,
+            "the per-request fee is read only where the card lives",
+            detail,
+            readers.len() as i64,
+            max_fee,
+            readers,
+        ));
+    }
     Ok(rows)
 }
 

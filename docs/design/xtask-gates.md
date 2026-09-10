@@ -883,6 +883,15 @@ legacy had no equivalent, and each is a named FAIL with its own selftest case:
   wrong reason and one nobody can act on.
 * Every gate's walk carries a `min_files` floor and every gate's unreadable-input path emits FAIL
   rows rather than reporting a clean tree.
+* `one-pricing-site:fee-fields` treats **zero reads of every spelling in `fee_fields`, anywhere in
+  the scanned tree** as a named FAIL, independent of `max_fee_readers`. The row is keyed on field
+  spellings, so a rename that retires every one of them leaves the grep with nothing to find — and
+  the legacy shape (and this row, before this fix) read that as "outside-crate reads: 0, under
+  ceiling" and reported the same plausible PASS or FAIL it always had, with no signal that it had
+  gone blind. Zero total hits now means "the rule cannot see the fee" and fails naming the spellings
+  it looked for, never "the fee is priced nowhere" — a real zero (no card-fee read exists in the
+  tree at all) and a blind zero (the field was renamed out from under the rule) are otherwise the
+  same number.
 
 ### 6.4 What parity does NOT cover
 
