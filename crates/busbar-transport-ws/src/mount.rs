@@ -72,7 +72,7 @@ use busbar_contract_transport::registry::facts as tfacts;
 use busbar_contract_transport::session::{
     Cut, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
 };
-use busbar_contract_transport::surface::{Bar, BindingDecl, WireSurface};
+use busbar_contract_transport::surface::{Bar, BindingDecl, Capture, WireSurface};
 use busbar_contract_transport::wire::{CloseReason, TransportError};
 use busbar_transport_http::mount::Unaddressed;
 
@@ -109,19 +109,25 @@ pub struct Upgrade<'u> {
     pub credential: Option<&'u str>,
 }
 
-/// The reserved fact keys a mounted session publishes.
+/// The RESERVED fact keys a mounted session publishes.
 ///
-/// Exactly the two this transport declares in its own `TRANSPORT_FACTS`, and the test beside this
+/// Exactly the three this transport declares in its own `TRANSPORT_FACTS`, and the test beside this
 /// module holds the two lists to each other. A reserved key published but never declared is a value
 /// a plane reads that no boot check knows about, which is the failure the reserved-key registry
 /// exists to make impossible.
+///
+/// The reserved keys and not the whole published list, for the reason the request/answer mount's
+/// own `MOUNT_FACTS` is the reserved keys: a session opened at a mount PATTERN also publishes what
+/// the pattern captured, under the names the DECLARER gave them, and those are the declarer's
+/// vocabulary rather than the kernel's. A transport that had to enumerate them here would be
+/// enumerating the routes of every plane it will ever carry.
 pub const SESSION_FACTS: &[&str] = &[tfacts::PATH, tfacts::PEER, tfacts::CREDENTIAL];
 
 /// Which declared binding an upgrade was addressed to, and what this transport stands on.
 ///
 /// Built once, before the upgrade, and then carried for the life of the session. It holds no state:
 /// everything the session accumulates is behind the [`SessionHandle`], on the driver's side.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Mount<'m> {
     /// The declared binding the upgrade named.
     pub binding: &'m BindingDecl,
@@ -131,6 +137,14 @@ pub struct Mount<'m> {
     pub key: &'static str,
     /// The composed transport stack, bottom layer first.
     pub chain: &'m [&'static str],
+    /// What the binding's matched mount PATTERN captured, in declaration order.
+    ///
+    /// Empty for an all-literal mount, which is every mount declared before patterns existed. Where
+    /// it is not empty it is the ONLY thing this session is ever told about where it was opened
+    /// beyond the raw path: a session declares no target template — after the upgrade this wire has
+    /// no target at all — so the pattern that admitted the upgrade is the one place the identifier
+    /// in the published URL was written down.
+    pub captures: Vec<Capture<'m>>,
 }
 
 /// Address one upgrade against a declared surface.
@@ -162,9 +176,9 @@ pub fn address<'s>(
     surface: &'s WireSurface,
     key: &'static str,
     chain: &'s [&'static str],
-    upgrade: &Upgrade<'_>,
+    upgrade: &Upgrade<'s>,
 ) -> Result<Mount<'s>, Unaddressed> {
-    let (binding, bar) =
+    let (binding, bar, captures) =
         busbar_contract_transport::surface::duplex_binding_at(surface, key, upgrade.target)
             .ok_or(Unaddressed)?;
     Ok(Mount {
@@ -172,23 +186,39 @@ pub fn address<'s>(
         bar,
         key,
         chain,
+        captures,
     })
 }
 
-/// Build the fact list one session publishes, reserved keys first.
+/// Build the fact list one session publishes, reserved keys first and the mount's captures after.
 ///
 /// The ORDER is load-bearing for the reason it is load-bearing on the request/answer mount: every
 /// location resolved further in is resolved against these, and a session whose `path` fact was not
-/// the path it was opened at would be a session answered about somewhere else.
+/// the path it was opened at would be a session answered about somewhere else. A declaration is
+/// free to name a capture `path`, or `credential`, and a session authenticated against a segment of
+/// its own URL instead of against what the caller presented would be a door opened by whoever wrote
+/// the mount. Reserved first, first match wins, and a capture that collides is simply never reached.
+///
+/// The captures come LAST and are the declarer's own names, which is exactly what
+/// `busbar_transport_http::mount::published_facts` does with a template's captures. They are the
+/// only account a session gets of where it was opened beyond the raw path.
 #[must_use]
-pub fn published_facts<'a>(upgrade: &'a Upgrade<'a>) -> Vec<(&'a str, &'a str)> {
-    let mut facts = vec![(tfacts::PATH, upgrade.target), (tfacts::PEER, upgrade.peer)];
+pub fn published_facts<'a>(
+    upgrade: &'a Upgrade<'a>,
+    captures: &'a [Capture<'a>],
+) -> Vec<(&'a str, &'a str)> {
+    let mut facts = Vec::with_capacity(SESSION_FACTS.len() + captures.len());
+    facts.push((tfacts::PATH, upgrade.target));
+    facts.push((tfacts::PEER, upgrade.peer));
     // Pushed only where the upgrade actually carried one, because an ABSENT fact and an EMPTY one
     // are different statements and the difference is a security one here: a driver reading an empty
     // credential is being told one was presented and is blank, and a caller that presented none did
     // not present a blank one. An anonymous caller has to stay representable.
     if let Some(credential) = upgrade.credential {
         facts.push((tfacts::CREDENTIAL, credential));
+    }
+    for c in captures {
+        facts.push((c.name, c.value));
     }
     facts
 }
@@ -204,13 +234,13 @@ pub fn published_facts<'a>(upgrade: &'a Upgrade<'a>) -> Vec<(&'a str, &'a str)> 
 /// # Errors
 ///
 /// The driver will not open a session for this upgrade.
-pub fn open_session(
+pub fn open_session<'a>(
     driver: &dyn SessionDriver,
     surface: &WireSurface,
-    mount: &Mount<'_>,
-    upgrade: &Upgrade<'_>,
+    mount: &'a Mount<'a>,
+    upgrade: &'a Upgrade<'a>,
 ) -> Result<SessionHandle, Outcome> {
-    let facts = published_facts(upgrade);
+    let facts = published_facts(upgrade, &mount.captures);
     driver.open(
         SessionOpen {
             facts: &facts,

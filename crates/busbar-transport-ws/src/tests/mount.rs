@@ -26,7 +26,7 @@ use busbar_contract_transport::session::{
     Cut, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen, SessionReply,
 };
 use busbar_contract_transport::surface::{
-    check_surface, Answering, Bar, BindingDecl, Dispatch, Operation, WireSurface,
+    check_surface, Answering, Bar, BindingDecl, Capture, Dispatch, Operation, WireSurface,
 };
 use busbar_contract_transport::wire::{CloseReason, TransportError};
 
@@ -65,6 +65,15 @@ const BINDINGS: &[BindingDecl] = &[
         transport: "ws",
         mounts: &["/posted"],
     },
+    // A session mount whose declared PATTERN carries an identifier. A published URL with a key in
+    // it is the ordinary shape of a session that is ABOUT something, and it is the one shape a
+    // vocabulary of literals could not declare: a session has no target template to read a capture
+    // off, because after the upgrade this wire has no target at all.
+    BindingDecl {
+        name: "keyed",
+        transport: "ws",
+        mounts: &["/session/leg/{leg_id}"],
+    },
 ];
 
 const OPERATIONS: &[Operation] = &[
@@ -74,11 +83,18 @@ const OPERATIONS: &[Operation] = &[
         // has before the protocol changes, and nothing it could not have afterwards. Declared as a
         // document row instead, it would carry a member and a name that nothing here resolves and
         // nothing here could resolve: after the upgrade there is no document to read either from.
-        dispatch: &[Dispatch::Duplex {
-            binding: "duplex",
-            method: "GET",
-            bar: Bar::Credential,
-        }],
+        dispatch: &[
+            Dispatch::Duplex {
+                binding: "keyed",
+                method: "GET",
+                bar: Bar::Credential,
+            },
+            Dispatch::Duplex {
+                binding: "duplex",
+                method: "GET",
+                bar: Bar::Credential,
+            },
+        ],
         answering: Answering::Stream,
         request_media: "application/octet-stream",
         response_media: "application/octet-stream",
@@ -376,7 +392,7 @@ fn a_request_answer_binding_of_this_wire_is_not_a_session_mount() {
 #[test]
 fn the_published_facts_are_the_declared_ones_in_order() {
     let up = upgrade("/session?since=4");
-    let facts = published_facts(&up);
+    let facts = published_facts(&up, &[]);
     assert_eq!(
         facts,
         vec![
@@ -400,6 +416,60 @@ fn the_published_facts_are_the_declared_ones_in_order() {
     }
 }
 
+/// A KEYED MOUNT PUBLISHES WHAT ITS PATTERN CAPTURED, under the declarer's own name and LAST.
+///
+/// Two halves. The capture reaches the driver at all — it is the only account a session gets of
+/// where it was opened beyond the raw path, because a session declares no target template to read
+/// one off. And it comes after the reserved keys, which is the precedence rather than a tidiness: a
+/// declaration is free to name a capture `credential`, and a session authenticated against a segment
+/// of its own URL instead of against what the caller presented would be a door opened by whoever
+/// wrote the mount.
+#[test]
+fn a_keyed_mount_publishes_its_capture_under_the_declared_name_and_after_the_reserved_keys() {
+    let up = upgrade_presenting("/session/leg/7f3a", "Bearer sk-1");
+    let mounted = address(&SURFACE, "ws", CHAIN, &up).expect("a keyed pattern is a session mount");
+    assert_eq!(mounted.binding.name, "keyed");
+    assert_eq!(
+        mounted.captures,
+        vec![Capture {
+            name: "leg_id",
+            value: "7f3a"
+        }]
+    );
+    assert_eq!(
+        published_facts(&up, &mounted.captures),
+        vec![
+            (tfacts::PATH, "/session/leg/7f3a"),
+            (tfacts::PEER, "198.51.100.7:44311"),
+            (tfacts::CREDENTIAL, "Bearer sk-1"),
+            ("leg_id", "7f3a"),
+        ]
+    );
+}
+
+/// A CAPTURE MAY NOT SHADOW A RESERVED KEY, because the reserved key is pushed first and the first
+/// match is the answer.
+///
+/// Named `path` on purpose: every location resolved further in is resolved against these facts, and
+/// a session whose `path` fact was a segment of its own URL rather than the URL would be a session
+/// answered about somewhere else.
+#[test]
+fn a_capture_named_like_a_reserved_key_is_never_reached() {
+    let up = upgrade("/session");
+    let facts = published_facts(
+        &up,
+        &[Capture {
+            name: tfacts::PATH,
+            value: "not-the-path",
+        }],
+    );
+    assert_eq!(
+        facts.iter().find(|(k, _)| *k == tfacts::PATH),
+        Some(&(tfacts::PATH, "/session")),
+        "reserved first, first match wins"
+    );
+}
+
 /// An upgrade that presented a credential publishes it, WHOLE, and an upgrade that presented none
 /// publishes no such fact at all.
 ///
@@ -412,7 +482,7 @@ fn the_published_facts_are_the_declared_ones_in_order() {
 fn a_presented_credential_is_published_whole_and_an_absent_one_is_absent() {
     let presented = upgrade_presenting("/session", "Bearer sk-44401");
     assert_eq!(
-        published_facts(&presented),
+        published_facts(&presented, &[]),
         vec![
             (tfacts::PATH, "/session"),
             (tfacts::PEER, "198.51.100.7:44311"),
@@ -422,7 +492,7 @@ fn a_presented_credential_is_published_whole_and_an_absent_one_is_absent() {
 
     let anonymous = upgrade("/session");
     assert!(
-        published_facts(&anonymous)
+        published_facts(&anonymous, &[])
             .iter()
             .all(|(k, _)| *k != tfacts::CREDENTIAL),
         "an upgrade that presented nothing publishes no credential fact, not an empty one"
@@ -430,7 +500,7 @@ fn a_presented_credential_is_published_whole_and_an_absent_one_is_absent() {
 
     let blank = upgrade_presenting("/session", "");
     assert_eq!(
-        published_facts(&blank)
+        published_facts(&blank, &[])
             .iter()
             .find(|(k, _)| *k == tfacts::CREDENTIAL),
         Some(&(tfacts::CREDENTIAL, "")),

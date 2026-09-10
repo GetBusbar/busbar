@@ -207,14 +207,32 @@ pub struct BindingDecl {
     pub name: &'static str,
     /// The registry key of the transport that carries it.
     pub transport: &'static str,
-    /// Where this binding's request documents are posted, for a binding whose operations are named
-    /// by a document member ([`Dispatch::Document`]).
+    /// Where this binding is addressed — its mount PATTERNS.
     ///
     /// A LIST, not one path, because a mount routinely has more than one accepted spelling and every
     /// one of them has to answer. An HTTP client handed `http://host/a2a` as a BASE resolves a
     /// request for `/` against it and sends `/a2a/`, so a mount declared only without the separator
     /// leaves the single most likely spelling of its own endpoint answering 404. Declaring the set
     /// is what makes that a data question rather than a route somebody has to remember to add.
+    ///
+    /// PATTERNS, in the one grammar this vocabulary already defines for a path: literal segments and
+    /// whole-segment `{name}` captures, matched by [`match_target`] and checked by
+    /// [`mount_is_wellformed`]. Every mount written before this was a pattern with no capture in it,
+    /// and an all-literal pattern matches exactly the one target it spells — so nothing that was
+    /// declared as a literal moved.
+    ///
+    /// The capture is what a SESSION mount could not express and needed to. A request/answer
+    /// operation is addressed by [`Dispatch::Target`] and has carried a template since this
+    /// vocabulary was written; a session is addressed by its binding's mounts and by nothing else,
+    /// so a published URL with an identifier in it — `/v1/realtime/telephony/{call_id}` is the
+    /// tree's own — was a URL a binding could not declare at all. The declaration had the choice of
+    /// a different URL or a literal per live call, and both of those are the served surface changing
+    /// to suit the vocabulary rather than the other way round.
+    ///
+    /// What a capture yields is the DECLARER's: [`duplex_binding_at`] hands back the
+    /// [`Capture`] list a matched pattern produced, in declaration order, and a mount publishes
+    /// them as facts under their declared names — the same thing the request/answer mount already
+    /// does with a template's captures.
     ///
     /// Empty for a binding whose operations are named by their target or by a service descriptor.
     pub mounts: &'static [&'static str],
@@ -423,6 +441,47 @@ pub fn template_is_wellformed(template: &str) -> bool {
     true
 }
 
+/// Whether a mount pattern is in the grammar [`match_target`] reads.
+///
+/// The same grammar [`template_is_wellformed`] holds a [`Dispatch::Target`] template to, minus one
+/// rule: an EMPTY segment is legitimate here and is refused there. `/a2a/` is a mount an HTTP client
+/// resolving `/` against a base sends and a mount that has to answer, and it ends in an empty
+/// segment; a template that ended in one would be an operation addressed at a path with a blank
+/// segment in it, which no protocol in the tree writes.
+///
+/// Everything else is held: a mount starts at the root, a capture is a WHOLE segment spelled
+/// `{name}` with a name in it, a segment that carries a brace and is not a whole capture is a
+/// pattern somebody meant to write a capture into and did not, and no pattern may declare more than
+/// [`MAX_CAPTURES`] of them.
+#[must_use]
+pub fn mount_is_wellformed(mount: &str) -> bool {
+    if !mount.starts_with('/') {
+        return false;
+    }
+    let mut captures = 0;
+    for (i, seg) in mount.split('/').enumerate() {
+        // The leading empty segment is the one `/` produces; a later empty one is the trailing
+        // separator spelling, which is the case this grammar exists to keep declarable.
+        if i == 0 || seg.is_empty() {
+            continue;
+        }
+        let opens = seg.starts_with('{');
+        let closes = seg.ends_with('}');
+        if opens != closes {
+            return false;
+        }
+        if opens {
+            captures += 1;
+            if seg.len() <= 2 || captures > MAX_CAPTURES {
+                return false;
+            }
+        } else if seg.contains('{') || seg.contains('}') {
+            return false;
+        }
+    }
+    true
+}
+
 /// The address one dispatch occupies, as the duplicate check compares them.
 ///
 /// Two dispatches collide when a request could name both. For a target that is the template and the
@@ -478,10 +537,10 @@ pub fn check_surface(surface: &WireSurface) -> Result<(), SurfaceError> {
     }
     for binding in surface.bindings {
         for mount in binding.mounts {
-            // A mount is a literal target and carries no captures, so the template grammar holds
-            // with the stricter reading: `/a2a/` ends in an empty segment and is a legitimate
-            // spelling of a mount, which is exactly the case a template may not have.
-            if !mount.starts_with('/') || mount.contains('{') || mount.contains('}') {
+            // A mount is a PATTERN, in the same grammar a target template is written in and with
+            // one rule relaxed: `/a2a/` ends in an empty segment and is a legitimate spelling of a
+            // mount, which is exactly the case a template may not have. See [`mount_is_wellformed`].
+            if !mount_is_wellformed(mount) {
                 return Err(SurfaceError::MalformedTemplate { path: mount });
             }
         }
@@ -590,15 +649,25 @@ pub fn resolve_service<'s>(
     None
 }
 
-/// The binding whose declared mounts include this target, if any.
+/// The binding one of whose declared mount patterns matches this target, if any.
 ///
-/// The target is cut at the query and the fragment first, for the reason [`match_target`] cuts it:
-/// neither is part of the path, and a mount that failed to match because a client appended a query
-/// would answer 404 to a well-formed request.
+/// The query and the fragment are cut inside [`match_target`], for the reason it cuts them: neither
+/// is part of the path, and a mount that failed to match because a client appended a query would
+/// answer 404 to a well-formed request.
+///
+/// The captures a pattern yielded are DROPPED here and are not dropped by
+/// [`duplex_binding_at`], and the asymmetry is the honest one rather than an omission. This walk
+/// answers for a binding whose operations are named by a member of the posted document — the
+/// address is the document's, the mount is only where it was posted, and a capture in it would name
+/// nothing the operation is addressed by. A session has no such document and no such member: its
+/// binding's mounts are the whole of how it is addressed, so what they captured is the only thing a
+/// session is ever told about where it was opened.
 #[must_use]
 pub fn binding_at<'s>(surface: &'s WireSurface, target: &str) -> Option<&'s BindingDecl> {
-    let path = target.split(['?', '#']).next().unwrap_or(target);
-    surface.bindings.iter().find(|b| b.mounts.contains(&path))
+    surface
+        .bindings
+        .iter()
+        .find(|b| b.mounts.iter().any(|m| match_target(m, target).is_some()))
 }
 
 /// The credential bar the DUPLEX rows of one binding declare, or `None` if it declares none.
@@ -650,17 +719,32 @@ pub fn duplex_bar(surface: &WireSurface, binding: &str) -> Option<Bar> {
 ///
 /// It names no plane, no protocol and no transport: `key` is the caller's own registry key and every
 /// string compared is the DECLARER's.
+///
+/// ## The third value, and why a session needs it where a posted document does not
+///
+/// The mounts are PATTERNS ([`BindingDecl::mounts`]), so a match can capture, and what it captured
+/// comes back here because there is nowhere else it could. A request/answer operation whose target
+/// carries an identifier declares a [`Dispatch::Target`] template and the mount reads the captures
+/// off that; a session declares no template — after the upgrade this wire has no target at all — so
+/// the pattern that admitted the upgrade is the only place the identifier in the published URL was
+/// ever written down. A walk that answered only "yes, this binding" would leave a mount holding a
+/// session opened at `/v1/realtime/telephony/7f3a` with no way to say which call it was, and the
+/// composition above would have to re-parse the path against a second copy of the pattern.
+///
+/// In DECLARATION ORDER, and the vector is empty for an all-literal pattern — which is every mount
+/// declared before patterns existed, so nothing that matched before matches differently now.
 #[must_use]
-pub fn duplex_binding_at<'s>(
+pub fn duplex_binding_at<'s, 't>(
     surface: &'s WireSurface,
     key: &str,
-    target: &str,
-) -> Option<(&'s BindingDecl, Bar)> {
-    let path = target.split(['?', '#']).next().unwrap_or(target);
+    target: &'t str,
+) -> Option<(&'s BindingDecl, Bar, Vec<Capture<'t>>)> {
     surface.bindings.iter().find_map(|b| {
-        (b.transport == key && b.mounts.contains(&path))
-            .then(|| duplex_bar(surface, b.name).map(|bar| (b, bar)))
-            .flatten()
+        if b.transport != key {
+            return None;
+        }
+        let captures = b.mounts.iter().find_map(|m| match_target(m, target))?;
+        duplex_bar(surface, b.name).map(|bar| (b, bar, captures))
     })
 }
 

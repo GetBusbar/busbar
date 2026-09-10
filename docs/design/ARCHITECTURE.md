@@ -94,9 +94,13 @@ them). Each axis is blind to the other two; only the kernel composes them.
   session as data with, boot-checked with the rest of the surface, and the `EgressLease` a
   synchronous driver reaches a relayed session's UPSTREAM half through — bounded, refusing, with
   `EGRESS_DEPTH` beside `SessionBudgets` because how deep a leg may queue is the composition's
-  number and not a wire's) — ≤ **1.1k** (1,027 measured
-  and pinned exact, 2026-09-10: the duplex seam is +177 over the 845 the crate held before it, and
-  the egress lease +5 over that),
+  number and not a wire's), and the MOUNT PATTERN a binding declares where it is addressed as (the
+  path grammar this contract already reads for a target template, matched by `match_target` and
+  checked by `mount_is_wellformed`, with the capture a session's upgrade yields handed back off
+  `duplex_binding_at` — a session declares no target template, so its binding's mounts are the only
+  place an identifier in a served URL is written down) — ≤ **1.1k** (1,056 measured
+  and pinned exact, 2026-09-10: the duplex seam is +177 over the 845 the crate held before it, the
+  egress lease +5 over that, and the mount pattern +29),
   gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,

@@ -69,7 +69,7 @@ fn every_declared_row_opens_a_session_and_every_mount_is_addressable_as_one() {
     }
     for binding in SURFACE.bindings {
         for mount in binding.mounts {
-            let (addressed, bar) = busbar_contract::transport::surface::duplex_binding_at(
+            let (addressed, bar, _) = busbar_contract::transport::surface::duplex_binding_at(
                 &SURFACE,
                 claims::WS_TRANSPORT,
                 mount,

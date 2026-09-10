@@ -153,7 +153,7 @@ busbar-voice = ["busbar-voice-codec"]
 [gate.surface_ceilings]
 contract_caps = 3489
 grammar = 388
-contract_transport = 1027
+contract_transport = 1056
 
 # ── declared raises: the streams line's SURFACE — the duplex session seam and the DUPLEX dispatch kind
 # are contract-transport surface, and the root's one route to that seam is one line of busbar-contract.
@@ -207,6 +207,14 @@ because = "busbar-substrate \u00d7 transport (busbar-substrate, transport): the 
 key = "gate.surface_ceilings.contract_transport"
 by = 182
 because = "FACE busbar-contract-transport::session::EgressLease extends this by 5 (1,022 -> 1,027, measured): the upstream half of one session as a SYNCHRONOUS driver may reach it \u2014 `offer` (bounded, refusing: Backpressure at depth, Closed when the leg is over) and `finish` \u2014 plus `EGRESS_DEPTH`, the composition's one number for how deep a relayed leg may queue, spelled beside `SessionBudgets` for the reason the deadline is. No dial, no address, no close code and no media: where the leg goes is the wire's, decided once when the lease was minted. FACE busbar-contract-transport::session + surface::Dispatch::Duplex — the seam a duplex wire hands a session across (SessionDriver open/drive/close; SessionOpen, SessionHandle, SessionFrame, SessionReply and its three constructors, Cut, SessionEnd, SessionBudgets) and the face an acceptor reaches a wire through (DuplexWire serve_upgrade/pump_session): session.rs 94 surface lines; the Duplex dispatch kind a plane declares a session as data with, its bar, its two boot-check refusals (NoDuplexMount, DuplexNotStreaming) and their Display, the address sentinel, the check_surface arm, and the one walk every duplex wire addresses an upgrade with (duplex_binding_at over duplex_bar): surface.rs +77; the three reserved fact keys a session's upgrade and a request carry about themselves (CREDENTIAL, ACCEPTS, MEDIA), published by the wires and read by no header: registry.rs +5; `pub mod session`: lib.rs +1. 94+77+5+1 = 177, measured by scripts/loc-surface.py at 1022 against 845 at the base"
+
+# ── declared raise: THE MOUNT PATTERN. A binding declares WHERE it is addressed as a pattern in the
+# grammar this vocabulary already reads for a target template, so a session mount can carry the
+# identifier its published URL has always carried. Expires when the base carries the number.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_transport"
+by = 29
+because = "FACE busbar-contract-transport::surface — `BindingDecl::mounts` becomes a list of PATTERNS rather than a list of literal targets, in the one path grammar this module already defines (literal segments and whole-segment `{name}` captures, matched by `match_target`), with one rule relaxed against a target template: an empty segment is legitimate in a mount, because `/a2a/` is the spelling an HTTP client resolving `/` against a base sends and it has to answer. `mount_is_wellformed` is that grammar as a public predicate and is what `check_surface` now refuses a malformed mount by; `duplex_binding_at` matches the pattern and returns the `Capture` list it yielded as a third value. The capture is the thing a session mount could not express and needed to: a request/answer operation carries a `Dispatch::Target` template and has read captures off it since this vocabulary was written, but a session declares no template at all — after the upgrade the wire has no target — so its binding's mounts are the only place an identifier in the served URL is ever written down, and a vocabulary of literals left a declaration choosing between changing the published URL and declaring one literal per live call. Every mount declared before this is an all-literal pattern, which matches exactly the one target it spells and captures nothing, so nothing that matched before matches differently now. 29 surface lines measured by scripts/loc-surface.py at 1,056 against 1,027 at the base"
 
 # ── declared raises: the streams line — a plane and a wire DECLARE a duplex surface as data. The
 # plane (busbar-plane-streams) writes its duplex route in the transport contract's vocabulary, the wire
