@@ -1,4 +1,5 @@
-use super::*;
+use crate::handlers_chat_fixture::CHAT;
+use crate::operation::Operation;
 
 #[test]
 fn chat_declares_its_capabilities() {
@@ -34,8 +35,12 @@ fn chat_declares_its_capabilities() {
 /// breaker to classify the attempt as a transient upstream failure.
 #[test]
 fn a_non_chat_operation_failure_reaches_the_breaker_with_a_status_attributed() {
-    let cell = crate::handlers::op_for("mcp", Operation::INVOKE, crate::transport::Transport::Http)
-        .expect("the (mcp, Invoke) cell is registered");
+    let cell = busbar_substrate::handlers::op_for(
+        "mcp",
+        Operation::INVOKE,
+        crate::transport::Transport::Http,
+    )
+    .expect("the (mcp, Invoke) cell is registered");
 
     let raw = cell.extract_error(503, br#"{"jsonrpc":"2.0","error":{"code":-32000}}"#);
 
@@ -105,9 +110,11 @@ fn every_cell_of_the_six_protocols_reports_its_protocol_vocabulary() {
             .and_then(|d| d.dialect())
             .unwrap_or_else(|| panic!("{protocol} is a registered protocol"));
         for operation in ALL_OPERATIONS {
-            let Some(cell) =
-                crate::handlers::op_for(protocol, operation, crate::transport::Transport::Http)
-            else {
+            let Some(cell) = busbar_substrate::handlers::op_for(
+                protocol,
+                operation,
+                crate::transport::Transport::Http,
+            ) else {
                 continue; // an operation this protocol does not serve — the no-handler 404
             };
             for status in STATUSES {

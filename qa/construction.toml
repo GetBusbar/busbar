@@ -164,7 +164,7 @@ because = "busbar-core × secret: the round-two scanner widening (every shipped 
 [gate.ceiling_raises."cell.busbar-core.transport.count"]
 file = "qa/kind-isolation.toml"
 from = 2117
-to = 2144
+to = 2143
 because = "busbar-core × transport: the round-two scanner widening (every shipped file, decoded escapes, joined literals) reads 28 more cross-kind token(s) that were already in the crate; the cell is the same pair at the base, re-pinned to the wider reading"
 
 [gate.ceiling_raises."cell.busbar-llm-codec.plane.count"]
