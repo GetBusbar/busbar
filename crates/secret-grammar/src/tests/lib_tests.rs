@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/secret-ref/src/lib.rs`.
+//! Tests for `crates/secret-grammar/src/lib.rs`.
 
 use super::*;
 

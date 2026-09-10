@@ -3660,10 +3660,10 @@
    ]
   },
   {
-   "id": "crates/secret-ref/src",
+   "id": "crates/secret-grammar/src",
    "kind": "production",
    "paths": [
-    "crates/secret-ref/src"
+    "crates/secret-grammar/src"
    ],
    "tree_hash": "a79f067f11b066245a1dfe8077a1f7185611592ac22d995931245e354655b348",
    "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
@@ -3678,7 +3678,7 @@
    "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
-    "crates/secret-ref/src/tests"
+    "crates/secret-grammar/src/tests"
    ],
    "rounds": [
     {
@@ -5859,10 +5859,10 @@
    ]
   },
   {
-   "id": "crates/secret-ref/src/tests",
+   "id": "crates/secret-grammar/src/tests",
    "kind": "test",
    "paths": [
-    "crates/secret-ref/src/tests"
+    "crates/secret-grammar/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -5875,10 +5875,10 @@
    "rounds": []
   },
   {
-   "id": "crates/secret-ref/tests",
+   "id": "crates/secret-grammar/tests",
    "kind": "test",
    "paths": [
-    "crates/secret-ref/tests"
+    "crates/secret-grammar/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

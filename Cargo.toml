@@ -49,7 +49,7 @@ members = [
     "crates/plugin-loader",
     "crates/plugin-sign",
     "crates/plugin-pack",
-    "crates/secret-ref",
+    "crates/secret-grammar",
     "crates/auth-admin-tokens",
     "crates/auth-static-plugin",
     "crates/hook-test-plugin",

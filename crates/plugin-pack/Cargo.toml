@@ -17,7 +17,7 @@ busbar-plugin-loader = { path = "../plugin-loader" }
 # The extracted SecretRef reference type — reachable from this tooling crate now (it used to be
 # pub(crate) inside the busbar binary crate). Used to derive the x-busbar-secret `oneOf` shape
 # directly from the real type rather than a hand-written parallel copy.
-busbar-secret-ref = { path = "../secret-ref" }
+busbar-secret-grammar = { path = "../secret-grammar" }
 hex = { workspace = true }
 # Keypair generation (`keygen`) draws its ed25519 seed from the OS RNG. The engine-facing
 # plugin-sign crate stays RNG-free on purpose; the RNG lives here, in the tooling.

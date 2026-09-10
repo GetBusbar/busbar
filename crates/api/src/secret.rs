@@ -121,7 +121,7 @@ pub trait SecretModule: Send + Sync + 'static {
     }
 }
 
-use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+use busbar_secret_grammar::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 
 /// BUILT-IN resolution of a secret reference to its raw bytes: `env` reads the
 /// environment variable; `file` reads the file. Any other module name is FAIL-CLOSED here - the

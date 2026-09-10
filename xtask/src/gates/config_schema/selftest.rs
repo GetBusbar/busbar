@@ -182,7 +182,7 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
     // a way that could happen, and each must stop the gate rather than narrow the scan.
 
     let mut ov = Overlay::new();
-    ov.remove("crates/secret-ref/src/lib.rs");
+    ov.remove("crates/secret-grammar/src/lib.rs");
     report.push(prove_rows_red(
         cx,
         gate,

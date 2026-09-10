@@ -271,7 +271,7 @@ kind from segment two, so directory name and `package.name` must agree.
 | `auth-static-plugin` | `busbar-auth-static` | dir only |
 | `auth-admin-tokens` | `busbar-auth-admin-tokens` | dir only; the token SIGNER moves to `busbar-unit-auth` (owner) |
 | `secret-example-plugin` | `busbar-secret-example` | dir only |
-| `secret-ref` | `busbar-core-contract` (fold the `SecretRef` type in) | a type crate is not a secret plugin; today the glob makes it one |
+| `secret-grammar` | `busbar-core-contract` (fold the `SecretRef` type in) | a type crate is not a secret plugin; today the glob makes it one |
 | `hook-test-plugin` | `busbar-hook-test` | dir only |
 | `hooks-ranking` | `busbar-hook-ranking` | and re-based off `busbar-api` onto `kinds::Hook` |
 | `export-example-plugin` | `busbar-export-example` | dir only |
@@ -295,7 +295,7 @@ boundaries around traits nothing implements.
 | store | `store-memory` / `store-example-plugin` impl `busbar_api::Store`; `kinds::Store::record_{put,get,scan}` has ZERO implementors | re-base onto `kinds::Store`; implement the three record verbs; add the kernel-side `Leg::Record` executor | ~150–200 (store) + ~250–350 (kernel executor) | **R5** `store/` row, after D31 B9 |
 | hook | `hooks-ranking` impls `busbar_api::RoutingPolicy` | re-base onto `kinds::Hook`; seats from the four-seat table | ~200 | **R5** `hooks/` row |
 | auth | `auth-admin-tokens` is a 1.5.5-era module on `busbar-api`; `auth-static-plugin` likewise | re-base onto `kinds::AuthScheme`; the token SIGNER lands in `busbar-unit-auth`, not in a plugin and not in capabilities | ~250 | **R5** `auth/` row |
-| secret | `secret-example-plugin` only; `secret-ref` is a type crate swept in by the glob | re-base onto `kinds::Secret`; fold `SecretRef` into the contract | ~150 | **R5** `store/`+`auth/` rows |
+| secret | `secret-example-plugin` only; `secret-grammar` is a type crate swept in by the glob | re-base onto `kinds::Secret`; fold `SecretRef` into the contract | ~150 | **R5** `store/`+`auth/` rows |
 | export | `export-example-plugin` on `busbar-api` | re-base onto `kinds::Export`; `Anchor` for the retention sink | ~150 | **R5** `export/` row |
 | egress-auth | **zero crates**; the schemes are hardcoded in `busbar-unit-egress-auth` and a full dialect-detection ladder sits in `busbar-unit-auth` | create `busbar-egress-auth-anthropic` / `-openai`; the unit keeps the mechanism, the crates keep the vocabulary; `lean-core`'s `max_hits = 21` ratchet closes to 0 | ~300 | **R6**, with the dialect split (same vocabulary, same move) |
 
@@ -316,7 +316,7 @@ Each row also owes its `plugin-testkit` battery (§3) and its `<KIND>_ABI` const
 | §1.6 "Rate card (config)" row | Removed from the kind table; it is config. |
 | §1.7 "~10" pinned nowhere | Header: ten plugin kinds (control admitted 2026-09-08), eleven tree rows, closure rule = §6. |
 | §1.8 ABI generation for two kinds only | §6 step 4 requires one per kind; §8 owes seven. |
-| §2 kind by glob, not declaration | §7 rename makes the globs correct by construction; `:name` (Appendix G) then reads the kind from segment two and cross-checks `Plugin::kind()`. `secret-ref` and the `hooks-ranking` accident both dissolve. |
+| §2 kind by glob, not declaration | §7 rename makes the globs correct by construction; `:name` (Appendix G) then reads the kind from segment two and cross-checks `Plugin::kind()`. `secret-grammar` and the `hooks-ranking` accident both dissolve. |
 | §3 contract restated 5–6× | This document is the single statement; `ARCHITECTURE.md` §§1.4/3.2/3.4/6/7 point here as normative. |
 | §3 contract-transport names transport instances | D6 (§5): keyed `WireCode` and a keyed extras map; `lean-core`'s scope extends to `busbar-core-contract*`. |
 | §3 `unit-transport-key` vs transport, inverted | §4: the edge is deleted; the unit hands the transport an opaque `TransportKeyHandle`. |

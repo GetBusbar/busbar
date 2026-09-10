@@ -41,7 +41,7 @@ test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 #     list; they are here only so they inherit the forbid-unsafe deny row, and counting them is how
 #     this table reaches "10" with a set that is not the owner's ten.
 #   * Kind membership is decided here by DIRECTORY GLOB, and `Plugin::kind()` — the declaration that
-#     should be authoritative — is read by nothing. That is how `crates/secret-ref` (a SecretRef TYPE
+#     should be authoritative — is read by nothing. That is how `crates/secret-grammar` (a SecretRef TYPE
 #     crate, no Secret impl) is classified `secret`, and how `crates/hooks-ranking` is classified
 #     `hook` by the directory name while implementing a busbar-api trait. Renaming the fifteen crate
 #     directories to their existing `package.name` (PLUGIN-TREE.md section 7) makes these globs
@@ -164,21 +164,6 @@ key = "gate.surface_ceilings.contract_caps"
 by = 1
 because = "FACE busbar_contract::SecretError::Denied, the same single variant seen a third time: it is plugin-visible by construction -- a secret plugin returns it and a loader matches on it -- so it spends exactly one line of the surface a plugin author reads. That is the cost the owner ruling accepts in exchange for keeping the config-versus-outage distinction the previous release documented."
 
-# A FOURTH, AND IT IS ABOUT A TYPE'S NAME RATHER THAN ABOUT COUPLING. `kind-isolation:matrix`
-# scores a crate's naming of another kind's vocabulary over the WHOLE TEXT, and `busbar-secret-ref`
-# is a crate of kind `secret`, so the identifier `SecretRef` reads as naming it. The secret kind's
-# face type in `busbar-contract` is called `SecretRef`, and the loader is the crate that implements
-# that face for a dlopened plugin -- so every signature and every construction of a reference in
-# `busbar-plugin-loader` scores as a hit against a crate the loader does not depend on and never
-# names. The spellings were already collapsed as far as they go (one helper in the battery, one
-# import in the source); what is left is the type appearing in the two trait signatures that MUST
-# name it. The number falls again when `busbar-secret-ref` is renamed, which is this same
-# retirement's own next step. Keyed by the cell's IDENTITY, never its ordinal.
-[[gate.ceiling_raises]]
-key = "cell.busbar-plugin-loader.secret.count"
-file = "qa/kind-isolation.toml"
-by = 8
-because = "FACE busbar_contract::kinds::Secret implemented by busbar-plugin-loader's DynSecret (busbar-plugin-loader x secret, 19 -> 27). The face's reference type is spelled `SecretRef` -- which the matrix reads as the loader naming the `busbar-secret-ref` package. It does not: the loader has no such dependency and the ledger's dep rows show none. Eight hits, every one of them the face's own type name in a signature, a construction or the single import; the battery's five call sites were already collapsed behind one helper. It falls when busbar-secret-ref is renamed, later in this same retirement."
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -690,7 +675,7 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # name below; a new crate NOT on this list is held to the rule immediately.
 known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
-  "secret-example-plugin", "secret-ref",
+  "secret-example-plugin", "secret-grammar",
 ]
 known_missing_deny = [ "plugin-loader",
   "store-memory", "store-example-plugin", "export-example-plugin",

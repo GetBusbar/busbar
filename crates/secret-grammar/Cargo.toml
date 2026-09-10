@@ -1,0 +1,18 @@
+[package]
+name = "busbar-secret-grammar"
+version = "1.5.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+rust-version = "1.97"
+description = "THE SECRET REFERENCE GRAMMAR — the one place the { module, settings } reference shape and its { env } / { file } sugar spellings are declared, and the one place the x-busbar-secret schema oneOf is derived from. It carries the SecretRef type and resolves nothing: what a reference MEANS is this crate's; turning one into bytes belongs to a kind:secret plugin. Named for what it does, so busbar-plugin-pack and any schema-generation tooling derive the reference shape from the SAME Deserialize the engine parses live config with, rather than a hand-written parallel copy that can drift."
+license = "Apache-2.0"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Test-only: round-trips the same YAML shapes the engine accepts. The `serde_yaml_ng` package
+# rename, and why, is stated once in the workspace table.
+serde_yaml = { workspace = true }
+jsonschema = { workspace = true }

@@ -655,8 +655,14 @@ planner:
         .client_identity
         .as_ref()
         .expect("the client identity is carried through");
-    assert_eq!(identity.cert.module, busbar_secret_ref::SECRET_MODULE_FILE);
-    assert_eq!(identity.key.module, busbar_secret_ref::SECRET_MODULE_FILE);
+    assert_eq!(
+        identity.cert.module,
+        busbar_secret_grammar::SECRET_MODULE_FILE
+    );
+    assert_eq!(
+        identity.key.module,
+        busbar_secret_grammar::SECRET_MODULE_FILE
+    );
     // The REFERENCE is what the config holds. Nothing here is key material, which is why the type
     // is safe to `Debug` and safe to serve back from the admin API.
     assert!(!format!("{identity:?}").contains("BEGIN"));

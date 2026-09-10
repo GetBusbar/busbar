@@ -644,7 +644,7 @@
         "stderr_contains": "a secret value must be a REFERENCE, never an inline literal (the value is not echoed)",
         "stdout_contains": null
       },
-      "notes": "\u00a73.1 P31 / \u00a75.1 SEC-010 (crates/secret-ref/src/lib.rs:144-153). The literal must NOT appear in stderr \u2014 the recorder can assert its absence too."
+      "notes": "\u00a73.1 P31 / \u00a75.1 SEC-010 (crates/secret-grammar/src/lib.rs:144-153). The literal must NOT appear in stderr \u2014 the recorder can assert its absence too."
     },
     {
       "id": "BOOT-P32",

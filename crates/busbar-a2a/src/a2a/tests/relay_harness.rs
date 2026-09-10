@@ -463,7 +463,9 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
         allow_private: false,
         upstream_credentials: None,
         upstream_credential: with_credential.then(|| crate::a2a::creds::OutboundCredential {
-            secret: busbar_secret_ref::SecretRef::file(secret_file().to_string_lossy().to_string()),
+            secret: busbar_secret_grammar::SecretRef::file(
+                secret_file().to_string_lossy().to_string(),
+            ),
             placement: crate::a2a::creds::CredentialPlacement::Bearer,
             lease_ttl_ms: 600_000,
         }),

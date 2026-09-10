@@ -50,7 +50,7 @@ pub use secret::{
 };
 // The config secret-reference type, re-exported from its own leaf crate so a plane crate names
 // `busbar_api::SecretRef` without a separate path dep.
-pub use busbar_secret_ref::SecretRef;
+pub use busbar_secret_grammar::SecretRef;
 pub use signal::{Signal, SignalBag, SignalValue};
 pub use store::{
     register_scope_kind, AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow,

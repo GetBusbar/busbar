@@ -465,7 +465,7 @@ value: busbar-ui composes one of
 {"module": "vault", "settings": {"...": "..."}}
 ```
 
-(the exact shapes accepted by `SecretRef`, now in the standalone `busbar-secret-ref` crate), and
+(the exact shapes accepted by `SecretRef`, now in the standalone `busbar-secret-grammar` crate), and
 busbar core resolves the reference to a plain value BEFORE the plugin's `open()` ever sees it. A
 bare string in a marked field is a config-authoring error, not a valid value.
 

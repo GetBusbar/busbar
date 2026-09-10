@@ -46,7 +46,7 @@ busbar-store-memory = { path = "../store-memory" }
 busbar-plugin = { path = "../busbar-plugin" }
 busbar-plugin-loader = { path = "../plugin-loader" }
 busbar-plugin-sign = { path = "../plugin-sign" }
-busbar-secret-ref = { path = "../secret-ref" }
+busbar-secret-grammar = { path = "../secret-grammar" }
 busbar-auth-admin-tokens = { path = "../auth-admin-tokens", optional = true }
 busbar-hooks-ranking = { path = "../hooks-ranking", optional = true }
 axum = { workspace = true }
