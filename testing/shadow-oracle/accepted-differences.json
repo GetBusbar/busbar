@@ -72,13 +72,27 @@
       "kind": "additive",
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
-      "expected_cells": 10,
+      "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
+      "expected_cells": 9,
       "classes": [
         "body",
         "headers"
       ],
       "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive \u2014 the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line. KIND MOVED improvement -> additive 2026-09-08 (busbar-oracle v0.3.3): the owner ruled on 2026-09-07 that key-list and view GROWTH is a new feature and not a break, and `additive` is the kind that makes that ruling checkable — the tool now PROVES the candidate a JSON superset of the golden at every path the golden names before it forgives `body`/`headers`, so this entry can no longer forgive a 1.5.5 field that changed value or went away."
+    },
+    {
+      "id": "overlay-section 404 lists the sections that now exist",
+      "kind": "additive",
+      "text_list_growth": true,
+      "changelog": "Admin views gained fields; none changed.",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage; SPLIT out of the additive-admin-views entry 2026-09-10",
+      "cells": "^admin\\.ops\\|DeleteOverlaySection\\|not-found$",
+      "expected_cells": 1,
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "SPLIT 2026-09-10 out of the additive-admin-views entry, because this cell's difference is not the same KIND of growth the others carry. The hook views grow JSON KEYS, which additive_superset proves by walking the document; this cell's whole difference lives inside ONE string leaf, the 400 body's `message`, whose backticked expected-one-of list gained the four named-map sections. A plain JSON-superset walk cannot see growth inside a string, so this cell needs `text_list_growth` and the hook-view cells must not have it: text_list_growth defers a string-leaf mismatch instead of failing on it, and giving that to nine cells that do not need it would widen nine acceptances to buy one. The TREE was fixed first, not the register: the route had also re-worded 1.5.5's `expected `a`, `b`, `c`, or `d`` into `expected one of `a`, `b`, `c`, `d``, and a re-worded refusal is not growth. `OverlaySection::valid_names_or` restores the published join, so the splice check now reproduces the 1.5.5 sentence byte-for-byte with the golden's own list put back, and the only difference left is the four names that were added. `content-length` rides on the body proof (the differ exempts it only once the body is proven a superset), which is why `headers` is named here too."
     },
     {
       "id": "F-011r hook write readback: `at` gives way to `fires_at`",

@@ -1519,8 +1519,8 @@ pub(crate) async fn reset_overlay_section(
         // hand-written version of this sentence outlived the addition of the `named_maps` section
         // and told operators `export` was not a section for a whole release.
         return err_json(&AdminError::Validation(format!(
-            "unknown overlay section `{section}`: expected one of {}",
-            OverlaySection::valid_names()
+            "unknown overlay section `{section}`: expected {}",
+            OverlaySection::valid_names_or()
         )));
     };
     let resource = format!("overlay:{}", section.as_str());

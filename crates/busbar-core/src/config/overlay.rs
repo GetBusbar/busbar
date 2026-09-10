@@ -686,6 +686,25 @@ impl OverlaySection {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    /// The valid section names as the PUBLISHED 1.5.5 prose list — backticked, comma-separated,
+    /// with an `or` before the last one — for the route's own 400 message, which spells its list
+    /// that way rather than with pipes. Same single source as [`OverlaySection::valid_names`]; a
+    /// different join because the two surfaces spell their lists differently and each must keep
+    /// the spelling it shipped with, so that a reader diffing either against 1.5.5 sees the added
+    /// names and no re-wording around them.
+    pub(crate) fn valid_names_or() -> String {
+        let names: Vec<String> = OverlaySection::all()
+            .iter()
+            .map(|s| format!("`{}`", s.as_str()))
+            .collect();
+        match names.split_last() {
+            None => String::new(),
+            Some((last, [])) => last.clone(),
+            Some((last, [only])) => format!("{only} or {last}"),
+            Some((last, rest)) => format!("{}, or {last}", rest.join(", ")),
+        }
+    }
 }
 
 /// Clear ONE section's entries + tombstones from the persisted overlay, IF persistence is enabled —

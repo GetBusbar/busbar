@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "5911fbccf3e210e1d1c757ed7bb365630410b1e969e1d006cfcfc0b30dd2df73",
+  "harness_rev": "9edb729214d8e17b9222ce112fc2a104518589262d858f903ff05c944d6aa6fc",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -79,6 +79,11 @@
         "from": "bba66fd7ecaea5d7930f0a0428a39799c0d80c5ace39fa2fdf27f050000fb4fe",
         "to": "5911fbccf3e210e1d1c757ed7bb365630410b1e969e1d006cfcfc0b30dd2df73",
         "why": "2026-09-10 documentation-only: accepted-differences.json is a harness_rev file, and the validator-wording entry left kind=additive/text_list_growth for the kind the owner set in the 2026-09-04 triage. The stronger proof was never available on those three cells: the pinned tool runs the additive check against the RECORDED pair, so the diagnostic-code rewrite a separate transform entry makes on the same lines is invisible to it (all three fail at that prefix, text byte 117, not at their list), and two of the three lists are pipe-joined and un-backticked, which the growth check cannot see as a list at all. Same cells, same class, same changelog line, same difference; only the claim about how it is proven is corrected. No cell re-recorded and no cell byte changed."
+      },
+      {
+        "from": "5911fbccf3e210e1d1c757ed7bb365630410b1e969e1d006cfcfc0b30dd2df73",
+        "to": "9edb729214d8e17b9222ce112fc2a104518589262d858f903ff05c944d6aa6fc",
+        "why": "2026-09-10 documentation-only: accepted-differences.json is a harness_rev file, and the overlay-section 404 was SPLIT out of the additive-admin-views entry into its own entry with `text_list_growth`. That cell's whole difference lives inside ONE string leaf (the 400 body's `message`, whose expected-one-of list gained the four named-map sections), which a plain JSON-superset walk cannot see into; the nine hook-view cells grow JSON KEYS and keep the stricter plain-superset proof rather than being widened to buy the tenth. No cell re-recorded and no cell byte changed."
       }
     ]
   },
