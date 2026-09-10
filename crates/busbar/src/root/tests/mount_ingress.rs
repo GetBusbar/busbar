@@ -7,12 +7,20 @@
 
 use super::*;
 use busbar_api::{PlaneRequestCtx, VirtualKey};
+use busbar_core::{governance::MemoryStore, plane_host::engine_host, test_support::TestApp};
 
 /// THE DEPLOYMENT's own engine host, minted over a bare test app exactly as the composition root
 /// mints one. Not a stub: what these cells assert about the host is that ONE of them reaches every
 /// arrival, and a stub would make that a property of the stub.
-fn a_host() -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
-    busbar_core::plane_host::engine_host(&busbar_core::test_support::TestApp::new().build())
+pub(crate) fn a_host() -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
+    engine_host(&TestApp::new().build())
+}
+
+/// THE ONE GOVERNANCE STORE a cell hands a leg, built the way every mount cell builds one — in
+/// memory, empty, and owned by the cell. Written once here so the retiring crate is named in one
+/// test module rather than in each leg's.
+pub(crate) fn memory_store() -> Arc<MemoryStore> {
+    Arc::new(MemoryStore::new())
 }
 
 /// THE BOOT'S MINT, as a cell writes it: close over one deployment's host and box the substrate's

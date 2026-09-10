@@ -66,7 +66,15 @@ fn the_document_answers_carry_this_planes_own_media_type() {
 
 use std::sync::Mutex;
 
-use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_core::{
+    cost::CostModel,
+    governance::GovState,
+    metrics::init as init_metrics,
+    plane_host::engine_host,
+    proxy::reqlog::REQUESTS,
+    state::App,
+    test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp},
+};
 use tower::ServiceExt as _;
 
 use crate::root::durability::Durability;
@@ -179,7 +187,7 @@ fn a_surface_underneath() -> axum::Router {
 /// be asked about the SAME caller. That is what the paired cell needs and nothing else does: a
 /// posting is keyed by principal, and two legs compared under two principals are two rows.
 struct Deployment {
-    app: Arc<busbar_core::state::App>,
+    app: Arc<App>,
     key: Arc<VirtualKey>,
     book: Arc<Mutex<Durability>>,
     node: LlmNode,
@@ -193,7 +201,7 @@ async fn mounted(streamed: bool) -> Mounted {
     let leg = LlmLeg::assemble(
         d.node,
         Arc::new(BootIngress::new(
-            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
+            crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
             move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -215,7 +223,7 @@ async fn mounted(streamed: bool) -> Mounted {
 /// Compose one deployment, resolving every caller to `caller` where one is handed in.
 async fn deployment(streamed: bool, caller: Option<Arc<VirtualKey>>) -> Deployment {
     busbar_llm::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    init_metrics();
     priced();
 
     let state = Arc::new(MockServerState::new());
@@ -241,17 +249,14 @@ async fn deployment(streamed: bool, caller: Option<Arc<VirtualKey>>) -> Deployme
     }
     let server = MockServer::new(Arc::clone(&state)).await;
 
-    let store = Arc::new(busbar_core::governance::MemoryStore::new());
+    let store = crate::root::mount_ingress::tests::memory_store();
     // A SIGNER, so the key below is minted as the credential a client actually presents rather than
     // hand-built beside the deployment that has to resolve it.
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        busbar_core::governance::GovState::new_with_signer(store, None, Some(signer))
-            .expect("governance"),
-    );
+    let gov = Arc::new(GovState::new_with_signer(store, None, Some(signer)).expect("governance"));
     let (key, _token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -262,11 +267,7 @@ async fn deployment(streamed: bool, caller: Option<Arc<VirtualKey>>) -> Deployme
             1_700_000_000,
         )
         .expect("mint the deployment's key");
-    let cost = busbar_core::cost::CostModel::resolve_parts(
-        None,
-        FEE_CENTS,
-        &std::collections::BTreeMap::new(),
-    );
+    let cost = CostModel::resolve_parts(None, FEE_CENTS, &std::collections::BTreeMap::new());
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
@@ -456,7 +457,7 @@ fn head(book: &Arc<Mutex<Durability>>) -> String {
 
 /// The link one unit left on the principal's chain, as the four fields an operator reads.
 fn links(key: &VirtualKey) -> Vec<(String, String, String, u16)> {
-    busbar_core::proxy::reqlog::REQUESTS
+    REQUESTS
         .records_for(&key.id)
         .into_iter()
         .map(|r| (r.pool, r.outcome, r.reason, r.status))
@@ -553,7 +554,7 @@ async fn one_request_each_way() -> Option<(
         .node
         .answer(
             busbar_llm::unit::walk::WalkArrival {
-                host: busbar_core::plane_host::engine_host(&driven.app),
+                host: engine_host(&driven.app),
                 gov: PlaneRequestCtx {
                     key: Some(Arc::clone(&key)),
                 },
@@ -582,9 +583,7 @@ async fn one_request_each_way() -> Option<(
     let leg = LlmLeg::assemble(
         second.node,
         Arc::new(BootIngress::new(
-            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(
-                &second.app,
-            )),
+            crate::root::mount_ingress::tests::minted(engine_host(&second.app)),
             move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -620,7 +619,7 @@ async fn the_ending_the_leg_hands_the_mount_is_settled_and_still_carries_its_pos
     let leg = LlmLeg::assemble(
         d.node,
         Arc::new(BootIngress::new(
-            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
+            crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
             move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -687,7 +686,7 @@ async fn the_boots_own_composition_answers_this_planes_address_from_the_mounted_
     let book = a_book();
     let inputs = crate::root::registry::MountInputs {
         ingress: Arc::new(BootIngress::new(
-            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
+            crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
             move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },
@@ -740,7 +739,7 @@ async fn a_plane_whose_row_refuses_leaves_its_addresses_on_the_surface_underneat
     let resolved = Arc::clone(&d.key);
     let inputs = crate::root::registry::MountInputs {
         ingress: Arc::new(BootIngress::new(
-            crate::root::mount_ingress::tests::minted(busbar_core::plane_host::engine_host(&d.app)),
+            crate::root::mount_ingress::tests::minted(engine_host(&d.app)),
             move |_| PlaneRequestCtx {
                 key: Some(Arc::clone(&resolved)),
             },

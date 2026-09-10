@@ -207,7 +207,7 @@ fn sources_with_chain(
         door: Some(Door::new(InMemoryCells::new())),
         groups: Some(GroupTable::default()),
         pricer: Some(Pricer::flat(0)),
-        store: Some(Arc::new(busbar_core::governance::MemoryStore::new())),
+        store: Some(crate::root::mount_ingress::tests::memory_store()),
         meter_policy: Some(crate::root::policy::build(
             &crate::root::policy::MeterPolicyConfig::default(),
         )),

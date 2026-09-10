@@ -1942,7 +1942,7 @@ fn two_units_of_one_caller_are_handed_the_same_chain() {
 fn a_record_leg_through_the_kernel_lands_in_the_stores_own_record_verbs() {
     use busbar_contract::kinds::{RecordBytes, RecordSink};
 
-    let store = Arc::new(busbar_core::governance::MemoryStore::new());
+    let store = crate::root::mount_ingress::tests::memory_store();
     let legs = SinkRecordLegs::new(store.clone());
     let key = LegKey {
         id: "t-1",
@@ -1981,7 +1981,7 @@ fn a_record_leg_through_the_kernel_lands_in_the_stores_own_record_verbs() {
 fn an_undeclared_schema_never_reaches_the_contract_sink() {
     use busbar_contract::kinds::RecordSink;
 
-    let store = Arc::new(busbar_core::governance::MemoryStore::new());
+    let store = crate::root::mount_ingress::tests::memory_store();
     let legs = SinkRecordLegs::new(store.clone());
     let stranger = busbar_contract::ids::RecordSchemaId::new("ledger");
     let key = LegKey {

@@ -48,6 +48,7 @@
 use std::sync::Arc;
 
 use busbar_api::PlaneRequestCtx;
+use busbar_core::governance::GovState;
 use busbar_substrate::ingress::arrival::ArrivalCtx;
 
 /// THE ONE QUESTION A MOUNTED LEG ASKS ITS BOOT, per arrival.
@@ -185,7 +186,7 @@ pub fn presented_secret(credential: &str) -> Option<&str> {
 #[must_use]
 pub fn boot_ingress(
     mint: impl Fn(PlaneRequestCtx, Option<String>) -> ArrivalCtx + Send + Sync + 'static,
-    governance: Option<Arc<busbar_core::governance::GovState>>,
+    governance: Option<Arc<GovState>>,
 ) -> BootIngress {
     BootIngress::new(mint, move |credential| PlaneRequestCtx {
         key: credential

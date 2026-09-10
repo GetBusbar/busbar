@@ -43,7 +43,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use busbar_core::{config, config_validate};
+use busbar_core::{config, config_validate, governance::GovState};
 use busbar_plane_a2a::{A2aPlane, Agent};
 use busbar_unit_admission::{Door, InMemoryCells};
 use busbar_unit_auth::Auth;
@@ -572,7 +572,7 @@ pub fn mount(
     inner: axum::Router,
     configured: Option<A2aConfigured>,
     kernel: busbar_kernel::teller::Kernel,
-    governance: Option<Arc<busbar_core::governance::GovState>>,
+    governance: Option<Arc<GovState>>,
     durability: Arc<Mutex<Durability>>,
     request_body_max_bytes: usize,
 ) -> Result<axum::Router, String> {

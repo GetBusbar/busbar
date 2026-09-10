@@ -6,7 +6,19 @@ use super::*;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
-use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use busbar_core::{
+    config::groups::LimitCfg,
+    config::groups::LimitMetric,
+    config::groups::LimitWindow,
+    config::GroupCfg,
+    cost::CostModel,
+    governance::GovState,
+    metrics::init as init_metrics,
+    plane_host::engine_host,
+    proxy::reqlog::REQUESTS,
+    state::App,
+    test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp},
+};
 use busbar_kernel::teller::Ended;
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
@@ -130,7 +142,7 @@ fn unique(prefix: &str) -> String {
 
 /// One deployment: a governed key, a one-lane pool, and a scripted upstream.
 struct Rig {
-    app: Arc<busbar_core::state::App>,
+    app: Arc<App>,
     key: Arc<busbar_api::VirtualKey>,
     /// The BEARER the deployment's own door will resolve back to [`Rig::key`]. Minted rather
     /// than synthesized, so a fixture that presents it is presenting the thing a client sends.
@@ -161,7 +173,7 @@ const DEAD_EXP: u64 = 1_000_000_000;
 
 async fn rig(fixture: Fixture) -> Rig {
     busbar_llm::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    init_metrics();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..8 {
@@ -174,13 +186,13 @@ async fn rig(fixture: Fixture) -> Rig {
     if fixture.seeded_group_requests().is_some() {
         groups.insert(
             group.clone(),
-            busbar_core::config::GroupCfg {
+            GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                limits: vec![LimitCfg {
+                    metric: LimitMetric::Budget,
                     amount: 100,
-                    per: Some(busbar_core::config::groups::LimitWindow::Total),
+                    per: Some(LimitWindow::Total),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
@@ -190,7 +202,7 @@ async fn rig(fixture: Fixture) -> Rig {
         );
     }
 
-    let store = Arc::new(busbar_core::governance::MemoryStore::new());
+    let store = crate::root::mount_ingress::tests::memory_store();
     if let Some(requests) = fixture.seeded_group_requests() {
         use busbar_api::Store as _;
         store
@@ -213,10 +225,7 @@ async fn rig(fixture: Fixture) -> Rig {
         &SIGNING_SECRET,
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        busbar_core::governance::GovState::new_with_signer(store, None, Some(signer))
-            .expect("governance"),
-    );
+    let gov = Arc::new(GovState::new_with_signer(store, None, Some(signer)).expect("governance"));
     let spec = |name: &str| busbar_substrate::governance::NewKeySpec {
         name: name.to_string(),
         allowed_pools: fixture.key_scopes(),
@@ -233,7 +242,7 @@ async fn rig(fixture: Fixture) -> Rig {
     let (_, expired_token) = gov
         .mint_signed(spec("root-llm-expired"), DEAD_EXP, MINTED_AT)
         .expect("mint the expired key");
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
+    let cost = CostModel::resolve_parts(None, FEE_CENTS, &groups);
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
@@ -266,7 +275,7 @@ impl Rig {
     }
 
     fn host(&self) -> Arc<dyn busbar_substrate::plane_host::EngineHost> {
-        busbar_core::plane_host::engine_host(&self.app)
+        engine_host(&self.app)
     }
 }
 
@@ -1208,8 +1217,6 @@ async fn the_loop_leaves_the_money_where_the_shipped_plane_leaves_it() {
 /// rather than the verification alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_unit_leaves_exactly_one_link_on_the_chain() {
-    use busbar_core::proxy::reqlog::REQUESTS;
-
     for fixture in [
         Fixture::BufferedOk,
         Fixture::OverBudget,
@@ -1986,8 +1993,6 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
 ///   anonymous actor — never the refused key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
-    use busbar_core::proxy::reqlog::REQUESTS;
-
     let mut failures: Vec<String> = Vec::new();
     for cred in [Credential::Good, Credential::Bad, Credential::Expired] {
         // LEG 1, on its own deployment: its own door, its own key, its own counters.
@@ -2182,7 +2187,6 @@ async fn leg_loop_seated(rig: &Rig, seats: &[&(dyn approve::VetoSeat + Sync)]) -
 ///   plane's own permission answer in the caller's dialect rather than the node's overload one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing() {
-    use busbar_core::proxy::reqlog::REQUESTS;
     use std::sync::atomic::AtomicBool;
 
     assert!(
