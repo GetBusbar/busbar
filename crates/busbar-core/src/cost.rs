@@ -28,11 +28,10 @@
 
 use std::collections::BTreeMap;
 
-use busbar_api::RESERVED_UNITS;
 // The engine's one seam onto the cost unit: every other module in this crate that needs one of the
 // unit's constants reads it through here rather than naming the unit itself.
 pub(crate) use busbar_unit_cost::{
-    CurrencyCode, GroupRuntime, LaneRates, RateCard, TierRates, NANOS_PER_CENT, NANOS_PER_MICRO,
+    CurrencyCode, GroupRuntime, LaneRates, RateCard, TierRates, NANOS_PER_MICRO,
 };
 // THE DRAIN EDGE, read rather than restated: the resolved topology is the cost unit's
 // (`GroupTable`) and the WALK over it is the admission unit's (`ChainWalk`, which yields a
@@ -78,19 +77,6 @@ pub(crate) fn is_bucket_of_group(bucket_id: &str, group: &str) -> bool {
     crate::config::groups::LimitWindow::ALL
         .iter()
         .any(|w| w.as_str() == window)
-}
-
-/// The nano-unit price of a usage map's RESERVED FOUR at one lane's rates: the four multiply-adds in
-/// u128 (a u64 count times a u64 nano rate cannot overflow u128), in canonical reserved order — the
-/// enforcement/derive summation, byte-identical to the private rate table it replaced: the map
-/// values are the counts, the card's per-class nano rate is the rate, and a class the lane does not
-/// price is 0. Opens are NOT priced here; the summation prices only the reserved four.
-#[inline]
-fn reserved_nanos(lane: &LaneRates<'_>, units: &BTreeMap<String, u64>) -> u128 {
-    RESERVED_UNITS.iter().fold(0u128, |acc, u| {
-        let n = units.get(*u).copied().unwrap_or(0);
-        acc + (n as u128) * (lane.nanos_per_unit(u) as u128)
-    })
 }
 
 /// ONE ENFORCEMENT BUCKET OF A RESOLVED CHAIN, AS A CURSOR — every field is a borrow of, or a `Copy`
@@ -427,10 +413,15 @@ impl CostModel {
 
     /// PRICE a neutral [`busbar_substrate::billing::Usage`] for `model` into nanodollars — the host-side
     /// entry point the [`MeteringHost::price_usage`](busbar_substrate::plane_host::MeteringHost::price_usage)
-    /// seam a live carrier (voice) drives folds through. Byte-for-byte the SAME arithmetic the
-    /// enforcement/derive summation uses ([`Self::lane`] → [`reserved_nanos`], exactly as
-    /// [`Self::derive_spend_cents`]/[`derive_spend_micros`](Self::derive_spend_micros) price each model),
-    /// so this is a new READER over the existing pricer — the LLM money path is untouched.
+    /// seam a live carrier (voice) drives folds through.
+    ///
+    /// A RELAY ONTO THE FACE. The fold this used to run in this file — the reserved four
+    /// multiply-adds over a `class -> quantity` map — is now
+    /// [`busbar_unit_cost::LaneRates::reserved_units_nanos`], beside the line-shaped fold and against
+    /// the same card. It is the same arithmetic on the same values (the unit's cells copied it
+    /// verbatim before this one went), with one change that is a fix rather than a difference: the
+    /// running sum saturates instead of adding plainly, which is identical below the accumulator's
+    /// top and pins rather than wrapping above it.
     ///
     /// The three `lane` outcomes carry straight through: card absent ⇒ `Some(0)` (every model prices
     /// at 0); card present + model priced ⇒ `Some(nanos)`; card present + model UNKNOWN ⇒ `None` (the
@@ -443,7 +434,7 @@ impl CostModel {
         usage: &busbar_substrate::billing::Usage,
     ) -> Option<u128> {
         self.lane(model)
-            .map(|lane| reserved_nanos(&lane, &usage.usage_units))
+            .map(|lane| lane.reserved_units_nanos(&usage.usage_units))
     }
 
     /// Whether a request for `model` must be REJECTED because the rate card is present but has no
@@ -459,68 +450,56 @@ impl CostModel {
         self.inner.model_unpriced(model)
     }
 
-    /// DERIVE the spend (in cents, abstract minor units) of a ledger view: a few multiply-adds
-    /// over the models the bucket actually used, plus - when `include_request_fee` - the flat
-    /// per-request fee times the BILLABLE request count (`fee_requests`: admitted minus refunded,
-    /// so the fee bills 2xx only). Every enforcement/read path passes `true` (each bucket counts
-    /// its own billable requests, so its fee component is its own); the flag exists for callers
-    /// that want a tokens-only projection. Pure recompute from tokens x current rates: no spend is
-    /// ever cached or stored.
+    /// DERIVE the spend (in cents, abstract minor units) of a ledger view — **A RELAY, AND NO
+    /// LONGER A DERIVATION**.
     ///
-    /// A model with no rate (card present, entry missing - only possible for ledger rows written
-    /// under a previous config) derives at 0; the mismatch is the operator's rate-card edit
-    /// taking effect retroactively, which is the designed behavior.
+    /// What used to be here was a second money fold: its own accumulation over the models a bucket
+    /// used, its own single divide to cents, its own flat-fee multiply and its own floor at zero,
+    /// beside the cost unit's. Every one of those four steps is a decision that must match the
+    /// unit's exactly, and nothing made them match — a per-lane floor undercharges every multi-model
+    /// bucket, an unclamped fee credits one back toward headroom, and a wrapping cast bills an
+    /// over-the-top ledger as free. Two answers to what a bucket has spent, with the ledger unable
+    /// to say which one admitted the request.
+    ///
+    /// So the whole of it is `busbar_unit_cost::derive_spend_minor_units` now, over the card this
+    /// model already holds: the same fold, the same divide, the same fee and the same floor as the
+    /// line-shaped derivation the composition root drives, because they are literally the same
+    /// lines. The semantics are unchanged and are the unit's: `include_request_fee` adds the flat
+    /// fee times the BILLABLE request count (`fee_requests`: admitted minus refunded, so the fee
+    /// bills 2xx only); every enforcement/read path passes `true`. Pure recompute from tokens x
+    /// current rates — no spend is ever cached or stored — and a model with no rate (card present,
+    /// entry missing, which only ledger rows written under a previous config can produce) derives at
+    /// 0, the operator's rate-card edit taking effect retroactively by design.
     pub(crate) fn derive_spend_cents<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
         fee_requests: u64,
         include_request_fee: bool,
     ) -> i64 {
-        let mut nanos: u128 = 0;
-        for (model, units) in models {
-            if let Some(lane) = self.lane(model) {
-                nanos = nanos.saturating_add(reserved_nanos(&lane, units));
-            }
-        }
-        // SATURATE into i64 (never `as`-cast): an adversarially large ledger (u64-scale token
-        // counts x a large configured rate) can push the cent total past i64::MAX, and a wrapping
-        // cast would land NEGATIVE - which `.max(0)` below then floors to 0, i.e. an over-the-top
-        // ledger would derive as FREE and bypass every budget cap. Pin at i64::MAX instead (an
-        // astronomically over-cap spend that blocks, fail-closed).
-        let mut cents = i64::try_from(nanos / NANOS_PER_CENT).unwrap_or(i64::MAX);
-        if include_request_fee {
-            let fee = self
-                .price_per_request_cents()
-                .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
-            cents = cents.saturating_add(fee);
-        }
-        cents.max(0)
+        busbar_unit_cost::derive_spend_minor_units(
+            self.inner.card(),
+            CurrencyCode::USD,
+            models,
+            fee_requests,
+            include_request_fee,
+        )
     }
 
-    /// As [`Self::derive_spend_cents`] but in MICRO-units, for the hook seam / admin projections.
+    /// As [`Self::derive_spend_cents`] but in MICRO-units, for the hook seam / admin projections —
+    /// the same relay onto the same sum, at the finer scale and with no floor at zero.
     pub(crate) fn derive_spend_micros<'m>(
         &self,
         models: impl Iterator<Item = (&'m str, &'m BTreeMap<String, u64>)>,
         fee_requests: u64,
         include_request_fee: bool,
     ) -> i64 {
-        let mut nanos: u128 = 0;
-        for (model, units) in models {
-            if let Some(lane) = self.lane(model) {
-                nanos = nanos.saturating_add(reserved_nanos(&lane, units));
-            }
-        }
-        let micros = i64::try_from(nanos / NANOS_PER_MICRO).unwrap_or(i64::MAX);
-        if include_request_fee {
-            // 1 cent = 10_000 micro-units.
-            let fee_micros = self
-                .price_per_request_cents()
-                .saturating_mul(10_000)
-                .saturating_mul(i64::try_from(fee_requests).unwrap_or(i64::MAX));
-            micros.saturating_add(fee_micros)
-        } else {
-            micros
-        }
+        busbar_unit_cost::derive_spend_micros_units(
+            self.inner.card(),
+            CurrencyCode::USD,
+            models,
+            fee_requests,
+            include_request_fee,
+        )
     }
 
     /// READ the ENFORCEMENT CHAIN for a key: [key's attribution bucket] -> key.group's window
