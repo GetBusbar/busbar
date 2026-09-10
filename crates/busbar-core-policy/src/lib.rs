@@ -77,7 +77,7 @@ pub mod plugin;
 /// THE SEAT: the port through which the engine reaches a `kind: hook` plugin, the projections it
 /// drives one with, and the built-in ranking resolver the composition hands in.
 pub mod seat;
-pub use seat::{DeclaredNeeds, HookSeat, NativeResolver, Need, Projectors};
+pub use seat::{Access, HookSeat, NativeResolver, Need, Projectors};
 pub mod scrape;
 pub mod wire;
 
@@ -626,9 +626,9 @@ fn resolve_gate_transport(
 }
 
 /// Return the loud INERT-GATE banner for a hook whose operator `prompt: rw` grant exceeds what its
-/// signed manifest declares (the caller has already confirmed `grant.can_rewrite() &&
-/// !needs_prompt.wants_rewrite()`), or `None` when the hook can't actually fall out of both admission
-/// chains this way. Only a `kind: gate` hook can: `resolve_pool_gates`/`resolve_gate_hooks` exclude a
+/// signed manifest declares (the caller has already confirmed the grant wants a rewrite and the
+/// declaration does not), or `None` when the hook can't actually fall out of both admission chains
+/// this way. Only a `kind: gate` hook can: `resolve_pool_gates`/`resolve_gate_hooks` exclude a
 /// `prompt: rw` hook from the phase-2 DECISION chain unconditionally on the raw operator grant
 /// (deliberate — a manifest-denied `rw` hook is never promoted into a decision gate it never asked
 /// for), and `resolve_pool_rewrites`/`resolve_rewrite_hooks` exclude it from the phase-1 REWRITE chain
@@ -642,22 +642,22 @@ fn resolve_gate_transport(
 /// `RUST_LOG=error`, the very level a production operator is most likely to run).
 ///
 /// Deliberately does NOT claim the hook "never fires under any circumstance": `resolve_on_error_chain`
-/// pushes ANY `kind: gate` hook named as another hook's `on_error` target (no `can_rewrite` filter
+/// pushes ANY `kind: gate` hook named as another hook's `on_error` target (no rewrite filter
 /// there), so a hook in this exact state can still be reached as a fallback link, contributing its
 /// decision verdict there (never its rewrite arm — that still normalizes to abstain). The banner
 /// therefore names the two chains it is excluded from precisely, rather than asserting total silence.
+///
+/// `declared` is the manifest's rung on the ARGUMENT axis; the banner spells it under the manifest's
+/// own key, because the fix it states is one the operator applies to that file.
 fn hook_inert_gate_banner(
     name: &str,
     plugin: &str,
     kind: crate::config::HookKind,
-    needs_prompt: Need,
+    declared: Need,
 ) -> Option<String> {
-    if kind != crate::config::HookKind::Gate {
-        return None;
-    }
-    Some(format!(
+    (kind == crate::config::HookKind::Gate).then(|| format!(
         "hook '{name}' (plugin '{plugin}') grants `prompt: rw` but its signed manifest only \
-         declares `needs.prompt: {needs_prompt:?}` — this hook is INERT wherever it is named \
+         declares `needs.prompt: {declared:?}` — this hook is INERT wherever it is named \
          directly (as a pool `hook:`/`hooks:` entry or in `global_hooks`): it is excluded from the \
          decision-gate chain by design (a `prompt: rw` grant is never promoted into a decision gate \
          it never asked for) AND fails the rewrite chain's effective-grant check (the manifest never \
@@ -669,37 +669,37 @@ fn hook_inert_gate_banner(
 }
 
 /// THE choke point for the belt-and-suspenders rule: effective access is the operator's grant MEET
-/// the plugin's signed-manifest `needs:`, on the ladder `no ⊂ ro ⊂ rw`. Read, rewrite and identity
-/// admission must all derive from here — a consumer that re-derives from `hook.prompt` bypasses the
-/// manifest gate.
+/// the plugin's signed-manifest declaration, per axis, on the ladder `no ⊂ ro ⊂ rw`. Read, rewrite
+/// and identity admission must all derive from here — a consumer that re-derives from the config
+/// leaf bypasses the manifest gate.
+///
+/// The operator's grant is read off the config leaf's two keys and projected onto the axis pair
+/// ONCE, here: the leaf's content key is the rung on the subject's ARGUMENT axis, its caller key
+/// the rung on the IDENTITY axis. The leaf keeps the operator's spelling (a deployed config parses
+/// byte-for-byte); nothing past the projection reads it.
 ///
 /// An unresolvable manifest falls back to the operator grant alone; pre-flight already fails boot
 /// on an unresolvable ref, so that branch is a safety net, never the live path.
-fn effective_access(
-    name: &str,
-    hook: &crate::config::HookCfg,
-    env: &HookEnv,
-) -> (crate::config::PromptAccess, crate::config::UserAccess) {
+fn effective_access(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> Access {
     use crate::config::{PromptAccess, UserAccess};
-
-    let grant_prompt = hook.prompt;
-    let grant_user = hook.user;
+    let grant = Access {
+        argument: match hook.prompt {
+            PromptAccess::No => Need::No,
+            PromptAccess::Ro => Need::Ro,
+            PromptAccess::Rw => Need::Rw,
+        },
+        identity: match hook.user {
+            UserAccess::No => Need::No,
+            UserAccess::Ro => Need::Ro,
+        },
+    };
     let Some(needs) = env.seat.declared_needs(&hook.plugin) else {
-        return (grant_prompt, grant_user);
+        return grant;
     };
-    // MEET on the ladder: the effective rung is the lower of the two declarations.
-    let eff_prompt = match (grant_prompt, needs.prompt) {
-        (PromptAccess::No, _) | (_, Need::No) => PromptAccess::No,
-        (PromptAccess::Rw, Need::Rw) => PromptAccess::Rw,
-        _ => PromptAccess::Ro,
-    };
-    let eff_user = match (grant_user, needs.user) {
-        (UserAccess::No, _) | (_, Need::No) => UserAccess::No,
-        _ => UserAccess::Ro,
-    };
+    let effective = grant.meet(needs);
     // Surface a fat-fingered grant that the manifest never declared: the projection is a no-op, but
     // the operator should know the grant is inert (they may have the wrong plugin).
-    if grant_prompt.sends_prompt() && !needs.prompt.wants_read() {
+    if grant.argument.wants_read() && !needs.argument.wants_read() {
         tracing::warn!(
             hook = %name, plugin = %hook.plugin,
             "hook grants `prompt` but the plugin manifest declares no prompt need — no prompt \
@@ -710,8 +710,8 @@ fn effective_access(
     // it attested it does not rewrite. See `hook_inert_gate_banner` for why a `kind: gate` hook here
     // is not merely "no rewrite chain" but silently inert on EVERY chain, and why the severity jumps
     // to a loud banner for a gate but stays a plain warn for a tap.
-    if grant_prompt.can_rewrite() && !needs.prompt.wants_rewrite() {
-        match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.prompt) {
+    if grant.argument.wants_rewrite() && !needs.argument.wants_rewrite() {
+        match hook_inert_gate_banner(name, &hook.plugin, hook.kind, needs.argument) {
             // ONE print per hook per build (see `banner_seen`'s doc): a hook named in several pools'
             // `hooks:` lists resolves — and would otherwise re-banner — once per reference.
             Some(banner)
@@ -728,14 +728,14 @@ fn effective_access(
             None => {
                 tracing::warn!(
                     hook = %name, plugin = %hook.plugin,
-                    needs_prompt = ?needs.prompt,
+                    needs_prompt = ?needs.argument,
                     "hook grants `prompt: rw` but the plugin manifest declares no prompt REWRITE \
                      need — the hook is NOT admitted to the rewrite chain (grant is inert)"
                 );
             }
         }
     }
-    if grant_user.sends_user() && !needs.user.wants_read() {
+    if grant.identity.wants_read() && !needs.identity.wants_read() {
         tracing::warn!(
             hook = %name, plugin = %hook.plugin,
             "hook grants `user` but the plugin manifest declares no user need — no identity will \
@@ -743,28 +743,28 @@ fn effective_access(
         );
     }
     // Surface the declared intent at resolution (register/load visibility).
-    if needs.declares_any() {
+    if needs != Access::default() {
         tracing::info!(
             hook = %name, plugin = %hook.plugin,
-            needs_prompt = ?needs.prompt, needs_user = ?needs.user,
-            send_prompt = eff_prompt.sends_prompt(), send_user = eff_user.sends_user(),
+            needs_prompt = ?needs.argument, needs_user = ?needs.identity,
+            send_prompt = effective.argument.wants_read(), send_user = effective.identity.wants_read(),
             "hook plugin declared content intent"
         );
     }
-    (eff_prompt, eff_user)
+    effective
 }
 
-/// The READ half of [`effective_access`], as the `(send_prompt, send_user)` pair the wire
-/// projections take.
+/// The READ half of [`effective_access`], as the `(argument, identity)` pair of booleans the
+/// substrate's resolved-policy carrier and the wire projections take.
 fn projection_grants(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> (bool, bool) {
-    let (prompt, user) = effective_access(name, hook, env);
-    (prompt.sends_prompt(), user.sends_user())
+    let access = effective_access(name, hook, env);
+    (access.argument.wants_read(), access.identity.wants_read())
 }
 
 /// The WRITE half of [`effective_access`]: may this hook join a REWRITE chain? Both rewrite
-/// resolvers ask THIS, never `hook.prompt.can_rewrite()` — the operator grant alone is not enough.
+/// resolvers ask THIS, never the config leaf alone — the operator grant is not the ticket.
 fn admits_rewrite(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> bool {
-    effective_access(name, hook, env).0.can_rewrite()
+    effective_access(name, hook, env).argument.wants_rewrite()
 }
 
 /// Open the `kind: hook` PLUGIN backing this hook through the [`HookSeat`] — the in-process
@@ -1808,11 +1808,7 @@ pub mod test_support {
         super::resolve_gate_transport(name, hook, hooks, env, settings_version)
     }
     /// [`super::effective_access`].
-    pub fn effective_access(
-        name: &str,
-        hook: &crate::config::HookCfg,
-        env: &HookEnv,
-    ) -> (crate::config::PromptAccess, crate::config::UserAccess) {
+    pub fn effective_access(name: &str, hook: &crate::config::HookCfg, env: &HookEnv) -> Access {
         super::effective_access(name, hook, env)
     }
     /// [`super::projection_grants`].
@@ -1828,9 +1824,9 @@ pub mod test_support {
         name: &str,
         plugin: &str,
         kind: crate::config::HookKind,
-        needs_prompt: Need,
+        declared: Need,
     ) -> Option<String> {
-        super::hook_inert_gate_banner(name, plugin, kind, needs_prompt)
+        super::hook_inert_gate_banner(name, plugin, kind, declared)
     }
     /// Has `name` already emitted its inert-gate banner under `env`?
     pub fn banner_seen(env: &HookEnv, name: &str) -> bool {

@@ -31,44 +31,54 @@
 use crate::RoutingPolicy;
 use std::sync::Arc;
 
-/// One axis of a hook plugin's DECLARED intent — the same `no ⊂ ro ⊂ rw` ladder the operator grant
-/// uses, so the engine compares "declared" against "granted" directly. `Rw` is meaningful on the
-/// prompt axis only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// One rung of the ladder every content grant is written on — `no ⊂ ro ⊂ rw` — the SAME ladder for
+/// what a plugin's signed manifest DECLARES it needs and what the operator GRANTS, so the engine
+/// meets the two directly. Ordered as the ladder is, so the meet is the lower rung.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum Need {
-    /// Declares no need for this content (the default).
+    /// No access to this axis (the default).
     #[default]
     No,
-    /// Asks to READ this content.
+    /// READ this axis.
     Ro,
-    /// Asks to read AND rewrite (prompt axis only).
+    /// Read AND rewrite (the argument axis only).
     Rw,
 }
 
 impl Need {
-    /// Whether the plugin declared it needs to READ this axis (`ro` or `rw`).
+    /// Whether this rung admits READING the axis (`ro` or `rw`).
     pub fn wants_read(self) -> bool {
         !matches!(self, Need::No)
     }
-    /// Whether the plugin declared it needs to REWRITE (prompt axis; `rw`).
+    /// Whether this rung admits REWRITING the axis (`rw`).
     pub fn wants_rewrite(self) -> bool {
         matches!(self, Need::Rw)
     }
 }
 
-/// What a hook plugin's manifest declared it needs to see, per axis.
+/// The two axes a hook's content access is written on, in the engine's own words: the hook
+/// subject's ARGUMENT payload — the bytes a content-granted hook is shown, which one plane projects
+/// as its conversation and another as its call arguments — and the caller's IDENTITY, which the
+/// kernel established and a hook may at most read. A plugin's manifest DECLARES one of these, the
+/// operator's config GRANTS one, and the engine MEETS them into the effective one. Every spelling of
+/// the pair an operator or a plugin author reads — the config key, the manifest key, the wire member
+/// — belongs to the leaf that carries it and is projected onto these axes at its own edge; the
+/// engine names the axes and nothing else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DeclaredNeeds {
-    /// Declared PROMPT need.
-    pub prompt: Need,
-    /// Declared caller-IDENTITY need (`ro` at most).
-    pub user: Need,
+pub struct Access {
+    /// The subject's ARGUMENT axis: `rw` is the top rung here, and only here.
+    pub argument: Need,
+    /// The caller-IDENTITY axis: `ro` at most.
+    pub identity: Need,
 }
 
-impl DeclaredNeeds {
-    /// Does the plugin declare ANY content need? Surfaced at resolution so an operator sees intent.
-    pub fn declares_any(&self) -> bool {
-        self.prompt != Need::No || self.user != Need::No
+impl Access {
+    /// The MEET, per axis: the effective rung is the lower of the two on each.
+    pub fn meet(self, other: Access) -> Access {
+        Access {
+            argument: self.argument.min(other.argument),
+            identity: self.identity.min(other.identity),
+        }
     }
 }
 
@@ -79,9 +89,9 @@ impl DeclaredNeeds {
 /// it always did: an absent plugin is "gate absent", never a stranded request; an open failure on
 /// a gate is a boot/reload refusal at `preopen_gate_hooks`.
 pub trait HookSeat: Send + Sync {
-    /// The declared needs of the plugin `plugin_ref` resolves to; `None` when it resolves to
-    /// nothing. Reads the manifest only — no instance is opened.
-    fn declared_needs(&self, plugin_ref: &str) -> Option<DeclaredNeeds>;
+    /// What the plugin `plugin_ref` resolves to DECLARES it needs, on the two axes; `None` when it
+    /// resolves to nothing. Reads the manifest only — no instance is opened.
+    fn declared_needs(&self, plugin_ref: &str) -> Option<Access>;
 
     /// Open the plugin `plugin_ref` resolves to as a policy transport for the hook named `name`,
     /// with `settings_json` — the hook's `settings:` map with every `SecretRef` already resolved —

@@ -20,9 +20,7 @@
 //! and `|_| None` without it, so `route: cheapest` on a build without the plugin stays the boot-time
 //! config error `config_validate` makes it.
 
-use busbar_core_policy::{
-    DeclaredNeeds, HookSeat, NativeResolver, Need, Projectors, RoutingPolicy,
-};
+use busbar_core_policy::{Access, HookSeat, NativeResolver, Need, Projectors, RoutingPolicy};
 use busbar_plugin_loader::PluginRegistry;
 use std::sync::Arc;
 
@@ -38,11 +36,13 @@ fn need_of(level: busbar_plugin_sign::NeedLevel) -> Need {
 }
 
 impl HookSeat for RegistrySeat {
-    fn declared_needs(&self, plugin_ref: &str) -> Option<DeclaredNeeds> {
+    fn declared_needs(&self, plugin_ref: &str) -> Option<Access> {
         let p = self.0.resolve(plugin_ref)?;
-        Some(DeclaredNeeds {
-            prompt: need_of(p.manifest.needs.prompt),
-            user: need_of(p.manifest.needs.user),
+        // The manifest's two keys are its spelling of the engine's axis pair: the content key is
+        // the subject's ARGUMENT axis, the caller key the IDENTITY axis. Read here, at the edge.
+        Some(Access {
+            argument: need_of(p.manifest.needs.prompt),
+            identity: need_of(p.manifest.needs.user),
         })
     }
 
