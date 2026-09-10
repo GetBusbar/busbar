@@ -516,6 +516,15 @@ pub struct ProductionUnits {
     /// The store, behind the published ABI. The verbs unit's disaster-recovery subset and its
     /// sealed idempotency cache both reach it, and both reach the same one.
     pub store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+    /// THE UNITS A DECLARED DUPLEX RUN'S MOMENTS ARE JUDGED BY, composed as DATA.
+    ///
+    /// A session's frame is a unit that lives for one moment, and which plane's units judge it is
+    /// a composition decision made by whoever mounted that plane's row — so it arrives here as a
+    /// value, through [`ProductionUnits::with_duplex_units`], and no plane is named on this struct
+    /// for it. `None` is a node that mounted no duplex plane: a declared run on it is judged by this
+    /// root's own steps, which refuse a unit no plane claimed, exactly as the one-shot driver's is.
+    #[cfg(feature = "root-duplex-serve")]
+    pub duplex: Option<Arc<dyn crate::root::session_driver::SessionUnits>>,
     /// The credential the kernel lends the verbs unit for the length of an execution.
     ///
     /// Minted once, at boot, from the node's one authority — the second token in the tree minted
@@ -605,6 +614,8 @@ impl ProductionUnits {
             #[cfg(feature = "root-admin")]
             admin,
             store,
+            #[cfg(feature = "root-duplex-serve")]
+            duplex: None,
             // Minted once, at boot, from the node's one authority. The verbs unit is lent it for the
             // length of an execution and holds nothing after; there is no second way to obtain one.
             admin_token: kernel.admin_token(),
@@ -704,6 +715,22 @@ impl ProductionUnits {
     #[must_use]
     pub fn with_auth_bindings(mut self, bindings: auth_bindings::AuthBindings) -> Self {
         self.auth_bindings = bindings;
+        self
+    }
+
+    /// Compose the units a declared duplex run's moments are judged by — the plane's own, as data.
+    ///
+    /// Separate from the constructors for the reason the auth bindings are: which plane's units
+    /// judge a session is decided where that plane's row is mounted, which is after the units are
+    /// assembled and in a file that may name the plane. This one may not, and does not: what
+    /// arrives is a value behind the root's own seam.
+    #[cfg(feature = "root-duplex-serve")]
+    #[must_use]
+    pub fn with_duplex_units(
+        mut self,
+        units: Arc<dyn crate::root::session_driver::SessionUnits>,
+    ) -> Self {
+        self.duplex = Some(units);
         self
     }
 
