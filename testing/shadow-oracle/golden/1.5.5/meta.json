@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 915,
   "binary_sha256": "84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7",
-  "harness_rev": "9edb729214d8e17b9222ce112fc2a104518589262d858f903ff05c944d6aa6fc",
+  "harness_rev": "c250d49d0af6896a6465ca4d6f1c7b59af245d96e87ce869c812cdd9eaac71ac",
   "host_triple": "x86_64-unknown-linux-gnu",
   "at": "2026-09-07T22:16:53Z",
   "provenance_history": {
@@ -84,6 +84,11 @@
         "from": "5911fbccf3e210e1d1c757ed7bb365630410b1e969e1d006cfcfc0b30dd2df73",
         "to": "9edb729214d8e17b9222ce112fc2a104518589262d858f903ff05c944d6aa6fc",
         "why": "2026-09-10 documentation-only: accepted-differences.json is a harness_rev file, and the overlay-section 404 was SPLIT out of the additive-admin-views entry into its own entry with `text_list_growth`. That cell's whole difference lives inside ONE string leaf (the 400 body's `message`, whose expected-one-of list gained the four named-map sections), which a plain JSON-superset walk cannot see into; the nine hook-view cells grow JSON KEYS and keep the stricter plain-superset proof rather than being widened to buy the tenth. No cell re-recorded and no cell byte changed."
+      },
+      {
+        "from": "9edb729214d8e17b9222ce112fc2a104518589262d858f903ff05c944d6aa6fc",
+        "to": "c250d49d0af6896a6465ca4d6f1c7b59af245d96e87ce869c812cdd9eaac71ac",
+        "why": "2026-09-10 documentation-only: accepted-differences.json is a harness_rev file, and F-011b (the openapi.json document) gained `description_corrections` naming ONE leaf: `NamedDefView.max_admin_scope`, whose PUBLISHED text offers a `none` ceiling token `Scope::parse_ceiling` has never accepted and cannot. Four sibling leaves on the same document were fixed in the TREE rather than registered; a sixth (the overlay-reset 409 description) is left RED and named for the owner, because it can be neither frozen (the v1 router panics on an emission the taxonomy does not declare) nor addressed (the tool's pointer resolver splits on `/`, so no leaf under `paths` is nameable). `description_corrections` forgives only the pointers it names, so the rest of the document is still proven a superset. No cell re-recorded and no cell byte changed."
       }
     ]
   },

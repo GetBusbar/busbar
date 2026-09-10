@@ -100,7 +100,7 @@ pub struct NamedDefView {
     pub unparseable: Option<String>,
 }
 
-/// ONE `agents:` REGISTRATION, as the admin read surface projects it — the `agents:` section's OWN
+/// ONE `agents:` REGISTRATION, as the read surface projects it — the `agents:` section's OWN
 /// view, not a widening of [`NamedDefView`].
 ///
 /// WHY A SECOND TYPE AND NOT THREE MORE OPTIONAL FIELDS. `agents:` first landed as three
@@ -112,10 +112,10 @@ pub struct NamedDefView {
 /// shipped client was told about `/identity-providers` and `/export` in order to describe a section
 /// those clients cannot reach.
 ///
-/// The rule the shared view states holds here word for word: SECRETS ARE NEVER PROJECTED. The
-/// backend `url:` is not projected either — it is the real remote endpoint, this surface is
-/// reachable at READ-ONLY admin scope, and "which third party is behind this name" is the fact the
-/// rewrite-through-busbar posture keeps on the server side.
+/// The rule the shared view states holds here word for word, at the same read-only scope it names:
+/// SECRETS ARE NEVER PROJECTED. The backend `url:` is not projected either — it is the real remote
+/// endpoint, and "which third party is behind this name" is the fact the rewrite-through-busbar
+/// posture keeps on the server side.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "openapi-schema", derive(schemars::JsonSchema))]
 pub struct AgentDefView {

@@ -697,6 +697,40 @@ impl OverlaySection {
             .join("|")
     }
 
+    /// THE SECTION NAMES THE 1.5.5 REFERENCE DOCUMENT PUBLISHED — four, frozen, and deliberately
+    /// NOT derived from [`OverlaySection::all`].
+    ///
+    /// `openapi.json` is a 1.5.5 WIRE SURFACE, judged against the published document as a JSON
+    /// superset: a new path may appear beside an old one, but an existing string leaf whose VALUE
+    /// changed is a divergence, whatever the reason it changed. Two leaves on
+    /// `DELETE /overlay/{section}` restated this list in prose — the operation `summary` and the
+    /// `400` condition — so deriving them from the live set rewrote two published strings the
+    /// moment 1.6.0 added a section.
+    ///
+    /// NOTHING IS HIDDEN BY FREEZING THEM. The operation's `section` path parameter carries the
+    /// live set as a JSON `enum`, derived from `all()` exactly as before, and an array that GAINS
+    /// members is growth the superset walk proves rather than prose that has to be re-read. The
+    /// machine-readable answer is therefore complete and checkable; what is frozen is the English
+    /// beside it, until 1.6.0's own document is published and becomes the thing to be judged
+    /// against. The route's OWN 400 message is not frozen either — it reads
+    /// [`OverlaySection::valid_names_or`] and names every live section, because it answers an
+    /// operator who just got one wrong.
+    // Only the two `openapi-schema` prose sites read this; on a default build it has no caller.
+    #[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
+    pub(crate) const PUBLISHED_NAMES: [&'static str; 4] =
+        ["groups", "hooks", "root", "plugin_versions"];
+
+    /// [`OverlaySection::PUBLISHED_NAMES`] rendered the way the published `400` condition rendered
+    /// them: backticked, pipe-joined — the frozen twin of [`OverlaySection::valid_names`].
+    #[cfg_attr(not(feature = "openapi-schema"), allow(dead_code))]
+    pub(crate) fn published_names() -> String {
+        OverlaySection::PUBLISHED_NAMES
+            .iter()
+            .map(|s| format!("`{s}`"))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+
     /// The valid section names as the PUBLISHED 1.5.5 prose list — backticked, comma-separated,
     /// with an `or` before the last one — for the route's own 400 message, which spells its list
     /// that way rather than with pipes. Same single source as [`OverlaySection::valid_names`]; a

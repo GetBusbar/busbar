@@ -130,7 +130,7 @@
         "type": "object"
       },
       "AgentDefView": {
-        "description": "ONE `agents:` REGISTRATION, as the admin read surface projects it — the `agents:` section's OWN\nview, not a widening of [`NamedDefView`].\n\nWHY A SECOND TYPE AND NOT THREE MORE OPTIONAL FIELDS. `agents:` first landed as three\n`skip_serializing_if` fields on [`NamedDefView`] plus a fourth on `module`, because an agent\nregistration has no backing plugin to name. The fourth is the one that cost: making `module`\nskippable took it out of the shared schema's `required` array, and that array is a 1.5.5\nPUBLISHED wire fact. A section that does not fit the shared spine needs its own view, exactly as\na section that does keeps the shared one unchanged; the alternative narrows what every already\nshipped client was told about `/identity-providers` and `/export` in order to describe a section\nthose clients cannot reach.\n\nThe rule the shared view states holds here word for word: SECRETS ARE NEVER PROJECTED. The\nbackend `url:` is not projected either — it is the real remote endpoint, this surface is\nreachable at READ-ONLY admin scope, and \"which third party is behind this name\" is the fact the\nrewrite-through-busbar posture keeps on the server side.",
+        "description": "ONE `agents:` REGISTRATION, as the read surface projects it — the `agents:` section's OWN\nview, not a widening of [`NamedDefView`].\n\nWHY A SECOND TYPE AND NOT THREE MORE OPTIONAL FIELDS. `agents:` first landed as three\n`skip_serializing_if` fields on [`NamedDefView`] plus a fourth on `module`, because an agent\nregistration has no backing plugin to name. The fourth is the one that cost: making `module`\nskippable took it out of the shared schema's `required` array, and that array is a 1.5.5\nPUBLISHED wire fact. A section that does not fit the shared spine needs its own view, exactly as\na section that does keeps the shared one unchanged; the alternative narrows what every already\nshipped client was told about `/identity-providers` and `/export` in order to describe a section\nthose clients cannot reach.\n\nThe rule the shared view states holds here word for word, at the same read-only scope it names:\nSECRETS ARE NEVER PROJECTED. The backend `url:` is not projected either — it is the real remote\nendpoint, and \"which third party is behind this name\" is the fact the rewrite-through-busbar\nposture keeps on the server side.",
         "properties": {
           "fingerprint_pinned": {
             "description": "Whether an approved card FINGERPRINT is pinned yet. A registration with a root but no\nfingerprint is the normal state of a fresh entry awaiting approval, and it is the state an\noperator most needs to be able to see.",
@@ -1964,7 +1964,7 @@
             "type": "integer"
           },
           "reset": {
-            "description": "The section that was reset. This endpoint's `section` path parameter enumerates the valid\nset; it is deliberately not restated here, because the hand-written copy that used to sit on\nthis line went stale the moment a section was added.",
+            "description": "The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).",
             "type": "string"
           }
         },
@@ -8610,7 +8610,7 @@
                 }
               }
             },
-            "description": "`invalid_request`: unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`|`identity-providers`|`export`|`tools`|`agents`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
+            "description": "`invalid_request`: unknown overlay section (expected `groups`|`hooks`|`root`|`plugin_versions`), malformed `If-Match` header, ephemeral busbar: no disk config to read, merge onto, or revert to, invalid config; nothing changed"
           },
           "401": {
             "content": {
@@ -8671,7 +8671,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions|identity-providers|export|tools|agents). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
+        "summary": "DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ groups|hooks|root|plugin_versions). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)",
         "x-busbar-required-scope": "full"
       }
     },

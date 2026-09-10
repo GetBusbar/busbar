@@ -169,9 +169,17 @@ pub(crate) struct ConfigRollbackView {
 /// an idempotent no-op).
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct OverlayResetView {
-    /// The section that was reset. This endpoint's `section` path parameter enumerates the valid
-    /// set; it is deliberately not restated here, because the hand-written copy that used to sit on
-    /// this line went stale the moment a section was added.
+    /// The section that was reset (`groups` | `hooks` | `root` | `plugin_versions`).
+    // FROZEN PUBLISHED PROSE: this doc comment is the field's `description` in the served
+    // `openapi.json`, a 1.5.5 wire document judged as a JSON superset of the published one, so a
+    // description that is REWRITTEN is an existing string leaf whose value changed rather than a
+    // new path beside the old. The 1.6.0 note therefore lives here, not above:
+    //   the four names on that line are the four 1.5.5 published, and this endpoint's `section`
+    //   path parameter carries the LIVE set as a JSON enum -- derived from `OverlaySection::all()`,
+    //   so it grows with the sections and the growth is proven rather than read. The rewrite that
+    //   stopped restating the set (because the hand-written copy went stale the moment a section
+    //   was added) was right about the hazard and wrong about the instrument: the enum beside it
+    //   already fixed the hazard, and the rewrite moved a published string to do it again.
     pub(crate) reset: String,
     pub(crate) config_version: u64,
     /// `true` when the reset discarded overlay mutations; `false` for an already-empty section.

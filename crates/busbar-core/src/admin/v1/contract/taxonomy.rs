@@ -234,13 +234,23 @@ impl Cond {
                 "this process has no shutdown channel, so it cannot restart itself"
             }
             Cond::UnknownSection => {
-                // DERIVED, never restated: the hand-written four-name list here outlived the
-                // arrival of the `named_maps` overlay section, so the API's own error taxonomy
-                // asserted `export` was not a section while it was becoming one.
+                // FROZEN PUBLISHED PROSE. This sentence IS the `400` response `description` on
+                // `DELETE /overlay/{section}` in the served `openapi.json`, a 1.5.5 wire document
+                // judged as a JSON superset of the published one — so a string leaf whose VALUE
+                // changed is a divergence and the four names 1.5.5 printed stay printed
+                // (`OverlaySection::PUBLISHED_NAMES`, which says at length why that hides nothing:
+                // the operation's `section` parameter enum carries the live set, additively).
+                //
+                // It was DERIVED from the live set for a real reason -- a hand-written four-name
+                // list here had outlived the arrival of the `named_maps` overlay section, so the
+                // taxonomy asserted `export` was not a section while it was becoming one. The two
+                // surfaces that answer an OPERATOR keep the derivation and answer with all eight:
+                // the route's own 400 message (`OverlaySection::valid_names_or`) and the parameter
+                // enum. Only this reference sentence is pinned to what was published.
                 static PROSE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
                     format!(
                         "unknown overlay section (expected {})",
-                        crate::config::overlay::OverlaySection::valid_names()
+                        crate::config::overlay::OverlaySection::published_names()
                     )
                 });
                 PROSE.as_str()

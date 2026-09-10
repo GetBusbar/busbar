@@ -4183,18 +4183,25 @@ pub(crate) fn openapi_doc() -> serde_json::Value {
             }
         }),
     );
-    // The section enum + the summary are DERIVED from `OverlaySection::all()`. Hand-written, they
-    // stated a four-value set as COMPLETE for the whole life of the `named_maps` section, so the
-    // reference documentation asserted a shipped functional gap was not one.
+    // The section ENUM is DERIVED from `OverlaySection::all()`. Hand-written, it stated a
+    // four-value set as COMPLETE for the whole life of the `named_maps` section, so the reference
+    // documentation asserted a shipped functional gap was not one. It is also the machine-readable
+    // answer, and an array that GAINS members is growth the published document's superset check
+    // proves rather than prose a reader has to re-read.
     let overlay_section_names: Vec<&'static str> = crate::config::overlay::OverlaySection::all()
         .iter()
         .map(|s| s.as_str())
         .collect();
+    // The SUMMARY restates that set in English, and a summary is a published string LEAF: deriving
+    // it rewrote a 1.5.5 wire string the moment 1.6.0 added a section. It is pinned to what was
+    // published (`OverlaySection::PUBLISHED_NAMES`, which carries the argument for why the enum
+    // above makes that safe), and the 1.6.0 story is this comment rather than a re-worded sentence.
+    let published_section_names = crate::config::overlay::OverlaySection::PUBLISHED_NAMES.join("|");
     paths.insert(
         ap("/overlay/{section}"),
         json!({
             "delete": {
-                "summary": format!("DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ {}). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)", overlay_section_names.join("|")),
+                "summary": format!("DISCARD a section's overlay mutations and revert it to base config.yaml (section ∈ {published_section_names}). Per-section reset: the OTHER sections' overlay survives. A NEW config version; an already-empty section is an idempotent no-op (changed:false)"),
                 "security": [{"adminToken": []}],
                 "parameters": [{"name": "section", "in": "path", "required": true, "schema": {"type": "string", "enum": overlay_section_names}}],
                 RESPONSES_KEY: {
