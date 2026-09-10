@@ -753,16 +753,45 @@ fn fold_report(
 /// that retired it: both answers over every recorded cell of the two families the golden has, and
 /// the golden's own billed count beside them.
 fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
-    fee_facts(walk.served_status(), walk.upstream_candidate(), origin)
+    let status = walk.served_status();
+    fee_facts(
+        status,
+        walk.upstream_candidate(),
+        finish_of_status(status),
+        origin,
+    )
 }
 
-/// The same evidence, over the two facts the carry supplies rather than over the carry.
+/// THE FINISH A STATUS ALONE CAN SUPPORT. A frame that came back 2xx is a request that was
+/// answered; anything else is not. It is the honest verdict at the exit, where the frame the client
+/// saw is the only reading that exists yet — and it is NOT the plane's own verdict, which for a
+/// streamed answer is not a fact until the body has drained.
+fn finish_of_status(status: Option<u16>) -> Option<busbar_contract::FinishClass> {
+    status.map(|s| {
+        if (200..300).contains(&s) {
+            busbar_contract::FinishClass::Complete
+        } else {
+            busbar_contract::FinishClass::Error
+        }
+    })
+}
+
+/// The same evidence, over the facts the carry supplies rather than over the carry.
 ///
 /// Split out for one reason: a cell that wants to check what this leg decides has to be able to
 /// drive THIS function, and the carry it used to take is a live per-request object with a runtime
 /// table behind it. A proof that drives a transcription of the rule instead of the rule is a proof
 /// about the transcription, and the transcription is what drifts.
-fn fee_facts(status: Option<u16>, upstream_candidate: bool, origin: OriginKind) -> FeeEvidence {
+///
+/// The FINISH is an argument rather than a re-reading of the status, because this plane has two
+/// moments and they do not have the same answer: at the exit the frame the client saw is all there
+/// is, and after the body has drained the tap knows how the stream really ended.
+fn fee_facts(
+    status: Option<u16>,
+    upstream_candidate: bool,
+    finish: Option<busbar_contract::FinishClass>,
+    origin: OriginKind,
+) -> FeeEvidence {
     FeeEvidence {
         // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is what a
         // caller pays for a request the node carried on its behalf, and a unit the node runs for any
@@ -779,13 +808,7 @@ fn fee_facts(status: Option<u16>, upstream_candidate: bool, origin: OriginKind) 
         // the dispute arm unreachable here — see the cell's `dispute_arm_is_unreachable` test.
         status_at: None,
         status: None,
-        finish: status.map(|s| {
-            if (200..300).contains(&s) {
-                busbar_contract::FinishClass::Complete
-            } else {
-                busbar_contract::FinishClass::Error
-            }
-        }),
+        finish,
     }
 }
 
