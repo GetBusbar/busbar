@@ -22,7 +22,7 @@
 //! an identity type, and a liveness rule. If the seam only fits things shaped like what already
 //! exists, it is not a seam.
 
-use super::*;
+use busbar_substrate::egress_auth::gate::*;
 
 use crate::admin::audit::{AuditEntry, AuditInput, OUTCOME_REJECTED};
 use crate::audit::{verify_chain, Chain};

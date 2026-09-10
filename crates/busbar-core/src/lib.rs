@@ -154,8 +154,21 @@ pub use busbar_api::durable;
 // not a protocol plane is built. The pooled client + the neutral return surface it hands back are
 // gated INSIDE the module to their consumers (the pool to either plane; the A2A return types to A2A).
 pub mod egress;
-pub mod egress_auth;
+// `egress_auth` DELETED (1.6.0 deletion wave): a `pub use busbar_substrate::egress_auth::*` glob
+// plus a `gate` shim that was the same glob one level down. Readers name the substrate. The three
+// core-side batteries it hosted are mounted here: the gate's third-plane proof (names
+// `crate::admin::audit`), the prebuilt-auth differential (needs core's test-seeded registry) and the
+// crate-wide license-header scan (walks THIS crate's `src`).
+#[cfg(test)]
+#[path = "tests/egress_auth_gate_tests.rs"]
+mod egress_auth_gate_tests;
+#[cfg(test)]
+#[path = "tests/egress_auth_prebuilt_tests.rs"]
+mod egress_auth_prebuilt_tests;
 pub mod endpoints;
+#[cfg(test)]
+#[path = "tests/license_tests.rs"]
+mod license_header_tests;
 // The narrow, `pub` re-export facade the extracted LLM engine reaches DOWN into core through once it
 // lives in busbar-llm (1.6.0 money-path relocation, Phase 0). Pure visibility lift — see the module.
 pub mod engine_facade;

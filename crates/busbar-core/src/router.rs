@@ -9,10 +9,9 @@ use axum::Router;
 #[allow(unused_imports)]
 use crate::{
     admin, audit, auth, auth_cache, billing, breaker, catalogue, config, config_validate,
-    core_routes, cost, durable, egress_auth, endpoints, eventstream, export, failover, governance,
-    hooks, ingress, json, limits, lossless, media, metrics, net_guard, oauth_as, observability,
-    operation, plane, plugin_routes, profile, proto, proxy, sigv4, state, store, telemetry, tls,
-    transport,
+    core_routes, cost, durable, endpoints, eventstream, export, failover, governance, hooks,
+    ingress, json, limits, lossless, media, metrics, net_guard, oauth_as, observability, operation,
+    plane, plugin_routes, profile, proto, proxy, sigv4, state, store, telemetry, tls, transport,
 };
 
 /// Response header name for the W3C Server-Timing field.

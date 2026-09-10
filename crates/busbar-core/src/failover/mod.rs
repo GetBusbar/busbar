@@ -26,7 +26,7 @@
 //! produces. **What a plane owns:** what a CANDIDATE is ([`Candidate`]), what makes two of them
 //! interchangeable (the pin it hands back from [`Candidate::interchange_key`]), the ORDER they are
 //! offered in ([`Order`]) and which admission primitive its dispatch needs — and nothing else.
-//! [`crate::egress_auth::gate`] is the precedent this copies rather
+//! [`busbar_substrate::egress_auth::gate`] is the precedent this copies rather
 //! than a new idea: a plane supplies a grant kind and keeps its refusal wording; it does not keep its
 //! own decision. [`crate::audit`] is the nearer one still: core owns the mechanism, a stream supplies
 //! one record type.
