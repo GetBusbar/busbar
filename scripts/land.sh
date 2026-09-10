@@ -633,21 +633,36 @@ EOF
 #
 # OFF BY DEFAULT. With `LAND_SELFTEST_SHARDS` unset, every landing runs exactly what it ran before.
 #
-# ── WHAT THE FLEET STILL OWES THE REMOTE ARM, MEASURED 2026-09-09 ──────────────────────────────────
-# The sequential arm is proven. The FAN-OUT arm is not reachable yet, and the reason is a fact about
-# the boxes rather than about this script, so it is written here rather than discovered by whoever
-# first exports the variable on a landing box:
+# ── THE FAN-OUT IS ORCHESTRATED FROM THE LAPTOP, NOT FROM THE BOX ─────────────────────────────────
+# A fleet box cannot reach a sibling: it has no ~/.busbar-fleet, no ~/.busbar-fleet-ssh, no aws on
+# PATH, and box-to-box tcp/22 is CLOSED (probed 2026-09-09; the security group is egress-only, as
+# scripts/ci-remote-lib.sh's header says). The laptop that launched the landing reaches every box.
+# So the fan-out is a REQUEST/DELIVER protocol between this copy of land.sh on the primary box and
+# scripts/land-remote.sh on the laptop, and it has to be a protocol rather than a one-shot launch
+# because the tree a shard must prove is THIS box's cherry-picked tip — it exists nowhere else — and
+# a red batch BISECTS, running these legs again per half at a tip that did not exist a minute ago.
 #
-#   * a fleet box has no ~/.busbar-fleet, no ~/.busbar-fleet-ssh and no ~/.ssh/busbar-ci-fleet, and
-#     no `aws` on PATH — so `fleet_pick_host` and `rsh_script` have nothing to work with there;
-#   * box-to-box tcp/22 is CLOSED (probed against two siblings' private IPs from a third): the
-#     security group is egress-only, exactly as scripts/ci-remote-lib.sh's header says it is.
+#   * this box runs shard 1 itself, pushes its tree to its OWN bare repo under refs/heads/<req>, and
+#     writes `<dir>/REQUEST` (`gate= n= sha= ref= ceil=`). Then it WAITS.
+#   * the laptop polls the primary for REQUEST files (the same 60 s poll that streams the log),
+#     fetches the sha from the primary's bare repo, pushes it to n-1 distinct least-loaded siblings,
+#     runs `cargo xtask gate <g> --selftest --shard k/n` detached on each, and when a sibling's exit
+#     status is on disk copies its log and then its .rc into `<dir>` here — log first, because the
+#     .rc is the signal.
+#   * this box's union check (land_shard_union, unchanged) reads what was delivered. A shard whose
+#     .rc never arrived — the laptop went away, the sibling died, the deadline passed — is RED with
+#     "never reported", exactly as before. THIS BOX NEVER FABRICATES A SIBLING'S VERDICT; it can only
+#     read what the laptop put on its disk, and with `LAND_SHARD_FANOUT=laptop` set it cannot go
+#     green on shard 1 alone, because the union is short by n-1 shards until they are delivered.
+#   * the laptop keeps its own copy of every shard's log and .rc and re-runs the same union check
+#     over them after this box reports; a green from here that the laptop's copies do not support
+#     is refused there. The join therefore happens in two places that must agree, and the laptop's
+#     is the authoritative one.
 #
-# So a box reaching a sibling needs the same three files the operator's laptop has, the aws CLI and
-# session-manager-plugin, and an instance profile that allows ssm:StartSession — one preparation
-# step, of the kind scripts/ci-runners-ssh.sh already performs for the laptop. Until then this arm
-# is RED when asked for, which is the correct answer and not a useful one: leave the variable unset
-# on a remote landing, or set it and take the sequential arm.
+# `LAND_SHARD_FANOUT=laptop` is set by land-remote.sh's remote environment and by nothing else. On a
+# box without it (an older transport that does not serve requests) the shards run SEQUENTIALLY here
+# — the same proof, on one box. Set without LAND_REMOTE_INNER it is a refusal: nobody serves
+# requests for a landing that was not launched through the transport.
 
 # The shard count, validated. Empty or 1 is "do not shard"; anything above 4 or not a number is a
 # REFUSAL rather than a silent fallback, because a caller who wrote `LAND_SELFTEST_SHARDS=eight`
@@ -701,80 +716,48 @@ land_shard_union() { # $1 = gate  $2 = n  $3 = dir
   return 0
 }
 
-# ONE SHARD ON A SIBLING BOX. Its own clone under ~/busbar-shards/<ref>, so a box already running a
-# landing in ~/busbar-prove is not disturbed by one; the ref is pushed to that box's OWN bare repo
-# by `remote_push_tree`, which is why the sibling can fetch it at all.
-land_shard_remote_one() { # $1 host  $2 ref  $3 gate  $4 k/n  $5 CEIL=VALUE
-  local host="$1" ref="$2" g="$3" spec="$4" ceil="$5"
-  remote_push_tree "$host" "$here" "$ref" || return 1
-  rsh_script "$host" "$ref" "$g" "$spec" "$ceil" <<'SHARD'
-set -uo pipefail
-REF="$1"; GATE="$2"; SPEC="$3"; CEIL="$4"
-export PATH="$HOME/.cargo/bin:$PATH"
-export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0
-export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
-# A SERVER PORT OF ITS OWN, for the reason land-remote.sh gives: a neighbour's
-# `sccache --stop-server` must not appear inside this shard's rustc as a reset connection.
-export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4310}"
-export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
-export "$CEIL"
-BARE="$HOME/busbar.git"
-W="$HOME/busbar-shards/$REF"
-mkdir -p "$HOME/busbar-shards"
-[ -d "$W/.git" ] || git clone -q --shared "$BARE" "$W" || exit 2
-cd "$W" || exit 2
-git fetch -q origin "+refs/heads/$REF:refs/heads/$REF" || exit 2
-git checkout -q -f "$REF" || exit 2
-git clean -qffdx -e target -e .cargo
-echo "shard $SPEC of $GATE on $(hostname): tree $(git rev-parse --short HEAD)"
-cargo xtask gate "$GATE" --selftest --shard "$SPEC"
-SHARD
+# PUBLISH THE TREE FOR THE SIBLINGS. A function of its own so the self-test can stand in for the
+# transport (there is no `prove` remote on a laptop) without standing in for anything else.
+land_shard_publish() { # $1 = ref
+  git -C "$here" push -q --force prove "HEAD:refs/heads/$1"
 }
 
-# THE FAN-OUT. Shard 1 stays on THIS box — it is already checked out, its target/ is warm, and it is
-# the one shard no transport can lose — and shards 2..n go to siblings, in parallel.
-land_shard_remote() { # $1 gate  $2 n  $3 dir  $4 CEIL=VALUE
-  local g="$1" n="$2" dir="$3" ceil="$4" k host pid1
-  # shellcheck source=scripts/ci-remote-lib.sh
-  . "$here/scripts/ci-remote-lib.sh" || {
-    echo "land.sh: RED — scripts/ci-remote-lib.sh will not source; the fan-out has no transport" >&2; return 1; }
-  # `rdie` in that library exits; every call to it from here is made inside a subshell so a
-  # transport that gives up is a RED leg rather than a landing that vanished with status 2.
-  ( remote_wrapper ) || { echo "land.sh: RED — no ssh wrapper for the fleet" >&2; return 1; }
-  local ref="landshard-$stamp"
+# THE REQUEST/WAIT ARM. Shard 1 here, in the background; the tree published; the request written
+# atomically (a laptop that reads a half-written request would launch the wrong thing, so the file
+# appears complete or not at all); then a wait on the siblings' .rc files bounded by the gate's own
+# ceiling plus the transport's share (clone, xtask build, two copies) — LAND_SHARD_WAIT_SECS overrides
+# for the self-test. The wait ENDS; it does not decide. land_shard_union decides, over whatever is
+# on disk when it ends.
+land_shard_request() { # $1 gate  $2 n  $3 dir  $4 CEIL=VALUE
+  local g="$1" n="$2" dir="$3" ceil="$4" pid1 k ref sha t0 deadline all
   ( cd "$here" && env "$ceil" cargo xtask gate "$g" --selftest --shard "1/$n" >"$dir/shard-1.log" 2>&1 ) &
   pid1=$!
-  # ONE SHARD PER BOX, AND NEVER THIS BOX. The allocator is a round-robin cursor shared by every
-  # agent on the host, so two consecutive picks can perfectly well hand back the same box — and
-  # this box is already running shard 1. Two shards on one box is the wall clock of one box, which
-  # is the whole thing this leg exists to stop paying; this box taking a second is worse still.
-  local me used=""
-  me="$(cat /var/lib/cloud/data/instance-id 2>/dev/null || true)"
-  k=2
-  while [ "$k" -le "$n" ]; do
-    host=""
-    local try=0
-    while [ "$try" -lt $(( n * 4 )) ]; do
-      try=$((try + 1))
-      local cand; cand="$( fleet_pick_host )" || cand=""
-      [ -n "$cand" ] || break
-      [ "$cand" = "$me" ] && continue
-      case " $used " in *" $cand "*) continue ;; esac
-      host="$cand"; used="$used $cand"; break
+  ref="shardreq-$stamp-$LAND_SHARD_SEQ"
+  sha="$(git -C "$here" rev-parse HEAD)"
+  if ! land_shard_publish "$ref" >"$dir/publish.log" 2>&1; then
+    # No tree for the siblings means no shards for the siblings: each is RED with the reason, and
+    # the union will say so. Shard 1 still finishes, because it is a fact about the tree.
+    k=2
+    while [ "$k" -le "$n" ]; do
+      { echo "land.sh: shard $k/$n: this box could not publish its tree for the fan-out (refs/heads/$ref); see publish.log"; cat "$dir/publish.log"; } >"$dir/shard-$k.log"
+      echo 2 >"$dir/shard-$k.rc"; k=$((k + 1))
     done
-    if [ -z "$host" ]; then
-      echo "land.sh: shard $k/$n: no free fleet host to hand it to (a shard with no box is RED, never skipped)" >"$dir/shard-$k.log"
-      echo 2 >"$dir/shard-$k.rc"
-    else
-      (
-        land_shard_remote_one "$host" "$ref" "$g" "$k/$n" "$ceil" >"$dir/shard-$k.log" 2>&1
-        echo $? >"$dir/shard-$k.rc"
-      ) &
-    fi
-    k=$((k + 1))
+    wait "$pid1"; echo $? >"$dir/shard-1.rc"; return 0
+  fi
+  printf 'gate=%s n=%s sha=%s ref=%s ceil=%s\n' "$g" "$n" "$sha" "$ref" "$ceil" >"$dir/REQUEST.tmp"
+  mv "$dir/REQUEST.tmp" "$dir/REQUEST"
+  echo "land.sh: $g self-test in $n shard(s): shard 1 here; shards 2..$n requested from the laptop ($dir/REQUEST, tree $(printf '%.9s' "$sha"))"
+  deadline="${LAND_SHARD_WAIT_SECS:-$(( ${ceil#*=} + 900 ))}"
+  t0="$(date +%s)"
+  while :; do
+    all=1; k=2
+    while [ "$k" -le "$n" ]; do [ -f "$dir/shard-$k.rc" ] || all=0; k=$((k + 1)); done
+    [ "$all" = 1 ] && break
+    [ $(( $(date +%s) - t0 )) -lt "$deadline" ] || {
+      echo "land.sh: $g self-test: waited ${deadline}s for the siblings' verdicts; what arrived is what will be judged" >&2; break; }
+    sleep "${LAND_SHARD_POLL_SECS:-20}"
   done
   wait "$pid1"; echo $? >"$dir/shard-1.rc"
-  wait
   return 0
 }
 
@@ -814,11 +797,14 @@ land_selftest_leg() { # $1 gate  $2 log  $3 CEIL=VALUE
   fi
   land_shard_dir "$g"; dir="$LAND_SHARD_DIR"
   mkdir -p "$dir"
-  if [ -n "${LAND_REMOTE_INNER:-}" ]; then
-    echo "land.sh: $g self-test in $n shard(s): shard 1 here, the rest on the fleet"
-    land_shard_remote "$g" "$n" "$dir" "$ceil"
+  if [ "${LAND_SHARD_FANOUT:-}" = laptop ] && [ -z "${LAND_REMOTE_INNER:-}" ]; then
+    echo "land.sh: RED — LAND_SHARD_FANOUT=laptop outside a remote landing: nobody serves shard requests here" >&2
+    return 1
+  fi
+  if [ -n "${LAND_REMOTE_INNER:-}" ] && [ "${LAND_SHARD_FANOUT:-}" = laptop ]; then
+    land_shard_request "$g" "$n" "$dir" "$ceil"
   else
-    echo "land.sh: $g self-test in $n shard(s), sequentially (this is not a remote landing)"
+    echo "land.sh: $g self-test in $n shard(s), sequentially (no laptop serves a fan-out for this landing)"
     land_shard_local "$g" "$n" "$dir" "$ceil"
   fi
   # ONE LOG, so every reader below — and every operator — still has the gate's own words in the
@@ -1712,6 +1698,44 @@ land_selftest() {
   _st "union: a case owned by no shard is RED"        1 land_shard_union g 4 "$sd/lost"
   _stgrep "union: the lost cases are COUNTED"         "$ST_OUT" 'own 144 of 152 case\(s\). 8 case\(s\) were proven by nobody'
 
+  # THE REQUEST/WAIT ARM. The transport is the laptop's; what is proven here is everything this side
+  # owns: the refusal, the request's shape, that nothing delivered is RED, and that what the laptop
+  # delivers is what the union reads. `cargo xtask` is stood in for by a stub on PATH so shard 1 is
+  # instant, and the publish step by a function that succeeds or fails on demand.
+  echo "land.sh selftest: the request/wait arm (the box asks, waits, and judges only what arrived)"
+  local stubbin="$root/stubbin"; mkdir -p "$stubbin"
+  # argv: xtask gate <g> --selftest --shard k/n — the stub owns 38 of 152, like the union cases above.
+  printf '#!/bin/sh\necho "stub xtask $*"\nn=${6#*/}\necho "  shard $6: $((152 / n)) of 152 case(s)"\nexit 0\n' >"$stubbin/cargo"; chmod +x "$stubbin/cargo"
+  _req() { # $1 = shards, $2 = fanout, $3 = inner, $4 = deliver (0|1), $5 = publish rc
+    local out="$root/req-$1-$2-$3-$4-$5"; mkdir -p "$out"
+    ( export PATH="$stubbin:$PATH" LAND_SELFTEST_SHARDS="$1" LAND_SHARD_WAIT_SECS=3 LAND_SHARD_POLL_SECS=1
+      [ -n "$2" ] && export LAND_SHARD_FANOUT="$2"; [ -n "$3" ] && export LAND_REMOTE_INNER=1
+      eval "land_shard_publish() { return $5; }"
+      # The leg names its own directory (land_shard_dir, sequence 1 of this subshell); the stand-in
+      # laptop delivers there, log first and then .rc, as the real one does.
+      LAND_SHARD_SEQ=0
+      local legdir="$here/target/land-shards-kind-isolation-$stamp-1"
+      if [ "$4" = 1 ]; then
+        ( sleep 1; k=2; while [ "$k" -le "$1" ]; do printf '  shard %s/%s: %s of 152 case(s)\n' "$k" "$1" "$((152 / $1))" >"$legdir/shard-$k.log"; echo 0 >"$legdir/shard-$k.rc"; k=$((k + 1)); done ) &
+      fi
+      land_selftest_leg kind-isolation "$out/leg.log" XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600 )
+  }
+  _st "req: FANOUT=laptop without INNER is REFUSED" 1 _req 4 laptop "" 0 0
+  _stgrep "req: the refusal says why"                "$ST_OUT" 'nobody serves shard requests here'
+  _st "req: nothing delivered is RED"                1 _req 4 laptop 1 0 0
+  _stgrep "req: the silent shards are NAMED"         "$ST_OUT" 'shard 2/4 never reported'
+  _stgrep "req: the request was written, complete" "$here/target/land-shards-kind-isolation-$stamp-1/REQUEST" 'gate=kind-isolation n=4 sha=[0-9a-f]{40} ref=shardreq-.* ceil=XTASK_GATE_CEILING_SECS_KIND_ISOLATION=3600'
+  rm -rf "$here"/target/land-shards-kind-isolation-*
+  _st "req: what the laptop delivers is what is judged" 0 _req 4 laptop 1 1 0
+  _stgrep "req: ...four shards, union complete"      "$ST_OUT" '4 shard\(s\) green, 152 of 152 case\(s\), union complete'
+  rm -rf "$here"/target/land-shards-kind-isolation-*
+  _st "req: a tree that cannot be published is RED"  1 _req 4 laptop 1 0 1
+  _stgrep "req: ...and each sibling shard says so"   "$ST_OUT" 'shard 2/4 exited 2'
+  rm -rf "$here"/target/land-shards-kind-isolation-*
+  _st "req: sequential when no laptop serves (INNER, no FANOUT)" 0 _req 2 "" 1 0 0
+  _stgrep "req: ...and says it ran sequentially"     "$ST_OUT" 'sequentially'
+  rm -rf "$here"/target/land-shards-kind-isolation-*
+
   # THE LEG ITSELF, ON A REAL GATE. Everything above tests the arithmetic over fabricated logs; this
   # runs `cargo xtask gate <g> --selftest --shard k/n` for real and asserts the leg's own verdict,
   # so a `--shard` flag that stopped being accepted, a summary line that changed shape, or a union
@@ -2183,6 +2207,10 @@ EOF
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # MAIN
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# LIBRARY MODE. scripts/land-remote.sh sources this file with LAND_LIB_ONLY=1 to run land_shard_union
+# over its own copies of the shards' logs — the same five refusals, one implementation, rather than
+# a second one that could drift. Nothing below this line runs when sourced that way.
+if [ "${LAND_LIB_ONLY:-}" = 1 ]; then return 0 2>/dev/null || exit 0; fi
 land_parse_args "$@"
 export P_to
 
