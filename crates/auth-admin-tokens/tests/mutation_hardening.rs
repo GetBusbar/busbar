@@ -86,19 +86,61 @@ fn non_matching_credentials_of_any_shape_never_identify() {
 /// A mismatched credential presented against a configured token must specifically `Reject`
 /// (a credential WAS presented, it's just wrong) — never silently `Pass`, which would make a wrong
 /// credential indistinguishable from "no credential", and never `Identify`.
+///
+/// `Pass` has exactly one meaning on the miss path, and the split that gave it that meaning closed a
+/// real hole: a chain arm owes three answers, and an arm that collapses `Pass` into `Reject` makes
+/// every arm after it unreachable — with `admin_auth: [admin-tokens, corp-oidc]` an OIDC bearer JWT
+/// was refused here before `corp-oidc` was ever asked, and the second arm was configured, resolved
+/// at boot, and dead. So a miss now asks ONE question — is this candidate PROVABLY another issuer's
+/// credential? — and the direction is fail-closed:
+///
+/// * a candidate this arm cannot positively attribute elsewhere stays MINE, and mine-and-wrong is
+///   the terminal `Reject` it always was;
+/// * a candidate carrying the JWS Compact Serialization an OIDC/AD arm is handed (three
+///   `.`-separated non-empty base64url segments) is provably foreign, so this arm steps aside with
+///   `Pass` and the NEXT arm answers. A chain that runs out of arms after a `Pass` denies, so the
+///   third answer cannot open the admin surface by exhaustion.
+///
+/// This cell asserts both halves. Asserting only the first — which is what it did before the split,
+/// with `"a.b.c"` in the reject row — would re-plant the hole the split closed.
 #[test]
 fn wrong_credential_of_any_shape_rejects_not_passes() {
     let h = hash("secret");
-    for cred in ["", "wrong", "a.b.c", "\0\x01garbage"] {
+    // Not attributable to any other issuer ⇒ still MINE ⇒ terminal Reject, never Identify.
+    for cred in ["", "wrong", "\0\x01garbage", "a.b", "a.b.c.d", "a..c", "a.b.$"] {
         assert_eq!(
             authenticate_admin_tokens(Some(&h), Some(cred), None),
             AuthOutcome::Reject,
-            "candidate {cred:?} on bearer carrier must Reject"
+            "candidate {cred:?} is not provably another issuer's, so it stays mine: the bearer \
+             carrier must Reject"
         );
         assert_eq!(
             authenticate_admin_tokens(Some(&h), None, Some(cred)),
             AuthOutcome::Reject,
-            "candidate {cred:?} on header carrier must Reject"
+            "candidate {cred:?} is not provably another issuer's, so it stays mine: the header \
+             carrier must Reject"
         );
     }
+    // Provably another issuer's ⇒ not mine ⇒ Pass, so the next arm is asked.
+    for cred in ["a.b.c", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcHMifQ.c2ln", "-_-.-_-.-_-"] {
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), Some(cred), None),
+            AuthOutcome::Pass,
+            "candidate {cred:?} is a JWS compact serialization, so this arm is not the one that \
+             refuses it: the bearer carrier must Pass to the next arm"
+        );
+        assert_eq!(
+            authenticate_admin_tokens(Some(&h), None, Some(cred)),
+            AuthOutcome::Pass,
+            "candidate {cred:?} is a JWS compact serialization, so this arm is not the one that \
+             refuses it: the header carrier must Pass to the next arm"
+        );
+    }
+    // One unattributable carrier keeps the WHOLE presentation mine: a foreign-shaped bearer beside
+    // a garbage header still stops here rather than stepping aside.
+    assert_eq!(
+        authenticate_admin_tokens(Some(&h), Some("a.b.c"), Some("wrong")),
+        AuthOutcome::Reject,
+        "one unattributable carrier keeps the presentation mine, so this must Reject"
+    );
 }
