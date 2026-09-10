@@ -575,69 +575,7 @@ fn ceiling_ratchet_cases<'a>(
         ));
     }
 
-    // ── the declared raise, and both ways it is refused ─────────────────────────────────────────
-    //
-    // A DECLARATION THAT DOES NOT DESCRIBE THIS RAISE EXCUSES NOTHING. The committed entry says
-    // 26 -> 47; rewriting its `to` leaves the raise in the file undeclared, and a declaration that
-    // named a direction rather than an edit would be a permanent hole with a reason field.
-    //
-    // THE PLANT IS THIS CASE'S OWN, NEVER THE COMMITTED FILE'S. It used to rewrite whichever
-    // `[gate.ceiling_raises]` entry the tree happened to carry — and that made the case depend on a
-    // table whose entire design is that it EMPTIES ITSELF. A declaration expires the commit after
-    // the one that needed it; the commit that struck the last standing entry turned this case into
-    // an infra failure, which is a self-test held hostage by the mechanism it is proving. So both
-    // halves are planted: the BASE's copy of one real ceiling is lowered, which makes the committed
-    // file a genuine raise, and a declaration is appended whose numbers describe a different edit.
-    // The refusal is then proven against a `[gate.ceiling_raises]` table that is empty in the tree,
-    // which is the state it is supposed to spend most of its life in.
-    if let Some(base_lowered) = ceilings::set_int(&text, "rules.legacy-reach", "ceiling", 0) {
-        let mut ov = on(base);
-        ov.set_command(format!("git-show:{based}:{CEILINGS}"), base_lowered);
-        ov.set(
-            CEILINGS,
-            format!(
-                "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 999\n\
-                 to = 998\nbecause = \"planted by the self-test: a declaration whose numbers are \
-                 not the raise it sits beside, so the raise is still undeclared and still \
-                 refused\"\n"
-            ),
-        );
-        r.push(prove_rows_red(
-            cx,
-            gate,
-            "a declared raise whose numbers are not this raise excuses nothing",
-            &[ceilings::ROW_ROSE],
-            ov,
-            &["declared as 999->998"],
-        ));
-    } else {
-        r.note_infra_failure(
-            "[rules.legacy-reach] carries no `ceiling` to lower at the base, so the arm that \
-             refuses a declaration describing a different edit is unproven",
-        );
-    }
-
-    // …AND A DECLARATION THAT DESCRIBES NO RAISE AT ALL IS A WAIVER THAT OUTLIVED WHAT IT EXCUSED.
-    // This is the half that makes the mechanism unable to silt up: the entry is struck by the
-    // commit after the one that needed it, or this row says so.
-    let mut ov = on(base);
-    ov.set(
-        CEILINGS,
-        format!(
-            "{text}\n[gate.ceiling_raises.\"rules.legacy-reach.ceiling\"]\nfrom = 1\nto = 2\n\
-             because = \"planted by the self-test; it describes no raise on this branch and must \
-             therefore be refused as a stale declaration rather than carried\"\n"
-        ),
-    );
-    r.push(prove_rows_red(
-        cx,
-        gate,
-        "a declared raise that is not a raise at the base is a waiver that outlived its commit",
-        &[ceilings::ROW_ROSE],
-        ov,
-        &["is not a raise at the base"],
-    ));
-
+    r.append(declared_raise_cases(gate, cx, base, &based, &text, cfg));
     r.append(kind_row_identity_cases(gate, cx, base, &based, &text));
 
     // A base whose ceilings file cannot be PARSED is a comparison that cannot be made, and a
@@ -757,6 +695,280 @@ fn ceiling_ratchet_cases<'a>(
     r
 }
 
+/// THE DECLARED RAISE: an array of deltas per ceiling, summed against the rise, self-expiring.
+///
+/// THE PLANT IS THIS FAMILY'S OWN, NEVER THE COMMITTED FILE'S. The `[[gate.ceiling_raises]]`
+/// table's entire design is that it EMPTIES ITSELF — an entry is struck the batch after its face
+/// lands — so a case that read whichever entry the tree happened to carry would be a self-test
+/// held hostage by the mechanism it is proving. Both halves are planted instead: the BASE's copy
+/// of one real ceiling is lowered by a known amount, which makes the committed figure a genuine
+/// rise of exactly that amount, and the declarations are appended to the tree's copy. Every case
+/// below runs against a `[[gate.ceiling_raises]]` table that is empty on the committed tree, which
+/// is the state it is meant to spend most of its life in.
+///
+/// The cases, over ONE real ceiling (`rules.legacy-reach.ceiling`) and one real base:
+///
+/// * two faces declared off the same base, each with its own delta, both green in one tree — the
+///   shape the retired `[gate.ceiling_raises."<key>"]` header could not spell at all;
+/// * a delta above what the tree rose by is over-declared and red;
+/// * a delta below it leaves the remainder undeclared and red;
+/// * an entry the BASE already carries is a warning, never red — its face landed, and the strike
+///   cannot ride in the same batch as the face;
+/// * an entry the base does NOT carry, naming a ceiling that did not rise, is stale and red;
+/// * the retired `from`/`to` shape is refused by name, and the refusal prints the array shape;
+/// * `--write` strikes exactly the carried entries and leaves the live one.
+fn declared_raise_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    base: &Overlay,
+    based: &str,
+    text: &str,
+    cfg: &Cfg,
+) -> Report<'a> {
+    let mut r = Report::new();
+    let (table, key) = ("rules.legacy-reach", "ceiling");
+    let Some(now) = cfg.doc.table(table).and_then(|t| t.int_of(key)) else {
+        r.note_infra_failure(format!(
+            "[{table}] carries no `{key}`, so the declared-raise arms are unproven rather than \
+             passing"
+        ));
+        return r;
+    };
+    const RISE: i64 = 15;
+    let Some(lowered) = ceilings::set_int(text, table, key, now - RISE) else {
+        r.note_infra_failure(format!(
+            "[{table}] `{key}` could not be lowered at the base, so the declared-raise arms are \
+             unproven rather than passing"
+        ));
+        return r;
+    };
+    let dotted = format!("{table}.{key}");
+    let entry = |key: &str, by: i64, face: &str| -> String {
+        format!(
+            "\n[[gate.ceiling_raises]]\nkey = \"{key}\"\nby = {by}\nbecause = \"planted by the \
+             self-test for the {face} face: its {by} measured lines are the whole of this \
+             declared raise, and nothing else on this tree is\"\n"
+        )
+    };
+    // The base's copy and the tree's copy, both planted.
+    let plant = |at_base: String, tree: String| -> Overlay {
+        let mut ov = on(base);
+        ov.set_command(format!("git-show:{based}:{CEILINGS}"), at_base);
+        ov.set(CEILINGS, tree);
+        ov
+    };
+
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "two faces declared off one base, each by its own delta, are both green in one tree",
+        ceilings::ROW_ROSE,
+        plant(
+            lowered.clone(),
+            format!(
+                "{text}{}{}",
+                entry(&dotted, 10, "virtual-key"),
+                entry(&dotted, 5, "key-facts")
+            ),
+        ),
+        &["1 declared raise(s):", "#1 +10", "#2 +5"],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a declared `by` above what the tree rose by is over-declared and refused",
+        &[ceilings::ROW_ROSE],
+        plant(
+            lowered.clone(),
+            format!(
+                "{text}{}{}",
+                entry(&dotted, 10, "virtual-key"),
+                entry(&dotted, 10, "key-facts")
+            ),
+        ),
+        &["over-declared", "rose by 15", "sum to 20"],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a declared `by` below what the tree rose by leaves the remainder undeclared",
+        &[ceilings::ROW_ROSE],
+        plant(
+            lowered.clone(),
+            format!("{text}{}", entry(&dotted, 10, "virtual-key")),
+        ),
+        &["cover only 10", "remaining 5 is undeclared"],
+    ));
+    // SELF-EXPIRY. The base carries the entry — the face landed — so the entry is a warning and
+    // the row is green; the strike is `--write`'s, not the next landing's.
+    let carried = format!("{text}{}", entry(&dotted, RISE, "virtual-key"));
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "a declared raise the base already carries is a warning, never red",
+        ceilings::ROW_ROSE,
+        plant(carried.clone(), carried.clone()),
+        &["1 declared raise(s) already carried by the base", "--write"],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a declared raise the base does not carry, naming a ceiling that did not rise, is stale",
+        &[ceilings::ROW_ROSE],
+        plant(text.to_string(), carried),
+        &[
+            "not a rise at the base",
+            "the face it was declared for is gone",
+        ],
+    ));
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "the retired `from`/`to` shape is refused by name, and the array shape is printed",
+        &[ceilings::ROW_ROSE],
+        plant(
+            lowered.clone(),
+            format!(
+                "{text}\n[gate.ceiling_raises.\"{dotted}\"]\nfrom = {}\nto = {now}\n\
+                 because = \"planted by the self-test in the shape this reader retired: a pair \
+                 of numbers that cannot sum with a second face's or expire on its own\"\n",
+                now - RISE
+            ),
+        ),
+        &[
+            "retired `from`/`to` shape",
+            "[[gate.ceiling_raises]]",
+            "by = 10",
+        ],
+    ));
+
+    // THE STRIKE MUST NOT MANUFACTURE A RISE. The declarations carry an integer, `by`, and an
+    // array row the reader cannot name is labelled by position — so with the table in the
+    // comparison, striking the FIRST of two carried entries (by = 3 ahead of by = 7) read as slot
+    // 0 rising 3 -> 7, which is the strike `--write` performs turning `ceiling-rose` red the batch
+    // after. The base carries both entries and the same figure; the tree has struck the first.
+    let two = format!(
+        "{}{}",
+        entry(&dotted, 3, "virtual-key"),
+        entry("rules.loc-ceilings.union_ceiling", 7, "key-facts")
+    );
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "striking an earlier declared delta does not raise a later one's `by`",
+        ceilings::ROW_ROSE,
+        plant(
+            format!("{text}{two}"),
+            format!(
+                "{text}{}",
+                entry("rules.loc-ceilings.union_ceiling", 7, "key-facts")
+            ),
+        ),
+        &["1 declared raise(s) already carried by the base"],
+    ));
+
+    // `--write` STRIKES EXACTLY THE CARRIED ENTRIES. The base carries two (one of them for a
+    // different ceiling), the tree carries those two plus a live third, and the strike is read off
+    // the same derivation `--write` commits — without writing a file.
+    const SMALL: i64 = 5;
+    let Some(lowered_small) = ceilings::set_int(text, table, key, now - SMALL) else {
+        r.note_infra_failure(format!(
+            "[{table}] `{key}` could not be lowered at the base, so the strike is unproven"
+        ));
+        return r;
+    };
+    let landed = format!(
+        "{}{}",
+        entry(&dotted, 3, "virtual-key"),
+        entry("rules.loc-ceilings.union_ceiling", 7, "key-facts")
+    );
+    let tree = format!("{text}{landed}{}", entry(&dotted, SMALL, "key-directory"));
+    let ov = plant(format!("{lowered_small}{landed}"), tree);
+    r.push(prove_row_pass_naming(
+        cx,
+        gate,
+        "a live delta beside two carried entries is judged alone; the carried two are warnings",
+        ceilings::ROW_ROSE,
+        ov.clone(),
+        &[
+            "1 declared raise(s):",
+            "#3 +5",
+            "2 declared raise(s) already carried by the base",
+        ],
+    ));
+    let planted = cx.with_overlay(ov);
+    let got = match ceilings::struck_text(&planted) {
+        Ok((after, struck)) => {
+            let struck: Vec<usize> = struck.iter().map(|s| s.ordinal).collect();
+            let (left, refused) = ceilings::raises_in(&after);
+            let left: Vec<(usize, i64)> = left.iter().map(|s| (s.ordinal, s.by)).collect();
+            if struck == [1, 2] && left == [(1, SMALL)] && refused.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red {
+                    naming: vec![format!(
+                        "--write would strike {struck:?} and leave {left:?} (refused: \
+                         {refused:?}); it must strike exactly the two entries the base carries \
+                         and leave the live one"
+                    )],
+                }
+            }
+        }
+        Err(e) => Expect::Red {
+            naming: vec![format!("--write could not derive its strike: {e}")],
+        },
+    };
+    r.push(Case {
+        name: "`--write` strikes exactly the declared raises the base carries and no other".into(),
+        covers: vec![ceilings::ROW_ROSE.to_string()],
+        expected: Expect::Green,
+        got,
+    });
+    r
+}
+
+/// The green arm WITH ITS DETAIL READ: the named row is PASS and its detail names every string in
+/// `naming`. A warning this gate reports rides in a PASS row's detail — there is no third status —
+/// so "green" alone cannot prove the warning was printed.
+fn prove_row_pass_naming(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    name: impl Into<String>,
+    row: &str,
+    overlay: Overlay,
+    naming: &[&str],
+) -> Case {
+    let planted = cx.with_overlay(overlay);
+    let verdict = execute(gate, &planted);
+    let got = match verdict.rows.iter().find(|r| r.id == row) {
+        None => Expect::Red {
+            naming: vec![format!("{row}: no such row was emitted")],
+        },
+        Some(r) if r.status != crate::ledger::Status::Pass => Expect::Red {
+            naming: vec![format!("{} {} {}", r.id, r.title, r.detail)],
+        },
+        Some(r) => {
+            let missing: Vec<&&str> = naming.iter().filter(|n| !r.detail.contains(**n)).collect();
+            if missing.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red {
+                    naming: vec![format!(
+                        "{row} is PASS but its detail does not name {missing:?}: {}",
+                        r.detail
+                    )],
+                }
+            }
+        }
+    };
+    Case {
+        name: name.into(),
+        covers: vec![row.to_string()],
+        expected: Expect::Green,
+        got,
+    }
+}
+
 /// One ceiling per watched file, chosen FROM THE FILE rather than named here: a plant that
 /// hard-codes a key is a plant that stops planting the day the key is renamed, and goes green.
 /// THE STRIKE, AND THE DECLARATION THAT MUST SURVIVE IT.
@@ -840,9 +1052,8 @@ fn kind_row_identity_cases<'a>(
          renumbers the file",
         &[ceilings::ROW_ROSE],
         plant(&format!(
-            "\n[gate.ceiling_raises.\"{identity}\"]\nfile = \"{file}\"\nfrom = {}\nto = {count}\n\
-             because = \"{because}\"\n",
-            count - 1
+            "\n[[gate.ceiling_raises]]\nkey = \"{identity}\"\nfile = \"{file}\"\nby = 1\n\
+             because = \"{because}\"\n"
         )),
     ));
     r.push(prove_rows_red(
@@ -851,9 +1062,8 @@ fn kind_row_identity_cases<'a>(
         "a declared raise keyed by ORDINAL is refused, whatever it happens to line up with",
         &[ceilings::ROW_ROSE],
         plant(&format!(
-            "\n[gate.ceiling_raises.\"cell.{ordinal}.count\"]\nfile = \"{file}\"\nfrom = {}\n\
-             to = {count}\nbecause = \"{because}\"\n",
-            count - 1
+            "\n[[gate.ceiling_raises]]\nkey = \"cell.{ordinal}.count\"\nfile = \"{file}\"\n\
+             by = 1\nbecause = \"{because}\"\n"
         )),
         &["keyed by ORDINAL", "renumbers every later row"],
     ));
