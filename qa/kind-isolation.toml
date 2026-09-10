@@ -244,12 +244,12 @@ cells = "0"
 # by the two crate names its gap comments now cite, not down.
 [[minted]]
 crate = "busbar-plane-llm-anthropic"
-commit = "aa98c0c69"
+commit = "013db3ada"
 cells = "0"
 
 [[minted]]
 crate = "busbar-plane-llm-gemini"
-commit = "aa98c0c69"
+commit = "013db3ada"
 cells = "0"
 
 # ------------------------------------------------------------------------------------------------
@@ -297,9 +297,9 @@ cells = "0"
 # kind-mint-count check refuses a row that says a number the branch does not mint.
 [[minted_kind]]
 kind = "dialect"
-commit = "cd7a4a0fb"
-cells = "26"
-edges = "15"
+commit = "ce1c2d168"
+cells = "6"
+edges = "3"
 
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
@@ -1534,12 +1534,6 @@ cite = "none. A control surface is unmetered and vendor-blind (PLUGIN-TREE.md se
 why = "crates of kind control naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
 drain = "delete the dialect names from crates/busbar-plane-admin/src/**: the admin reads the registered dialect list off the plane registry, so each hit goes on the commit that makes the verb read the registry."
 
-[[edge]]
-from = "dialect"
-to = "dialect"
-cite = "none. D36 section 2 — a dialect names its plane and the contract and no sibling. The hits are one doc comment in each of the first two crates explaining why it is a sibling of the other."
-why = "crates of kind dialect naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
-drain = "delete the sibling's name from crates/busbar-plane-llm-openai/src/lib.rs and crates/busbar-plane-llm-responses/src/lib.rs: say 'the vendor's other surface' and let the registry say which crate that is. The third and fourth crates name no sibling."
 
 [[edge]]
 from = "dialect"
@@ -1555,12 +1549,6 @@ cite = "none by name — the legacy engine crates (busbar-core, busbar-llm, busb
 why = "crates of kind legacy naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
 drain = "delete with the engine twins (D33 wave 4): each hit goes on the commit that deletes the arrival, pipeline or native-ingress file that spells the vendor."
 
-[[edge]]
-from = "plane"
-to = "dialect"
-cite = "none. D36 section 2 — the plane never names a dialect; `kind-isolation:deps` refuses the manifest edge and this class is the same rule on vocabulary. The busbar-plane-llm hits are the gap comments naming the crate that took each rung (allowed by tests/neutrality.rs, counted here); the mcp, voice and a2a hits are those planes still carrying their own single dialect."
-why = "crates of kind plane naming dialect vocabulary: dialect package names in any spelling and the kind-qualified id (dialect-<id>). Matched in identifiers, string literals, comments, doc comments and manifests, whole text, tests included. TODAY'S MEASUREMENT is the [[cell]] rows of this column; the column was minted by the [[minted_kind]] row above at commit cd7a4a0fb."
-drain = "delete the crate names from the gap comments in crates/busbar-plane-llm/src/{claims,dialect}.rs and tests/{neutrality,claims_ladder}.rs once every row is carved out and the comments describe a pattern rather than four exceptions; the other three planes drain when their codec becomes their first dialect crate (D36 section 7)."
 
 [[edge]]
 from = "plugin-abi"
@@ -3374,7 +3362,7 @@ note = "segment scanner 105, window scanner 106. The two read the brand and acro
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "600"
+count = "620"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -6041,7 +6029,7 @@ drain = "move both implementations into a store-kind crate and have the root REG
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "600"
+count = "620"
 
 [[cell]]
 crate = "busbar-a2a"
