@@ -242,6 +242,10 @@ pub mod appbuild;
 #[cfg(test)]
 #[path = "tests/key_revoke_tombstone_tests.rs"]
 mod key_revoke_tombstone_tests;
+/// THE `plugins:` RESOLUTION — the operator's block turned into the loader's fetch list and the
+/// signer's trust policy. Here and not in the config layer or the loader, because this crate is the
+/// one that may name both the grammar's home and the plugin tooling.
+pub mod plugins_policy;
 pub mod preflight;
 pub mod router;
 #[cfg(test)]

@@ -39,7 +39,6 @@ pub mod highwater;
 pub mod hook;
 mod hostlog;
 mod legacy_usage;
-pub mod policy;
 pub mod registry;
 mod stage;
 pub mod store_adapter;
@@ -60,9 +59,6 @@ pub use busbar_plugin::cold::export::{ExportField, ExportStream};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
 pub use hook::DlopenPolicy;
-// The two resolutions of the `plugins:` block. Named at the crate root because every caller is an
-// engine boot/reload/admin path that already spells `busbar_plugin_loader::`.
-pub use policy::{fetch_specs, trust_policy};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry,
     LoadablePlugin, PluginRegistry, SkippedPlugin,

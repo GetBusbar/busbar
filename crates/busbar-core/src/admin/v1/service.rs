@@ -2013,7 +2013,7 @@ impl AdminService {
         // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
         // never the ARTIFACT.
         let mut policy =
-            busbar_plugin_loader::trust_policy(&self.app.plugins_cfg, &manifest.version)
+            crate::plugins_policy::trust_policy(&self.app.plugins_cfg, &manifest.version)
                 .map_err(AdminError::Validation)?;
         policy
             .min_versions

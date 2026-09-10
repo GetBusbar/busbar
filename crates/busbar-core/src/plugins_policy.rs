@@ -2,10 +2,20 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! RESOLVING THE `plugins:` BLOCK — the operator's grammar
-//! ([`busbar_substrate_values::config::plugins::PluginsCfg`]) turned into the two things the plugin
-//! subsystem actually runs on: a [`FetchSpec`] list and a `busbar_plugin_sign::TrustPolicy`.
+//! ([`busbar_substrate::config::plugins::PluginsCfg`], declared in the substrate's pure half) turned
+//! into the two things the plugin subsystem actually runs on: a [`FetchSpec`] list and a
+//! `busbar_plugin_sign::TrustPolicy`.
 //!
-//! ## Why the resolution lives HERE and the grammar lives in the config leaf
+//! ## Why the resolution lives in the ENGINE and the grammar lives in the config leaf
+//!
+//! The resolution names the plugin tooling (`busbar_plugin_loader::FetchSpec`,
+//! `busbar_plugin_sign::TrustPolicy`) and the grammar's neutral home. Exactly two crates may name
+//! both: the composition root and this one. The config layer may not (a core-kind crate reaches only
+//! the neutral spine, never the plugin tooling), and the loader may not (the plugin tooling's TCB
+//! edges reach the api, the ABI and the unit crates — never the substrate, whose closure would pull
+//! the engine's neutral half under the one crate every `unsafe` FFI line is isolated in). So the two
+//! functions live here, beside the preflight that arms the floors they leave empty, and the root
+//! calls them at their one definition site.
 //!
 //! The two halves answer different questions and are owned by different people. The GRAMMAR is
 //! "what may an operator write, and what is a typo" — it is frozen, snapshot-fingerprinted, and it
@@ -16,16 +26,15 @@
 //!
 //! Keeping them together put fourteen sites naming `busbar_plugin_sign::` and
 //! `busbar_plugin_loader::` inside the config document root, for a policy the config layer neither
-//! defines nor enforces. Split, the config layer states the grammar without naming the loader and
-//! the loader reads an operator's block without naming the config layer.
+//! defines nor enforces. Split, the config layer states the grammar without naming the loader, and
+//! the loader keeps reading nothing but its own inputs.
 
-use busbar_substrate_values::config::plugins::{PluginFetch, PluginsCfg};
-use busbar_substrate_values::diag_warn;
-use busbar_substrate_values::diagnostics::{
+use busbar_plugin_loader::FetchSpec;
+use busbar_substrate::config::plugins::{PluginFetch, PluginsCfg};
+use busbar_substrate::diag_warn;
+use busbar_substrate::diagnostics::{
     CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-
-use crate::fetch::FetchSpec;
 
 /// The tarball filename inside `plugins.dir` a fetch URL writes to: the last path segment (before any
 /// `?`/`#`), which must be non-empty. Errors if the URL has no usable basename.
@@ -123,9 +132,10 @@ pub fn fetch_specs(cfg: &PluginsCfg) -> Result<Vec<FetchSpec>, String> {
 /// "plugin at or above the binary version" floor rejected every correctly-signed current release
 /// (removed before 1.5.0 shipped; see plugin-sign's `evaluate()` for the full rationale).
 ///
-/// It is a PARAMETER rather than this crate's own `CARGO_PKG_VERSION` on purpose: the version that
-/// belongs on the policy is the ENGINE BINARY's, and this crate versions on its own line. A caller
-/// passes its own `env!("CARGO_PKG_VERSION")`.
+/// It is a PARAMETER on purpose: the version that belongs on the policy is the ENGINE BINARY's. The
+/// composition root passes its own `env!("CARGO_PKG_VERSION")`; the in-engine automatic paths go
+/// through [`crate::preflight::engine_trust_policy`], which supplies the engine crate's — the same
+/// workspace version. The plugin ROLLBACK passes the artifact's own.
 ///
 /// Anti-downgrade still holds per name: an explicit operator ROLLBACK (Full-scope, If-Match,
 /// audited) persists a per-name pin via the overlay `plugin_versions` mechanism, and
@@ -133,8 +143,8 @@ pub fn fetch_specs(cfg: &PluginsCfg) -> Result<Vec<FetchSpec>, String> {
 ///
 /// The AUTOMATIC first-party anti-downgrade floor is NOT resolved here: it is the per-name
 /// high-water mark, an observed fact rather than a config value, and it is injected by the engine's
-/// preflight from [`crate::HighWaterMarks`]. This resolver leaves `first_party_high_water` empty; a
-/// caller that skips the injection gets NO automatic floor.
+/// preflight from `busbar_plugin_loader::HighWaterMarks`. This resolver leaves `first_party_high_water`
+/// empty; a caller that skips the injection gets NO automatic floor.
 pub fn trust_policy(
     cfg: &PluginsCfg,
     binary_version: &str,
@@ -188,7 +198,7 @@ pub fn trust_policy(
         binary_version: binary_version.to_string(),
         first_party_floors: cfg.first_party_floors.clone(),
         // The automatic first-party floor is injected by the caller that owns the marks
-        // (`plugins_preflight`, from `crate::HighWaterMarks`); config carries no
+        // (`plugins_preflight`, from `busbar_plugin_loader::HighWaterMarks`); config carries no
         // high-water key and never will — the mark is an observed fact, not an operator setting.
         first_party_high_water: Default::default(),
         publishers,
@@ -197,3 +207,7 @@ pub fn trust_policy(
         min_versions: cfg.min_versions.clone(),
     })
 }
+
+#[cfg(test)]
+#[path = "tests/plugins_policy_tests.rs"]
+mod tests;

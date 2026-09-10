@@ -439,16 +439,17 @@ fn list_plugins_command() -> i32 {
     // operator reads in a plugin refusal and in telemetry). The in-core automatic paths have no
     // root to ask, so they go through `preflight::engine_trust_policy`, which answers with the
     // engine crate's — the same 1.6.0, from the one workspace version.
-    let policy = match busbar_plugin_loader::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!(
-                "[error] {}: plugins.trust is invalid: {e}",
-                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
-            );
-            return 1;
-        }
-    };
+    let policy =
+        match busbar_core::plugins_policy::trust_policy(&plugins_cfg, env!("CARGO_PKG_VERSION")) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "[error] {}: plugins.trust is invalid: {e}",
+                    busbar_substrate::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
+                );
+                return 1;
+            }
+        };
     let dir = std::path::PathBuf::from(&plugins_cfg.dir);
     println!(
         "plugins dir: {} (plugins.enabled: {})",

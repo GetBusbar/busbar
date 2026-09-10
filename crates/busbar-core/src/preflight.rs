@@ -36,7 +36,7 @@ fn fleet_data_dir() -> Option<std::path::PathBuf> {
     (!path.as_os_str().is_empty()).then_some(path)
 }
 
-/// THE ENGINE'S trust policy for a `plugins:` block — [`busbar_plugin_loader::trust_policy`] with
+/// THE ENGINE'S trust policy for a `plugins:` block — [`crate::plugins_policy::trust_policy`] with
 /// the ENGINE BINARY's version supplied.
 ///
 /// The resolver takes `binary_version` as a parameter rather than reading its own
@@ -49,7 +49,7 @@ fn fleet_data_dir() -> Option<std::path::PathBuf> {
 pub fn engine_trust_policy(
     plugins_cfg: &config::PluginsCfg,
 ) -> Result<busbar_plugin_sign::TrustPolicy, String> {
-    busbar_plugin_loader::trust_policy(plugins_cfg, env!("CARGO_PKG_VERSION"))
+    crate::plugins_policy::trust_policy(plugins_cfg, env!("CARGO_PKG_VERSION"))
 }
 
 /// Build a complete `App` from a RESOLVED config — the ONE construction path shared by boot
