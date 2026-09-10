@@ -558,6 +558,15 @@ const ARCHITECTURE_ALLOWED: &[(&str, &str)] = &[
     ("root", "substrate"),
     ("root", "transport"),
     ("root", "unit"),
+    // EVERY PLUGIN KIND IS GRANTED `busbar-contract` — the one face all halves may name, on the
+    // same terms as every other plugin kind (`ARCHITECTURE.md`'s core-vs-plugin section already
+    // says so in its own words). `store` carried this row already; `auth`, `export`, `hooks` and
+    // `secret` are the four the census names that did not, and a plugin-kind crate that depends on
+    // the contract and is refused here is a table hole, not a naming defect in the crate.
+    ("auth", "contract"),
+    ("export", "contract"),
+    ("hooks", "contract"),
+    ("secret", "contract"),
     ("store", "contract"),
     ("substrate", "contract"),
     ("transport", "contract"),
