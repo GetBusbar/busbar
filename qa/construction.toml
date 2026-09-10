@@ -328,6 +328,49 @@ file = "qa/kind-isolation.toml"
 by = 25
 because = "COMPOSITION MODULE LIST identity, root × plane: the `pub mod units_{mcp,a2a,llm}*` / `pub mod plane_mount` declarations in crates/busbar/src/root/mod.rs and the `#[cfg(feature = \"root-*\")]` gates that select them, plus the same feature gates at main.rs's call sites; measured over the `mod` and `cfg` lines only, doc comments and comments excluded (mod.rs 8 -> 26, main.rs 51 -> 58); 2127 -> 2152"
 
+# THE MOUNT TEST SIBLINGS. `tests/units_{a2a,mcp}_{leg,mount}.rs`, `tests/transports.rs`,
+# `tests/plane_mount.rs`, `tests/units_mcp.rs` and `tests/units_a2a.rs` are the cells of the mount
+# files declared above them. A sibling names exactly what its subject names, for the same reason:
+# the thing under test IS the composition, and a cell that asserted about a mount without naming
+# the plane, the wire or the kernel loop it joins would be asserting about nothing. They carry the
+# same identity as the files they test, so they are declared the same way — per file, per cell,
+# over the NON-PROSE halves only.
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = "MOUNT TEST SIBLING identity, root x caps: the cells that prove the composition, in tests/units_a2a_leg.rs 0->30, tests/transports.rs 0->15, tests/units_mcp.rs 26->37 and tests/units_mcp_leg.rs 0->1 - a sibling names the sealed token a composed transport is handed because that is what it is asserting about the mount; the class rose by 57 gross and the same cell drained 51 lines elsewhere on this branch (units_llm.rs, durability.rs, tests/units_llm.rs), so the NET rise the ceiling owes is 6; 323 -> 329"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 30
+because = "MOUNT TEST SIBLING identity, root x contract-transport: the cells that prove the composition, in tests/units_a2a_leg.rs 0->18, tests/transports.rs 0->9, tests/units_a2a_mount.rs 0->2 and tests/units_mcp.rs 0->1 - a sibling names the driver seam an arrival crosses because the thing under test is the root implementing it; 61 -> 91"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 42
+because = "MOUNT TEST SIBLING identity, root x kernel: the cells that prove the composition, in tests/units_mcp.rs 4->22, tests/units_a2a_leg.rs 0->13, tests/transports.rs 0->8 and one line each in tests/units_{a2a,mcp}_mount.rs and tests/units_mcp_leg.rs - a sibling drives the teller loop from above it because that is the composition it is asserting; 195 -> 237"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 359
+because = "MOUNT TEST SIBLING identity, root x plane: the cells that prove the composition, in tests/units_mcp.rs 60->138, tests/units_a2a_leg.rs 0->79, tests/transports.rs 2->72, tests/units_a2a.rs 35->49, tests/units_a2a_mount.rs 0->40, tests/units_mcp_leg.rs 0->36, tests/units_mcp_mount.rs 0->21, tests/plane_mount.rs 0->21 - naming the plane is what proving a mount IS, exactly as it is for the mount file the sibling tests; measured over the non-prose halves only; 2152 -> 2511"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 114
+because = "MOUNT TEST SIBLING identity, root x transport: the cells that prove the composition, in tests/units_mcp.rs 83->111, tests/units_a2a_leg.rs 0->30, tests/plane_mount.rs 0->17, tests/units_mcp_leg.rs 0->13, tests/transports.rs 16->25, tests/units_a2a_mount.rs 0->8, tests/units_mcp_mount.rs 0->7, tests/units_a2a.rs 20->22 - a sibling resolves a declared binding against the instance the root composed, which is the mount it is testing; 981 -> 1095"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 15
+because = "MOUNT TEST SIBLING identity, root x unit: the cells that prove the composition, in tests/units_a2a_leg.rs 0->22, tests/units_a2a_mount.rs 0->12, tests/units_mcp_leg.rs 0->10 and tests/units_mcp_mount.rs 0->10 - a sibling holds the scope, trust and admission entries the leg it tests was assembled with; the class rose by 52 gross and the same cell drained 37 lines elsewhere on this branch (tests/units_mcp.rs among them), so the NET rise the ceiling owes is 15; 1191 -> 1206"
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
