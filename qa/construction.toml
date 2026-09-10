@@ -168,29 +168,13 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 294
 because = "the union row sums caps/contract; it rises by the same 294 lines the caps_contract row does and by nothing else (kernel 5379 and unit-* 14606 are unchanged by the hooks-kind face move)"
 
-# The virtual-key directory face (`busbar_contract::kinds::{KeyScope, KeyFacts,
-# VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
-# posture, the revocation denylist and the operator credential digest, inside the loop. It
-# measures 19 surface lines (`scripts/loc-surface.py`), and the three entries below are the SAME
-# nineteen lines counted three times -- once by the surface script, once by the loc-ceilings
-# rule's own counter, and once more in the kernel + contract + unit union that the loc-ceilings
-# rule sums. The face moved home from the composition root
-# (`crates/busbar/src/root/auth_bindings.rs`), where it was a port declared in the one place the
-# design does not list as a home for one.
-[[gate.ceiling_raises]]
-key = "gate.surface_ceilings.contract_caps"
-by = 19
-because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: 19 surface lines measured by scripts/loc-surface.py, moved home from the composition root and widened to the key's posture"
-
-[[gate.ceiling_raises]]
-key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 19
-because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: the same 19 surface lines as the surface-ceiling raise, as the loc-ceilings rule counts them"
-
-[[gate.ceiling_raises]]
-key = "rules.loc-ceilings.union_ceiling"
-by = 19
-because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 19 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms"
+# NO OTHER ENTRY STANDS HERE. The virtual-key directory face (`busbar_contract::kinds::{KeyScope,
+# KeyFacts, VirtualKeyDirectory}`; 19 surface lines) landed under three declarations of exactly this
+# shape and the DELETION that followed it (`Unit::{byte_counts, frame_counts, set_counts}` and
+# their two fields, 21 lines the kernel never wrote) took the pair BELOW where it stood before the
+# face. A declaration that describes no rise at the base is stale and refused, so the three were
+# struck in that same deletion commit and the ceilings re-pinned to the measurement; the face is
+# paid for.
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -198,7 +182,7 @@ because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the sam
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3788
+contract_caps = 3767
 grammar = 388
 contract_transport = 845
 
@@ -419,12 +403,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3793
+caps_contract_ceiling = 3772
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23778
+union_ceiling = 23757
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
