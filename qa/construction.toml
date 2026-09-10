@@ -185,13 +185,44 @@ file = "qa/kind-isolation.toml"
 by = 8
 because = "busbar-plugin-loader x secret. The loader now implements busbar_contract::kinds::Secret for DynSecret, and the face's reference type is spelled `SecretRef` -- which the matrix reads as the loader naming the `busbar-secret-ref` package. It does not: the loader has no such dependency and the ledger's dep rows show none. Eight hits, every one of them the face's own type name in a signature, a construction or the single import; the battery's five call sites were already collapsed behind one helper. It falls when busbar-secret-ref is deleted, later in this same retirement."
 
+# A FIFTH, AND IT IS THE SECOND LEGITIMATE RAISE THE OWNER RULED FOR 1.6.0: a NEW-ARCHITECTURE
+# FACE. The contract pair's surface is pinned at zero slack, and a face the architecture names
+# cannot be paid for out of a surface that has nothing deletable in it. So each such face lands
+# with a declaration here that names the FACE and its MEASURED lines, and ARCHITECTURE.md section
+# 1.1 is amended in the same commit to the new total.
+#
+# The virtual-key directory face (`busbar_contract::kinds::{KeyScope, KeyFacts,
+# VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
+# posture, the revocation denylist and the operator credential digest, inside the loop. It measures
+# 20 surface lines, and the three entries below are the SAME twenty lines counted three times --
+# once by the surface script, once by the loc-ceilings rule's own counter, and once more in the
+# kernel + contract + unit union that the loc-ceilings rule sums. The face moved home from the
+# composition root (`crates/busbar/src/root/auth_bindings.rs`), where it was a port declared in the
+# one place the design does not list as a home for one. Each is a SECOND delta on a key the
+# structured-error seam above already raised, which is why the raise is an array per key: the two
+# faces landed on one line and each says its own number.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 20
+because = "the VirtualKeyDirectory face (KeyScope + KeyFacts + the three-method trait) in busbar-contract/src/kinds.rs: 20 surface lines MEASURED ON THIS BASE by scripts/loc-surface.py (3684 -> 3704), not the 19 the face measured on its own base -- the structured-error seam beneath it took `SecretError` and `StoreError` out of the lib.rs re-export list, so adding the face's three names rewraps that list one line longer here. The number is this tree's measurement, never the source branch's. A second delta on this key beside the structured-error seam's 206."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 20
+because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 20 lines as the surface-ceiling raise, as the loc-ceilings rule counts them (3686 -> 3706)."
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 20
+because = "the VirtualKeyDirectory face in busbar-contract/src/kinds.rs: the same 20 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms (23671 -> 23691)."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 3684
+contract_caps = 3704
 grammar = 388
 contract_transport = 845
 
@@ -412,12 +443,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 3686
+caps_contract_ceiling = 3706
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23671
+union_ceiling = 23691
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
@@ -586,7 +617,7 @@ plane_file = "crates/busbar-contract/src/plane.rs"
 transport_file = "crates/busbar-contract/src/transport.rs"
 traits = [
   "AuthScheme", "EgressAuthScheme", "Store", "Secret", "Hook", "Export", "Anchor",
-  "Plane", "SessionPlane", "Transport",
+  "Plane", "SessionPlane", "Transport", "VirtualKeyDirectory",
 ]
 max_defaulted = 0
 
