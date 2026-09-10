@@ -73,6 +73,37 @@ fn only_the_first_denial_in_a_window_is_audited() {
     );
 }
 
+/// A clock regression (NTP step back, VM restore) must not reset an already-spent budget. Spend
+/// the full CONFIG budget in window `W`, then regress `now` into window `W - 1`: the sweep must
+/// NOT treat the still-live `W` entry as stale and wipe it just because the newly-arrived request
+/// computed an older window. Before the fix (`*w == window`), the sweep kept only entries whose
+/// window equalled the OLDER computed window, so it dropped the `W` entry and the next check
+/// started a fresh, unspent counter — the budget came back. After the fix (`*w >= window`), the
+/// `W` entry is strictly newer than `W - 1` and survives the sweep, so the regressed-clock request
+/// is still judged against the spent `W` counter and stays denied.
+#[test]
+fn clock_regression_does_not_reset_the_spent_budget() {
+    let l = MutationLimiter::new();
+    let w = 600_000; // window-aligned: a multiple of MUTATION_RATE_WINDOW_SECS (60)
+    for _ in 0..10 {
+        assert!(l.check("a", MutationClass::Config, w).admitted());
+    }
+    assert_eq!(
+        l.check("a", MutationClass::Config, w),
+        RateCheck::Denied {
+            first_in_window: true
+        },
+        "the 11th CONFIG mutation in window w is limited"
+    );
+
+    // The clock steps backwards into the PRIOR window.
+    let regressed = w - 1;
+    assert!(
+        !l.check("a", MutationClass::Config, regressed).admitted(),
+        "a clock regression into a past window must not refill the already-spent budget"
+    );
+}
+
 /// `POST /plugins/inspect` gets its OWN dedicated budget — neither the CONFIG class nor the
 /// shared CRUD class: burning the shared 60/min CRUD budget on N candidate-artifact inspections
 /// during a fleet-wide plugin upgrade would starve real mutating work in the same window.
