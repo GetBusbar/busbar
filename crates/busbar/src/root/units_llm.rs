@@ -588,7 +588,7 @@ impl LlmNode {
                 // plane that is the record a unit ran and ended and nothing else: the money is in a
                 // cell the response's own body fills when it DRAINS, which has not happened yet. So
                 // the body goes out wrapped, and the figure lands when it arrives.
-                self.attach_late_accrual(response, walk, &principal, arrived, history)
+                self.attach_late_accrual(response, walk, &principal, arrived, history, ctx.origin)
             }
         }
     }
@@ -610,6 +610,7 @@ impl LlmNode {
         principal: &PrincipalId,
         arrived: Arrived,
         history: Option<crate::root::kernel::PinnedHistory>,
+        origin: OriginKind,
     ) -> Response {
         let Some(book) = self.book.get() else {
             return response;
@@ -642,6 +643,7 @@ impl LlmNode {
             // are two postings OF one unit, and they order beside it rather than beside each other.
             arrived,
             walk,
+            origin,
             tap,
         };
         let (parts, body) = response.into_parts();
@@ -736,11 +738,54 @@ fn fold_report(
 /// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
 /// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
 /// unit the node has ever run.
+/// **THE FEE'S EVIDENCE, BUILT ONCE.** What the kernel's one decider is handed for this plane.
+///
+/// The flat per-request fee is decided by `busbar_kernel::teller::fee_count` and by nothing else.
+/// This function is the whole of what this plane contributes to it: the facts, read off the unit's
+/// carry and the origin the kernel sealed. It is called from exactly two places — the `evidence()`
+/// the exit path settles from, and the late accrual arm that prices what the body reported after the
+/// terminal — because those are the two moments this plane's money is decided, and a fee decided
+/// twice is two answers to what one request cost.
+///
+/// The plane used to hold a second decider: `unit/meter.rs` answered `delivered && upstream_leg` and
+/// carried that count out on its late report, and THAT was the number that billed while the kernel's
+/// was computed and discarded. `crates/busbar/tests/fee_one_decision.rs` is the byte-identity cell
+/// that retired it: both answers over every recorded cell of the two families the golden has, and
+/// the golden's own billed count beside them.
+fn fee_evidence(walk: &Walk, origin: OriginKind) -> FeeEvidence {
+    let status = walk.served_status();
+    FeeEvidence {
+        // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is what a
+        // caller pays for a request the node carried on its behalf, and a unit the node runs for any
+        // other reason is not a caller's request. Hard-coded true, every origin this loop could ever
+        // carry would post one — a provider push, a tick, a nested unit — and the sibling planes,
+        // which read the same field off the same context, would price the same traffic differently.
+        // The origin the kernel sealed is the one fact that answers this, so it is the one thing
+        // read.
+        client_open_or_one_shot: origin == OriginKind::Client,
+        selected_upstream: walk.upstream_candidate(),
+        relayed_first_response_frame: status.is_some(),
+        // This transport reports no status leg of its own: the response IS the status, and the
+        // plane's finish is decided from the frame the client saw. Both `None` is also what makes
+        // the dispute arm unreachable here — see the cell's `dispute_arm_is_unreachable` test.
+        status_at: None,
+        status: None,
+        finish: status.map(|s| {
+            if (200..300).contains(&s) {
+                busbar_contract::FinishClass::Complete
+            } else {
+                busbar_contract::FinishClass::Error
+            }
+        }),
+    }
+}
+
 fn priced_posting(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
     token: &busbar_caps::UsageToken,
     report: &LateReport,
+    fee: u32,
 ) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
     // the classes and their counts, and the unit's PINNED arrival supplies the instant in both its
@@ -767,7 +812,10 @@ fn priced_posting(
     let mut posting = busbar_unit_cost::Posting::from_usage(
         &report.lane,
         &folded.usage,
-        u64::from(report.fee_count),
+        // THE FEE IS THE KERNEL'S ANSWER, handed in. The report says what the unit CONSUMED — the
+        // classes and their quantities — and it no longer says how many billable requests it is,
+        // because deciding that is not the plane's to do. See [`fee_evidence`].
+        u64::from(fee),
         busbar_unit_cost::STANDARD_TIER_BP,
         arrived.ms(),
         arrived.mono(),
@@ -799,8 +847,9 @@ fn priced_amount(
     arrived: Arrived,
     token: &busbar_caps::UsageToken,
     report: &LateReport,
+    fee: u32,
 ) -> u64 {
-    let (_posting, priced) = priced_posting(history, arrived, token, report);
+    let (_posting, priced) = priced_posting(history, arrived, token, report, fee);
     priced
         .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
         .unwrap_or(0)
@@ -838,6 +887,10 @@ struct LateAccrual {
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
     /// table the walk resolved and the facts the Route and Meter steps left, and both live here.
     walk: Walk,
+    /// THE ORIGIN THE KERNEL SEALED, carried so the late arm decides the fee off the same fact the
+    /// exit arm did. Read rather than assumed: a fee is a client's fee, and the one place that
+    /// answers whether this unit was a client's is the context the loop ran under.
+    origin: OriginKind,
     /// The cell the body fills. Held rather than looked up again, because by the time it is read the
     /// response it rode on no longer exists.
     tap: Tap,
@@ -855,6 +908,7 @@ impl LateAccrual {
             principal,
             arrived,
             walk,
+            origin,
             tap,
         } = self;
         let Some(report) = walk.reported_after_terminal(&tap) else {
@@ -881,7 +935,11 @@ impl LateAccrual {
         // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
         // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
         // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = priced_amount(&history, arrived, &usage_token, &report);
+        // THE FEE, decided by the kernel over the same evidence the exit path settled from. This is
+        // the line the MOVE exists for: the number that BILLS is now the kernel's, and the plane no
+        // longer carries an answer of its own for it to disagree with.
+        let (fee, _flags) = busbar_kernel::teller::fee_count(&fee_evidence(&walk, origin));
+        let amount = priced_amount(&history, arrived, &usage_token, &report, fee);
         if amount == 0 {
             return;
         }
@@ -1399,7 +1457,7 @@ impl Units for LlmUnit<'_> {
         &self,
         token: &UnitToken<Meter>,
         usage: &UsageToken,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
         // THE ACCRUAL IS NOT MADE HERE, and the reason is a fact about this plane rather than a
@@ -1421,10 +1479,15 @@ impl Units for LlmUnit<'_> {
         // instant: it would price whatever the report said at whatever card the door happened to
         // hold, and a unit whose price changed underneath it would settle at the wrong entry with
         // nothing on the record saying so.
+        // THE FEE IS THE KERNEL'S, HERE TOO. The live pricing and the late pricing are two readings
+        // of one unit, so they are answered off one decision: the same `fee_evidence` the exit path
+        // settles from. The step used to hand its own count in on the report and this closure used
+        // to spend it, which is how a plane that could not see the origin came to decide money.
+        let (fee, _flags) = busbar_kernel::teller::fee_count(&fee_evidence(&self.walk, ctx.origin));
         self.walk.meter(token, usage, &|report| {
             self.history
                 .as_ref()
-                .map(|history| priced_amount(history, self.arrived, usage, report))
+                .map(|history| priced_amount(history, self.arrived, usage, report, fee))
                 .unwrap_or(0)
         })
     }
@@ -1509,29 +1572,10 @@ impl Units for LlmUnit<'_> {
             // A verified set with an upstream in it is what makes a client unit draw a request slot,
             // and the slot is drawn at the door and never released.
             upstream_candidate: self.walk.upstream_candidate(),
-            fee: FeeEvidence {
-                // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is
-                // what a caller pays for a request the node carried on its behalf, and a unit the
-                // node runs for any other reason is not a caller's request. Hard-coded true, every
-                // origin this loop could ever carry would post one — a provider push, a tick, a
-                // nested unit — and the sibling planes, which read the same field off the same
-                // context, would price the same traffic differently. The origin the kernel sealed is
-                // the one fact that answers this, so it is the one thing read.
-                client_open_or_one_shot: ctx.origin == OriginKind::Client,
-                selected_upstream: self.walk.upstream_candidate(),
-                relayed_first_response_frame: status.is_some(),
-                // This transport reports no status leg of its own: the response IS the status, and
-                // the plane's finish is decided from the frame the client saw.
-                status_at: None,
-                status: None,
-                finish: status.map(|s| {
-                    if (200..300).contains(&s) {
-                        busbar_contract::FinishClass::Complete
-                    } else {
-                        busbar_contract::FinishClass::Error
-                    }
-                }),
-            },
+            // THE FEE'S EVIDENCE, built in ONE place — see [`fee_evidence`]. The exit path settles
+            // from it and the late pricing arm prices from it, so a row that says one fee and a
+            // posting that says none cannot both be true of one unit.
+            fee: fee_evidence(&self.walk, ctx.origin),
         }
     }
 }

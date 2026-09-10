@@ -608,8 +608,8 @@ struct Metering {
     /// Whether the Meter step made the accrual itself, as opposed to sealing the one the walk's tap
     /// had already made.
     posted_here: bool,
-    /// The fee the step says posts, and the refund it says is owed.
-    fee_count: u32,
+    /// The refund the step says is owed. The FEE is not here: it is the kernel's one decision,
+    /// taken in the composition root, and this rehearsal drives the plane rather than the root.
     refund: bool,
     /// What the METER step was bound to, as the Route step handed it over: the serving lane, the
     /// reported split, and whether those figures are evidence rather than a charge. Empty while
@@ -628,7 +628,6 @@ impl Metering {
         Metering {
             reached: false,
             posted_here: false,
-            fee_count: 0,
             refund: false,
             bound: (None, None, false),
             finish: None,
@@ -916,7 +915,6 @@ async fn drive(
     // The accrual arm's own report of itself. `row` is filled whether the step posted or only
     // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
     metering.posted_here = metered.posted;
-    metering.fee_count = metered.fee_count;
     metering.refund = metered.refund;
     // What the step was actually BOUND to, read off the facts rather than off the response: the
     // three figures Route folds out of the tap where the tap had already finished.
@@ -1315,16 +1313,19 @@ async fn the_meter_step_is_fed_from_the_route_steps_output() {
         );
     }
 
-    // The fee and the refund are the step's own answer over those facts, and they are read back
-    // here rather than assumed: a delivered 2xx from an upstream leg posts the flat fee and refunds
-    // nothing; a charged non-2xx posts none and refunds the fee base; and a candidate miss is a
-    // charged non-2xx that never dialled, so it posts no fee either.
+    // The REFUND is the step's own answer over those facts, and it is read back here rather than
+    // assumed: a delivered 2xx refunds nothing, and a charged non-2xx refunds the fee base whether
+    // it failed upstream or never dialled at all.
+    //
+    // The FEE is no longer among them. It is decided once, by `busbar_kernel::teller::fee_count`,
+    // in the composition root — this rehearsal drives the plane's steps and the plane no longer
+    // holds an answer. `busbar/tests/fee_one_decision.rs` is where the fee is pinned.
     let (_, delivered) = leg_chain_metered(Fixture::BufferedOk).await;
-    assert_eq!((delivered.fee_count, delivered.refund), (1, false));
+    assert!(!delivered.refund);
     let (_, failed) = leg_chain_metered(Fixture::UpstreamFailure).await;
-    assert_eq!((failed.fee_count, failed.refund), (0, true));
+    assert!(failed.refund);
     let (_, missed) = leg_chain_metered(Fixture::UnknownModel).await;
-    assert_eq!((missed.fee_count, missed.refund), (0, true));
+    assert!(missed.refund);
 }
 
 /// GAP 2, CLOSED — the walk's tap IS the METER step's body, and it fires once.
@@ -1517,10 +1518,6 @@ async fn the_live_carry_hands_the_meter_step_the_meter_half_the_walk_took() {
         (LANE, "test"),
         "the report names the SERVING lane and its provider — the two names the 1.5.5 row is keyed \
          by, and the key space the rates are written in"
-    );
-    assert_eq!(
-        report.fee_count, 1,
-        "a delivered client request that reached an upstream is one billable request"
     );
     // The tier split, by the neutral reserved-unit keys. Sparse by construction — a zero tier is not
     // an entry — so the two cache sides are absent rather than zero on this fixture.

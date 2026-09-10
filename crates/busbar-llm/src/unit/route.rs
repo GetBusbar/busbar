@@ -297,8 +297,6 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
                 usage: None,
                 status: response.status().as_u16(),
                 billing_failed: false,
-                // Nothing was dialled, so this is not a fee-bearing upstream leg.
-                upstream_leg: false,
                 // The walk never ran, so no tap of its can have accrued anything.
                 accrued: false,
             },
@@ -461,8 +459,6 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         // The status the CLIENT saw, which is the fee basis and is known at the head either way.
         status: resp.status().as_u16(),
         billing_failed: false,
-        // The walk resolved candidates and dialled, so this is a fee-bearing client request.
-        upstream_leg: true,
         accrued,
     };
     if let Some(report) = resp

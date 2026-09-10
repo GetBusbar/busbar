@@ -460,9 +460,9 @@ async fn route_step_refuses_an_unresolved_destination_without_a_terminal() {
         "a unit that never reaches the walk draws no correlation id"
     );
     let resp = routed.response;
-    // The facts a miss hands the Meter step: nothing was dialled, so there is no fee-bearing
-    // leg and no tap of anyone's accrued anything.
-    assert!(!routed.facts.upstream_leg);
+    // The facts a miss hands the Meter step: nothing was dialled, so no tap of anyone's accrued
+    // anything. Whether a leg was fee-bearing is no longer among them — the fee is the kernel's
+    // one decision and it reads the admission's `upstream_candidate`, not the walk's dial.
     assert!(!routed.facts.accrued);
     assert_eq!(routed.facts.status, 404);
     let refusal = routed
