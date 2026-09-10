@@ -1468,7 +1468,7 @@ count = "98"
 [[cell]]
 crate = "busbar"
 kind = "plane"
-count = "1798"
+count = "1826"
 
 [[cell]]
 crate = "busbar"
@@ -1683,7 +1683,7 @@ count = "16"
 [[cell]]
 crate = "busbar-contract"
 kind = "control"
-count = "20"
+count = "24"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1703,7 +1703,7 @@ count = "1"
 [[cell]]
 crate = "busbar-contract"
 kind = "plane"
-count = "42"
+count = "43"
 
 [[cell]]
 crate = "busbar-contract"
@@ -1903,7 +1903,7 @@ count = "79"
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "300"
+count = "298"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1943,7 +1943,7 @@ count = "60"
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "plane"
-count = "285"
+count = "282"
 
 [[cell]]
 crate = "busbar-llm-codec"
@@ -2088,7 +2088,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-a2a"
 kind = "plane"
-count = "17"
+count = "15"
 
 [[cell]]
 crate = "busbar-plane-a2a"
@@ -2158,7 +2158,7 @@ count = "1"
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "plane"
-count = "5"
+count = "4"
 
 [[cell]]
 crate = "busbar-plane-llm"
@@ -2193,7 +2193,7 @@ count = "2"
 [[cell]]
 crate = "busbar-plane-mcp"
 kind = "plane"
-count = "15"
+count = "13"
 
 [[cell]]
 crate = "busbar-plane-mcp"
@@ -2223,7 +2223,7 @@ count = "13"
 [[cell]]
 crate = "busbar-plane-voice"
 kind = "plane"
-count = "43"
+count = "31"
 
 [[cell]]
 crate = "busbar-plane-voice"
@@ -2388,7 +2388,7 @@ count = "4"
 [[cell]]
 crate = "busbar-plugin-testkit"
 kind = "api"
-count = "10"
+count = "11"
 
 [[cell]]
 crate = "busbar-plugin-testkit"
@@ -2573,7 +2573,7 @@ count = "134"
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "plane"
-count = "162"
+count = "161"
 
 [[cell]]
 crate = "busbar-substrate-values"
@@ -5604,17 +5604,17 @@ drain = "move both implementations into a store-kind crate and have the root REG
 [[cell]]
 crate = "busbar"
 kind = "dialect"
-count = "175"
+count = "587"
 
 [[cell]]
 crate = "busbar-a2a"
 kind = "dialect"
-count = "8"
+count = "30"
 
 [[cell]]
 crate = "busbar-api"
 kind = "dialect"
-count = "3"
+count = "20"
 
 [[cell]]
 crate = "busbar-caps"
@@ -5624,12 +5624,12 @@ count = "2"
 [[cell]]
 crate = "busbar-contract"
 kind = "dialect"
-count = "14"
+count = "20"
 
 [[cell]]
 crate = "busbar-core"
 kind = "dialect"
-count = "1196"
+count = "1778"
 
 [[cell]]
 crate = "busbar-hooks-ranking"
@@ -5639,27 +5639,27 @@ count = "2"
 [[cell]]
 crate = "busbar-llm"
 kind = "dialect"
-count = "3208"
+count = "3424"
 
 [[cell]]
 crate = "busbar-llm-codec"
 kind = "dialect"
-count = "11200"
+count = "11298"
 
 [[cell]]
 crate = "busbar-mcp"
 kind = "dialect"
-count = "119"
+count = "206"
 
 [[cell]]
 crate = "busbar-mcp-codec"
 kind = "dialect"
-count = "7"
+count = "12"
 
 [[cell]]
 crate = "busbar-plugin"
 kind = "dialect"
-count = "3"
+count = "6"
 
 [[cell]]
 crate = "busbar-plugin-loader"
@@ -5669,17 +5669,17 @@ count = "9"
 [[cell]]
 crate = "busbar-secret-ref"
 kind = "dialect"
-count = "2"
+count = "3"
 
 [[cell]]
 crate = "busbar-substrate"
 kind = "dialect"
-count = "90"
+count = "263"
 
 [[cell]]
 crate = "busbar-substrate-values"
 kind = "dialect"
-count = "252"
+count = "302"
 
 [[cell]]
 crate = "busbar-transport-sse"
@@ -5694,7 +5694,7 @@ count = "94"
 [[cell]]
 crate = "busbar-unit-breaker"
 kind = "dialect"
-count = "3"
+count = "8"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"
@@ -5709,7 +5709,7 @@ count = "2"
 [[cell]]
 crate = "busbar-unit-trust"
 kind = "dialect"
-count = "5"
+count = "7"
 
 [[cell]]
 crate = "busbar-unit-usage"
@@ -5719,12 +5719,57 @@ count = "7"
 [[cell]]
 crate = "busbar-voice"
 kind = "dialect"
-count = "335"
+count = "352"
 
 [[cell]]
 crate = "busbar-voice-codec"
 kind = "dialect"
-count = "257"
+count = "271"
+
+[[cell]]
+crate = "busbar-plane-admin"
+kind = "dialect"
+count = "3"
+
+[[cell]]
+crate = "busbar-plane-llm-openai"
+kind = "plane"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "control"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-plugin-testkit"
+kind = "legacy"
+count = "1"
+
+[[cell]]
+crate = "busbar-timing"
+kind = "dialect"
+count = "2"
+
+[[cell]]
+crate = "busbar-transport-grpc"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-transport-http"
+kind = "dialect"
+count = "4"
+
+[[cell]]
+crate = "busbar-unit-egress"
+kind = "dialect"
+count = "1"
 
 [[edge]]
 from = "api"
@@ -5816,6 +5861,34 @@ to = "dialect"
 cite = "none. ARCHITECTURE.md 1.1 -- three blind axes, one small kernel: a crate of kind unit has no clause that lets it name a vendor. Every hit is a coupling to delete."
 why = "crates of kind unit naming DIALECT vocabulary: the vendor names the `dialect` kind is named for -- the six words `plane-purity`'s DIALECT rule bans as whole words, read from that list and not from a second one here. The `dialect` kind has no crate yet (it lands as `busbar-plane-<plane>-<dialect>` when the codec split finishes), so the census derives no needles for it and this column would otherwise be the one column of the matrix that is unmeasured. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "delete the vendor name from the unit crate: a vendor is reached through the dialect crate that is named for it, never by spelling it. Until the codec split lands these are the pre-split dialects' own words sitting in crates that are not dialects; every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
+
+[[edge]]
+from = "control"
+to = "dialect"
+cite = "none. PLUGIN-TREE.md 1 admits control as its own kind and D36 section 1 makes dialect its own kind: a control surface has no clause that lets it name a dialect's vendor vocabulary. Every hit is a coupling to delete."
+why = "crates of kind control naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — where dialect is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "R7. busbar-plane-admin becomes busbar-control-admin with its route table declared as data; the three hits are vendor words in that surface's own text and fall with the rename."
+
+[[edge]]
+from = "dialect"
+to = "plane"
+cite = "ARCHITECTURE.md 1.4 / D36 section 2: a dialect crate is a crate of the plane it is a dialect OF — `busbar-plane-<plane>-<dialect>` names its plane in its own package name and depends on `busbar-plane-<plane>` for the row type it fills in. The edge is the naming scheme, not a coupling."
+why = "crates of kind dialect naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "nothing drains this class while the naming scheme stands: the hits are the crate's own name and its one workspace dependency. It falls only if D36's naming scheme is withdrawn."
+
+[[edge]]
+from = "plugin-tooling"
+to = "legacy"
+cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
+why = "crates of kind plugin-tooling naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
+
+[[edge]]
+from = "timing"
+to = "dialect"
+cite = "none. ARCHITECTURE.md 1.1 — three blind axes, one small kernel: a crate of kind timing has no clause that lets it name dialect vocabulary. Every hit is a coupling to delete."
+why = "crates of kind timing naming dialect vocabulary: dialect package names in any spelling, the kind-qualified id (dialect-<id>), and — where dialect is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the dialect name from the timing crate: a timing crate reaches a dialect through the contract face it is written against, never by naming it. Every file:line in the drain list of cargo xtask gate kind-isolation --report is one deletion."
 
 [[disagreement]]
 crate = "busbar"

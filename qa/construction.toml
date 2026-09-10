@@ -147,16 +147,16 @@ busbar-voice = ["busbar-voice-codec"]
 
 [[gate.ceiling_raises]]
 key = "gate.surface_ceilings.contract_caps"
-by = 152
+by = 51
 because = """The SURFACE-measured twin of the same one owner ruling that raises \
 `rules.loc-ceilings.caps_contract_ceiling`. The two rows are one decision counted two ways, and \
 raising one without the other would leave the pair capped at whichever number is smaller while the \
-larger one reads as the ruling -- a ceiling raised in name only. The measurement that spent it is \
+larger one reads as the ruling -- a ceiling raised in name only. RE-KEYED (K7) to the measured 51. The measurement that spent it is \
 recorded once, beside `[rules.loc-ceilings]`, rather than transcribed twice."""
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.caps_contract_ceiling"
-by = 150
+by = 51
 because = """The FIRST gating figure for the dialect kind's contract face. The dialect kind is a new \
 row in the closed kind set, and a kind that the contract cannot name is a kind no plugin can \
 implement — so `busbar-contract` grows one trait, its associated types, and the dialect id. Every \
@@ -164,8 +164,145 @@ implement — so `busbar-contract` grows one trait, its associated types, and th
 the workspace before this moved: exactly one item had nothing behind it (`ids::TransportId`, \
 deleted) and every other zero-implementor item is claimed by a queued branch, a dated migration row \
 or an object-safety fixture. The raise could not be paid for out of dead surface because there is \
-almost none. 150 lines of headroom, once; the next kind's trait comes out of surface or out of a \
-second owner ruling."""
+almost none. RE-KEYED (K7) FROM THE OWNER'S +150 HEADROOM RULING TO THE MEASUREMENT: the delta shape \
+declares what the face SPENT, not what it was allowed, and the face measures 51. The headroom \
+ruling stands; the unspent 99 lines are not declared here, because a `by` above what the tree \
+rose by is over-declared and red."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 412
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar x dialect: 175 -> 587)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 28
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar x plane: 1798 -> 1826)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-a2a.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 22
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-a2a x dialect: 8 -> 30)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-api.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-api x dialect: 3 -> 20)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.control.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-contract x control: 20 -> 24)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 6
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-contract x dialect: 14 -> 20)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-contract x plane: 42 -> 43)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 582
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-core x dialect: 1196 -> 1778)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 216
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-llm x dialect: 3208 -> 3424)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-llm-codec.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 98
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-llm-codec x dialect: 11200 -> 11298)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 87
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-mcp x dialect: 119 -> 206)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-mcp-codec.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-mcp-codec x dialect: 7 -> 12)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-plugin x dialect: 3 -> 6)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-testkit.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-plugin-testkit x api: 10 -> 11)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-secret-ref.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-secret-ref x dialect: 2 -> 3)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 173
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-substrate x dialect: 90 -> 263)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-substrate-values.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 50
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-substrate-values x dialect: 252 -> 302)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-breaker.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 5
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-unit-breaker x dialect: 3 -> 8)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-trust.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-unit-trust x dialect: 5 -> 7)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-voice x dialect: 335 -> 352)"""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-voice-codec.dialect.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-voice-codec x dialect: 257 -> 271)"""
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 51
+because = """The union ceiling counts busbar-caps + busbar-contract inside it, so the SAME 51 lines \
+the dialect kind's contract face spent against `rules.loc-ceilings.caps_contract_ceiling` are \
+counted here a second time. One face, one measurement, declared against every ceiling that measures \
+it -- declaring the pair and not the union would leave the union to refuse a rise the owner already \
+priced. 23465 -> 23516, exactly the caps/contract delta and not one line more."""
 
 # NO ENTRY STANDS HERE TODAY, and an empty list is this mechanism working rather than resting.
 # `rules.legacy-reach.prefixes.busbar_substrate.figure` carried the one-time 26 -> 47 calibration
@@ -188,7 +325,7 @@ second owner ruling."""
 # `contract_transport` are NOT part of the ruling and keep the figures the integration line
 # measured them at: the dialect kind's trait is contract surface, and nothing it adds is grammar or
 # transport surface, so raising those two would be spending a ruling on rows it was not written for.
-contract_caps = 3630
+contract_caps = 3529
 grammar = 388
 contract_transport = 845
 
@@ -424,12 +561,12 @@ contract_crate = "busbar-contract"
 # written and carries 3480 now, so the raise lands at 3630 rather than the 3650 first recorded.
 # It is the last one that is free: the next kind's trait comes out of surface, or out of a second
 # ruling.
-caps_contract_ceiling = 3630
+caps_contract_ceiling = 3531
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14606
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 23465
+union_ceiling = 23516
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.
