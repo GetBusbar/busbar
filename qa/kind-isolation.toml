@@ -112,11 +112,6 @@ kind = "core"
 reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
 
 [[announced]]
-crate  = "busbar-export-file"
-kind   = "export"
-reason = "the append-only request-log file sink lifted out of busbar-core/src/export/file.rs; export kind, Export face"
-
-[[announced]]
 crate  = "busbar-export-webhook"
 kind   = "export"
 reason = "the SSRF-guarded request-log webhook sink lifted out of busbar-core/src/export/webhook.rs; export kind, Export face"
@@ -922,6 +917,13 @@ drain = "delete the per-control wiring from crates/busbar/src/root/** and crates
 
 [[edge]]
 from = "root"
+to = "export"
+cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A export name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
+why = "crates of kind root naming export vocabulary: export package names in any spelling, the kind-qualified id (export-<id>), and — where export is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
+drain = "delete the per-export wiring from crates/busbar/src/root/** and crates/busbar/src/main.rs: the root mounts a declared surface read off the registry, so each hit goes on the commit that moves the declaration into the export itself."
+
+[[edge]]
+from = "root"
 to = "hooks"
 cite = "none. ARCHITECTURE.md 1.1 gives the composition root a REGISTRY to assemble from — it mounts what a plugin DECLARES. A hooks name inside crates/busbar is the assembly hand-wired instead of read, and no clause grants it."
 why = "crates of kind root naming hooks vocabulary: hooks package names in any spelling, the kind-qualified id (hooks-<id>), and — where hooks is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
@@ -1394,7 +1396,7 @@ count = "6"
 [[cell]]
 crate = "busbar"
 kind = "substrate"
-count = "9"
+count = "10"
 
 [[cell]]
 crate = "busbar"
@@ -1664,12 +1666,12 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "2995"
+count = "2994"
 
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "267"
+count = "266"
 
 [[cell]]
 crate = "busbar-core"
@@ -2976,6 +2978,11 @@ crate = "busbar-voice-codec"
 kind = "transport"
 count = "19"
 
+[[cell]]
+crate = "busbar"
+kind = "export"
+count = "17"
+
 [[disagreement]]
 crate = "busbar"
 kind = "plane"
@@ -3158,6 +3165,16 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 1.1 / ARCHITECTURE.md 3.1 — the composition root is the one thing that names all three axes."
 why     = "busbar names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
+to      = "busbar-export-file"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 1.2 — the composition root mounts every plugin kind it ships, export included; the edge always runs root -> plugin and never the reverse."
+why     = "busbar names busbar-export-file: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

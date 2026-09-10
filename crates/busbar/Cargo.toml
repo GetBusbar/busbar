@@ -54,6 +54,9 @@ busbar-a2a = { path = "../busbar-a2a", optional = true }
 busbar-voice = { path = "../busbar-voice", optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
+# The built-in `request-log-file` export sink. A crate of kind `export`, composed here like every
+# other plugin the root loads: the root builds it, sheds for it and calls it.
+busbar-export-file = { path = "../busbar-export-file" }
 
 # ── THE COMPOSITION ROOT'S OWN EDGES (src/root/) ────────────────────────────────────────────────
 # The binary is the one place entitled to name the kernel, the units, the planes and the transports

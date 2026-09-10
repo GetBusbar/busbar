@@ -33,13 +33,14 @@
 //! spelled, so lifting the fan-out out of the engine costs the ratchet nothing.
 
 pub(crate) mod admission;
+mod file_report;
 
 use admission::AdmissionGate;
 // MODULE-LEVEL, deliberately. The `legacy-reach` ratchet counts DISTINCT symbols the root spells
 // through a retiring crate's prefix, and it may only go down: naming the two modules the engine
 // still owns here — and every item under them by short path — is the same two names main.rs
 // already spelled, so lifting the fan-out out of the engine costs the ratchet nothing.
-use busbar_core::{config, export};
+use busbar_core::{config, export, metrics};
 use export::{BuiltinPushSink, Projection, RequestLogFacts, Ship};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
@@ -70,7 +71,62 @@ static SINKS: OnceLock<Vec<Sink>> = OnceLock::new();
 /// No configured PUSH sink ⇒ nothing is installed and nothing is allocated: the zero-config default
 /// pays for none of this.
 pub fn install(cfg: &config::ExportCfg) {
-    let sinks: Vec<Sink> = export::builtin_push_sinks(cfg)
+    let mut sinks = file_sinks(cfg);
+    sinks.extend(engine_sinks(cfg));
+    if sinks.is_empty() {
+        return;
+    }
+    let _ = SINKS.set(sinks);
+    export::install_request_log_sink(deliver);
+}
+
+/// Compose one `busbar-export-file` sink per configured `request-log-file` instance.
+///
+/// The crate states its capacity, its retention bound and its gate label; the root builds it, holds
+/// it, sheds for it, chooses the thread its blocking write runs on, and turns its reports into this
+/// process's diagnostics and counters. None of those four is a sink's business, which is why the
+/// crate names neither a runtime, nor a recorder, nor a diagnostics registry — nor, in fact,
+/// anything at all outside the standard library.
+fn file_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
+    export::request_log_file_instances(cfg)
+        .into_iter()
+        .map(|instance| {
+            let handler = Arc::new(busbar_export_file::FileSink::new(
+                instance.path,
+                instance.rotate_mb,
+                Arc::new(file_report::EngineReport),
+            ));
+            Sink {
+                projection: instance.projection,
+                gate: AdmissionGate::new(
+                    busbar_export_file::MAX_INFLIGHT_APPENDS,
+                    busbar_export_file::MODULE,
+                ),
+                dropped_total: metrics::FILE_LOGS_DROPPED_TOTAL,
+                ship: Box::new(move |payload, permit| {
+                    // The write is blocking and the request path is async, so it goes to the
+                    // blocking pool. That is a decision about THIS process's runtime, which is
+                    // exactly why the sink does not make it. The permit rides along and returns the
+                    // slot when the task ends.
+                    let handler = handler.clone();
+                    let payload = payload.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        // Already built to THIS sink's projection, so an ungranted field is never
+                        // written to disk. The sink frames the line; the root serialized it.
+                        handler.append(&payload.to_string());
+                    });
+                }),
+            }
+        })
+        .collect()
+}
+
+/// The PUSH sinks whose bodies are still in the engine — today just `request-log-webhook`, whose
+/// delivery is the substrate's egress engine behind the engine's own SSRF guard and therefore not
+/// yet something a crate of kind `export` could carry.
+fn engine_sinks(cfg: &config::ExportCfg) -> Vec<Sink> {
+    export::builtin_push_sinks(cfg)
         .into_iter()
         .map(
             |BuiltinPushSink {
@@ -86,12 +142,7 @@ pub fn install(cfg: &config::ExportCfg) {
                 ship,
             },
         )
-        .collect();
-    if sinks.is_empty() {
-        return;
-    }
-    let _ = SINKS.set(sinks);
-    export::install_request_log_sink(deliver);
+        .collect()
 }
 
 /// A per-delivery cache of already-built payloads, keyed by PROJECTION. Instances with IDENTICAL
@@ -148,7 +199,7 @@ fn fan_out(sinks: &[Sink], facts: &RequestLogFacts<'_>) {
     for sink in sinks {
         // Acquire this sink's delivery slot WITHOUT waiting.
         let Some(permit) = sink.gate.try_enter() else {
-            metrics::counter!(sink.dropped_total).increment(1);
+            ::metrics::counter!(sink.dropped_total).increment(1);
             continue;
         };
         // THIS sink's payload, built to THIS sink's projection (shared with any sibling holding the

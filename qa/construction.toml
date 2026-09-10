@@ -204,8 +204,8 @@ because = "the export projection grammar face busbar_plugin::cold::export::proje
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.plugin-tooling.count"
 file = "qa/kind-isolation.toml"
-by = 2
-because = "the same export projection grammar face: busbar-core stops declaring the grammar and starts naming it, so two config-layer sites spell `busbar_plugin::cold::export::projection` where they used to spell `crate::export::projection`. Two lines of SPELLING against a Cargo edge busbar-core already carried (crates/busbar-core/Cargo.toml:55), not a new reach — and it is transitional: both sites travel to busbar-core-config, and the export half of them dies when the four busbar-export-* crates land and core stops naming export at all."
+by = 1
+because = "the same export projection grammar face: busbar-core stops declaring the grammar and starts naming it, so two config-layer sites spell `busbar_plugin::cold::export::projection` where they used to spell `crate::export::projection`. Two lines of SPELLING against a Cargo edge busbar-core already carried (crates/busbar-core/Cargo.toml:55), not a new reach — and it is transitional: both sites travel to busbar-core-config. It was declared at +2 and is +1 at this tip, which is that promise being kept and not an over-declaration corrected: the file sink left for a crate of kind export on this line, and core's own prose about the face that sink is written against went with it, so one of the two spellings is already drained."
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
@@ -1446,3 +1446,14 @@ key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
 by = 4
 because = "RELAY onto FACE busbar_unit_cost::LaneRates::reserved_units_nanos: cost.rs adds derive_spend_minor_units and derive_spend_micros_units to the one pub(crate) use line that is the engine's seam onto the cost unit, and deletes its own reserved-four fold, its own divide to cents, its own fee multiply, its own floor and the private lane helper with them. Four spellings on one seam line in place of a second answer to what a bucket has spent, with every reader inside the crate going through that seam rather than naming the unit itself; the edge dies with busbar-core"
+
+# THE FILE SINK'S REPORTS, TURNED INTO THIS PROCESS'S DIAGNOSTICS (the `request-log-file` sink
+# leaving busbar-core for a crate of kind `export`). A sink of that kind may name no diagnostics
+# registry — the registry is a property of the process it was composed into — so it REPORTS, and the
+# composition root is the only party that can turn a report into a coded diagnostic. That is the
+# root composing what it mounts, and the one name it costs is the registry the codes live in.
+[[gate.ceiling_raises]]
+key = "cell.busbar.substrate.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the composition root turns the relocated file sink's reports into the five coded diagnostics the in-engine sink emitted, byte-identically, and the one import line that costs is `use busbar_substrate_values::{diag_warn, diagnostics}` in crates/busbar/src/root/units_export/file_report.rs. ONE line, naming the crate the diagnostic codes are declared in, because a crate of kind export may name no diagnostics registry at all and the composer is the only party left that can. The macro is taken from the substrate rather than the retiring engine on purpose: it is the same expansion on the same ids, and it keeps the root's total legacy reach flat at 91 instead of teaching it one more name through a crate that is leaving."

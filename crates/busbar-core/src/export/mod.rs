@@ -17,7 +17,10 @@
 //!   registered; absent ⇒ no recorder, `/metrics` unmounted, every emit site a true no-op.
 //! - [`webhook`] — PUSH per-request. The `request-log-webhook` + `generic-webhook` sinks POST the
 //!   built request-log line behind the relocated SSRF guard.
-//! - [`file`] — PUSH per-request. The `request-log-file` sink appends the line as JSONL.
+//! - the `request-log-file` sink is GONE from this crate: its body is a crate of kind `export`,
+//!   which this crate may not name. What is left here is the config layer's
+//!   own job — resolving the operator's `module:` token and the settings under it — which this
+//!   module hands to the composition root as [`request_log_file_instances`].
 //!
 //! WHAT LEFT. The FAN-OUT is not here any more: the composition root builds one payload per
 //! distinct projection, sheds for each sink against a gate it owns, and calls the sink. Each PUSH
@@ -26,7 +29,6 @@
 //! semaphore, no `OnceLock` and no knowledge of its siblings. That is the shape a `busbar-export-*`
 //! crate presents over the ABI, reached here without one.
 
-pub(crate) mod file;
 pub mod prometheus;
 pub(crate) mod webhook;
 
@@ -41,8 +43,14 @@ pub use busbar_plugin::cold::export::projection::{build_request_log, Projection,
 use busbar_plugin_loader::ExportStream;
 use busbar_plugin_loader::Route;
 use serde_json::Value;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::OwnedSemaphorePermit;
+
+/// The streams the `request-log-file` sink carries. Its BODY is a crate of kind `export`, which
+/// this crate may not name — but resolving which sink an operator's `module:` token names, and what
+/// that sink was therefore granted, is the config layer's own job and stays here beside the token.
+/// It moves out with the config layer, not with the sink.
+pub(crate) const REQUEST_LOG_FILE_STREAMS: &[ExportStream] = &[ExportStream::Logs];
 
 /// The streams the `otlp` sink carries. It has no module of its own in this crate — its config
 /// surface is `ExportCfg::otlp` and its span pipeline is the tracing subscriber — so its
@@ -86,7 +94,7 @@ pub(crate) fn route_owners(cfg: &ExportCfg) -> Vec<(String, RouteKind, Route)> {
 /// Ship one payload, already built to the sink's projection, taking the permit that holds this
 /// delivery's slot. Named so the sink declaration below reads as the five facts it is, rather than
 /// as one line of type.
-pub type Ship = Box<dyn Fn(&Value, OwnedSemaphorePermit) + Send + Sync>;
+pub type Ship = Box<dyn Fn(&Arc<Value>, OwnedSemaphorePermit) + Send + Sync>;
 
 /// One configured built-in PUSH sink, handed to the COMPOSITION ROOT as data.
 ///
@@ -122,9 +130,34 @@ pub struct BuiltinPushSink {
 /// Empty when no PUSH sink is configured (the zero-config default), which is the root's signal to
 /// install no fan-out at all.
 pub fn builtin_push_sinks(cfg: &ExportCfg) -> Vec<BuiltinPushSink> {
-    let mut sinks = webhook::sinks(cfg);
-    sinks.extend(file::sinks(cfg));
-    sinks
+    webhook::sinks(cfg)
+}
+
+/// One configured `request-log-file` instance, as data for the composition root to build its sink
+/// crate from. The typed `settings:` shape stays with the config layer — it is `deny_unknown_fields`
+/// and frozen, and resolving an operator's token to the sink it names is what a config layer is FOR
+/// — but the sink itself is a crate of kind `export`, which this crate may not name.
+pub struct FileInstance {
+    /// The JSONL file path each line is appended to.
+    pub path: String,
+    /// Size (MiB) at which the file is rotated; absent ⇒ never rotate.
+    pub rotate_mb: Option<u64>,
+    /// The streams + fields THIS instance was granted.
+    pub projection: Projection,
+}
+
+/// Every configured `module: request-log-file` instance, in config order. Empty ⇒ no file sink.
+/// 1.5.3: `export:` is a NAMED map, so two file instances (a local tail file and an audit-mount
+/// file, say) are a legitimate configuration and each is its own sink with its own capacity.
+pub fn request_log_file_instances(cfg: &ExportCfg) -> Vec<FileInstance> {
+    cfg.request_log_files
+        .iter()
+        .map(|f| FileInstance {
+            path: f.path.clone(),
+            rotate_mb: f.rotate_mb,
+            projection: f.projection,
+        })
+        .collect()
 }
 
 /// The composition root's request-log fan-out, installed once at boot.
@@ -157,7 +190,7 @@ pub(crate) fn test_logs_projection() -> Projection {
     let p = busbar_plugin::cold::export::projection::resolve_projection(
         "test",
         "request-log-file",
-        Some(file::STREAMS),
+        Some(&[ExportStream::Logs]),
         Some(&["logs".to_string()]),
         None,
         false,

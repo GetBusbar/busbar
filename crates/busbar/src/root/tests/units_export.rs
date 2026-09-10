@@ -33,9 +33,13 @@ fn logs_projection() -> Projection {
     let mut errors = Vec::new();
     let cfg = config::resolve_export(&defs, &mut errors);
     assert!(errors.is_empty(), "{errors:#?}");
-    let mut sinks = export::builtin_push_sinks(&cfg);
-    assert_eq!(sinks.len(), 1, "one configured instance, one declared sink");
-    sinks.remove(0).projection
+    let mut instances = export::request_log_file_instances(&cfg);
+    assert_eq!(
+        instances.len(),
+        1,
+        "one configured instance, one declared sink"
+    );
+    instances.remove(0).projection
 }
 
 /// One composed sink whose `ship` only counts, so a test can measure what the fan-out DID without a

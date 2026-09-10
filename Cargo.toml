@@ -56,6 +56,7 @@ members = [
     "crates/secret-example-plugin",
     "crates/store-example-plugin",
     "crates/export-example-plugin",
+    "crates/busbar-export-file",
     "crates/hooks-ranking",
     "crates/store-memory",
     "crates/busbar-transport-ws",

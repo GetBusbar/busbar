@@ -50,7 +50,10 @@ const MIGRATED_FILES: &[&str] = &[
     // (the plane-purity lint enforces this); each plane crate enforces its own uncoded-diagnostic floor. So neither the
     // A2A nor the MCP sources are listed here.
     "src/export/webhook.rs",
-    "src/export/file.rs",
+    // The file sink RELOCATED out of this module to a crate of kind `export`. A sink of that kind
+    // may name no diagnostics registry at all, so it emits nothing and reports instead; the root
+    // turns those reports into the same coded diagnostics this list exists to hold in place, and the
+    // root's floor is what scans them now. Core no longer has a file sink to scan.
     "src/ir/mod.rs",
     "src/proto/mod.rs",
     "src/plane/approvals.rs",

@@ -338,6 +338,7 @@ dependencies = [
  "busbar-caps",
  "busbar-contract",
  "busbar-core",
+ "busbar-export-file",
  "busbar-kernel",
  "busbar-llm",
  "busbar-mcp",
@@ -592,6 +593,10 @@ dependencies = [
  "busbar-plugin-sdk",
  "serde_json",
 ]
+
+[[package]]
+name = "busbar-export-file"
+version = "1.6.0"
 
 [[package]]
 name = "busbar-grammar"

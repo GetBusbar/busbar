@@ -1894,7 +1894,7 @@ pub(crate) fn builtin_export_streams(
     match module {
         EXPORT_MODULE_PROMETHEUS => Some(crate::export::prometheus::STREAMS),
         EXPORT_MODULE_REQUEST_LOG_WEBHOOK => Some(crate::export::webhook::STREAMS),
-        EXPORT_MODULE_REQUEST_LOG_FILE => Some(crate::export::file::STREAMS),
+        EXPORT_MODULE_REQUEST_LOG_FILE => Some(crate::export::REQUEST_LOG_FILE_STREAMS),
         EXPORT_MODULE_OTLP => Some(crate::export::OTLP_STREAMS),
         _ => None,
     }

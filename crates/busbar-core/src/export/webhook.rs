@@ -102,7 +102,7 @@ pub(crate) fn sinks(cfg: &ExportCfg) -> Vec<BuiltinPushSink> {
                 max_inflight,
                 gate: GATE,
                 dropped_total: crate::metrics::WEBHOOK_LOGS_DROPPED_TOTAL,
-                ship: Box::new(move |payload: &Value, permit| {
+                ship: Box::new(move |payload: &Arc<Value>, permit| {
                     deliver_one(&target, &client, payload.to_string(), permit);
                 }),
             }
