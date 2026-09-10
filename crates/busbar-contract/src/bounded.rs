@@ -164,6 +164,21 @@ impl<T: serde::Serialize, const N: usize> serde::Serialize for BoundedVec<T, N> 
     }
 }
 
+impl<'de, T: serde::Deserialize<'de>, const N: usize> serde::Deserialize<'de> for BoundedVec<T, N> {
+    /// Read a list, refusing one longer than the declared capacity: a bound the writer did not
+    /// hold is not a bound the reader may quietly forget.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let items = Vec::<T>::deserialize(deserializer)?;
+        if items.len() > N {
+            return Err(serde::de::Error::invalid_length(
+                items.len(),
+                &format!("at most {N} items").as_str(),
+            ));
+        }
+        Ok(Self { items })
+    }
+}
+
 impl<T, const N: usize> IntoIterator for BoundedVec<T, N> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;

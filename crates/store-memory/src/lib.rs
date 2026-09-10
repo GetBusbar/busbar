@@ -15,7 +15,8 @@ use busbar_api::{
 // contract's own spelling. `StoreError` is imported under a second name because the two protocols
 // each carry one and this crate answers both.
 use busbar_contract::ids::RecordSchemaId;
-use busbar_contract::kinds::{RecordBytes, StoreError as ContractStoreError};
+use busbar_contract::kinds::RecordBytes;
+use busbar_contract::PluginError;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
@@ -158,7 +159,7 @@ impl MemoryStore {
         schema: RecordSchemaId,
         key: &[u8],
         value: &RecordBytes,
-    ) -> Result<(), ContractStoreError> {
+    ) -> Result<(), PluginError> {
         let written_at = self.now();
         let mut records = self.records.write().unwrap_or_else(|e| e.into_inner());
         records.insert(
@@ -195,7 +196,7 @@ impl MemoryStore {
         &self,
         schema: RecordSchemaId,
         key: &[u8],
-    ) -> Result<Option<RecordBytes>, ContractStoreError> {
+    ) -> Result<Option<RecordBytes>, PluginError> {
         Ok(self
             .records
             .read()
@@ -218,7 +219,7 @@ impl MemoryStore {
         schema: RecordSchemaId,
         prefix: &[u8],
         limit: u32,
-    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, ContractStoreError> {
+    ) -> Result<Vec<(Vec<u8>, RecordBytes)>, PluginError> {
         let schema = schema.as_str();
         Ok(self
             .records

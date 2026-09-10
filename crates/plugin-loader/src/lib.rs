@@ -25,8 +25,9 @@ use busbar_api::{
 // The SECRET kind's face. `Kind` is aliased because this crate already spells the ABI's own
 // kind-tag module `abi_kind`, and two things called "kind" one screen apart is how a reader stops
 // reading.
-use busbar_contract::kinds::{Secret, SecretError, SecretRef, SecretValue};
+use busbar_contract::kinds::{Secret, SecretRef, SecretValue};
 use busbar_contract::plugin::{AbiVersion, Kind as ContractKind, Plugin};
+use busbar_contract::{ErrorClass, PluginError};
 use busbar_plugin::cold::{
     kind as abi_kind, symbol, CallFn, CloseFn, FreeFn, PluginKindFn, StoreRequest, StoreResponse,
     MAX_PLUGIN_RESPONSE_LEN, STATUS_ERR, STATUS_OK, STATUS_PANIC, STATUS_PROTOCOL,
@@ -1350,34 +1351,43 @@ const SECRET_LANE_KEY: &str = "cold";
 /// [`SecretError::Malformed`].
 const SECRET_REF_GRAMMAR: &str = "a JSON object: the secret reference's own settings map";
 
-/// THE WIRE TOKEN → FACE ERROR MAP, AND THE ONLY COPY OF IT IN THE WORKSPACE.
+/// THE WIRE TOKEN → CLASS MAP, AND THE ONLY COPY OF IT IN THE WORKSPACE.
 ///
-/// A `kind: secret` plugin reports a typed module-level failure as one of five frozen snake_case
-/// tokens (see `busbar_plugin::cold::SecretErrorKind`); the face a host sees is
-/// [`SecretError`]. Exactly one place may hold the correspondence, and this is it — the loader is
-/// the one crate whose job is to be on both sides of the ABI, so a second copy anywhere else would
-/// be a second answer to the same question.
+/// A `kind: secret` plugin built before the structured error existed reports a typed module-level
+/// failure as one of five frozen snake_case tokens (see `busbar_plugin::cold::SecretErrorKind`).
+/// The face a host sees is the one structured [`PluginError`], whose class is the contract's
+/// closed taxonomy. Exactly one place may hold the correspondence, and this is it — the loader is
+/// the one crate whose job is to be on both sides of the ABI.
 ///
-/// The two collapses are deliberate and each is the honest one:
+/// * `not_found` is `NotFound`, `unavailable` is `Unavailable`, `denied` is `Denied` — not folded
+///   onto `NotFound`, because telling an operator whose caller lacks permission that their
+///   reference does not exist sends them to edit the reference.
+/// * `invalid` is `Malformed`: a bad settings shape is a reference outside the plugin's grammar.
+/// * `internal` is `Internal`, which is what an untyped failure has always been.
 ///
-/// * `not_found` and `internal` both become `Unknown`. The face's `Unknown` is "the reference does
-///   not resolve", which is exactly what a miss is; and `internal` has always been the catch-all
-///   that every untyped string failure became, so it has no more specific home. Nothing is lost
-///   that the face can express.
-/// * `invalid` becomes `Malformed`, not `Unknown`: a bad settings shape is a reference outside the
-///   plugin's grammar, which is what `Malformed` names.
-///
-/// And the one that is NOT a collapse: `denied` becomes `Denied`. Folding it onto `Unknown` would
-/// tell an operator whose caller lacks permission that their reference does not exist, and they
-/// would go and edit the reference. That is the whole reason the face gained the variant.
-fn secret_face_error(kind: busbar_plugin::cold::SecretErrorKind) -> SecretError {
+/// The CODE such a plugin never chose is minted from the token, under the wire's own namespace
+/// (`wire.not_found`), so it is a code the loader's own catalog declares rather than a code
+/// nobody declared. See [`WIRE_CATALOG`].
+fn secret_wire_class(kind: busbar_plugin::cold::SecretErrorKind) -> ErrorClass {
     use busbar_plugin::cold::SecretErrorKind as Wire;
     match kind {
-        Wire::NotFound => SecretError::Unknown,
-        Wire::Unavailable => SecretError::Unavailable,
-        Wire::Denied => SecretError::Denied,
-        Wire::Invalid => SecretError::Malformed,
-        Wire::Internal => SecretError::Unknown,
+        Wire::NotFound => ErrorClass::NotFound,
+        Wire::Unavailable => ErrorClass::Unavailable,
+        Wire::Denied => ErrorClass::Denied,
+        Wire::Invalid => ErrorClass::Malformed,
+        Wire::Internal => ErrorClass::Internal,
+    }
+}
+
+/// The code minted for a frozen wire token: `wire.<token>`.
+fn secret_wire_code(kind: busbar_plugin::cold::SecretErrorKind) -> &'static str {
+    use busbar_plugin::cold::SecretErrorKind as Wire;
+    match kind {
+        Wire::NotFound => "wire.not_found",
+        Wire::Unavailable => "wire.unavailable",
+        Wire::Denied => "wire.denied",
+        Wire::Invalid => "wire.invalid",
+        Wire::Internal => "wire.internal",
     }
 }
 
@@ -1409,10 +1419,11 @@ impl Secret for DynSecret {
         SECRET_REF_GRAMMAR
     }
 
-    fn resolve(&self, r: &SecretRef) -> Result<SecretValue, SecretError> {
+    fn resolve(&self, r: &SecretRef) -> Result<SecretValue, PluginError> {
         let Ok(settings) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&r.0)
         else {
-            return Err(SecretError::Malformed);
+            return Err(PluginError::new(ErrorClass::Malformed, "wire.invalid")
+                .with_message("the reference is not a JSON object"));
         };
         let req = busbar_plugin::cold::SecretRequest::Resolve {
             settings,
@@ -1424,34 +1435,20 @@ impl Secret for DynSecret {
         {
             // A TRANSPORT failure — the plugin panicked, or signalled a status the loader treats as
             // an error. It carries an untyped string and no taxonomy, which is precisely what the
-            // wire's `internal` token means, so it lands where `internal` lands. The string itself
-            // cannot ride the face (the face's error IS the taxonomy, by design), so it goes to the
-            // log, which is where this crate already puts a misbehaving plugin's own words.
-            Err(message) => {
-                tracing::warn!(
-                    plugin = %self.raw.path,
-                    %message,
-                    "secret plugin call failed at the transport level; resolving as Unknown"
-                );
-                Err(SecretError::Unknown)
-            }
+            // wire's `internal` token means, so it lands where `internal` lands, with the string
+            // as the developer message.
+            Err(message) => Err(self.record(
+                PluginError::new(ErrorClass::Internal, "wire.internal").with_message(message),
+            )),
             Ok(busbar_plugin::cold::SecretResponse::Bytes(b)) => Ok(SecretValue::new(b)),
-            Ok(busbar_plugin::cold::SecretResponse::Error { kind, message }) => {
-                // Same division: the TAXONOMY is the face's answer, the plugin's own message is
-                // operator-facing detail that the face has no field for. Logging it keeps the
-                // "name the source, not the value" discipline the wire already requires of it.
-                tracing::warn!(
-                    plugin = %self.raw.path,
-                    ?kind,
-                    %message,
-                    "secret plugin reported a typed module-level failure"
-                );
-                Err(secret_face_error(kind))
-            }
+            Ok(busbar_plugin::cold::SecretResponse::Error { kind, message }) => Err(self.record(
+                PluginError::new(secret_wire_class(kind), secret_wire_code(kind))
+                    .with_message(message),
+            )),
         }
     }
 
-    fn watch(&self, _r: &SecretRef) -> Result<Option<u64>, SecretError> {
+    fn watch(&self, _r: &SecretRef) -> Result<Option<u64>, PluginError> {
         // NOTHING TO WATCH, and that is a statement about the wire rather than about the plugin.
         // `SECRET_ABI_VERSION` 1 declares exactly one operation, `Resolve`; there is no version
         // token on the wire for a host to compare, so a cold-lane reference is inert here — it is
@@ -1460,16 +1457,16 @@ impl Secret for DynSecret {
         Ok(None)
     }
 
-    fn sign(&self, _key: &str, _bytes: &[u8]) -> Result<Vec<u8>, SecretError> {
-        Err(SecretError::Unknown)
+    fn sign(&self, _key: &str, _bytes: &[u8]) -> Result<Vec<u8>, PluginError> {
+        Err(not_on_the_wire("sign"))
     }
 
-    fn seal(&self, _key: &str, _context: &[u8], _plaintext: &[u8]) -> Result<Vec<u8>, SecretError> {
-        Err(SecretError::Unknown)
+    fn seal(&self, _key: &str, _context: &[u8], _plaintext: &[u8]) -> Result<Vec<u8>, PluginError> {
+        Err(not_on_the_wire("seal"))
     }
 
-    fn unseal(&self, _key: &str, _context: &[u8], _sealed: &[u8]) -> Result<Vec<u8>, SecretError> {
-        Err(SecretError::Unknown)
+    fn unseal(&self, _key: &str, _context: &[u8], _sealed: &[u8]) -> Result<Vec<u8>, PluginError> {
+        Err(not_on_the_wire("unseal"))
     }
 }
 
@@ -1483,8 +1480,8 @@ impl Secret for DynSecret {
 /// this crate's, which is the one crate that is on both sides.
 ///
 /// # Errors
-/// The module's taxonomy, rendered. The plugin's own message is not here (the face has no field for
-/// it) and is in the log instead; see [`DynSecret::resolve`].
+/// The module's class, rendered as the sentence the previous release printed, with the structured
+/// error's own words after it. The five fields are in the log verbatim; see [`DynSecret::record`].
 pub fn resolve_secret_settings(
     module: &dyn Secret,
     settings_json: &str,
@@ -1492,26 +1489,95 @@ pub fn resolve_secret_settings(
     module
         .resolve(&SecretRef(settings_json.to_string()))
         .map(|v| v.expose().to_vec())
-        .map_err(|e| match e {
-            SecretError::Unknown => "the secret module has no such reference, or failed with an \
-                                     untyped error (see the log for the module's own message)"
-                .to_string(),
-            SecretError::Unavailable => {
+        .map_err(|e| match e.class {
+            ErrorClass::NotFound | ErrorClass::Internal => format!(
+                "the secret module has no such reference, or failed with an untyped error \
+                 ({e}; see the log for the module's own message)"
+            ),
+            ErrorClass::Unavailable | ErrorClass::Timeout | ErrorClass::Exhausted => format!(
                 "the secret module's backing source could not be reached — an OUTAGE, not a \
-                 configuration error"
-                    .to_string()
-            }
-            SecretError::Denied => "the secret module REFUSED the caller permission to read this \
-                                    reference — a configuration/policy error, not an outage"
-                .to_string(),
-            SecretError::Malformed => format!(
-                "the secret reference is outside the module's grammar ({}): {settings_json}",
+                 configuration error ({e})"
+            ),
+            ErrorClass::Denied => format!(
+                "the secret module REFUSED the caller permission to read this reference — a \
+                 configuration/policy error, not an outage ({e})"
+            ),
+            ErrorClass::Malformed => format!(
+                "the secret reference is outside the module's grammar ({}): {settings_json} ({e})",
                 module.ref_grammar()
             ),
-            SecretError::NotAuthentic => {
-                "the secret module returned bytes that did not authenticate".to_string()
+            ErrorClass::Integrity | ErrorClass::Rejected | ErrorClass::Conflict => {
+                format!("the secret module returned bytes that did not authenticate ({e})")
             }
         })
+}
+
+/// THE WIRE CATALOG: the codes the loader mints for a plugin that shipped none.
+///
+/// A plugin built before the structured error existed says a token and a string. The token
+/// becomes a class and a `wire.*` code; this is the catalog that declares those codes, so the
+/// host renders them through the same reason table as a plugin's own, in the caller's locale,
+/// rather than through a second path for old plugins. One default locale, five codes.
+pub fn wire_catalog() -> &'static busbar_contract::Catalog {
+    use busbar_contract::{Catalog, CatalogEntry, Template};
+    static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let mut catalog = Catalog::empty("en");
+        for (code, text) in [
+            ("wire.not_found", "the reference does not resolve"),
+            (
+                "wire.unavailable",
+                "the backing source could not be reached",
+            ),
+            (
+                "wire.denied",
+                "the caller is not permitted to read this reference",
+            ),
+            (
+                "wire.invalid",
+                "the reference is not in the plugin's grammar",
+            ),
+            ("wire.internal", "the plugin failed without saying why"),
+        ] {
+            let mut templates = busbar_contract::BoundedVec::new();
+            let _ = templates.push(Template {
+                locale: "en".into(),
+                text: text.into(),
+            });
+            let _ = catalog.entries.push(CatalogEntry {
+                code: code.into(),
+                templates,
+            });
+        }
+        catalog
+            .check()
+            .expect("the wire catalog is well-formed by construction");
+        catalog
+    })
+}
+
+/// An operation `SECRET_ABI_VERSION` 1 does not carry: `Resolve` is the wire's one verb, so the
+/// other three faces of the kind are answered as not found, under the wire's own code.
+fn not_on_the_wire(op: &str) -> PluginError {
+    PluginError::new(ErrorClass::NotFound, "wire.not_found")
+        .with_message(format!("`{op}` is not an operation of the secret wire"))
+}
+
+impl DynSecret {
+    /// THE LOG PATH: the five fields, verbatim, beside the plugin that said them. Nothing here
+    /// renders — rendering is the reason table's, in the caller's locale — this is the record.
+    fn record(&self, e: PluginError) -> PluginError {
+        tracing::warn!(
+            plugin = %self.raw.path,
+            class = %e.class,
+            code = %e.code,
+            params = ?e.params.as_slice(),
+            developer_message = %e.developer_message,
+            advisory = ?e.advisory,
+            "secret plugin reported a failure"
+        );
+        e
+    }
 }
 
 impl std::fmt::Debug for DynSecret {
