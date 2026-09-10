@@ -5,7 +5,7 @@
 # token; if it could name a transport it would grow a second opinion about what a credential is. So
 # the only edge out of this crate is `busbar-caps`, which is where the token and the answer type
 # live. Everything the chain needs from the outside — the header carriers, the credential digest,
-# the key verifier, the revocation set — arrives as a trait the caller implements.
+# the virtual-key directory — arrives as a trait the caller implements.
 [package]
 name = "busbar-unit-auth"
 version = "1.6.0"

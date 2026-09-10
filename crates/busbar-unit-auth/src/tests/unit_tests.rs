@@ -39,7 +39,7 @@ fn anonymous_renders_as_the_literal_word() {
         candidate: None,
         ..request()
     };
-    let d = auth.resolve(&req, None, None, None, None, &token);
+    let d = auth.resolve(&req, None, None, None, &token);
     let principal = d.into_result(&seal).expect("the open door admits");
     assert_eq!(
         principal
@@ -59,7 +59,7 @@ fn a_denied_chain_refuses_at_the_authenticate_step() {
         vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
         false,
     ));
-    let d = auth.resolve(&request(), None, None, None, None, &token);
+    let d = auth.resolve(&request(), None, None, None, &token);
     let refusal = d.into_result(&seal).expect_err("an all-pass chain denies");
     assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
     assert_eq!(
@@ -79,7 +79,7 @@ fn a_plane_may_only_narrow_within_the_claims_alternatives() {
         declared_schemes: &["bearer", "signature"],
         ..request()
     };
-    let d = auth.resolve(&req, None, None, None, None, &token);
+    let d = auth.resolve(&req, None, None, None, &token);
     let refusal = d
         .into_result(&seal)
         .expect_err("an undeclared scheme is refused");
@@ -92,7 +92,7 @@ fn a_plane_may_only_narrow_within_the_claims_alternatives() {
         declared_schemes: &["bearer", "signature"],
         ..request()
     };
-    let d = auth.resolve(&req, None, None, None, None, &token);
+    let d = auth.resolve(&req, None, None, None, &token);
     assert!(d.into_result(&seal).is_ok());
 }
 
@@ -115,7 +115,7 @@ fn a_challenge_is_only_offered_inside_a_handshake_unit() {
     };
     let pending = Challenge::open(b"nonce".to_vec(), bounds);
     let offered = auth
-        .resolve(&req, None, None, None, Some(pending), &token)
+        .resolve(&req, None, None, Some(pending), &token)
         .into_result(&seal)
         .expect("a handshake unit is offered the round");
     assert!(matches!(offered, busbar_caps::Authenticated::Challenge(_)));
@@ -123,7 +123,7 @@ fn a_challenge_is_only_offered_inside_a_handshake_unit() {
     // Outside one, the chain's own verdict stands.
     let (seal, token) = seal_and_token();
     let pending = Challenge::open(b"nonce".to_vec(), bounds);
-    let d = auth.resolve(&request(), None, None, None, Some(pending), &token);
+    let d = auth.resolve(&request(), None, None, Some(pending), &token);
     assert_eq!(
         d.into_result(&seal).expect_err("all-pass denies").reason(),
         ReasonCode::Unauthenticated
@@ -146,7 +146,7 @@ fn an_exhausted_exchange_ends_the_unit() {
         },
     );
     assert!(spent.exhausted(), "one round, and it was spent opening");
-    let d = auth.resolve(&req, None, None, None, Some(spent), &token);
+    let d = auth.resolve(&req, None, None, Some(spent), &token);
     assert_eq!(
         d.into_result(&seal).expect_err("exhausted").reason(),
         ReasonCode::ChallengeExhausted
@@ -179,7 +179,18 @@ fn a_challenge_advances_within_its_bounds_and_then_stops() {
 #[test]
 fn revocation_gates_a_new_unit_and_not_one_in_flight() {
     struct AllRevoked;
-    impl crate::chain::RevocationView for AllRevoked {
+    impl busbar_contract::VirtualKeyDirectory for AllRevoked {
+        fn verify(
+            &self,
+            _c: &str,
+            _now: u64,
+            _aud: Option<&str>,
+        ) -> Option<busbar_contract::KeyFacts> {
+            None
+        }
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
         fn is_revoked(&self, _credential: &str) -> bool {
             true
         }
@@ -196,7 +207,7 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
     ));
 
     let (seal, token) = seal_and_token();
-    let d = auth.resolve(&request(), None, None, Some(&AllRevoked), None, &token);
+    let d = auth.resolve(&request(), None, Some(&AllRevoked), None, &token);
     assert_eq!(
         d.into_result(&seal)
             .expect_err("a new unit is gated")
@@ -209,7 +220,7 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
         new_unit: false,
         ..request()
     };
-    let d = auth.resolve(&in_flight, None, None, Some(&AllRevoked), None, &token);
+    let d = auth.resolve(&in_flight, None, Some(&AllRevoked), None, &token);
     assert_eq!(
         d.into_result(&seal)
             .expect("a unit already in flight runs to its end")
@@ -234,7 +245,18 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
 #[test]
 fn the_revocation_gate_does_not_distinguish_refusals_the_chain_already_made() {
     struct AllRevoked;
-    impl crate::chain::RevocationView for AllRevoked {
+    impl busbar_contract::VirtualKeyDirectory for AllRevoked {
+        fn verify(
+            &self,
+            _c: &str,
+            _now: u64,
+            _aud: Option<&str>,
+        ) -> Option<busbar_contract::KeyFacts> {
+            None
+        }
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
         fn is_revoked(&self, _credential: &str) -> bool {
             true
         }
@@ -249,7 +271,7 @@ fn the_revocation_gate_does_not_distinguish_refusals_the_chain_already_made() {
     ));
     assert_eq!(
         denies
-            .resolve(&request(), None, None, Some(&AllRevoked), None, &token)
+            .resolve(&request(), None, Some(&AllRevoked), None, &token)
             .into_result(&seal)
             .expect_err("an all-pass chain denies")
             .reason(),
@@ -263,7 +285,7 @@ fn the_revocation_gate_does_not_distinguish_refusals_the_chain_already_made() {
     let (seal, token) = seal_and_token();
     let open = Auth::new(AuthChain::new(Vec::new(), false));
     assert_eq!(
-        open.resolve(&request(), None, None, Some(&AllRevoked), None, &token)
+        open.resolve(&request(), None, Some(&AllRevoked), None, &token)
             .into_result(&seal)
             .expect("the open door admits anonymously")
             .principal()
@@ -288,7 +310,7 @@ fn a_module_may_not_synthesize_a_reserved_identity() {
             )],
             false,
         ));
-        let d = auth.resolve(&request(), None, None, None, None, &token);
+        let d = auth.resolve(&request(), None, None, None, &token);
         assert_eq!(
             d.into_result(&seal)
                 .expect_err("a reserved id is refused")
@@ -356,16 +378,26 @@ fn satisfaction_is_a_decided_table_not_a_declaration_order() {
 #[test]
 fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
     struct Resolves;
-    impl crate::chain::KeyVerifier for Resolves {
-        fn verify_token(
+    impl busbar_contract::VirtualKeyDirectory for Resolves {
+        fn is_revoked(&self, _credential: &str) -> bool {
+            false
+        }
+        fn operator_token_hash(&self) -> Option<String> {
+            None
+        }
+        fn verify(
             &self,
             _token: &str,
             _now: u64,
             _expected_aud: Option<&str>,
-        ) -> Option<crate::chain::ResolvedKey> {
-            Some(crate::chain::ResolvedKey {
+        ) -> Option<busbar_contract::KeyFacts> {
+            Some(busbar_contract::KeyFacts {
                 id: "vk_live".to_string(),
                 name: "live".to_string(),
+                scopes: None,
+                enabled: true,
+                expires_at: None,
+                deleted_at: None,
             })
         }
     }
@@ -373,7 +405,7 @@ fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
     // The keys arm: a `vk_` id is the key's OWN id, and it is admitted.
     let (seal, token) = seal_and_token();
     let auth = Auth::new(AuthChain::new(Vec::new(), true));
-    let d = auth.resolve(&request(), None, Some(&Resolves), None, None, &token);
+    let d = auth.resolve(&request(), None, Some(&Resolves), None, &token);
     assert_eq!(
         d.into_result(&seal)
             .expect("a resolved key is an identity the directory issued")
@@ -395,7 +427,7 @@ fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
         )],
         false,
     ));
-    let d = auth.resolve(&request(), None, None, None, None, &token);
+    let d = auth.resolve(&request(), None, None, None, &token);
     assert_eq!(
         d.into_result(&seal)
             .expect_err("a module may not name a key")
