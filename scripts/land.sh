@@ -445,21 +445,72 @@ land_xtask_touched() {  # $1 = newline-separated touched paths
 # `LAND_GATE_SELFTESTS=all` forces the whole battery back on for an operator who wants it.
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-# THE xtask PACKAGE'S OWN BLOCK IN Cargo.lock, ISOLATED. A lockfile bump that moves some leaf
+# THE xtask PACKAGE'S RESOLVED DEPENDENCY CLOSURE, ISOLATED. A lockfile bump that moves some leaf
 # crate's version is not a change to the gate runner, and treating `Cargo.lock` as plumbing wholesale
-# would put the 4900 s battery on every dependency bump in the queue. A bump that moves xtask's own
-# entry IS a change to the gate runner. Paragraph mode, because that is the shape of a Cargo.lock:
-# `[[package]]` stanzas separated by blank lines.
-land_lock_xtask_block() { # $1 = a Cargo.lock path (a missing file is an empty block)
+# would put the 4900 s battery on every dependency bump in the queue. A bump that moves the code the
+# gate runner is BUILT FROM is a change to it.
+#
+# AUDIT NOTE-31: WHY THE STANZA IS NOT THE UNIT. This compared xtask's own `[[package]]` stanza text.
+# A stanza lists its DIRECT dependencies by name — `"anyhow",` — and a name has no version in it, so
+# a bump to anything transitive (memchr under anyhow, serde under toml) leaves that stanza BYTE-
+# IDENTICAL. The battery stayed narrow while the gate runner was rebuilt out of different code than
+# the one whose self-tests were last proven, which is the same silence the battery narrowing exists
+# to avoid paying for: a landing that says "this gate is still good" on evidence from other code.
+#
+# So the unit is the CLOSURE: start at xtask's stanza, walk `dependencies` transitively, and print
+# the identity — name, version, source, checksum — of every crate reached, in sorted order. Two
+# lockfiles agree here exactly when xtask compiles from the same resolved crates in both. Cargo.lock
+# is a flat list of stanzas separated by blank lines, so this is a single paragraph-mode awk pass
+# and a breadth-first walk over what it read: no `cargo metadata`, no network, no toolchain — the
+# self-test drives it over fixture lockfiles on a box with neither.
+#
+# DEPENDENCIES ARE MATCHED BY NAME, not by name+version. A lockfile that carries two versions of one
+# crate puts BOTH in the closure when either is reachable. That is deliberate and conservative: the
+# cost of the wider answer is a battery that runs when it did not have to, and the cost of the
+# narrower one is the failure this note is about.
+land_lock_xtask_closure() { # $1 = a Cargo.lock path (a missing file, or one with no xtask, is empty)
   [ -f "$1" ] || { printf ''; return 0; }
-  awk 'BEGIN{RS="";ORS="\n\n"} /(^|\n)name = "xtask"(\n|$)/ {print}' "$1" 2>/dev/null || true
+  awk 'BEGIN{RS=""}
+    {
+      n = split($0, L, "\n"); nm = ""; txt = ""; deps = ""; indep = 0
+      for (i = 1; i <= n; i++) {
+        l = L[i]
+        if (indep) {
+          if (l ~ /^\]/) { indep = 0 }
+          else { d = l; gsub(/^[ \t]*"/, "", d); gsub(/",?[ \t]*$/, "", d); split(d, P, " ")
+                 if (P[1] != "") deps = deps " " P[1] }
+          continue
+        }
+        if (l ~ /^dependencies = \[/) { indep = 1; continue }
+        if (l ~ /^name = "/) { nm = l; sub(/^name = "/, "", nm); sub(/"$/, "", nm) }
+        if (l ~ /^(name|version|source|checksum) = /) txt = txt l "\n"
+      }
+      # a name can carry two stanzas (two versions of one crate); keep both, in file order
+      if (nm != "") { TXT[nm] = TXT[nm] txt; DEP[nm] = DEP[nm] deps }
+    }
+    END{
+      if (!("xtask" in TXT)) exit 0
+      seen["xtask"] = 1; q[1] = "xtask"; qn = 1
+      for (qi = 1; qi <= qn; qi++) {
+        m = split(DEP[q[qi]], D, " ")
+        for (j = 1; j <= m; j++) {
+          d = D[j]
+          if (d != "" && !(d in seen) && (d in TXT)) { seen[d] = 1; q[++qn] = d }
+        }
+      }
+      k = 0; for (nm in seen) out[++k] = nm
+      for (i = 2; i <= k; i++) { v = out[i]; j = i - 1
+        while (j >= 1 && out[j] > v) { out[j + 1] = out[j]; j-- }
+        out[j + 1] = v }
+      for (i = 1; i <= k; i++) printf "%s", TXT[out[i]]
+    }' "$1" 2>/dev/null || true
 }
-land_lock_xtask_moved() { # $1 = tree  $2 = base sha; rc 0 when xtask's lock entry differs from base
+land_lock_xtask_moved() { # $1 = tree  $2 = base sha; rc 0 when xtask's resolved closure differs
   local a b tmp
   tmp="$(mktemp "${TMPDIR:-/tmp}/land-lock.XXXXXX")" || return 1
   git -C "$1" show "$2:Cargo.lock" >"$tmp" 2>/dev/null || : >"$tmp"
-  a="$(land_lock_xtask_block "$tmp")"
-  b="$(land_lock_xtask_block "$1/Cargo.lock")"
+  a="$(land_lock_xtask_closure "$tmp")"
+  b="$(land_lock_xtask_closure "$1/Cargo.lock")"
   rm -f "$tmp"
   [ "$a" != "$b" ]
 }
@@ -2064,7 +2115,7 @@ land_selftest() {
   _seteq "qa/construction.toml owes construction"   "construction" "qa/construction.toml"
   _seteq "another qa/*.toml owes the ceiling reader" "construction" "qa/segments.toml"
   # THE LOCKFILE. A leaf-crate bump is not a change to the gate runner; xtask's own entry is.
-  _seteq "a Cargo.lock whose xtask entry moved owes ALL" "ALL" "Cargo.lock" 1
+  _seteq "a Cargo.lock whose xtask CLOSURE moved owes ALL" "ALL" "Cargo.lock" 1
   _seteq "  ...one that only moved a leaf does not"  ""   "Cargo.lock" 0
   # THE OPERATOR'S OVERRIDE.
   ( export LAND_GATE_SELFTESTS=all
@@ -2081,20 +2132,56 @@ land_selftest() {
   _st "wanted: the empty set holds nothing"    1 land_gate_battery_wanted kind-isolation ""
   _st "wanted: a prefix is not a member"       1 land_gate_battery_wanted kind "kind-isolation"
 
-  # THE LOCKFILE READER, over two real-shaped lockfiles. A grep for `xtask` anywhere in the diff
-  # would fire on every crate that merely DEPENDS on nothing of the sort; the block is the unit.
+  # THE LOCKFILE READER, over real-shaped lockfiles. A grep for `xtask` anywhere in the diff would
+  # fire on every crate that merely DEPENDS on nothing of the sort; the RESOLVED CLOSURE is the unit.
+  #
+  # AUDIT NOTE-31. This used to compare xtask's own `[[package]]` stanza text, and a stanza names its
+  # DIRECT dependencies by name — usually without a version. So a bump to anything TRANSITIVE under
+  # xtask (memchr under anyhow, serde under toml) left that stanza byte-identical, the battery stayed
+  # narrow, and the gate runner was rebuilt out of different code than the one whose self-tests were
+  # last proven. `land_lock_xtask_closure` walks the `dependencies` lists from the xtask stanza
+  # transitively and hashes what it reaches — name, version, source and checksum of every crate the
+  # gate runner is actually built from — so a bump anywhere INSIDE the closure moves it and a bump
+  # OUTSIDE it still does not. The fixtures below are that shape: xtask -> anyhow -> memchr and
+  # xtask -> toml -> serde, with zerocopy and aho-corasick in the lockfile and outside the closure.
   mkdir -p "$root/lock"
-  printf '[[package]]\nname = "aho-corasick"\nversion = "1.1.3"\n\n[[package]]\nname = "xtask"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n]\n\n[[package]]\nname = "zerocopy"\nversion = "0.7.35"\n' >"$root/lock/base.toml"
-  printf '[[package]]\nname = "aho-corasick"\nversion = "1.1.4"\n\n[[package]]\nname = "xtask"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n]\n\n[[package]]\nname = "zerocopy"\nversion = "0.8.0"\n' >"$root/lock/leaf.toml"
-  printf '[[package]]\nname = "aho-corasick"\nversion = "1.1.3"\n\n[[package]]\nname = "xtask"\nversion = "0.1.0"\ndependencies = [\n "anyhow",\n "toml",\n]\n\n[[package]]\nname = "zerocopy"\nversion = "0.7.35"\n' >"$root/lock/xt.toml"
+  _lockfile() { # _lockfile <path> <anyhow-ver> <memchr-ver> <zerocopy-ver> <xtask-deps...>
+    local out="$1" anyhow="$2" memchr="$3" zerocopy="$4"; shift 4
+    { printf '[[package]]\nname = "aho-corasick"\nversion = "1.1.3"\ndependencies = [\n "memchr",\n]\n\n'
+      printf '[[package]]\nname = "anyhow"\nversion = "%s"\ndependencies = [\n "memchr",\n]\n\n' "$anyhow"
+      printf '[[package]]\nname = "memchr"\nversion = "%s"\n\n' "$memchr"
+      printf '[[package]]\nname = "serde"\nversion = "1.0.210"\n\n'
+      printf '[[package]]\nname = "toml"\nversion = "0.8.19"\ndependencies = [\n "serde",\n]\n\n'
+      printf '[[package]]\nname = "xtask"\nversion = "0.1.0"\ndependencies = [\n'
+      local d; for d in "$@"; do printf ' "%s",\n' "$d"; done
+      printf ']\n\n[[package]]\nname = "zerocopy"\nversion = "%s"\n' "$zerocopy"
+    } >"$out"
+  }
+  _lockfile "$root/lock/base.toml"    1.0.89 2.7.4 0.7.35 anyhow toml
+  # xtask's own stanza is BYTE-IDENTICAL in this one: only memchr, two hops down, moved.
+  _lockfile "$root/lock/deep.toml"    1.0.89 2.7.5 0.7.35 anyhow toml
+  # a direct dependency of xtask moves, its stanza still unchanged (the version lives in ITS stanza)
+  _lockfile "$root/lock/direct.toml"  1.0.90 2.7.4 0.7.35 anyhow toml
+  # nothing in the closure moves; zerocopy is in the lockfile and nowhere under xtask
+  _lockfile "$root/lock/outside.toml" 1.0.89 2.7.4 0.8.0  anyhow toml
+  # xtask's own dependency LIST grows — the one case the old stanza comparison could see
+  _lockfile "$root/lock/xt.toml"      1.0.89 2.7.4 0.7.35 anyhow toml zerocopy
+  printf '[[package]]\nname = "zerocopy"\nversion = "0.7.35"\n' >"$root/lock/none.toml"
   _stlock() { if [ "$2" = "$3" ]; then printf '  ok   %-46s\n' "$1"; else printf '  FAIL %-46s (wanted [%s], got [%s])\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi; }
-  _stlock "the lock block is only xtask's stanza" 1 "$(land_lock_xtask_block "$root/lock/base.toml" | grep -c '^name = ')"
-  _stlock "  ...and it is xtask's"      'name = "xtask"' "$(land_lock_xtask_block "$root/lock/base.toml" | grep '^name = ')"
-  _stlock "a leaf-only bump leaves it unmoved" same \
-     "$([ "$(land_lock_xtask_block "$root/lock/base.toml")" = "$(land_lock_xtask_block "$root/lock/leaf.toml")" ] && echo same || echo moved)"
-  _stlock "an xtask dependency bump moves it" moved \
-     "$([ "$(land_lock_xtask_block "$root/lock/base.toml")" = "$(land_lock_xtask_block "$root/lock/xt.toml")" ] && echo same || echo moved)"
-  _stlock "a lockfile with no xtask stanza is empty" "" "$(land_lock_xtask_block "$root/lock/none.toml")"
+  _moved() { [ "$(land_lock_xtask_closure "$1")" = "$(land_lock_xtask_closure "$2")" ] && echo same || echo moved; }
+  _stlock "the closure holds xtask and what it reaches" "anyhow memchr serde toml xtask" \
+     "$(land_lock_xtask_closure "$root/lock/base.toml" | sed -n 's/^name = "\(.*\)"$/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+  _stlock "  ...and NOT a crate outside it" 0 "$(land_lock_xtask_closure "$root/lock/base.toml" | grep -c zerocopy)"
+  _stlock "a bump OUTSIDE the closure leaves it unmoved" same "$(_moved "$root/lock/base.toml" "$root/lock/outside.toml")"
+  # THE CASE THE STANZA COMPARISON COULD NOT SEE (AUDIT NOTE-31): two hops down, xtask's own
+  # stanza byte-identical, and the gate runner is nevertheless built from different code.
+  _stlock "a TRANSITIVE bump under xtask moves it"    moved "$(_moved "$root/lock/base.toml" "$root/lock/deep.toml")"
+  _stlock "  ...even though xtask's own stanza did not" same \
+     "$(diff <(awk 'BEGIN{RS="";ORS="\n\n"} /(^|\n)name = "xtask"(\n|$)/' "$root/lock/base.toml") \
+             <(awk 'BEGIN{RS="";ORS="\n\n"} /(^|\n)name = "xtask"(\n|$)/' "$root/lock/deep.toml") >/dev/null && echo same || echo moved)"
+  _stlock "a DIRECT dependency bump moves it"         moved "$(_moved "$root/lock/base.toml" "$root/lock/direct.toml")"
+  _stlock "xtask's own dependency list moves it"      moved "$(_moved "$root/lock/base.toml" "$root/lock/xt.toml")"
+  _stlock "a lockfile with no xtask stanza is empty"  ""    "$(land_lock_xtask_closure "$root/lock/none.toml")"
 
   # AND THE LEGS THEMSELVES READ THE SET. Source assertions, because the alternative is a two-hour
   # landing: what is proven here is that the three conditions are the battery set and nothing else.
