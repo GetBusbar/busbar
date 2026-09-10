@@ -128,6 +128,19 @@ STREAM_UPSTREAM_ERROR_OUTCOME = (
     "stream_upstream_error",
     "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event")
 
+# THE TWO MID-STREAM FAULT SHAPES, both from the pinned mock's own verb vocabulary. They are not
+# two spellings of one thing: `stream-error` is a failure the upstream ANNOUNCES after the response
+# has begun (so the door has an error to translate into its own dialect), `cut` is a failure it does
+# not announce at all (so the door has to invent the terminal itself, or not). What busbar does with
+# each is a different code path and a different answer to "who pays for the tokens already sent".
+STREAM_FAULTS = [
+    ("stream-error", "the upstream sends the dialect's normal frames up to and including the text "
+                     "delta, then an IN-BAND error event in that dialect's own error shape, and no "
+                     "terminal usage/[DONE] frame -- the 5xx that arrives too late to be a status"),
+    ("cut", "headers, the first frame, then the socket dies with no error at all -- the reset, where "
+            "the door is the only party that can say anything about the failure"),
+]
+
 # TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT CARRY. `ok` sends a bare `ping` and the mock answers with
 # bare text, so two whole surfaces are unrecorded: an ANSWER that annotates its text with a source,
 # and a REQUEST whose content array mixes a cache marker with a native attachment. Both are ordinary
@@ -218,9 +231,26 @@ def llm_cells(inv: dict) -> list[dict]:
     # dialect, and (money) whether the tokens already delivered are billed or refunded — is
     # unrecorded. One cell per BACKEND on its own door (the diagonal): the backend decides what the
     # error looks like on the wire, the door decides what the client is told, and the diagonal
-    # covers all six of each. SKIP-able until the recorder drives mock-upstream.py's `stream-error`
-    # verb (added alongside this cell); the golden is recorded from the published 1.5.5 binary by
-    # the integrator, so nothing is recorded here.
+    # covers all six of each.
+    #
+    # THESE SIX STAY `needs_fixture`, AND THE REASON IS NOT THE MOCK. The mock grew the
+    # `stream-error` verb for all six dialects and the PINNED tool (oracle.pin v0.3.7) ships it. What
+    # is missing is the RECORDER, and it is missing twice, on the two independent legs of the cell:
+    #   1. record.sh's built-in `llm` driver writes the mock control for exactly ONE outcome —
+    #      `if [ "$outcome" = upstream_down ]` -> "down". A cell's own `mock_control` is read by the
+    #      `http` and `concurrent` drivers only. On an llm cell it is dead, so the mock answers the
+    #      HEALTHY 200 — the same silent-pass shape the gemini tool-use note below describes.
+    #   2. build-request.py decides streaming by `oc in ("ok_stream", "ok_stream_array")`.
+    #      `stream_upstream_error` is in neither tuple, so the request it builds is BUFFERED: not a
+    #      stream at all, and a buffered request can never fail mid-stream.
+    # MEASURED, NOT ARGUED (2026-09-10, published 1.5.5, aarch64-apple-darwin): with `needs_fixture`
+    # lifted, all six record `HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}` and a
+    # buffered `chat.completion` body — the happy path frozen under the name of the failure, and
+    # frozen identically on the candidate, so the cell would prove the opposite of what it claims.
+    # Recording them therefore needs a TOOL release that teaches the llm driver `mock_control` and
+    # build-request.py the streaming outcome; that is named in accepted-gaps.json and owed to a pin
+    # bump, not to anything in this tree. The behaviour itself is pinned TODAY by the
+    # `llm.stream|<dialect>|<fault>` family above, in the half of the harness busbar owns.
     # gemini is not in the inventory's `streams` set (its streaming is the path-selected
     # streamGenerateContent framing, not a `streaming` field), but it streams, and a mid-stream
     # failure is exactly as unrecorded there — so it gets the cell too: all six backends.
@@ -1409,6 +1439,52 @@ def auth_lifecycle_cells() -> list[dict]:
     ]
 
 
+def llm_stream_fault_cells(inv: dict) -> list[dict]:
+    """`llm.stream|<dialect>|<fault>`: THE MID-STREAM UPSTREAM FAILURE, one cell per backend on its
+    own door, per fault shape. Script driver (scripts/llm-stream-fault.sh), llm plane, its own
+    self-contained boot -- the same shape teller|* and cooldown|trip-then-serve use.
+
+    THE HOLE THIS CLOSES. Every recorded upstream failure in the corpus refuses BEFORE a byte of the
+    answer has left the door: `upstream_down` is a status code, and a status code is still a choice.
+    Once the door has written `200` and the first frame that choice is spent -- the failure has to be
+    told in the stream's own dialect, the frames already delivered have to be billed or refunded, and
+    the breaker has to decide whether a lane that answered and then died is a failure. None of that
+    is in any golden. busbar-unit-egress has never served a request and the engine's egress half is
+    moving into it (L2 MOVE 7); a first activation on the money path cannot be proven byte-identical
+    against a recording that stops at the first byte.
+
+    WHY NOT THE SIX `llm|<d>|<d>|request|stream_upstream_error` ROWS BELOW. Because under the PINNED
+    recorder they cannot record what they name, and they fail green. See the comment on those rows:
+    record.sh's llm driver writes the mock control for `upstream_down` and nothing else, and
+    build-request.py only streams for `ok_stream`/`ok_stream_array`. Measured against 1.5.5 with
+    their `needs_fixture` lifted, all six recorded the BUFFERED HAPPY PATH -- `usage delta
+    {"requests":1,"spend_cents":250,"tokens":18}` -- under the name of the failure. Those rows stay a
+    NAMED gap owed to a tool release; this family pins the behaviour in the half busbar owns.
+
+    DIALECT-DRIVEN, NEVER DIALECT-SPECIFIC. The list comes from the field inventory, exactly as
+    llm_cells' does, so a seventh backend is a new cell the day it is inventoried and nobody is in
+    the loop. The driver is one script that takes the dialect as an argument and builds its request
+    with the same builder the `ok_stream` golden used; nothing about a dialect is written here.
+    """
+    dialects = sorted(inv["dialects"]) if isinstance(inv["dialects"], list) else sorted(inv["dialects"].keys())
+    cells = []
+    for d in dialects:
+        for fault, why in STREAM_FAULTS:
+            cells.append({
+                "id": f"llm.stream|{d}|{fault}", "plane": "llm", "family": "llm.stream",
+                "driver": "script", "script": {"name": "llm-stream-fault.sh", "args": [d, fault]},
+                "outcome": "ok", "weight": 10,
+                "ingress_dialect": d, "egress_dialect": d, "cross_protocol": False,
+                "why": f"mid-stream upstream failure on the {d} door, {why} -- the cell pins what "
+                       f"the caller was told after the 200 (status, headers, every byte including "
+                       f"the terminal frame or its absence), the LEDGER ROW drawn for a stream that "
+                       f"delivered text and then died, a second usage read after a settle pause (a "
+                       f"late or doubled posting), what the breaker recorded, and what busbar sent "
+                       f"upstream",
+            })
+    return cells
+
+
 def teller_cells() -> list[dict]:
     """`teller`: H2 -- one named cell per Teller step (ARCHITECTURE.md #2.2), llm plane, each its own
     self-contained boot (script driver, mirrors auth.lifecycle's own-boot shape) so a step's cell can
@@ -1770,6 +1846,10 @@ def llm_wire_cells() -> list[dict]:
     return llm_cells(json.loads(FIELD_INV.read_text()))
 
 
+def llm_stream_fault_wire_cells() -> list[dict]:
+    return llm_stream_fault_cells(json.loads(FIELD_INV.read_text()))
+
+
 def protocol_wire_cells() -> list[dict]:
     return protocol_cells(json.loads(METHOD_INV.read_text()))
 
@@ -1777,6 +1857,7 @@ def protocol_wire_cells() -> list[dict]:
 # The 22 builders, in order. The engine calls them all and sorts the union by id.
 BUILDERS = [
     ("llm.wire", llm_wire_cells),
+    ("llm.stream", llm_stream_fault_wire_cells),
     ("protocol", protocol_wire_cells),
     ("cli", cli_cells),
     ("config.migrate", migrate_cells),
