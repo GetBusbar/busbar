@@ -344,6 +344,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   Both now surface a real error to the client, record the upstream fault on the breaker, and are
   not billed as completions. The content-moderation `ERROR_TOXIC` stop is untouched: a safety
   refusal is a correctly-served response and must not fault a lane. No successful stream changes.
+- **The fabricated `response.failed` terminal on a mid-stream cut carries the full Responses
+  object; 1.5.5 rendered a partial one.** On a mid-stream cut on the Responses door, the upstream
+  socket dies with no error at all; both 1.5.5 and 1.6.0 answer 200 `text/event-stream` and
+  fabricate their own `response.failed` terminal frame — the upstream never sent one. 1.6.0's
+  fabricated frame is a JSON superset of 1.5.5's: 0 keys changed, 0 removed, 8 added
+  (`incomplete_details`, `instructions`, `metadata`, `parallel_tool_calls`, `temperature`,
+  `tool_choice`, `tools`, `top_p`). Status, headers, frame count, the client's transport outcome
+  and every billing figure are unchanged.
 
 ### Breaking
 
