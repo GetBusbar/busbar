@@ -1,8 +1,9 @@
 # D36 — the dialect split
 
 **Status:** the pattern, established by `busbar-plane-llm-openai`, the first crate of the dialect
-kind. Written to be COPIED: the next eight dialects should be a manifest, four files and a battery,
-with nothing decided again.
+kind, and COPIED once — by `busbar-plane-llm-responses`, whose landing is section 9. Written to be
+copied: the next seven dialects should be a manifest, four files and a battery, with nothing decided
+again. The second one was, and section 9 is what it cost.
 
 ---
 
@@ -202,9 +203,9 @@ name read OFF THE REGISTERED ROW rather than written in the test.
    `ARCHITECTURE_ALLOWED`, so the second dialect adds rows and no rule.
 7. `cargo xtask gate kind-isolation` and its ship twin.
 
-**The eight that follow, and what each costs.** `responses` (rung 10; `/input`,
-`/max_output_tokens`, four different meter pointers — the reason it is a SECOND crate and not a
-branch in the first). `anthropic` (header-detected: `anthropic-version`, `anthropic-beta`,
+**The eight that follow, and what each costs.** `responses` — LANDED; see section 9 — (rung 10;
+`/input`, `/max_output_tokens`, four different meter pointers — the reason it is a SECOND crate and
+not a branch in the first). `anthropic` (header-detected: `anthropic-version`, `anthropic-beta`,
 `x-api-key`). `gemini` (`:generateContent` and its four siblings, plus the `/v1beta/models` tail —
 the loosest path family of the six). `bedrock` (`HeaderPrefix("authorization",
 "AWS4-HMAC-SHA256")` and `/converse`; the only one whose credential scheme is not bearer-shaped).
@@ -240,3 +241,75 @@ So there are exactly two ways out, and both are owner decisions rather than land
 
 Until one of the two lands, `kind-isolation:matrix` is a standing red for the dialect column, and it
 should be read as the size of the drain rather than as a defect in this landing.
+
+---
+
+## 9. The checklist, ticked for `responses`
+
+`busbar-plane-llm-responses` is the second crate of the kind and the first COPY of this pattern.
+The checklist of section 7, item by item, with what each cost:
+
+1. **The skeleton.** ✅ `crates/busbar-plane-llm-responses/`, the five files of section 3 plus the
+   battery. Two dependencies (`busbar-contract`, `busbar-plane-llm`), no `[dev-dependencies]` table
+   at all, no features. Nothing was decided again; what was chosen is the values a dialect exists to
+   declare.
+2. **Rungs at the numbers they already occupy.** ✅ Rung 10, `PathSuffix("/v1/responses")`, built
+   with the plane's own `claim()` builder.
+3. **The battery of section 6, all fifteen.** ✅ Fifteen of fifteen, red first: the file went in
+   against a crate with no `dialect` module and no type, and rustc refused both imports. Only two
+   cases needed a sentence about the vendor — the cache-WRITE locator (a pointer here where the
+   sibling declares the empty "not reported" string) and the response ceiling (ONE member name here
+   where the sibling declares two). Those two differences are why this is a second crate, so those
+   are the two cases that carry a reason.
+4. **Carve-out + seam as two commits, `golden_parity` byte-identical.** ✅ Eighteen frozen cells:
+   `req_g2r_{plain,tools,inline_data}`, `req_o2r_{plain,tools,attachments}`,
+   `req_r2a_{plain,tools,input_file}`, `resp_a2r_{plain,tool_use,thinking}`,
+   `resp_r2g_{plain,reasoning,function_call}`, `resp_r2o_{plain,reasoning,function_call}`. Proved red
+   by taking the harness fixture back out with the plane's row already gone: both parity cases and
+   three ladder cases panicked. The legacy Responses path in `busbar-llm-codec` is untouched and
+   stays until R5 deletes it — the claim this landing makes is EQUALITY with it over the corpus, not
+   its removal.
+5. **One line of `crates/busbar/Cargo.toml`; one row of `dialects.rs`.** ✅ Exactly that, and not one
+   line of `registry.rs`. The six pinned boot numbers were red first at one below their pins (llm 24
+   of 25, 47 sealed of 48, 62 path-family of 63, 22 of 23, 152 of 153, and the sealed-order row with
+   `llm PathSuffix("/v1/responses")` absent) and all six answer again in the same byte-for-byte
+   order.
+6. **Ledger.** ✅ Three `[[dep]]` rows at `count = "1"`, `verdict = "allowed"` — `busbar ->
+   busbar-plane-llm-responses`, and the dialect's two sinks. **No rule and no table in
+   `xtask/src/gates/kind_isolation.rs` changed**, which is item 6's own prediction coming true: all
+   three classes were already in `ARCHITECTURE_ALLOWED`. No `[[registered]]` row: the four-segment
+   glob names the kind, and a per-crate row would be a second place kind membership is stated.
+7. **The gate and its ship twin.** ✅ 10 of 11 rows PASS. `:matrix` is the standing red of
+   section 8 — this crate mints exactly one cell, `busbar-plane-llm-responses × dialect = 1`, its own
+   package name becoming visible to the census, and the twin shows it in that one cell and no other.
+
+**One boot test was wrong in a way only a second dialect could reveal**, and that is the most
+useful thing this landing found. `the_merged_ladder_answers_for_the_registered_dialect` read
+`dialects::LLM[0]` — a test about the FIRST entry wearing the name of a test about registration. It
+would have gone on passing while a second registered row answered for nobody. It walks every entry
+now, feeds the plane each path rung's own selector text and compares against the name read off the
+row that declared it. **Every later dialect should expect to find one of these**: the first crate of
+a kind cannot tell a loop over a table from a lookup of its only element, and the second crate is
+the first thing that can.
+
+**What the third crate — `anthropic` — needs, beyond a copy of this one.**
+
+- **Header rungs, which neither of the first two has.** Rungs 2 (`anthropic-version`,
+  `anthropic-beta`), 4 (`x-api-key`) and 11 (`PathContains("/v1/messages")`) — three rungs at three
+  numbers, two of them header forms. Two consequences. The battery's `every_claimed_surface_has_a_verb`
+  compares verbs against DISTINCT RUNGS, so three rungs want at least three verbs. And the boot test
+  generalised above skips non-path selectors by design: `anthropic` is the first dialect that will
+  need the header arm, and the `_ => continue` in that match is where it says so rather than being
+  silently skipped — filling it in is part of that landing, not an afterthought.
+- **A `SCHEME_ALT` that is not `bearer`.** Its clients present `api-key`, which the plane declares,
+  so `the_scheme_alternative_is_one_the_plane_declared` is the case that will earn its keep for the
+  first time.
+- **All four meter classes reported, at `/usage/{input,output}_tokens` and the two
+  `cache_{read,creation}_input_tokens` members** — the same SHAPE as `responses` and different
+  spellings, which is precisely the case the positional locator count exists for.
+- **A ceiling with one spelling (`/max_tokens`) that this dialect REQUIRES.** `requires_max_response`
+  reads the legacy codec's `DECLS` by name and this is the dialect it answers `true` for, so the
+  carve-out has to leave that answer unchanged while the plane stops naming the key — the one place
+  where the third carve-out is harder than the second rather than identical to it.
+- **Golden cells in both directions with almost every other dialect**, which makes it the widest
+  parity surface of the six; budget the carve-out commit accordingly.
