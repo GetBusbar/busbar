@@ -16,7 +16,7 @@ pub type SeededCheck = (&'static str, &'static str, &'static str);
 
 pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-0", &[
-        ("gate", "scripts/inventory-coverage.sh", "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red"),
+        ("gate", "xtask/src/gates/inventory_coverage.rs", "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden ledger or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red, and so does a gap entry naming a row that no longer exists or has since been covered"),
     ]),
     ("PB-1", &[
         ("test", "enforce_restricts_reapplies_compliance_tags_across_pools", "a Reject restrict with no eligible lane fails closed; the Weighted arm passes candidates unchanged"),
