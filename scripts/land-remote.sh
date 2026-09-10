@@ -132,6 +132,14 @@ export LAND_ORACLE_PORT_BASE=$(( 40000 + ( $$ % 40 ) * 200 ))
 cd "$HOME/busbar-prove" || { echo "no ~/busbar-prove — ./scripts/prove-remote.sh --setup $(hostname)"; exit 2; }
 git fetch -q prove "+refs/heads/$REF:refs/heads/$REF" "+refs/proof/$REF/*:refs/proof/$REF/*" "+refs/audit-pins/*:refs/audit-pins/*" || exit 2
 git checkout -q -f "$REF" || exit 2
+# THE BASE THE CEILING GATE COMPARES AGAINST IS THE RUNNER'S TIP. `ceilings::base_ref` resolves
+# origin/integration/oracle-phase0 on this checkout; the box's `origin` is the bare repo whose
+# integration branch is whatever was pushed at setup — measured 22:5x: 0998dc6f8, an ancestor of
+# the tip with busbar-core x api at 603 against the tip's 610, so a landing that STRUCK its
+# expired declarations would have been judged as twelve undeclared rises. $REF at this point is
+# exactly the runner's tip (the picks are applied by land.sh afterwards), so it is the base.
+git update-ref refs/remotes/origin/integration/oracle-phase0 "refs/heads/$REF"
+echo "integration base on the box: $(git rev-parse --short origin/integration/oracle-phase0) (= runner tip $(git rev-parse --short "$REF"))"
 git clean -qffdx -e target -e .cargo -e node_modules
 mkdir -p target
 LOG="target/land-remote-$REF.log"; RC="target/land-remote-$REF.rc"
