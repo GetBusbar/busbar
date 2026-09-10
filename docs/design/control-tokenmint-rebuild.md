@@ -209,3 +209,105 @@ why, drain) with the row's own irreducibility as the cite.
 3. **`Kind` in the contract still has no `Control` variant.** The crate implements `Plugin` with a
    kind the contract can name, and `kind-isolation:faces` only refuses the plane/dialect/transport/
    unit entry faces, so that is legal today and is recorded here as the seam the control kind owes.
+
+## The re-pick onto the instruments tip, and the one thing that is still owed to the door
+
+**Status: RE-PICKED AND LEDGERED.** The whole series was re-picked onto
+`origin/keep-gate-instruments-on-tip` @ `50b5da4b2` — the tip that carries the `[[minted]]`,
+`[[renamed]]` and `[[gate.census_retired]]` doors — with E1's re-keyed plugin-error series and G1'
+beneath it. The judge is byte-identical on the new base: 29 cells, 0 diverging, at every prefix.
+
+### The crate mints ONE cell, and seven drained
+
+The previous slot ended with two minted `[[cell]]` rows and no door to put them through. There is a
+door now, and only one row goes through it.
+
+* **`x plane` was 27 and is ZERO.** Every hit was the bare instance id of a sibling data plane in
+  text that did not need it: the RFC 8707 protected-resource fixtures in the crate's own tests
+  (`mcp:read`, `mcp:write`, a `https://gw.example.com/mcp` audience) and doc comments that cited a
+  sibling row's constants and its protocol revision by name to explain this crate's own. The
+  fixtures are arbitrary to what those tests prove — they prove that a self-registered client
+  cannot ask for more than the operator's `default_grant`, and the scope's spelling is not the
+  subject — so they now read plane-neutral literals. All 28 of the crate's tests pass behind the
+  rename. This is the same move the landing already made for `admin` -> `elevated`.
+* **`x dialect` was 1 and is ZERO**: the word `responses` in a sentence about what the RFCs fix. It
+  is an LLM dialect's instance id, and the sentence did not need it.
+* **`x transport = 44 STAYS.** This is an HTTP authorization server. `http::Request` and
+  `http::Response` are its own vocabulary and the wire its RFCs are written against, and `http` is
+  the instance id of `busbar-transport-http`. Three hits are the manifest dependency and forty-one
+  are the types at the crate's own surface, already hoisted to one import per file. A control crate
+  that answers an HTTP request cannot stop naming HTTP. The drain is the day the neutral route seam
+  carries its own request type.
+
+`moved_from` is deliberately absent: the served half of `busbar-core/src/oauth_as/` was DELETED and
+the surface REBUILT against a protocol library, so this is not a carve-out. Claiming
+`moved_from = "busbar-core"` would put busbar-core's own `x transport` ceiling (2081) over a 44-hit
+row, which is a ceiling that measures nothing.
+
+### The ruled 1071 is 1080 on this base, and the difference is the INSTRUMENT
+
+The owner ruling accepted `busbar x control` at **1071**. On this base it measures **1080**, and the
+nine are not a coupling this landing grew. T0-A widened the matrix scan set from `crates/**/*.rs` +
+`crates/**/*.toml` to EVERY readable non-binary file — a red team had gone around the old set with a
+`.yaml` twin, a `.inc` and a `.txt` — so the byte-identity judge's OWN recording,
+`crates/busbar/tests/oauth_issuer_golden/{config.yaml,routes.txt}`, is scored now and was not scored
+on the base the ruling was made against.
+
+MEASURED BOTH WAYS, which is the only way to say this honestly. Move that one directory aside and
+this tree reads the ruled figures EXACTLY:
+
+| cell | merge-base | ruled / without the recording | with it |
+|---|---|---|---|
+| `busbar x control` | 1063 | 1071 | **1080** |
+| `busbar x plane` | 1798 | 1799 | **1802** |
+| `busbar x transport` | 939 | 955 | **970** |
+| `busbar x auth` | 25 | 25 | **26** |
+
+The 28 hits are not drainable, and the reason is the point of the file they are in. `routes.txt` is
+the wire, pinned cell for cell — four of its hits are the two `missing or invalid admin credential
+(Bearer or x-admin-token)` bodies, and fifteen of the transport hits are the `http://127.0.0.1:<port>`
+endpoint URLs the metadata document lists and the recorded `content-type` headers. `config.yaml` is
+the boot the recording was taken against: the consent route's bar is `Admin`, so the node must run
+an operator listener and an auth chain for four of the twenty-nine cells to exist at all. Changing
+either changes what the judge compares, which is the one thing this landing may not do.
+
+Each is declared in `qa/construction.toml` with the split stated line by line, and the ruling is
+asked again against the wider scanner: **`busbar x control` at 1080, of which 1071 is the ruled
+figure and 9 is the judge's own recording becoming visible.**
+
+### THE ONE THING STILL OWED, AND IT IS A ONE-LINE ACTION ON THE INTEGRATION LINE
+
+`kind-isolation:matrix` is down to TWO findings, and they are one cause:
+
+```
+minted-row        [[cell]] busbar-control-tokenmint × transport
+unannounced-mint  [[minted]] busbar-control-tokenmint
+```
+
+`[[minted]]` requires that `crate` be named by an `[[announced]]` row **in the merge-base's copy of
+the ledger**, and the merge-base (`4197eb09`) announces this crate under the name it had when it was
+announced — `busbar-control-oauth2`. The C1'' ruling renamed the instance to
+`busbar-control-tokenmint` for reasons that are measured and stand. So the base announces this
+crate, under a name the mint rule cannot see.
+
+A `[[renamed]]` row is written and does not close it: `[[renamed]]`'s stated contract is "every rule
+that asks the base about `to` asks it about `from` instead", and it delivers that for `[[cell]]`,
+`[[edge]]` and `[[disagreement]]` row keys and for dependency edges — but the `[[announced]]` lookup
+in `minted_rows` reads `m.krate` raw
+(`xtask/src/gates/kind_isolation/matrix.rs`, `if !at_base.announced.contains_key(&m.krate)`).
+
+**There are two ways through, and the first is the right one.** The refusal names it itself: *"land
+the `[[announced]]` row first, on the integration line, and mint against it afterwards."* The
+integration line carries an `[[announced]]` row for this crate already; it needs the four-word
+rename `busbar-control-oauth2` -> `busbar-control-tokenmint` applied to it, and this branch's mint is
+admitted with no gate change at all. The second is to route that one lookup through
+`reg.base_names()` like every other history question in the module — defensible, in the spirit of
+the `[[renamed]]` doc, and admitting nothing that was not already announced — but it is a change to
+a ratchet and belongs in its own commit with a red-before-green case, not smuggled in beside a
+landing. **A ratchet is not weakened on the branch it happens to inconvenience.**
+
+### Still owed, unchanged
+
+The three items in the section above stand exactly as written: the `oauth_as:` grammar is still
+core's, the state is still the protocol library's in-process backing, and `Kind` still has no
+`Control` variant.
