@@ -18,7 +18,7 @@ use crate::GrpcTransport;
 /// A `grpc` transport standing on `http`, which is what carries an inbound connection.
 fn server_transport() -> GrpcTransport {
     GrpcTransport::over(std::sync::Arc::new(
-        busbar_transport_http::HttpTransport::new(busbar_transport_http::ClientSettings::default()),
+        busbar_transport_http::battery_transport(busbar_transport_http::ClientSettings::default()),
     ))
 }
 

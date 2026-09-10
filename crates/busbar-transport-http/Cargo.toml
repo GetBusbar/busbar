@@ -33,3 +33,11 @@ webpki-roots = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "io-util", "time", "macros"] }
+
+# THE BATTERY'S UPSTREAM CLIENT, and nothing else. This transport dials only through the client it
+# was composed over, so a battery needs one to compose it over — and the sibling transports that are
+# built OVER `http` (`sse`, `ws`, `grpc`) dial through it in their own batteries. Off in every
+# shipped build: `battery_exchange` is `#[cfg(any(test, feature = "test-support"))]`, and the
+# siblings enable it on a dev-dependency line only.
+[features]
+test-support = []

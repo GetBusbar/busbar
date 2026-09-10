@@ -19,6 +19,10 @@ futures = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+# The `http` layer under this transport dials only through the client it was COMPOSED OVER, so this
+# crate's battery — which dials through it — composes one. `test-support` is what exposes that
+# battery client; it is a dev-dependency line and a shipped build of this crate carries none of it.
+busbar-transport-http = { path = "../busbar-transport-http", features = ["test-support"] }
 # TEST-ONLY, and only for the seal. The battery needs a kernel-side seal to build the handle and the
 # destination a dial takes; minting the capability crate's own token is the seam a deployment uses,
 # where declaring a private type and implementing the contract's sealing trait on it was a forgery

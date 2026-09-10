@@ -9,6 +9,7 @@ use busbar_contract_transport::registry::status_ns;
 use busbar_contract_transport::wire::WireStatus;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
+use std::time::Duration;
 
 struct FixtureSeal;
 impl KernelSeal for FixtureSeal {
@@ -99,7 +100,7 @@ async fn request_line_echo_server() -> String {
 #[tokio::test]
 async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
     let uri = request_line_echo_server().await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -133,7 +134,7 @@ async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
 #[tokio::test]
 async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallowed() {
     let uri = request_line_echo_server().await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -161,7 +162,7 @@ async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallow
 #[tokio::test]
 async fn a_status_line_is_not_a_request_this_transport_can_send() {
     let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -177,7 +178,7 @@ async fn a_status_line_is_not_a_request_this_transport_can_send() {
 #[tokio::test]
 async fn egress_round_trip_reports_status_class_on_the_first_frame() {
     let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -212,7 +213,7 @@ async fn egress_maps_4xx_and_5xx_status_classes() {
                 .into_boxed_slice(),
         );
         let uri = fixed_response_server(resp).await;
-        let transport = HttpTransport::new(ClientSettings::default());
+        let transport = crate::battery_transport(ClientSettings::default());
         let conn = transport
             .dial(&upstream_dest(&uri), &fixture_key())
             .await
@@ -242,7 +243,7 @@ async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {
                 .into_boxed_slice(),
         );
         let uri = fixed_response_server(resp).await;
-        let transport = HttpTransport::new(ClientSettings::default());
+        let transport = crate::battery_transport(ClientSettings::default());
         let conn = transport
             .dial(&upstream_dest(&uri), &fixture_key())
             .await
@@ -271,7 +272,7 @@ async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
     let uri =
         fixed_response_server(b"HTTP/1.1 429 X\r\nRetry-After: 7\r\nContent-Length: 0\r\n\r\n")
             .await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -296,7 +297,7 @@ async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
 #[tokio::test]
 async fn egress_reports_no_retry_after_when_the_upstream_asked_for_none() {
     let uri = fixed_response_server(b"HTTP/1.1 503 X\r\nContent-Length: 0\r\n\r\n").await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -356,7 +357,7 @@ fn retry_after_parses_both_normative_forms() {
 
 #[tokio::test]
 async fn ingress_reads_a_head_and_body_frame_from_a_real_client() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -394,7 +395,7 @@ async fn ingress_reads_a_head_and_body_frame_from_a_real_client() {
 /// that the bytes do not honour is a message that never arrived, not a smaller one that did.
 #[tokio::test]
 async fn a_declared_length_body_cut_short_at_eof_is_a_framing_error() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -447,7 +448,7 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
     };
 
     // Ingress: a declared length past the cap, plus a trickle of the body behind it.
-    let transport = StdArc::new(HttpTransport::new(settings));
+    let transport = StdArc::new(crate::battery_transport(settings));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -481,7 +482,7 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
     writer.abort();
 
     // Egress: the pending accumulator refuses to grow past the same cap.
-    let transport = HttpTransport::new(settings);
+    let transport = crate::battery_transport(settings);
     let conn = transport
         .dial(&upstream_dest("http://127.0.0.1:1/"), &fixture_key())
         .await
@@ -520,7 +521,7 @@ async fn a_body_past_the_configured_maximum_is_refused_on_both_sides() {
 /// invented out of a parse failure: the reader must say it could not read the message.
 #[tokio::test]
 async fn an_unparsable_header_block_is_a_framing_error_not_a_headerless_request() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -559,7 +560,7 @@ async fn an_unparsable_header_block_is_a_framing_error_not_a_headerless_request(
 /// The header questions this exercises are asked of a live socket, not of a header vector built by
 /// hand, so a reading that only holds in a unit test cannot pass here.
 async fn ingress_first(request: &'static [u8]) -> Result<(StreamId, Frame), TransportError> {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -623,7 +624,7 @@ async fn chunked_declared_twice_is_refused() {
 /// not quietly fallen back to `Content-Length`. Both halves of the ambiguity, closed.
 #[tokio::test]
 async fn a_transfer_encoding_that_is_not_chunked_last_is_refused() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -670,7 +671,7 @@ async fn a_transfer_encoding_that_is_not_chunked_last_is_refused() {
 /// request, and the round-trip cell above pins that. The two directions now agree.
 #[tokio::test]
 async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -710,7 +711,7 @@ async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused
 /// serve the request as empty.
 #[tokio::test]
 async fn an_overflowing_content_length_is_a_framing_error() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -749,7 +750,7 @@ async fn an_overflowing_content_length_is_a_framing_error() {
 /// non-negative integer with no sign, so `+5` must refuse rather than be parsed as five.
 #[tokio::test]
 async fn a_content_length_with_a_leading_sign_is_a_framing_error() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -803,7 +804,7 @@ async fn a_cancelled_egress_write_ends_the_frame_stream_rather_than_hanging_it()
         }
     });
 
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
     let conn = transport
         .dial(&upstream_dest(uri), &fixture_key())
@@ -840,7 +841,7 @@ async fn a_cancelled_egress_write_ends_the_frame_stream_rather_than_hanging_it()
 /// `Content-Length` saw no body here at all.
 #[tokio::test]
 async fn a_chunked_body_of_at_least_a_mebibyte_at_a_budget_boundary() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -951,7 +952,7 @@ async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
         }
     });
 
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let uri: &'static str = Box::leak(format!("http://{addr}/units").into_boxed_str());
     let conn = transport
         .dial(&upstream_dest(uri), &fixture_key())
@@ -991,7 +992,7 @@ async fn an_egress_body_accumulates_across_calls_until_the_declared_length() {
 /// layout is the transport's, and this is the transport.
 #[test]
 fn the_envelope_encodes_as_an_http_message() {
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let arena = TestArena;
     let bytes = transport
         .encode_envelope(
@@ -1035,7 +1036,7 @@ fn the_envelope_encodes_as_an_http_message() {
 /// carries one, and a reader that stops at it reads a different message than the one written.
 #[test]
 fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let arena = TestArena;
     let poisoned: &[(&str, &[u8])] = &[
         ("x-note", b"ok\r\nauthorization: bearer stolen".as_slice()),
@@ -1096,7 +1097,7 @@ impl busbar_contract::Arena for TestArena {
 
 #[tokio::test]
 async fn every_transport_error_is_mapped_on_dial() {
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
 
     // The dial's own refusals: an address that is not one, and a destination that is not upstream.
     let bad = upstream_dest("not a uri at all");
@@ -1261,7 +1262,7 @@ async fn a_streamed_upstream_yields_frames_before_it_closes() {
         }
     });
 
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
     let conn = transport
         .dial(&upstream_dest(uri), &fixture_key())
@@ -1337,7 +1338,7 @@ async fn a_response_body_past_the_cap_ends_the_stream_rather_than_accumulating()
     });
 
     const CAP: usize = 4096;
-    let transport = HttpTransport::new(ClientSettings {
+    let transport = crate::battery_transport(ClientSettings {
         response_body_max_bytes: CAP,
         ..ClientSettings::default()
     });
@@ -1398,7 +1399,7 @@ async fn a_chunked_upstream_response_head_carries_no_framing_headers() {
         b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
     )
     .await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -1585,7 +1586,7 @@ impl tokio::io::AsyncWrite for FlushFailsWriter {
 /// the socket shut.
 #[tokio::test]
 async fn a_close_ends_a_parked_ingress_pump_and_releases_the_socket() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -1651,7 +1652,7 @@ async fn a_close_ends_a_parked_ingress_pump_and_releases_the_socket() {
 /// read, not merely mark it.
 #[tokio::test]
 async fn a_close_ends_a_parked_ingress_pump_whose_peer_never_writes_again() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -1705,7 +1706,7 @@ async fn a_close_ends_a_parked_ingress_pump_whose_peer_never_writes_again() {
 /// wake that only covers the header loop would leave this one holding the socket just as long.
 #[tokio::test]
 async fn a_close_ends_a_pump_parked_on_a_body_the_peer_never_finishes() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -1768,7 +1769,7 @@ async fn an_undelivered_unit0_refusal_is_an_error() {
 /// all — the same guess the body branches already refuse to make.
 #[tokio::test]
 async fn a_header_block_cut_short_at_eof_is_a_framing_error() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -1804,7 +1805,7 @@ async fn a_non_ascii_response_header_value_reaches_the_head_frame_as_its_own_byt
         b"HTTP/1.1 200 OK\r\nx-note: caf\xc3\xa9\xff\r\nContent-Length: 0\r\n\r\n",
     )
     .await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -1833,7 +1834,7 @@ async fn a_non_ascii_response_header_value_reaches_the_head_frame_as_its_own_byt
 /// per message: the header, each body chunk, the trailers.
 #[tokio::test]
 async fn one_read_buffer_per_connection_rather_than_one_per_read() {
-    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let transport = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -1933,7 +1934,7 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
     let uri =
         fixed_response_server(b"HTTP/1.1 200 OK\r\nX-Tag: t\r\nContent-Length: 5\r\n\r\nhello")
             .await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await
@@ -1962,7 +1963,7 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
     assert!(honest(&body));
 
     // Ingress: the HEAD frame is the verbatim header prefix, the body frame is the decoded body.
-    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let served = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -2012,7 +2013,7 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
 /// and the only place the fact exists on an ephemeral (`:0`) bind.
 #[tokio::test]
 async fn an_arrival_names_the_port_it_arrived_on() {
-    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let served = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -2043,7 +2044,7 @@ async fn an_arrival_names_the_port_it_arrived_on() {
 /// it is the parity bar rather than an addition.
 #[tokio::test]
 async fn a_request_expecting_a_continue_is_answered_before_its_body_is_waited_for() {
-    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let served = StdArc::new(crate::battery_transport(ClientSettings::default()));
     let cfg = TestCfg {
         bind: "127.0.0.1:0".to_string(),
     };
@@ -2108,7 +2109,7 @@ async fn upstream_response_trailers_reach_the_caller_as_a_final_frame() {
           5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n",
     )
     .await;
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = crate::battery_transport(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
         .await

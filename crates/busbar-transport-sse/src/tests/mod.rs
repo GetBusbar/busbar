@@ -3,7 +3,7 @@
 //! parser tests ported alongside `proto` itself.
 
 use super::*;
-use busbar_transport_http::ClientSettings;
+use busbar_transport_http::{battery_transport, ClientSettings};
 use futures::StreamExt;
 
 /// The seal these fixtures build kernel-side values with: the capability crate's own token.
@@ -67,7 +67,7 @@ async fn sse_server() -> String {
 #[tokio::test]
 async fn request_plus_n_response_frames_over_a_real_stream() {
     let uri = sse_server().await;
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = SseTransport::new(http);
 
     let conn = sse
@@ -217,7 +217,7 @@ async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
         });
 
         let uri = format!("http://{addr}/");
-        let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+        let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
         let sse = SseTransport::new(http);
         let conn = sse
             .dial(&upstream_dest(&uri), &fixture_key())
@@ -290,7 +290,7 @@ async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
     });
 
     let uri = format!("http://{addr}/");
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = SseTransport::new(http);
     let conn = sse
         .dial(&upstream_dest(&uri), &fixture_key())
@@ -362,7 +362,7 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
     });
 
     let uri = format!("http://{addr}/");
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = SseTransport::new(http);
     let conn = sse
         .dial(&upstream_dest(&uri), &fixture_key())
@@ -420,7 +420,7 @@ async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
     });
 
     let uri = format!("http://{addr}/");
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = SseTransport::new(http);
     let conn = sse
         .dial(&upstream_dest(&uri), &fixture_key())
@@ -488,7 +488,7 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     }
 
     let uri = sse_server().await;
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = SseTransport::new(http);
     let conn = sse
         .dial(&upstream_dest(&uri), &fixture_key())
@@ -543,7 +543,7 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
 /// exactly like the six siblings that all name the constant.
 #[test]
 fn the_declared_abi_is_the_registrys_own_constant() {
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     assert_eq!(
         SseTransport::new(http).abi(),
         busbar_contract_transport::registry::TRANSPORT_ABI
@@ -625,7 +625,7 @@ async fn no_frame_is_emitted_after_the_terminal_framing_error() {
     // The served side, where one declared-length body arrives as ONE frame: a complete event
     // followed by a tail that never ends a frame and runs past the cursor budget, so the carve and
     // the budget check meet inside a single re-segmentation step.
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = std::sync::Arc::new(SseTransport::new(http));
     let listener = sse
         .listen(&BindCfg("127.0.0.1:0".to_string()), &fixture_key())
@@ -703,7 +703,7 @@ async fn an_event_stream_that_ends_mid_event_is_a_framing_error() {
     });
     let uri = format!("http://{addr}/");
 
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = SseTransport::new(http);
     let conn = sse
         .dial(&upstream_dest(&uri), &fixture_key())
@@ -757,7 +757,7 @@ async fn a_trailer_frame_from_the_layer_below_is_not_read_as_an_event() {
     });
     let uri = format!("http://{addr}/");
 
-    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let http = std::sync::Arc::new(battery_transport(ClientSettings::default()));
     let sse = SseTransport::new(http);
     let conn = sse
         .dial(&upstream_dest(&uri), &fixture_key())

@@ -26,13 +26,27 @@ use busbar_contract::{
     ArenaBytes, DestinationFacts, LaneId, StreamId, Transport, TransportKeyHandle, UpstreamAddress,
     VerifiedDestination,
 };
-use busbar_substrate::egress::engine::{build_client, EngineSpec};
-use busbar_transport_http::{ClientSettings, HttpTransport};
+use busbar_substrate::egress::engine::{build_client, EngineClient, EngineSpec};
+use busbar_transport_http::{
+    ClientSettings, EgressExchange, EgressFault, EgressFuture, EgressRequest, HttpTransport,
+};
 use futures::StreamExt;
 
 /// The name no nameserver answers. The pin is what makes it reachable, so a client without the pin
 /// cannot reach the upstream at all — which is the posture difference, made visible.
 const PINNED_NAME: &str = "posture.invalid";
+
+/// THE COMPOSITION, as the root will make it: the engine's client behind the transport's own face.
+/// Nothing is decided here — the request goes over as it arrives and the answer comes back as it
+/// arrives — which is the whole of what handing a client in means.
+struct ComposedEngineClient(EngineClient);
+
+impl EgressExchange for ComposedEngineClient {
+    fn exchange(&self, req: EgressRequest) -> EgressFuture {
+        let sent = self.0.request(req);
+        Box::pin(async move { sent.await.map_err(|e| Box::new(e) as EgressFault) })
+    }
+}
 
 struct CellSeal;
 impl KernelSeal for CellSeal {
@@ -92,7 +106,7 @@ async fn head_echo_server() -> u16 {
 #[tokio::test]
 async fn the_transport_reaches_the_pinned_upstream_through_the_composed_client() {
     let port = head_echo_server().await;
-    let _client = build_client(&EngineSpec::pinned(
+    let client = build_client(&EngineSpec::pinned(
         Arc::from(PINNED_NAME),
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         None,
@@ -100,7 +114,10 @@ async fn the_transport_reaches_the_pinned_upstream_through_the_composed_client()
     ))
     .expect("the pinned posture builds");
 
-    let transport = HttpTransport::new(ClientSettings::default());
+    let transport = HttpTransport::over_egress(
+        Arc::new(ComposedEngineClient(client)),
+        ClientSettings::default(),
+    );
     let uri = format!("http://{PINNED_NAME}:{port}/");
     let conn = transport
         .dial(&upstream_dest(&uri), &cell_key())
@@ -129,7 +146,8 @@ async fn the_transport_reaches_the_pinned_upstream_through_the_composed_client()
         "the upstream saw {seen:?}, not the request the envelope named"
     );
     assert!(
-        seen.to_ascii_lowercase().contains("x-busbar-posture: pinned"),
+        seen.to_ascii_lowercase()
+            .contains("x-busbar-posture: pinned"),
         "the upstream saw {seen:?}, without the header the caller wrote"
     );
 }
