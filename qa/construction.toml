@@ -148,13 +148,26 @@ busbar-voice = ["busbar-voice-codec"]
 # way every entry does -- the moment a later commit re-pins the ceiling below the base, it is
 # struck.
 
-# NO ENTRY STANDS HERE TODAY. The virtual-key directory face (`busbar_contract::kinds::{KeyScope,
+# ONE FACE STANDS HERE TODAY, two entries: the per-unit arena's route-walk future,
+# `busbar_unit_egress::ports::UnitFut<'a, T>` (crates/busbar-unit-egress/src/ports.rs), the one
+# surface line the arena face adds under busbar-unit-*, counted once by unit_total_ceiling and once
+# by the union. The earlier face is paid for: the virtual-key directory face (`busbar_contract::kinds::{KeyScope,
 # KeyFacts, VirtualKeyDirectory}`; 19 surface lines) landed under three declarations of exactly this
 # shape -- contract_caps 3478 -> 3497, caps_contract_ceiling 3480 -> 3499, union_ceiling 23465 ->
 # 23484 -- and the DELETION that followed it (`Unit::{byte_counts, frame_counts, set_counts}` and
 # their two fields, 21 lines the kernel never wrote) took the pair BELOW the base again. A
 # declaration that describes no rise at the base is stale and refused, so the three were struck in
 # that same deletion commit and the ceilings re-pinned to the measurement; the face is paid for.
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.unit_total_ceiling"
+by = 1
+because = "arena face: `busbar_unit_egress::ports::UnitFut<'a, T>`, the one non-Send boxed future of the route walk (it borrows the plane's Ctx, and so the per-unit arena, across the upstream await) — +1 surface line in crates/busbar-unit-egress/src/ports.rs; `Egress::route` and `EgressUnit::route` re-type in place and add nothing"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 1
+because = "arena face: the same `busbar_unit_egress::ports::UnitFut<'a, T>` line (crates/busbar-unit-egress/src/ports.rs), counted once more by the union of kernel + caps/contract + busbar-unit-* — +1 surface line, nothing else in the union moves"
 
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
