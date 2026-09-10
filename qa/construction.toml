@@ -189,6 +189,30 @@ file = "qa/kind-isolation.toml"
 by = 42
 because = "busbar-transport-ws × transport (busbar-transport-ws, transport): the streams line declares a duplex surface as data through the transport contract face (Dispatch::Duplex, DuplexWire, SessionBudgets); use-lines and declarations of that face, not a plane in a wire"
 
+# THE SESSION DRIVER'S TWO NEW CELLS, and both of them are `busbar` — the composition root, the one
+# WIRE-PERMITTED kind, naming what it composes. A rise anywhere else would be coupling and would be
+# drained instead, which is what being generic over the units and over the wire buys: the driver
+# holds no plane, so no plane's crate moved by a line.
+#
+# The driver's other three cells — contract-transport, kernel and transport — are not new entries.
+# The acceptor's own declarations below already stand on them and have not expired (the base this
+# branch is measured against still carries the pre-acceptor numbers), so each was EXTENDED to the
+# number this landing measures rather than shadowed by a second entry: two declarations of one
+# ceiling are two opinions about it, and the one that expired first would leave the other describing
+# a rise that had already happened.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.caps.count"
+file = "qa/kind-isolation.toml"
+by = 17
+because = "busbar × caps (busbar, caps): the root's session driver opens each frame's unit in the capability vocabulary the one-shot driver already opens one in — UnitKey, HoldCell, Hold, PrincipalId, OriginKind, Canary — plus the cells' own unit-set double, which is written against the sealed step tokens because that is the only way to observe which unit the driver opened"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 3
+because = "busbar × control (busbar, control): the root's own composition vocabulary reaching the new module — the driver declared beside its acceptor under the same neutral switch, and the one mapping from a loop ending to the eight words widened to the union of its two readers rather than copied"
+
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -1294,3 +1318,21 @@ key = "cell.busbar.transport.count"
 file = "qa/kind-isolation.toml"
 by = 31
 because = "cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs); a permitted kind naming what it mounts. The acceptor itself names no wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, and the manifest switch that says this build carries a duplex wire."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "cell (crate = \"busbar\", kind = \"contract-transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and now runs what the acceptor hands it through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. `busbar_contract::transport::…` is the seam both are written against — DuplexWire, SessionBudgets, SessionDriver, SessionEnd for the acceptor, and SessionOpen, SessionFrame, SessionReply, SessionHandle, the surface's Answering/Bar/Dispatch and CloseReason for the driver — and all of it is spelled through the contract rather than through the wire's crate precisely so no transport type is named at the root."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 15
+because = "cell (crate = \"busbar\", kind = \"kernel\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and runs a session's frames over the loop through the generic session driver (root/session_driver.rs); a permitted kind naming what it composes. One hit is the acceptor's battery asking the registry, in the kernel's own vocabulary, whether the wire it mounts is the entry the boot seal registered. The rest is the LOOP a session's frames are judged by — run_unit, Units, UnitCtx, Run, Ended, the kernel's own session_id mint, the gauge and the lease cell — named by the root because the root is what composes it. The driver is generic over the unit set for the same reason the acceptor is generic over the wire, so none of it is any plane's units."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 10
+because = "cell (crate = \"busbar\", kind = \"transport\"). The composition root composes the duplex wire through the generic acceptor (root/plane_mount.rs) and runs what it accepts through the generic session driver (root/session_driver.rs); a permitted kind naming what it mounts. Neither names a wire; the vocabulary is the root's own — the registry the wire is taken off, the listener the node already bound, the manifest switch that says this build carries a duplex wire, and, for the driver, the declared wire surface a session's row is read off, the registry key an upgrade arrived on and the published transport facts the credential bar is resolved against. All of that is data the plane declared, and none of it is a wire's type."

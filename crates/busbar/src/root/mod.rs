@@ -72,6 +72,13 @@ pub mod migration;
 pub mod plane_mount;
 pub mod policy;
 pub mod registry;
+// WHAT THE GENERIC DUPLEX MOUNT HANDS A SESSION TO, under the SAME neutral switch and for the same
+// reason. A driver gated separately from its acceptor would admit a build with one and not the
+// other — an acceptor with nothing to serve, or a driver nothing serves through. It reaches into no
+// plane's anything either: what it is handed is a declared row and a unit set, and it could not say
+// whose they are.
+#[cfg(feature = "root-duplex-serve")]
+pub mod session_driver;
 pub mod transports;
 #[cfg(feature = "root-a2a")]
 pub mod units_a2a;
