@@ -10,10 +10,13 @@
 #              better part of half an hour.
 #   tests    — the packages whose test binaries the sharded legs must include by name.
 #
-# THIS BRANCH IS THE DIALECT SPLIT'S FIRST CUT — the `openai` dialect of the LLM plane leaves the
-# plane's own tables and arrives as its own crate, registering by claim. So the scope is the LLM
-# families first of all: every openai golden cell is a cell one of them replays, and a byte that
-# moved would be a wire format changed under every client of it.
+# THIS BRANCH IS THE DIALECT SPLIT'S SECOND CUT — the `responses` dialect of the LLM plane leaves
+# the plane's own tables and arrives as its own crate, registering by claim, on the pattern the
+# `openai` cut established. So the scope is the LLM families first of all: every `responses` golden
+# cell is a cell one of them replays, and a byte that moved would be a wire format changed under
+# every client of it. Eighteen frozen cells cross this dialect in one direction or the other, and
+# the answer direction is the one with the most to lose: this is the only dialect that mints both a
+# response identity and a per-item identity, and the only one that reports all four metered classes.
 #
 # `billing` is here because the metered quantities are located by the DIALECT — the meter locators
 # move with the crate, and a locator that pointed at the wrong member would meter a request on a
@@ -22,11 +25,15 @@
 # resolved off the merged ladder, and neutrality is the property the split exists to establish —
 # a plane that no longer names one of its dialects.
 families = '^(llm|billing|route\.failover|neutrality)([|.]|$)'
+# `busbar-plane-llm-openai` stays in the list beside the new crate, and that is not a courtesy: the
+# two dialects are one vendor's two request surfaces, they sit at adjacent rungs of one ladder, and
+# the way a split of the second could break the first is a rung interleaved at the wrong number. A
+# leg that ran only the new crate's battery would not see it.
 tests = [
+    "busbar-plane-llm-responses",
     "busbar-plane-llm-openai",
     "busbar-plane-llm",
     "busbar-llm-codec",
-    "busbar-llm",
     "busbar",
     "xtask",
 ]
