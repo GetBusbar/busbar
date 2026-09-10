@@ -228,7 +228,7 @@ impl Gate for ServiceImagesGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -1109,17 +1109,17 @@ fn unplantable(name: &str, covers: &[&str], naming: &[&str], why: String) -> Cas
     }
 }
 
-fn plant_table(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant_table<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     edit: Edit,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     match table_overlay(cx, &edit) {
         Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
-        Err(e) => unplantable(name, covers, naming, e),
+        Err(e) => unplantable(name, covers, naming, e).into(),
     }
 }
 
@@ -1143,30 +1143,30 @@ fn workflow_overlay(image_line: &str) -> Overlay {
     ov
 }
 
-fn plant_workflow(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant_workflow<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     image_line: &str,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     prove_red(cx, gate, name, covers, workflow_overlay(image_line), naming)
 }
 
 /// `Some((needle, replacement))` substitutes into the real script; `None` replaces it with a script
 /// that runs no container at all, which is the floor's case.
-fn plant_release_check(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant_release_check<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     subst: Option<(&str, &str)>,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     match release_check_overlay(cx, subst) {
         Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
-        Err(e) => unplantable(name, covers, naming, e),
+        Err(e) => unplantable(name, covers, naming, e).into(),
     }
 }
 

@@ -52,7 +52,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
-use crate::gates::{prove_green, prove_red, Case, Gate, Report};
+use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::toml_lite;
 
@@ -623,7 +623,7 @@ impl Gate for WorkspaceDepsGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -731,7 +731,7 @@ struct Plant {
 }
 
 impl Plant {
-    fn case(self, cx: &Ctx, gate: &dyn Gate) -> Case {
+    fn case<'a>(self, cx: &'a Ctx, gate: &'a dyn Gate) -> crate::gates::CasePlan<'a> {
         let naming: Vec<&str> = self.naming.iter().map(String::as_str).collect();
         prove_red(cx, gate, self.label, &[self.rule], self.overlay, &naming)
     }

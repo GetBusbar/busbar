@@ -383,7 +383,7 @@ impl Gate for ShipReadyGate {
         Verdict::of(rows)
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::default();
 
         // -- THE STANDING-RED ROW, both directions, on the real list and on planted ones. The
