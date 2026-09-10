@@ -120,7 +120,7 @@ fn bulk(n: usize) -> String {
         .collect()
 }
 
-pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
+pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     let mut r = Report::new();
     let base = base_overlay(cx);
 
@@ -165,7 +165,7 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
 }
 
 /// The attempt seam, the request terminal, the plane's doors and the plane/kernel wall.
-fn shape_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+fn shape_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
 
     let mut ov = on(base);
@@ -260,7 +260,7 @@ fn shape_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
 }
 
 /// The Teller loop: its tokens, its order, its one entry per plane, and the substrate's seams.
-fn loop_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+fn loop_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
 
     let mut ov = on(base);
@@ -336,7 +336,7 @@ fn loop_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
 }
 
 /// The two rules whose subject is another instrument's answer.
-fn delegated_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+fn delegated_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
 
     let mut ov = on(base);
@@ -387,7 +387,7 @@ fn delegated_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
 }
 
 /// The section 1.1 ceilings, each spent in the file or crate whose budget it is.
-fn ceiling_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+fn ceiling_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
     let Ok(cfg) = ConstructionGate::cfg(cx) else {
         r.note_infra_failure("the ceilings file could not be read, so no ceiling can be planted");
@@ -478,7 +478,12 @@ fn ceiling_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
 /// planting a bigger tree would prove the measurement moved, which is what every other case in this
 /// file already proves. So the ceilings file itself is the overlay, and the base commit's copy of
 /// it is the overlay's answer to the `show` the rule asks git for.
-fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -> Report {
+fn ceiling_ratchet_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
+    base: &Overlay,
+    cfg: &Cfg,
+) -> Report<'a> {
     let mut r = Report::new();
     let Ok(text) = cx.read(CEILINGS) else {
         r.note_infra_failure("the ceilings file could not be read, so it cannot be re-pinned");
@@ -868,14 +873,14 @@ fn ceiling_ratchet_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay, cfg: &Cfg) -
 /// * an entry the base does NOT carry, naming a ceiling that did not rise, is stale and red;
 /// * the retired `from`/`to` shape is refused by name, and the refusal prints the array shape;
 /// * `--write` strikes exactly the carried entries and leaves the live one.
-fn declared_raise_cases(
-    gate: &dyn Gate,
-    cx: &Ctx,
+fn declared_raise_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
     base: &Overlay,
     based: &str,
     text: &str,
     cfg: &Cfg,
-) -> Report {
+) -> Report<'a> {
     let mut r = Report::new();
     let (table, key) = ("rules.legacy-reach", "ceiling");
     let Some(now) = cfg.doc.table(table).and_then(|t| t.int_of(key)) else {
@@ -1137,13 +1142,13 @@ fn prove_row_pass_naming(
 /// * with no declaration, the refusal NAMES the cell — `cell.<crate>.<kind>.count`, not a slot;
 /// * a declaration keyed by that identity excuses it, across the renumbering;
 /// * a declaration keyed by the ordinal is refused outright, whatever it lines up with.
-fn kind_row_identity_cases(
-    gate: &dyn Gate,
-    cx: &Ctx,
+fn kind_row_identity_cases<'a>(
+    gate: &'a dyn Gate,
+    cx: &'a Ctx,
     base: &Overlay,
     based: &str,
     ceilings_text: &str,
-) -> Report {
+) -> Report<'a> {
     let mut r = Report::new();
     let file = ceilings::KIND_CEILINGS;
     let Ok(kinds) = cx.read(file) else {
@@ -1313,7 +1318,7 @@ fn rose_plants(cx: &Ctx) -> Vec<(String, String, String)> {
 }
 
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.
-fn kind_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+fn kind_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
     let manifest_kinds = strings(&[
         "plane",
@@ -1420,7 +1425,7 @@ fn kind_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
 }
 
 /// The vocabulary, the kind traits, the seals and the two raw-text scans.
-fn vocabulary_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+fn vocabulary_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
 
     let mut ov = on(base);
@@ -1590,7 +1595,7 @@ fn plant_each(ov: &mut Overlay, dir: &str, tag: &str, needles: &[String]) -> Vec
     named
 }
 
-fn money_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
+fn money_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
     let cfg = ConstructionGate::cfg(cx).ok();
     let listed = |rule: &str, key: &str| -> Vec<String> {

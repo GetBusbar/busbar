@@ -198,7 +198,7 @@ impl Gate for KernelTokenWirePurityGate {
         Some(translate(&runs[0]))
     }
 
-    fn selftest(&self, cx: &Ctx) -> Report {
+    fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
         report.push(prove_green(
             cx,
@@ -320,15 +320,15 @@ fn verdict_expect(gate: &dyn Gate, cx: &Ctx) -> crate::gates::Expect {
     }
 }
 
-fn plant(
-    cx: &Ctx,
-    gate: &dyn Gate,
+fn plant<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn Gate,
     name: &str,
     covers: &[&str],
     path: &str,
     edit: Edit,
     naming: &[&str],
-) -> Case {
+) -> crate::gates::CasePlan<'a> {
     let mut ov = Overlay::new();
     if edit.apply(cx, path, &mut ov).is_err() {
         return Case {
@@ -338,7 +338,8 @@ fn plant(
                 naming: naming.iter().map(|s| (*s).to_string()).collect(),
             },
             got: crate::gates::Expect::Skipped,
-        };
+        }
+        .into();
     }
     prove_red(cx, gate, name, covers, ov, naming)
 }
