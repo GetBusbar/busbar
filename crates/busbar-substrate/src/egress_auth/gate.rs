@@ -55,7 +55,7 @@
 // carry their own per-plane attrs below).
 #![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 
-use busbar_api::VirtualKey;
+use busbar_contract::store::VirtualKey;
 
 /// ONE GRANT THAT MUST PASS: which check this is, the scope KIND it is asked under, and the VALUE
 /// looked up in the caller's grant list.

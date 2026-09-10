@@ -97,7 +97,7 @@ async fn spawn_gauntlet_ws_server(refuse: bool) -> SocketAddr {
         axum::extract::State(refuse): axum::extract::State<bool>,
         upgrade: axum::extract::ws::WebSocketUpgrade,
     ) -> axum::response::Response {
-        let gov = busbar_api::PlaneRequestCtx::default();
+        let gov = busbar_contract::store::PlaneRequestCtx::default();
         let req = crate::plane_host::GauntletRequest {
             gov: &gov,
             destination: "model-x",
@@ -576,7 +576,7 @@ async fn spawn_accept_gauntlet_ws_server(refuse: bool) -> SocketAddr {
         axum::extract::State(refuse): axum::extract::State<bool>,
         upgrade: axum::extract::ws::WebSocketUpgrade,
     ) -> axum::response::Response {
-        let gov = busbar_api::PlaneRequestCtx::default();
+        let gov = busbar_contract::store::PlaneRequestCtx::default();
         let req = crate::plane_host::GauntletRequest {
             gov: &gov,
             destination: "model-x",

@@ -20,7 +20,7 @@ pub mod calllog;
 pub mod observe;
 
 // The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
-// `PlaneStoreView` that narrows a real `busbar_api::Store` to it. Both name only `busbar_api` leaf
+// `PlaneStoreView` that narrows a real `busbar_contract::store::Store` to it. Both name only `busbar_api` leaf
 // types, so they live here; core re-exports them from `busbar_core::plane::store`.
 pub mod store;
 

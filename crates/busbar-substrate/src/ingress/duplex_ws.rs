@@ -224,7 +224,7 @@ pub struct WsArrival {
     /// is [`serve_gauntlet`] / [`accept_gauntlet`]; a plane's accept fn never calls a bare `on_upgrade`.
     pub upgrade: WebSocketUpgrade,
     /// The middleware-resolved governance request context (`None` on a `RouteAuth::None` route).
-    pub gov: Option<busbar_api::PlaneRequestCtx>,
+    pub gov: Option<busbar_contract::store::PlaneRequestCtx>,
     /// The middleware-resolved auth principal (`None` on a `RouteAuth::None` route).
     pub principal: Option<busbar_api::AuthPrincipal>,
     /// The resolved caller principal id, lifted from `gov` — the identity a plane binds session state to.

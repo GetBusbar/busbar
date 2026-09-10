@@ -57,7 +57,8 @@ pub use crate::plane_host::scope::{DispatchScope, DurableScope, SessionScope};
 use crate::store::Unavailable;
 use crate::trust::validate::{Lapsed, Standing};
 use crate::trust::TrustState;
-use busbar_api::{AuthPrincipal, IdentityRefusal, PlaneRequestCtx, VirtualKey};
+use busbar_api::{AuthPrincipal, IdentityRefusal};
+use busbar_contract::store::{PlaneRequestCtx, VirtualKey};
 use busbar_plugin::hot::{AdmissionId, Signal, StatusClass};
 use std::sync::Arc;
 
@@ -168,7 +169,7 @@ pub struct HostCompletion {
 /// lives in the plane's own [`GauntletPlane`] value, NEVER here — so this names no plane type.
 pub struct GauntletRequest<'a> {
     /// Stage 1 — the resolved caller identity/scope, threaded from the auth layer that ran upstream.
-    pub gov: &'a busbar_api::PlaneRequestCtx,
+    pub gov: &'a busbar_contract::store::PlaneRequestCtx,
     /// The destination key the pre-admission `verify_destination` judges — a model for the LLM plane,
     /// a tool/server for the MCP plane. Opaque to the shared sequence; each plane spells its meaning.
     pub destination: &'a str,
@@ -971,7 +972,7 @@ pub trait BudgetHost: Send + Sync {
     /// `gov.rate_headroom(&app.cost, key, pool, now)`. `gov`/`cost` are the opaque handles the caller
     /// minted (via [`governance`](Self::governance)/[`cost`](Self::cost)); the host downcasts them to the
     /// concrete `GovState`/`CostModel` and drives the SAME pure observation (no cell mutation). No
-    /// `HostCtx`. `key` is the already-neutral [`VirtualKey`](busbar_api::VirtualKey) (api).
+    /// `HostCtx`. `key` is the already-neutral [`VirtualKey`](busbar_contract::store::VirtualKey) (api).
     ///
     /// WEDGE 2 (App-retype): additive — the seam the wedge-3 `hooks.rs::decide_policy_order` `&app.cost`
     /// read flips onto (the `gov` object is already the sink's own via the handle, so byte-identical).
@@ -979,7 +980,7 @@ pub trait BudgetHost: Send + Sync {
         &self,
         gov: &GovHandle,
         cost: &CostHandle,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::store::VirtualKey,
         pool: Option<&str>,
         now: u64,
     ) -> Option<f64>;
@@ -997,7 +998,7 @@ pub trait BudgetHost: Send + Sync {
         &self,
         gov: &GovHandle,
         cost: &CostHandle,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::store::VirtualKey,
         now: u64,
     ) -> Vec<busbar_api::BudgetBucketState>;
 
@@ -1072,7 +1073,7 @@ pub trait BudgetHost: Send + Sync {
         &self,
         gov: &GovHandle,
         cost: &CostHandle,
-        key: &busbar_api::VirtualKey,
+        key: &busbar_contract::store::VirtualKey,
         pool: &str,
         model: &str,
         usage: &crate::billing::Usage,
@@ -1123,7 +1124,7 @@ pub trait IdentityHost: Send + Sync {
     /// threads a resolved key, so this never runs there). Gated to test / `test-support` builds so no
     /// production binary carries a raw-token verifier on the neutral seam.
     #[cfg(any(test, feature = "test-support"))]
-    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_api::VirtualKey>>;
+    fn verify_token_test(&self, token: &str) -> Option<Arc<busbar_contract::store::VirtualKey>>;
 
     /// Establish what can be established about a presented bearer's RFC 8707 audience binding against
     /// `expected_aud` — the fail-closed pre-filter a plane runs BEFORE the auth chain, for credentials
@@ -1349,7 +1350,7 @@ pub trait CompletionHost: Send + Sync {
     /// bounds the response body read.
     async fn synthesize_completion(
         &self,
-        gov: &busbar_api::PlaneRequestCtx,
+        gov: &busbar_contract::store::PlaneRequestCtx,
         model: &str,
         body: bytes::Bytes,
         max_body_bytes: usize,

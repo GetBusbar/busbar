@@ -95,7 +95,7 @@ pub enum UnitEnd {
 /// `GauntletRequest`, which the gauntlet adapter now builds from it.
 pub struct Unit<'a> {
     /// The resolved caller identity/scope, threaded from the auth layer that ran upstream.
-    pub gov: &'a busbar_api::PlaneRequestCtx,
+    pub gov: &'a busbar_contract::store::PlaneRequestCtx,
     /// The destination Verify judges. Opaque to the loop; each plane spells its meaning.
     pub destination: &'a str,
     /// The monotonic start instant for the request-duration metric.
@@ -110,7 +110,7 @@ pub struct Unit<'a> {
 impl<'a> Unit<'a> {
     /// Start a unit with no correlation id yet (zero until [`Unit::set_correlation`]).
     pub fn new(
-        gov: &'a busbar_api::PlaneRequestCtx,
+        gov: &'a busbar_contract::store::PlaneRequestCtx,
         destination: &'a str,
         charged_at: u64,
         started: std::time::Instant,

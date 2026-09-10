@@ -102,8 +102,8 @@ pub struct Usage {
 
 /// THE NEUTRAL RAW-RATE VIEW (1.6.0 config-seam S2a): one entry's four reserved-tier rates as RAW
 /// micro-float-per-token values (1e-6 abstract cost unit per token), in the CANONICAL reserved-four
-/// order the engine already fixes ([`busbar_api::RESERVED_UNITS`] = input, output, cache_read,
-/// cache_write). The field names are the neutral reserved-unit spellings (`busbar_api::UNIT_INPUT`
+/// order the engine already fixes ([`busbar_contract::store::RESERVED_UNITS`] = input, output, cache_read,
+/// cache_write). The field names are the neutral reserved-unit spellings (`busbar_contract::store::UNIT_INPUT`
 /// …), NOT any plane's config grammar (`rate_card:`'s `input_utok:` etc.).
 ///
 /// It is the read-back seam core's pricing oracle projects to integer nanos through
@@ -120,13 +120,13 @@ pub struct Usage {
 /// numbers cross into core.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct RawTierRates {
-    /// Raw micro-units per token for the `input` reserved tier (`busbar_api::UNIT_INPUT`).
+    /// Raw micro-units per token for the `input` reserved tier (`busbar_contract::store::UNIT_INPUT`).
     pub input: f64,
-    /// Raw micro-units per token for the `output` reserved tier (`busbar_api::UNIT_OUTPUT`).
+    /// Raw micro-units per token for the `output` reserved tier (`busbar_contract::store::UNIT_OUTPUT`).
     pub output: f64,
-    /// Raw micro-units per token for the `cache_read` reserved tier (`busbar_api::UNIT_CACHE_READ`).
+    /// Raw micro-units per token for the `cache_read` reserved tier (`busbar_contract::store::UNIT_CACHE_READ`).
     pub cache_read: f64,
-    /// Raw micro-units per token for the `cache_write` reserved tier (`busbar_api::UNIT_CACHE_WRITE`).
+    /// Raw micro-units per token for the `cache_write` reserved tier (`busbar_contract::store::UNIT_CACHE_WRITE`).
     pub cache_write: f64,
 }
 

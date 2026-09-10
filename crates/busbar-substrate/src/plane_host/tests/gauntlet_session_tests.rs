@@ -39,7 +39,7 @@ impl GauntletPlane for StubPlane {
     }
 }
 
-fn req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
+fn req(gov: &busbar_contract::store::PlaneRequestCtx) -> GauntletRequest<'_> {
     GauntletRequest {
         gov,
         destination: "model-x",
@@ -51,7 +51,7 @@ fn req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
 
 #[tokio::test]
 async fn siblings_coexist_and_share_the_admit_open_gate() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
 
     // PROCEED: run_gauntlet DRIVES (charge leg runs); run_gauntlet_session ADMITS (no drive) and the
     // Admitted carries the correlation id — the same shared gate said "proceed" to both.

@@ -26,12 +26,12 @@ pub struct NewKeySpec {
     /// Optional mint-time labels echoed onto metrics (never interpreted by enforcement).
     pub labels: std::collections::BTreeMap<String, String>,
     /// PROVENANCE (1.6.0): the principal that minted this key, recorded on
-    /// [`busbar_api::VirtualKey::minted_by`]. `Some` for an APP/service token minted through the
+    /// [`busbar_contract::store::VirtualKey::minted_by`]. `Some` for an APP/service token minted through the
     /// admin API by a (possibly delegated) admin — the token OUTLIVES its minter (review H2/H3), and
     /// this enables "list tokens minted-by X" re-attestation + mint-ceiling accounting. `None` leaves
     /// the field unset (byte-identical to a pre-1.6.0 mint).
     pub minted_by: Option<String>,
-    /// The BINDING MODE (1.6.0, wire spelling) recorded on [`busbar_api::VirtualKey::binding_mode`].
+    /// The BINDING MODE (1.6.0, wire spelling) recorded on [`busbar_contract::store::VirtualKey::binding_mode`].
     /// `Some("time-bound")` for an admin-minted app/service token (bounded by `exp`, no IdP tie);
     /// `None` leaves it unset.
     pub binding_mode: Option<String>,

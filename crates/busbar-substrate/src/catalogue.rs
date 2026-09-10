@@ -82,7 +82,7 @@
 // their own per-plane attrs below).
 #![cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
 
-use busbar_api::VirtualKey;
+use busbar_contract::store::VirtualKey;
 
 use crate::trust::validate::{Generations, Grant};
 

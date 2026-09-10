@@ -62,7 +62,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use busbar_api::VirtualKey;
+use busbar_contract::store::VirtualKey;
 
 use super::{Approval, PinnedArtifact, Sighting, TrustState};
 
@@ -438,7 +438,7 @@ pub fn validate_request<A: PinnedArtifact>(ask: &Ask<'_, A>) -> Result<(), Refus
 // ── THE STANDING-PERMISSION PRIMITIVE (D3, relocated from busbar-core) ────────────────────────────
 //
 // A long-lived response re-asks its principal per frame rather than carrying a resolved `Arc<VirtualKey>`
-// into a `'static` future. The struct and its refusal are pure — they name only `busbar_api::VirtualKey`
+// into a `'static` future. The struct and its refusal are pure — they name only `busbar_contract::store::VirtualKey`
 // (already imported), this module's `Refusal`, and std — so they live in the substrate; the ONE thing
 // that names a core type, the governance re-resolution, is threaded through the [`GovResolve`] trait
 // (implemented core-side over `GovState`), so a plane holds a `Standing` and re-asks it through the

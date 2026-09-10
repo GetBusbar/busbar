@@ -33,7 +33,7 @@ use crate::plane::handle_engine::{
     ChainPosition, DurableHandleEngine, HandleDenied, HandleEngineError, MutateError, Mutation,
     ScopedMutateError, SubmitRecord, SweepBounds,
 };
-use busbar_api::StoreError;
+use busbar_contract::store::StoreError;
 use busbar_plugin::hot::{
     AdmissionId, EgressFailClass, EgressId, PipeId, Signal, StatusClass, VerifyLease,
 };

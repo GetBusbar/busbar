@@ -39,7 +39,7 @@ use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
 
-use busbar_api::ScopeRef;
+use busbar_contract::store::ScopeRef;
 
 /// One `groups:` entry.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]

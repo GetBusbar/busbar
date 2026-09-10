@@ -14,7 +14,7 @@ use std::sync::Arc;
 #[derive(Clone, Default)]
 pub struct Principal {
     /// The virtual key the caller presented, when the request is governed.
-    pub key: Option<Arc<busbar_api::VirtualKey>>,
+    pub key: Option<Arc<busbar_contract::store::VirtualKey>>,
 }
 
 impl std::fmt::Debug for Principal {

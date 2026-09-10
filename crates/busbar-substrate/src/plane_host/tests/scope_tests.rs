@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::plane::handle_engine::{HandleMeta, SealedEvent};
-use busbar_api::{PlaneDisposition, PlaneRecord};
+use busbar_contract::store::{PlaneDisposition, PlaneRecord};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -397,7 +397,7 @@ fn sess_abandon(
     None
 }
 
-fn sess_no_report(_id: &str, _e: &busbar_api::StoreError) {}
+fn sess_no_report(_id: &str, _e: &busbar_contract::store::StoreError) {}
 
 /// Open the session's handle at genesis, stamping the `SubmitRecord` with the session's own
 /// `(owner, id)` — the binding contract [`SessionScope::open`] documents.

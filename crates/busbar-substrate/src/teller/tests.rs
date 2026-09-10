@@ -203,13 +203,13 @@ fn parked_plane() -> (RecordingPlane, Arc<Trace>) {
     (p, trace)
 }
 
-fn unit(gov: &busbar_api::PlaneRequestCtx) -> Unit<'_> {
+fn unit(gov: &busbar_contract::store::PlaneRequestCtx) -> Unit<'_> {
     Unit::new(gov, "dest", 1, std::time::Instant::now()).with_correlation(7)
 }
 
 #[tokio::test]
 async fn a_full_pass_runs_all_nine_steps_in_order_and_posts_completed_once() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
     let (p, trace) = plane(None, true);
     let out = run_unit(p, unit(&gov)).await;
     assert_eq!(out.status(), 200);
@@ -229,7 +229,7 @@ async fn a_full_pass_runs_all_nine_steps_in_order_and_posts_completed_once() {
 
 #[tokio::test]
 async fn a_refusal_at_verify_never_reaches_admit_and_goes_to_audit_refused() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
     let (p, trace) = plane(Some(StepName::Verify), true);
     let out = run_unit(p, unit(&gov)).await;
     assert_eq!(
@@ -263,7 +263,7 @@ async fn a_refusal_at_verify_never_reaches_admit_and_goes_to_audit_refused() {
 
 #[tokio::test]
 async fn a_refusal_at_admit_has_no_hold_and_goes_to_audit_refused() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
     let (p, trace) = plane(Some(StepName::Admit), true);
     let out = run_unit(p, unit(&gov)).await;
     assert_eq!(out.status(), 429);
@@ -279,7 +279,7 @@ async fn a_refusal_at_admit_has_no_hold_and_goes_to_audit_refused() {
 
 #[tokio::test]
 async fn a_refusal_at_route_reaches_audit_with_the_admitted_hold() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
     let (p, trace) = plane(Some(StepName::Route), true);
     let out = run_unit(p, unit(&gov)).await;
     assert_eq!(
@@ -304,7 +304,7 @@ async fn a_refusal_at_route_reaches_audit_with_the_admitted_hold() {
 
 #[tokio::test]
 async fn a_refusal_at_meter_reaches_audit_with_the_hold() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
     let (p, trace) = plane(Some(StepName::Meter), false);
     let out = run_unit(p, unit(&gov)).await;
     assert_eq!(out.status(), 500);
@@ -317,7 +317,7 @@ async fn a_refusal_at_meter_reaches_audit_with_the_hold() {
 
 #[tokio::test]
 async fn a_caller_that_goes_away_under_the_hold_still_reaches_audit_and_posts_once() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
     let (p, trace) = parked_plane();
     let mut running = Box::pin(run_unit(p, unit(&gov)));
 
@@ -363,7 +363,7 @@ fn step_names_after_admit_are_exactly_route_meter_audit() {
 
 #[test]
 fn open_unit_returns_the_hold_on_a_pass_and_posts_only_on_a_refusal() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
 
     let (mut p, trace) = plane(None, true);
     let hold = open_unit(&mut p, &unit(&gov)).expect("the door opens");
@@ -426,7 +426,7 @@ impl GauntletPlane for StubPlane {
     }
 }
 
-fn gauntlet_req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
+fn gauntlet_req(gov: &busbar_contract::store::PlaneRequestCtx) -> GauntletRequest<'_> {
     GauntletRequest {
         gov,
         destination: "dest-x",
@@ -438,7 +438,7 @@ fn gauntlet_req(gov: &busbar_api::PlaneRequestCtx) -> GauntletRequest<'_> {
 
 #[tokio::test]
 async fn adapter_run_gauntlet_drives_on_proceed_and_returns_the_refusal_on_refuse() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
 
     let drove = Arc::new(AtomicBool::new(false));
     let seen = Arc::new(AtomicUsize::new(0));
@@ -476,7 +476,7 @@ async fn adapter_run_gauntlet_drives_on_proceed_and_returns_the_refusal_on_refus
 
 #[test]
 fn adapter_run_gauntlet_session_admits_without_driving_and_refuses_before_any_charge() {
-    let gov = busbar_api::PlaneRequestCtx::default();
+    let gov = busbar_contract::store::PlaneRequestCtx::default();
 
     let drove = Arc::new(AtomicBool::new(false));
     let admitted = run_gauntlet_session(

@@ -2,22 +2,22 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE PLANE STORE SEAM'S NARROWING ADAPTER — the trait a plane persists through and the one bridge
-//! that narrows a real `busbar_api::Store` to it, relocated to the neutral substrate so a plane crate
+//! that narrows a real `busbar_contract::store::Store` to it, relocated to the neutral substrate so a plane crate
 //! holds an `Arc<dyn PlaneStore>` without naming `busbar_core::plane::store`.
 //!
 //! [`PlaneStore`] declares ONLY the eight neutral kind-tagged PLANE-RECORD verbs and NONE of the
-//! audit-chain / credential / key / usage authority `busbar_api::Store` also carries; [`PlaneStoreView`]
+//! audit-chain / credential / key / usage authority `busbar_contract::store::Store` also carries; [`PlaneStoreView`]
 //! wraps an `Arc<dyn Store>` and forwards each verb one-to-one, exposing only [`PlaneStore`]. Both name
 //! only `busbar_api` leaf types (`PlaneRecord`/`PlaneSelector`/`StoreResult`/`Store`), so they live
 //! here; core re-exports them, so `crate::plane::store::{PlaneStore, PlaneStoreView}` still resolves
 //! there. The typed-row `KIND_*` mapping, the `encode`/`decode` bridge and the record builders stay
 //! core beside the plane row types they serialize.
 
-use busbar_api::{PlaneRecord, PlaneSelector, Store, StoreResult};
+use busbar_contract::store::{PlaneRecord, PlaneSelector, Store, StoreResult};
 use std::sync::Arc;
 
 /// The PLANE-FACING durable sink: exactly the eight neutral kind-tagged verbs of
-/// [`busbar_api::Store`], and provably none of its audit-chain / key / credential / usage authority.
+/// [`busbar_contract::store::Store`], and provably none of its audit-chain / key / credential / usage authority.
 /// A plane persists its trust state through this and cannot reach [`Store::append_audit`] because the
 /// method is not on the trait.
 ///
@@ -60,7 +60,7 @@ pub trait PlaneStore: Send + Sync + 'static {
     ) -> StoreResult<bool>;
 }
 
-/// The one bridge across the plane store seam: wraps the real [`busbar_api::Store`] and forwards
+/// The one bridge across the plane store seam: wraps the real [`busbar_contract::store::Store`] and forwards
 /// each neutral verb to it, exposing ONLY [`PlaneStore`]. Boot builds one per configured store via
 /// [`PlaneStoreView::narrow`] and every plane state type holds the resulting `Arc<dyn PlaneStore>`,
 /// so a plane's durable writes reach the same backend the engine uses while its handle carries none

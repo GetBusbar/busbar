@@ -6,7 +6,7 @@
 //! monotonic-cursor no-op-vs-advance, the retention cap sweep, and the boot rehydrate's counts.
 
 use super::*;
-use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
+use busbar_contract::store::{PlaneDisposition, PlaneRecord, PlaneSelector, StoreResult};
 use std::sync::{Arc, Mutex};
 
 /// A stand-in plane row: the engine holds it opaquely and never names it.
@@ -97,7 +97,9 @@ impl PlaneStore for MemStore {
     }
     fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
         if self.append_fails.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(busbar_api::StoreError("the append did not land".into()));
+            return Err(busbar_contract::store::StoreError(
+                "the append did not land".into(),
+            ));
         }
         self.events.lock().unwrap().push(record.clone());
         Ok(())
@@ -188,7 +190,7 @@ fn demo_abandon(
     })
 }
 
-fn no_report(_id: &str, _e: &busbar_api::StoreError) {}
+fn no_report(_id: &str, _e: &busbar_contract::store::StoreError) {}
 
 fn bounds() -> SweepBounds {
     SweepBounds {

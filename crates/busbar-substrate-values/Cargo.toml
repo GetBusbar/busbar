@@ -24,6 +24,10 @@ license = "Apache-2.0"
 # The plugin CONTRACTS (`busbar-api`'s `VirtualKey`, the redaction wrapper) and the plugin ABI, both
 # leaves, exactly as the parent crate named them.
 busbar-api = { path = "../api" }
+# THE STORE-KIND FACE, NAMED WHERE IT LIVES. `busbar_contract::store` holds the records and the
+# 1.5.5 replay face this crate reads and writes; `busbar-api` re-exported them while it drained and
+# this line is the drain arriving. No new closure: `busbar-api` already links `busbar-contract`.
+busbar-contract = { path = "../busbar-contract" }
 busbar-plugin = { path = "../busbar-plugin" }
 # The bare HTTP vocabulary (`HeaderMap`/`HeaderName`/`HeaderValue`/`StatusCode`) the protocol
 # declarations, the breaker's `Retry-After` parse and the wire types name. These are the SAME types
