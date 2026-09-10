@@ -195,6 +195,10 @@ lq_batch_size() { # $1 = tip sha, $2 = ledger (default $PP)
 #     union make a red row attributable to neither. At most one per batch.
 #   * A LINE THAT HAS GONE RED ONCE. The land-done ledger remembers it; it lands ALONE, so its
 #     second red — or its green — is its own and not a bisect over its neighbours.
+#   * A DECLARED RAISE AND A LOWERING OF THE SAME CEILING. The box proves one tree against one base:
+#     a line that declares `[gate.ceiling_raises."K"]` (from A to B) beside a line that lowers K's
+#     figure nets the rise below the declaration, and `ceiling-rose` refuses the declaration as
+#     STALE — a red that belongs to neither line. They never share a batch (2026-09-09 audit).
 lq_line_touches_gates() { # $1 = queue line, $2 = repo
   local f
   while IFS= read -r f; do
@@ -204,6 +208,47 @@ $(lq_line_files "$1" "$2")
 EOF
   return 1
 }
+# THE CEILING MOVES A LINE MAKES, over qa/construction.toml and qa/kind-isolation.toml. Two kinds:
+#   raise <file>:<path>   the line ADDS a declared raise entry `[gate.ceiling_raises."<path>"]`
+#                         (keyed as ceilings::raises keys it: the entry's `file`, default
+#                         qa/construction.toml, then the dotted path);
+#   lower <file>:<path>   the line LOWERS the integer at <path> in <file>.
+# A line that cannot be resolved prints `?`. Integers are read whether written bare or quoted, as the
+# gate reads them.
+lq_toml_ints() { # $1 = repo  $2 = rev  $3 = file; prints "<path>\t<int>" per integer, and "raise\t<key>" per declared raise
+  git -C "$1" show "$2:$3" 2>/dev/null | awk '
+    /^\[/ { sec = $0; sub(/^\[+/, "", sec); sub(/\]+.*$/, "", sec)
+             if (index(sec, "gate.ceiling_raises.") == 1) { k = substr(sec, 21); gsub(/"/, "", k); print "raise\t" k }
+             next }
+    /^[A-Za-z0-9_.-]+[ \t]*=[ \t]*"?[0-9]+"?[ \t]*(#.*)?$/ {
+             key = $0; sub(/[ \t]*=.*$/, "", key); v = $0; sub(/^[^=]*=[ \t]*"?/, "", v); sub(/"?[ \t]*(#.*)?$/, "", v)
+             print (sec == "" ? key : sec "." key) "\t" v }'
+}
+lq_line_ceiling_moves() { # $1 = queue line, $2 = repo; prints "raise <file>:<path>" / "lower <file>:<path>" / "?"
+  local line="$1" repo="$2" h f any=0
+  for h in $(lq_line_hashes "$line"); do
+    any=1
+    git -C "$repo" rev-parse -q --verify "$h^{commit}" >/dev/null 2>&1 || { printf '?\n'; return 0; }
+    for f in qa/construction.toml qa/kind-isolation.toml; do
+      git -C "$repo" diff --quiet "$h^" "$h" -- "$f" 2>/dev/null && continue
+      # Raise entries added by this pick. The entry's own `file` field decides the key's file.
+      awk -F'\t' -v f="$f" 'FNR == NR { if ($1 == "raise") before[$2] = 1; next }
+                             $1 == "raise" && !($2 in before) { print "raise-entry\t" $2 }' \
+        <(lq_toml_ints "$repo" "$h^" "$f") <(lq_toml_ints "$repo" "$h" "$f") \
+      | while IFS="$TAB" read -r _ k; do
+          local ef; ef="$(git -C "$repo" show "$h:$f" | awk -v k="$k" '
+            /^\[gate\.ceiling_raises\./ { s = $0; gsub(/"/, "", s); on = index(s, "gate.ceiling_raises." k "]") > 0; next }
+            /^\[/ { on = 0 } on && /^file[ \t]*=/ { v = $0; sub(/^file[ \t]*=[ \t]*"/, "", v); sub(/".*$/, "", v); print v; exit }')"
+          printf 'raise %s:%s\n' "${ef:-qa/construction.toml}" "$k"
+        done
+      # Integers lowered by this pick.
+      awk -F'\t' -v f="$f" 'FNR == NR { if ($1 != "raise") before[$1] = $2; next }
+                             $1 != "raise" && ($1 in before) && ($2 + 0 < before[$1] + 0) { print "lower " f ":" $1 }' \
+        <(lq_toml_ints "$repo" "$h^" "$f") <(lq_toml_ints "$repo" "$h" "$f")
+    done
+  done
+  [ "$any" = 1 ] || printf '?\n'
+}
 lq_line_was_red() { # $1 = queue line, $2 = done ledger (default $D); rows are `ST batch=.. log=.. <text>`
   local line="$1" d="${2:-$D}"
   [ -f "$d" ] || return 1
@@ -212,9 +257,9 @@ lq_line_was_red() { # $1 = queue line, $2 = done ledger (default $D); rows are `
 # THE JOIN DECISION for one candidate against the batch so far. Prints nothing; the exit status is the
 # answer, and the caller extends the claimed set only on a yes.
 #   $1 = line  $2 = repo  $3 = lines in batch so far  $4 = claimed files (TAB-joined)  $5 = gates already taken (0|1)
-#   $6 = batch holds a was-red line (0|1)
+#   $6 = batch holds a was-red line (0|1)  $7 = ceiling moves claimed so far ("raise K" / "lower K", TAB-joined)
 lq_may_join() {
-  local line="$1" repo="$2" nb="$3" claimed="$4" gates="$5" alone="$6" files f
+  local line="$1" repo="$2" nb="$3" claimed="$4" gates="$5" alone="$6" moves="${7:-}" files f m kind key
   [ "$alone" = 0 ] || return 1                         # a red-once line took the whole batch
   if lq_line_was_red "$line"; then [ "$nb" = 0 ] || return 1; fi
   files="$(lq_line_files "$line" "$repo")"
@@ -226,6 +271,16 @@ lq_may_join() {
 $files
 EOF
   if [ "$gates" = 1 ] && lq_line_touches_gates "$line" "$repo"; then return 1; fi
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    kind="${m%% *}"; key="${m#* }"
+    case "$kind" in
+      raise) case "$TAB$moves" in *"${TAB}lower $key$TAB"*) return 1 ;; esac ;;
+      lower) case "$TAB$moves" in *"${TAB}raise $key$TAB"*) return 1 ;; esac ;;
+    esac
+  done <<EOF
+$(lq_line_ceiling_moves "$line" "$repo")
+EOF
   return 0
 }
 
@@ -335,7 +390,7 @@ EOF
 # line pre-proven RED at this tip is parked `#RED-preproof <log>` rather than popped. Everything
 # else is popped exactly as it always was, in queue order.
 lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out; prints the count
-  local tip="$1" b="$2" batch="$3" keep="$4" line st n=0 greens=0 claimed="" gates=0 alone=0 f
+  local tip="$1" b="$2" batch="$3" keep="$4" line st n=0 greens=0 claimed="" gates=0 alone=0 f moves="" m
   : >"$batch"; : >"$keep"
   greens="$(awk -F"$TAB" -v tip="$tip" '$1 == "GREEN" && $2 == tip {print $4}' "$PP" 2>/dev/null | sort -u | grep -c . || true)"
   case "$greens" in ''|*[!0-9]*) greens=0 ;; esac
@@ -358,10 +413,13 @@ lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out;
     if [ "$greens" -gt 0 ] && [ "$st" != GREEN ]; then
       printf '%s\n' "$line" >>"$keep"; continue
     fi
-    if [ "$n" -lt "$b" ] && lq_may_join "$line" "$W" "$n" "$claimed" "$gates" "$alone"; then
+    if [ "$n" -lt "$b" ] && lq_may_join "$line" "$W" "$n" "$claimed" "$gates" "$alone" "$moves"; then
       printf '%s\n' "$line" >>"$batch"; n=$((n + 1))
       while IFS= read -r f; do [ -n "$f" ] && claimed="$claimed$f$TAB"; done <<EOF
 $(lq_line_files "$line" "$W")
+EOF
+      while IFS= read -r m; do [ -n "$m" ] && [ "$m" != "?" ] && moves="$moves$m$TAB"; done <<EOF
+$(lq_line_ceiling_moves "$line" "$W")
 EOF
       lq_line_touches_gates "$line" "$W" && gates=1
       lq_line_was_red "$line" && alone=1
@@ -439,6 +497,25 @@ lq_selftest() {
   local hg1; hg1="$(git -C "$repo" rev-parse HEAD)"
   printf 'g2\n' >"$repo/xtask/src/gates/g2.rs"; git -C "$repo" add -A; git -C "$repo" commit -qm g2
   local hg2; hg2="$(git -C "$repo" rev-parse HEAD)"
+  # The ceilings: a base with two files, then a line that DECLARES a raise of a kind-isolation figure
+  # (the entry lives in construction.toml, as they all do), and a line that LOWERS that same figure.
+  mkdir -p "$repo/qa"
+  printf '[gate]\nx = 1\n\n[rules.legacy-reach]\nceiling = 92\n' >"$repo/qa/construction.toml"
+  printf '[rules.x]\nfigure = "47"\n' >"$repo/qa/kind-isolation.toml"
+  git -C "$repo" add -A; git -C "$repo" commit -qm ceilings-base
+  local hcb; hcb="$(git -C "$repo" rev-parse HEAD)"
+  printf '[gate]\nx = 1\n\n[gate.ceiling_raises."rules.x.figure"]\nfile = "qa/kind-isolation.toml"\nfrom = 47\nto = 60\nbecause = "first gating figure"\n\n[rules.legacy-reach]\nceiling = 92\n' >"$repo/qa/construction.toml"
+  git -C "$repo" add -A; git -C "$repo" commit -qm declares-raise
+  local hraise; hraise="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q "$hcb"
+  printf '[rules.x]\nfigure = "40"\n' >"$repo/qa/kind-isolation.toml"
+  git -C "$repo" add -A; git -C "$repo" commit -qm lowers-figure
+  local hlower; hlower="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q "$hcb"
+  printf '[gate]\nx = 1\n\n[rules.legacy-reach]\nceiling = 80\n' >"$repo/qa/construction.toml"
+  git -C "$repo" add -A; git -C "$repo" commit -qm lowers-other
+  local hother; hother="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" checkout -q -f master 2>/dev/null || git -C "$repo" checkout -q -f main 2>/dev/null || git -C "$repo" checkout -q -f "$hg2"
 
   echo "landq4 selftest: a line's file set"
   _t "the files of a one-pick line"  "a.txt"  "$(lq_line_files "--prove $ha" "$repo")"
@@ -532,6 +609,19 @@ lq_selftest() {
   _t "a red-once line at the head lands ALONE" "--prove $hb" "$(cat "$root/b6.txt")"
   _t "  ...and nothing joins it"               "--prove $hc" "$(cat "$root/k6.txt")"
   : >"$D"
+  # ONE CEILING, RAISED AND LOWERED. The declaration is in construction.toml, the figure it names is
+  # in kind-isolation.toml — two files, so the one-file rule does not see it; this rule does.
+  echo "landq4 selftest: a declared raise and a lowering of the same ceiling never share"
+  _t "the raise line's move is named"      "raise qa/kind-isolation.toml:rules.x.figure" "$(lq_line_ceiling_moves "--prove $hraise" "$repo")"
+  _t "the lowering line's move is named"   "lower qa/kind-isolation.toml:rules.x.figure" "$(lq_line_ceiling_moves "--prove $hlower" "$repo")"
+  _t "a lowering of another ceiling is another key" "lower qa/construction.toml:rules.legacy-reach.ceiling" "$(lq_line_ceiling_moves "--prove $hother" "$repo")"
+  printf -- '--prove %s\n--prove %s\n--prove %s\n' "$hraise" "$hlower" "$hother" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b8.txt" "$root/k8.txt")"
+  _t "raise K and lower K do not share"   "--prove $hraise" "$(cat "$root/b8.txt")"
+  _t "  ...the lowering waits"             "--prove $hlower" "$(head -n1 "$root/k8.txt")"
+  printf -- '--prove %s\n--prove %s\n' "$hlower" "$hraise" >"$Q"
+  n="$(lq_pop tipX 4 "$root/b9.txt" "$root/k9.txt")"
+  _t "  ...in either order"                "--prove $hlower" "$(cat "$root/b9.txt")"
   # UNKNOWN SHARES WITH NOBODY. A line whose pick does not resolve is not "touches nothing".
   printf -- '--prove %s\n--prove deadbee\n--prove %s\n' "$ha" "$hc" >"$Q"
   n="$(lq_pop tipX 4 "$root/b7.txt" "$root/k7.txt")"
