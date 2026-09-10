@@ -219,15 +219,61 @@ Zero slack; the next face declares its own raise."""
 
 [[gate.ceiling_raises]]
 key = "rules.loc-ceilings.union_ceiling"
-by = 65
-because = """The same 116 lines, counted a third time: the union row is kernel + caps/contract + \
-unit-* and the caps/contract term is the one that moved (5379 + 3596 + 14606 = 23581). No kernel \
-or unit line changed. Declared separately because it is a separate integer `ceiling-rose` compares, \
-and pinned at the measurement for the same reason the pair is."""
+by = 12
+because = """The pair's 116 lines counted a third time, LESS the 53 unit lines the same series \
+deleted: the union row is kernel + caps/contract + unit-* (5379 + 3596 + 14553 = 23528). The \
+caps/contract term rose by 116 (the dialect kind's face, then the upstream status table); the unit \
+term FELL by 53 because busbar-unit-breaker and busbar-unit-egress stopped declaring their own \
+copies of the status class and the disposition and now name the table (`unit_total_ceiling` was \
+re-pinned downward by `--write`, 14606 -> 14553). Declared separately because it is a separate \
+integer `ceiling-rose` compares, and pinned at the measurement for the same reason the pair is."""
 
-# THREE ENTRIES STAND HERE TODAY, and all three describe ONE rise measured three ways: two contract
-# faces — the dialect kind's (51 lines) and the upstream status table's (65) — as the contract
-# pair's surface, as the pair's LOC row, and as the term they add to the union. They expire together the moment this commit is the base. The previous
+# ── kind-isolation cells, declared BY IDENTITY (`cell.<crate>.<kind>.count`, `file` naming the
+# ledger) rather than by slot, per db7f08cca. These four rises are the R6 dialect lines' and the
+# prerequisites' — none of the files the matrix lists for them is touched by keep-status-table — and
+# they are declared here because the matrix reads as ONE ratchet and cannot be green on this line
+# while any cell is above its row. They expire with the rest when this commit is the base.
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.control.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = """The dialect kind's contract face names the control kind: `Kind::Control`, its \
+sealed marker and `CONTROL_ABI` in plugin.rs, and the kind-set and object-safety fixtures that \
+walk the closed set (tests/kind_set.rs +4 is the whole rise; the matrix lists no file this branch \
+wrote). A kind the closed set spells is a kind the contract has to name once per row of the set."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-contract.plane.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """One hit, in src/dialect.rs: the dialect kind's contract face says which PLANE a \
+dialect declares (`DialectMeta::PLANE`), and the word is the face's, not a plane's — the contract \
+names the kind, never an instance. R6's line; the matrix lists no file this branch wrote."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.plane.count"
+file = "qa/kind-isolation.toml"
+by = 37
+because = """The composition root seals the two R6 dialect crates into the LLM plane \
+(root/dialects.rs, root/registry.rs and their tests) and names them in its manifest; the root is \
+the one crate that names every kind (ARCHITECTURE.md 1.1 / 3.1). The heaviest files the matrix \
+lists — main.rs, Cargo.toml, root/tests/units_voice.rs, tests/plane_host_universal_purity.rs, \
+root/tests/registry.rs — are untouched by keep-status-table. R6's line; declared here so the \
+matrix can be one green ratchet on the line that carries both."""
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plugin-testkit.api.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = """One hit in plugin-testkit, the kinds battery that R6 extended to `Kind::Dialect` \
+and `Kind::Control` (src/kinds.rs, src/tests/kinds_tests.rs). Not a file this branch wrote; \
+declared with the other three so the matrix is one green ratchet on the line that carries R6."""
+
+# SEVEN ENTRIES STAND HERE TODAY. Three describe ONE rise measured three ways: two contract faces —
+# the dialect kind's (51 lines) and the upstream status table's (65) — as the contract pair's
+# surface, as the pair's LOC row, and as the term they add to the union. Four are kind-isolation
+# cells the R6 dialect lines grew, declared by identity above. They expire together the moment this commit is the base. The previous
 # occupant — `rules.legacy-reach.prefixes.busbar_substrate.figure`, the one-time 26 -> 47
 # calibration — LANDED, the base carried 47, `ceiling-rose` refused the declaration as stale, and it
 # was struck: the expiry working exactly as the paragraph above describes it.
@@ -488,12 +534,12 @@ contract_crate = "busbar-contract"
 # own declared raise naming its own measured lines, never out of this one.
 caps_contract_ceiling = 3596
 unit_crate_glob = "busbar-unit-*"
-unit_total_ceiling = 14606
+unit_total_ceiling = 14553
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-# 23465 -> 23581: the caps/contract term above rose by 116 (the dialect kind's face, then the
-# upstream status table) and nothing else in the sum moved. Declared under `[gate.ceiling_raises]` with the pair.
-union_ceiling = 23581
+# 23465 -> 23528: the caps/contract term above rose by 116 (the dialect kind's face, then the
+# upstream status table) and the unit term fell by 53 (two units stopped declaring their own copies). Declared under `[gate.ceiling_raises]` with the pair.
+union_ceiling = 23528
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

@@ -982,6 +982,7 @@ name = "busbar-substrate-values"
 version = "1.6.0"
 dependencies = [
  "busbar-api",
+ "busbar-contract",
  "busbar-plugin",
  "busbar-timing",
  "bytes",

@@ -77,20 +77,20 @@ pub struct Classified {
     pub label: &'static str,
 }
 
-/// The metric label literals. These are pinned to the SAME string values as the egress unit's own
-/// `ports::disposition` module — the two crates share no dependency to point at one constant, so the
-/// values are kept in step by hand, deliberately, rather than through a shared type.
+/// The metric label literals, read off the contract's disposition table — the same rows the egress
+/// unit reads, so the two crates no longer keep four strings in step by hand.
 pub mod label {
+    use busbar_contract::upstream::Disposition;
     /// A transient upstream failure.
-    pub const TRANSIENT_UPSTREAM: &str = "transient_upstream";
+    pub const TRANSIENT_UPSTREAM: &str = Disposition::TransientUpstream.label();
     /// A definitive signal about the shared destination.
-    pub const HARD_DOWN: &str = "hard_down";
+    pub const HARD_DOWN: &str = Disposition::HardDown.label();
     /// The request was too large for this destination's window.
-    pub const CONTEXT_LENGTH: &str = "context_length";
+    pub const CONTEXT_LENGTH: &str = Disposition::ContextLength.label();
     /// The caller's own fault. Never read as a telemetry label by the reference caller (a
     /// `ClientFault` short-circuits before the label is used) but a real value all the same — never
     /// a placeholder a future caller could mistake for "unset".
-    pub const CLIENT_FAULT: &str = "client_fault";
+    pub const CLIENT_FAULT: &str = Disposition::ClientFault.label();
 }
 
 /// Fold a classified [`Disposition`] into the [`Outcome`] this unit's state machine acts on and the
