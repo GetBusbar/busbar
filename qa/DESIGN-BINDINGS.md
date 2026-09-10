@@ -17,16 +17,16 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **103**  (PB-0 master rule + 102 table rows)
-- mapped (proven): **102**
-- unproven (cited, but nothing compared): **1**
+- mapped (proven): **103**
+- unproven (cited, but nothing compared): **0**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 11, lint 5, oracle-cell 58, oracle-family 5, test 453
+- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 58, oracle-family 5, test 453
 
 ## Bindings
 
 | # | Surface | Status | Verdict | Why | Checks |
 |---|---|---|---|---|---|
-| PB-0 | master rule | unproven | FAIL | partly proven; a referenced check settles nothing: gate:scripts/inventory-coverage.sh | gate: `scripts/inventory-coverage.sh`<br>gate: `xtask/src/gates/construction.rs` |
+| PB-0 | master rule | mapped | PASS |  | gate: `xtask/src/gates/inventory_coverage.rs`<br>gate: `xtask/src/gates/construction.rs` |
 | PB-1 | hook `on_empty` | mapped | PASS |  | test: `enforce_restricts_reapplies_compliance_tags_across_pools`<br>test: `multi_restrict_disjoint_intersection_fails_closed` |
 | PB-2 | per-lane `max_concurrent` | mapped | PASS |  | test: `excluded_reasons_records_at_capacity`<br>test: `at_capacity_reject_sheds_503_not_queued`<br>test: `queue_dispatches_when_permit_frees_before_deadline`<br>test: `queue_times_out_to_503_when_capacity_never_frees`<br>gate: `scripts/release-check.sh` |
 | PB-3 | tripped / budget-exhausted / at-capacity lanes | mapped | PASS |  | test: `ordered_walk_skips_tripped_preferred_to_next`<br>test: `ordered_walk_skips_excluded_preferred`<br>test: `at_capacity_plus_tripped_member_rejects_503`<br>test: `least_bad_never_reaches_an_excluded_member`<br>test: `strengthened_lane_availability_invariant` |
@@ -129,14 +129,6 @@ The three words are not interchangeable:
 | PB-100 | admin wire details | mapped | PASS |  | oracle-family: `admin.ops` (44/240 cells cite it)<br>oracle-cell: `http.crosscut\|OPTIONS\|chat`<br>oracle-cell: `http.crosscut\|auth-token\|POST-empty`<br>oracle-cell: `ops.scrape\|v1models\|openai-fp`<br>test: `test_admin_v1_key_idempotent_mint_and_if_match`<br>test: `test_admin_v1_overlay_reset_hooks_reverts_to_base`<br>test: `keys_error_surface_is_byte_stable`<br>test: `admin_error_surface_witnesses_every_declared_response`<br>test: `declared_error_set_is_exactly_what_the_handlers_emit`<br>test: `record_list_get_and_bound`<br>test: `exchange_ok_body_includes_base_url_equal_to_public_url`<br>test: `begin_sets_httponly_secure_cookie_and_redirects`<br>test: `callback_state_mismatch_400`<br>test: `callback_nonce_mismatch_rejected`<br>test: `execute_hop_refuses_non_allowlisted_host`<br>test: `vet_hop_url_enforces_https_allowlist_and_blocks_metadata`<br>test: `execute_hop_does_not_follow_redirect`<br>test: `refresh_rotates_key_and_revokes_the_old_one` |
 | PB-101 | inbound auth details | mapped | PASS |  | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
-
-## The unproven bindings: cited, but nothing was compared
-
-Each of these names one or more checks and is still proof of nothing. A binding here is
-red under `cargo xtask gate design-bindings`; it is fixed by making the citation real,
-or it is demoted to a named gap. It is never waived.
-
-- **PB-0** (master rule): partly proven; a referenced check settles nothing: gate:scripts/inventory-coverage.sh
 
 ## Findings: bindings in conflict with the tree
 

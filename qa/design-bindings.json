@@ -15,12 +15,12 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 102,
-  "unproven": 1,
+  "mapped": 103,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
-   "gate": 11,
+   "gate": 13,
    "lint": 5,
    "oracle-cell": 58,
    "oracle-family": 5,
@@ -62,12 +62,12 @@
    "surface": "master rule",
    "binding": "EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in the body needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for the body is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?",
    "inventory": "every row of every inventory file under docs/design/inventory/",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "gate",
-     "ref": "scripts/inventory-coverage.sh",
-     "proves": "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red",
+     "ref": "xtask/src/gates/inventory_coverage.rs",
+     "proves": "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell that PASSes on the golden ledger or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red, and so does a gap entry naming a row that no longer exists or has since been covered",
      "source": "curated",
      "status": "mapped"
     },
@@ -79,8 +79,8 @@
      "proves": "construction-gate `legacy-reach`: ONE ratchet over the composition root's TOTAL count of distinct symbols named through the retiring engine crates, which may only go down, with a per-crate figure per retiring crate that gates in both directions (over its figure is that row's own FAIL, under it is `ceiling-slack`) -- so a cut that retargets a core symbol onto the substrate on its way to the kernel is a re-pin of two figures in the commit that makes it rather than a number nothing could fail on, and the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/inventory-coverage.sh"
+   "verdict": "PASS",
+   "verdict_detail": "gate:xtask/src/gates/inventory_coverage.rs, gate:xtask/src/gates/construction.rs"
   },
   {
    "id": "PB-1",
