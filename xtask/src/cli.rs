@@ -237,7 +237,15 @@ fn gate(args: &[String]) -> i32 {
         // deliberate: the arm is a GATE RUN whose owed set is its own row, so `execute` reconciles
         // it exactly as it reconciles a judging run, and the refusal arrives as a FAIL row a
         // reader can diff rather than as a message on stderr.
-        if reg.name == "kind-isolation" {
+        //
+        // `config-schema --write` answers the same way and for the same reason: its write arm is
+        // INSIDE the gate (one derivation, two arms — `snapshot-drift` either rewrites the frozen
+        // render or diffs it), so the only thing needed here is to let the gate run. It was not on
+        // this list, which meant the exact command the gate's own STALE message tells an operator
+        // to run — `cargo xtask gate config-schema --write` — answered "this gate has nothing to
+        // write" and exited 2. A gate that names a repair nobody can perform is a gate that has to
+        // be repaired by hand, which is the one way a frozen render stops being a derivation.
+        if matches!(reg.name, "kind-isolation" | "config-schema") {
             let verdict = gates::execute(gate.as_ref(), &cx);
             gates::print_verdict(reg.name, &verdict);
             return i32::from(verdict.red);

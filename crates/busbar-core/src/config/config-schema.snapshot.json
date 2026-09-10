@@ -2066,6 +2066,10 @@
           "optional": true,
           "type": "u32"
         },
+        "denied_destinations": {
+          "optional": true,
+          "type": "Vec<String>"
+        },
         "max_output_tokens": {
           "optional": true,
           "type": "u32"
