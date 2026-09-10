@@ -246,3 +246,20 @@ fn the_reader_is_deterministic() {
     let body = br#"{"jsonrpc":"2.0","id":"x","method":"tools/list","params":{}}"#;
     assert_eq!(read(body), read(body));
 }
+
+/// Both halves of the hook subject are pointers the decode step already resolves.
+///
+/// `hook_subject` answers with locators into the span table, never by scanning the body a second
+/// time, so a pointer it names that the request-pointer table does not carry would resolve to
+/// nothing on every request and a gate attached to this plane would be handed an absent payload
+/// while the request that arrived plainly had one. This is the only way that failure is visible: it
+/// is silent at run time and byte-invisible on the wire.
+#[test]
+fn the_hook_subject_names_only_pointers_this_plane_declares() {
+    for ptr in [super::PTR_PARAMS_NAME, super::PTR_PARAMS_ARGUMENTS] {
+        assert!(
+            super::REQUEST_PTRS.contains(&ptr),
+            "the hook subject names `{ptr}`, so the request-pointer table must resolve it"
+        );
+    }
+}

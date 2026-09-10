@@ -194,6 +194,38 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 258
 because = "the union row sums kernel + caps/contract + unit-*; the hooks-kind face is the same 295 lines the caps_contract row counts, 37 of them paid for by the two DELETIONS that landed beside it (21 contract lines for Unit::{byte_counts, frame_counts, set_counts}, 16 unit lines for unit-auth's ResolvedKey/KeyVerifier/RevocationView) -- kernel 5379 is unchanged"
 
+# THE PLANE-NEUTRAL HOOK-SUBJECT FACE (`busbar_contract::HookSubject` + `Plane::hook_subject`):
+# what a hook is asked to judge about one unit, said in the locator idiom every other plane step
+# already answers in. It exists because the neutral firing seam could not name its own subject, so
+# each plane lent it one: the request-admission host ABI takes MCP's `tool` + `args_json` (the agent
+# plane spells a task op into it, the duplex plane a literal method name) and the model plane's
+# projection carries `requested_model`/`prompt`. This is that question asked once, in nouns no plane
+# owns. Six lines by every counter -- `scripts/loc-surface.py` measures busbar-contract 3603 -> 3609
+# with busbar-caps 1151 unmoved, and the loc-ceilings rule's own counter measures busbar-contract
+# 3604 -> 3610 with busbar-caps 1153 unmoved -- so the three entries below are the SAME six lines
+# counted three times, once by the surface script, once by the loc-ceilings rule and once more in the
+# kernel + contract + unit union that rule sums.
+[[gate.ceiling_raises]]
+key = "gate.surface_ceilings.contract_caps"
+by = 6
+because = "the plane-neutral hook-subject face (`HookSubject` with its `subject_locator`/`argument_span` members, and `Plane::hook_subject` with no default body) in busbar-contract/src/hooks.rs and plane.rs: 6 surface lines measured by scripts/loc-surface.py, which give the neutral hook seam a vocabulary for WHAT IS BEING ASKED FOR so it stops being handed one plane's nouns for it -- MCP's `tool` and `args_json` on the request-admission host ABI, the model plane's `requested_model` and `prompt` on the routing projection"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.caps_contract_ceiling"
+by = 6
+because = "the plane-neutral hook-subject face (`HookSubject` + `Plane::hook_subject`) in busbar-contract/src/hooks.rs and plane.rs: the same 6 lines as the surface-ceiling raise, as the loc-ceilings rule's own counter measures them (busbar-contract 3604 -> 3610, busbar-caps 1153 unmoved). Locators, never values, on the same terms as every other plane step, so the answer a plane gives cannot differ from the payload that plane would have serialized"
+
+[[gate.ceiling_raises]]
+key = "rules.loc-ceilings.union_ceiling"
+by = 6
+because = "the plane-neutral hook-subject face in busbar-contract/src/hooks.rs and plane.rs: the same 6 lines once more, because the union is the kernel + contract + unit sum and the contract is one of its terms -- kernel 5379 and unit-* 14590 are both unchanged by this line, which adds no kernel and no unit code at all"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-plane-llm.transport.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "the plane-neutral hook-subject face is proven by a cell that decodes a REAL request of four dialects and asks the plane what a hook would be told about it (crates/busbar-plane-llm/tests/hook_subject.rs), and decoding one means constructing the stack it arrived on -- so the model plane's TEST naming of the wire axis goes 35 -> 36. ONE construction site in the whole file, which is the minimum a new decode fixture can cost; no production line in this plane names a wire, and the face itself names none. The row's comment carries the drain: the fixture stack moves behind a transport-blind harness entry that hands back a ready node"
+
 # THE VIRTUAL-KEY DIRECTORY FACE (`busbar_contract::kinds::{KeyScope, KeyFacts,
 # VirtualKeyDirectory}`): what the authenticate and eligibility steps reach for a signed key's
 # posture, the revocation denylist and the operator credential digest, inside the loop. It
@@ -301,7 +333,7 @@ because = "busbar-contract x plane. operation.rs's header is the table that deri
 # a green baseline value for a scratch copy; the checked-in numbers below never move except by the
 # owner's own hand.
 [gate.surface_ceilings]
-contract_caps = 4754
+contract_caps = 4760
 grammar = 388
 contract_transport = 845
 # THE HOOK POLICY ENGINE (`busbar-core-policy`, kind core) — not a plugin-author budget but the
@@ -527,12 +559,12 @@ kernel_crate = "busbar-kernel"
 kernel_ceiling = 5379
 caps_crate = "busbar-caps"
 contract_crate = "busbar-contract"
-caps_contract_ceiling = 4757
+caps_contract_ceiling = 4763
 unit_crate_glob = "busbar-unit-*"
 unit_total_ceiling = 14590
 verbs_crate = "busbar-unit-verbs"
 verbs_ceiling = 1428
-union_ceiling = 24726
+union_ceiling = 24732
 # Files (by basename, wherever they sit under busbar-kernel/src) whose bodies seed the call-graph
 # name-match: every identifier called from one of these files, that busbar-kernel does not itself
 # define, is looked up by name against every busbar-unit-* file.

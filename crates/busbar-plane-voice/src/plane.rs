@@ -63,6 +63,7 @@ use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir};
 use busbar_contract::dest::{
     ClientMode, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
+use busbar_contract::hooks::HookSubject;
 use busbar_contract::ids::{
     AdminVerbId, CorrelationRef, CorrelationValue, MeterClassId, OpClassId, SchemeKey,
 };
@@ -452,6 +453,20 @@ impl Plane for VoicePlane {
         // is this plane's own configuration (`Upstream::lane`), and the response is unbounded audio,
         // not a single JSON body the kernel would clamp.
         AdmitFacts::default()
+    }
+
+    fn hook_subject<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> Option<HookSubject> {
+        // A duplex session HAS a subject — the session being opened, which is what an operator
+        // attaches a gate to here — but neither half of it is in the arriving bytes: the mode and
+        // the parameters a gate screens are the OPERATOR'S session configuration, resolved before a
+        // frame is read. So this plane answers that there is something to decide about and that no
+        // locator into the request can point at it, which is the truth. It is the sharpest case for
+        // this face existing: the stand-in it replaces is a literal method name, spelled into a
+        // neighbouring plane's `tool` argument, for a protocol that has no tools.
+        Some(HookSubject {
+            subject_locator: None,
+            argument_span: None,
+        })
     }
 
     fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {

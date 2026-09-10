@@ -10,6 +10,7 @@ use busbar_contract::bounded::{
 };
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
 use busbar_contract::grammar::{ArrivalLocation, Location};
+use busbar_contract::hooks::HookSubject;
 use busbar_contract::ids::{AdminVerbId, MeterClassId, OpClassId, SchemeAlt, SchemeKey};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
@@ -904,6 +905,27 @@ impl Plane for LlmPlane {
             },
             input_span: Some(input_span),
         }
+    }
+
+    fn hook_subject<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> Option<HookSubject> {
+        // The subject a hook decides about on this plane is the MODEL the caller asked for, and it
+        // is in exactly the place the admission step already names it: the dialect's own table says
+        // where the model is, and this answers with that same locator rather than a second opinion
+        // about it. A body whose dialect the decode step did not resolve has no subject to name.
+        let d = unit_dialect(u)?;
+        let body = u.body().body();
+        Some(HookSubject {
+            subject_locator: Some(d.model_location),
+            // The whole request document is the argument payload: a screening hook on this plane is
+            // shown the conversation, and every part of the body except the controls around it is
+            // conversation. Narrowing this to the priced input span would hide the controls a
+            // guardrail reads (the tool definitions, the response format) from the one hook whose
+            // job is to read them.
+            argument_span: (!body.is_empty()).then_some(Span {
+                start: 0,
+                end: body.len(),
+            }),
+        })
     }
 
     fn route<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> RoutePlan {

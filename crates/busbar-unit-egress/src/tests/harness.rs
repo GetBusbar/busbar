@@ -1175,6 +1175,15 @@ impl busbar_contract::Plane for TestPlane {
         AdmitFacts::default()
     }
 
+    fn hook_subject<'u>(
+        &self,
+        _u: &Unit<'u>,
+        _ctx: &Ctx<'u>,
+    ) -> Option<busbar_contract::HookSubject> {
+        // A fixture governs nothing, so it names no subject.
+        None
+    }
+
     fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
         RoutePlan::default()
     }

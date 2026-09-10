@@ -243,3 +243,19 @@ fn the_reader_is_deterministic() {
     let body = br#"{"jsonrpc":"2.0","id":"x","method":"message/send","params":{}}"#;
     assert_eq!(read(body), read(body));
 }
+
+/// Both halves of the hook subject are pointers the decode step already resolves.
+///
+/// The subject on this protocol is the METHOD — which skill of the agent is being asked for — and
+/// the argument payload is the params object under it. `hook_subject` answers with locators into the
+/// span table rather than by re-scanning, so a pointer it names that the request-pointer table does
+/// not carry would leave a gate on this plane screening nothing, silently.
+#[test]
+fn the_hook_subject_names_only_pointers_this_plane_declares() {
+    for ptr in [super::PTR_METHOD, super::PTR_PARAMS] {
+        assert!(
+            super::REQUEST_PTRS.contains(&ptr),
+            "the hook subject names `{ptr}`, so the request-pointer table must resolve it"
+        );
+    }
+}

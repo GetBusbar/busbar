@@ -14,6 +14,8 @@
 
 use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
+use busbar_contract::grammar::Location;
+use busbar_contract::hooks::HookSubject;
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{
@@ -819,6 +821,25 @@ impl Plane for McpPlane {
                 end: u.body().body().len(),
             }),
         }
+    }
+
+    fn hook_subject<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> Option<HookSubject> {
+        // This protocol's subject is the NAME its own pointer table already declares a place for,
+        // and its argument payload is the arguments member beside it. Both are read off the spans
+        // the decode step resolved; neither is scanned again here. A request that carries neither is
+        // one whose whole content is its method name, and it answers with both absent rather than
+        // with a name borrowed from the configured server.
+        let at = |ptr: &str| {
+            u.body()
+                .pointers()
+                .find(|(p, _)| *p == ptr)
+                .map(|(_, span)| span)
+        };
+        Some(HookSubject {
+            subject_locator: at(jsonrpc::PTR_PARAMS_NAME)
+                .map(|_| Location::UnitJsonPointer(jsonrpc::PTR_PARAMS_NAME)),
+            argument_span: at(jsonrpc::PTR_PARAMS_ARGUMENTS),
+        })
     }
 
     fn route<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {

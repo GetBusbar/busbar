@@ -186,6 +186,7 @@ pub const REQUEST_PTRS: &[&str] = &[
     PTR_ID,
     PTR_PARAMS,
     PTR_PARAMS_NAME,
+    PTR_PARAMS_ARGUMENTS,
     PTR_PARAMS_URI,
     PTR_PARAMS_TASK_ID,
     PTR_PARAMS_META,
@@ -203,6 +204,10 @@ pub const RESPONSE_PTRS: &[&str] = &[
 
 /// Where a request's subject is, for the methods whose subject is a name.
 pub const PTR_PARAMS_NAME: &str = "/params/name";
+
+/// The ARGUMENTS a call carries — the payload a screening hook is shown, and the one member of a
+/// request on this protocol that is written by the caller rather than by the protocol.
+pub const PTR_PARAMS_ARGUMENTS: &str = "/params/arguments";
 
 /// Where a request's subject is, for the methods whose subject is a resource.
 pub const PTR_PARAMS_URI: &str = "/params/uri";

@@ -287,6 +287,23 @@ pub trait Plane: Plugin + Send + Sync + 'static {
     /// that differs from the draft's is a dispute; the draft's class is what priced the unit.
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, ctx: &Ctx<'u>) -> AuditFacts;
 
+    /// Say what a hook is being asked to judge about this unit.
+    ///
+    /// The one step-adjacent question that had no face: an operator attaches a gate to a container
+    /// and the gate must be told WHAT is being asked for. Until this method existed the neutral
+    /// firing seam had to be handed one plane's nouns for it, so every other plane spelled itself
+    /// into those nouns to be governed at all. Here each plane names its own subject and the seam
+    /// names none.
+    ///
+    /// Locators, never values, on the same terms as every other step: see [`HookSubject`].
+    ///
+    /// `None` says this unit has no subject a hook could decide about — an operation whose whole
+    /// content is its own name, or a plane that governs nothing. It is not "hooks are off": a plane
+    /// answering `None` is answering that there is nothing here to screen, and a gate attached to it
+    /// is an operator error the composition can report rather than a call that silently sees an
+    /// empty payload.
+    fn hook_subject<'u>(&self, u: &Unit<'u>, ctx: &Ctx<'u>) -> Option<crate::hooks::HookSubject>;
+
     /// Answer one of this plane's declared read-only introspection verbs. Errors when the verb
     /// is not one this plane declares.
     ///

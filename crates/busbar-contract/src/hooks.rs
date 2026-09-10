@@ -131,6 +131,51 @@ impl std::fmt::Debug for CallerIdentity {
     }
 }
 
+/// WHAT A HOOK IS ASKED TO JUDGE, said in locators — the plane's answer to "what is being asked
+/// for here", for a hook that is about to decide whether it may proceed.
+///
+/// # Why this is not a payload
+///
+/// Every other plane step answers with a locator: `authenticate` says WHERE the credential is,
+/// [`crate::unit::AdmitFacts::lane_locator`] says WHERE the lane name is, `input_span` says WHICH
+/// span is the priced input. The plane never holds the value and the kernel resolves the locator
+/// against the same bytes. A hook subject is the same question one step earlier, so it takes the
+/// same form — and the form is what makes it byte-identical: a locator resolved against the body a
+/// plane already decoded cannot differ from the payload that plane would have serialized.
+///
+/// # Why it exists
+///
+/// The neutral seam that fires an operator's gates could not name its own subject. So each plane
+/// lent it one, and the borrowed nouns ended up in kind-neutral crates: one plane's word for a
+/// callable and one for its arguments on the request-admission host ABI — into which a second plane
+/// spells a task operation and a third a literal method name, neither of which has callables at all
+/// — and a fourth plane's word for a target and one for its content on the routing projection. Three
+/// planes' vocabulary for one question none of them was allowed to ask abstractly. This is that
+/// question, asked once, in nouns no plane owns.
+///
+/// # The CONTAINER is deliberately absent
+///
+/// Which pool, which server, which agent a request is addressed to is resolved from operator
+/// configuration and is not in the request at all, so no locator could point at it. The firing site
+/// resolved it and supplies it, exactly as it does today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HookSubject {
+    /// Where the SUBJECT'S OWN NAME is in the request — the thing the caller asked for, under
+    /// whatever noun this plane's dialect gives it: a tool, a skill, a model, a session mode.
+    ///
+    /// `None` when the request does not carry one because the plane's configuration does. That is a
+    /// fact about the dialect, not a gap: a hook told `None` has been told the request names no
+    /// target, which is true, rather than shown a name borrowed from somewhere else.
+    pub subject_locator: Option<crate::grammar::Location>,
+    /// Where the subject's ARGUMENT PAYLOAD is: the span of the request body a content-granted hook
+    /// is shown, and that an `rw` grant may rewrite.
+    ///
+    /// `None` when the operation carries no arguments to screen. The grant ladder is unchanged and
+    /// is applied by the engine, never here — a projection that decided for itself whether it may be
+    /// seen would be a projection with a policy in it.
+    pub argument_span: Option<crate::bounded::Span>,
+}
+
 /// One routable member, with the metadata + live signals a policy ranks on. Projected from the
 /// engine's lane table + the pool member config + the store. `idx` is the stable handle the
 /// failover loop already speaks.

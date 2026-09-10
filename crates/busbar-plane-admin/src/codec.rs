@@ -10,6 +10,7 @@
 
 use busbar_contract::bounded::{ArenaBytes, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, RoutePlan, VerifiedDestination};
+use busbar_contract::hooks::HookSubject;
 use busbar_contract::ids::AdminVerbId;
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, Response, UnitDraft};
@@ -313,6 +314,15 @@ impl Plane for AdminPlane {
         // Admin verbs are not priced against a lane: no lane locator, no response ceiling to
         // clamp, no priced input span.
         AdmitFacts::default()
+    }
+
+    fn hook_subject<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> Option<HookSubject> {
+        // An admin verb is its own subject: the thing being asked for is the verb name, which the
+        // approve step already states as a resource, and there is no caller-written argument payload
+        // for a hook to screen. So there is nothing here for a policy hook to decide about that the
+        // scope unit does not decide better, and this plane says so rather than offering an empty
+        // payload a gate would read as "screened clean".
+        None
     }
 
     fn route<'u>(&self, _u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {

@@ -93,7 +93,7 @@ them). Each axis is blind to the other two; only the kernel composes them.
   records and the `Store` replay face, moved in from `busbar-api` verbatim; 626 lines) and the residue (`busbar_contract::operation`,
   `::redacted`; 154 lines) are the ones so far, 3684 → 4775 — less the DELETION that
   followed them (the never-written `Unit` byte and frame counts and their two fields, 21 lines the
-  kernel never wrote), which paid 21 of it back: 4775 → 4754. Two crates carry their own surface ceilings beside it, because
+  kernel never wrote), which paid 21 of it back: 4775 → 4754 — and the plane-neutral HOOK-SUBJECT face (`HookSubject`: where the subject's own name is and where its argument payload is, plus `Plane::hook_subject`, which every plane answers and none defaults; 6 lines), which gives the neutral hook seam a word for *what is being asked for* so it stops borrowing one plane's — MCP's `tool`/`args_json` on the request-admission host ABI, the model plane's `requested_model`/`prompt` on the routing projection: 4754 → 4760. Two crates carry their own surface ceilings beside it, because
   each is contract surface that a plugin author does not read and a ceiling nothing measures is a
   ceiling that has been abolished rather than met: `busbar-grammar` — the closed JSON span grammar,
   std-only, named by the kernel and re-exported as `busbar_contract::spans` — ≤ **0.5k**, gated as

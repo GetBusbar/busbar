@@ -2111,10 +2111,15 @@ crate = "busbar-plane-llm"
 kind = "plane"
 count = "5"
 
+# +1 over the base's 35, and every hit in this cell is TEST code. The hook-subject cell
+# (crates/busbar-plane-llm/tests/hook_subject.rs) has to decode a REAL request to ask the plane what
+# a hook would be told about it, and decoding one means constructing the stack it arrived on. ONE
+# construction site in the whole file, so it costs the minimum a new decode fixture can cost. Drain:
+# the fixture stack moves behind a transport-blind harness entry that hands back a ready node.
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "transport"
-count = "35"
+count = "36"
 
 [[cell]]
 crate = "busbar-plane-mcp"

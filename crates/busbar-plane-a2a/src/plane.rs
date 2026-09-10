@@ -14,6 +14,8 @@
 
 use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
+use busbar_contract::grammar::Location;
+use busbar_contract::hooks::HookSubject;
 use busbar_contract::ids::{AdminVerbId, LaneId, SchemeAlt};
 use busbar_contract::kinds::{ContentFacts, CredentialLocator, PlaneFacts};
 use busbar_contract::plane::{
@@ -731,6 +733,24 @@ impl Plane for A2aPlane {
                 end: u.body().body().len(),
             }),
         }
+    }
+
+    fn hook_subject<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> Option<HookSubject> {
+        // On this protocol the subject is the METHOD — which skill of the agent is being asked for
+        // — and the argument payload is the params object under it. Both have a declared pointer
+        // already, because both are read at decode for other reasons; this states which of them a
+        // hook is deciding about, and states it in this plane's nouns rather than in a neighbour's.
+        let at = |ptr: &str| {
+            u.body()
+                .pointers()
+                .find(|(p, _)| *p == ptr)
+                .map(|(_, span)| span)
+        };
+        Some(HookSubject {
+            subject_locator: at(jsonrpc::PTR_METHOD)
+                .map(|_| Location::UnitJsonPointer(jsonrpc::PTR_METHOD)),
+            argument_span: at(jsonrpc::PTR_PARAMS),
+        })
     }
 
     fn route<'u>(&self, u: &Unit<'u>, _ctx: &Ctx<'u>) -> RoutePlan {
