@@ -2505,7 +2505,7 @@ count = "4"
 [[cell]]
 crate = "busbar-plugin-testkit"
 kind = "api"
-count = "11"
+count = "10"
 
 [[cell]]
 crate = "busbar-plugin-testkit"
@@ -5960,18 +5960,8 @@ count = "2"
 
 [[cell]]
 crate = "busbar-plugin-testkit"
-kind = "control"
-count = "2"
-
-[[cell]]
-crate = "busbar-plugin-testkit"
 kind = "dialect"
 count = "2"
-
-[[cell]]
-crate = "busbar-plugin-testkit"
-kind = "legacy"
-count = "1"
 
 [[cell]]
 crate = "busbar-timing"
@@ -6097,13 +6087,6 @@ to = "plane"
 cite = "ARCHITECTURE.md 1.4 / D36 section 2: a dialect crate is a crate of the plane it is a dialect OF — `busbar-plane-<plane>-<dialect>` names its plane in its own package name and depends on `busbar-plane-<plane>` for the row type it fills in. The edge is the naming scheme, not a coupling."
 why = "crates of kind dialect naming plane vocabulary: plane package names in any spelling, the kind-qualified id (plane-<id>), and — where plane is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
 drain = "nothing drains this class while the naming scheme stands: the hits are the crate's own name and its one workspace dependency. It falls only if D36's naming scheme is withdrawn."
-
-[[edge]]
-from = "plugin-tooling"
-to = "legacy"
-cite = "none. The retiring 1.5.x crates predate the plane/transport split (ARCHITECTURE.md 9.2); the number is the SIZE OF THE RETIREMENT, not an allowance, and it goes to zero when the crate does."
-why = "crates of kind plugin-tooling naming legacy vocabulary: legacy package names in any spelling, the kind-qualified id (legacy-<id>), and — where legacy is a plane or a transport, the two families that HAVE an instance vocabulary — the bare instance id. Matched in identifiers, string literals, comments, doc comments, filenames, Cargo dependency names, feature names and cfg attributes, tests included."
-drain = "git rm -r the retiring 1.5.x crate. The ratchet here IS the retirement; this row cannot be edited down any other way."
 
 [[edge]]
 from = "timing"

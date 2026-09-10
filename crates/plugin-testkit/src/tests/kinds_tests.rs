@@ -31,7 +31,7 @@ impl Plugin for Decl {
 
 fn well_formed(kind: Kind) -> Decl {
     Decl {
-        key: "admin",
+        key: "fixture",
         kind,
         abi: 1,
     }
@@ -104,7 +104,7 @@ fn a_registry_key_an_operator_cannot_retype_is_refused() {
 #[should_panic(expected = "generation 0 is not a generation")]
 fn an_undeclared_interface_generation_is_refused() {
     control(&Decl {
-        key: "admin",
+        key: "fixture",
         kind: Kind::Control,
         abi: 0,
     });

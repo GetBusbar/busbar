@@ -262,12 +262,6 @@ by = 3
 because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-plugin x dialect: 3 -> 6)"""
 
 [[gate.ceiling_raises]]
-key = "cell.busbar-plugin-testkit.api.count"
-file = "qa/kind-isolation.toml"
-by = 1
-because = """R6 dialect face, first crate: busbar-plane-llm-openai lands as the FIRST crate of the dialect kind, so the census contributes its package name to the dialect column's needle list on top of the vendor list the column was derived from before. Every hit counted here already stood in the tree and is counted for the first time by a column this face widened; the face measures the very lines it is made of. Delta is the measurement, exactly. (busbar-plugin-testkit x api: 10 -> 11)"""
-
-[[gate.ceiling_raises]]
 key = "cell.busbar-secret-ref.dialect.count"
 file = "qa/kind-isolation.toml"
 by = 1

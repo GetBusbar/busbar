@@ -124,9 +124,9 @@ mod tests;
 pub mod store_conformance;
 
 /// The per-kind batteries. NOT behind a feature, unlike [`store_conformance`], and the difference
-/// is the crate each pulls in: `busbar-api` is the retiring waist that only store plugins touch,
-/// while `busbar-core-contract` is the crate EVERY kind's row in the dependency table already
-/// names — a plugin that could not name it could not be a plugin. So it is never an extra edge in
-/// a plugin's dev tree, and a battery behind a feature flag is a battery a sibling forgets to
-/// enable.
+/// is the crate each pulls in: the store suite needs the retiring waist named two lines above,
+/// which only store plugins touch, while the batteries need the plugin-visible contract — the one
+/// crate EVERY kind's row in the dependency table already names, and a plugin that could not name
+/// it could not be a plugin. So it is never an extra edge in a plugin's dev tree, and a battery
+/// behind a feature flag is a battery a sibling forgets to enable.
 pub mod kinds;
