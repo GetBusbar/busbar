@@ -5,7 +5,7 @@
 //!
 //! This is the relocated home of the request-log webhook DELIVERY that used to live in
 //! `crate::observability`: the bounded fire-and-forget POST behind the SSRF guard
-//! ([`crate::observability::validate_webhook_url`], reused not reinvented) and the in-flight
+//! ([`busbar_unit_egress::sink_guard::validate_webhook_url`], reused not reinvented) and the in-flight
 //! [`AdmissionGate`] backpressure. `export.request-log-webhook` is the direct replacement for the
 //! retired `observability.request_log_webhook_url`; `export.generic-webhook` is the same machinery
 //! plus a configurable auth header (logs + audit).
@@ -18,7 +18,7 @@ use crate::config::ExportCfg;
 use crate::export::projection::Projection;
 use crate::export::PayloadCache;
 use crate::limits::admission::AdmissionGate;
-use crate::observability::{mask_userinfo, validate_webhook_url};
+use busbar_unit_egress::sink_guard::{mask_userinfo, validate_webhook_url};
 use http::header::{HeaderName, HeaderValue};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

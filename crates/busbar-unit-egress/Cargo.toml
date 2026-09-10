@@ -41,7 +41,14 @@ path = "src/lib.rs"
 busbar-caps = { path = "../busbar-caps" }
 busbar-contract = { path = "../busbar-contract" }
 busbar-contract-transport = { path = "../busbar-contract-transport" }
+# The sink guard calls the shared internal-address predicates rather than growing a copy of them:
+# `ipv4_is_internal`, `ipv6_is_internal`, `ip_is_internal`, `is_alternate_ipv4_encoding`. Duplicated
+# SECURITY logic is the one place a documented divergence does not neutralize drift.
+busbar-unit-trust = { path = "../busbar-unit-trust" }
 futures = { workspace = true }
+# One item, for the sink guard alone: the WHATWG host parser, which is what canonicalizes every
+# alternate IPv4 spelling to a dotted quad BEFORE any predicate reads the host.
+url = { workspace = true }
 
 # Test-only. `busbar-unit-breaker` is never named by this crate's library code — the breaker seam
 # enters production code through `ports::Breaker` alone, and the composition root binds the two

@@ -63,6 +63,7 @@ pub mod pool;
 pub mod ports;
 pub mod race;
 pub mod select;
+pub mod sink_guard;
 pub mod walk;
 pub mod wire;
 

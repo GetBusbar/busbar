@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3031"
+count = "3029"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2117"
+count = "2037"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "37"
+count = "46"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2764,17 +2764,17 @@ count = "1"
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "plane"
-count = "1"
+count = "3"
 
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "transport"
-count = "59"
+count = "139"
 
 [[cell]]
 crate = "busbar-unit-egress"
 kind = "unit"
-count = "51"
+count = "81"
 
 [[cell]]
 crate = "busbar-unit-egress-auth"
@@ -3739,6 +3739,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
 why     = "busbar-core names busbar-unit-admission: declared normal in the shipped graph, 1 declaration(s) at this commit. THE CHAIN WALK, read rather than restated. The legacy engine carried its own resolved group topology AND its own walk over it; the topology is the cost unit's GroupTable and the walk is this crate's ChainWalk, yielding a BucketChain. Two walks over one money topology that must agree exactly is how a deployment comes to be admitted against one set of ledger cells and billed against another. The engine now walks each group's chain ONCE, at boot, through this crate, and a request READS the result through a cursor that borrows (busbar-core cost::BucketView) — so the edge costs the admission path no allocation at all; cost_tests::chain_read_is_a_borrow_not_a_build pins that by address rather than by equality. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "the edge dies with busbar-core: the readers of `cost::Chain`/`cost::BucketView` (governance/state.rs admit/charge/refund/accrue/headroom, admin/v1/service.rs, plane_host) move onto busbar_unit_admission's own decision, and cost.rs goes with them. `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-egress"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
+why     = "busbar-core names busbar-unit-egress: declared normal in the shipped graph, 1 declaration(s) at this commit. THE SINK GUARD, called rather than kept. The two sinks this crate still owns - the request-log webhook and the OTLP trace collector - are dialled at an operator-supplied URL, and whether a destination may be dialled at all is the egress unit's question and no other's. The guard suite MOVED there whole (mask_userinfo, validate_webhook_url, validate_otlp_endpoint and every URL-shaped atom under them, with their thirty-two tests ported); this crate keeps no copy and calls it at two sites, observability.rs and export/webhook.rs. The count is TODAY'S MEASUREMENT, exact in both directions - above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the edge dies with busbar-core: the two call sites are the OTLP subscriber install and the request-log-webhook exporter, and both are already homed elsewhere by design - the install to the composition root, the exporter to busbar-export-webhook. When they leave, nothing in this crate names the unit."
 
 [[dep]]
 from    = "busbar-core"
@@ -5318,6 +5328,16 @@ count   = "1"
 verdict = "allowed"
 cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
 why     = "busbar-unit-cost names busbar-unit-admission: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar-unit-egress"
+to      = "busbar-unit-trust"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "ARCHITECTURE.md 3.1 — units are keyed on busbar-caps; unit->unit is the measured cost/admission/ledger chain."
+why     = "busbar-unit-egress names busbar-unit-trust: declared normal in the shipped graph, 1 declaration(s) at this commit. THE INTERNAL-ADDRESS PREDICATES, called and not copied. The sink guard that arrived in this crate needs ipv4_is_internal, ipv6_is_internal, ip_is_internal and is_alternate_ipv4_encoding; those live in the trust unit's `net` module and this edge is how they are reached. The alternative is a copy, and duplicated SECURITY logic is the one place a documented divergence does not neutralize drift - a contributor hardening one guard against a new range would silently miss the other. The engine the guard came from called the same predicates through a shim for exactly this reason. The count is TODAY'S MEASUREMENT, exact in both directions - above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: ARCHITECTURE.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]

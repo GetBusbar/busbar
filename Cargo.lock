@@ -531,6 +531,7 @@ dependencies = [
  "busbar-timing",
  "busbar-unit-admission",
  "busbar-unit-cost",
+ "busbar-unit-egress",
  "bytes",
  "crc32fast",
  "criterion",
@@ -1161,7 +1162,9 @@ dependencies = [
  "busbar-contract",
  "busbar-contract-transport",
  "busbar-unit-breaker",
+ "busbar-unit-trust",
  "futures",
+ "url",
 ]
 
 [[package]]
