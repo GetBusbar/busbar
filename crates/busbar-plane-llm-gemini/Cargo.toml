@@ -1,0 +1,54 @@
+# busbar-plane-llm-gemini — THE `gemini` DIALECT OF THE `llm` PLANE, AND THE FOURTH CRATE OF ITS
+# KIND.
+#
+# WHAT A DIALECT IS. One wire vocabulary through one plane. The plane owns what a request MEANS —
+# the IR, the step list, the operation classes, the meter CLASSES — and a dialect owns how one
+# vendor spells it: which paths and headers name it, where the model is, where the four metered
+# quantities are, which credential its clients present. The kind exists because those two things
+# change on different clocks: a vendor ships a seventh spelling and a plane that carried a branch
+# per vendor would be edited for it.
+#
+# WHAT THIS ONE ADDS TO THE PATTERN. It is the first dialect whose model rides the REQUEST TARGET
+# rather than the body — its row names a path segment, not a JSON pointer — and the first whose
+# path family is a PATTERN with a tail (`/v1beta/models/...`) rather than a suffix, which is the
+# loosest path family of the six and why its rung 6 sits below its action-suffix rung 5. It is also
+# the first with a header rung that is a KEY header alone (rung 3), with no version header beside
+# it.
+#
+# THE ONE EDGE. A dialect names its plane and the contract, and NOTHING ELSE — no transport, no
+# unit, no sibling dialect, not even another plane, and not a dev-dependency either. That is the
+# narrowest edge set in the plugin tree, and it is what makes `busbar-plane-llm` dialect-neutral
+# while its wire surface stays open: the dialect names the plane, the plane never names the dialect.
+# `kind-isolation:deps` refuses the reverse.
+#
+# HOW IT REGISTERS: BY CLAIM, NOT BY A MATCH ARM. This crate declares its ladder rungs and its
+# location row as constants, and a composition root seals them into the plane's registry at boot.
+# Nothing in `busbar-plane-llm` spells `gemini` for this to work. Adding the next dialect is adding
+# a crate and a registry row; it is not a patch to the plane.
+[package]
+name = "busbar-plane-llm-gemini"
+version = "1.6.0"
+publish = false            # internal workspace crate; never goes to crates.io
+edition = "2021"
+# One pinned number, set to what CI verifies — the same rationale every other member states.
+rust-version = "1.97"
+description = "The gemini dialect of the busbar LLM plane: the claim rungs, the locations and the meter locators for the Google Gemini API, registering into busbar-plane-llm by claim."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_plane_llm_gemini"
+path = "src/lib.rs"
+
+# NO FEATURES, ON PURPOSE, and for the reason the plane states: a dialect compiled two ways is two
+# dialects, and the registry that sealed one of them could not say which.
+
+[dependencies]
+# THE CONTRACT. The one busbar crate a plugin manifest may name without argument.
+busbar-contract = { path = "../busbar-contract" }
+# ITS PLANE, AND THE ONLY OTHER CRATE THIS ONE MAY NAME. The claim builder, the location row shape,
+# the registry entry and the four dialect-parameterised codec bodies all come from here.
+busbar-plane-llm = { path = "../busbar-plane-llm" }
+
+# NO `[dev-dependencies]`, AND THAT IS THE KIND'S RULE HOLDING UNDER ITS OWN TESTS: a dev edge is
+# still a manifest edge, and `dialect -> codec` is an edge no clause grants. The battery asserts
+# what this crate DECLARES, and a declaration needs nothing registered to be read.

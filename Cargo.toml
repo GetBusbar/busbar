@@ -37,6 +37,11 @@ members = [
     # — different rungs, different paths, a different conversation member, and four different meter
     # pointers.
     "crates/busbar-plane-llm-responses",
+    # THE THIRD AND FOURTH DIALECT CRATES, each a vendor the plane no longer spells. `anthropic` is
+    # the first dialect detected by header rather than by path; `gemini` is the first whose model
+    # rides the request target and whose path family is a pattern rather than a suffix.
+    "crates/busbar-plane-llm-anthropic",
+    "crates/busbar-plane-llm-gemini",
     "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-admin",
