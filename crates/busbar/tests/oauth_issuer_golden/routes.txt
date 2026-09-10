@@ -1,9 +1,9 @@
 === metadata GET /.well-known/oauth-authorization-server
 status: 200
-header: content-length: 853
+header: content-length: 855
 header: content-type: application/json;charset=UTF-8
 body:
-{"issuer":"http://127.0.0.1:46201","authorization_endpoint":"http://127.0.0.1:46201/authorize","token_endpoint":"http://127.0.0.1:46201/token","device_authorization_endpoint":"http://127.0.0.1:46201/device_authorization","revocation_endpoint":"http://127.0.0.1:46201/revoke","registration_endpoint":"http://127.0.0.1:46201/register","jwks_uri":"http://127.0.0.1:46201/jwks","scopes_supported":["mcp:read"],"response_types_supported":["code"],"response_modes_supported":["query"],"grant_types_supported":["authorization_code","refresh_token","client_credentials","urn:ietf:params:oauth:grant-type:device_code"],"token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"],"code_challenge_methods_supported":["S256"],"protected_resources":["http://127.0.0.1:46201/mcp"],"authorization_response_iss_parameter_supported":true}
+{"issuer":"http://127.0.0.1:46201","authorization_endpoint":"http://127.0.0.1:46201/authorize","token_endpoint":"http://127.0.0.1:46201/token","device_authorization_endpoint":"http://127.0.0.1:46201/device_authorization","revocation_endpoint":"http://127.0.0.1:46201/revoke","registration_endpoint":"http://127.0.0.1:46201/register","jwks_uri":"http://127.0.0.1:46201/jwks","scopes_supported":["tools:read"],"response_types_supported":["code"],"response_modes_supported":["query"],"grant_types_supported":["authorization_code","refresh_token","client_credentials","urn:ietf:params:oauth:grant-type:device_code"],"token_endpoint_auth_methods_supported":["client_secret_basic","client_secret_post","none"],"code_challenge_methods_supported":["S256"],"protected_resources":["http://127.0.0.1:46201/mcp"],"authorization_response_iss_parameter_supported":true}
 
 === metadata.wrong-method POST /.well-known/oauth-authorization-server
 status: 401
@@ -37,7 +37,7 @@ header: pragma: no-cache
 body:
 {"error":"invalid_request","error_description":"missing client_id"}
 
-=== authorize.unknown-client GET /authorize?response_type=code&client_id=no-such-client&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope=mcp%3Aread&state=judge
+=== authorize.unknown-client GET /authorize?response_type=code&client_id=no-such-client&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope=tools%3Aread&state=judge
 status: 400
 header: cache-control: no-store, no-cache, max-age=0
 header: content-length: 67
@@ -142,45 +142,45 @@ header: content-type: application/json
 body:
 {"error":{"code":"<OPAQUE>","message":"Incorrect API key provided.","param":null,"type":"authentication_error"}}
 
-=== consent.get.no-credential GET /consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dmcp%3Aread
+=== consent.get.no-credential GET /consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dtools%3Aread
 status: 401
 header: content-length: 107
 header: content-type: application/json
 body:
 {"error":{"code":"<OPAQUE>","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}
 
-=== consent.get.admin.no-return GET /consent
+=== consent.get.operator.no-return GET /consent
 status: 400
 header: content-length: 138
 header: content-type: text/html; charset=utf-8
 body:
 <!doctype html><meta charset=utf-8><title>busbar</title><p>There is no authorization request waiting. Start the login from your agent.</p>
 
-=== consent.get.admin.offsite-return GET /consent?return=https%3A%2F%2Fevil.example%2F
+=== consent.get.operator.offsite-return GET /consent?return=https%3A%2F%2Fevil.example%2F
 status: 400
 header: content-length: 138
 header: content-type: text/html; charset=utf-8
 body:
 <!doctype html><meta charset=utf-8><title>busbar</title><p>There is no authorization request waiting. Start the login from your agent.</p>
 
-=== consent.get.admin.scheme-relative-return GET /consent?return=%2F%2Fevil.example%2F
+=== consent.get.operator.scheme-relative-return GET /consent?return=%2F%2Fevil.example%2F
 status: 400
 header: content-length: 138
 header: content-type: text/html; charset=utf-8
 body:
 <!doctype html><meta charset=utf-8><title>busbar</title><p>There is no authorization request waiting. Start the login from your agent.</p>
 
-=== consent.get.admin.ok GET /consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dmcp%3Aread%26redirect_uri%3Dhttps%253A%252F%252Fclient.example%252Fcb
+=== consent.get.operator.ok GET /consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dtools%3Aread%26redirect_uri%3Dhttps%253A%252F%252Fclient.example%252Fcb
 status: 200
 header: cache-control: no-store
-header: content-length: 422
+header: content-length: 426
 header: content-type: text/html; charset=utf-8
 header: set-cookie: busbar_as_session=<HEX64>; Path=/authorize; HttpOnly; SameSite=Lax; Max-Age=600
 header: set-cookie: busbar_as_session=<HEX64>; Path=/consent; HttpOnly; SameSite=Lax; Max-Age=600
 body:
-<!doctype html><meta charset=utf-8><title>busbar — authorize</title><h1>Authorize this client?</h1><p>Client: <code>c</code></p><p>Requesting: <code>mcp:read</code></p><p>Sends the credential to: <code>client.example</code></p><form method=post><input type=hidden name=return value="/authorize?client_id=c&amp;scope=mcp:read&amp;redirect_uri=https%3A%2F%2Fclient.example%2Fcb"><button type=submit>Approve</button></form>
+<!doctype html><meta charset=utf-8><title>busbar — authorize</title><h1>Authorize this client?</h1><p>Client: <code>c</code></p><p>Requesting: <code>tools:read</code></p><p>Sends the credential to: <code>client.example</code></p><form method=post><input type=hidden name=return value="/authorize?client_id=c&amp;scope=tools:read&amp;redirect_uri=https%3A%2F%2Fclient.example%2Fcb"><button type=submit>Approve</button></form>
 
-=== consent.get.admin.escaping GET /consent?return=%2Fauthorize%3Fclient_id%3D%253Cscript%253E%26scope%3D%2522x%2522%26redirect_uri%3Dhttps%253A%252F%252Fclient.example%2540evil.example%252Fcb
+=== consent.get.operator.escaping GET /consent?return=%2Fauthorize%3Fclient_id%3D%253Cscript%253E%26scope%3D%2522x%2522%26redirect_uri%3Dhttps%253A%252F%252Fclient.example%2540evil.example%252Fcb
 status: 200
 header: cache-control: no-store
 header: content-length: 463
@@ -197,25 +197,25 @@ header: content-type: application/json
 body:
 {"error":{"code":"<OPAQUE>","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}
 
-=== consent.post.admin.no-session-cookie POST /consent
+=== consent.post.operator.no-session-cookie POST /consent
 status: 400
 header: content-length: 138
 header: content-type: text/html; charset=utf-8
 body:
 <!doctype html><meta charset=utf-8><title>busbar</title><p>There is no authorization request waiting. Start the login from your agent.</p>
 
-=== consent.post.admin.offsite-return POST /consent
+=== consent.post.operator.offsite-return POST /consent
 status: 400
 header: content-length: 138
 header: content-type: text/html; charset=utf-8
 body:
 <!doctype html><meta charset=utf-8><title>busbar</title><p>There is no authorization request waiting. Start the login from your agent.</p>
 
-=== consent.post.admin.with-session POST /consent
+=== consent.post.operator.with-session POST /consent
 status: 302
 header: cache-control: no-store
 header: content-length: 0
-header: location: /authorize?client_id=c&scope=mcp:read
+header: location: /authorize?client_id=c&scope=tools:read
 body:
 
 

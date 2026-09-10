@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE JUDGE for the OAuth 2.1 issuer's move out of `busbar-core` and into the CONTROL surface
-//! `busbar-control-oauth2`: every route's answer, recorded on the base binary before the move and
+//! the control-kind issuer crate: every route's answer, recorded on the base binary before the move and
 //! required to be the SAME BYTES after it.
 //!
 //! ## Why this file exists at all
@@ -34,43 +34,42 @@
 //!
 //! ## Recording
 //!
-//! `BUSBAR_OAUTH2_GOLDEN_RECORD=1 cargo test -p busbar --test oauth2_control_byte_identity`
-//! rewrites `tests/oauth2_golden/routes.txt`. Without it the test COMPARES, and a difference is the
-//! finding. The recording was taken on the base commit named in `docs/design/control-oauth2-rebuild.md`.
+//! `BUSBAR_OAUTH_ISSUER_GOLDEN_RECORD=1 cargo test -p busbar --test oauth_issuer_byte_identity`
+//! rewrites `tests/oauth_issuer_golden/routes.txt`. Without it the test COMPARES, and a difference is the
+//! finding. The recording was taken on the base commit named in the design note under docs/design.
 //!
 //! ## The signing key is FIXED, and it is a throwaway
 //!
-//! `tests/oauth2_golden/signing-key.b64` is a P-256 PKCS#8 key generated for this file and used
+//! `tests/oauth_issuer_golden/signing-key.b64` is a P-256 PKCS#8 key generated for this file and used
 //! nowhere else, so the JWKS document — which is a pure function of the key — is a stable cell. It
 //! is a fixture, not a credential: nothing this repository ships ever loads it.
 //!
 //! ## The ports
 //!
-//! 46201 (data) and 46202 (admin), fixed rather than asked of the OS, because the ISSUER is part of
+//! 46201 (data) and 46202 (operator), fixed rather than asked of the OS, because the ISSUER is part of
 //! every answer under test: it is the `iss` of the discovery document, the base of every advertised
 //! endpoint, and the origin of the `jwks_uri`. A port the OS chose would make every one of those
 //! cells a different string on every run, which would defeat the file.
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 /// The data listener, and therefore the ISSUER. See the module note on why it is not a free port.
 const DATA_PORT: u16 = 46201;
-/// The admin listener. Unused by the cells (the consent route is on the DATA listener) but a
+/// The operator listener. Unused by the cells (the consent route is on the DATA listener) but a
 /// deployment needs one, and pinning it keeps the fixture reproducible.
-const ADMIN_PORT: u16 = 46202;
-/// The operator admin token the consent cells present. A fixture value; the consent screen's bar is
+const OPERATOR_PORT: u16 = 46202;
+/// The operator operator token the consent cells present. A fixture value; the consent screen's bar is
 /// what is under test, not the token.
-const ADMIN_TOKEN: &str = "oauth2-judge-admin-token";
+const OPERATOR_TOKEN: &str = "oauth-issuer-judge-operator-token";
 
 /// The recorded surface. One cell per request, in declaration order.
-const GOLDEN: &str = "tests/oauth2_golden/routes.txt";
+const GOLDEN: &str = "tests/oauth_issuer_golden/routes.txt";
 
 /// THE FIXED SIGNING KEY (see the module note). `include_str!` rather than a literal so the bytes
 /// live in a file that reads as a fixture rather than as a secret pasted into source.
-const SIGNING_KEY_B64: &str = include_str!("oauth2_golden/signing-key.b64");
+const SIGNING_KEY_B64: &str = include_str!("oauth_issuer_golden/signing-key.b64");
 
 /// One request to make, and the name it is recorded under.
 struct Cell {
@@ -80,8 +79,8 @@ struct Cell {
     target: &'static str,
     /// `(content-type, body)`, or `None` for a request with no body.
     body: Option<(&'static str, &'static str)>,
-    /// Present ⇒ the request carries `Authorization: Bearer <admin token>`.
-    admin: bool,
+    /// Present ⇒ the request carries `Authorization: Bearer <operator token>`.
+    operator: bool,
     /// Present ⇒ the request carries this `Cookie` header verbatim.
     cookie: Option<&'static str>,
 }
@@ -95,7 +94,7 @@ const CELLS: &[Cell] = &[
         method: "GET",
         target: "/.well-known/oauth-authorization-server",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -103,7 +102,7 @@ const CELLS: &[Cell] = &[
         method: "POST",
         target: "/.well-known/oauth-authorization-server",
         body: Some(("application/json", "{}")),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     // ── jwks ─────────────────────────────────────────────────────────────────────────────────
@@ -112,7 +111,7 @@ const CELLS: &[Cell] = &[
         method: "GET",
         target: "/jwks",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -120,7 +119,7 @@ const CELLS: &[Cell] = &[
         method: "POST",
         target: "/jwks",
         body: Some(("application/json", "{}")),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     // ── authorize ────────────────────────────────────────────────────────────────────────────
@@ -129,7 +128,7 @@ const CELLS: &[Cell] = &[
         method: "GET",
         target: "/authorize",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -138,9 +137,9 @@ const CELLS: &[Cell] = &[
         // A non-URL `client_id` on purpose: a `client_id` that parses as an HTTPS URL is a Client ID
         // Metadata Document, and resolving one is a NETWORK FETCH. A cell whose answer depends on
         // DNS is not a cell.
-        target: "/authorize?response_type=code&client_id=no-such-client&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope=mcp%3Aread&state=judge",
+        target: "/authorize?response_type=code&client_id=no-such-client&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&scope=tools%3Aread&state=judge",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -148,7 +147,7 @@ const CELLS: &[Cell] = &[
         method: "GET",
         target: "/authorize?client_id=no-such-client&redirect_uri=https%3A%2F%2Fclient.example%2Fcb",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -156,7 +155,7 @@ const CELLS: &[Cell] = &[
         method: "POST",
         target: "/authorize",
         body: Some(("application/x-www-form-urlencoded", "")),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     // ── token ────────────────────────────────────────────────────────────────────────────────
@@ -165,7 +164,7 @@ const CELLS: &[Cell] = &[
         method: "POST",
         target: "/token",
         body: Some(("application/x-www-form-urlencoded", "")),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -176,7 +175,7 @@ const CELLS: &[Cell] = &[
             "application/x-www-form-urlencoded",
             "grant_type=authorization_code&code=no-such-code&client_id=no-such-client&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&code_verifier=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         )),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -187,7 +186,7 @@ const CELLS: &[Cell] = &[
             "application/x-www-form-urlencoded",
             "grant_type=password&username=a&password=b",
         )),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -195,7 +194,7 @@ const CELLS: &[Cell] = &[
         method: "GET",
         target: "/token",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
     // ── register (RFC 7591, mounted UNCONDITIONALLY) ──────────────────────────────────────────
@@ -207,7 +206,7 @@ const CELLS: &[Cell] = &[
             "application/json",
             r#"{"redirect_uris":["https://client.example/cb"],"client_name":"judge client","grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}"#,
         )),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -216,9 +215,9 @@ const CELLS: &[Cell] = &[
         target: "/register",
         body: Some((
             "application/json",
-            r#"{"redirect_uris":["https://client.example/cb"],"scope":"admin:everything"}"#,
+            r#"{"redirect_uris":["https://client.example/cb"],"scope":"root:everything"}"#,
         )),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -226,7 +225,7 @@ const CELLS: &[Cell] = &[
         method: "POST",
         target: "/register",
         body: Some(("application/json", r#"{"client_name":"no redirect"}"#)),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -234,7 +233,7 @@ const CELLS: &[Cell] = &[
         method: "POST",
         target: "/register",
         body: Some(("application/json", "not json at all")),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
@@ -242,59 +241,59 @@ const CELLS: &[Cell] = &[
         method: "GET",
         target: "/register",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
-    // ── consent: the ONE route this deployment authenticates itself, through the admin chain ──
+    // ── consent: the ONE route this deployment authenticates itself, through the operator chain ──
     Cell {
         name: "consent.get.no-credential",
         method: "GET",
-        target: "/consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dmcp%3Aread",
+        target: "/consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dtools%3Aread",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
-        name: "consent.get.admin.no-return",
+        name: "consent.get.operator.no-return",
         method: "GET",
         target: "/consent",
         body: None,
-        admin: true,
+        operator: true,
         cookie: None,
     },
     Cell {
-        name: "consent.get.admin.offsite-return",
+        name: "consent.get.operator.offsite-return",
         method: "GET",
         target: "/consent?return=https%3A%2F%2Fevil.example%2F",
         body: None,
-        admin: true,
+        operator: true,
         cookie: None,
     },
     Cell {
-        name: "consent.get.admin.scheme-relative-return",
+        name: "consent.get.operator.scheme-relative-return",
         method: "GET",
         target: "/consent?return=%2F%2Fevil.example%2F",
         body: None,
-        admin: true,
+        operator: true,
         cookie: None,
     },
     Cell {
-        name: "consent.get.admin.ok",
+        name: "consent.get.operator.ok",
         method: "GET",
-        target: "/consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dmcp%3Aread%26redirect_uri%3Dhttps%253A%252F%252Fclient.example%252Fcb",
+        target: "/consent?return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dtools%3Aread%26redirect_uri%3Dhttps%253A%252F%252Fclient.example%252Fcb",
         body: None,
-        admin: true,
+        operator: true,
         cookie: None,
     },
     Cell {
-        name: "consent.get.admin.escaping",
+        name: "consent.get.operator.escaping",
         // The consent page interpolates the `client_id`, the scope and the redirect HOST. This cell
         // hands all three something that changes the meaning of surrounding markup, so the golden
         // carries the ESCAPED rendering and a move that dropped `escape()` is a diff.
         method: "GET",
         target: "/consent?return=%2Fauthorize%3Fclient_id%3D%253Cscript%253E%26scope%3D%2522x%2522%26redirect_uri%3Dhttps%253A%252F%252Fclient.example%2540evil.example%252Fcb",
         body: None,
-        admin: true,
+        operator: true,
         cookie: None,
     },
     Cell {
@@ -302,40 +301,40 @@ const CELLS: &[Cell] = &[
         method: "POST",
         target: "/consent",
         body: Some(("application/x-www-form-urlencoded", "return=%2Fauthorize")),
-        admin: false,
+        operator: false,
         cookie: None,
     },
     Cell {
-        name: "consent.post.admin.no-session-cookie",
+        name: "consent.post.operator.no-session-cookie",
         method: "POST",
         target: "/consent",
         body: Some((
             "application/x-www-form-urlencoded",
-            "return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dmcp%3Aread",
+            "return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dtools%3Aread",
         )),
-        admin: true,
+        operator: true,
         cookie: None,
     },
     Cell {
-        name: "consent.post.admin.offsite-return",
+        name: "consent.post.operator.offsite-return",
         method: "POST",
         target: "/consent",
         body: Some((
             "application/x-www-form-urlencoded",
             "return=https%3A%2F%2Fevil.example%2F",
         )),
-        admin: true,
+        operator: true,
         cookie: Some("busbar_as_session=0000000000000000000000000000000000000000000000000000000000000000"),
     },
     Cell {
-        name: "consent.post.admin.with-session",
+        name: "consent.post.operator.with-session",
         method: "POST",
         target: "/consent",
         body: Some((
             "application/x-www-form-urlencoded",
-            "return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dmcp%3Aread",
+            "return=%2Fauthorize%3Fclient_id%3Dc%26scope%3Dtools%3Aread",
         )),
-        admin: true,
+        operator: true,
         cookie: Some("busbar_as_session=0000000000000000000000000000000000000000000000000000000000000000"),
     },
     Cell {
@@ -343,7 +342,7 @@ const CELLS: &[Cell] = &[
         method: "DELETE",
         target: "/consent",
         body: None,
-        admin: true,
+        operator: true,
         cookie: None,
     },
     // ── the negative control: a path the issuer does NOT mount ────────────────────────────────
@@ -354,13 +353,13 @@ const CELLS: &[Cell] = &[
         method: "GET",
         target: "/introspect",
         body: None,
-        admin: false,
+        operator: false,
         cookie: None,
     },
 ];
 
 #[test]
-fn every_oauth2_route_answers_the_same_bytes_after_the_move() {
+fn every_issuer_route_answers_the_same_bytes_after_the_move() {
     let dir = fixture_dir();
     let cfg = write_config(&dir);
     let mut child = spawn(&cfg);
@@ -369,10 +368,9 @@ fn every_oauth2_route_answers_the_same_bytes_after_the_move() {
     if !wait_for(Duration::from_secs(120), || {
         std::net::TcpStream::connect(&addr).is_ok()
     }) {
-        let seen = drain(&mut child);
         let _ = child.kill();
         let _ = child.wait();
-        panic!("busbar never listened on {addr}. Output:\n{seen}");
+        panic!("busbar never listened on {addr} (its own output is on this test's stderr)");
     }
 
     let mut recorded = String::new();
@@ -385,7 +383,7 @@ fn every_oauth2_route_answers_the_same_bytes_after_the_move() {
     let _ = std::fs::remove_dir_all(&dir);
 
     let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(GOLDEN);
-    if std::env::var_os("BUSBAR_OAUTH2_GOLDEN_RECORD").is_some() {
+    if std::env::var_os("BUSBAR_OAUTH_ISSUER_GOLDEN_RECORD").is_some() {
         std::fs::create_dir_all(golden_path.parent().unwrap()).unwrap();
         std::fs::write(&golden_path, &recorded).unwrap();
         return;
@@ -394,8 +392,8 @@ fn every_oauth2_route_answers_the_same_bytes_after_the_move() {
     let expected = std::fs::read_to_string(&golden_path).unwrap_or_else(|e| {
         panic!(
             "the recorded surface is missing ({}: {e}). Record it against the BASE binary with \
-             `BUSBAR_OAUTH2_GOLDEN_RECORD=1 cargo test -p busbar --test \
-             oauth2_control_byte_identity` — never against the moved one, or the judge is judging \
+             `BUSBAR_OAUTH_ISSUER_GOLDEN_RECORD=1 cargo test -p busbar --test \
+             oauth_issuer_byte_identity` — never against the moved one, or the judge is judging \
              its own defendant.",
             golden_path.display()
         )
@@ -408,7 +406,7 @@ fn every_oauth2_route_answers_the_same_bytes_after_the_move() {
 
 /// The recorded form of ONE cell: a header line, the status, the headers, then the body.
 fn record(addr: &str, cell: &Cell) -> String {
-    let (status, headers, body) = http(addr, cell);
+    let (status, headers, body) = exchange(addr, cell);
     let mut out = format!("=== {} {} {}\n", cell.name, cell.method, cell.target);
     out.push_str(&format!("status: {status}\n"));
     for (name, value) in headers {
@@ -539,7 +537,7 @@ fn replace_member(
 }
 
 /// One request. Returns `(status, headers sorted by name with `date` dropped, body text)`.
-fn http(addr: &str, cell: &Cell) -> (u16, Vec<(String, String)>, String) {
+fn exchange(addr: &str, cell: &Cell) -> (u16, Vec<(String, String)>, String) {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
         let client = reqwest::Client::builder()
@@ -557,8 +555,8 @@ fn http(addr: &str, cell: &Cell) -> (u16, Vec<(String, String)>, String) {
             "DELETE" => client.delete(url),
             _ => client.get(url),
         };
-        if cell.admin {
-            req = req.bearer_auth(ADMIN_TOKEN);
+        if cell.operator {
+            req = req.bearer_auth(OPERATOR_TOKEN);
         }
         if let Some(cookie) = cell.cookie {
             req = req.header("cookie", cookie);
@@ -588,43 +586,19 @@ fn http(addr: &str, cell: &Cell) -> (u16, Vec<(String, String)>, String) {
     })
 }
 
-/// The smallest config that makes this deployment an authorization server, plus the `mcp:` block
+/// The smallest config that makes this deployment an authorization server, plus the tool-plane block
 /// that gives it a protected resource to mint for (the RFC 8707 `allowed_resources` list and the
 /// `aud` of every access token are derived from it, so a fixture without one records a DIFFERENT
 /// discovery document).
 fn write_config(dir: &Path) -> PathBuf {
     std::fs::write(dir.join("providers.yaml"), "{}\n").unwrap();
     let path = dir.join("config.yaml");
-    std::fs::write(
-        &path,
-        format!(
-            r#"listen: "127.0.0.1:{DATA_PORT}"
-admin_listen: "127.0.0.1:{ADMIN_PORT}"
-providers: {{}}
-models: {{}}
-pools: {{}}
-identity-providers:
-  admin-tokens:
-    module: admin-tokens
-    token: {{ env: BUSBAR_ADMIN_TOKEN }}
-auth:
-  chain: [keys]
-  admin_auth: [admin-tokens]
-  signing_key: {{ env: BUSBAR_SIGNING_KEY }}
-mcp:
-  canonical_uri: "http://127.0.0.1:{DATA_PORT}/mcp"
-  authorization_servers:
-    - "http://127.0.0.1:{DATA_PORT}"
-oauth_as:
-  issuer: "http://127.0.0.1:{DATA_PORT}"
-  signing_key: {{ env: BUSBAR_OAUTH_SIGNING_KEY }}
-  key_id: "judge-key-1"
-  default_grant: ["mcp:read"]
-  access_token_ttl_secs: 600
-"#
-        ),
-    )
-    .unwrap();
+    // The fixture lives beside the recording as data, with the two ports substituted here, so the
+    // deployment under test is spelled once and read as a file rather than as a string in source.
+    let config = include_str!("oauth_issuer_golden/config.yaml")
+        .replace("{DATA_PORT}", &DATA_PORT.to_string())
+        .replace("{OPERATOR_PORT}", &OPERATOR_PORT.to_string());
+    std::fs::write(&path, config).unwrap();
     path
 }
 
@@ -635,34 +609,21 @@ fn spawn(cfg: &Path) -> Child {
             "BUSBAR_PROVIDERS",
             cfg.parent().unwrap().join("providers.yaml"),
         )
-        .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
+        .env("BUSBAR_OPERATOR_TOKEN", OPERATOR_TOKEN)
         .env(
             "BUSBAR_SIGNING_KEY",
             "0000000000000000000000000000000000000000000000000000000000000001",
         )
         .env("BUSBAR_OAUTH_SIGNING_KEY", SIGNING_KEY_B64.trim())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .spawn()
         .expect("spawn busbar")
 }
 
 fn fixture_dir() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("busbar-oauth2-judge-{}", std::process::id()));
+    let d = std::env::temp_dir().join(format!("busbar-oauth-issuer-judge-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
-}
-
-fn drain(child: &mut Child) -> String {
-    let mut seen = String::new();
-    if let Some(mut o) = child.stdout.take() {
-        let _ = o.read_to_string(&mut seen);
-    }
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut seen);
-    }
-    seen
 }
 
 fn wait_for(budget: Duration, mut cond: impl FnMut() -> bool) -> bool {

@@ -1,0 +1,23 @@
+listen: "127.0.0.1:{DATA_PORT}"
+admin_listen: "127.0.0.1:{OPERATOR_PORT}"
+providers: {}
+models: {}
+pools: {}
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_OPERATOR_TOKEN }
+auth:
+  chain: [keys]
+  admin_auth: [admin-tokens]
+  signing_key: { env: BUSBAR_SIGNING_KEY }
+mcp:
+  canonical_uri: "http://127.0.0.1:{DATA_PORT}/mcp"
+  authorization_servers:
+    - "http://127.0.0.1:{DATA_PORT}"
+oauth_as:
+  issuer: "http://127.0.0.1:{DATA_PORT}"
+  signing_key: { env: BUSBAR_OAUTH_SIGNING_KEY }
+  key_id: "judge-key-1"
+  default_grant: ["tools:read"]
+  access_token_ttl_secs: 600
