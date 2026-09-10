@@ -62,6 +62,14 @@ pub mod harness;
 pub mod kernel;
 pub mod ledger_identity;
 pub mod migration;
+// THE GENERIC DUPLEX MOUNT, under a NEUTRAL switch. Every sibling serving module here is declared
+// under the plane's own feature, because everything inside it reaches into that plane's units. This
+// one reaches into no plane's anything: it is handed a listener, a declared surface and a driver,
+// and it could not say whose they are. A declaration under a plane-named feature would be the one
+// place in this tree where the generic mount was spelled as one plane's, which is exactly the
+// coupling it exists to remove.
+#[cfg(feature = "root-duplex-serve")]
+pub mod plane_mount;
 pub mod policy;
 pub mod registry;
 pub mod transports;
