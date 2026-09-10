@@ -3436,8 +3436,8 @@ half    = "shipped"
 count   = "1"
 verdict = "allowed"
 cite    = "the busbar-api drain (Track 4): each face of the retiring contract crate moves into busbar-contract first and busbar-api re-exports it until its last reader is repointed. PENDING_EDGES (api, contract) is that statement in the gate."
-why     = "busbar-api names busbar-contract: the hooks-kind face (RoutingPolicy, its projections, the signal catalog) is the contract's now and busbar-api re-exports it, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "delete busbar-api. Every `busbar_api::RoutingPolicy` spelling becomes `busbar_contract::RoutingPolicy`; the re-export block and this row go with the crate."
+why     = "busbar-api names busbar-contract: the hooks-kind face (RoutingPolicy, its projections, the signal catalog), the store-kind face (busbar_contract::store: VirtualKey and its frozen wire, the records, the Store replay face) and the residue (busbar_contract::operation, busbar_contract::redacted) are the contract's now and busbar-api re-exports each behind its own drain line, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions."
+drain   = "delete busbar-api. Every `busbar_api::RoutingPolicy` spelling becomes `busbar_contract::RoutingPolicy`, every `busbar_api::<store name>` becomes `busbar_contract::store::<name>`, `busbar_api::operation` becomes `busbar_contract::operation` and `busbar_api::Redacted` becomes `busbar_contract::redacted::Redacted`; the three re-export blocks and this row go with the crate."
 
 [[dep]]
 from    = "busbar-a2a"

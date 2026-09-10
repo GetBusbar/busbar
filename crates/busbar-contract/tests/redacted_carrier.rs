@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/busbar-contract/src/redacted.rs`.
+//! The secret carrier (`busbar_contract::redacted::Redacted`): prints nothing, zeroizes, compares in constant time.
 
-use super::*;
+use busbar_contract::redacted::*;
 
 /// The core guarantee: neither `Debug` nor `Display` ever contains the secret material.
 #[test]

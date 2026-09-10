@@ -1,37 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for `crates/api/src/signal.rs`.
+//! The signal catalog (`busbar_contract::signal`): every name is stable, unique and round-trips.
 
-use super::*;
+use busbar_contract::signal::*;
+use std::borrow::Cow;
 
 /// `Signal::ALL` must list every variant exactly once, and `Signal::name`'s hand-written match
 /// must agree with the `#[serde(rename_all = "snake_case")]` derive — the exhaustiveness guard
 /// for this append-only catalog (mirrors the codebase's `KNOWN_PROTOCOLS` pattern).
 #[test]
 fn all_lists_every_variant_and_name_matches_serde() {
-    // THE EXHAUSTIVENESS HALF, and it has to be a `match` rather than a walk of `ALL`. Every other
-    // assertion in this test is driven BY `Signal::ALL`, so all of them are self-referential: add a
-    // variant plus its `Signal::name` arm (both compiler-forced) and forget `Signal::ALL` (a
-    // hand-maintained slice the compiler does NOT check) and the whole test passed -- while
-    // `Signal::bit` panics on "Signal::ALL must list every variant" the first time anyone declares
-    // that signal, on the live decide/tap path. Degenerately, an EMPTY `ALL` passed everything
-    // below too (`0 == 0`, `vec![] == (0..0)`). This match is non-exhaustive the moment a variant
-    // is added, so the omission becomes a compile error in the same change that introduces it.
+    // THE EXHAUSTIVENESS HALF, AS MUCH OF IT AS AN OUTSIDE CELL CAN HOLD. In-crate, this was an
+    // exhaustive `match` over every variant, so that adding a variant and forgetting the
+    // hand-maintained `Signal::ALL` was a compile error in the same change. The contract's
+    // batteries live in `tests/` (its surface carries no `#[cfg(test)]`), and `Signal` is
+    // `#[non_exhaustive]` -- no downstream `match` can be exhaustive over it, by design. What
+    // remains: every listed variant is one this cell knows by name (a variant added to `ALL`
+    // without being added here is red), and the length pin below refuses a silent change in
+    // either direction. The omission the in-crate match caught -- a variant declared and never
+    // listed -- is caught by `Signal::bit`'s panic on the live decide/tap path the first time the
+    // variant is declared, and by the length pin the moment anyone counts.
     for &s in Signal::ALL {
-        let listed = match s {
+        let listed = matches!(
+            s,
             Signal::RequestedModel
-            | Signal::RequestTotalChars
-            | Signal::RequestMessageCount
-            | Signal::RequestToolCount
-            | Signal::RequestSystemChars
-            | Signal::CandidateBreakerState
-            | Signal::CandidateErrorRate
-            | Signal::CandidateLatencyP95Ms
-            | Signal::RoutingPolicy
-            | Signal::ResponseTokensOut => true,
-        };
-        assert!(listed);
+                | Signal::RequestTotalChars
+                | Signal::RequestMessageCount
+                | Signal::RequestToolCount
+                | Signal::RequestSystemChars
+                | Signal::CandidateBreakerState
+                | Signal::CandidateErrorRate
+                | Signal::CandidateLatencyP95Ms
+                | Signal::RoutingPolicy
+                | Signal::ResponseTokensOut
+        );
+        assert!(
+            listed,
+            "`Signal::ALL` lists a variant this cell does not know: {s:?}"
+        );
     }
     assert_eq!(
         Signal::ALL.len(),

@@ -1447,7 +1447,3 @@ impl PlaneRequestCtx {
         self.key.is_some()
     }
 }
-
-#[cfg(test)]
-#[path = "tests/store_tests.rs"]
-mod tests;

@@ -4,7 +4,7 @@
 //! THE SERDE FENCE for [`Redacted`](crate::redacted::Redacted) — a compile-time pin that a secret VALUE can
 //! NEVER be serialized into an audit record, a wire payload, on-disk config, or a log line by
 //! construction. The single structural guarantee the whole secret-hygiene design rests on
-//! (`docs/design/1.6.0-secret-hygiene.md`, Part 2 §2.1(b) + Part 3, Check 3) is:
+//! (`docs/design/1.6.0-secret-hygiene.md`, Part 2 item 2.1(b) + Part 3, Check 3) is:
 //!
 //!   > `Redacted<T>` deliberately implements NEITHER `Serialize` NOR `Deserialize`.
 //!
@@ -23,7 +23,7 @@
 //! reflection of "does an impl exist right now". A control probe over a type that IS `Serialize`/
 //! `Deserialize` (plain `String`) proves the probe actually detects impls (it isn't vacuously false).
 
-use super::*;
+use busbar_contract::redacted::*;
 
 use core::marker::PhantomData;
 

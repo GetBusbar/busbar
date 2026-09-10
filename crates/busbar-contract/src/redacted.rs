@@ -124,12 +124,6 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
     std::hint::black_box(result) == 0
 }
 
-#[cfg(test)]
-#[path = "tests/redacted_tests.rs"]
-mod tests;
-
-// The compile-time SERDE FENCE: pins `Redacted<T>: !Serialize`/`!Deserialize` so a secret value can
-// never reach an audit/wire/disk/log sink by construction (Part 3, Check 3 of the secret-hygiene design).
-#[cfg(test)]
-#[path = "tests/redacted_no_serde.rs"]
-mod redacted_no_serde;
+// The compile-time SERDE FENCE — `Redacted<T>: !Serialize`/`!Deserialize`, so a secret value can
+// never reach an audit/wire/disk/log sink by construction (Part 3, Check 3 of the secret-hygiene
+// design) — is the crate's `tests/redacted_no_serde.rs` cell; its battery is `tests/redacted_carrier.rs`.
