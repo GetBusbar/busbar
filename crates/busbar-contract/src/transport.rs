@@ -70,8 +70,8 @@ pub use busbar_contract_transport::driver::{Answer, Arrival, Detached, Outcome, 
 /// reason anybody could state.
 pub use busbar_contract_transport::session;
 pub use busbar_contract_transport::session::{
-    Cut, DetachedSession, SessionDriver, SessionEnd, SessionFrame, SessionHandle, SessionOpen,
-    SessionReply,
+    Cut, DetachedSession, DuplexWire, SessionBudgets, SessionDriver, SessionEnd, SessionFrame,
+    SessionHandle, SessionOpen, SessionReply,
 };
 
 /// Everything a transport declares about itself.

@@ -244,3 +244,118 @@ impl SessionDriver for DetachedSession {
 
     fn close(&self, _session: SessionHandle, _end: SessionEnd) {}
 }
+
+/// THE COMPOSITION'S CEILING ON ONE SESSION.
+///
+/// One field, and the "one" is the deliberate half. The other bounds a duplex session runs under
+/// live where the thing they bound lives: a message ceiling is the CARRIER's, because the carrier
+/// is what buffers a partial message before anyone above has been handed anything, and a keepalive
+/// answer is the carrier's too, because it is a frame of one wire's own protocol that no plane may
+/// ever see. A seam that carried either would be a seam that had to know what a wire's frames are,
+/// which is precisely the knowledge this module is arranged not to have.
+///
+/// What is left is the one bound that is genuinely about the SESSION rather than about a frame: how
+/// long the whole thing may run. It is spelled here rather than in a wire's own crate because the
+/// answer is the COMPOSITION's — the same number for every wire this node serves — and a wire that
+/// owned it would be a wire an acceptor had to name in order to state a deadline.
+///
+/// `Default` is the unbounded session, which is the honest posture for a session between two things
+/// one deployment composed itself: the deadline exists to bound a session opened by a stranger.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionBudgets {
+    /// How long the whole session may run, measured from the pump's first read.
+    ///
+    /// `None` is unbounded, and it is a real choice rather than a missing value: a deadline on an
+    /// exchange with no stranger on either end would cut a healthy long-lived session for no reason
+    /// anybody could act on.
+    pub deadline: Option<std::time::Duration>,
+}
+
+impl SessionBudgets {
+    /// A session bounded to run no longer than `deadline`.
+    #[must_use]
+    pub fn within(deadline: std::time::Duration) -> Self {
+        Self {
+            deadline: Some(deadline),
+        }
+    }
+}
+
+/// A WIRE THAT UPGRADES AND PUMPS: the seam an ACCEPTOR reaches a duplex wire through.
+///
+/// [`SessionDriver`] is the seam a session's FRAMES cross, and it faces the other way. This one is
+/// what a composition root holds: it has a listener, a declared surface and a driver, and it needs
+/// to ask SOME wire for one session at a time without being written against a particular one.
+///
+/// ## Why it is TWO calls
+///
+/// Because a node that can be asked to stop has two situations and they are not the same situation.
+/// WAITING for an upgrade it owes nobody anything: nothing has been accepted, no caller has been
+/// told yes, and dropping the wait is free and correct. MID-SESSION a caller HAS been told yes and
+/// is being served, and dropping that is a session cut by this node for a reason the caller cannot
+/// see. An acceptor holding a single accept-upgrade-open-and-pump future cannot tell those apart —
+/// one future spans both — so a stop either cancels a live session or waits on a connection that
+/// may never come.
+///
+/// [`DuplexWire::serve_upgrade`] returns exactly where the first situation ends and the second
+/// begins, and it says so by handing back a VALUE. That is the whole of the drain, stated in
+/// ownership: "is anything open?" is not a flag an acceptor sets, clears and remembers to read, it
+/// is a value the acceptor either holds or does not, and the only thing that can be done with one
+/// is move it into [`DuplexWire::pump_session`].
+///
+/// ## What is NOT here
+///
+/// No frame, no close code, no ping, no handshake, no address and no bind. A wire's own protocol is
+/// its own, and an acceptor written against this face could not tell you which wire it just served.
+/// Neither is a refusal: whether a session may be opened at all is the DRIVER's answer, given while
+/// the upgrade still has somewhere to carry one, and whether a target is a session mount is the
+/// DECLARATION's, read by the wire.
+pub trait DuplexWire: Send + Sync {
+    /// ONE SESSION THAT IS OPEN AND HAS NOT BEEN PUMPED — the wire's own value for it.
+    ///
+    /// Associated rather than a shared struct, because what an open session IS differs by wire: an
+    /// upgraded carrier here, a stream identifier there, a peer connection somewhere else. What the
+    /// face fixes is not its contents but its OWNERSHIP — an acceptor holding one has told a caller
+    /// yes — so an implementation that made it `Clone` would be handing out a promise twice.
+    type OpenSession: Send + 'static;
+
+    /// THE WAITING HALF: take one upgrade off the listener and OPEN the session it names — and stop
+    /// there, with the session open and not one frame pumped.
+    ///
+    /// The future may be DROPPED, and that is the point: everything it holds before a session opens
+    /// is this node's own, and dropping it tells no caller anything, which is what makes it the arm
+    /// of an acceptor's stop-or-accept race. An implementation that answered a caller and then
+    /// returned would have moved the promise before the value that carries it.
+    ///
+    /// # Errors
+    ///
+    /// No session opened — the listener could not yield one, the upgrade failed, or the driver
+    /// refused it before the protocol changed. Either way nothing is open, so nothing is draining
+    /// and the acceptor may go round again; a listener that will never yield another reports
+    /// [`crate::wire::TransportError::Closed`], which is how the two are told apart.
+    fn serve_upgrade<'w>(
+        &'w self,
+        listener: &'w crate::wire::Listener,
+        driver: &'w dyn SessionDriver,
+        surface: &'w WireSurface,
+    ) -> impl core::future::Future<Output = Result<Self::OpenSession, crate::wire::TransportError>>
+           + Send
+           + 'w;
+
+    /// THE MID-SESSION HALF: run one already-open session to its end.
+    ///
+    /// Takes the session BY VALUE, which is the ownership statement the drain rests on. It answers
+    /// rather than erring, because past the open every ending is an ending — the peer went, the
+    /// deadline ran out, the driver ended it, the carrier failed — and which end cut it is in the
+    /// [`SessionEnd`]. [`SessionDriver::close`] has been called exactly once by the time it
+    /// returns, on every one of those endings including the ugly ones.
+    ///
+    /// The budget arrives HERE rather than with the upgrade, so an acceptor that held an open
+    /// session across a configuration change is not holding a stale ceiling.
+    fn pump_session<'w>(
+        &'w self,
+        open: Self::OpenSession,
+        driver: &'w dyn SessionDriver,
+        budgets: SessionBudgets,
+    ) -> impl core::future::Future<Output = SessionEnd> + Send + 'w;
+}
