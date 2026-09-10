@@ -10,11 +10,12 @@
 //! singleton can be initialised once per test binary, which would leave the fold's order and skip
 //! rules provable only by booting binaries.
 
-use crate::plane::config::{config_sections, config_sections_from, refuse_cross_plane_reference};
+use crate::plane::config::{config_sections, refuse_cross_plane_reference};
 use crate::plane::registry::{
-    build_dispatch, builtin_plane_decls, install_planes, merged_boot_plane_decls, plane_decl_for,
-    PlaneDecl,
+    build_dispatch, builtin_plane_decls, install_planes, plane_decl_for, PlaneDecl,
 };
+use busbar_substrate::plane::config::config_sections_from;
+use busbar_substrate::plane::registry::{merged_boot_plane_decls, CORE_OWNED_CONCRETE_SECTIONS};
 use std::any::Any;
 use std::collections::BTreeMap;
 
@@ -335,7 +336,8 @@ fn a_registered_plane_cannot_collide_with_a_builtin_vocabulary() {
 /// that routes through `scope_kind_index` is proven to invert the decoder here.
 #[test]
 fn the_scope_kind_index_is_the_exact_inverse_of_scope_kind_at() {
-    use crate::plane::registry::{scope_kind_at, scope_kind_index};
+    use crate::plane::registry::scope_kind_at;
+    use busbar_substrate::plane::registry::scope_kind_index;
     // The neutral base kind plus every kind any registered plane declares — the full vocabulary the
     // two functions share. Iterating this (rather than a literal list) means a plane adding a kind
     // is covered with no edit here.
@@ -942,7 +944,7 @@ fn dup_claim_guard_fires_when_two_planes_claim_the_same_section() {
     let decls: Vec<&'static PlaneDecl> = vec![&ALPHA_CLAIMS_FOO, &BETA_CLAIMS_FOO];
     let err = crate::plane::registry::check_owned_config_claims(
         &decls,
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("two planes claiming section `foo` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
@@ -956,7 +958,7 @@ fn dup_claim_guard_fires_when_a_plane_claims_a_core_owned_section() {
     let decls: Vec<&'static PlaneDecl> = vec![&GAMMA_CLAIMS_RATE_CARD];
     let err = crate::plane::registry::check_owned_config_claims(
         &decls,
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("claiming `rate_card` while core still owns it concretely MUST be refused — the grammar would be declared twice");
     assert!(
@@ -986,13 +988,13 @@ fn dup_claim_guard_admits_streams_alone_and_refuses_a_streams_collision() {
     // M5: `streams` is NOT in `CORE_OWNED_CONCRETE_SECTIONS`, so voice's lone claim is ADMITTED.
     crate::plane::registry::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS],
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect("`streams` is not core-owned and has one claimant — the voice claim must be admitted");
     // A SECOND claimant of `streams` is refused by construction, naming both planes and the section.
     let err = crate::plane::registry::check_owned_config_claims(
         &[&ONE_CLAIMS_STREAMS, &TWO_CLAIMS_STREAMS],
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect_err("two planes claiming `streams` MUST be refused — one plane's grammar would answer for the other's");
     assert!(
@@ -1007,7 +1009,7 @@ fn dup_claim_guard_passes_for_the_shipped_empty_registry() {
     let decls = merged_boot_plane_decls(&[], builtin_plane_decls());
     crate::plane::registry::check_owned_config_claims(
         &decls,
-        crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS,
+        CORE_OWNED_CONCRETE_SECTIONS,
     )
     .expect("stage 1 ships an EMPTY owned-config registry — no plane claims any section, so the guard must pass");
     for decl in &decls {

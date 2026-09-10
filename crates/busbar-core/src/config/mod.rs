@@ -2484,7 +2484,9 @@ pub fn resolve(
         let present = deploy
             .plane_section(section)
             .is_some_and(|cfg| cfg.is_present());
-        if present && crate::plane::registry::plane_decl_for_config_section(section).is_none() {
+        if present
+            && busbar_substrate::plane::registry::plane_decl_for_config_section(section).is_none()
+        {
             errors.push(format!(
                 "`{section}:` is configured, but this build was compiled without the plane that \
                  owns it, so busbar cannot serve it. Rebuild with that plane's feature enabled, or \
@@ -2500,7 +2502,7 @@ pub fn resolve(
     // this never fires; with it compiled out the `RawPlaneSection` reports `is_present()` for a
     // section the operator wrote, and there is no decl for it.
     if deploy.streams.0.is_present()
-        && crate::plane::registry::plane_decl_for_config_section("streams").is_none()
+        && busbar_substrate::plane::registry::plane_decl_for_config_section("streams").is_none()
     {
         errors.push(
             "`streams:` is configured, but this build was compiled without the plane that owns it, \
@@ -2569,7 +2571,7 @@ pub fn resolve(
                 // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns
                 // the `mcp:` door), so no plane key is named here. Compiled out ⇒ no decl ⇒ the
                 // deletion-gate refusal below.
-                match crate::plane::registry::plane_decl_for_config_section(
+                match busbar_substrate::plane::registry::plane_decl_for_config_section(
                     busbar_substrate::plane::config::NAMED_MAP_SECTIONS[2],
                 )
                 .and_then(|d| d.lower_endpoint)

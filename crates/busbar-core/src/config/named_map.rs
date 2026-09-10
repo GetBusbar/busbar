@@ -70,7 +70,7 @@ impl NamedMapSection {
     /// [`busbar_substrate::plane::config::NAMED_MAP_SECTIONS`] instead.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
-        for decl in crate::plane::registry::plane_decls() {
+        for decl in busbar_substrate::plane::registry::plane_decls() {
             if decl.named_def_list.is_some() {
                 out.push(NamedMapSection::Plane(decl.config_section));
             }
@@ -112,7 +112,7 @@ impl NamedMapSection {
             NamedMapSection::IdentityProviders => "identity-provider",
             NamedMapSection::Export => "exporter",
             NamedMapSection::Plane(_) => {
-                crate::plane::registry::plane_decl_for_config_section(self.key())
+                busbar_substrate::plane::registry::plane_decl_for_config_section(self.key())
                     .map(|d| d.admin_noun)
                     .unwrap_or_else(|| self.key())
             }
@@ -275,7 +275,9 @@ impl NamedMapSection {
             // a present `tools:`/`agents:` section — naming the SECTION (its plane-declared grammar
             // key), not a hard-coded plane.
             NamedMapSection::Plane(_) => {
-                if crate::plane::registry::plane_decl_for_config_section(self.key()).is_none() {
+                if busbar_substrate::plane::registry::plane_decl_for_config_section(self.key())
+                    .is_none()
+                {
                     let section = self.key();
                     return Err(format!(
                         "`{section}.{name}`: this build was compiled without the plane that owns the \
@@ -364,7 +366,7 @@ fn plane_config_validate(
     name: &str,
     def: &serde_json::Value,
 ) -> Result<(), String> {
-    match crate::plane::registry::plane_decl_for_config_section(section.key())
+    match busbar_substrate::plane::registry::plane_decl_for_config_section(section.key())
         .and_then(|d| d.config_validate)
     {
         Some(f) => f(name, def),

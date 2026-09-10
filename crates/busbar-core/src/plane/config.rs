@@ -362,44 +362,14 @@ impl<'de> serde::Deserialize<'de> for McpEndpointSection {
     }
 }
 
-/// EVERY TOP-LEVEL CONFIG SECTION a bare hook reference could be reaching onto, DERIVED from the two
-/// tables that declare the config grammar rather than written as a literal.
-///
-/// [`super::registry::PlaneDecl::config_section`] over [`super::registry::plane_decls`] gives the
-/// plane sections (`pools:`, `tools:`, `agents:`, and any registered plane's own section);
-/// [`NamedMapSection::key`] over [`NamedMapSection::ALL`] gives the 1.5.3 named-definition maps
-/// (`identity-providers:`, `export:`, and the two plane sections again, which is why this
-/// de-duplicates). Both tables state that their variant set is the only thing a new section adds —
-/// this function is what makes that true for the hook-reference rule too.
-///
-/// Order is deterministic (plane tables first, in layering order) so a refusal naming a section
-/// names the same one on every run. A nondeterministic diagnostic makes a boot failure
-/// unreproducible.
-pub fn config_sections() -> Vec<&'static str> {
-    config_sections_from(super::registry::plane_decls())
-}
-
-/// THE SECTION FOLD, over a GIVEN plane declaration list rather than the process one — so a test can
-/// pass a plane busbar does not have and watch its section reach this grammar with nothing written
-/// for it in core (see `plane/tests/registry_tests.rs`). [`config_sections`] passes the process
-/// [`super::registry::plane_decls`]; the plane sections come off each decl's
-/// [`super::registry::PlaneDecl::config_section`] rather than an enum `match`, which is what lets a
-/// registered plane's section into the hook-reference grammar.
-pub(crate) fn config_sections_from(
-    decls: &[&'static super::registry::PlaneDecl],
-) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for section in decls
-        .iter()
-        .map(|decl| decl.config_section)
-        .chain(busbar_substrate::plane::config::NAMED_MAP_SECTIONS)
-    {
-        if !out.contains(&section) {
-            out.push(section);
-        }
-    }
-    out
-}
+// THE SECTION DERIVATION relocated to `busbar_substrate::plane::config` beside the plane list it
+// folds (`config_sections` over the process `plane_decls`, `config_sections_from` over a given decl
+// list) — so the config layer derives the top-level grammar from the neutral registry without a path
+// back into core. Re-exported here at the historical paths for core's in-crate callers.
+//
+// `[[transitional]]` — drain when core's remaining callers name
+// `busbar_substrate::plane::config::config_sections` directly.
+pub use busbar_substrate::plane::config::config_sections;
 
 /// A whole attach list, judged by the same rule one entry is — the SECTION-level `hooks:` list has
 /// no per-entry parse to hang off, and a looser rule there would be a hole in exactly the place an
