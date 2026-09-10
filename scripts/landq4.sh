@@ -919,6 +919,38 @@ EOF
 }
 
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
+# WHY A LINE WAS PARKED, AND WHAT THE QUEUE LOOKS LIKE, WITHOUT OPENING A LOG
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
+# A `#RED-preproof` park named the log and nothing else, so every tick that wanted to know what had
+# happened opened a file on a fleet box's copy-back and read for the sentence. The sentence is in
+# that log; it is put in the ledger BESIDE the park, so the log stays the evidence and the ledger
+# stays readable. The first line that says why, in the order the engine says it: land.sh's own
+# verdict, then a gate's FAIL row, then a compiler error.
+lq_preproof_reason() { # $1 = log path; prints the one line that says why, or nothing
+  local lg="$1" re out
+  [ -n "$lg" ] && [ -f "$lg" ] || return 0
+  for re in 'land\.sh: RED[^a-z]' '^FAIL ' '^[[:space:]]*error(\[|:)' '^[[:space:]]*(RED|FAILED)[: ]'; do
+    out="$(grep -m1 -E "$re" "$lg" 2>/dev/null | tr -d '\r' | cut -c1-200)"
+    [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+  done
+  return 0
+}
+
+# THE STATE OF THE QUEUE IN ONE LINE, written at every loop top, so a tick reads `tail -n 1` of
+# target/gate/landq4.status instead of reconstructing the queue from the log. Parked counts BOTH
+# kinds of park — the pre-proof's and the landing's — because both are lines that need a human.
+lq_status() { # $1 = queue (default $Q), $2 = done ledger (default $D), $3 = tree (default $W)
+  local q="${1:-$Q}" d="${2:-$D}" tree="${3:-$W}" live held parked landed tip
+  live="$(grep -cE '^--' "$q" 2>/dev/null || true)"
+  held="$(grep -cE '^#HOLD' "$q" 2>/dev/null || true)"
+  parked="$(grep -cE '^#RED' "$q" 2>/dev/null || true)"
+  landed="$(grep -cE '^GREEN ' "$d" 2>/dev/null || true)"
+  tip="$(git -C "$tree" rev-parse --short HEAD 2>/dev/null)"
+  printf 'live %s held %s parked %s landed %s tip %s\n' \
+    "${live:-0}" "${held:-0}" "${parked:-0}" "${landed:-0}" "${tip:-?}"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE POPPER
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # Pre-proven-green lines first, and ONLY those while any exist at this tip: they are the lines with
@@ -952,7 +984,9 @@ lq_pop() { # $1 = tip, $2 = batch size, $3 = batch file out, $4 = keep file out;
         st=NONE
       else
         printf '#RED-preproof %s %s\n' "${lg:-no-log}" "$line" >>"$keep"
+        local why; why="$(lq_preproof_reason "$lg")"
         lq_log "pre-prove RED at $(printf '%.9s' "$tip"): parked $(printf '%.80s' "$line") (log: ${lg:-none})"
+        lq_log "pre-prove RED reason: ${why:-<no reason line in the log>}"
         continue
       fi
     fi
@@ -1789,6 +1823,57 @@ lq_selftest() {
   _t "try_push pushes over it"                      1 "$(grep -c '^    cancelled-in-progress)$' "$0")"
   _t "  ...and says why, in the log"                1 "$(grep -c '^      lq_log "push over in_progress CI on ' "$0")"
 
+
+  # ── A PARK SAYS WHY, AND THE QUEUE SAYS WHERE IT STANDS, WITHOUT OPENING A LOG ────────────────
+  echo "landq4 selftest: a #RED-preproof park carries its reason line"
+  local savedQ7="$Q" savedPP7="$PP" savedL7="$L" savedW7="$W" savedD7="$D"
+  local rl="$root/reason-land.log" rf="$root/reason-fail.log" re2="$root/reason-err.log" rn="$root/reason-none.log"
+  printf 'building\nland.sh: RED — tests failed in: busbar-core\nmore noise\n' >"$rl"
+  printf 'FAIL construction: legacy-reach 94 > 92\nland.sh: RED — gate rows red\n' >"$rf"
+  printf 'error[E0433]: failed to resolve: use of undeclared crate\n' >"$re2"
+  printf 'all quiet\n' >"$rn"
+  _t "land.sh's own verdict is the reason"  "land.sh: RED — tests failed in: busbar-core" "$(lq_preproof_reason "$rl")"
+  # THE ENGINE'S OWN VERDICT OUTRANKS A ROW IT PRINTED ON THE WAY: "gate rows red" names the gate,
+  # a single FAIL row names one figure of it.
+  _t "land.sh's verdict outranks a gate row"  "land.sh: RED — gate rows red" "$(lq_preproof_reason "$rf")"
+  printf 'FAIL construction: legacy-reach 94 > 92\nnoise\n' >"$rf"
+  _t "a gate's FAIL row when that is all there is" "FAIL construction: legacy-reach 94 > 92" "$(lq_preproof_reason "$rf")"
+  _t "a compiler error is a reason"         "error[E0433]: failed to resolve: use of undeclared crate" "$(lq_preproof_reason "$re2")"
+  _t "a log with nothing to say says nothing" "" "$(lq_preproof_reason "$rn")"
+  _t "a log that is not there says nothing"   "" "$(lq_preproof_reason "$root/nosuch.log")"
+  _t "no log at all says nothing"             "" "$(lq_preproof_reason "")"
+  # AT THE POP: the park is unchanged, and the ledger now carries the sentence beside it.
+  Q="$root/reasonq.txt"; PP="$root/reason-pp.txt"; L="$root/reason-log.txt"; : >"$L"; W="$repo"
+  printf 'RED%stip1%s%s%s--prove %s\n' "$TAB" "$TAB" "$rl" "$TAB" "$hb" >"$PP"
+  printf -- '--prove %s\n' "$hb" >"$Q"
+  local rn2; rn2="$(lq_pop tip1 4 "$root/rb.txt" "$root/rk.txt")"
+  _t "the line is still parked with its log"   1 "$(grep -c "^#RED-preproof $rl " "$root/rk.txt" || true)"
+  _t "  ...and the ledger carries the reason"  1 "$(grep -cx "pre-prove RED reason: land.sh: RED — tests failed in: busbar-core" "$L" || true)"
+  printf 'RED%stip1%s%s%s--prove %s\n' "$TAB" "$TAB" "$rn" "$TAB" "$hb" >"$PP"
+  printf -- '--prove %s\n' "$hb" >"$Q"; : >"$L"
+  rn2="$(lq_pop tip1 4 "$root/rb2.txt" "$root/rk2.txt")"
+  _t "a log with no sentence says so, in words" 1 "$(grep -cx 'pre-prove RED reason: <no reason line in the log>' "$L" || true)"
+
+  echo "landq4 selftest: the status line (a tick reads tail -n 1, not the log)"
+  D="$root/status-done.txt"
+  printf -- '--prove %s\n--prove %s\n#HOLD-after-abc123456 --prove held\n#RED --prove parked\n#RED-preproof /l/1 --prove parked2\n# a comment\n\n' "$ha" "$hb" >"$Q"
+  printf 'GREEN batch=1 log=/l/a one\nRED batch=1 log=/l/b two\nGREEN batch=2 log=/l/c three\nCI-RED deadbeef\n' >"$D"
+  _t "live, held, parked and landed are counted" \
+     "live 2 held 1 parked 2 landed 2 tip $(git -C "$repo" rev-parse --short HEAD)" \
+     "$(lq_status "$Q" "$D" "$repo")"
+  _t "  ...and it is ONE line"                 1 "$(lq_status "$Q" "$D" "$repo" | grep -c . )"
+  _t "  ...so tail -n 1 is the whole state"    "$(lq_status "$Q" "$D" "$repo")" "$(lq_status "$Q" "$D" "$repo" | tail -n 1)"
+  : >"$Q"; : >"$D"
+  _t "an empty queue counts zeroes, not blanks" \
+     "live 0 held 0 parked 0 landed 0 tip $(git -C "$repo" rev-parse --short HEAD)" \
+     "$(lq_status "$Q" "$D" "$repo")"
+  _t "a tree that is not one is tip ?"         "live 0 held 0 parked 0 landed 0 tip ?" "$(lq_status "$Q" "$D" "$root/nosuchtree")"
+  _t "the runner writes it at every loop top"  1 "$(grep -c '^  lq_status >"\$W/target/gate/landq4.status"$' "$0")"
+  _t "  ...before it reads the tip"            1 \
+     "$( [ "$(grep -n '^  lq_status >"\$W/target/gate/landq4.status"$' "$0" | head -n1 | cut -d: -f1)" -lt "$(grep -n '^  tip="\$(git -C "\$W" rev-parse HEAD)"$' "$0" | head -n1 | cut -d: -f1)" ] && echo 1 || echo 0)"
+  _t "  ...and puts it in the log too"         1 "$(grep -c '^  lq_log "status: ' "$0")"
+  Q="$savedQ7"; PP="$savedPP7"; L="$savedL7"; W="$savedW7"; D="$savedD7"
+
   rm -rf "$root"
   if [ "$fails" -eq 0 ]; then
     echo "landq4 selftest: GREEN (file sets, disjoint sweep, tip-keyed ledger, batch ceiling, one-file/one-judge/red-alone, popper)"
@@ -1824,6 +1909,11 @@ fi
 consec_head_conflict=0
 while true; do
   [ -f "$W/target/gate/STOP" ] && { lq_log "STOP marker seen"; exit 0; }
+
+  # THE STATE OF THE QUEUE IN ONE LINE (see lq_status), first thing, every loop: a tick reads
+  # `tail -n 1 target/gate/landq4.status` rather than the log.
+  lq_status >"$W/target/gate/landq4.status"
+  lq_log "status: $(cat "$W/target/gate/landq4.status")"
 
   tip="$(git -C "$W" rev-parse HEAD)"
   # ONE ENGINE IN THE TREE (see lq_census): strangers are killed and logged, and a tree that is not
