@@ -771,7 +771,7 @@ mod shim {
     //! repointing the shim at the real verb and deleting the note.
 
     use super::{DestinationId, LaneState, Outcome, UnitCfg};
-    use busbar_unit_breaker::port::{Classified, UpstreamCode, UpstreamStatus};
+    use busbar_unit_breaker::port::{Classified, Credential, UpstreamCode, UpstreamStatus};
     use busbar_unit_breaker::{Breaker, BreakerUnit};
 
     /// The lane-global counters `/stats` renders (difference 8).
@@ -805,24 +805,27 @@ mod shim {
 
     /// Classify one upstream answer, carrying the credential provenance and the body-derived
     /// signals the recording holds.
-    ///
-    /// GAP (differences 2, 3, 4): `UpstreamStatus` carries neither the provenance of the credential
-    /// that was refused nor the provider code / structured type the dialect read out of the body,
-    /// so this shim can only hand over the status and the `Retry-After`.
     #[allow(clippy::too_many_arguments)]
     pub fn classify(
         u: &BreakerUnit,
         dest: DestinationId,
         status: u16,
-        _passthrough: bool,
-        _provider_code: Option<&str>,
-        _structured_type: Option<&str>,
+        passthrough: bool,
+        provider_code: Option<&str>,
+        structured_type: Option<&str>,
         retry_after: Option<u64>,
     ) -> Classified {
         u.classify(
             dest,
             UpstreamStatus {
                 code: Some(UpstreamCode::Http(status)),
+                credential: if passthrough {
+                    Credential::Passthrough
+                } else {
+                    Credential::Declared
+                },
+                provider_code,
+                structured_type,
                 retry_after,
             },
         )

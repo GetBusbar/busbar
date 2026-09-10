@@ -91,6 +91,7 @@ fn error_map_code_wins_over_http_status() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -106,6 +107,7 @@ fn unmapped_code_falls_through_to_http_status() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(500)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -120,6 +122,7 @@ fn empty_error_map_still_classifies_by_http_status() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(429)),
             retry_after: Some(7),
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -140,6 +143,7 @@ fn auth_status_is_hard_down() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(401)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -154,6 +158,7 @@ fn client_error_status_is_client_fault_with_no_penalty() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(422)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -171,6 +176,7 @@ fn no_code_at_all_classifies_as_client_error_via_status_zero() {
         UpstreamStatus {
             code: None,
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -190,6 +196,7 @@ fn breaker_unit_classify_reads_the_declared_error_map() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out.disposition, Disposition::HardDown);
@@ -201,6 +208,7 @@ fn breaker_unit_classify_reads_the_declared_error_map() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     assert_eq!(out2.disposition, Disposition::ClientFault);
@@ -219,6 +227,7 @@ fn breaker_unit_classify_then_observe_trips_every_pool_cell_on_hard_down() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     let tripped = unit.observe(
@@ -259,6 +268,7 @@ fn an_unrecognized_error_map_value_warns_the_sink_exactly_once() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &warn_once,
     );
@@ -267,6 +277,7 @@ fn an_unrecognized_error_map_value_warns_the_sink_exactly_once() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &warn_once,
     );
@@ -289,6 +300,7 @@ fn noop_diagnostics_stays_silent_on_an_unrecognized_error_map_value() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -316,6 +328,7 @@ fn breaker_unit_classify_reaches_its_own_diagnostics_sink() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
     let _ = unit.classify(
@@ -323,6 +336,7 @@ fn breaker_unit_classify_reaches_its_own_diagnostics_sink() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(1113)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
     );
 
@@ -374,6 +388,7 @@ fn every_grpc_code_classifies_through_grpcs_own_table() {
             UpstreamStatus {
                 code: Some(UpstreamCode::Grpc(*code)),
                 retry_after: None,
+                ..UpstreamStatus::default()
             },
             &NoopDiagnostics,
         );
@@ -411,6 +426,7 @@ fn an_undefined_grpc_code_records_nothing() {
         UpstreamStatus {
             code: Some(UpstreamCode::Grpc(200)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -445,6 +461,7 @@ fn every_http_band_classifies_through_https_own_table() {
             UpstreamStatus {
                 code: Some(UpstreamCode::Http(*status)),
                 retry_after: None,
+                ..UpstreamStatus::default()
             },
             &NoopDiagnostics,
         );
@@ -465,6 +482,7 @@ fn the_same_number_means_different_things_in_the_two_namespaces() {
         UpstreamStatus {
             code: Some(UpstreamCode::Grpc(classify::GRPC_UNAVAILABLE)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -473,6 +491,7 @@ fn the_same_number_means_different_things_in_the_two_namespaces() {
         UpstreamStatus {
             code: Some(UpstreamCode::Http(u16::from(classify::GRPC_UNAVAILABLE))),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -499,6 +518,7 @@ fn a_grpc_resource_exhausted_carries_the_upstreams_wait() {
         UpstreamStatus {
             code: Some(UpstreamCode::Grpc(classify::GRPC_RESOURCE_EXHAUSTED)),
             retry_after: Some(9),
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );
@@ -521,6 +541,7 @@ fn an_http_keyed_error_map_does_not_claim_a_grpc_code() {
         UpstreamStatus {
             code: Some(UpstreamCode::Grpc(classify::GRPC_UNAVAILABLE)),
             retry_after: None,
+            ..UpstreamStatus::default()
         },
         &NoopDiagnostics,
     );

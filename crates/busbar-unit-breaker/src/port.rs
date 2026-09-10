@@ -47,20 +47,47 @@ pub enum UpstreamCode {
     Grpc(u8),
 }
 
-/// The upstream answer as this unit classifies it: the numeric status WITH its namespace (`None`
-/// when the transport could not put a number on the failure) and the upstream's own requested wait.
+/// WHOSE credential the upstream refused.
 ///
-/// `status.code`, when it is an [`UpstreamCode::Http`], stands in for BOTH the HTTP status and the
-/// provider error code an `error_map` entry is keyed on — the config grammar accepts a plain
-/// HTTP-status string as a key (`error_map: { "400": client_error }`), which is the one signal a
-/// caller that reads no response body (per `// contract:` in `busbar-unit-egress`'s `ports.rs`) can
-/// supply. A gRPC code is NOT offered to the `error_map` as a provider code: those keys are
-/// HTTP-status strings by the config grammar, and feeding `14` in would let an operator's rule for
-/// HTTP `14` — a status that does not exist — silently claim a gRPC `UNAVAILABLE`.
+/// 1.5.5 asks this question on the response path and it changes the answer: a 401/403 against a
+/// key the CALLER supplied is that caller's own credential failing, not this destination's, and it
+/// is relayed with no breaker penalty at all (`busbar-llm/src/engine/attempt/classify.rs:203-210`).
+/// Without the distinction the same response hard-downs the destination in every pool, so one
+/// caller's stale key benches a healthy upstream for everybody else.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct UpstreamStatus {
+pub enum Credential {
+    /// The credential busbar itself declared for this destination. A refusal is the destination's.
+    #[default]
+    Declared,
+    /// The caller's own key, relayed unchanged (1.5.5's `UpstreamCreds::Passthrough`).
+    Passthrough,
+}
+
+/// The upstream answer as this unit classifies it: the numeric status WITH its namespace (`None`
+/// when the transport could not put a number on the failure), whose credential was refused, the
+/// signals the dialect read out of the response BODY, and the upstream's own requested wait.
+///
+/// `provider_code` and `structured_type` are the two slots an `error_map` entry is keyed on. They
+/// are the dialect's reading of the body — 1.5.5's `extract_error(status, body)`, folded in at
+/// `busbar-llm/src/engine/attempt/classify.rs:214-220` — and they are what makes an operator's rule
+/// for `insufficient_quota` a rule about a provider's own vocabulary rather than about an HTTP
+/// number. When no code was read, the HTTP status string stands in, because the config grammar
+/// accepts a plain status as a key too (`error_map: { "400": client_error }`); that fallback is a
+/// FALLBACK and never a replacement, which is the whole difference. A gRPC code is NOT offered as a
+/// provider code: those keys are HTTP-status strings by the config grammar, and feeding `14` in
+/// would let an operator's rule for HTTP `14` — a status that does not exist — silently claim a
+/// gRPC `UNAVAILABLE`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UpstreamStatus<'a> {
     /// The upstream's numeric status and the numbering that spelled it, where one is known.
     pub code: Option<UpstreamCode>,
+    /// Whose credential this answer refused.
+    pub credential: Credential,
+    /// The provider's own error CODE, as the dialect read it out of the response body.
+    pub provider_code: Option<&'a str>,
+    /// The provider's structured error TYPE, as the dialect read it out of the response body — the
+    /// second signal `normalize_raw_error` checks when the code matched nothing.
+    pub structured_type: Option<&'a str>,
     /// The upstream's requested Retry-After, in whole seconds, where it asked for one.
     pub retry_after: Option<u64>,
 }
@@ -132,7 +159,7 @@ pub fn outcome_and_label(
 #[must_use]
 pub fn classify_upstream(
     error_map: &std::collections::HashMap<String, String>,
-    status: UpstreamStatus,
+    status: UpstreamStatus<'_>,
     diagnostics: &dyn classify::Diagnostics,
 ) -> Classified {
     // Each namespace through its own table. The gRPC leg never enters the HTTP normalizer at all:
@@ -152,14 +179,33 @@ pub fn classify_upstream(
             };
             let raw = classify::RawUpstreamError {
                 http_status: http_status.unwrap_or(0),
-                provider_code: http_status.map(|c| c.to_string()),
-                structured_type: None,
+                // The dialect's reading of the body first, the status string only where there was
+                // none. Reversing that order — or dropping the body reading, as this crate did
+                // before the equivalence cells named it — silently re-keys every operator rule
+                // onto HTTP numbers, and every rule written against a provider's own vocabulary
+                // stops firing without saying so.
+                provider_code: status
+                    .provider_code
+                    .map(str::to_string)
+                    .or_else(|| http_status.map(|c| c.to_string())),
+                structured_type: status.structured_type.map(str::to_string),
                 retry_after_secs: status.retry_after,
             };
             classify::normalize_raw_error(&raw, error_map, diagnostics)
         }
     };
-    let disposition = classify::classify(&sig);
+    // A passthrough 401/403 is the CALLER's key failing, not busbar's: no breaker penalty, relay.
+    // Placed after the signal is built, not before, so the classification a caller reads back is
+    // still the one the tables produced — only the DISPOSITION is overridden, and only for the two
+    // statuses 1.5.5 exempts. A passthrough 429 is still a transient the breaker records, or a
+    // caller could suppress every penalty on this destination by relaying its own key.
+    let disposition = if status.credential == Credential::Passthrough
+        && matches!(status.code, Some(UpstreamCode::Http(401 | 403)))
+    {
+        Disposition::ClientFault
+    } else {
+        classify::classify(&sig)
+    };
     let (outcome, label) = outcome_and_label(disposition, sig.retry_after);
     Classified {
         disposition,

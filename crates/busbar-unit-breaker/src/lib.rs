@@ -365,7 +365,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     pub fn classify(
         &self,
         destination: DestinationId,
-        status: port::UpstreamStatus,
+        status: port::UpstreamStatus<'_>,
     ) -> port::Classified {
         // The shared map comes out from under the lock as a reference count, never a copy, and the
         // lock is released before the pure classification runs. A destination that declared no

@@ -329,11 +329,18 @@ impl Breaker for BreakerAdapter {
 
     fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
         let code = Self::narrow_code(status);
+        // contract: the egress port's `UpstreamStatus` carries the transport's reading of the frame
+        // and nothing the dialect read out of the BODY, and it does not say whose credential was
+        // refused. The breaker takes both — they are what keeps an operator's `error_map` keyed on a
+        // provider's own vocabulary and a caller's own 401 off this destination's breaker — so this
+        // narrowing hands over the defaults until the served path supplies them (ROUTE-design L2,
+        // where `unit/route.rs` stops calling the legacy forward and hydrates the walk instead).
         let classified = self.unit.classify(
             destination,
             busbar_unit_breaker::port::UpstreamStatus {
                 code,
                 retry_after: status.retry_after,
+                ..busbar_unit_breaker::port::UpstreamStatus::default()
             },
         );
         Classified {

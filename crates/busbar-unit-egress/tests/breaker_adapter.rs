@@ -184,6 +184,11 @@ impl Breaker for BreakerAdapter {
             busbar_unit_breaker::port::UpstreamStatus {
                 code,
                 retry_after: status.retry_after,
+                // This port carries the transport's reading of the frame and nothing the dialect
+                // read out of the body, and it does not say whose credential was refused — so the
+                // narrowing an integrator does here hands over the defaults, exactly as the root's
+                // own `BreakerAdapter` does.
+                ..busbar_unit_breaker::port::UpstreamStatus::default()
             },
         );
         Classified {
