@@ -18,7 +18,7 @@ use busbar_secret_ref::SecretRef;
 /// module docs on [`super`] for what "costs nothing when off" is measured against.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct OauthAsCfg {
+pub struct OauthAsCfg {
     /// RFC 8414 `issuer`: the canonical absolute URL that names THIS authorization server, and the
     /// value every endpoint below is derived from.
     ///
@@ -63,7 +63,7 @@ pub(crate) struct OauthAsCfg {
 /// Why an `oauth_as:` block was refused at boot. Every arm names the field and what a correct value
 /// looks like, because an operator reading "invalid oauth_as config" cannot act on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AsCfgError {
+pub enum AsCfgError {
     /// `issuer` is empty.
     MissingIssuer,
     /// `issuer` is not an absolute `http(s)` URL.
