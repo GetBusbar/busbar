@@ -2007,42 +2007,6 @@ fn a_turn_that_outruns_its_reservation_posts_in_full_and_carries_the_rest() {
 // borrowed views and the one resource a plugin call is given, so the plane's own decoder can be
 // handed a real frame.
 
-/// A leaking arena. Test-only, run a bounded number of times per process: the trait's
-/// allocators hand back borrowed slices, so an honest double either leaks or is unsafe.
-struct CellArena;
-
-impl busbar_contract::bounded::Arena for CellArena {
-    fn alloc_bytes<'a>(
-        &'a self,
-        src: &[u8],
-    ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
-    {
-        let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
-        Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
-    }
-
-    fn alloc_str<'a>(
-        &'a self,
-        src: &str,
-    ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
-        Ok(Box::leak(src.to_string().into_boxed_str()))
-    }
-
-    fn alloc_spans<'a>(
-        &'a self,
-        src: &[(&'a str, busbar_contract::bounded::Span)],
-    ) -> Result<
-        &'a [(&'a str, busbar_contract::bounded::Span)],
-        busbar_contract::bounded::ArenaBudget,
-    > {
-        Ok(Box::leak(src.to_vec().into_boxed_slice()))
-    }
-
-    fn remaining(&self) -> usize {
-        usize::MAX
-    }
-}
-
 struct CellConfig;
 
 impl busbar_contract::unit::ConfigView for CellConfig {
@@ -2106,7 +2070,8 @@ fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
     use busbar_plane_voice::session::VoiceSessionState;
 
     let seal = KernelSeal::acquire_for_kernel();
-    let arena = CellArena;
+    let mut space = crate::root::arena::ArenaSpace::new();
+    let arena = crate::root::arena::UnitArena::new(&mut space);
     let config = CellConfig;
     let transport = CellTransport;
     let labels = Labels::new();
