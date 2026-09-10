@@ -1665,6 +1665,59 @@ def voice_mount_cells() -> list[dict]:
                               "back at all) and the body are pinned, and so are the ledger, metrics "
                               "and audit deltas — a session that was never opened must also never "
                               "have been billed."))
+    # THE TIP'S OWN SPELLINGS, so the family covers the surface 1.6.0 actually declares and not only
+    # the one this note's author guessed. busbar-voice/src/mount.rs names four non-duplex paths —
+    # MINT_PATH `/v1/realtime/client_secrets`, SDP_PATH `/v1/realtime/calls`, MOUNT_PATH
+    # `/v1/realtime` (above) and the plane's OAuth protected-resource metadata document. A cell on
+    # each is what makes "1.6.0's mount is additive" a comparison rather than an assertion.
+    for leg, method, path, note in [
+        ("mint-client-secrets", "POST", "/v1/realtime/client_secrets",
+         "the tip's MINT_PATH: the ephemeral-credential one-shot a browser sideband leg presents"),
+        ("sdp-calls", "POST", "/v1/realtime/calls",
+         "the tip's SDP_PATH: the WebRTC offer/answer one-shot (webrtc deliberately unclaimed, VT-3 ruling 3)"),
+        ("oauth-metadata", "GET", "/.well-known/oauth-protected-resource/v1/realtime",
+         "the tip's METADATA_PATH: the plane's OAuth protected-resource document, an UNAUTHENTICATED "
+         "discovery surface — a build that serves one is publishing an issuer and an audience to "
+         "anonymous callers, which is a disclosure decision and must be a visible diff"),
+    ]:
+        cells.append(http(f"{F}|{leg}", F, method, path,
+                          auth=("none" if leg == "oauth-metadata" else "ok"),
+                          headers=({} if method == "GET" else {"Content-Type": "application/json"}),
+                          body=(None if method == "GET" else json.dumps({"session": {"type": "realtime"}})),
+                          why=f"1.5.5's answer on {path}: {note}. 1.5.5 has no such route, so the "
+                              "cell pins the unmounted answer and the ledger/metrics/audit deltas "
+                              "that prove nothing was drawn for it."))
+    # THE ADMISSION ARMS, which is the half of VT-5's requested case list that IS recordable against
+    # 1.5.5. A served session, a first frame, a turn, a tap rewrite and a close cannot be recorded
+    # from a binary that opens no session — but WHERE IN THE PIPELINE the unmounted answer is
+    # produced can, and it is the thing the mount seam has to preserve. 1.5.5 is asked the same
+    # socket four ways: with no credential at all, with a key whose scope list grants nothing, with
+    # a broken credential, and (above) with a good model-plane key. If the four answers are the
+    # SAME 404, the route lookup runs BEFORE admission in 1.5.5 and a 1.6.0 build that answers 401
+    # on an unauthenticated realtime URL has moved the gate ahead of the router — additive on the
+    # happy path and a disclosure change on the unhappy one (an unmounted path that answers 401
+    # tells an anonymous caller the path exists).
+    for leg, auth_kind, note in [
+        ("sideband-unauth", "none", "VT-5's `unauth` arm: no Authorization header at all"),
+        ("sideband-noscope", "noscope", "VT-5's `no-session-scope` arm: a key whose scope list grants "
+                                        "nothing on this pool (the plane's `session` scope kind cannot "
+                                        "exist in 1.5.5, so this is the nearest real credential)"),
+        ("sideband-broke", "broke", "VT-5's `wrong-audience` arm: a credential the door rejects — 1.5.5 "
+                                    "has no voice audience to be wrong for, so a rejected key is the "
+                                    "nearest recordable shape"),
+    ]:
+        cells.append(http(f"{F}|{leg}", F, "GET", f"/v1/realtime/sideband/{CALL}",
+                          auth=auth_kind, headers=dict(WS),
+                          why=f"1.5.5 on the sideband socket, {note}. Pinned so the ORDER of the "
+                              "route lookup and the admission gate is a recorded fact before the "
+                              "mount seam moves either of them."))
+    for leg, path in [("mint-client-secrets-unauth", "/v1/realtime/client_secrets"),
+                      ("sdp-calls-unauth", "/v1/realtime/calls")]:
+        cells.append(http(f"{F}|{leg}", F, "POST", path, auth="none",
+                          headers={"Content-Type": "application/json"},
+                          body=json.dumps({"session": {"type": "realtime"}}),
+                          why=f"1.5.5 on {path} with no credential: the same route-vs-gate ordering "
+                              "question as the sideband arms, asked on the two one-shots"))
     # The mint/SDP one-shot is an ORDINARY HTTP POST, not an upgrade: it is the only leg of the plane
     # whose 1.6.0 shape could in principle have existed in 1.5.5 without a WebSocket at all, so it is
     # asked as itself rather than with the handshake preamble.

@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2338,
+    "total": 2346,
     "by_plane": {
       "a2a": 468,
-      "core": 797,
+      "core": 805,
       "llm": 161,
       "mcp": 912
     },
@@ -89,7 +89,7 @@
       "queue": 2,
       "route.failover": 16,
       "teller": 7,
-      "voice.mount": 8
+      "voice.mount": 16
     }
   },
   "cells": [
@@ -32180,6 +32180,58 @@
       "why": "1.5.5's answer to a WebSocket upgrade on /ws/v1beta/models/m-gemini:BidiGenerateContent: the composition's declared gemini-live mount, the other half of the same disjunction. The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
     },
     {
+      "id": "voice.mount|mint-client-secrets",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/realtime/client_secrets",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"session\": {\"type\": \"realtime\"}}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer on /v1/realtime/client_secrets: the tip's MINT_PATH: the ephemeral-credential one-shot a browser sideband leg presents. 1.5.5 has no such route, so the cell pins the unmounted answer and the ledger/metrics/audit deltas that prove nothing was drawn for it."
+    },
+    {
+      "id": "voice.mount|mint-client-secrets-unauth",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/realtime/client_secrets",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"session\": {\"type\": \"realtime\"}}",
+        "auth": "none",
+        "listener": "data"
+      },
+      "why": "1.5.5 on /v1/realtime/client_secrets with no credential: the same route-vs-gate ordering question as the sideband arms, asked on the two one-shots"
+    },
+    {
+      "id": "voice.mount|oauth-metadata",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/.well-known/oauth-protected-resource/v1/realtime",
+        "headers": {},
+        "body": null,
+        "auth": "none",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer on /.well-known/oauth-protected-resource/v1/realtime: the tip's METADATA_PATH: the plane's OAuth protected-resource document, an UNAUTHENTICATED discovery surface \u2014 a build that serves one is publishing an issuer and an audience to anonymous callers, which is a disclosure decision and must be a visible diff. 1.5.5 has no such route, so the cell pins the unmounted answer and the ledger/metrics/audit deltas that prove nothing was drawn for it."
+    },
+    {
       "id": "voice.mount|realtime-root",
       "plane": "core",
       "family": "voice.mount",
@@ -32199,6 +32251,42 @@
         "listener": "data"
       },
       "why": "1.5.5's answer to a WebSocket upgrade on /v1/realtime: the plane's bare mount root, WITH the upgrade preamble \u2014 `neutrality|routes|voice-shaped-404` asks the same path as an ordinary GET and therefore never asked the door to upgrade. The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
+    },
+    {
+      "id": "voice.mount|sdp-calls",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/realtime/calls",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"session\": {\"type\": \"realtime\"}}",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5's answer on /v1/realtime/calls: the tip's SDP_PATH: the WebRTC offer/answer one-shot (webrtc deliberately unclaimed, VT-3 ruling 3). 1.5.5 has no such route, so the cell pins the unmounted answer and the ledger/metrics/audit deltas that prove nothing was drawn for it."
+    },
+    {
+      "id": "voice.mount|sdp-calls-unauth",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1/realtime/calls",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"session\": {\"type\": \"realtime\"}}",
+        "auth": "none",
+        "listener": "data"
+      },
+      "why": "1.5.5 on /v1/realtime/calls with no credential: the same route-vs-gate ordering question as the sideband arms, asked on the two one-shots"
     },
     {
       "id": "voice.mount|sessions-mint",
@@ -32238,6 +32326,69 @@
         "listener": "data"
       },
       "why": "1.5.5's answer to a WebSocket upgrade on /v1/realtime/sideband/c-oracle-0001: the browser SIDEBAND leg, the one with no dialect and webrtc deliberately unclaimed (VT-3 ruling 3). The status, the headers (including whether any `sec-websocket-*` header comes back at all) and the body are pinned, and so are the ledger, metrics and audit deltas \u2014 a session that was never opened must also never have been billed."
+    },
+    {
+      "id": "voice.mount|sideband-broke",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime/sideband/c-oracle-0001",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "broke",
+        "listener": "data"
+      },
+      "why": "1.5.5 on the sideband socket, VT-5's `wrong-audience` arm: a credential the door rejects \u2014 1.5.5 has no voice audience to be wrong for, so a rejected key is the nearest recordable shape. Pinned so the ORDER of the route lookup and the admission gate is a recorded fact before the mount seam moves either of them."
+    },
+    {
+      "id": "voice.mount|sideband-noscope",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime/sideband/c-oracle-0001",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "noscope",
+        "listener": "data"
+      },
+      "why": "1.5.5 on the sideband socket, VT-5's `no-session-scope` arm: a key whose scope list grants nothing on this pool (the plane's `session` scope kind cannot exist in 1.5.5, so this is the nearest real credential). Pinned so the ORDER of the route lookup and the admission gate is a recorded fact before the mount seam moves either of them."
+    },
+    {
+      "id": "voice.mount|sideband-unauth",
+      "plane": "core",
+      "family": "voice.mount",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/realtime/sideband/c-oracle-0001",
+        "headers": {
+          "Connection": "Upgrade",
+          "Upgrade": "websocket",
+          "Sec-WebSocket-Version": "13",
+          "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+        },
+        "body": null,
+        "auth": "none",
+        "listener": "data"
+      },
+      "why": "1.5.5 on the sideband socket, VT-5's `unauth` arm: no Authorization header at all. Pinned so the ORDER of the route lookup and the admission gate is a recorded fact before the mount seam moves either of them."
     },
     {
       "id": "voice.mount|telephony",
