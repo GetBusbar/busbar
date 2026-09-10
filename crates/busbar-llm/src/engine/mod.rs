@@ -209,9 +209,6 @@ mod probe_guard_tests;
 #[path = "tests/probe_release_owner_tests.rs"]
 mod probe_release_owner_tests;
 #[cfg(test)]
-#[path = "tests/reqlog_dispatch_tests.rs"]
-mod reqlog_dispatch_tests;
-#[cfg(test)]
 #[path = "tests/request_short_circuit_tests.rs"]
 mod request_short_circuit_tests;
 #[cfg(test)]

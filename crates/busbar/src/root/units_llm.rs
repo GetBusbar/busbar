@@ -83,15 +83,26 @@ use axum::response::Response;
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
-    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+    StepName, TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
+use busbar_kernel::teller::{fee_count, AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
+// THE ROOT'S ONE SEAM ONTO THE AUDIT UNIT, and the only line in this file that names it. The record
+// is the unit's, its vocabulary is the unit's, and every spelling below is one of these names —
+// which is what keeps "the audit step is served once, for every plane" a fact about the code rather
+// than a sentence in a comment. Three of the names are ALIASED because this plane's own vocabulary
+// already spells them: `Audit` above is the step MARKER while `SealRecord` here is the trait that
+// seals a record, and `OpClassId`/`FinishClass` above are the plane's own declarations while the
+// record keeps owned rows of its own.
 use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
+use busbar_unit_audit::{
+    Amount, Audit as SealRecord, AuditInputs, Controls, FinishClass as RecordFinish,
+    OpClassId as RecordOpClass, OutcomeFacts, Subject, What,
+};
 
 /// The transport stack every request on this plane arrives over.
 ///
@@ -1099,7 +1110,7 @@ impl LlmUnit<'_> {
 
     /// The facts this plane's flat per-request fee is decided from.
     ///
-    /// Lifted out of [`LlmUnit::evidence`] so the record and the settlement read ONE answer through
+    /// Lifted out of [`Self::evidence`] so the record and the settlement read ONE answer through
     /// one function rather than two spellings of the same rule.
     fn fee_evidence(&self, origin: OriginKind) -> FeeEvidence {
         let status = self.walk.served_status();
@@ -1129,26 +1140,21 @@ impl LlmUnit<'_> {
     /// plane contributes exactly two identifiers to it — what kind of operation this was and how it
     /// finished — so that two rows written by two planes can be compared at all. Everything else
     /// here is read off evidence some earlier step already produced; nothing is decided a second
-    /// time, least of all the fee, which comes back through [`LlmUnit::fee_evidence`].
-    fn audit_inputs(
-        &self,
-        ctx: &UnitCtx,
-        outcome: Outcome,
-        destination: &str,
-    ) -> busbar_unit_audit::AuditInputs {
-        let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee_evidence(ctx.origin));
-        busbar_unit_audit::AuditInputs {
+    /// time, least of all the fee, which comes back through [`Self::fee_evidence`].
+    fn audit_inputs(&self, ctx: &UnitCtx, outcome: Outcome, destination: &str) -> AuditInputs {
+        let (fee_count, _) = fee_count(&self.fee_evidence(ctx.origin));
+        AuditInputs {
             // WHO THE RECORD IS ABOUT. The key the deployment's own door resolved, where one was
             // resolved. `Arrival` is the honest answer for a request that presented nothing a door
             // could name — and it is written rather than dropped, because a chain that silently
             // omits every anonymous request has a hole a caller can choose.
             subject: match self.walk.gov().key() {
-                Some(key) => busbar_unit_audit::Subject::PrincipalId(key.id.clone()),
-                None => busbar_unit_audit::Subject::Arrival,
+                Some(key) => Subject::PrincipalId(key.id.clone()),
+                None => Subject::Arrival,
             },
-            what: busbar_unit_audit::What {
+            what: What {
                 unit_key: ctx.key,
-                op_class: busbar_unit_audit::OpClassId::new(self.op_class.as_str()),
+                op_class: RecordOpClass::new(self.op_class.as_str()),
                 // THE SAME DESTINATION BOTH DOORS NAME, handed in by the terminal that is sealing:
                 // the bounded pool label, which is the string an auditor can join on and which an
                 // unconfigured model name can never widen.
@@ -1164,7 +1170,7 @@ impl LlmUnit<'_> {
             wall: self.arrived.secs(),
             mono: self.arrived.mono(),
             origin: self.node.kernel.origin(ctx.origin),
-            outcome: busbar_unit_audit::OutcomeFacts {
+            outcome: OutcomeFacts {
                 unit_end: outcome,
                 step: outcome.step(),
                 finish: audit_finish(self.finish_class()),
@@ -1172,7 +1178,7 @@ impl LlmUnit<'_> {
                 emission_delta: 0,
                 stale_policy: false,
             },
-            amount: busbar_unit_audit::Amount {
+            amount: Amount {
                 // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, for the reason `evidence` gives at
                 // length: the figure lands in the walk's tap after this unit has ended, so a
                 // reading taken here would be a number the books could not defend. What the record
@@ -1187,7 +1193,7 @@ impl LlmUnit<'_> {
                 rate_card_version: 0,
                 bucket_chain_ref: String::new(),
             },
-            controls: busbar_unit_audit::Controls::default(),
+            controls: Controls::default(),
             // The label itself never reaches the chain — only its digest does — so there is nothing
             // here a reader could resolve back to a conversation.
             correlation_label: None,
@@ -1211,7 +1217,7 @@ impl LlmUnit<'_> {
         };
         let inputs = self.audit_inputs(ctx, outcome, destination);
         let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
-        let _record = busbar_unit_audit::Audit::seal(&mut durability.record, inputs, token);
+        let _record = SealRecord::seal(&mut durability.record, inputs, token);
     }
 
     /// The node's own answer, for a terminal reached with an empty carry.
@@ -1564,10 +1570,7 @@ impl Units for LlmUnit<'_> {
         self.seal_record(
             token,
             ctx,
-            Outcome::Refused(
-                refusal.step().unwrap_or(busbar_caps::StepName::Admit),
-                refusal.reason(),
-            ),
+            Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason()),
             &destination,
         );
         decision
@@ -1680,12 +1683,12 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
 /// Two crates name the same four endings and neither depends on the other, so the mapping is
 /// written once, here, where both are in scope. Totality is what makes it safe: a fifth ending
 /// would not compile.
-fn audit_finish(finish: busbar_contract::FinishClass) -> busbar_unit_audit::FinishClass {
+fn audit_finish(finish: busbar_contract::FinishClass) -> RecordFinish {
     match finish {
-        busbar_contract::FinishClass::Complete => busbar_unit_audit::FinishClass::Complete,
-        busbar_contract::FinishClass::TurnComplete => busbar_unit_audit::FinishClass::TurnComplete,
-        busbar_contract::FinishClass::Partial => busbar_unit_audit::FinishClass::Partial,
-        busbar_contract::FinishClass::Error => busbar_unit_audit::FinishClass::Error,
+        busbar_contract::FinishClass::Complete => RecordFinish::Complete,
+        busbar_contract::FinishClass::TurnComplete => RecordFinish::TurnComplete,
+        busbar_contract::FinishClass::Partial => RecordFinish::Partial,
+        busbar_contract::FinishClass::Error => RecordFinish::Error,
     }
 }
 
@@ -1733,7 +1736,7 @@ pub fn settle(
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.
-        step: busbar_caps::StepName::Meter,
+        step: StepName::Meter,
         // The posting's two clocks, and they are two READINGS of the one arrival: the wall epoch
         // DATES the posting, the monotonic reading ORDERS it. Stamped from the wall clock twice, the
         // second field is a copy — and two postings of one second become unorderable, which is

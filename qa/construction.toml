@@ -1440,8 +1440,8 @@ because = "RELAY onto FACE busbar_unit_cost::LaneRates::reserved_units_nanos: co
 [[gate.ceiling_raises]]
 key = "cell.busbar-core.unit.count"
 file = "qa/kind-isolation.toml"
-by = 32
-because = "FACE busbar-unit-audit::legacy: the legacy engine's four evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim"
+by = 30
+because = "FACE busbar-unit-audit::legacy: the legacy engine's evidence streams read the audit unit's chain — the ONE append, the ONE canonicaliser, the ONE verifier — through no re-export of their own, so each reader file names the unit once; core's 465-line second implementation of the same mechanism is deleted, and the two primitives it alone needed (Digest::raw, frame_prelude) land in the unit's legacy chain verbatim. TWO OF THE READERS ARE SINCE GONE: proxy/reqlog.rs and its reqlog_tests.rs were the model plane's RAM-only request log, deleted with the plane onto the uniform audit record, and each named the unit once on its own import line. A by is what the tree rose by, not room for it, so this is 32 less the two given back"
 
 # THE RECORD MOVE (line 4 of gate/CORE-HOMES-design.md). `busbar-core/src/admin/audit.rs` held a
 # SECOND definition of the admin audit record — the eight wire fields, their `ChainedRecord` impl,

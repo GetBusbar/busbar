@@ -6,13 +6,26 @@ use super::*;
 
 use axum::body::Bytes;
 use axum::http::HeaderMap;
+// The two capability names this file needs that the implementation beside it does not: the kernel's
+// seal, for minting the step token a mirror chain is sealed with, and the sealed origin every record
+// carries. Everything else in this vocabulary is already in scope through `use super::*`.
+use busbar_caps::{KernelSeal, Origin};
 use busbar_core::config::groups::{LimitCfg, LimitMetric, LimitWindow};
 use busbar_core::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_kernel::teller::Ended;
+// THE ONE LINE THIS FILE NAMES THE AUDIT UNIT ON, as the implementation beside it does: the record
+// the cells below read is the unit's, and every name they spell is one of these.
+use busbar_unit_audit::{
+    Amount, Audit as SealRecord, AuditChain, AuditInputs, Controls, FinishClass as RecordFinish,
+    OpClassId as RecordOpClass, OutcomeFacts, Subject, What,
+};
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
 /// the PATH rather than about a translation.
 const PROTO: &str = busbar_llm::proto_codec::PROTO_OPENAI;
+/// The one operation these fixtures send, named once: a request and the record it leaves must be
+/// two accounts of the SAME operation, and two spellings are two chances for them not to be.
+const CHAT: busbar_api::operation::Operation = busbar_api::operation::Operation::CHAT;
 const POOL: &str = "p";
 const LANE: &str = "m0";
 /// One cent, so that derived spend in cents reads as the billable count.
@@ -457,7 +470,7 @@ async fn leg_legacy(fixture: Fixture) -> Observed {
         json_headers(),
         fixture.body(),
         PROTO,
-        busbar_api::operation::Operation::CHAT,
+        CHAT,
         None,
     )
     .await;
@@ -482,7 +495,7 @@ async fn drive(rig: &Rig, fixture: Fixture) -> Response {
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: fixture.body(),
@@ -558,13 +571,8 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
     // settle path onto a real journal, come back off it in the order they were written — which
     // is the ordering the record is FOR, and which does not exist if the second field is the
     // first one copied.
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
-    let mut durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let seal = KernelSeal::acquire_for_kernel();
+    let mut durability = memory_book();
     let who = PrincipalId::new("acct:llm");
     for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
         let ledger_token = busbar_caps::LedgerToken::mint(&seal);
@@ -632,7 +640,7 @@ async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in(
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: Fixture::BufferedOk.body(),
@@ -940,13 +948,8 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
     );
 
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
-    let mut durability = crate::root::durability::build(
-        &crate::root::durability::DurabilityConfig { data_dir: None },
-        Box::new(busbar_unit_wal::NullShipper::new()),
-        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
-    )
-    .expect("a memory-buffered journal cannot fail to open");
+    let seal = KernelSeal::acquire_for_kernel();
+    let mut durability = memory_book();
     let who = PrincipalId::new("acct:llm");
     let settled = settle(
         &mut durability,
@@ -1047,7 +1050,7 @@ async fn drive_keeping_the_unit<'n>(
         host: rig.host(),
         gov,
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: fixture.body(),
@@ -1284,7 +1287,7 @@ fn path_facts(proto: &'static str, fixture: Fixture) -> PathFacts {
     let model = fixture.model().to_string();
     let stream = fixture.streamed();
     PathFacts {
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         stream,
         // `/v1beta/models/{model}:streamGenerateContent` with no `?alt=sse` is the JSON-array
         // framing; bedrock has no such framing at all.
@@ -1481,7 +1484,7 @@ async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_i
                 host: rig.host(),
                 gov: rig.gov(),
                 proto,
-                operation: busbar_api::operation::Operation::CHAT,
+                operation: CHAT,
                 caller_token: None,
                 headers: json_headers(),
                 body: path_body(proto),
@@ -1535,7 +1538,7 @@ async fn the_url_facts_ride_the_unit_and_not_the_thread() {
         host: rig.host(),
         gov: rig.gov(),
         proto: GEMINI,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: path_body(GEMINI),
@@ -1770,7 +1773,7 @@ async fn the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it() {
         for shape in [Decoded::Named, Decoded::NoModel, Decoded::Malformed] {
             let label = format!("{proto}/{shape:?}");
             let body = dialect_body(proto, shape);
-            let op = busbar_api::operation::Operation::CHAT;
+            let op = CHAT;
             let legacy = leg_legacy_decode(proto, op, body.clone()).await;
             let looped = leg_loop_decode(proto, op, body).await;
             compare(&label, &legacy, &looped, &mut failures);
@@ -1919,7 +1922,7 @@ async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed 
         json_headers(),
         Fixture::BufferedOk.body(),
         PROTO,
-        busbar_api::operation::Operation::CHAT,
+        CHAT,
         None,
     )
     .await;
@@ -1937,7 +1940,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> (Observed, 
         host: rig.host(),
         gov,
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: Fixture::BufferedOk.body(),
@@ -2049,12 +2052,12 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 // key the door resolved. A step that answered with any other principal seals a
                 // record with a different subject on it, and the digest says so.
                 if let Err(why) = sealed.is(expected_inputs(
-                    busbar_unit_audit::Subject::PrincipalId(loop_rig.key.id.clone()),
+                    Subject::PrincipalId(loop_rig.key.id.clone()),
                     1,
                     POOL,
                     loop_rig.arrived(),
-                    busbar_caps::Outcome::Completed,
-                    busbar_unit_audit::FinishClass::Complete,
+                    Outcome::Completed,
+                    RecordFinish::Complete,
                     1,
                 )) {
                     failures.push(format!("{cred:?}: {why}"));
@@ -2103,12 +2106,12 @@ async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
                 // whose bearer was just turned away, which is the record a refused credential
                 // must not be able to earn.
                 if let Err(why) = sealed.is(expected_inputs(
-                    busbar_unit_audit::Subject::Arrival,
+                    Subject::Arrival,
                     1,
                     POOL,
                     loop_rig.arrived(),
-                    busbar_caps::Outcome::Completed,
-                    busbar_unit_audit::FinishClass::Complete,
+                    Outcome::Completed,
+                    RecordFinish::Complete,
                     1,
                 )) {
                     failures.push(format!("{cred:?}/unbound: {why}"));
@@ -2162,7 +2165,7 @@ async fn leg_loop_seated(
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: Fixture::BufferedOk.body(),
@@ -2271,15 +2274,12 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     // names the step the veto stopped it at and the reason the seat gave, which is the half of an
     // audit a status line cannot supply. Nothing was charged, so no fee is on it.
     if let Err(why) = sealed.is(expected_inputs(
-        busbar_unit_audit::Subject::PrincipalId(veto_rig.key.id.clone()),
+        Subject::PrincipalId(veto_rig.key.id.clone()),
         1,
         POOL,
         veto_rig.arrived(),
-        busbar_caps::Outcome::Refused(
-            busbar_caps::StepName::Approve,
-            busbar_caps::ReasonCode::HookVeto,
-        ),
-        busbar_unit_audit::FinishClass::Error,
+        Outcome::Refused(StepName::Approve, ReasonCode::HookVeto),
+        RecordFinish::Error,
         0,
     )) {
         failures.push(format!("a vetoed unit: {why}"));
@@ -2308,7 +2308,7 @@ async fn drive_counting(rig: &Rig, fixture: Fixture) -> (Response, Option<u64>) 
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: fixture.body(),
@@ -2443,17 +2443,24 @@ async fn the_route_seam_is_driven_once_by_a_served_unit_and_never_by_a_refused_o
 // differently — a destination, a subject, an ending, a fee that landed where none should have —
 // moves the digest, and there is no field the comparison can quietly skip.
 
+/// A MEMORY-BUFFERED BOOK, built the one way every fixture in this file builds one.
+///
+/// Written once because a second spelling of "the journal these tests settle onto" is a second
+/// deployment shape, and two fixtures disagreeing about which shipper or which rows they are
+/// measured against would be comparing two nodes.
+fn memory_book() -> crate::root::durability::Durability {
+    crate::root::durability::build(
+        &crate::root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_unit_wal::NullShipper::new()),
+        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+    )
+    .expect("a memory-buffered journal cannot fail to open")
+}
+
 /// A book of this node's own, and a node bound to it. One per case, so two cases never share a
 /// chain and "this chain has two records" cannot be satisfied by somebody else's unit.
 fn booked() -> (LlmNode, Arc<Mutex<crate::root::durability::Durability>>) {
-    let book = Arc::new(Mutex::new(
-        crate::root::durability::build(
-            &crate::root::durability::DurabilityConfig { data_dir: None },
-            Box::new(busbar_unit_wal::NullShipper::new()),
-            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
-        )
-        .expect("a memory-buffered journal cannot fail to open"),
-    ));
+    let book = Arc::new(Mutex::new(memory_book()));
     let node = LlmNode::new();
     node.bind_book(Arc::clone(&book));
     (node, book)
@@ -2474,7 +2481,7 @@ async fn drive_recording(
         host: rig.host(),
         gov: rig.gov(),
         proto: PROTO,
-        operation: busbar_api::operation::Operation::CHAT,
+        operation: CHAT,
         caller_token: None,
         headers: json_headers(),
         body: fixture.body(),
@@ -2512,17 +2519,17 @@ struct Sealed {
 
 impl Sealed {
     /// One unit, one record, and the record is the one `expected` describes.
-    fn is(&self, expected: busbar_unit_audit::AuditInputs) -> Result<(), String> {
+    fn is(&self, expected: AuditInputs) -> Result<(), String> {
         if self.count != 1 {
             return Err(format!(
                 "one unit sealed {} record(s) — never none, and never two",
                 self.count
             ));
         }
-        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let seal = KernelSeal::acquire_for_kernel();
         let token: UnitToken<Audit> = UnitToken::mint(&seal);
-        let mut mirror = busbar_unit_audit::AuditChain::new();
-        busbar_unit_audit::Audit::seal(&mut mirror, expected, &token);
+        let mut mirror = AuditChain::new();
+        SealRecord::seal(&mut mirror, expected, &token);
         if self.head != mirror.head() {
             return Err(format!(
                 "the record the unit sealed is not the record expected\n  sealed:   {}\n                   expected: {}",
@@ -2539,21 +2546,19 @@ impl Sealed {
 /// about values and not about a shape that happens to compile.
 #[allow(clippy::too_many_arguments)]
 fn expected_inputs(
-    subject: busbar_unit_audit::Subject,
+    subject: Subject,
     unit_key: u64,
     destination: &str,
     at: Arrived,
-    outcome: busbar_caps::Outcome,
-    finish: busbar_unit_audit::FinishClass,
+    outcome: Outcome,
+    finish: RecordFinish,
     fee_count: u32,
-) -> busbar_unit_audit::AuditInputs {
-    busbar_unit_audit::AuditInputs {
+) -> AuditInputs {
+    AuditInputs {
         subject,
-        what: busbar_unit_audit::What {
+        what: What {
             unit_key: UnitKey::new(unit_key),
-            op_class: busbar_unit_audit::OpClassId::new(
-                busbar_api::operation::Operation::CHAT.name(),
-            ),
+            op_class: RecordOpClass::new(CHAT.name()),
             destination: Some(destination.to_string()),
             parent: None,
             pre_hook_head: None,
@@ -2561,11 +2566,8 @@ fn expected_inputs(
         },
         wall: at.secs(),
         mono: at.mono(),
-        origin: busbar_caps::Origin::seal(
-            &busbar_caps::KernelSeal::acquire_for_kernel(),
-            OriginKind::Client,
-        ),
-        outcome: busbar_unit_audit::OutcomeFacts {
+        origin: Origin::seal(&KernelSeal::acquire_for_kernel(), OriginKind::Client),
+        outcome: OutcomeFacts {
             unit_end: outcome,
             step: outcome.step(),
             finish,
@@ -2573,7 +2575,7 @@ fn expected_inputs(
             emission_delta: 0,
             stale_policy: false,
         },
-        amount: busbar_unit_audit::Amount {
+        amount: Amount {
             lines: Vec::new(),
             pre_tier: 0,
             priced: 0,
@@ -2583,12 +2585,12 @@ fn expected_inputs(
             rate_card_version: 0,
             bucket_chain_ref: String::new(),
         },
-        controls: busbar_unit_audit::Controls::default(),
+        controls: Controls::default(),
         correlation_label: None,
     }
 }
 
-/// **THE MODEL PLANE'S UNIT WRITES THE UNIFORM AUDIT RECORD, THROUGH BOTH DOORS, ON ONE CHAIN.**
+/// **THIS PLANE'S UNIT WRITES THE UNIFORM AUDIT RECORD, THROUGH BOTH DOORS, ON ONE CHAIN.**
 ///
 /// A served request and a refusal, in that order, on one node with one book. Three claims:
 ///
@@ -2603,14 +2605,14 @@ fn expected_inputs(
 ///    sealed from inputs spelled in the audit unit's vocabulary, and it agrees with the node's
 ///    chain digest for digest. Every field the record has is inside that comparison.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
+async fn the_model_planes_two_doors_seal_the_uniform_record_on_one_chain() {
     let (node, book) = booked();
     // A mirror of the same chain, sealed from what this file says the records should be. It starts
     // where the node's chain starts, so record N of one is record N of the other or the digests
     // part company.
-    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let seal = KernelSeal::acquire_for_kernel();
     let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
-    let mut mirror = busbar_unit_audit::AuditChain::new();
+    let mut mirror = AuditChain::new();
 
     assert_eq!(
         chain_of(&book),
@@ -2638,17 +2640,17 @@ async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
         (1, 2),
         "one unit through the charged door seals one record, at the first position"
     );
-    busbar_unit_audit::Audit::seal(
+    SealRecord::seal(
         &mut mirror,
         expected_inputs(
-            busbar_unit_audit::Subject::PrincipalId(served_principal),
+            Subject::PrincipalId(served_principal),
             // THE FIRST UNIT this node took, by the node's own counter: a record that named every
             // unit the same could not tell two units of one node apart.
             1,
             POOL,
             served_at,
-            busbar_caps::Outcome::Completed,
-            busbar_unit_audit::FinishClass::Complete,
+            Outcome::Completed,
+            RecordFinish::Complete,
             1,
         ),
         &audit_token,
@@ -2683,10 +2685,10 @@ async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
         refused_head, served_head,
         "two units, two records: a chain whose head did not move recorded the second one nowhere"
     );
-    busbar_unit_audit::Audit::seal(
+    SealRecord::seal(
         &mut mirror,
         expected_inputs(
-            busbar_unit_audit::Subject::PrincipalId(refused_principal.clone()),
+            Subject::PrincipalId(refused_principal.clone()),
             // The SECOND.
             2,
             POOL,
@@ -2694,11 +2696,8 @@ async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
             // WHERE it stopped and WHY, which is the half of an audit a status line cannot say:
             // the pre-admission guard is the Verify step, and the reason is that this key holds no
             // grant on the pool it named.
-            busbar_caps::Outcome::Refused(
-                busbar_caps::StepName::Verify,
-                busbar_caps::ReasonCode::PoolNotPermitted,
-            ),
-            busbar_unit_audit::FinishClass::Error,
+            Outcome::Refused(StepName::Verify, ReasonCode::PoolNotPermitted),
+            RecordFinish::Error,
             0,
         ),
         &audit_token,
@@ -2718,16 +2717,16 @@ async fn the_llm_units_two_doors_seal_the_uniform_record_on_one_chain() {
     // uniform record the door is a FIELD — `Completed` against `Refused(step, reason)` — and the
     // fee that did or did not land beside it. Sealing the served ending at the refusal's position
     // must not reproduce the refusal's digest, or the record cannot tell the doors apart at all.
-    let mut wrong_door = busbar_unit_audit::AuditChain::resume(served_head.clone(), 2);
-    busbar_unit_audit::Audit::seal(
+    let mut wrong_door = AuditChain::resume(served_head.clone(), 2);
+    SealRecord::seal(
         &mut wrong_door,
         expected_inputs(
-            busbar_unit_audit::Subject::PrincipalId(refused_principal),
+            Subject::PrincipalId(refused_principal),
             2,
             POOL,
             refused_at,
-            busbar_caps::Outcome::Completed,
-            busbar_unit_audit::FinishClass::Complete,
+            Outcome::Completed,
+            RecordFinish::Complete,
             1,
         ),
         &audit_token,

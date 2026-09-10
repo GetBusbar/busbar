@@ -1309,7 +1309,7 @@ drain = "delete the unit name from the unit crate: a unit reaches unit through t
 [[cell]]
 crate = "busbar"
 kind = "api"
-count = "121"
+count = "110"
 
 [[cell]]
 crate = "busbar"
@@ -1319,7 +1319,7 @@ count = "25"
 [[cell]]
 crate = "busbar"
 kind = "caps"
-count = "302"
+count = "300"
 
 [[cell]]
 crate = "busbar"
@@ -1349,7 +1349,7 @@ count = "158"
 [[cell]]
 crate = "busbar"
 kind = "legacy"
-count = "93"
+count = "90"
 
 [[cell]]
 crate = "busbar"
@@ -1619,7 +1619,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "597"
+count = "595"
 
 [[cell]]
 crate = "busbar-core"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5169"
+count = "5163"
 
 [[cell]]
 crate = "busbar-core"
@@ -1644,7 +1644,7 @@ count = "46"
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3012"
+count = "2996"
 
 [[cell]]
 crate = "busbar-core"
@@ -1659,7 +1659,7 @@ count = "319"
 [[cell]]
 crate = "busbar-core"
 kind = "store"
-count = "104"
+count = "103"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2117"
+count = "2116"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "79"
+count = "77"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -1749,7 +1749,7 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "api"
-count = "301"
+count = "297"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1784,12 +1784,12 @@ count = "3"
 [[cell]]
 crate = "busbar-llm"
 kind = "legacy"
-count = "79"
+count = "74"
 
 [[cell]]
 crate = "busbar-llm"
 kind = "plane"
-count = "300"
+count = "297"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1799,7 +1799,7 @@ count = "4"
 [[cell]]
 crate = "busbar-llm"
 kind = "store"
-count = "119"
+count = "117"
 
 [[cell]]
 crate = "busbar-llm"
@@ -1809,7 +1809,7 @@ count = "12"
 [[cell]]
 crate = "busbar-llm"
 kind = "transport"
-count = "1206"
+count = "1200"
 
 [[cell]]
 crate = "busbar-llm"
