@@ -81,15 +81,18 @@ use axum::http::StatusCode;
 use axum::response::Response;
 
 use busbar_caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
-    Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
-    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Canary, Decision,
+    Decode, DurabilityLost, DurabilityToken, Encode, Frame, LedgerToken, Meter, OpClassId,
+    OriginKind, Outcome, Posted, PostingLent, PrincipalId, ReasonCode, Refusal, Route, TrustToken,
+    UnitToken, Usage, UsageLine, UsageToken, VerifiedDestination, Verify,
 };
 use busbar_contract::{
     Direction, FinishClass, FrameMeta, LaneId, Registration, SlabBytes, StreamId, UnitKey,
 };
-use busbar_kernel::slice::GroupLeaseSlip;
-use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
+use busbar_kernel::{
+    slice::GroupLeaseSlip, teller::AccrualMeter, teller::Evidence, teller::FeeEvidence,
+    teller::UnitCtx, teller::Units,
+};
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 pub(crate) use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
@@ -242,7 +245,7 @@ pub struct LlmNode {
     kernel: busbar_kernel::teller::Kernel,
     inflight: busbar_kernel::inflight::InFlight,
     gauge: busbar_kernel::slice::ConcurrencyGauge,
-    canary: busbar_caps::Canary,
+    canary: Canary,
     door: crate::root::kernel::AdmissionDoor,
     /// THE NODE'S ONE INTERNER. A configured lane's name is read out of config as a runtime `String`
     /// and a `LaneId` is a borrowed static one, so the two are bridged by leaking each name exactly
@@ -273,7 +276,7 @@ pub struct LlmNode {
     /// Minted outside the loop because making a posting durable happens after the exit has sealed
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
-    durability_token: busbar_caps::DurabilityToken,
+    durability_token: DurabilityToken,
     // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
     // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than
     // bound once, because a rate is a statement about a deployment and a deployment's rates change
@@ -295,7 +298,7 @@ pub struct LlmNode {
     /// Minted outside the loop for the same reason the journal's and the ledger's are: the report a
     /// late accrual prices arrives after the exit sealed the end, so there is no step of the unit
     /// whose token could stand in.
-    usage_token: busbar_caps::UsageToken,
+    usage_token: UsageToken,
     /// THE ONE SEAM THIS PLANE'S ROUTE STEP REACHES THE ENGINE THROUGH.
     ///
     /// On the node rather than on the unit because what it instruments is a statement about a SET of
@@ -757,10 +760,7 @@ impl LlmNode {
 ///
 /// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
 /// from the billable count the report carries, which is what keeps one configured fee to one place.
-fn usage_record(
-    token: &busbar_caps::UsageToken,
-    usage: &busbar_substrate::billing::Usage,
-) -> busbar_caps::Usage {
+fn usage_record(token: &UsageToken, usage: &busbar_substrate::billing::Usage) -> Usage {
     let lines = [
         busbar_api::UNIT_INPUT,
         busbar_api::UNIT_OUTPUT,
@@ -772,7 +772,7 @@ fn usage_record(
         // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
         // them for the same reason. Kept out here too so the two reports have the same shape.
         let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
-        (quantity > 0).then(|| busbar_caps::UsageLine {
+        (quantity > 0).then(|| UsageLine {
             class: busbar_caps::MeterClassId::new(class),
             quantity,
             source: busbar_caps::QuantitySource::Count,
@@ -812,7 +812,7 @@ fn usage_record(
 fn priced_posting(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_caps::UsageToken,
+    token: &UsageToken,
     report: &LateReport,
 ) -> (busbar_unit_cost::Posting, Option<busbar_unit_cost::Priced>) {
     // A POSTING IS QUANTITIES AND AN INSTANT, and both are stated here: the plane's report supplies
@@ -853,7 +853,7 @@ fn priced_posting(
 fn priced_amount(
     history: &crate::root::kernel::PinnedHistory,
     arrived: Arrived,
-    token: &busbar_caps::UsageToken,
+    token: &UsageToken,
     report: &LateReport,
 ) -> u64 {
     let (_posting, priced) = priced_posting(history, arrived, token, report);
@@ -886,9 +886,9 @@ struct LateAccrual {
     /// request an operator edited a price underneath — which is the request the distinction exists
     /// for.
     history: crate::root::kernel::PinnedHistory,
-    durability_token: busbar_caps::DurabilityToken,
-    ledger_token: busbar_caps::LedgerToken,
-    usage_token: busbar_caps::UsageToken,
+    durability_token: DurabilityToken,
+    ledger_token: LedgerToken,
+    usage_token: UsageToken,
     principal: PrincipalId,
     arrived: Arrived,
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
@@ -1527,7 +1527,7 @@ impl Units for LlmUnit<'_> {
         // is the honest answer rather than a trailer this surface does not send.
         Decision::proceed(
             token,
-            busbar_caps::Frame {
+            Frame {
                 direction: Direction::Outbound,
                 stream: StreamId(0),
                 bytes: SlabBytes::new(std::sync::Arc::from(&b""[..])),
@@ -1671,9 +1671,9 @@ pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     arrived: Arrived,
-    token: &busbar_caps::DurabilityToken,
-    posted: busbar_caps::Posted,
-) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+    token: &DurabilityToken,
+    posted: Posted,
+) -> Result<crate::root::durability::Settled, DurabilityLost> {
     let key = balance(principal);
     durability.settle_posted(&settling(&key, arrived, token), posted)
 }
@@ -1695,9 +1695,9 @@ pub fn settle_lent(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     arrived: Arrived,
-    token: &busbar_caps::DurabilityToken,
-    lent: busbar_caps::PostingLent<'_>,
-) -> Result<crate::root::durability::SettledLent, busbar_caps::DurabilityLost> {
+    token: &DurabilityToken,
+    lent: PostingLent<'_>,
+) -> Result<crate::root::durability::SettledLent, DurabilityLost> {
     let key = balance(principal);
     durability.settle_lent(&settling(&key, arrived, token), lent)
 }
@@ -1710,7 +1710,7 @@ pub fn settle_lent(
 fn settling<'a>(
     key: &'a TotalsKey,
     arrived: Arrived,
-    token: &'a busbar_caps::DurabilityToken,
+    token: &'a DurabilityToken,
 ) -> crate::root::durability::Settling<'a> {
     crate::root::durability::Settling {
         key,

@@ -28,13 +28,12 @@ use busbar_contract::{
     transport::check_surface,
     transport::SurfaceError,
 };
-use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
-use busbar_plane_mcp::{claims, records, McpPlane};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 use busbar_unit_scope::Scope;
 use std::collections::BTreeMap;
 
 use crate::root::units_mcp::{required_scopes, ClassPrices, Records};
+use busbar_plane_mcp::{claims, meta::CLASS_BYTES, meta::CLASS_TOOL_CALLS, records, McpPlane};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The mount

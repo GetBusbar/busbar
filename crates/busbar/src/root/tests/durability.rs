@@ -3,7 +3,11 @@
 //! super::*` reaches the private items it always did.
 
 use super::*;
-use busbar_caps::KernelSeal;
+use busbar_caps::{
+    step::Admit, AdmitToken, Audit as AuditStep, Hold, KernelSeal, LedgerToken, MeterClassId,
+    Origin, OriginKind, Outcome, Posted, PrincipalId, QuantitySource, UnitKey, UnitToken, Usage,
+    UsageLine, UsageToken,
+};
 use busbar_unit_audit::{Clock, NoSeam};
 use busbar_unit_ledger::legacy::RecordingRows;
 use busbar_unit_wal::{decode_run, verify_journal, NullShipper};
@@ -187,7 +191,6 @@ fn posting() -> Posting {
 
 /// A sealed audit record for a unit that ran.
 fn audit_inputs(unit: u64) -> busbar_unit_audit::AuditInputs {
-    use busbar_caps::{KernelSeal, Origin, OriginKind, Outcome, UnitKey};
     use busbar_unit_audit::{
         Amount, AuditInputs, Controls, FinishClass, OpClassId, OutcomeFacts, Subject, What,
     };
@@ -236,7 +239,6 @@ fn audit_inputs(unit: u64) -> busbar_unit_audit::AuditInputs {
 /// where a reader asking "under which policy" looks.
 #[test]
 fn a_sealed_audit_record_goes_on_the_journal() {
-    use busbar_caps::{Audit as AuditStep, KernelSeal, UnitToken};
     use busbar_unit_audit::Audit as _;
 
     let mut durability = build_for_node(
@@ -631,10 +633,6 @@ fn settling<'a>(key: &'a TotalsKey, durability: &'a DurabilityToken) -> Settling
 /// to close.
 #[test]
 fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
-    use busbar_caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
-    };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
     let key = totals_key("vk_settle");
@@ -689,10 +687,6 @@ fn settling_a_hold_moves_the_books_and_puts_the_posting_on_the_chain() {
 /// already carries both, and a replay that added them twice would double the window.
 #[test]
 fn an_overdraft_is_its_own_record_beside_the_posting_it_came_out_of() {
-    use busbar_caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
-    };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_node();
     let key = totals_key("vk_over");
@@ -787,10 +781,6 @@ impl busbar_unit_wal::Shipper for CountingShipper {
 /// what makes the pair atomic against a crash rather than merely adjacent.
 #[test]
 fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
-    use busbar_caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
-    };
     let seal = KernelSeal::acquire_for_kernel();
     let batches = CountingShipper::default();
     let mut durability = build(
@@ -864,10 +854,6 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
 /// through.
 #[test]
 fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
-    use busbar_caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, Posted, PrincipalId,
-        QuantitySource, Usage, UsageLine, UsageToken,
-    };
     let seal = KernelSeal::acquire_for_kernel();
     let admit = AdmitToken::<Admit>::mint(&seal);
     let key = totals_key("vk_both");

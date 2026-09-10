@@ -44,7 +44,6 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use busbar_core::{config, config_validate, governance::GovState};
-use busbar_plane_a2a::{A2aPlane, Agent};
 use busbar_unit_admission::{Door, GroupTable, InMemoryCells};
 use busbar_unit_auth::Auth;
 use busbar_unit_trust::net::{Denylist, GuardPolicy};
@@ -54,6 +53,7 @@ use crate::root::durability::Durability;
 use crate::root::units_a2a_leg::{A2aLeg, A2aLegSources};
 use busbar_contract::ids::LaneId;
 use busbar_kernel::teller::Kernel;
+use busbar_plane_a2a::{A2aPlane, Agent};
 use busbar_unit_cost::nano_rate;
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════════

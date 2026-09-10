@@ -50,11 +50,8 @@ use busbar_contract::transport::surface::{
 };
 use busbar_contract::transport::SurfaceError;
 use busbar_kernel::{
-    registry::Generation,
-    slice::ConcurrencyGauge,
-    slice::LeaseCell,
-    teller::AccrualMeter,
-    teller::{Kernel, Run, UnitCtx},
+    registry::Generation, slice::ConcurrencyGauge, slice::LeaseCell, teller::AccrualMeter,
+    teller::Kernel, teller::Run, teller::UnitCtx,
 };
 use busbar_unit_auth::{chain::ChainEntry, chain::KEYS_MODULE, AuthChain};
 

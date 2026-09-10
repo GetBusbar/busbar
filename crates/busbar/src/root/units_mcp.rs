@@ -48,18 +48,9 @@
 use std::sync::Arc;
 
 use busbar_api::VirtualKey;
-use busbar_caps::{
-    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, Authenticate, Decision, Decode,
-    Encode, Meter, Outcome, PrincipalId, ReasonCode, Refusal, Route, RoutePlan, ScopeFacts,
-    TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
-};
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::plane::{Plane, PlaneMeta};
-use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
-use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
-use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
-use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
 use busbar_unit_admission::{
     Admission, AdmissionUnit, BucketChain, ClassEstimate, Door, Estimate, InMemoryCells, Pricer,
 };
@@ -415,7 +406,7 @@ pub fn authenticate_bound(
 /// ONE TYPE, SHARED WITH THE OTHER PLANE THAT REGISTERS PEERS. `Catalogue` used to be an mcp-shaped
 /// implementation of `KindFacts` and it was the only one in the root. The A2A plane needs the same
 /// trait over a registration of exactly the same shape — `busbar_plane_a2a::Agent` and
-/// `busbar_plane_mcp::Server` carry the same four fields — so rather than growing a second,
+/// `Server` carry the same four fields — so rather than growing a second,
 /// a2a-shaped copy of the guard call, the allow-list conjunct and the lane-index mapping, the
 /// implementation moved to [`crate::root::registrations::Kinds`] and this is its MCP instantiation.
 /// No answer changed; what changed is that there is one of each rather than two.
@@ -947,7 +938,7 @@ pub fn meter(
     kernel: &KernelCounts,
     policy: &MeterPolicy,
     token: &UsageToken,
-) -> Result<Metered, busbar_caps::UsageError> {
+) -> Result<Metered, UsageError> {
     fold_usage(retained, kernel, policy, &leg_declaration(), token)
 }
 
@@ -1091,9 +1082,9 @@ pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
     at: Clocks,
-    token: &busbar_caps::DurabilityToken,
-    posted: busbar_caps::Posted,
-) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+    token: &DurabilityToken,
+    posted: Posted,
+) -> Result<crate::root::durability::Settled, DurabilityLost> {
     let key = balance(principal);
     let settling = crate::root::durability::Settling {
         key: &key,
@@ -1169,8 +1160,8 @@ impl Mono {
 #[must_use]
 pub fn audit_inputs(
     ended: &Ended<'_>,
-    outcome: busbar_caps::Outcome,
-    origin: busbar_caps::Origin,
+    outcome: Outcome,
+    origin: Origin,
     at: Clocks,
 ) -> AuditInputs {
     let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
@@ -1581,7 +1572,7 @@ pub struct McpBindings<'r> {
     pub dispatch: Option<&'r dyn MountDispatch>,
     /// The sealed origin the audit record is written under. Sealed by the kernel and carried here
     /// because `Origin::seal` takes the kernel's seal and this is not the kernel.
-    pub origin: busbar_caps::Origin,
+    pub origin: Origin,
     /// THE GOVERNANCE KEY THIS CALLER PRESENTED, where the deployment governs — what the catalogue
     /// walk narrows a listing by.
     ///
@@ -1737,9 +1728,9 @@ impl<'r> McpUnits<'r> {
     pub fn settle(
         &self,
         principal: &PrincipalId,
-        posted: busbar_caps::Posted,
-        token: &busbar_caps::DurabilityToken,
-    ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
+        posted: Posted,
+        token: &DurabilityToken,
+    ) -> Result<crate::root::durability::Settled, DurabilityLost> {
         let mut durability = read_through_poison(self.bindings.durability);
         settle(&mut durability, principal, self.bindings.at, token, posted)
     }
@@ -2328,7 +2319,7 @@ impl McpUnits<'_> {
         // different class here would be this file disputing the plane's own earlier answer.
         Decision::proceed(
             token,
-            busbar_caps::AuditFacts {
+            AuditFacts {
                 op_class: op,
                 finish,
             },
@@ -2352,6 +2343,19 @@ impl McpUnits<'_> {
 #[allow(unused_imports)]
 pub use crate::root::units_mcp_seal::{
     class_prices, mount, planned_legs, seal, Mount, MountRefusal,
+};
+use busbar_caps::{
+    Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate, Decision,
+    Decode, DurabilityLost, DurabilityToken, Encode, Meter, Origin, Outcome, Posted, PrincipalId,
+    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitToken, UsageError,
+    UsageToken, VerifiedDestination, Verify,
+};
+use busbar_kernel::{
+    slice::DoorGrant, slice::GroupLeaseSlip, teller::AccrualMeter, teller::Evidence,
+    teller::UnitCtx, teller::Units,
+};
+use busbar_plane_mcp::{
+    claims, meta::CLASS_BYTES, meta::CLASS_TOOL_CALLS, ops, records, McpPlane, Server,
 };
 
 #[cfg(test)]

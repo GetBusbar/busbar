@@ -14,7 +14,7 @@ use busbar_contract::{
     ids::LaneId,
 };
 use busbar_kernel::teller::Kernel;
-use busbar_plane_mcp::claims;
+use busbar_plane_mcp::{claims, Server};
 use busbar_unit_auth::{Auth, AuthChain};
 use busbar_unit_ledger::legacy::RecordingRows;
 use busbar_unit_trust::{lane::BreakerView, net::Denylist, net::GuardPolicy, Unavailable};
@@ -169,7 +169,7 @@ fn a_mounted_surface(calls: Arc<SurfaceCalls>) -> axum::Router {
 }
 
 /// The registration these cells' node carries.
-static ONE_SERVER: &[busbar_plane_mcp::Server] = &[busbar_plane_mcp::Server {
+static ONE_SERVER: &[Server] = &[Server {
     id: "fs",
     lane: LaneId::new("fs-lane"),
     host: "127.0.0.1:9",

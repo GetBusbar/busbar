@@ -16,6 +16,13 @@ use busbar_unit_trust::{
 use busbar_api::{
     MeteringDelta, MeteringRow, ScopeRef, Store as AbiStore, StoreResult, UsageLedger, VirtualKey,
 };
+use busbar_caps::{
+    step::Admit as AdmitStep, Admission, AdmitToken, Authenticated, DurabilityToken, Hold,
+    KernelSeal, LedgerToken, MeterClassId, Origin, OriginKind, OriginKind as CameFrom,
+    PostingFlags, QuantitySource, UnitToken, Usage, UsageLine, UsageToken,
+};
+use busbar_kernel::teller::fee_count;
+use busbar_plane_mcp::{catalogue::Row, catalogue::RowKind, facts as f};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 use busbar_unit_admission::{budget_window, window::WINDOW_DAY, GroupTable};
 use busbar_unit_ledger::legacy::RecordingRows;
@@ -107,8 +114,6 @@ impl AbiStore for SilentStore {
 /// and every location the later steps resolve are all read off exactly these bytes.
 #[test]
 fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
-    use busbar_caps::KernelSeal;
-
     let seal = KernelSeal::acquire_for_kernel();
     let over_tls = |chain: Vec<&'static str>| ArrivalRecord {
         source: "198.51.100.7:52344".to_string(),
@@ -248,11 +253,9 @@ fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
 /// version and the progress token reachable as the facts the later steps read.
 #[test]
 fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
-    use busbar_caps::KernelSeal;
     use busbar_contract::bounded::{FactValue, Labels};
     use busbar_contract::unit::{Clock, Ctx};
     use busbar_contract::wire::FrameCursor;
-    use busbar_plane_mcp::facts as f;
 
     let seal = KernelSeal::acquire_for_kernel();
     let mut space = crate::root::arena::ArenaSpace::new();
@@ -374,7 +377,6 @@ fn the_declared_schemes_are_the_claims_own() {
 #[test]
 fn the_bound_form_authenticates_through_the_nodes_own_seams() {
     use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
-    use busbar_caps::{Authenticated, KernelSeal};
     use busbar_unit_auth::{AuthChain, ChainVerdict};
 
     struct OneKey;
@@ -1051,7 +1053,7 @@ fn the_balance_names_the_caller_and_not_the_registration() {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// A unit of this plane, ended, with everything the money is decided from.
-fn ended(shape: Shape, origin: busbar_caps::OriginKind, answered: bool) -> Ended<'static> {
+fn ended(shape: Shape, origin: OriginKind, answered: bool) -> Ended<'static> {
     Ended {
         shape,
         origin,
@@ -1100,9 +1102,6 @@ fn the_shape_reads_the_hop_off_the_plan() {
 /// cannot happen, and every unit of this plane over-reserves for the life of the deployment.
 #[test]
 fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
-    use busbar_caps::OriginKind as CameFrom;
-    use busbar_kernel::teller::fee_count;
-
     let called = Shape {
         op: ops::OP_TOOL_CALL,
         hops_upstream: true,
@@ -1137,8 +1136,6 @@ fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
 /// unrepresentable rather than merely unlikely.
 #[test]
 fn the_settlement_and_the_record_read_one_fee_decision() {
-    use busbar_caps::OriginKind as CameFrom;
-    use busbar_kernel::teller::fee_count;
     let origin = busbar_kernel::teller::Kernel::new().origin(CameFrom::Client);
     let at = Clocks {
         wall: 1_700_000_000,
@@ -1222,7 +1219,6 @@ fn memory_durability() -> crate::root::durability::Durability {
 /// it opens it only because the decision said yes. Nothing about the size is a decision.
 #[test]
 fn the_door_opens_a_reservation_sized_off_this_planes_estimate() {
-    use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
     let seal = KernelSeal::acquire_for_kernel();
     let door = Door::new(InMemoryCells::new());
     let pricer = Pricer::flat(0);
@@ -1303,8 +1299,7 @@ fn ask_the_door(
     door: &Door<InMemoryCells>,
     chain: &BucketChain,
     who: &PrincipalId,
-) -> (Result<busbar_caps::Admission, Refusal>, GroupLeaseSlip) {
-    use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, UnitToken};
+) -> (Result<Admission, Refusal>, GroupLeaseSlip) {
     let seal = KernelSeal::acquire_for_kernel();
     let pricer = Pricer::flat(0);
     let est = estimate(ops::OP_TOOL_CALL, 10, &ClassPrices::default(), 0);
@@ -1377,10 +1372,6 @@ fn an_mcp_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_fi
 /// happened nowhere at all.
 #[test]
 fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
-    use busbar_caps::{
-        step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
-        MeterClassId, QuantitySource, Usage, UsageLine, UsageToken,
-    };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_durability();
     let who = PrincipalId::new("vk_mcp");
@@ -1448,10 +1439,6 @@ fn the_exit_settles_the_reservation_onto_the_books_and_the_journal() {
 /// stepped backwards writes records that read as having happened in an order they did not.
 #[test]
 fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_clock() {
-    use busbar_caps::{
-        step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
-        Usage, UsageToken,
-    };
     const SAME_SECOND: u64 = 1_700_000_000;
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_durability();
@@ -1501,10 +1488,6 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp_and_not_the_wall_c
 /// its own on the chain beside the posting it came out of.
 #[test]
 fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
-    use busbar_caps::{
-        step::Admit as AdmitStep, AdmitToken, DurabilityToken, Hold, KernelSeal, LedgerToken,
-        MeterClassId, PostingFlags, QuantitySource, Usage, UsageLine, UsageToken,
-    };
     let seal = KernelSeal::acquire_for_kernel();
     let mut durability = memory_durability();
     let mut hold = Hold::open(
@@ -1796,7 +1779,7 @@ struct Node {
     meter_policy: crate::root::policy::MeterPolicyHandle,
     scope: crate::root::policy::ScopePolicy,
     durability: std::sync::Mutex<crate::root::durability::Durability>,
-    origin: busbar_caps::Origin,
+    origin: Origin,
     pool: String,
 }
 
@@ -2385,7 +2368,6 @@ fn a_unit_with_no_surface_behind_it_still_walks_and_answers_nothing() {
 
 /// Three rows on two servers, in the order the legacy catalogue lists them.
 fn three_rows() -> Vec<busbar_plane_mcp::catalogue::Row> {
-    use busbar_plane_mcp::catalogue::{Row, RowKind};
     vec![
         Row {
             kind: RowKind::Prompt,
@@ -2553,7 +2535,6 @@ fn the_rows_are_narrowed_by_the_same_gate_the_legacy_listing_asks() {
 #[cfg(feature = "plane-mcp")]
 #[test]
 fn the_grant_and_kind_vocabularies_are_the_legacy_catalogues_own() {
-    use busbar_plane_mcp::catalogue::RowKind;
     assert_eq!(
         busbar_plane_mcp::catalogue::SCOPE_KIND_SERVER,
         busbar_mcp::mcp::catalogue::SCOPE_KIND_SERVER
