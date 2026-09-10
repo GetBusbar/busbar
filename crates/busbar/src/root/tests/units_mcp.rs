@@ -2197,6 +2197,61 @@ fn the_fall_through_is_taken_by_exactly_the_classes_the_plane_does_not_compose()
     }
 }
 
+/// **THE TWO CHEAPEST CLASSES TO COMPOSE ARE NOT ON THIS CARRIER AT ALL, AND ARE NOT COMPOSED.**
+///
+/// `initialize` and `ping` read nothing and are constants of this build, so they are the obvious next
+/// two for `served::COMPOSED` and they are deliberately not in it. The reason is one the plane already
+/// decided and this cell pins from the root's side: `surface::row_on` asks the METHOD and the CARRIER
+/// together, and both console-era verbs are declared on the console binding alone — so a request for
+/// either over this listener is not a unit of this plane at all. The decode names no operation, the
+/// mount recognises nothing, and the surface answers its own method-not-found.
+///
+/// Composing an answer for either in the leg would therefore not move a byte-ownership boundary; it
+/// would newly ANSWER a method this node currently refuses on this carrier, which is a protocol
+/// decision. The cell is here so taking it by accident is red.
+#[test]
+fn the_console_era_verbs_are_not_units_of_this_plane_on_this_carrier() {
+    for (body, op) in [
+        (
+            r#"{"jsonrpc":"2.0","id":7,"method":"initialize"}"#,
+            ops::OP_INITIALIZE,
+        ),
+        (r#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#, ops::OP_PING),
+    ] {
+        assert!(
+            !busbar_plane_mcp::served::COMPOSED.contains(&op),
+            "{op} is composed, and it is not answerable on this carrier"
+        );
+        let node = Node::new();
+        let pools = node.pools(None);
+        let surface = CountingSurface::default();
+        let draft = draft_for(&node.plane, body);
+        assert_eq!(
+            draft.op, None,
+            "{op} is declared on the console binding, not on this one"
+        );
+
+        let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+        let ended = node.walk(&units);
+        let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+            panic!("a refused unit still settles: {ended:?}");
+        };
+        assert_eq!(
+            end.outcome(),
+            busbar_caps::Outcome::Refused(
+                busbar_caps::StepName::Decode,
+                busbar_caps::ReasonCode::DecodeFailed
+            ),
+            "{op} is refused at the step that read the bytes"
+        );
+        assert_eq!(
+            surface.asked(),
+            0,
+            "and a refusal path executes nothing, for {op} as for anything else"
+        );
+    }
+}
+
 /// **A method this server does not answer never reaches a step, and never reaches the surface.**
 ///
 /// The plane's decode is what says so, and the refusal is at the step that read the bytes. What this
