@@ -647,7 +647,7 @@ pub unsafe fn secret_dispatch(handle: *mut c_void, bytes: &[u8]) -> BoundaryOutc
         // primitives), fall back to the untyped channel rather than losing the failure entirely.
         Err(e) => {
             let typed = busbar_plugin::cold::SecretResponse::Error {
-                kind: e.kind,
+                kind: e.kind.into(),
                 message: e.message.clone(),
             };
             match serde_json::to_vec(&typed) {
