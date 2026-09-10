@@ -2247,9 +2247,15 @@
     },
     "manual-de LimitCfg": {
       "fields": {
+        "budget": {
+          "optional": true
+        },
+        "concurrent": {
+          "optional": true
+        },
         "downgrade_to": {
           "optional": true,
-          "type": "ScopeRef"
+          "type": "String"
         },
         "on_exhaust": {
           "optional": true,
@@ -2258,6 +2264,28 @@
         "per": {
           "optional": true,
           "type": "LimitWindow"
+        },
+        "pool": {
+          "optional": true,
+          "type": "String"
+        },
+        "requests": {
+          "optional": true
+        },
+        "tokens": {
+          "optional": true
+        },
+        "tokens_cache_read": {
+          "optional": true
+        },
+        "tokens_cache_write": {
+          "optional": true
+        },
+        "tokens_input": {
+          "optional": true
+        },
+        "tokens_output": {
+          "optional": true
         }
       },
       "kind": "manual",
@@ -2284,7 +2312,14 @@
       "wire_keys": []
     },
     "manual-de OnExhaustedCfg": {
-      "fields": {},
+      "fields": {
+        "least_bad": {
+          "optional": true
+        },
+        "reject": {
+          "optional": true
+        }
+      },
       "kind": "manual",
       "refused": [],
       "wire_keys": [
@@ -2312,12 +2347,18 @@
     },
     "manual-de SecretRef": {
       "fields": {
+        "env": {
+          "optional": true
+        },
+        "file": {
+          "optional": true
+        },
         "module": {
-          "optional": false,
+          "optional": true,
           "type": "String"
         },
         "settings": {
-          "optional": false,
+          "optional": true,
           "type": "serde_json::Map<String, serde_json::Value>"
         }
       },

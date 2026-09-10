@@ -567,34 +567,211 @@ fn refused_forms(src: &[char], start: usize, end: usize) -> Vec<String> {
     out.into_iter().collect()
 }
 
-/// Fingerprint one `impl<'de> Deserialize<'de> for X`: the accepted wire keys, the declared type of
-/// each WIRE-VISIBLE member (taken from `X`'s own struct declaration, which carries no derive and
-/// so was skipped entirely by the derive-gated walk), and the refused input forms.
+/// The arm the wire-key literal `lit` introduces, if it introduces one.
 ///
-/// ONLY wire-visible members are recorded. A hand-impl'd type's declaration is also its PARSED
-/// RESULT and the two are not the same set — `LimitCfg` accepts `requests:`/`tokens:` and stores
-/// `amount`/`metric`. Freezing the whole declaration would fire RED on a purely internal rename no
-/// config can observe, and a gate that cries wolf is a gate that gets muted.
-fn manual_de_detail(
-    src: &[char],
-    open_idx: usize,
-    decls: &BTreeMap<String, Map<String, Value>>,
-    name: &str,
-) -> Value {
+/// The same literal is written in more places than the arm — the `unknown_field` expectation list
+/// names every accepted key — so an occurrence counts only when a `=>` follows it, across the `|`
+/// alternatives an arm may be spelled with.
+fn find_arm(body: &[char], lit: &str) -> Option<std::ops::Range<usize>> {
+    let pat: Vec<char> = lit.chars().collect();
+    let n = body.len();
+    for i in 0..n {
+        if !scan::starts_with(body, i, lit) {
+            continue;
+        }
+        let mut j = i + pat.len();
+        loop {
+            while j < n && body[j].is_whitespace() {
+                j += 1;
+            }
+            if scan::starts_with(body, j, "=>") {
+                return Some(arm_span(body, j + 2));
+            }
+            if body.get(j) != Some(&'|') {
+                break;
+            }
+            j += 1;
+            while j < n && body[j].is_whitespace() {
+                j += 1;
+            }
+            if body.get(j) != Some(&'"') {
+                break;
+            }
+            j += 1;
+            while j < n && body[j] != '"' && body[j] != '\n' {
+                j += 1;
+            }
+            if body.get(j) != Some(&'"') {
+                break;
+            }
+            j += 1;
+        }
+    }
+    None
+}
+
+/// The span of the arm a `"key" =>` at `at` introduces: its block, or everything up to the comma
+/// that ends it.
+fn arm_span(body: &[char], at: usize) -> std::ops::Range<usize> {
+    let mut i = at;
+    while i < body.len() && body[i].is_whitespace() {
+        i += 1;
+    }
+    if body.get(i) == Some(&'{') {
+        return i..scan::match_block(body, i);
+    }
+    let mut depth = 0i32;
+    let mut j = i;
+    while j < body.len() {
+        match body[j] {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => break,
+            _ => {}
+        }
+        j += 1;
+    }
+    i..j
+}
+
+/// The `let mut <ident>: Option<T> = None;` accumulators a hand-written visitor collects its keys
+/// into, and the `T` each one asks `map.next_value()` for.
+fn visitor_locals(body: &[char]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let n = body.len();
+    let mut i = 0usize;
+    while i < n {
+        if !(scan::starts_with(body, i, "let") && (i == 0 || !scan::is_word(body[i - 1]))) {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 3;
+        while j < n && body[j].is_whitespace() {
+            j += 1;
+        }
+        if !scan::starts_with(body, j, "mut") {
+            i += 1;
+            continue;
+        }
+        j += 3;
+        while j < n && body[j].is_whitespace() {
+            j += 1;
+        }
+        let s = j;
+        while j < n && scan::is_word(body[j]) {
+            j += 1;
+        }
+        if j == s {
+            i += 1;
+            continue;
+        }
+        let ident = scan::text(body, s..j);
+        while j < n && body[j].is_whitespace() {
+            j += 1;
+        }
+        if body.get(j) != Some(&':') {
+            i += 1;
+            continue;
+        }
+        j += 1;
+        while j < n && body[j].is_whitespace() {
+            j += 1;
+        }
+        if !scan::starts_with(body, j, "Option<") {
+            i += 1;
+            continue;
+        }
+        j += 7;
+        let ts = j;
+        let mut depth = 1i32;
+        while j < n && depth > 0 {
+            match body[j] {
+                '<' => depth += 1,
+                '>' => depth -= 1,
+                _ => {}
+            }
+            j += 1;
+        }
+        if depth == 0 {
+            out.insert(ident, norm_type(&scan::text(body, ts..j - 1)).0);
+        }
+        i = j;
+    }
+    out
+}
+
+/// The accumulator an arm assigns `map.next_value()` into, if it assigns one at all.
+///
+/// `per = Some(map.next_value()?)` names `per`; `metric = Some((m, map.next_value()?))` names
+/// nothing, because the value it parses is not the key's own type. Silence is the answer when the
+/// arm does not say — a type this cannot read is left UNRECORDED rather than guessed at.
+fn arm_value_local(body: &[char], span: std::ops::Range<usize>) -> Option<String> {
+    let text = scan::text(body, span);
+    for form in ["= Some(map.next_value(", "= map.next_value("] {
+        let Some(at) = text.find(form) else {
+            continue;
+        };
+        let head: Vec<char> = text[..at].chars().collect();
+        let mut e = head.len();
+        while e > 0 && head[e - 1].is_whitespace() {
+            e -= 1;
+        }
+        let mut s = e;
+        while s > 0 && scan::is_word(head[s - 1]) {
+            s -= 1;
+        }
+        if s < e {
+            return Some(scan::text(&head, s..e));
+        }
+    }
+    None
+}
+
+/// Fingerprint one `impl<'de> Deserialize<'de> for X`: the accepted wire keys, what each one is
+/// parsed as and whether it may be absent, and the refused input forms.
+///
+/// THE WIRE TRUTH OF A HAND-WRITTEN IMPL IS THE VISITOR, NOT THE DECLARATION. This used to read
+/// the field set as `declared struct fields ∩ visitor match arms` and the optionality off the
+/// struct's `Option`, and both halves were wrong about the only thing they were asked. A
+/// hand-impl'd type's declaration is its PARSED RESULT: `LimitCfg` accepts `requests:`/`tokens:`
+/// and stores `metric`/`amount`, `SecretRef` accepts `env:`/`file:` and stores neither, and
+/// `downgrade_to:` took a plain string on the wire while the struct called it a `ScopeRef`. So the
+/// intersection SILENTLY DROPPED every accepted key the struct spells differently, and reported a
+/// declaration that collapsed `on_exhaust: Option<_>` + `downgrade_to: Option<_>` into one closed
+/// value as "a field removed, a field made required" — a RED on a commit that moved no document at
+/// all, which is how a stability gate gets muted.
+///
+/// So: the field set is the arms. A key is REQUIRED when the visitor REFUSES ITS ABSENCE
+/// (`missing_field`), which is the only thing that can break a document that omits it — an
+/// `Option` on the struct says nothing, and a cross-key rule ("one metric key", "`module:` or the
+/// sugar") is not a per-field fact and is not recorded as one. The type is the one the arm hands
+/// to `map.next_value()`, which IS the value grammar under that key; where the arm does not say,
+/// no type is recorded rather than a borrowed one.
+fn manual_de_detail(src: &[char], open_idx: usize) -> Value {
     let end = scan::match_block(src, open_idx);
     let body: Vec<char> = src[open_idx..end].to_vec();
     let keys: BTreeSet<String> = scan::match_arm_literals(&body).into_iter().collect();
-    let decl_fields = decls
-        .get(name)
-        .and_then(|d| d.get("fields"))
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
+    let locals = visitor_locals(&body);
+    let flat = scan::text(&body, 0..body.len());
     let mut fields = Map::new();
-    for (k, v) in decl_fields {
-        if keys.contains(&k) {
-            fields.insert(k, v);
+    for k in &keys {
+        let mut m = Map::new();
+        let lit = format!("\"{k}\"");
+        let arm = find_arm(&body, &lit);
+        if let Some(ty) = arm
+            .and_then(|span| arm_value_local(&body, span))
+            .and_then(|l| locals.get(&l).cloned())
+        {
+            m.insert("type".into(), Value::String(ty));
         }
+        let required = flat.contains(&format!("missing_field({lit})"));
+        m.insert("optional".into(), Value::Bool(!required));
+        fields.insert(k.clone(), Value::Object(m));
     }
     let mut out = Map::new();
     out.insert("kind".into(), Value::String("manual".into()));
@@ -697,12 +874,14 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
     }
     let mut carried: BTreeSet<String> = BTreeSet::new();
 
-    let mut decls: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+    // THE DECLARATION WALK RUNS FOR ITS OTHER EFFECT. Nothing reads the shapes it parses any more
+    // — a hand-written impl is fingerprinted from its visitor, which is where its wire truth is —
+    // but it is the only pass that reaches EVERY declaration, derive or not, and the lift list's
+    // orphan check below is answered from the `carried` set it fills. Walking only the derived
+    // types would turn a lifted key whose carrier sits on a hand-impl'd struct into an orphan.
     for (_, src) in &sources {
         for item in scan::items(src) {
-            let mut shape = declared_shape(src, &item, &lifted, &mut carried)?;
-            shape.remove("kind");
-            decls.insert(item.name.clone(), shape);
+            declared_shape(src, &item, &lifted, &mut carried)?;
         }
     }
 
@@ -766,10 +945,7 @@ pub fn extract(files: &[(String, String)]) -> Result<Value, String> {
                     "the hand-written `Deserialize` impl for",
                     path,
                 )?;
-                types.insert(
-                    format!("manual-de {name}"),
-                    manual_de_detail(src, open, &decls, &name),
-                );
+                types.insert(format!("manual-de {name}"), manual_de_detail(src, open));
             }
         }
 
@@ -849,4 +1025,133 @@ pub fn render(cx: &Ctx) -> Result<String, String> {
         read.push((path, text));
     }
     Ok(canonical(&extract(&read)?))
+}
+
+// ── the instrument's own proof ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gates::config_schema::classify;
+
+    const BOTH_ARMS: &str = "\"size\" => { size = Some(map.next_value()?); }\n\
+                             \"label\" => { label = Some(map.next_value()?); }";
+    const ONE_ARM: &str = "\"size\" => { size = Some(map.next_value()?); }";
+    const OPEN_TAIL: &str = "Ok(WidgetCfg { size, label })";
+    /// A visitor that REFUSES a document with no `size:` — the only thing that makes a wire key
+    /// required, and the thing an `Option` on the struct cannot tell you.
+    const REQUIRING_TAIL: &str =
+        "let size = size.ok_or_else(|| de::Error::missing_field(\"size\"))?;\n\
+         Ok(WidgetCfg { size, label })";
+
+    const OPEN_DECL: &str = "pub size: Option<u64>,\npub label: Option<String>,";
+
+    /// A hand-parsed type in the shape the real ones take: a visitor over a `match` on the wire
+    /// key, accumulating into locals, joined at the end.
+    fn widget(decl: &str, arms: &str, tail: &str) -> Vec<(String, String)> {
+        vec![(
+            "widget.rs".to_string(),
+            format!(
+                "pub struct WidgetCfg {{\n{decl}\n}}\n\
+                 impl<'de> Deserialize<'de> for WidgetCfg {{\n\
+                 fn deserialize<D>(d: D) -> Result<Self, D::Error> {{\n\
+                 struct V;\n\
+                 impl<'de> Visitor<'de> for V {{\n\
+                 type Value = WidgetCfg;\n\
+                 fn visit_map<A>(self, mut map: A) -> Result<WidgetCfg, A::Error> {{\n\
+                 let mut size: Option<u64> = None;\n\
+                 let mut label: Option<String> = None;\n\
+                 while let Some(key) = map.next_key::<String>()? {{\n\
+                 match key.as_str() {{\n\
+                 {arms}\n\
+                 other => return Err(de::Error::unknown_field(other, &[])),\n\
+                 }}\n\
+                 }}\n\
+                 {tail}\n\
+                 }}\n}}\n\
+                 d.deserialize_map(V)\n}}\n}}\n"
+            ),
+        )]
+    }
+
+    fn fingerprint(decl: &str, arms: &str, tail: &str) -> Value {
+        extract(&widget(decl, arms, tail)).expect("the fixture parses")
+    }
+
+    fn breaking(before: &Value, after: &Value) -> Vec<String> {
+        classify::classify(before, after)
+            .into_iter()
+            .filter(|f| f.severity == classify::Severity::Breaking)
+            .map(|f| format!("{}: {}", f.path, f.reason))
+            .collect()
+    }
+
+    /// THE CONTROL. The same tree twice is no delta at all.
+    #[test]
+    fn same_source_is_no_delta() {
+        let a = fingerprint(OPEN_DECL, BOTH_ARMS, OPEN_TAIL);
+        let found = breaking(&a, &a);
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    /// A WIRE KEY REALLY REMOVED FROM THE VISITOR. The arm is gone, so the document that set it
+    /// is refused as an unknown field — the break the gate exists for, and the one taking the
+    /// field set from the visitor must not lose.
+    #[test]
+    fn a_key_removed_from_the_visitor_is_breaking() {
+        let before = fingerprint(OPEN_DECL, BOTH_ARMS, OPEN_TAIL);
+        let after = fingerprint(OPEN_DECL, ONE_ARM, OPEN_TAIL);
+        let found = breaking(&before, &after);
+        assert!(
+            found.iter().any(|f| f.contains("label")),
+            "a removed wire key must be BREAKING, got {found:?}"
+        );
+    }
+
+    /// A KEY MADE REQUIRED IN THE VISITOR. Nothing about the declaration moves — `size` is
+    /// `Option<u64>` on both sides — and every document that omitted `size:` now fails.
+    #[test]
+    fn a_key_the_visitor_starts_refusing_absent_is_breaking() {
+        let before = fingerprint(OPEN_DECL, BOTH_ARMS, OPEN_TAIL);
+        let after = fingerprint(OPEN_DECL, BOTH_ARMS, REQUIRING_TAIL);
+        let found = breaking(&before, &after);
+        assert!(
+            found
+                .iter()
+                .any(|f| f.contains("size") && f.contains("REQUIRED")),
+            "a newly refused absence must be BREAKING, got {found:?}"
+        );
+    }
+
+    /// THE ARTIFACT. The declaration collapses a pair of `Option`s into one closed value — the
+    /// visitor's arms, its refusals and every document that parsed are untouched. Taking the
+    /// field set and its optionality from the DECLARATION read this as "a field removed, a field
+    /// made required"; taking them from the visitor reads it as what it is: nothing.
+    #[test]
+    fn a_declaration_only_collapse_is_not_a_wire_change() {
+        let before = fingerprint(OPEN_DECL, BOTH_ARMS, OPEN_TAIL);
+        let after = fingerprint(
+            "pub size: Option<u64>,\npub label: Label,",
+            BOTH_ARMS,
+            OPEN_TAIL,
+        );
+        let found = breaking(&before, &after);
+        assert!(
+            found.is_empty(),
+            "a declaration-only collapse is no wire change, got {found:?}"
+        );
+    }
+
+    /// The other half of the same artifact: the carrier field is DELETED from the struct because
+    /// what it carried now travels inside the closed value. The wire key is still accepted.
+    #[test]
+    fn a_carrier_field_deleted_from_the_struct_is_not_a_wire_change() {
+        let before = fingerprint(OPEN_DECL, BOTH_ARMS, OPEN_TAIL);
+        let after = fingerprint("pub size: Option<u64>,", BOTH_ARMS, OPEN_TAIL);
+        let found = breaking(&before, &after);
+        assert!(
+            found.is_empty(),
+            "a deleted carrier field is no wire change, got {found:?}"
+        );
+    }
 }

@@ -25,6 +25,8 @@ pub const FROZEN_MSG: &str = "the config grammar is FROZEN after 1.5.3 — addit
 pub enum Severity {
     Additive,
     Relocated,
+    /// A REMOVED TYPE AND AN ADDED TYPE THAT ARE ONE TYPE UNDER A NEW NAME. See [`rename_map`].
+    Renamed,
     Breaking,
 }
 
@@ -140,7 +142,13 @@ fn py_repr(s: &str) -> String {
     format!("{quote}{s}{quote}")
 }
 
-fn field_findings(tname: &str, bf: &Value, ff: &Value, out: &mut Vec<Finding>) {
+fn field_findings(
+    tname: &str,
+    bf: &Value,
+    ff: &Value,
+    renames: &BTreeMap<String, String>,
+    out: &mut Vec<Finding>,
+) {
     let empty = serde_json::Map::new();
     let b = bf.as_object().unwrap_or(&empty);
     let f = ff.as_object().unwrap_or(&empty);
@@ -172,7 +180,24 @@ fn field_findings(tname: &str, bf: &Value, ff: &Value, out: &mut Vec<Finding>) {
                 let bt = str_of(bv, "type");
                 let ft = str_of(fv, "type");
                 if bt != ft {
-                    if relocated_only(&bt, &ft) {
+                    if rename_equivalent(&bt, &ft, renames) {
+                        // A FIELD RETYPED TO A RENAME-EQUIVALENT TYPE IS NOT A RETYPE. The type it
+                        // names was proven — by [`rename_map`], against the same rules that judge
+                        // every other node — to be the OLD TYPE UNDER A NEW NAME, and the grammar
+                        // this field declares is whatever that type's own node says it is. Reading
+                        // the spelling instead would make every private Rust rename a config break.
+                        add(
+                            out,
+                            Severity::Renamed,
+                            path.clone(),
+                            format!(
+                                "field type RENAMED {} -> {} (the same type under a new name; its \
+                                 wire shape is compared in its own right)",
+                                py_repr(&bt),
+                                py_repr(&ft)
+                            ),
+                        );
+                    } else if relocated_only(&bt, &ft) {
                         add(
                             out,
                             Severity::Relocated,
@@ -345,6 +370,221 @@ fn container_flag_findings(tname: &str, b: &Value, f: &Value, out: &mut Vec<Find
     }
 }
 
+// ── rename-equivalence ───────────────────────────────────────────────────────────────────────────
+
+/// A REMOVED TYPE AND AN ADDED TYPE OF THE SAME WIRE SHAPE ARE ONE TYPE RENAMED.
+///
+/// A Rust type name is not config grammar. `OnExhaust` becoming `OnExhaustWord` renames nothing an
+/// operator can write: the accepted words, the accepted keys, the refusals and the optionality are
+/// where the grammar lives, and a rename leaves every one of them where it was. Read by NAME, that
+/// rename is a type REMOVED plus a type ADDED, and "removed" is a break — so a gate that reads
+/// names teaches reviewers that its breaks are usually spelling, which is how a stability gate dies.
+///
+/// THE PAIRING IS JUDGED BY THE SAME RULES AS EVERYTHING ELSE, and that is the whole of the design.
+/// Two nodes pair when comparing them head-on produces NO BREAKING FINDING — the old node as the
+/// baseline, the new node as the fresh render, through [`node_findings`] itself. So a rename that
+/// also drops a variant, removes a key, retypes a field or makes one required does NOT pair: the
+/// removal stays BREAKING and is reported as one, because that is what it is. A rename that also
+/// APPENDS a variant does pair, and the appended variant is reported additively under the new name,
+/// which is exactly what the same change without the rename would have said.
+///
+/// THE MATCH MUST BE UNAMBIGUOUS. Two removed types of identical shape and one added type of that
+/// shape is not evidence of which one was renamed — it is evidence that the gate cannot tell — so a
+/// name that has more than one candidate on either side pairs with nothing and stays a removal. A
+/// guess here would launder a real removal behind an unrelated addition.
+pub fn rename_map(
+    bt: &serde_json::Map<String, Value>,
+    ft: &serde_json::Map<String, Value>,
+) -> BTreeMap<String, String> {
+    let removed: Vec<&String> = bt.keys().filter(|k| !ft.contains_key(*k)).collect();
+    let added: Vec<&String> = ft.keys().filter(|k| !bt.contains_key(*k)).collect();
+    let none = BTreeMap::new();
+    let mut cands: Vec<(&String, &String)> = Vec::new();
+    for old in &removed {
+        for new in &added {
+            let mut probe = Vec::new();
+            // The pairing probe runs with NO rename map: a rename proven by a rename it is itself
+            // proving is a circle, and the fixed point that circle settles on is not one anybody
+            // reviewed.
+            node_findings(new, &bt[*old], &ft[*new], &none, &mut probe);
+            if !probe.iter().any(|f| f.severity == Severity::Breaking) {
+                cands.push((old, new));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for (old, new) in &cands {
+        let one_old = cands.iter().filter(|(o, _)| o == old).count() == 1;
+        let one_new = cands.iter().filter(|(_, n)| n == new).count() == 1;
+        if one_old && one_new {
+            out.insert((*old).clone(), (*new).clone());
+        }
+    }
+    out
+}
+
+/// True when `after` is `before` with every renamed type substituted — including inside a generic,
+/// which is where these names mostly appear (`Option<OnExhaust>`).
+///
+/// Substitution is by WHOLE WORD on the path-stripped spelling, so `OnExhaust` never rewrites the
+/// `OnExhaustWord` it is a prefix of, and a relocation on top of a rename still reads as the rename.
+pub fn rename_equivalent(before: &str, after: &str, renames: &BTreeMap<String, String>) -> bool {
+    if renames.is_empty() {
+        return false;
+    }
+    let subbed = substitute(&strip_in_tree_paths(before), renames);
+    subbed != strip_in_tree_paths(before) && subbed == strip_in_tree_paths(after)
+}
+
+fn substitute(t: &str, renames: &BTreeMap<String, String>) -> String {
+    let c: Vec<char> = t.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < c.len() {
+        if i == 0 || !super::scan::is_word(c[i - 1]) {
+            let mut e = i;
+            while e < c.len() && super::scan::is_word(c[e]) {
+                e += 1;
+            }
+            if e > i {
+                let word: String = c[i..e].iter().collect();
+                out.push_str(renames.get(&word).unwrap_or(&word));
+                i = e;
+                continue;
+            }
+        }
+        out.push(c[i]);
+        i += 1;
+    }
+    out
+}
+
+/// One node against its counterpart: the kind, the container flags, and whichever of fields,
+/// variants, wire keys and refusals that kind carries.
+fn node_findings(
+    tname: &str,
+    b: &Value,
+    f: &Value,
+    renames: &BTreeMap<String, String>,
+    out: &mut Vec<Finding>,
+) {
+    let bk = str_of(b, "kind");
+    let fk = str_of(f, "kind");
+    if bk != fk {
+        add(
+            out,
+            Severity::Breaking,
+            tname.to_string(),
+            format!("kind changed {bk} -> {fk} (shape change)"),
+        );
+        return;
+    }
+    if bk == "alias" {
+        let bta = str_of(b, "target");
+        let fta = str_of(f, "target");
+        if bta != fta {
+            if rename_equivalent(&bta, &fta, renames) {
+                add(
+                    out,
+                    Severity::Renamed,
+                    tname.to_string(),
+                    format!(
+                        "alias target RENAMED {} -> {} (the same type under a new name; the map \
+                         shape is unchanged)",
+                        py_repr(&bta),
+                        py_repr(&fta)
+                    ),
+                );
+            } else if relocated_only(&bta, &fta) {
+                add(
+                    out,
+                    Severity::Relocated,
+                    tname.to_string(),
+                    format!(
+                        "alias target MOVED {} -> {} (same type, new module path; the map \
+                         shape is unchanged)",
+                        py_repr(&bta),
+                        py_repr(&fta)
+                    ),
+                );
+            } else {
+                add(
+                    out,
+                    Severity::Breaking,
+                    tname.to_string(),
+                    format!(
+                        "type alias RETARGETED {} -> {} (the definition-map shape changed)",
+                        py_repr(&bta),
+                        py_repr(&fta)
+                    ),
+                );
+            }
+        }
+        return;
+    }
+    container_flag_findings(tname, b, f, out);
+    let null = Value::Null;
+    if bk == "manual" {
+        field_findings(
+            tname,
+            b.get("fields").unwrap_or(&null),
+            f.get("fields").unwrap_or(&null),
+            renames,
+            out,
+        );
+        variant_findings(
+            tname,
+            b.get("wire_keys"),
+            f.get("wire_keys"),
+            "accepted wire key",
+            out,
+        );
+        refusal_findings(tname, b.get("refused"), f.get("refused"), out);
+    } else if bk == "struct" {
+        field_findings(
+            tname,
+            b.get("fields").unwrap_or(&null),
+            f.get("fields").unwrap_or(&null),
+            renames,
+            out,
+        );
+    } else if bk == "enum" {
+        variant_findings(
+            tname,
+            b.get("variants"),
+            f.get("variants"),
+            "enum variant",
+            out,
+        );
+    } else {
+        // AN UNRECOGNISED KIND IS NOT AN ENUM, AND THE HOLE WAS THAT IT WAS TREATED AS ONE.
+        //
+        // The Python's last arm is a bare `else: # enum`, so ANY node whose `kind` is not
+        // `alias`/`manual`/`struct` — a missing key, a typo, a `"kind": "object"` written by a
+        // hand-edit or by a future generator — was handed to the variant comparison. That
+        // reads `variants` on both sides, finds the key absent on both, computes the empty set
+        // against the empty set, and reports NOTHING. The node's fields were never compared,
+        // so every field under it could be removed, retyped or made required at zero delta.
+        //
+        // It is a break rather than a refusal because it is a break: the two sides are the same
+        // unrecognised shape, so the gate cannot say the grammar is unchanged, and "cannot say"
+        // must never render as "additive".
+        add(
+            out,
+            Severity::Breaking,
+            tname.to_string(),
+            format!(
+                "unrecognised node kind {} — this node was NOT compared. The classifier knows \
+                 `struct`, `enum`, `alias` and `manual`; anything else falls through every \
+                 rule, so its fields and variants would be free to change at zero delta. \
+                 Regenerate the snapshot with the current generator, or teach the classifier \
+                 this kind.",
+                py_repr(&bk)
+            ),
+        );
+    }
+}
+
 /// Walk baseline-vs-fresh fingerprint trees and classify every delta.
 pub fn classify(baseline: &Value, fresh: &Value) -> Vec<Finding> {
     let empty = serde_json::Map::new();
@@ -357,6 +597,8 @@ pub fn classify(baseline: &Value, fresh: &Value) -> Vec<Finding> {
         .and_then(Value::as_object)
         .unwrap_or(&empty);
     let names: BTreeSet<&String> = bt.keys().chain(ft.keys()).collect();
+    let renames = rename_map(bt, ft);
+    let renamed_to: BTreeSet<&String> = renames.values().collect();
 
     let mut out = Vec::new();
     for tname in names {
@@ -364,122 +606,47 @@ pub fn classify(baseline: &Value, fresh: &Value) -> Vec<Finding> {
         let f = ft.get(tname);
         let (Some(b), Some(f)) = (b, f) else {
             match (b, f) {
-                (None, _) => add(
-                    &mut out,
-                    Severity::Additive,
-                    tname.clone(),
-                    "new type/section added",
-                ),
-                _ => add(
-                    &mut out,
-                    Severity::Breaking,
-                    tname.clone(),
-                    "type/section REMOVED (a config referencing it now fails)",
-                ),
-            }
-            continue;
-        };
-        let bk = str_of(b, "kind");
-        let fk = str_of(f, "kind");
-        if bk != fk {
-            add(
-                &mut out,
-                Severity::Breaking,
-                tname.clone(),
-                format!("kind changed {bk} -> {fk} (shape change)"),
-            );
-            continue;
-        }
-        if bk == "alias" {
-            let bta = str_of(b, "target");
-            let fta = str_of(f, "target");
-            if bta != fta {
-                if relocated_only(&bta, &fta) {
-                    add(
-                        &mut out,
-                        Severity::Relocated,
-                        tname.clone(),
-                        format!(
-                            "alias target MOVED {} -> {} (same type, new module path; the map \
-                             shape is unchanged)",
-                            py_repr(&bta),
-                            py_repr(&fta)
-                        ),
-                    );
-                } else {
-                    add(
+                (None, _) => {
+                    // The ADDED half of a rename is not a new type; it is the old one, already
+                    // reported under its old name with every delta the pair carries.
+                    if !renamed_to.contains(tname) {
+                        add(
+                            &mut out,
+                            Severity::Additive,
+                            tname.clone(),
+                            "new type/section added",
+                        );
+                    }
+                }
+                _ => match renames.get(tname) {
+                    Some(new) => {
+                        add(
+                            &mut out,
+                            Severity::Renamed,
+                            tname.clone(),
+                            format!(
+                                "type/section RENAMED {} -> {} (the wire shape is unchanged: the \
+                                 same keys, variants, refusals and optionality, under a new Rust \
+                                 name)",
+                                py_repr(tname),
+                                py_repr(new)
+                            ),
+                        );
+                        // Whatever the pair DOES differ by is reported under the new name, exactly
+                        // as the same change without the rename would have reported it.
+                        node_findings(new, &bt[tname], &ft[new], &renames, &mut out);
+                    }
+                    None => add(
                         &mut out,
                         Severity::Breaking,
                         tname.clone(),
-                        format!(
-                            "type alias RETARGETED {} -> {} (the definition-map shape changed)",
-                            py_repr(&bta),
-                            py_repr(&fta)
-                        ),
-                    );
-                }
+                        "type/section REMOVED (a config referencing it now fails)",
+                    ),
+                },
             }
             continue;
-        }
-        container_flag_findings(tname, b, f, &mut out);
-        let null = Value::Null;
-        if bk == "manual" {
-            field_findings(
-                tname,
-                b.get("fields").unwrap_or(&null),
-                f.get("fields").unwrap_or(&null),
-                &mut out,
-            );
-            variant_findings(
-                tname,
-                b.get("wire_keys"),
-                f.get("wire_keys"),
-                "accepted wire key",
-                &mut out,
-            );
-            refusal_findings(tname, b.get("refused"), f.get("refused"), &mut out);
-        } else if bk == "struct" {
-            field_findings(
-                tname,
-                b.get("fields").unwrap_or(&null),
-                f.get("fields").unwrap_or(&null),
-                &mut out,
-            );
-        } else if bk == "enum" {
-            variant_findings(
-                tname,
-                b.get("variants"),
-                f.get("variants"),
-                "enum variant",
-                &mut out,
-            );
-        } else {
-            // AN UNRECOGNISED KIND IS NOT AN ENUM, AND THE HOLE WAS THAT IT WAS TREATED AS ONE.
-            //
-            // The Python's last arm is a bare `else: # enum`, so ANY node whose `kind` is not
-            // `alias`/`manual`/`struct` — a missing key, a typo, a `"kind": "object"` written by a
-            // hand-edit or by a future generator — was handed to the variant comparison. That
-            // reads `variants` on both sides, finds the key absent on both, computes the empty set
-            // against the empty set, and reports NOTHING. The node's fields were never compared,
-            // so every field under it could be removed, retyped or made required at zero delta.
-            //
-            // It is a break rather than a refusal because it is a break: the two sides are the same
-            // unrecognised shape, so the gate cannot say the grammar is unchanged, and "cannot say"
-            // must never render as "additive".
-            add(
-                &mut out,
-                Severity::Breaking,
-                tname.clone(),
-                format!(
-                    "unrecognised node kind {} — this node was NOT compared. The classifier knows \
-                     `struct`, `enum`, `alias` and `manual`; anything else falls through every \
-                     rule, so its fields and variants would be free to change at zero delta. \
-                     Regenerate the snapshot with the current generator, or teach the classifier \
-                     this kind.",
-                    py_repr(&bk)
-                ),
-            );
-        }
+        };
+        node_findings(tname, b, f, &renames, &mut out);
     }
     out
 }
@@ -528,6 +695,9 @@ pub fn load_waivers(path: &str, text: &str) -> Result<BTreeMap<String, String>, 
 pub struct Outcome {
     pub additive: Vec<Finding>,
     pub relocated: Vec<Finding>,
+    /// Each type that is one the baseline carried under another name. Informational, and printed
+    /// on its own line every run: a reviewer must see the rename and ask whether it was intended.
+    pub renamed: Vec<Finding>,
     /// Each excused break, with the reason that excused it.
     pub waived: Vec<(Finding, String)>,
     pub breaking: Vec<Finding>,
@@ -551,12 +721,14 @@ impl Outcome {
 pub fn judge(findings: Vec<Finding>, waivers: &BTreeMap<String, String>) -> Outcome {
     let mut additive = Vec::new();
     let mut relocated = Vec::new();
+    let mut renamed = Vec::new();
     let mut waived = Vec::new();
     let mut breaking = Vec::new();
     for f in findings {
         match f.severity {
             Severity::Additive => additive.push(f),
             Severity::Relocated => relocated.push(f),
+            Severity::Renamed => renamed.push(f),
             // A waiver matches ONE exact path. Everything else stays RED.
             Severity::Breaking => match waivers.get(&f.path) {
                 Some(why) => {
@@ -577,8 +749,150 @@ pub fn judge(findings: Vec<Finding>, waivers: &BTreeMap<String, String>) -> Outc
     Outcome {
         additive,
         relocated,
+        renamed,
         waived,
         breaking,
         stale,
+    }
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn enum_node(variants: &[&str]) -> Value {
+        json!({"kind": "enum", "deny_unknown_fields": false, "transparent": false,
+               "variants": variants})
+    }
+
+    fn tree(types: Value) -> Value {
+        json!({ "types": types })
+    }
+
+    fn severities(before: &Value, after: &Value, sev: Severity) -> Vec<String> {
+        classify(before, after)
+            .into_iter()
+            .filter(|f| f.severity == sev)
+            .map(|f| format!("{}: {}", f.path, f.reason))
+            .collect()
+    }
+
+    /// THE RULING. A removed type and an added type of the SAME WIRE SHAPE are one type renamed:
+    /// informational, never a break. Nothing an operator writes has moved.
+    #[test]
+    fn a_type_renamed_with_the_same_shape_is_not_a_break() {
+        let before = tree(json!({ "OnExhaust": enum_node(&["block", "downgrade"]) }));
+        let after = tree(json!({ "OnExhaustWord": enum_node(&["block", "downgrade"]) }));
+        let breaks = severities(&before, &after, Severity::Breaking);
+        assert!(
+            breaks.is_empty(),
+            "a pure rename must not break: {breaks:?}"
+        );
+        let renamed = severities(&before, &after, Severity::Renamed);
+        assert!(
+            renamed.iter().any(|f| f.contains("OnExhaustWord")),
+            "the rename must be REPORTED, not swallowed: {renamed:?}"
+        );
+    }
+
+    /// A RENAME THAT ALSO APPENDS A VARIANT is the same change the rename-free tree would have
+    /// made: additive, and reported under the NEW name so the appended word is visible.
+    #[test]
+    fn a_rename_that_appends_a_variant_is_additive_under_the_new_name() {
+        let before = tree(json!({ "OnExhaust": enum_node(&["block", "downgrade"]) }));
+        let after = tree(json!({ "OnExhaustWord": enum_node(&["block", "cut", "downgrade"]) }));
+        let breaks = severities(&before, &after, Severity::Breaking);
+        assert!(
+            breaks.is_empty(),
+            "an appended variant is additive: {breaks:?}"
+        );
+        let additive = severities(&before, &after, Severity::Additive);
+        assert!(
+            additive
+                .iter()
+                .any(|f| f.contains("OnExhaustWord::cut") && f.contains("APPENDED")),
+            "the appended variant must still be reported: {additive:?}"
+        );
+    }
+
+    /// RED-FIRST, THE OTHER WAY. A rename that also DROPS a variant is a break and stays one — the
+    /// config that spelled the dropped word does not parse, whatever the type is now called.
+    #[test]
+    fn a_rename_that_drops_a_variant_is_breaking() {
+        let before = tree(json!({ "OnExhaust": enum_node(&["block", "downgrade"]) }));
+        let after = tree(json!({ "OnExhaustWord": enum_node(&["block"]) }));
+        let breaks = severities(&before, &after, Severity::Breaking);
+        assert!(
+            breaks.iter().any(|f| f.starts_with("OnExhaust:")),
+            "a shape-changing rename must stay BREAKING: {breaks:?}"
+        );
+    }
+
+    /// A TYPE REALLY REMOVED, with nothing of its shape added, is the break the rule exists for.
+    #[test]
+    fn a_removed_type_with_no_counterpart_is_breaking() {
+        let before = tree(json!({ "OnExhaust": enum_node(&["block", "downgrade"]) }));
+        let after = tree(json!({}));
+        let breaks = severities(&before, &after, Severity::Breaking);
+        assert!(
+            breaks.iter().any(|f| f.contains("REMOVED")),
+            "a removal is a removal: {breaks:?}"
+        );
+    }
+
+    /// AN AMBIGUOUS MATCH IS NO MATCH. Two removed types of one shape and one addition of that
+    /// shape is not evidence of which was renamed; guessing would launder the other removal.
+    #[test]
+    fn an_ambiguous_pairing_pairs_with_nothing() {
+        let before = tree(json!({
+            "OnExhaust": enum_node(&["block", "downgrade"]),
+            "OnExhaustToo": enum_node(&["block", "downgrade"]),
+        }));
+        let after = tree(json!({ "OnExhaustWord": enum_node(&["block", "downgrade"]) }));
+        let breaks = severities(&before, &after, Severity::Breaking);
+        assert_eq!(
+            breaks.len(),
+            2,
+            "neither removal may be excused by one ambiguous addition: {breaks:?}"
+        );
+    }
+
+    /// A FIELD RETYPED TO A RENAME-EQUIVALENT TYPE IS NOT A RETYPE — and one retyped to anything
+    /// else still is.
+    #[test]
+    fn a_field_retyped_to_a_renamed_type_is_not_a_retype() {
+        let before = tree(json!({
+            "OnExhaust": enum_node(&["block", "downgrade"]),
+            "LimitCfg": json!({"kind": "struct", "deny_unknown_fields": false,
+                               "transparent": false,
+                               "fields": {"on_exhaust": {"type": "Option<OnExhaust>",
+                                                         "optional": true}}}),
+        }));
+        let after = tree(json!({
+            "OnExhaustWord": enum_node(&["block", "downgrade"]),
+            "LimitCfg": json!({"kind": "struct", "deny_unknown_fields": false,
+                               "transparent": false,
+                               "fields": {"on_exhaust": {"type": "Option<OnExhaustWord>",
+                                                         "optional": true}}}),
+        }));
+        let breaks = severities(&before, &after, Severity::Breaking);
+        assert!(
+            breaks.is_empty(),
+            "the field follows the rename: {breaks:?}"
+        );
+
+        let unrelated = tree(json!({
+            "OnExhaustWord": enum_node(&["block", "downgrade"]),
+            "LimitCfg": json!({"kind": "struct", "deny_unknown_fields": false,
+                               "transparent": false,
+                               "fields": {"on_exhaust": {"type": "Option<u64>",
+                                                         "optional": true}}}),
+        }));
+        let breaks = severities(&before, &unrelated, Severity::Breaking);
+        assert!(
+            breaks.iter().any(|f| f.contains("RETYPED")),
+            "a field retyped to an UNRELATED type is still a break: {breaks:?}"
+        );
     }
 }

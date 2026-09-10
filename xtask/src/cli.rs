@@ -242,29 +242,42 @@ fn gate(args: &[String]) -> i32 {
             gates::print_verdict(reg.name, &verdict);
             return i32::from(verdict.red);
         }
-        let written = match reg.name {
-            "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
-            // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
-            // only downward — see `gates::construction::ceilings`. It is the same derivation the
-            // `ceiling-slack` row reports, so the arm that repairs and the arm that judges cannot
-            // disagree about what the tree measures; what the flag changes is whether the answer
-            // is printed or committed.
-            "construction" => crate::gates::construction::ceilings::rewrite(&cx),
-            _ => {
-                eprintln!("xtask gate {name}: this gate has nothing to write");
-                return 2;
-            }
-        };
-        return match written {
-            Ok(msg) => {
-                println!("{msg}");
-                0
-            }
-            Err(e) => {
-                eprintln!("xtask gate {name} --write: {e}");
-                3
-            }
-        };
+        // TWO KINDS OF WRITER, and only one of them is this arm's.
+        //
+        // `design-bindings` and `construction` write through associated functions of their own, so
+        // they are dispatched here. `config-schema` and `field-inventory` write from INSIDE their
+        // `run`, on the same `cx.env().write` flag — their regeneration is a row of their own
+        // report ("Written(n)"), which is what lets a reader see what was rewritten. Refusing them
+        // here made the command their own error message names (`cargo xtask gate config-schema
+        // --write`) unreachable: it exited 2 saying the gate had nothing to write, while the code
+        // that writes sat unread a few frames down. So they fall through to the normal run, which
+        // is where their writing lives.
+        const RUN_WRITERS: &[&str] = &["config-schema", "field-inventory"];
+        if !RUN_WRITERS.contains(&reg.name) {
+            let written = match reg.name {
+                "design-bindings" => crate::gates::design_bindings::DesignBindingsGate::write(&cx),
+                // The construction gate's write arm RE-PINS ITS CEILINGS TO WHAT THEY MEASURE, and
+                // only downward — see `gates::construction::ceilings`. It is the same derivation
+                // the `ceiling-slack` row reports, so the arm that repairs and the arm that judges
+                // cannot disagree about what the tree measures; what the flag changes is whether
+                // the answer is printed or committed.
+                "construction" => crate::gates::construction::ceilings::rewrite(&cx),
+                _ => {
+                    eprintln!("xtask gate {name}: this gate has nothing to write");
+                    return 2;
+                }
+            };
+            return match written {
+                Ok(msg) => {
+                    println!("{msg}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("xtask gate {name} --write: {e}");
+                    3
+                }
+            };
+        }
     }
 
     // THE PARITY ARM, used by every conversion before its Python or bash is deleted: run the

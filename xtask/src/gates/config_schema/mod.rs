@@ -266,11 +266,18 @@ enum BaselineState {
 fn row_additive(outcome: &classify::Outcome) -> Row {
     if outcome.breaking.is_empty() {
         let mut detail = format!(
-            "{} additive delta(s), {} relocation(s), {} waived break(s)",
+            "{} additive delta(s), {} relocation(s), {} rename(s), {} waived break(s)",
             outcome.additive.len(),
             outcome.relocated.len(),
+            outcome.renamed.len(),
             outcome.waived.len()
         );
+        // A RENAME is printed on its own line every run, for the same reason a relocation is: the
+        // grammar did not move, but the source did, and the reviewer is the one who decides whether
+        // that was meant.
+        for f in &outcome.renamed {
+            detail.push_str(&format!("  |  RENAMED {}: {}", f.path, f.reason));
+        }
         // A RELOCATION is printed on its own line every run, loudly: it is a third verdict, not a
         // pass, and a reviewer must be able to see the move and ask whether it was intended.
         for f in &outcome.relocated {
@@ -423,7 +430,7 @@ impl Gate for ConfigSchemaGate {
             .config_baseline_ref
             .clone()
             .unwrap_or_else(|| DEFAULT_BASELINE_REF.to_string());
-        let (state, baseline) = read_baseline(cx, &r);
+        let (state, baseline) = read_baseline(cx, &r, &files);
         rows.push(row_baseline(&state));
 
         match baseline {
@@ -467,9 +474,36 @@ impl Gate for ConfigSchemaGate {
     }
 }
 
-/// Resolve the baseline ref and read the snapshot it carries. Returns the row state and, when there
-/// is one, the parsed baseline the classifier gets.
-fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
+/// THE BASELINE IS RE-RENDERED FROM THE REF'S OWN SOURCES, not read out of the snapshot the ref
+/// happens to carry.
+///
+/// A snapshot is a RENDER, and a render is only meaningful beside the instrument that made it. When
+/// the extractor is corrected — a hand-written `Deserialize` whose wire truth is its VISITOR rather
+/// than its struct — every field the old instrument described differently reads as a CHANGE, and
+/// the classifier has no way to tell "the grammar moved" from "the instrument was fixed". That is
+/// not a hypothetical: correcting `manual_de_detail` to read the visitor made `LimitCfg`'s
+/// `downgrade_to` read as `ScopeRef -> String` — the same YAML scalar, described twice.
+///
+/// Rendering the baseline HERE, with TODAY's extractor, over the ref's OWN source bytes removes the
+/// second instrument from the comparison entirely: both sides of the delta are produced by one
+/// reader, so a difference between them is a difference in the GRAMMAR and nothing else.
+///
+/// This is not a bypass. The bytes still come from history — `git show <ref>:<path>`, never the
+/// working tree — so rewriting the committed snapshot still cannot launder a break. What changed is
+/// only WHICH bytes of history are read: the sources the grammar actually lives in, rather than a
+/// derived artifact of them.
+///
+/// THE ROW ITSELF STILL JUDGES THE SNAPSHOT. Every state below (`Unresolvable`, `NoSnapshot`,
+/// `Unparseable`, `Empty`, `Bootstrap`) is a fact about the ref and the snapshot it carries, and a
+/// ref that fails any of them is refused before its sources are asked for — a ref carrying no
+/// snapshot is still the free bypass it always was.
+///
+/// A REF WHOSE SOURCES CANNOT BE READ AT ALL falls back to the snapshot it carries, and only then.
+/// That is the SYNTHETIC ref: the self-test plants `git-ref:<r>` and `git-show:<r>:<snapshot>`
+/// against a repository where no such commit exists, so there are no source bytes to render. The
+/// fallback is guarded by "not one tracked source resolved", so a real ref that renamed one file —
+/// or a hundred of them, but not all — still renders, and the rename shows up as the delta it is.
+fn read_baseline(cx: &Ctx, r: &str, files: &[String]) -> (BaselineState, Option<Value>) {
     if !cx.git_ref_resolves(r) {
         return (BaselineState::Unresolvable { r: r.to_string() }, None);
     }
@@ -502,12 +536,37 @@ fn read_baseline(cx: &Ctx, r: &str) -> (BaselineState, Option<Value>) {
             None,
         );
     }
+    // THE RE-RENDER. The snapshot above has done its job — it proved the ref is a baseline — and
+    // the document the CLASSIFIER reads is built here instead, by today's extractor over the ref's
+    // own bytes.
+    let at_ref: Vec<(String, String)> = files
+        .iter()
+        .filter_map(|p| cx.git_show(r, p).ok().map(|text| (p.clone(), text)))
+        .collect();
+    let rendered = if at_ref.is_empty() {
+        // A SYNTHETIC REF: it resolves and carries a snapshot, but no source of it is in this
+        // repository. There is nothing to render, so the snapshot it carries IS the baseline.
+        doc
+    } else {
+        match schema::extract(&at_ref) {
+            Ok(v) => v,
+            Err(why) => {
+                return (
+                    BaselineState::Unparseable {
+                        r: r.to_string(),
+                        why: format!("its own sources do not render: {why}"),
+                    },
+                    None,
+                )
+            }
+        }
+    };
     (
         BaselineState::Ok {
             r: r.to_string(),
             types,
         },
-        Some(doc),
+        Some(rendered),
     )
 }
 
