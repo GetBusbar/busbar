@@ -1248,6 +1248,16 @@ fn ledger_plus(cx: &Ctx, rows: &str) -> crate::ctx::Overlay {
     plant(LEDGER, &format!("{}\n\n{}\n", text.trim_end(), rows.trim()))
 }
 
+/// One `[[edge]]` class row, with the three sentences its reader owes.
+fn edge_row(from: &str, to: &str) -> String {
+    format!(
+        "[[edge]]\nfrom = \"{from}\"\nto = \"{to}\"\ncite = \"ARCHITECTURE.md 1.1 — the \
+         composition root names every axis\"\nwhy = \"crates of kind {from} naming {to} \
+         vocabulary\"\ndrain = \"the class falls when the root mounts the crate off the registry \
+         rather than by name\"\n"
+    )
+}
+
 /// One `[[minted]]` row, with or without its carve-out ceiling.
 fn minted_row(krate: &str, cells: usize, moved_from: Option<&str>) -> String {
     let mut out =
@@ -1364,6 +1374,30 @@ pub fn selftest(
             );
             ov
         },
+    ));
+
+    // …AND THE `[[edge]]` HALF OF THE SAME LANDING, which is the one a FIRST-of-its-kind crate
+    // needs: `busbar-core-config` is the first `core` crate, so the class rows naming `core` are in
+    // no base either. They are admitted through the KIND the base announced the crate as, and the
+    // class is not scored DEAD while that kind has no crate — the same window `[[announced]]`
+    // already opens for the dead-kind ratchet, with the same expiry.
+    //
+    // This is `root -> core`: the composition root names every axis, and `core` is the carve-out of
+    // the crate it already names as `legacy`. `PENDING_EDGES` grants the dependency class; this row
+    // is the vocabulary class beside it.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "the first crate of a kind mints its [[edge]] class too, and the class is not scored dead",
+        &[ROW_MATRIX],
+        ledger_plus(
+            cx,
+            &format!(
+                "{}\n{}",
+                edge_row("root", "core"),
+                minted_row("busbar-core-config", 0, None),
+            ),
+        ),
     ));
 
     // A CRATE THE BASE DID NOT ANNOUNCE MINTS NOTHING. Announcing a crate and admitting its ledger
