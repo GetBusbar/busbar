@@ -118,6 +118,51 @@ async fn streams_hooks_reject_all_refuses_a_session_open() {
     );
 }
 
+/// THE SUBJECT THIS PLANE NAMES IS THE SESSION MODE — not a method name it never had.
+///
+/// Until the neutral seam could be told what a gate is deciding about, this plane spelled the
+/// literal `"session.open"` into the tool-shaped argument the seam took: a callable name, on a
+/// protocol with no callables, carrying one bit of information a gate already had from the
+/// container it was attached to. The mode is the fact an operator screening this door can act on —
+/// a `mint` is a browser sideband, a `telephony` is a media leg with no preceding `ek_` pass — and
+/// it is the plane's own, resolved from which route the operator mounted before any frame arrives.
+///
+/// Falsifiable two ways: the two opens differ only in their ingress and the subjects differ with
+/// them, and the string that used to be sent appears nowhere.
+#[tokio::test]
+async fn the_gate_is_told_which_session_mode_is_opening() {
+    let rt = runtime();
+    // A gate that PROCEEDS: this cell is about what the gate is TOLD, not about the verdict.
+    let recorder = Arc::new(FixtureHost::new().attach_gate(
+        crate::PLANE_DECL.key,
+        GATE_CONTAINER,
+        Arc::new(|_args_json: &[u8]| GateOutcome::Proceed) as GateScript,
+    ));
+
+    let mut open = an_open(&rt, Arc::clone(&recorder) as Arc<dyn EngineHost>);
+    open.ingress = Ingress::Mint;
+    let _ = open_governed(open).await;
+    let mut open = an_open(&rt, Arc::clone(&recorder) as Arc<dyn EngineHost>);
+    open.ingress = Ingress::Telephony;
+    let _ = open_governed(open).await;
+
+    let seen: Vec<Option<String>> = recorder.subjects_seen();
+    assert_eq!(
+        seen,
+        vec![
+            Some("mint".to_string()),
+            Some("telephony".to_string())
+        ],
+        "each open must name the mode IT opened in — a subject that did not change with the ingress \
+         would be a subject that says nothing about the request"
+    );
+    assert!(
+        !seen.iter().flatten().any(|s| s == "session.open"),
+        "the stand-in this face replaced was the literal `session.open`; a plane with no methods \
+         must not be spelling one to be governed"
+    );
+}
+
 /// The plane's real dispatch slot, built the way `appbuild` does — a `BuildCtx` over a `public_url`.
 fn a_slot() -> Arc<dyn std::any::Any + Send + Sync> {
     let unit = ();

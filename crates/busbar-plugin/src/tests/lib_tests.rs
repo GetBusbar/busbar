@@ -136,6 +136,61 @@ fn usage_units_tail_hidden_from_a_pre_minor_20_sender() {
     assert_eq!(unsafe { decode_usage_units(&*guard) }, units);
 }
 
+/// THE MINOR-22 SUBJECT TAIL IS AN APPEND, and this is what says so: an older caller advertises the
+/// pre-22 `size` and the guard hides `subject_ptr`/`subject_len` from it, so the host falls back to
+/// `method_ptr` — the pre-22 spelling of the same fact — and gates exactly as it does today. A
+/// current caller writing the tail exposes it. If the tail were ever INSERTED rather than appended,
+/// this reads a field the older caller never wrote and the layout golden reds beside it.
+#[test]
+fn gate_subject_tail_hidden_from_a_pre_minor_22_sender() {
+    use crate::hot::GateSubjectRef;
+
+    let method = "tools/call";
+    let subject = "read_file";
+    let current = GateSubjectRef {
+        size: core::mem::size_of::<GateSubjectRef>() as u32,
+        version: crate::hot::POD_VERSION,
+        plane_key: 0,
+        key_present: 0,
+        incremental: 0,
+        _reserved: [0; 3],
+        request_id: 1,
+        container_ptr: core::ptr::null(),
+        container_len: 0,
+        method_ptr: method.as_ptr(),
+        method_len: method.len(),
+        args_ptr: core::ptr::null(),
+        args_len: 0,
+        key_id_ptr: core::ptr::null(),
+        key_id_len: 0,
+        key_name_ptr: core::ptr::null(),
+        key_name_len: 0,
+        session_id_ptr: core::ptr::null(),
+        session_id_len: 0,
+        subject_ptr: subject.as_ptr(),
+        subject_len: subject.len(),
+    };
+    assert_eq!(
+        read_sized_field!(&current, current.size, GateSubjectRef, subject_len),
+        Some(subject.len()),
+        "a minor-22 caller's subject is readable"
+    );
+
+    // The pre-22 size (the tail is the last 16 bytes of the struct).
+    let mut old = current;
+    old.size = (core::mem::size_of::<GateSubjectRef>() - 16) as u32;
+    assert_eq!(
+        read_sized_field!(&old, old.size, GateSubjectRef, subject_ptr),
+        None,
+        "a pre-minor-22 caller must expose NO subject tail — the host reads `method_ptr` instead"
+    );
+    assert_eq!(
+        read_sized_field!(&old, old.size, GateSubjectRef, subject_len),
+        None,
+        "both halves of the tail are hidden together, or a length without a pointer would be read"
+    );
+}
+
 /// The sized-field guard must be safe to point at a peer buffer that is SHORTER than the struct it
 /// describes. Reading through a `&Usage` cannot be: the reference asserts the full 96 bytes are a
 /// valid, dereferenceable `Usage` the instant it is formed, which over a 64-byte peer buffer is a
