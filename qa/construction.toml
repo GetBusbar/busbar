@@ -148,6 +148,32 @@ contract_caps = 3478
 grammar = 388
 contract_transport = 845
 
+# ── declared raises (one delta per face; see the prose above) ──────────────────────────────────────
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+by = 22
+because = "FACE: the admin control verbs (ARCHITECTURE.md, Control: verify, admit, audit, answer — busbar-control-admin) — crates/busbar/tests/new_verbs_legacy_leg.rs pins which of the 17 new verbs the legacy surface answers; a proof file, 22 namings of control vocabulary"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.legacy.count"
+by = 6
+because = "FACE: the admin control verbs — the same proof names the legacy leg it pins the answer set against (tests/new_verbs_legacy_leg.rs); 6 namings, all in the proof, none in shipped root source"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+by = 3
+because = "FACE: the admin control verbs — the proof drives the verbs over the transport it mounts (tests/new_verbs_legacy_leg.rs); 3 namings"
+file = "qa/kind-isolation.toml"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+by = 6
+because = "FACE: the admin control verbs — the proof names the verbs unit whose 17 new verbs it pins (tests/new_verbs_legacy_leg.rs); 6 namings"
+file = "qa/kind-isolation.toml"
+
+
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
