@@ -24,7 +24,7 @@
 
 use busbar_caps::{Route, UnitToken};
 use busbar_contract::{Ctx, EgressBody, Frame, Plane, Transport, Unit};
-use busbar_contract_transport::wire::{Conn, StatusClass};
+use busbar_contract_transport::wire::{Conn, WireStatusClass};
 use futures::StreamExt;
 
 use crate::ports::{
@@ -346,7 +346,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         code: first.frame.meta.status_code,
         retry_after: first.frame.meta.retry_after_secs,
     };
-    let succeeded = matches!(first.frame.meta.status, Some(StatusClass::Success) | None);
+    let succeeded = matches!(status.class, Some(WireStatusClass::Success) | None);
     // An upstream answered, which is the one thing an abandonment says did not happen. From here
     // the record settles on that answer however the rest of it goes.
     journal.disarm();

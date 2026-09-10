@@ -32,9 +32,9 @@ use busbar_contract_transport::wire::Decode;
 use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::Encode;
 use busbar_contract_transport::wire::FrameMeta;
-use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
 use busbar_contract_transport::wire::WireStatus;
+use busbar_contract_transport::wire::WireStatusClass;
 use busbar_unit_breaker::classify::{
     GRPC_ABORTED, GRPC_DATA_LOSS, GRPC_DEADLINE_EXCEEDED, GRPC_INTERNAL, GRPC_PERMISSION_DENIED,
     GRPC_RESOURCE_EXHAUSTED, GRPC_UNAUTHENTICATED, GRPC_UNAVAILABLE, GRPC_UNKNOWN,
@@ -402,7 +402,7 @@ impl Breaker for TestBreaker {
             },
             (Some(400..=499), _, _)
             | (_, Some(_), _)
-            | (None, None, Some(StatusClass::ClientError)) => Classified {
+            | (None, None, Some(WireStatusClass::ClientError)) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::RecordNothing,
                 label: disposition::TRANSIENT,
@@ -732,14 +732,14 @@ pub enum Script {
 }
 
 /// A response frame with the transport's own status reading on it.
-pub fn frame(status: Option<StatusClass>, body: &str) -> Frame {
+pub fn frame(status: Option<WireStatusClass>, body: &str) -> Frame {
     frame_with_upstream(status, None, None, body)
 }
 
 /// A response frame carrying the whole status leg a real transport reads off an answer: the coarse
 /// class, the exact number the upstream put on it, and the wait it asked for.
 pub fn frame_with_upstream(
-    status: Option<StatusClass>,
+    status: Option<WireStatusClass>,
     status_code: Option<WireStatus>,
     retry_after_secs: Option<u64>,
     body: &str,
@@ -761,8 +761,8 @@ pub fn frame_with_upstream(
 /// A two-frame success: an answer and its terminal.
 pub fn ok_frames() -> Vec<Frame> {
     vec![
-        frame(Some(StatusClass::Success), "head"),
-        frame(Some(StatusClass::Success), "end"),
+        frame(Some(WireStatusClass::Success), "head"),
+        frame(Some(WireStatusClass::Success), "end"),
     ]
 }
 
