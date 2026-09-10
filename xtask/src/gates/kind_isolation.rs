@@ -277,15 +277,17 @@ static KINDS: &[KindDef] = &[
         matchers: &["=busbar-kernel"],
     },
     // THE ENGINE SURFACES BEING CARVED OUT OF `busbar-core` — `busbar-core-config`,
-    // `busbar-core-hooks`, and whatever the drain names next. A `core` crate is NEUTRAL on exactly
+    // `busbar-core-policy`, and whatever the drain names next. A `core` crate is NEUTRAL on exactly
     // the terms `kernel` and `caps` are: it may carry no plane and no transport instance in its
     // name, and it reaches only the neutral spine ([`PENDING_EDGES`]), so an edge to a plane, a
     // dialect, a transport or a unit is a NEW class and is refused like any other.
     //
     // A PREFIX, not two exact names: an exact matcher yields an EMPTY remainder, which would mean
     // `busbar-core-mcp` was never read for a plane instance at all — the kind would be a hole the
-    // shape of every name it accepted. The prefix costs one reviewed accepted-name entry
-    // (`busbar-core-hooks`, below) and buys the name rule over every future member.
+    // shape of every name it accepted. The prefix buys the name rule over every future member:
+    // the hook policy engine landed once as `busbar-core-hooks` on an accepted-name waiver, and
+    // `hooks` being the hook-plugin kind's marker word is exactly why it is `busbar-core-policy`
+    // now and the waiver is gone.
     KindDef {
         kind: "core",
         family: Family::Neutral,
@@ -517,13 +519,6 @@ const ACCEPTED_NAMES: &[(&str, &str)] = &[
         "the ADMIN API's token issuer, an auth plugin. `admin` here is the administrative surface \
          whose tokens it mints, not the admin PLANE instance — it carries no plane edge and no \
          plane vocabulary.",
-    ),
-    (
-        "busbar-core-hooks",
-        "the engine's HOOK DISPATCH, carved out of busbar-core. `hooks` here is the thing core \
-         dispatches, not the hooks-plugin kind: a hook plugin is `busbar-hook-<name>` and \
-         implements the hook ABI, while this crate is the neutral caller that runs them. It is \
-         `core` kind on the same terms as kernel and caps, and reaches only the neutral spine.",
     ),
 ];
 
@@ -7220,17 +7215,13 @@ impl Gate for KindIsolationGate {
             &["dead-kind", "core"],
         ));
 
-        // …and the same on the waiver side: `busbar-core-hooks`'s reviewed sentence is a review
-        // arriving BEFORE its crate, and the announcement is the only thing that distinguishes that
-        // from a hole nobody re-reads.
-        report.push(prove_rows_red(
-            cx,
-            self,
-            "an accepted name for an unannounced crate that does not exist is a dead waiver",
-            &[ROW_NAME],
-            registry_plant(""),
-            &["dead-waiver", "busbar-core-hooks"],
-        ));
+        // …and the waiver side has no case any more, on purpose: `dead-waiver` fires for an
+        // `ACCEPTED_NAMES` entry whose crate is neither on disk nor announced, and the last such
+        // entry (`busbar-core-hooks`, a review that arrived before its crate) was struck when the
+        // crate landed as `busbar-core-policy`, a name that needs no waiver. The waiver list is
+        // CODE, so the only plant that could red the rule again would be an entry in this file —
+        // and a battery that edits the gate to prove the gate is not a battery. The rule stays;
+        // the day a waiver outlives its crate again, this row names it.
 
         // ── THE STRICT STEP LIST, AND THE WIRE REGISTRY ──────────────────────────────────────────
 
@@ -7399,15 +7390,10 @@ impl Gate for KindIsolationGate {
             // THE TWO CORE CRATES LANDING IS GREEN — no unknown kind, no dead kind, no dead waiver,
             // no new edge class. This is the case the announcement exists to make true: the agent
             // who lands them reds nothing.
-            let mut ov = manifest_plant(
+            let ov = manifest_plant(
                 "crates/busbar-core-config",
                 "busbar-core-config",
                 &["busbar-substrate"],
-            );
-            ov.set(
-                "crates/busbar-core-hooks/Cargo.toml",
-                "[package]\nname = \"busbar-core-hooks\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
-                 busbar-api = { workspace = true }\n",
             );
             report.push(prove_rows_green(
                 cx,
@@ -7491,15 +7477,10 @@ impl Gate for KindIsolationGate {
 
         // AN ANNOUNCEMENT DOES NOT SURVIVE ITS LANDING PAST A RELEASE. Landing the two core crates
         // is green on the per-push gate (proven above); on the ship sha the spent row is collected.
-        let mut ov = manifest_plant(
+        let ov = manifest_plant(
             "crates/busbar-core-config",
             "busbar-core-config",
             &["busbar-substrate"],
-        );
-        ov.set(
-            "crates/busbar-core-hooks/Cargo.toml",
-            "[package]\nname = \"busbar-core-hooks\"\nversion = \"0.0.0\"\n\n[dependencies]\n\
-             busbar-api = { workspace = true }\n",
         );
         report.push(prove_rows_red(
             cx,

@@ -3,7 +3,8 @@
 
 //! Tests for `crates/api/src/signal.rs`.
 
-use super::*;
+use busbar_contract::{Signal, SignalBag, SignalValue};
+use std::borrow::Cow;
 
 /// `Signal::ALL` must list every variant exactly once, and `Signal::name`'s hand-written match
 /// must agree with the `#[serde(rename_all = "snake_case")]` derive — the exhaustiveness guard
@@ -30,6 +31,10 @@ fn all_lists_every_variant_and_name_matches_serde() {
             | Signal::CandidateLatencyP95Ms
             | Signal::RoutingPolicy
             | Signal::ResponseTokensOut => true,
+            // `Signal` is `#[non_exhaustive]`, so from outside the crate the match needs this arm;
+            // the `ALL.len()` pin directly below is what catches an added variant now.
+            #[allow(unreachable_patterns)]
+            _ => false,
         };
         assert!(listed);
     }

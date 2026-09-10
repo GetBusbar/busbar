@@ -42,6 +42,15 @@ from = "busbar-core"
 to = "busbar-plane-admin"
 reason = "legacy drain"
 
+# The hook policy engine carved out of busbar-core: `busbar_core::hooks` is one `pub use
+# busbar_core_policy::*` plus the seat adapter and the `/metrics/hooks` route handler. Drain line:
+# the re-export is deleted with the last `busbar_core::hooks` reader in the plane-host/admin wave;
+# the adapter moves to the composition root when the registry does.
+[[transitional]]
+from = "busbar-core"
+to = "busbar-core-policy"
+reason = "legacy drain: the hook policy engine is busbar-core-policy; busbar-core keeps the seat adapter and the re-export until its last hooks reader is drained"
+
 # The same phenomenon one crate over, and it is in the tree TODAY rather than on a branch:
 # `busbar-voice` is the retiring 1.5.x streams crate and `busbar-plane-voice` is the plane it is
 # draining into. The rule is written about the drain, not about `busbar-core`, so this edge is named
@@ -134,6 +143,14 @@ reason = "the admin CONTROL surface — an unmetered served surface on the contr
 #   to     = "busbar-secret-grammar"
 #   commit = "0000000"
 
+# The hook POLICY ENGINE was announced as `busbar-core-hooks` and landed as `busbar-core-policy`:
+# `hooks` is the hook-plugin kind's marker word, and a core crate wearing another kind's marker is
+# the fusion `kind-isolation:name` exists to refuse. Same crate, same kind (core), new name.
+[[renamed]]
+from   = "busbar-core-hooks"
+to     = "busbar-core-policy"
+commit = "5fe28f82a"
+
 [[announced]]
 crate = "busbar-control-oauth2"
 kind = "control"
@@ -144,10 +161,8 @@ crate = "busbar-core-config"
 kind = "core"
 reason = "the configuration surface being carved out of busbar-core; core kind, neutral spine only"
 
-[[announced]]
-crate = "busbar-core-hooks"
-kind = "core"
-reason = "the hook-dispatch surface being carved out of busbar-core; core kind, neutral spine only"
+# `busbar-core-hooks` was announced here and LANDED as `busbar-core-policy` — see `[[renamed]]`
+# and `[[minted]]` below; an announcement is struck by the landing it announced.
 
 # ------------------------------------------------------------------------------------------------
 # [[minted]] — THE ROWS A CRATE THAT DID NOT EXIST BRINGS WITH IT
@@ -181,6 +196,17 @@ reason = "the hook-dispatch surface being carved out of busbar-core; core kind, 
 # it, so the row and the crate land together. Writing one ahead of the crate would spend the crate's
 # one admission on the branch that did not need it — the landing would then be a SECOND mint and
 # refused, which is the rule working exactly as written and against the wrong branch.
+
+# THE HOOK POLICY ENGINE, minted on the branch that created it (announced as `busbar-core-hooks`,
+# landed as `busbar-core-policy` — the `[[renamed]]` row is how the announcement is read). Every
+# cell is at or under busbar-core's pin for the same kind at the base: the vocabulary moved, it was
+# not created. control 20 (≤ 5200), hooks 2 (≤ 46), legacy 8 (the `× legacy` comments that say
+# what was carved out of what), plane 36 (≤ 3033), secret 17 (≤ 319), transport 2 (≤ 2117).
+[[minted]]
+crate = "busbar-core-policy"
+commit = "5fe28f82a"
+cells = "6"
+moved_from = "busbar-core"
 
 # ------------------------------------------------------------------------------------------------
 # [[edge]] / [[cell]] / [[disagreement]] — THE KIND × CRATE VOCABULARY MATRIX
@@ -1545,22 +1571,14 @@ count = "2"
 [[cell]]
 crate = "busbar-api"
 kind = "control"
-count = "28"
+count = "23"
 
-[[cell]]
-crate = "busbar-api"
-kind = "legacy"
-count = "2"
 
 [[cell]]
 crate = "busbar-api"
 kind = "plane"
-count = "107"
+count = "78"
 
-[[cell]]
-crate = "busbar-api"
-kind = "plugin-tooling"
-count = "2"
 
 [[cell]]
 crate = "busbar-api"
@@ -1690,7 +1708,7 @@ count = "183"
 [[cell]]
 crate = "busbar-core"
 kind = "api"
-count = "603"
+count = "577"
 
 [[cell]]
 crate = "busbar-core"
@@ -1705,27 +1723,27 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5200"
+count = "5184"
 
 [[cell]]
 crate = "busbar-core"
 kind = "hooks"
-count = "46"
+count = "41"
 
 [[cell]]
 crate = "busbar-core"
 kind = "plane"
-count = "3033"
+count = "2987"
 
 [[cell]]
 crate = "busbar-core"
 kind = "plugin-tooling"
-count = "265"
+count = "256"
 
 [[cell]]
 crate = "busbar-core"
 kind = "secret"
-count = "319"
+count = "253"
 
 [[cell]]
 crate = "busbar-core"
@@ -1745,12 +1763,47 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2117"
+count = "2113"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
 count = "10"
+
+[[cell]]
+crate = "busbar-core"
+kind = "core"
+count = "36"
+
+[[cell]]
+crate = "busbar-core-policy"
+kind = "control"
+count = "20"
+
+[[cell]]
+crate = "busbar-core-policy"
+kind = "hooks"
+count = "2"
+
+[[cell]]
+crate = "busbar-core-policy"
+kind = "legacy"
+count = "8"
+
+[[cell]]
+crate = "busbar-core-policy"
+kind = "plane"
+count = "36"
+
+[[cell]]
+crate = "busbar-core-policy"
+kind = "secret"
+count = "17"
+
+[[cell]]
+crate = "busbar-core-policy"
+kind = "transport"
+count = "2"
 
 [[cell]]
 crate = "busbar-export-example-plugin"

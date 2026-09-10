@@ -244,7 +244,3 @@ impl Serialize for SignalBag {
         map.end()
     }
 }
-
-#[cfg(test)]
-#[path = "tests/signal_tests.rs"]
-mod tests;
