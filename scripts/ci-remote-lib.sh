@@ -224,6 +224,14 @@ if [ ! -d "$WORK/.git" ]; then
   git -C "$WORK" remote rename origin prove 2>/dev/null || git -C "$WORK" remote add prove "$BARE"
 fi
 git -C "$WORK" remote get-url prove >/dev/null 2>&1 || git -C "$WORK" remote add prove "$BARE"
+# THE AUDIT PINS FOLLOW THE CHECKOUT, NOT ONLY THE BARE REPO (see remote_push_tree). They are pushed
+# into ~/busbar.git under refs/audit-pins/<sha>, and ~/busbar-prove is CLONED from it — with git's
+# default refspec, which is refs/heads/* and nothing else. So a fresh box has the pins in the bare
+# repo and none in the checkout, `qa/audit-ledger.json`'s `audited_at` commits do not resolve, and
+# the audit-ledger gate is RED for a reason that has nothing to do with the tree being proven
+# (measured by CFG-MIGRATE on a fresh prove box; `gate --all` went green by hand after this fetch).
+# It runs on every setup, not only the first: a pin minted after the clone is exactly the case.
+git -C "$WORK" fetch -q prove "+refs/audit-pins/*:refs/audit-pins/*" 2>/dev/null || true
 git -C "$WORK" config user.name  "busbar remote prove"
 git -C "$WORK" config user.email "ci@busbar.invalid"
 git -C "$WORK" config advice.detachedHead false
@@ -291,6 +299,35 @@ _lib_selftest() {
   _t "  ...as is its proof namespace"        KEEP  "$(_age refs/proof/land-20260910-122102-15256/4b6e3e40c 20260909-143312)"
   _t "yesterday's run is swept"              SWEEP "$(_age refs/heads/land-20260908-112641-43934-landed 20260909-143312)"
   _t "a branch with no run stamp is untouched" KEEP "$(_age refs/heads/keep-land-engine-4 20260909-143312)"
+
+  # ── THE AUDIT PINS REACH THE CHECKOUT, not only the box's bare repo ──────────────────────────
+  # The command under test is EXTRACTED FROM THE SETUP SCRIPT IN THIS FILE, so the thing proven here
+  # is the thing the box runs. A fixture: a bare repo carrying a pin the way remote_push_tree leaves
+  # it, a clone of it the way the setup makes ~/busbar-prove, and the pin must be resolvable in the
+  # CLONE afterwards — which, with git's default clone refspec, it is not until this line runs.
+  echo "ci-remote-lib selftest: a pushed audit pin is in the prove checkout after setup"
+  local pinfetch; pinfetch="$(grep -F 'fetch -q prove "+refs/audit-pins/*:refs/audit-pins/*"' "${BASH_SOURCE[0]}" | head -n1)"
+  _t "the setup fetches the audit pins into the checkout" 1 "$(printf '%s' "$pinfetch" | grep -c . || true)"
+  local src="$root/pinsrc" bare="$root/pinbare" work="$root/pinwork"
+  mkdir -p "$src"; git -C "$src" init -q; git -C "$src" config user.email pin@selftest; git -C "$src" config user.name pin
+  git -C "$src" config commit.gpgsign false; mkdir -p "$root/nohooks"; git -C "$src" config core.hooksPath "$root/nohooks"
+  printf 'x\n' >"$src/f.txt"; git -C "$src" add -A; git -C "$src" commit -qm base
+  local pinsha; pinsha="$(git -C "$src" rev-parse HEAD)"
+  printf 'y\n' >"$src/f.txt"; git -C "$src" add -A; git -C "$src" commit -qm head
+  # The pin is NOT an ancestor of the tip — that is the whole shape of an audit worktree pin.
+  git -C "$src" checkout -q -b pinside "$pinsha"; printf 'audit\n' >"$src/a.txt"
+  git -C "$src" add -A; git -C "$src" commit -qm "audit pin"
+  local pin; pin="$(git -C "$src" rev-parse HEAD)"
+  git -C "$src" update-ref "refs/audit-pins/$pin" "$pin"; git -C "$src" checkout -q master 2>/dev/null || git -C "$src" checkout -q main
+  git init -q --bare "$bare"
+  git -C "$src" push -q --force "$bare" "+HEAD:refs/heads/master" "+refs/audit-pins/$pin:refs/audit-pins/$pin"
+  git -C "$bare" symbolic-ref HEAD refs/heads/master
+  _t "the pin is in the box's bare repo"     "$pin" "$(git -C "$bare" rev-parse "refs/audit-pins/$pin" 2>/dev/null)"
+  git clone -q "$bare" "$work"; git -C "$work" remote rename origin prove
+  _t "a plain clone of it does NOT have the pin" "" "$(git -C "$work" rev-parse -q --verify "refs/audit-pins/$pin" 2>/dev/null)"
+  ( WORK="$work"; eval "$pinfetch" )
+  _t "  ...and the setup line puts it there"  "$pin" "$(git -C "$work" rev-parse -q --verify "refs/audit-pins/$pin" 2>/dev/null)"
+  _t "  ...so the checkout can read its tree" 1 "$(git -C "$work" ls-tree --name-only "$pin" 2>/dev/null | grep -c '^a.txt$' || true)"
 
   printf 'box-a\nbox-b\nbox-c\nbox-d\nbox-e\nbox-f\n# a comment\n' >"$root/fleet"
   # The stub: box-a load 4.5, box-b unprepared (prints nothing), box-c load 1.0, box-d hangs, box-e load 2.0,

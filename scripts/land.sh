@@ -1316,7 +1316,9 @@ EOF
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
 # THE BATCH ENGINE
 # ──────────────────────────────────────────────────────────────────────────────────────────────────
-# BL_text/BL_tests/BL_fams/BL_gate/BL_hashes/BL_prove/BL_out, indexed by line number (0-based).
+# BL_text/BL_tests/BL_fams/BL_gate/BL_hashes/BL_prove/BL_out/BL_unit, indexed by line number
+# (0-based). BL_unit is the 1-based landing-line number of the line that ROOTS this line's unit —
+# itself, for every line that is not a chained dependent.
 
 # ── THE LEDGER IS A MEASUREMENT, AND MEASUREMENTS ARE NOT MERGED ──────────────────────────────────
 # qa/kind-isolation.toml and qa/construction.toml are EXACT ratchets: every pinned figure equals
@@ -1561,13 +1563,113 @@ land_batch_range() {  # $@ = line indices; the tree is at their base on entry
     echo "land.sh: === RED line $(( ${applied[0]} + 1 )) — alone, proven red, backed out" >&2
     return 0
   fi
-  # BISECT. The whole range is split — including the lines that conflicted, because a line can
-  # conflict against a preceding line that is about to be found red and dropped, and it deserves the
-  # second chance the serial queue would have given it.
-  local half=$(( (n + 1) / 2 ))
-  echo "land.sh: === RED over $lbl — bisecting into $half + $((n - half))" >&2
-  land_batch_range "${idx[@]:0:$half}"
-  land_batch_range "${idx[@]:$half}"
+  # BISECT — BY UNIT, NEVER THROUGH ONE. The whole range is split, including the lines that
+  # conflicted (a line can conflict against a preceding line that is about to be found red and
+  # dropped, and it deserves the second chance the serial queue would have given it) — but the split
+  # is over UNITS, so a half never carries a dependent without the predecessor whose picks it needs
+  # beneath it. A range that is ONE unit of more than one line has no half to take: it is proven as
+  # a prefix ladder instead (land_unit_prefix).
+  local units="" u nu=0
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    u="${BL_unit[${idx[$i]}]:-$(( ${idx[$i]} + 1 ))}"
+    case " $units " in *" $u "*) ;; *) units="$units $u"; nu=$((nu + 1)) ;; esac
+    i=$((i + 1))
+  done
+  if [ "$nu" -le 1 ]; then
+    land_unit_prefix "${idx[@]}"
+    return 0
+  fi
+  local uhalf=$(( (nu + 1) / 2 ))
+  local -a lhs; local -a rhs; local nl=0 nr=0 k=0 first=""
+  first="$(printf '%s\n' $units | head -n "$uhalf" | tr '\n' ' ')"
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    u="${BL_unit[${idx[$i]}]:-$(( ${idx[$i]} + 1 ))}"
+    case " $first " in
+      *" $u "*) lhs[$nl]="${idx[$i]}"; nl=$((nl + 1)) ;;
+      *)        rhs[$nr]="${idx[$i]}"; nr=$((nr + 1)) ;;
+    esac
+    i=$((i + 1))
+  done
+  echo "land.sh: === RED over $lbl — bisecting BY UNIT into $uhalf + $((nu - uhalf)) unit(s) ($nl + $nr line(s))" >&2
+  [ "$nl" -gt 0 ] && land_batch_range "${lhs[@]}"
+  [ "$nr" -gt 0 ] && land_batch_range "${rhs[@]}"
+  return 0
+}
+
+# ── A RED UNIT IS BISECTED BY PREFIX ──────────────────────────────────────────────────────────────
+# A unit is a chain: line 1 is a live root, line 2 needs line 1's picks beneath it, line 3 needs
+# both. There is no half of that to prove — a half beginning at line 2 is a tree the queue will
+# never land — so the ladder is climbed instead: root; root+1; root+2 … Every rung is a real union
+# proof at the full price, and the FIRST rung that turns red names the culprit, because the rung
+# below it was green.
+#
+# WHAT COMES OUT, and it is the whole point of doing it this way:
+#   * every line BEFORE the culprit is GREEN with a proof of its own (the rung it topped), and its
+#     picks stay on the tree — those lines have landed;
+#   * the culprit is RED, alone, with its picks backed out;
+#   * every line AFTER the culprit is HELD, not red. Its predecessor did not land, so the tree it is
+#     to be judged on does not exist yet and nothing about it was proven. The runner writes it back
+#     to the queue under the hold it was popped from (lq_park_line) and its chained verdict is
+#     dropped. A line parked #RED here would be a line convicted for its predecessor's fault.
+land_unit_prefix() {  # $@ = the indices of ONE unit, in queue order; the tree is at their base on entry
+  local -a idx; local i=0
+  for a in "$@"; do idx[$i]="$a"; i=$((i + 1)); done
+  local n=$i
+  [ "$n" -gt 0 ] || return 0
+  local base0; base0="$(git -C "$here" rev-parse HEAD)"
+  if [ "$n" -eq 1 ]; then
+    # One line is its own prefix; land_batch_range has already proven it red and reset the tree.
+    BL_out[${idx[0]}]=RED
+    echo "land.sh: === RED line $(( ${idx[0]} + 1 )) — alone, proven red, backed out" >&2
+    return 0
+  fi
+  echo "land.sh: === RED over a unit of $n line(s) — bisecting BY PREFIX (root; root+1; root+2 …)" >&2
+  local culprit=-1 pre j lbl u_tests u_feats u_gate u_fams repinned
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    j="${idx[$i]}"
+    pre="$(git -C "$here" rev-parse HEAD)"
+    if ! land_apply_line "$j"; then culprit=$i; break; fi
+    # The union of the prefix, exactly as land_batch_range builds a batch's.
+    u_tests=""; u_feats=""; u_gate=""; u_fams=""; lbl=""
+    local m=0 q
+    while [ "$m" -le "$i" ]; do
+      q="${idx[$m]}"
+      u_tests="$u_tests ${BL_tests[$q]}"
+      [ -n "${BL_feats[$q]}" ] && u_feats="$u_feats,${BL_feats[$q]}"
+      [ -n "${BL_gate[$q]}" ] && u_gate="$u_gate|${BL_gate[$q]}"
+      [ -n "${BL_fams[$q]}" ] && u_fams="$u_fams|(${BL_fams[$q]})"
+      lbl="$lbl,$((q + 1))"
+      m=$((m + 1))
+    done
+    # shellcheck disable=SC2086
+    u_tests="$(printf '%s\n' $u_tests | sed '/^$/d' | sort -u | tr '\n' ' ')"
+    u_feats="$(printf '%s\n' "$u_feats" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
+    u_gate="${u_gate#|}"; u_fams="${u_fams#|}"; lbl="prefix ${lbl#,}"
+    repinned=1
+    land_repin_ledger "$lbl" || repinned=0
+    echo "land.sh: === proving $lbl at $(git -C "$here" rev-parse --short HEAD)"
+    if [ "$repinned" = 1 ] && prove_tree "$base0" "$u_tests" "$u_gate" "$u_fams" "$lbl" "$u_feats"; then
+      BL_out[$j]=GREEN; BL_repin[$j]="${LAND_REPIN_SHA:-none}"
+      echo "land.sh: === GREEN $lbl — line $((j + 1)) is green with its own proof, by:$PROVEN"
+    else
+      git -C "$here" reset -q --hard "$pre"
+      BL_out[$j]=RED
+      echo "land.sh: === RED line $((j + 1)) — the first prefix that turns red; it is the culprit, backed out" >&2
+      culprit=$i
+      break
+    fi
+    i=$((i + 1))
+  done
+  [ "$culprit" -ge 0 ] || return 0
+  i=$((culprit + 1))
+  while [ "$i" -lt "$n" ]; do
+    BL_out[${idx[$i]}]=HELD
+    echo "land.sh: === HELD line $(( ${idx[$i]} + 1 )) — its predecessor did not land; not proven, not red" >&2
+    i=$((i + 1))
+  done
   return 0
 }
 
@@ -1582,13 +1684,34 @@ land_preproving() {
 land_run_batch() {  # $1 = batch file
   local bf="$1"
   [ -f "$bf" ] || { echo "land.sh: --batch: no such file: $bf" >&2; exit 2; }
-  local n=0 line
+  local n=0 line uk uwant=""
   while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in
+      # ── THE UNIT MARKER (see "UNITS, NOT LINES") ──────────────────────────────────────────────
+      # `#UNIT <k>` says the NEXT landing line belongs to the unit rooted at the k-th landing line
+      # of this batch — a chain: a line and the predecessor whose picks it needs beneath it. It is a
+      # comment to everything that has ever read a batch file, and it is refused here rather than
+      # ignored when it names no earlier landing line, because a chain silently split into two units
+      # is a bisect that separates a dependent from its predecessor — the one thing units exist to
+      # prevent.
+      '#UNIT'|'#UNIT '*)
+        uk="${line#\#UNIT}"; uk="${uk# }"; uk="${uk%% *}"
+        case "$uk" in ''|*[!0-9]*)
+          echo "land.sh: --batch: a #UNIT marker must name a landing-line number: $line" >&2; exit 2 ;;
+        esac
+        if [ "$uk" -lt 1 ] || [ "$uk" -gt "$n" ]; then
+          echo "land.sh: --batch: #UNIT $uk names no landing line before it (this file has $n so far)" >&2; exit 2
+        fi
+        uwant="$uk"; continue ;;
+      ''|'#'*) continue ;;
+    esac
     BL_text[$n]="$line"
     eval "land_parse_args $line"
     BL_tests[$n]="$P_tests"; BL_feats[$n]="$P_features"; BL_fams[$n]="$P_families"; BL_gate[$n]="$P_gate"
     BL_hashes[$n]="$P_hashes"; BL_prove[$n]="$P_prove"; BL_out[$n]=PENDING; BL_repin[$n]=none
+    # A LINE WITH NO MARKER IS A UNIT OF ONE, ROOTED AT ITSELF. The unit id is the root's own
+    # 1-based landing-line number, so a marked dependent and its unmarked root agree by construction.
+    BL_unit[$n]="${uwant:-$((n + 1))}"; uwant=""
     if [ -z "$P_hashes" ] && [ "$P_prove" != 1 ]; then
       echo "land.sh: --batch line $((n + 1)) has no hashes and no --prove: $line" >&2; exit 2
     fi
@@ -1626,7 +1749,7 @@ land_run_batch() {  # $1 = batch file
   # pops; a green here only chooses the ORDER of the queue, never its verdict.
   land_preproving && done_file="$here/target/land-preprove-$stamp.done"
   mkdir -p "$(dirname "$done_file")" 2>/dev/null || true
-  local green=0 red=0 conflict=0
+  local green=0 red=0 conflict=0 held=0
   i=0
   while [ "$i" -lt "$n" ]; do
     local st="${BL_out[$i]}"
@@ -1634,10 +1757,13 @@ land_run_batch() {  # $1 = batch file
     printf '%s\t%s\n' "$st" "${BL_text[$i]}" >>"$res"
     # `repin=` names the ledger re-pin commit that is part of this line's landed tip (or `none`).
     printf '%s batch=%s log=%s repin=%s %s\n' "$st" "$stamp" "$here/target/land-$stamp.log" "${BL_repin[$i]:-none}" "${BL_text[$i]}" >>"$done_file"
-    case "$st" in GREEN) green=$((green + 1)) ;; RED-CONFLICT) conflict=$((conflict + 1)) ;; *) red=$((red + 1)) ;; esac
+    # HELD IS NOT RED (see land_unit_prefix): the line was never proven and never applied, so it
+    # counts as neither a landing nor a refusal — and it never occurs without the culprit's RED in
+    # the same result file, so the batch's exit status is red exactly as it should be.
+    case "$st" in GREEN) green=$((green + 1)) ;; RED-CONFLICT) conflict=$((conflict + 1)) ;; HELD) held=$((held + 1)) ;; *) red=$((red + 1)) ;; esac
     i=$((i + 1))
   done
-  echo "land.sh: batch $stamp: $green green, $red red, $conflict red-conflict; base $(git -C "$here" rev-parse --short "$base0"), tip $(git -C "$here" rev-parse --short HEAD)"
+  echo "land.sh: batch $stamp: $green green, $red red, $conflict red-conflict, $held held; base $(git -C "$here" rev-parse --short "$base0"), tip $(git -C "$here" rev-parse --short HEAD)"
   echo "land.sh: per-line outcomes: $res"
   if land_preproving; then
     git -C "$here" reset -q --hard "$base0"
@@ -2385,6 +2511,65 @@ EOF
   _stno  "L: the batch did move the tip"             <(git -C "$repo" rev-parse HEAD) "^$prepick\$"
   ( here="$repo" land_export_gate_base "$prepick"; echo "$BUSBAR_GATE_BASE_REF" ) >"$root/gatebase-run.txt"
   _stgrep "L: the exported value is the PRE-PICK head" "$root/gatebase-run.txt" "^$prepick\$"
+
+  # ── CASE M — UNITS: A CHAIN IS ADMITTED, BISECTED AND JUDGED AS ONE ───────────────────────────
+  # M1: ONE UNIT OF THREE, culprit at position 2. The ladder is climbed root; root+1 — the second
+  # rung is red — so line 1 is GREEN with a proof of its own and its picks are on the tree, line 2
+  # is the culprit and is backed out, and line 3 is HELD: never proven, never parked red.
+  local bm="$root/batchM1.txt"
+  { echo "--prove $c1"; echo "#UNIT 1"; echo "--prove $c2"; echo "#UNIT 1"; echo "--prove $c3"; } >"$bm"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "M1: a red unit -> batch exits 1"           1 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-M.txt" \
+      bash "$0" --batch "$bm"
+  _stgrep "M1: the unit bisects BY PREFIX"        "$ST_OUT" 'bisecting BY PREFIX \(root; root\+1; root\+2'
+  _stno   "M1: no half was taken through the unit" "$ST_OUT" 'bisecting into'
+  _stgrep "M1: line 1 GREEN (its own prefix proof)" "$bm.result" "^GREEN.*$c1"
+  _stgrep "M1: line 2 RED — the culprit"          "$bm.result" "^RED.*$c2"
+  _stgrep "M1: line 3 HELD, not RED"              "$bm.result" "^HELD.*$c3"
+  _stno   "M1: line 3 is not parked red"          "$bm.result" "^RED.*$c3"
+  _stgrep "M1: the culprit is named as such"      "$ST_OUT" 'the first prefix that turns red; it is the culprit'
+  _stgrep "M1: the held line says why"            "$ST_OUT" 'HELD line 3 — its predecessor did not land'
+  [ -f "$repo/a.txt" ] && printf '  ok   %-46s\n' "M1: line 1's pick landed" \
+    || { printf '  FAIL %-46s\n' "M1: line 1's pick landed"; fails=$((fails + 1)); }
+  [ -e "$repo/POISON" ] && { printf '  FAIL %-46s\n' "M1: the culprit is backed out"; fails=$((fails + 1)); } \
+    || printf '  ok   %-46s\n' "M1: the culprit is backed out"
+  [ -f "$repo/b.txt" ] && { printf '  FAIL %-46s\n' "M1: the held line's picks are NOT on the tree"; fails=$((fails + 1)); } \
+    || printf '  ok   %-46s\n' "M1: the held line's picks are NOT on the tree"
+  _stgrep "M1: land-done records the HELD row too" "$root/done-M.txt" "^HELD batch=.*$c3"
+
+  # M2: TWO UNITS, the red one second. The batch bisects BY UNIT — never through the chain — so the
+  # chain's two lines are proven together in one half and both land, and the single is red alone.
+  local bm2="$root/batchM2.txt"
+  { echo "--prove $c1"; echo "#UNIT 1"; echo "--prove $c3"; echo "--prove $c2"; } >"$bm2"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "M2: two units, one red -> batch exits 1"   1 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-M.txt" \
+      bash "$0" --batch "$bm2"
+  _stgrep "M2: the split is BY UNIT, 1 + 1 units, 2 + 1 lines" "$ST_OUT" 'bisecting BY UNIT into 1 \+ 1 unit\(s\) \(2 \+ 1 line\(s\)\)'
+  _stgrep "M2: the chain's line 1 GREEN"          "$bm2.result" "^GREEN.*$c1"
+  _stgrep "M2: the chain's line 2 GREEN"          "$bm2.result" "^GREEN.*$c3"
+  _stgrep "M2: the single is RED alone"           "$bm2.result" "^RED.*$c2"
+  _stno   "M2: nothing was HELD (the chain was never split)" "$bm2.result" '^HELD'
+  _stgrep "M2: the chain was proven whole in its half" "$ST_OUT" '=== GREEN lines 1,2'
+
+  # M3: A MARKER THAT NAMES NO EARLIER LANDING LINE IS REFUSED, not ignored: a chain silently split
+  # into two units is a bisect that separates a dependent from its predecessor.
+  local bm3="$root/batchM3.txt"
+  { echo "#UNIT 1"; echo "--prove $c1"; } >"$bm3"
+  _st "M3: a forward #UNIT marker is refused"     2 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-M.txt" \
+      bash "$0" --batch "$bm3"
+  _stgrep "M3: it says which marker and why"      "$ST_OUT" '#UNIT 1 names no landing line before it'
+  local bm4="$root/batchM4.txt"
+  { echo "--prove $c1"; echo "#UNIT x"; echo "--prove $c3"; } >"$bm4"
+  _st "M3: a marker that is not a number is refused" 2 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-M.txt" \
+      bash "$0" --batch "$bm4"
+  _stgrep "M3: …and says so"                      "$ST_OUT" 'must name a landing-line number'
+  # …and an ordinary comment is still an ordinary comment.
+  local bm5="$root/batchM5.txt"
+  { echo "# a note from the runner"; echo "--prove $c1"; } >"$bm5"
+  git -C "$repo" checkout -q integ; git -C "$repo" reset -q --hard "$integ"
+  _st "M3: a plain comment line is still ignored" 0 env LAND_SELFTEST_ROOT="$repo" LAND_DONE="$root/done-M.txt" \
+      bash "$0" --batch "$bm5"
+  _stgrep "M3: the commented batch landed its one line" "$bm5.result" "^GREEN.*$c1"
 
   if [ "$fails" = 0 ]; then
     printf '\nland.sh selftest: GREEN (floor plan, shard partition, shard collection, batch bisect,\n'
