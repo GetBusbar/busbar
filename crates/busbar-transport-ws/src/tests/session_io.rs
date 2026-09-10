@@ -40,6 +40,7 @@ use crate::conn::{LowerIo, Sock};
 use crate::mount::{FrameSink, FrameSource, SessionBudgets};
 use crate::session_io::{is_text_media, split};
 use crate::WsTransport;
+use busbar_contract_transport::session::EgressLease;
 
 // ── a declaration that is nobody's ──────────────────────────────────────────────────────────────
 
@@ -778,4 +779,161 @@ async fn the_generic_acceptor_serves_this_wire_over_a_real_socket() {
         1,
         "one ending, one close"
     );
+}
+
+// ── the upstream leg: the bounded lease and the drain that is returned, not spawned ─────────────
+
+/// THE LEASE REFUSES AT DEPTH rather than waiting, and that is the whole reason it is bounded.
+///
+/// The offering end is reached from a SYNCHRONOUS driver, so there is no answer between "took it"
+/// and "did not": a lease that waited would suspend the session's one thread behind an upstream that
+/// stopped reading, and a lease that grew would let that upstream decide how much of this node's
+/// memory one session costs. So the depth is the ceiling and the refusal is one of the words the
+/// session already knows how to answer with.
+///
+/// The drain is deliberately NOT spawned here — it is a value this test holds and never polls, which
+/// is exactly the "upstream that stopped reading" the bound exists for.
+#[tokio::test]
+async fn the_lease_refuses_at_depth_instead_of_waiting() {
+    let (server, _client) = upgraded().await;
+    let (_source, sink) = split(server);
+    let (mut lease, _drain) = crate::session_io::lease(2, sink, "application/json");
+
+    assert!(
+        lease.offer(b"one").is_ok(),
+        "a lease with room takes the frame"
+    );
+    assert!(
+        lease.offer(b"two").is_ok(),
+        "a lease with room takes the frame"
+    );
+    assert_eq!(
+        lease.offer(b"three"),
+        Err(busbar_contract_transport::wire::TransportError::Backpressure),
+        "at depth the answer is one of the eight words, not a wait: the session owns the leg and \
+         is the only thing with a vocabulary for what to do about it"
+    );
+}
+
+/// FINISHING THE LEASE ends the leg: the drain writes what it holds, in order, then the close, and
+/// every later offer answers `Closed`.
+///
+/// Both halves matter. The peer is owed the frames already offered — a finish that dropped them
+/// would be this node losing a session's tail — and it is owed the close its own protocol defines,
+/// because this node opened the leg. And the lease answering `Closed` afterwards is what a driver
+/// that offers again learns from; there is no third party to retry against.
+#[tokio::test]
+async fn finishing_the_lease_drains_what_it_holds_and_closes_the_leg() {
+    let (server, mut client) = upgraded().await;
+    let (_source, sink) = split(server);
+    let (mut lease, drain) = crate::session_io::lease(
+        busbar_contract_transport::session::EGRESS_DEPTH,
+        sink,
+        "application/json",
+    );
+
+    lease.offer(br#"{"seq":0}"#).expect("the lease takes it");
+    lease.offer(br#"{"seq":1}"#).expect("the lease takes it");
+    lease.finish();
+    assert_eq!(
+        lease.offer(br#"{"seq":2}"#),
+        Err(busbar_contract_transport::wire::TransportError::Closed),
+        "a finished lease is over, and an offer to it is not a frame anything will ever send"
+    );
+
+    // The composition spawns the drain; the transport only handed it back. Awaiting it here is this
+    // test standing in for that owner, and it returns because the lease was finished.
+    drain.await;
+
+    assert_eq!(
+        client.next().await.expect("a frame").expect("no failure"),
+        Message::Text(r#"{"seq":0}"#.into()),
+        "in order, and in the frame kind the declaration named"
+    );
+    assert_eq!(
+        client.next().await.expect("a frame").expect("no failure"),
+        Message::Text(r#"{"seq":1}"#.into()),
+        "the frame offered before the finish is still owed to the peer"
+    );
+    assert!(
+        matches!(
+            client.next().await.expect("a close").expect("no failure"),
+            Message::Close(_)
+        ),
+        "an upstream this node opened is owed the close its protocol defines"
+    );
+}
+
+/// THE UPSTREAM LEG, DIALLED: one real socket, three owners, and the ownership move that makes it
+/// one.
+///
+/// What the cell holds the call to is the arrangement rather than the bytes. The dial is the
+/// transport's own — the same [`busbar_contract::Transport::dial`] every other caller reaches, so
+/// there is no second dialling path and the `wss://`-over-cleartext refusal is not re-implemented
+/// here. What is added is that the socket comes out WHOLE: the connection has left the registry, the
+/// read half is a `FrameSource` something can pump, the write half is only reachable through the
+/// lease, and the drain is a value this test spawns because a transport that spawned it would be
+/// choosing the composition's runtime.
+#[tokio::test]
+async fn dialling_a_session_hands_back_the_source_the_lease_and_an_unspawned_drain() {
+    let upstream = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("the upstream binds");
+    let addr = upstream.local_addr().expect("the upstream has an address");
+
+    // A provider that speaks WebSocket and nothing else: it echoes the one frame it is offered and
+    // then closes, which is all this cell needs from the far end.
+    let provider = tokio::spawn(async move {
+        let (tcp, _peer) = upstream.accept().await.expect("the leg arrives");
+        let mut sock = tokio_tungstenite::accept_async(tcp)
+            .await
+            .expect("the leg upgrades");
+        let offered = sock.next().await.expect("a frame").expect("no failure");
+        sock.send(Message::Text(r#"{"kind":"provider"}"#.into()))
+            .await
+            .expect("the provider answers");
+        sock.close(None).await.expect("the provider closes");
+        offered
+    });
+
+    let ws = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
+    let host: &'static str = Box::leak(format!("ws://{addr}/leg").into_boxed_str());
+    let (mut source, mut lease, drain) = crate::mount::dial_session(
+        &ws,
+        &crate::battery::verified_upstream(host),
+        &test_key_handle(),
+        "application/json",
+        busbar_contract_transport::session::EGRESS_DEPTH,
+    )
+    .await
+    .expect("the leg dials");
+
+    // The composition's job, not the transport's: the drain is a value that was handed back.
+    let drain = tokio::spawn(drain);
+
+    lease
+        .offer(br#"{"kind":"ingress"}"#)
+        .expect("the lease takes the frame");
+    lease.finish();
+
+    assert_eq!(
+        provider.await.expect("the provider finished"),
+        Message::Text(r#"{"kind":"ingress"}"#.into()),
+        "what the driver offered reached the far end of the leg, in the declared frame kind"
+    );
+    let answered = source
+        .next_frame()
+        .await
+        .expect("the leg did not end first")
+        .expect("the read did not fail");
+    assert_eq!(
+        answered,
+        br#"{"kind":"provider"}"#.to_vec(),
+        "the inbound half is a FrameSource, which is the same face the client half is pumped through"
+    );
+    assert!(
+        source.next_frame().await.is_none(),
+        "the provider's close is the orderly end of the leg"
+    );
+    drain.await.expect("the drain finished");
 }

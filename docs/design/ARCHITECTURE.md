@@ -91,8 +91,12 @@ them). Each axis is blind to the other two; only the kernel composes them.
   generation, the composition check, the one-shot driver seam and the duplex session seam (the
   `SessionDriver` a wire hands a session across once and frames across many times, the `DuplexWire`
   face an acceptor reaches any wire through, and the `Duplex` dispatch kind a plane declares a
-  session as data with, boot-checked with the rest of the surface) — ≤ **1.1k** (1,022 measured
-  and pinned exact, 2026-09-09: the duplex seam is +177 over the 845 the crate held before it),
+  session as data with, boot-checked with the rest of the surface, and the `EgressLease` a
+  synchronous driver reaches a relayed session's UPSTREAM half through — bounded, refusing, with
+  `EGRESS_DEPTH` beside `SessionBudgets` because how deep a leg may queue is the composition's
+  number and not a wire's) — ≤ **1.1k** (1,027 measured
+  and pinned exact, 2026-09-10: the duplex seam is +177 over the 845 the crate held before it, and
+  the egress lease +5 over that),
   gated as `surface-ceiling:contract-transport`.
   All `busbar-unit-*` ≤ 45k (incl. verbs
   ≤ 15k); union ≤ 56k. 100 % (non-equivalent) mutation floor: Teller loop, WAL/group-commit, recovery,

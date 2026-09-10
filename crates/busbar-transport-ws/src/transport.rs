@@ -282,6 +282,29 @@ impl WsTransport {
         self.conns.lock().unwrap().get(&id).cloned()
     }
 
+    /// TAKE THE SOCKET BACK OUT of a connection this transport dialled, whole.
+    ///
+    /// The registry holds a live connection as its two split halves behind one write lock, because
+    /// that is what every frame-at-a-time call on this transport needs. A SESSION needs the opposite:
+    /// one end read in a loop and the other written from somewhere else entirely, which is exactly
+    /// what [`crate::session_io::split`] makes and exactly what it wants a whole socket to make it
+    /// from. So the halves are reunited and the connection LEAVES the registry in the same breath —
+    /// after this, nothing can reach it by `Conn` any more, which is the honest statement: the
+    /// session owns the socket now, and a second owner reachable through the frame calls would be
+    /// two unsynchronised writers on one WebSocket.
+    ///
+    /// `None` for a connection this transport does not hold, one already handed out, or one some
+    /// other holder still has a handle on. All three are the same answer to the caller — there is no
+    /// socket here to take — and none of them is recoverable by asking again.
+    #[cfg(feature = "serve-sessions")]
+    pub(crate) fn take_sock(&self, conn: &Conn) -> Option<crate::conn::Sock> {
+        let state = self.conns.lock().unwrap().remove(&conn.id())?;
+        let state = Arc::try_unwrap(state).ok()?;
+        let reader = state.reader.into_inner()?;
+        let writer = state.writer.into_inner();
+        writer.reunite(reader).ok()
+    }
+
     /// Wrap an already-established, already-upgraded WS socket as a live connection. `Sock` is
     /// generic over the boxed duplex, so the battery drives this over an in-memory pair through
     /// the identical path a real TCP/TLS accept uses.

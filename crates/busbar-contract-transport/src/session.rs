@@ -245,6 +245,57 @@ pub struct SessionBudgets {
     pub deadline: Option<std::time::Duration>,
 }
 
+/// HOW DEEP THE UPSTREAM LEG OF ONE SESSION MAY QUEUE, spelled beside the budget it belongs with.
+///
+/// Beside [`SessionBudgets`] rather than in a wire, for the same reason the deadline is: it is the
+/// COMPOSITION's number — the same for every wire this node relays over — and a copy per wire is a
+/// set of ceilings that drift apart with nothing to notice. Small on purpose. The queue exists only
+/// so that a synchronous driver can hand a frame off without awaiting a socket; anything deeper
+/// would be this node buffering a peer's backlog on a session it is merely relaying, and a leg that
+/// has fallen this far behind is one the session is better off ending than hiding.
+pub const EGRESS_DEPTH: usize = 32;
+
+/// THE UPSTREAM HALF OF ONE SESSION, as a SYNCHRONOUS driver may reach it.
+///
+/// [`SessionDriver::drive`] is sync, and it is sync on purpose: the arena, the plane call and the
+/// ledger all run under it, and a seam that could await would be a seam a session's state could be
+/// held across. So the driver cannot own a socket — it can only own something it can hand a frame
+/// to and get an answer from without suspending, which is what this is.
+///
+/// ## Why it REFUSES rather than blocks
+///
+/// The lease is bounded, and an offer that does not fit is [`crate::wire::TransportError::Backpressure`]
+/// rather than a wait. It is the same posture the duplex mount's own header states for the inbound
+/// direction: no queue, and the absence is the backpressure answer rather than a missing feature. A
+/// lease that blocked would suspend the pump — the one thread of the session — behind an upstream
+/// that stopped reading, and a lease that grew would let that upstream decide how much of this
+/// node's memory one session costs. Refusing hands the decision back to the driver, which has the
+/// only vocabulary that can say what happened: one of the eight words, on the session that owns the
+/// leg.
+///
+/// ## What is NOT here
+///
+/// No dial, no address, no close code, no media, no reconnect. Where the leg goes and what it is
+/// made of are the WIRE's, decided once when the lease was minted; a driver holding one could not
+/// tell you which wire is under it. And no read: the inbound direction of the leg is a
+/// [`SessionOpen`]-shaped thing the composition pumps, not something a lease hands back.
+pub trait EgressLease: Send {
+    /// Offer one frame to the upstream leg, without waiting for it to reach the wire.
+    ///
+    /// # Errors
+    ///
+    /// The leg would not take it: [`crate::wire::TransportError::Backpressure`] if the lease is at
+    /// depth, and [`crate::wire::TransportError::Closed`] if the leg is over. Both are the session's
+    /// to answer — there is no third party to retry against.
+    fn offer(&mut self, frame: &[u8]) -> Result<(), crate::wire::TransportError>;
+
+    /// Say that nothing further will be offered, so the leg may finish what it holds and close.
+    ///
+    /// Infallible and idempotent: the leg is over either way, and a finish that could fail would let
+    /// an upstream that stopped reading decide how this node records the ending.
+    fn finish(&mut self);
+}
+
 /// A WIRE THAT UPGRADES AND PUMPS: the seam an ACCEPTOR reaches a duplex wire through.
 ///
 /// [`SessionDriver`] is the seam a session's FRAMES cross, and it faces the other way. This one is

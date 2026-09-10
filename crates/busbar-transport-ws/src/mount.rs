@@ -310,6 +310,70 @@ pub fn reason_for(error: TransportError) -> CloseReason {
 /// where what it does and does not bound is written down.
 pub use busbar_contract_transport::session::SessionBudgets;
 
+/// DIAL THE UPSTREAM LEG OF ONE SESSION, and hand back the three pieces of it that are owned in
+/// three different places.
+///
+/// ## Why three values and not a handle
+///
+/// A relayed session has three parts and each has a different owner, so a call that returned one
+/// object would be a call that decided all three:
+///
+/// * the INBOUND half is read in a loop, by whatever is pumping the leg — a [`FrameSource`], the
+///   same face this module's own pump reads a client through;
+/// * the OFFERING half is reached from [`busbar_contract_transport::session::SessionDriver::drive`],
+///   which is synchronous, so it is an
+///   [`busbar_contract_transport::session::EgressLease`] and not a socket;
+/// * the DRAIN is a future, and it is RETURNED rather than spawned. A transport that spawned it
+///   would be choosing the composition's runtime and deciding when the task is cancelled; the root
+///   spawns it beside the session that owns it and drops it with that session.
+///
+/// ## What this adds over `Transport::dial`, and what it deliberately does not
+///
+/// Nothing about WHERE the leg goes. The destination is already sealed and already narrowed by the
+/// trust unit's resolve-then-pin guard, and the `wss://`-over-cleartext refusal is the dial's own,
+/// made before a socket is opened — this call reaches it through the same
+/// [`busbar_contract::Transport::dial`] every other caller does, so there is no second dialling path
+/// to keep honest. What it adds is only the OWNERSHIP move: the socket leaves the connection
+/// registry whole, which is what makes the session its single owner.
+///
+/// `media` is the declaration's, for the reason this module's [`FrameSink`] takes one: this wire has
+/// two frame kinds and the declaration is the only thing entitled to choose which carries a plane's
+/// bytes. `depth` is the composition's, spelled beside the session budget it belongs with.
+///
+/// # Errors
+///
+/// The dial itself was refused or failed, or the socket could not be taken whole out of the
+/// connection it arrived as. Both are [`busbar_contract_transport::wire::TransportError`] and
+/// neither leaves a leg half-open: on either, nothing has been handed back to own.
+#[cfg(feature = "serve-sessions")]
+pub async fn dial_session(
+    transport: &crate::WsTransport,
+    dest: &busbar_contract::dest::VerifiedDestination,
+    keys: &busbar_contract::TransportKeyHandle,
+    media: &str,
+    depth: usize,
+) -> Result<
+    (
+        impl FrameSource + Send,
+        Box<dyn busbar_contract_transport::session::EgressLease>,
+        impl std::future::Future<Output = ()> + Send,
+    ),
+    TransportError,
+> {
+    use busbar_contract::Transport as _;
+
+    let conn = transport.dial(dest, keys).await?;
+    // Whole, and out of the registry in the same breath. A socket left reachable by `Conn` while a
+    // session held its two halves would be two unsynchronised writers on one WebSocket, which is a
+    // protocol error rather than a race that resolves itself.
+    let sock = transport
+        .take_sock(&conn)
+        .ok_or(TransportError::HandoffMismatch)?;
+    let (source, sink) = crate::session_io::split(sock);
+    let (lease, drain) = crate::session_io::lease(depth, sink, media);
+    Ok((source, Box::new(lease), drain))
+}
+
 /// RUN ONE OPEN SESSION to its end, and report which end cut it.
 ///
 /// One frame at a time, in order, with no queue in either direction — see this module's own header

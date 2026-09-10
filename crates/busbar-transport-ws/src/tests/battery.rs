@@ -892,7 +892,10 @@ pub(crate) fn test_key_handle() -> busbar_contract::TransportKeyHandle {
     busbar_contract::TransportKeyHandle::issue(&Seal, 0, "test")
 }
 
-fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {
+/// `pub(crate)` for the reason [`test_key_handle`] is: the session battery beside this one dials an
+/// upstream leg, and a second sealing implementation for it would be a second forged seal in a tree
+/// the construction gate counts them in.
+pub(crate) fn verified_upstream(host: &'static str) -> busbar_contract::VerifiedDestination {
     struct Seal;
     impl busbar_contract::plugin::KernelSeal for Seal {
         fn seal_origin(&self) -> &'static str {

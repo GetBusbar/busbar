@@ -33,8 +33,10 @@
 //! plane's bytes are. A wire with one kind ignores the media type; this one reads it. Nothing else
 //! about the bytes is looked at: the payload is the plane's, whole, in both directions.
 
+use std::future::Future;
 use std::sync::Arc;
 
+use busbar_contract_transport::session::EgressLease;
 use busbar_contract_transport::wire::TransportError;
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
@@ -168,4 +170,89 @@ impl FrameSink for WsSink {
         })
         .await;
     }
+}
+
+/// THE OFFERING END OF AN UPSTREAM LEG: a bounded queue, and refusal when it is full.
+///
+/// The whole of why it is a queue at all is that the driver seam it serves is SYNCHRONOUS — see
+/// [`busbar_contract_transport::session::EgressLease`]'s own header — and a socket write is not. So
+/// the hand-off is a `try_send` and never a wait: the sender is the session's one thread, and a wait
+/// here would suspend the inbound pump behind an upstream that stopped reading.
+///
+/// `finish` drops the sender rather than sending a sentinel, because the channel already carries
+/// "no more" in its own vocabulary and a sentinel is a value the drain would have to be trusted to
+/// recognise. Dropping it is the same statement with nothing to get wrong, and it is idempotent
+/// because a cell that is already empty stays empty.
+pub(crate) struct ChannelLease {
+    tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+}
+
+impl EgressLease for ChannelLease {
+    fn offer(&mut self, frame: &[u8]) -> Result<(), TransportError> {
+        let Some(tx) = self.tx.as_ref() else {
+            return Err(TransportError::Closed);
+        };
+        match tx.try_send(frame.to_vec()) {
+            Ok(()) => Ok(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                Err(TransportError::Backpressure)
+            }
+            // The far end is gone, so the lease is over and every later offer is over too. The cell
+            // is cleared here rather than left holding a sender nothing reads, so a caller that
+            // ignores this answer and offers again gets the same one for a reason that is now
+            // local.
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.tx = None;
+                Err(TransportError::Closed)
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        self.tx = None;
+    }
+}
+
+/// THE DRAINING END: everything offered, in order, onto the upstream socket, then the close.
+///
+/// RETURNED by the dial rather than spawned inside it, and that is the ownership statement the whole
+/// arrangement rests on: a transport that spawned this would be a transport deciding what runtime
+/// the composition's tasks live on and when they are cancelled. The root spawns it, beside the
+/// session it belongs to, and drops it with the session.
+///
+/// A write that fails ends the drain rather than being retried: the leg is one socket, the frames
+/// are a session's and in order, and a frame skipped over would be a hole in a stream whose reader
+/// has no way to see one. The lease's next offer answers `Closed`, which is how the driver finds out.
+pub(crate) async fn drain_egress(
+    mut frames: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    mut sink: WsSink,
+    media: String,
+) {
+    while let Some(frame) = frames.recv().await {
+        if sink.write_frame(&frame, &media).await.is_err() {
+            // Nothing left to close politely on: the write that just failed was the attempt.
+            return;
+        }
+    }
+    // Every ending that reaches here is orderly — the lease was finished, or the session that held
+    // it was dropped — and an upstream this node opened is owed the close its protocol defines.
+    sink.write_close(crate::mount::close_code(
+        busbar_contract_transport::wire::CloseReason::Normal,
+    ))
+    .await;
+}
+
+/// Mint the pair one upstream leg is offered and drained through.
+pub(crate) fn lease(
+    depth: usize,
+    sink: WsSink,
+    media: &str,
+) -> (ChannelLease, impl Future<Output = ()> + Send) {
+    // A zero-depth channel is not a channel `try_send` can ever put anything into, so the floor is
+    // one: a lease nothing can be offered to would refuse a healthy session's first frame.
+    let (tx, rx) = tokio::sync::mpsc::channel(depth.max(1));
+    (
+        ChannelLease { tx: Some(tx) },
+        drain_egress(rx, sink, media.to_string()),
+    )
 }
