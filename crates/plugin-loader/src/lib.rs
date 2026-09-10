@@ -48,6 +48,10 @@ mod legacy_usage;
 pub mod registry;
 mod stage;
 pub mod store_adapter;
+// The store kind's COMPLETE face over a loaded ABI-2/4 artifact. A separate module from
+// `store_adapter` on purpose: that file binds the same store to the three unit-side seams and is
+// proven by the ABI-2 adapter battery, and the face is a fourth seam of a different shape.
+pub mod store_face;
 pub mod tarball;
 
 pub use auth::DynAuth;
