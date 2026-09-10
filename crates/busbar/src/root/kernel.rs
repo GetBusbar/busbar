@@ -30,16 +30,16 @@
 //! | `evidence` | the usage and cost units, read once by the exit path |
 //!
 //! Reached elsewhere, and bound by the root rather than by a step: the WAL unit sits under the
-//! ledger on the durability path; the verbs unit is a destination at Route, holding the admin
+//! ledger on the durability path; the verbs unit is a destination at Route, holding the administrative
 //! token; the transport-key unit runs at listen, dial and upgrade, outside the loop entirely; the
 //! egress-auth unit is called from inside Route by the egress unit; and the breaker unit is
 //! consulted at Verify and recorded at Route without ever being a step of its own.
 //!
 //! ## One plane at a time
 //!
-//! The bodies arrive one plane at a time — admin first, then the other three, then the reference
+//! The bodies arrive one plane at a time — the administrative plane first, then the other three, then the reference
 //! plane last — and the first of them has landed. Every method therefore begins with the same
-//! question: is this unit one the admin bindings opened? If it is, the step runs against the units
+//! question: is this unit one the administrative bindings opened? If it is, the step runs against the units
 //! that plane composes over. If it is not, the step REFUSES, naming the step it refused at.
 //!
 //! The refusal is deliberate and is not a placeholder. A unit that reached this type on a plane
@@ -377,7 +377,7 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// it. No plane sees a rate at all.
 ///
 /// THE ROOT'S, NOT A PLANE'S. The card this builds is the one every plane's exit prices against —
-/// the holder above is the process's, reached by mcp, a2a, voice and admin exactly as it is by llm —
+/// the holder above is the process's, reached by mcp, a2a, voice and the administrative plane exactly as it is by llm —
 /// so the relay belongs beside the holder and the repricer rather than in one plane's unit file. It
 /// lived in `units_llm` while llm was the only leg switched over, and a plane's unit file is
 /// compiled out with its plane: any build without that plane's feature lost the root's ability to
@@ -586,8 +586,8 @@ pub struct ProductionUnits {
     pub meter_policy: crate::root::policy::MeterPolicyHandle,
     /// What the scope unit reads at Approve. Silence is a refusal.
     pub scope_policy: crate::root::policy::ScopePolicy,
-    /// The admin plane's bindings: the seam an operation's body is reached through, and the table
-    /// of admin units the loop is currently walking.
+    /// The administrative plane's bindings: the seam an operation's body is reached through, and the table
+    /// of administrative units the loop is currently walking.
     ///
     /// One plane's bindings rather than five, because one plane has been switched. The other four
     /// arrive as their own fields as their own steps land, and until then their step methods say so
@@ -697,13 +697,13 @@ impl ProductionUnits {
     /// One plane has been switched onto the loop, and this is the composition for it: the journal is
     /// memory-buffered because the administrative surface writes no money and probes no directory,
     /// the metering policy is the empty one because the plane declares no meter classes to price
-    /// against, and the store is the unconfigured one because no admin operation this root drives
+    /// against, and the store is the unconfigured one because no administrative operation this root drives
     /// reaches the disaster-recovery subset. Every one of those is a decision this constructor
     /// MAKES rather than defaults into, and each is the reason the corresponding argument of
     /// [`ProductionUnits::new`] is not asked for here.
     ///
     /// When the other four planes switch, they come in through `new` with the configuration they
-    /// actually need. This constructor exists because an admin-only node genuinely needs less, not
+    /// actually need. This constructor exists because an administrative-only node genuinely needs less, not
     /// because the rest is unfinished.
     #[cfg(feature = "root-admin")]
     #[must_use]
@@ -743,7 +743,7 @@ impl ProductionUnits {
     ///
     /// The one constructor a boot that serves more than the administrative listener can use. The
     /// other two open a book of their own, which is right for a node whose only settlements are the
-    /// admin plane's; it is wrong the moment a second plane's exit arm settles, because that arm
+    /// administrative plane's; it is wrong the moment a second plane's exit arm settles, because that arm
     /// would be moving figures on a book these views cannot see. An operator reading the totals
     /// would get an empty table off a node that had been posting all day — and an empty table
     /// reconciles, so the emptiness would not even read as a fault.
@@ -811,14 +811,14 @@ impl ProductionUnits {
         self.auth.chain().is_open()
     }
 
-    /// The scope THIS caller's admin credential carries, or nothing at all.
+    /// The scope THIS caller's administrative credential carries, or nothing at all.
     ///
     /// The previous release's rule, in its three arms and no more:
     ///
     /// 1. **No principal.** The explicit open administrative posture — a deployment that configured
-    ///    no admin credential. Full, and dev-only, exactly as it has always been.
+    ///    no administrative credential. Full, and dev-only, exactly as it has always been.
     /// 2. **The operator credential.** A roleless principal carrying the reserved id, which on this
-    ///    node only the admin-token module mints. Full by definition: it IS the root credential.
+    ///    node only the administrative-token module mints. Full by definition: it IS the root credential.
     /// 3. **Anyone else roleless.** No grant. Not a narrower one — none — because a roleless
     ///    principal has nothing bound to read a scope out of, and inventing one would be this root
     ///    granting authority the deployment never wrote down.
@@ -839,12 +839,12 @@ impl ProductionUnits {
 }
 
 /// Every step below asks the same question first: which plane is this unit's? One plane has been
-/// switched onto this loop, so the answer is either the admin plane or a plane whose own steps have
+/// switched onto this loop, so the answer is either the administrative plane or a plane whose own steps have
 /// not landed yet. The unswitched answer is a refusal naming the step, never a panic and never a
 /// silent pass: a unit that reached here on a plane this root does not yet drive was routed wrongly,
 /// and the honest answer is to say so and end it rather than to serve it half-composed.
 impl ProductionUnits {
-    /// Whether this unit is one the admin bindings are walking.
+    /// Whether this unit is one the administrative bindings are walking.
     ///
     /// Membership of the table, not a guess from the context: the surface that opened the unit is
     /// what put it there, so a unit that is in the table is one this root composed and a unit that
@@ -1069,11 +1069,11 @@ const OP_UNCLAIMED: &str = "unclaimed";
 
 /// What the record says about a unit this root did not compose.
 ///
-/// The admin plane's "the verb did not resolve" facts used to answer here, and they name an
+/// The administrative plane's "the verb did not resolve" facts used to answer here, and they name an
 /// administrative READ — so every unit of every other plane that reached this door was sealed as
 /// one. A voice turn or a chat completion refused at the root is not an operator reading a
 /// configuration page, and a record that says it was is wrong about the one thing an audit record
-/// exists to state. Nothing here is derived from the admin plane, because nothing about this unit
+/// exists to state. Nothing here is derived from the administrative plane, because nothing about this unit
 /// is administrative.
 fn unclaimed_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
     busbar_contract::AuditFacts {

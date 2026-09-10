@@ -571,7 +571,7 @@ impl<U: busbar_kernel::teller::Units + Send + Sync> PlaneLeg for U {
 /// A completed unit whose Encode step declined to write still leaves with no body.
 ///
 /// **A plane's own steps.** A leg whose units answer every step with a refusal is a leg the root has
-/// not composed yet, and that is the shape `ProductionUnits` has for every plane but admin — so a
+/// not composed yet, and that is the shape `ProductionUnits` has for every plane but the administrative one — so a
 /// unit driven over it ends at its first step whatever the bytes were, and what the caller reads is
 /// the plane's rendering of that refusal. A leg that DOES compose its plane's steps ends wherever
 /// those steps end, and this file cannot tell the two apart, which is the property that lets a
@@ -870,7 +870,7 @@ impl LoopDriver<'_> {
     /// and whether the listener that accepted them is the administrative one — and every one of them
     /// is answered below with the value a client request on a data listener has. That is the truth
     /// for the mount this driver serves today and it is not a derivation: a node that mounted a
-    /// surface on its admin listener would be running those units as ordinary client units, which is
+    /// surface on its administrative listener would be running those units as ordinary client units, which is
     /// the wrong answer arrived at silently.
     ///
     /// The arrival is HANDED ON, to the leg, which is the one thing here entitled to read it: a leg

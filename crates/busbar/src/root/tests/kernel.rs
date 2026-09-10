@@ -257,11 +257,11 @@ fn the_admin_grant_is_the_previous_releases_three_arms() {
 
 /// A unit no plane on this node composed is not sealed as an administrative read.
 ///
-/// Both audit doors are asked, because both used to answer with the admin plane's word for a
+/// Both audit doors are asked, because both used to answer with the administrative plane's word for a
 /// verb that did not resolve: a plane unit refused at the root came out of the record as an
 /// operator reading a page. The assertion is written as an inequality against that word as well
 /// as an equality on the right one, because what matters is not which class replaced it but
-/// that no unit of another plane wears the admin plane's.
+/// that no unit of another plane wears the administrative plane's.
 #[cfg(feature = "root-admin")]
 #[test]
 fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {

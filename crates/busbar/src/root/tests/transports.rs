@@ -92,7 +92,7 @@ fn two_listeners(cert: &str, key: &str) -> Vec<ListenerConfig> {
                 key: key.into(),
                 client_ca: None,
             }),
-            fingerprint: "admin-listener",
+            fingerprint: "operator-listener",
         },
     ]
 }
@@ -319,7 +319,7 @@ fn the_listener_view_answers_the_operators_message_ceiling() {
 #[test]
 fn the_handle_carries_no_material() {
     let token = crate::root::kernel::new_kernel().transport_key_token();
-    let handle = busbar_unit_transport_key::issue_handle(&token, 1, "admin-listener");
+    let handle = busbar_unit_transport_key::issue_handle(&token, 1, "operator-listener");
     let rendered = format!("{handle:?}");
     assert!(
         rendered.contains("no material"),

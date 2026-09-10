@@ -37,7 +37,7 @@
 //! - [`units_voice`] — one plane, switched over: a live voice session as a sequence of ordinary
 //!   units. The handshake that opens it, the per-frame turns the pump dispatches, the hold that is
 //!   the session's metering lease, and four seams to the half of the plane that owns sockets.
-//! - [`units_admin`] — the admin plane's twelve steps, and the one seam an admin operation's body
+//! - [`units_admin`] — the administrative plane's twelve steps, and the one seam an administrative operation's body
 //!   is reached through. The root drives the loop; the operation's own logic stays where it lives.
 //!
 //! ## The order

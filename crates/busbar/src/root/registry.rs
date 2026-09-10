@@ -247,7 +247,7 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
     }
 
     // Declaration order is what breaks precedence ties, so the planes are appended in the order the
-    // table has always read: llm, mcp, a2a, voice, admin. Voice's row is present exactly when its
+    // table has always read: llm, mcp, a2a, voice, administrative. Voice's row is present exactly when its
     // crate edge is — a claim from a plane this build does not register would name a plane, and a
     // transport, that no request could ever reach.
     let mut claims: Vec<PlaneClaim> = claims_of::<LlmPlane>()

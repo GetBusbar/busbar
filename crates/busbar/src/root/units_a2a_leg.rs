@@ -261,7 +261,7 @@ const A2A_RULES: KindRules = KindRules {
         busbar_plane_a2a::claims::TRANSPORT_GRPC,
     ],
     // This plane reaches no administrative verb. Its operator surface — connect, approve — is the
-    // admin plane's, under that plane's claim and that plane's scope.
+    // administrative plane's, under that plane's claim and that plane's scope.
     verb_scope_held: false,
     // And names no nested plane: every destination it declares is an agent, a record or a client
     // delivery.

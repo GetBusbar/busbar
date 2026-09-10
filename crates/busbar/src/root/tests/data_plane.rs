@@ -286,10 +286,13 @@ fn each_walk_is_its_own_unit_on_the_node_s_own_counters() {
 fn a_data_plane_unit_is_not_an_administrative_one() {
     let chain = PlaneChain::over(&SURFACE).expect("the declared surface checks");
     let kernel = crate::root::kernel::new_kernel();
-    let (admin, verb_only, origin) = chain.run(&kernel, |ctx, _run| {
+    let (administrative, verb_only, origin) = chain.run(&kernel, |ctx, _run| {
         (ctx.admin_listener, ctx.kernel_verb_only, ctx.origin)
     });
-    assert!(!admin, "a data listener is not the administrative one");
+    assert!(
+        !administrative,
+        "a data listener is not the administrative one"
+    );
     assert!(
         !verb_only,
         "a unit of an ordinary plane is not a kernel verb"

@@ -101,7 +101,7 @@ pub const SCOPE_KIND_TOOL: &str = "mcp_tool";
 /// The action a served tool call is recorded under on the administrative chain.
 ///
 /// **A seam to the I/O half.** The literal lives in `busbar-mcp`'s dispatch, which is where the verb
-/// body still is, and it is not visible outside that crate. The rig reads it back off the admin
+/// body still is, and it is not visible outside that crate. The rig reads it back off the administrative
 /// audit surface, so it has to be the same string in both places; the pin below reads the codec's
 /// own source rather than trusting this line.
 pub const AUDIT_ACTION_TOOL_CALL: &str = "mcp_tool.call";
@@ -435,7 +435,7 @@ const MCP_RULES: KindRules = KindRules {
         claims::TRANSPORT_STDIO,
     ],
     // This plane reaches no administrative verb. Its two introspection verbs are read through the
-    // admin plane's own surface, under that plane's claim and that plane's scope.
+    // administrative plane's own surface, under that plane's claim and that plane's scope.
     verb_scope_held: false,
     // The one nested destination is the reference plane's chat class, named by a key rather than
     // reached directly. Whether that plane is registered is the registry's answer, and the boot
@@ -2556,7 +2556,7 @@ impl McpUnits<'_> {
     /// **The administrative chain is deliberately not written here.** [`legacy_entry`] is this
     /// plane's declaration of what a served call leaves on the operator's log, and the surface that
     /// answers the call already writes it. A loop that wrote a second one would put two rows on the
-    /// admin log for one tool call — the exact divergence the mounted-versus-unmounted battery
+    /// administrative log for one tool call — the exact divergence the mounted-versus-unmounted battery
     /// exists to refuse.
     fn seal(
         &self,

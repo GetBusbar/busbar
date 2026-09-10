@@ -244,7 +244,7 @@ fn a_projection_is_read_only_and_a_send_is_not() {
 /// because either one alone is half the door:
 ///
 /// - THE GATE, which is the kernel's and which this plane is UNDER. A2A arrives on the data
-///   listener, so `admin_listener` is false and the exemption the admin leg gets does not reach
+///   listener, so `admin_listener` is false and the exemption the administrative leg gets does not reach
 ///   it: on a table with room the unit enters and its hold lives in the cell, and on a full one
 ///   it is refused with `InFlightCap`, stamped at `Arrival` because the origin is a client, with
 ///   the arrival hold handed straight back rather than dropped. A refusal here is the whole
@@ -266,7 +266,7 @@ fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arr
     // One slot, none held back: a table this plane can fill and then be measured against.
     let table = InFlight::new(1, 0);
     // What an a2a unit asks the table for. The data listener is the whole point — an a2a unit
-    // that claimed the admin listener's exemption would be outside the cap the deployment set.
+    // that claimed the administrative listener's exemption would be outside the cap the deployment set.
     let entering = |key: u64| Enter {
         key: UnitKey::new(key),
         origin: OriginKind::Client,
