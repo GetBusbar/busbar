@@ -434,6 +434,31 @@ file = "qa/kind-isolation.toml"
 by = 2
 because = "PLANE-HOST COMPOSITION identity, root x transport: the host files' wire lines - the a2a boot resolves the binding the plane declared against the wire instance the root composed, which is the one place a composed transport and a booted plane are both visible; measured over the non-prose half of units_a2a_boot.rs only (0 -> 2); 1097 -> 1099"
 
+# THE TEST SIBLINGS OF THE LLM LEG/MOUNT AND THE PLANE HOST. tests/units_llm_{leg,mount}.rs,
+# tests/data_plane.rs, tests/plane_ctx.rs, tests/kernel.rs and tests/units_a2a_boot.rs carry the
+# same identity as the files they test, for the same reason the mount test siblings above them do:
+# the thing under test IS the composition, and a cell that asserted about a leg, a mount or a
+# plane host without naming the plane, the wire or the kernel loop it joins would be asserting
+# about nothing. Declared per file, per cell, over the NON-PROSE halves only. The plane share of
+# these siblings is already carried, net, by the plane-host entry above and is not repeated here.
+[[gate.ceiling_raises]]
+key = "cell.busbar.contract-transport.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "TEST SIBLING identity, root x contract-transport: the cells that prove the composition, in tests/units_llm_leg.rs 0 -> 1, tests/data_plane.rs 0 -> 1 and tests/plane_ctx.rs 0 -> 1 - a sibling names the driver seam an arrival crosses because that is what its subject holds; the class rose by 3 gross in these siblings and the same cell drained 1 line elsewhere on this branch, so the NET rise the ceiling owes is 2; 100 -> 102"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.kernel.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "TEST SIBLING identity, root x kernel: the cells that prove the composition, in tests/kernel.rs 0 -> 1 and tests/units_llm_mount.rs 0 -> 1 - a sibling drives the teller loop from above it because that is the composition it is asserting about; 248 -> 250"
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.transport.count"
+file = "qa/kind-isolation.toml"
+by = 29
+because = "TEST SIBLING identity, root x transport: the cells that prove the composition, in tests/units_llm_mount.rs 0 -> 16, tests/plane_ctx.rs 0 -> 6, tests/data_plane.rs 0 -> 5, tests/units_a2a_boot.rs 0 -> 1 and tests/units_llm_leg.rs 0 -> 1 - a sibling resolves a declared binding against the instance the root composed, which is the mount it is testing; 1099 -> 1128"
+
 [gate.surface_ceilings]
 contract_caps = 3506
 grammar = 388
