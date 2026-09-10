@@ -1399,6 +1399,15 @@ async fn run(data_workers: usize) {
     app.versions
         .record(0, "system", "boot", &app.hook_registry, &app.global_hooks);
 
+    // THE ADMIN MUTATION LOG'S DURABLE PATH, mounted FIRST and by the root, because the root is the
+    // only thing entitled to build it: a kernel-held record leg, over the store the loader
+    // resolved, under the schema the admin plane declares. This copies forward whatever a previous
+    // release wrote, seeds the engine's ring from the persisted tail so the sequence continues
+    // across the restart, and hands the engine a durable path it records through without naming a
+    // store, a kernel or a plane. With nothing durable configured it does nothing, which is the
+    // documented in-memory behaviour and not a failure.
+    let admin_audit = root::audit_stream::mount(app.governance.as_ref().map(|gov| gov.store()));
+
     // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
     // the MCP demotion/spent-approval records, restored from the configured governance store
     // BEFORE a listener is bound. One boot entry point (`busbar_core::boot::hydrate_all`)
@@ -1407,7 +1416,7 @@ async fn run(data_workers: usize) {
     // out from under the hash chains. The narration (which restore is a hiccup, which is
     // tamper evidence) moved with the code; see busbar-core/src/boot.rs. A plane whose durable
     // state cannot be restored REFUSES BOOT — `hydrate_all` propagates the plane hook's `Err`.
-    busbar_core::boot::hydrate_all(&app).unwrap_or_else(|e| die(e));
+    busbar_core::boot::hydrate_all(&app, admin_audit).unwrap_or_else(|e| die(e));
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): circuit breakers, cooldowns, latency EWMAs
     // and hard-down latches live in RAM only and are RE-LEARNED after a restart (a lane that is down
     // re-trips its breaker on request #1). Nothing is restored from disk — the durable config that

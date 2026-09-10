@@ -20,13 +20,12 @@
 //!
 //! ## ONE MECHANISM IS NOT ONE STREAM, and conflating them would be a different defect
 //!
-//! Three chains run on that one mechanism and they stay SEPARATE:
+//! Two chains run on that one mechanism and they stay SEPARATE:
 //!
 //! | stream | scope of a chain | rate |
 //! |---|---|---|
 //! | [`crate::admin::audit`] — admin MUTATIONS | one chain, process-wide | operator-rate |
 //! | [`crate::calllog`] — MCP tool CALLS | one chain per PRINCIPAL | request-rate |
-//! | [`crate::plane::auditlog`] — plane task EVENTS | one chain per TASK | task-rate |
 //!
 //! `calllog.rs`'s own header records why the per-call event was moved OFF the admin ring: an admin
 //! mutation is operator-rate and a tool call is REQUEST-rate, so sharing one bounded ring means a
@@ -38,7 +37,7 @@
 //!
 //! ## WHAT A PLANE STILL OWNS: which fields the digest covers
 //!
-//! The three digests cover different fields, and that difference is legitimate — an admin mutation
+//! The digests cover different fields, and that difference is legitimate — an admin mutation
 //! has an `action` and a `resource`, a tool call has a `tool` and a pin generation, a task event has
 //! a state. So `ChainedRecord::digest_fields` is the ONE thing a record type supplies about the
 //! digest: which fields, in which order. Everything else — the sequence allocation, the `prev_hash`

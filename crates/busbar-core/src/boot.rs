@@ -12,6 +12,18 @@
 
 use std::sync::Arc;
 
+/// THE ADMIN AUDIT LOG'S DURABLE PATH, as the composition root hands it over: the seam every
+/// recorded mutation is persisted through, and the records already persisted for the ring to be
+/// seeded from.
+///
+/// A pair rather than a type of its own, because the two halves are used once each and immediately:
+/// a struct here would be a name this crate publishes for something the root builds and this crate
+/// only forwards.
+pub type AdminAuditMount = (
+    Box<dyn busbar_unit_audit::legacy::DurableSeam>,
+    Vec<busbar_unit_audit::legacy::AuditEntry>,
+);
+
 /// DURABLE-STATE HYDRATION, whole and in order: the audit ring FIRST (core, the append-only chain),
 /// then every registered plane's own durable state through its [`PlaneDecl::hydrate`] hook — the A2A
 /// task table, the MCP per-call log, and the MCP demotion + spent-approval records. Called ONCE from
@@ -24,22 +36,35 @@ use std::sync::Arc;
 /// the code it restores — and this function now names no plane: it folds over [`plane_decls`] and
 /// calls the hook each plane declared. What each hook may touch of the durable home is narrowed at the
 /// seam: [`BootCtx`]'s store is `PlaneStore`, never the `append_audit`-carrying `Store` (invariant
-/// (a)), so only the audit block below — which IS the chain — holds the full `Store`.
-pub fn hydrate_all(app: &Arc<crate::state::App>) -> Result<(), String> {
-    // DURABLE AUDIT (#17): the admin audit log's ONE durable path is the neutral journal seam
-    // ([`crate::plane::auditlog`]). Register the `audit` stream, run the ONE-TIME legacy-table →
-    // `plane_records` migration (idempotent; a no-op on a migrated / fresh / memory store), and RESTORE
-    // the audit log FROM `plane_records` — seeding both the seam chain position (so a later append
-    // continues the same chain) and the `AUDIT_LOG` read-model ring `GET /audit` serves. The RAM
-    // default (`store: memory`) keeps nothing durable, so the log is ephemeral BY DESIGN, started fresh
-    // on every boot. A chain-verification failure on restore is logged as a tamper signal inside the
-    // seam restore; there is no file fallback to fall back to.
+/// (a)), so a plane hook never sees the `append_audit`-carrying `Store` the admin chain's own
+/// copy-forward reads — and that copy-forward is not here at all any more, because it is the
+/// composition root's, in the same place the leg it copies onto is.
+pub fn hydrate_all(
+    app: &Arc<crate::state::App>,
+    admin_audit: Option<AdminAuditMount>,
+) -> Result<(), String> {
+    // THE ADMIN AUDIT LOG GOES FIRST, and it arrives already built. Its durable path is a
+    // kernel-held record leg, which this crate cannot construct — a leg is admitted by the kernel
+    // and lands on the published store protocol, and neither is this crate's to name — so the
+    // composition root builds it and hands the two halves in: the seam every recorded mutation is
+    // persisted through, and what was already persisted, to seed the ring from so the sequence
+    // continues across the restart rather than restarting at one.
     //
-    // This is NOT a plane and is deliberately NOT a `hydrate` hook: the audit chain's migration reads
-    // the FULL `Store` (the legacy `list_audit` table it copies from), the one durable-state block that
-    // must hold what every plane hook is narrowed away from.
-    if let Some(gov) = app.governance.as_ref() {
-        crate::plane::auditlog::register_and_migrate(app, &gov.store());
+    // `None` is a deployment with nothing durable configured. The ring still records, still chains
+    // and still serves reads, and nothing is persisted — the documented in-memory behaviour, which
+    // is why it is an option rather than a failure.
+    //
+    // A SECOND mount REFUSES BOOT. Two seams over one chain is a fork, and a fork in the evidence
+    // is worse than a node that will not start.
+    if let Some((seam, restored)) = admin_audit {
+        if !crate::admin::audit::install_durable(seam) {
+            return Err(
+                "the admin audit log already had a durable path installed; a second one \
+                        would fork the chain"
+                    .to_string(),
+            );
+        }
+        crate::admin::audit::AUDIT.load(restored);
     }
 
     // THE PLANE HYDRATION FOLD. Each plane restores its OWN durable state through the `hydrate` hook

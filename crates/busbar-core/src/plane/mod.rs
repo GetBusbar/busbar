@@ -91,7 +91,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod approvals;
-pub mod auditlog;
 pub mod config;
 pub mod cost;
 pub(crate) mod observe;

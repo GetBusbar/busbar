@@ -55,6 +55,9 @@
 #![allow(dead_code)]
 
 pub mod adapters;
+/// The admin mutation log, mounted on the kernel-held record leg: the durable path the engine's
+/// one chokepoint records through, and the ring it is seeded into at boot.
+pub mod audit_stream;
 pub mod auth_bindings;
 pub mod durability;
 #[cfg(any(test, feature = "test-harness"))]

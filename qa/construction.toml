@@ -222,6 +222,30 @@ file = "qa/kind-isolation.toml"
 by = 8
 because = "the audit unit's chain, named by the composition that drives it: `busbar_unit_audit::legacy::{Chain, ChainedRecord, ChainBreak, ChainLabels, Digest, Framing, frame_prelude, verify_chain}`. The prelude, the digest, the sequence authority and the verifier are the unit's and are not re-implemented here; what the root adds is the position it holds and the store it lands on."
 
+# THE ADMIN MUTATION LOG, mounted on the record leg, and the SECOND COPY OF IT deleted from the
+# engine. `crates/busbar-core/src/plane/auditlog.rs` (787 lines) and its battery (588) go; what
+# replaces them is `crates/busbar/src/root/audit_stream.rs` and its cells, which build the durable
+# path the engine's one chokepoint records through and hand it over at hydration. Five busbar-core
+# cells FALL in the same landing and are re-pinned to the measurement; the three that rise below are
+# the composition the fall paid for.
+[[gate.ceiling_raises]]
+key = "cell.busbar.api.count"
+file = "qa/kind-isolation.toml"
+by = 14
+because = "the admin mutation log's store reach, in the root: the copy-forward that carries the previous release's audit table onto the record leg reads and writes the published store protocol directly (list_audit, append_plane_record, list_plane_records, PlaneRecord, PlaneSelector, PlaneDisposition), plus the fixture store its cells drive that copy-forward through. It is 1375 busbar-core lines lighter for it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.control.count"
+file = "qa/kind-isolation.toml"
+by = 28
+because = "the admin mutation log's record, named by the composition that mounts it: the schema, the five-field suffix, the previous release's flat row and the log's single scope, plus the cell that pins the leg's framing byte-identical to the ring's own digest and the three that pin the copy-forward as a copy rather than a re-seal. The record declaration is the admin plane's; what is named here is the mounting of it."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 4
+because = "the audit unit's own record and window verifier, named by the root that now hands them over: busbar_unit_audit::legacy::{AuditEntry, DurableSeam, verify_window, digest}. The ring, the digest and the verifier stay the unit's; the root supplies the durable path and the tail to seed from, which is the half the unit has no way to reach."
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

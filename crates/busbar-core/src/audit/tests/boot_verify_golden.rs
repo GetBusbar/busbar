@@ -24,23 +24,19 @@
 //! a constant produced by a past build, not a value this build recomputes, so it cannot drift with
 //! the code the way a parallel formula can.
 //!
-//! ## Coverage — all three framings, plus the two landmines
+//! ## Coverage — the one framing whose engine is still here
 //!
-//! - **MCP per-call** (`LengthPrefixed`, scope in the digest) — the CLEAN cleave-first target.
-//! - **A2A task provenance** (`PipeSeparated`, scope in the digest) — carries the PipeSeparated
-//!   GENESIS LANDMINE: the first event's `prev_hash` is empty, and the leading `|` before `task_id`
-//!   that the empty-but-present `prev_hash` produces is load-bearing. A cleave that dropped it would
-//!   shift every A2A digest by one separator.
-//! - **Admin audit** (`PipeSeparated`, NO scope in the digest) — the `digests_scope = false` shape,
-//!   proving the generic prelude framing omits the scope for exactly the streams that omit it.
+//! The MCP per-call chain: `LengthPrefixed`, with the scope in the digest. The two chains this file
+//! used to guard beside it have gone to the code that produces them; see the note at the bottom for
+//! where each went and which frozen bytes went with it.
 //!
-//! Every fixture is a two-record chain: record 1 is GENESIS (empty `prev_hash`), record 2 LINKS it,
+//! The fixture is a two-record chain: record 1 is GENESIS (empty `prev_hash`), record 2 LINKS it,
 //! so both the genesis anchor and the inter-record linkage are exercised. DO NOT REGENERATE these
 //! bytes to make a failing test pass: a change here is a change to a persisted digest, and the test
 //! failing is the tripwire working.
 
-use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
-use busbar_api::{AuditRecord, PlaneRecord, PlaneSelector, StoreResult};
+use crate::plane::store::{decode, PlaneStore, KIND_CALL};
+use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
 
 /// The one field this golden reads back off a frozen `call`-stream body — the tail digest. Decoded
 /// through a NEUTRAL local shape (matching the on-disk field name) so this core test names no plane
@@ -66,13 +62,9 @@ struct FrozenTailDigest {
 const MCP_1: &[u8] = br#"{"seq":1,"prev_hash":"","hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,0,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,8,115,114,118,95,116,111,111,108,0,0,0,0,0,0,0,10,100,105,115,112,97,116,99,104,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,6,97,98,99,49,50,51,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
 const MCP_2: &[u8] = br#"{"seq":2,"prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a","content":[0,0,0,0,0,0,0,8,0,0,0,0,101,83,241,60,0,0,0,0,0,0,0,3,115,114,118,0,0,0,0,0,0,0,9,115,114,118,95,111,116,104,101,114,0,0,0,0,0,0,0,7,114,101,102,117,115,101,100,0,0,0,0,0,0,0,11,110,111,116,95,103,114,97,110,116,101,100,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,7]}"#;
 
-const AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
-const AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
-
-// The frozen hashes named explicitly, so a diff of this file shows WHICH digest a change perturbed
-// rather than only "some bytes moved". They are the tail links of each two-record chain.
+// The frozen hash named explicitly, so a diff of this file shows WHICH digest a change perturbed
+// rather than only "some bytes moved". It is the tail link of the two-record chain.
 const MCP_TAIL_HASH: &str = "721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a";
-const AD_TAIL_HASH: &str = "33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264";
 
 // ── A FROZEN-BYTES PLANE STORE ──────────────────────────────────────────────────────────────────
 //
@@ -193,65 +185,10 @@ fn mcp_call_chain_boot_verifies_from_frozen_bytes() {
     assert_eq!(tail.hash, MCP_TAIL_HASH);
 }
 
-// The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to `busbar-a2a` with the
-// task subsystem (1.7.0 plane extraction): the plane owns its `TaskRow`/`TaskEventRow` and computes the
-// chain plane-side now, so the digest-drift tripwire lives beside the code that produces it — see
-// `busbar_a2a::taskstore`'s golden test. Core keeps the neutral admin-audit golden below (its generic
-// hash-chain mechanism stays in core) and the MCP call golden above.
-
-/// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records restore
-/// through the REAL boot path — the NEUTRAL journal seam the admin audit stream is registered on, with
-/// `digests_scope = false` — and verify byte-identically (zero chain breaks) with the tail hash intact.
-/// This is the `digests_scope = false` framing shape: the scope must NOT enter the digest, and the
-/// frozen bytes are the legacy `serde(AuditRecord)` rows, reframed by the stream's own decode bridge.
-#[test]
-fn admin_audit_chain_boot_verifies_from_frozen_bytes() {
-    let mut store = FrozenStore::new();
-    store.put(KIND_AUDIT, Some("admin"), AD_1);
-    store.put(KIND_AUDIT, Some("admin"), AD_2);
-
-    // The chain position cache is host-side now: register a fresh isolated stream and host-drive the
-    // restore. The FROZEN BYTES/HASHES above are unchanged — only the scaffolding that replays them
-    // through the durable seam changed. The restore SEEDS positions from the store passed here (the
-    // frozen bytes), so the throwaway app the harness registers against is immaterial to the digests.
-    let h = crate::plane::auditlog::AuditTestHarness::over(std::sync::Arc::new(
-        busbar_store_memory::MemoryStore::new(),
-    ));
-    let restored = h.restore_from_store(&store).expect("store read");
-    assert!(
-        restored.chain_breaks.is_empty(),
-        "a persisted admin chain reported TAMPERED means the digest drifted: {:?}",
-        restored.chain_breaks
-    );
-    assert_eq!(restored.records, 2, "both frozen records restored");
-
-    let tail: AuditRecord = decode(AD_2).unwrap();
-    assert_eq!(tail.hash, AD_TAIL_HASH);
-
-    // A7.3b: the restore ALSO seeds the read-model RING (the source `GET /audit` reads once cut over).
-    // The seeded ring must equal the frozen tail byte-for-byte, newest-first — a perturbation of the
-    // reframe/decode or the seq-ordered push would fail this against the same frozen bytes above.
-    let head: AuditRecord = decode(AD_1).unwrap();
-    let ring = h
-        .log
-        .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None);
-    assert_eq!(
-        ring.len(),
-        2,
-        "the ring is seeded with both restored records"
-    );
-    assert_eq!(
-        (ring[0].seq, ring[0].hash.as_str()),
-        (tail.seq, tail.hash.as_str()),
-        "newest-first: the tail record leads"
-    );
-    assert_eq!(
-        (ring[1].seq, ring[1].hash.as_str()),
-        (head.seq, head.hash.as_str()),
-        "the older record follows, seq-ordered"
-    );
-    assert!(
-        ring.iter().all(|e| !e.recorded_here),
-        "restored ring entries are seeded (recorded_here = false), never live appends"
-    );
-}
+// TWO of the three frozen chains this file was written to guard have RELOCATED to the code that
+// produces them, and neither took a byte with it. The A2A per-task provenance chain went to
+// `busbar-a2a` with the task subsystem (the plane owns its own rows and computes the chain
+// plane-side). The ADMIN AUDIT chain went to the composition root, where its durable path now is: a
+// kernel-held record leg, replayed against exactly the same frozen `AD_1`/`AD_2` bodies and the
+// same tail digest `33a39062…5264` — see `busbar::root::records`'s golden. What stays here is the
+// MCP call golden above, because the engine that restores it is still here.

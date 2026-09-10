@@ -643,9 +643,13 @@ impl busbar_substrate::plane_host::TelemetryHost for EngineHostImpl {
 
 impl busbar_substrate::plane_host::JournalHost for EngineHostImpl {
     fn audit_emit(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
-        // Hostless: the admin-audit engine reads `store::now` + the global ring and needs no `HostCtx`.
-        // A plain forward to the UNCHANGED core engine.
-        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+        // Hostless: the admin-audit ring reads its own clock and needs no `HostCtx`. It is the SAME
+        // reach as `audit_record` below, and it is a plain forward to the same call, because the
+        // second ring the two used to distinguish between is gone: there is one admin log, `AUDIT`,
+        // and recording a mutation is what puts a record in it and on the durable leg. The two seam
+        // methods stay distinct on the frozen ABI; what they DO no longer differs, and pretending
+        // otherwise would be a distinction with no record behind it.
+        crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
     }
 
     fn audit_record(&self, action: &str, resource: &str, outcome: &'static str, principal: &str) {

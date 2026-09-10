@@ -119,11 +119,11 @@ impl EngineTestKit for CoreEngineKit {
     }
 
     fn emit_admin_audit_now(&self, action: &str, resource: &str, outcome: &str, principal: &str) {
-        crate::plane::auditlog::emit_admin_hostless_now(action, resource, outcome, principal);
+        crate::admin::audit::AUDIT.record_by(action, resource, outcome, principal);
     }
 
     fn audit_entries(&self) -> Vec<AuditRecord> {
-        crate::plane::auditlog::AUDIT_LOG
+        crate::admin::audit::AUDIT
             .list_filtered(0, crate::admin::audit::MAX_AUDIT_ENTRIES, None, None)
             .into_iter()
             .map(|e| AuditRecord {

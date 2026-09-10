@@ -7,14 +7,18 @@
 //! ring reads and the durable seam it feeds, bound ONCE into the process-wide static every admin
 //! mutation records through.
 //!
-//! ## Where durability lives — the ONE durable path
+//! ## Where durability lives — the ONE durable path, and it is not in this crate
 //!
-//! Durability is the neutral journal seam's ([`crate::plane::auditlog`]): `AUDIT.record_by` is the
-//! ONE place an admin mutation is recorded, and the seam bound below carries that mutation onto the
-//! store-backed durable seam, which persists the hash-chained record into `plane_records`, seeds the
-//! read-model ring `GET /audit` serves, and is restored + verified at boot. The ring itself keeps NO
-//! durable state: it is ephemeral by construction (started fresh on every boot), retained for the
-//! in-process tamper-evidence checks the audit unit tests assert on.
+//! `AUDIT.record_by` is the ONE place an admin mutation is recorded, and the record it seals goes
+//! down ONE durable path: a kernel-held record leg, whose store reach the composition root owns.
+//! This crate cannot build that leg — a leg is admitted by the kernel and lands on the published
+//! store protocol, and neither is this crate's to name — so what lives here is the SLOT the root
+//! installs its seam into, and the ring the same root seeds from the durable tail at boot.
+//!
+//! An UNINSTALLED slot is a deployment with no durable audit at all: the ring still records, still
+//! chains and still serves reads, and nothing is persisted. That is the in-memory behaviour stated
+//! honestly rather than a failure — and it is why the emit is a lookup with a `None` arm
+//! rather than an `expect`.
 //!
 //! **Sharing the mechanism is not sharing the buffer, and the difference is load-bearing.** This log
 //! is admin-MUTATION-ONLY and its working set is a bounded ring of [`MAX_AUDIT_ENTRIES`]. An admin
@@ -36,11 +40,10 @@ use busbar_unit_audit::legacy::{AuditLog, Clock, DurableSeam};
 /// re-export keeps the existing import path for the hundred-odd call sites that name them.
 pub use crate::audit::vocab::{OUTCOME_APPLIED, OUTCOME_DEGRADED, OUTCOME_REJECTED};
 
-/// How many entries the in-memory ring retains. Bounds RAM, not history — the durable seam keeps the
-/// full log. It is the ring's own cap, so the read-model ring the seam seeds
-/// ([`crate::plane::auditlog`]) is bounded by the SAME number as the ring `record_by` fills;
-/// re-exported so `crate::admin::audit::MAX_AUDIT_ENTRIES` (and the test asking for "every matching
-/// row that can exist") still resolves.
+/// How many entries the in-memory ring retains. Bounds RAM, not history — the durable leg keeps the
+/// full log.
+/// It is the ring's own cap, re-exported so `crate::admin::audit::MAX_AUDIT_ENTRIES` (and the test
+/// asking for "every matching row that can exist") still resolves.
 pub use busbar_unit_audit::legacy::MAX_AUDIT_ENTRIES;
 
 /// The clock the ring seals a mutation under: the store's, read ONCE per mutation inside the ring so
@@ -53,19 +56,43 @@ impl Clock for StoreClock {
     }
 }
 
-/// THE CHOKEPOINT FEED onto the durable journal seam. `record_by` is the ONE place an admin mutation
-/// is recorded, so this ONE call — with the SAME `ts` the ring sealed — is the durable write.
-/// Fire-and-forget: it NEVER fails the mutation it records (see
-/// `plane::auditlog::emit_admin_hostless`), and the seam's own seq/prev_hash/hash are minted
-/// independently of the in-process ring's (both continue the same persisted chain).
-struct JournalSeam;
+/// THE INSTALLED DURABLE PATH. One slot, set once at boot by the composition root, holding the
+/// record leg the sealed mutation is persisted through.
+///
+/// A `OnceLock` and not a swappable handle: the durable path is a chain, and a chain whose sink can
+/// be replaced mid-process is a chain that can be forked by whoever replaces it. It is also why
+/// there is no uninstall — the way to stop persisting is to boot without a store, which leaves this
+/// empty from the start rather than emptying it halfway through.
+static DURABLE: std::sync::OnceLock<Box<dyn DurableSeam>> = std::sync::OnceLock::new();
 
-impl DurableSeam for JournalSeam {
+/// INSTALL the durable path, once, at boot.
+///
+/// Returns whether this call is the one that installed it. A second call is refused rather than
+/// ignored: two seams over one log is the fork the `OnceLock` exists to prevent, and a caller that
+/// thought it had installed one needs to be told it had not.
+pub fn install_durable(seam: Box<dyn DurableSeam>) -> bool {
+    DURABLE.set(seam).is_ok()
+}
+
+/// THE CHOKEPOINT FEED onto whatever the root installed. `record_by` is the ONE place an admin
+/// mutation is recorded, so this ONE call — with the SAME `ts` the ring sealed — is the durable
+/// write.
+///
+/// Fire-and-forget: it NEVER fails the mutation it records. A gateway whose control plane stops
+/// when its audit backend blinks has converted an observability dependency into an availability
+/// one, and losing the ability to change configuration while a store is unreachable is worse than a
+/// gap in a log that is already being alarmed on.
+struct InstalledSeam;
+
+impl DurableSeam for InstalledSeam {
     fn emit(&self, ts: u64, action: &str, resource: &str, outcome: &str, principal: &str) {
-        crate::plane::auditlog::emit_admin_hostless(ts, action, resource, outcome, principal);
+        if let Some(seam) = DURABLE.get() {
+            seam.emit(ts, action, resource, outcome, principal);
+        }
     }
 }
 
-/// The process-wide admin audit log: the unit's ring, bound to this crate's clock and seam.
+/// The process-wide admin audit log: the unit's ring, bound to this crate's clock and to the slot
+/// the root installs its record leg into.
 pub static AUDIT: LazyLock<AuditLog> =
-    LazyLock::new(|| AuditLog::with(Box::new(StoreClock), Box::new(JournalSeam)));
+    LazyLock::new(|| AuditLog::with(Box::new(StoreClock), Box::new(InstalledSeam)));
