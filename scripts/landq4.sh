@@ -519,8 +519,14 @@ lq_tree_settled() { # $1 = tree, $2 = last-landed-tip file; 0 = HEAD is that tip
 #     says. The stamp is mtime AND size AND cksum, because mtime alone has one-second granularity
 #     and the window this exists to close is usually shorter than that.
 lq_qstamp() { # prints a stamp of the queue file as it is right now
+  # THE TWO `stat`s ARE NOT THE SAME PROGRAM, and neither fails on the other's flags in a way a
+  # fallback chain can read: GNU's `-f` is "file SYSTEM status" and prints a block of free-block
+  # counts that CHANGE between two calls a millisecond apart, so `stat -f %m || stat -c %Y` gave a
+  # Linux box a stamp that never matched itself and refused every rewrite it was asked for. Found
+  # by the fleet box, not by the laptop, which is why it is asked the way `date` is asked above.
   local m
-  m="$(stat -f %m "$Q" 2>/dev/null || stat -c %Y "$Q" 2>/dev/null || echo 0)"
+  if stat --version >/dev/null 2>&1; then m="$(stat -c %Y "$Q" 2>/dev/null || echo 0)"
+  else m="$(stat -f %m "$Q" 2>/dev/null || echo 0)"; fi
   printf '%s:%s\n' "$m" "$(cksum <"$Q" 2>/dev/null || echo 0)"
 }
 lq_qlock() { # $1 = seconds to wait (default 30); 0 when this shell holds the queue lock
@@ -1388,6 +1394,11 @@ lq_selftest() {
   local savedQ5="$Q" savedQL="$QLOCK"
   Q="$root/lockq.txt"; QLOCK="$root/lockq.lock"; rm -rf "$QLOCK"
   printf -- '--prove one\n--prove two\n' >"$Q"
+  # A STAMP THAT DOES NOT MATCH ITSELF REFUSES EVERY REWRITE. These two cases are the ones the
+  # fleet box went red on: on Linux the first form of this asked GNU stat for FILESYSTEM status,
+  # whose free-block counts move between two calls, and the runner then refused its own writes.
+  _t "the stamp is stable while the file is"   1 "$(a="$(lq_qstamp)"; b="$(lq_qstamp)"; [ "$a" = "$b" ] && echo 1 || echo 0)"
+  _t "  ...and is mtime:cksum, on one line"    1 "$(lq_qstamp | grep -cxE '[0-9]+:[0-9]+ [0-9]+' || true)"
   _t "the stamp moves when the file does"      1 "$(a="$(lq_qstamp)"; printf -- '--prove one\n' >>"$Q"; b="$(lq_qstamp)"; [ "$a" != "$b" ] && echo 1 || echo 0)"
   printf -- '--prove one\n--prove two\n' >"$Q"
   # A LOOP THAT CHANGED NOTHING WRITES NOTHING. This is the whole of the first rule: the file that
