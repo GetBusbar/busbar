@@ -243,6 +243,50 @@ key = "rules.loc-ceilings.union_ceiling"
 by = 2
 because = "the same FACE as the verbs_ceiling raise, busbar_unit_verbs::Verbs::new(.., limiter: &MutationLimiter): the one parameter line, counted twice in this union because verbs.rs is call-graph-reachable from the Teller loop and a reachable unit file spends kernel budget as well as its own crate's — so the union rises by two where each of the other three rises by one."
 
+# THE LIMITER DELETION, and the six vocabulary rows it moves. `busbar-core/src/admin/rate.rs` (200
+# lines: the per-principal mutation limiter, the four classes, the six-row CONFIG table and
+# `classify_mutation`) is DELETED against `busbar-unit-verbs::rate`, whose own module doc has always
+# said it was moved verbatim from it. Two copies of one rate table is how a mutation comes to be
+# blast-radius class on the path the kernel loop takes and roomy CRUD class on the path the layered
+# surface takes, and the copies HAD drifted: the engine derived the named-definition map roots from
+# the section registry at runtime, the unit listed two of them as literals. The engine's `× control`
+# cell FALLS 5199 -> 5179 with the file, and is re-pinned down in the same commit; the six rows
+# below are what the edge costs, each measured, each explained. Two of the eight rows the ledger
+# moves carry NO entry here and that is correct: `cell.busbar.control.count` 1062 -> 1063 is not a
+# rise against the branch's base (the base already reads 1063), and the new
+# `dep.busbar-core.busbar-unit-verbs` row is a row the base does not have at all rather than a
+# ceiling that rose — the [[dep]] row's own `cite`/`why`/`drain` is where that edge is declared.
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.unit.count"
+file = "qa/kind-isolation.toml"
+by = 56
+because = "busbar-core/src/admin/rate.rs DELETED against busbar-unit-verbs::rate; the one enforcement chokepoint every admin request crosses now names the unit's MutationLimiter, MutationClass::for_path and ConfigClassRule instead of a second copy of them. 12 in Cargo.toml (the dependency and its drain note), 12 in auth/mod.rs, 12 in auth/tests/tests.rs (the byte-identity test for the 429), 8 in state.rs, 6 in admin/tests/tests.rs (the doc-table cross-check now judged against the live classifier), the rest in appbuild.rs, config/named_map.rs and test_support."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-core.transport.count"
+file = "qa/kind-isolation.toml"
+by = 1
+because = "one occurrence, and it is the transport family's bare id `http` inside `axum::http::header::RETRY_AFTER` in the new byte-identity test for the 429 refusal: the advertised back-off is asserted to be the unit's own window constant rather than a literal beside it, and the header name is how a test reads it. No new transport reach; one spelling of a header."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar.unit.count"
+file = "qa/kind-isolation.toml"
+by = 26
+because = "the composition root composes the node's ONE mutation limiter and the node's class table: ProductionUnits gains `mutation_limiter` and `config_class_rules` beside `breaker`, `with_mutation_limiter`/`with_config_class_rules` hand it the app snapshot's own handles, and units_admin::route passes both by reference to the executor it builds per request. Every one of the 26 is a busbar_unit_verbs:: spelling in root/kernel.rs, root/units_admin/mod.rs, main.rs and their tests."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-verbs.control.count"
+file = "qa/kind-isolation.toml"
+by = 7
+because = "the path-keyed classifier face and the borrowed limiter: `for_path` documents the ADMIN_PREFIX-relative paths it is written against and the chokepoint that reaches it, `NamedMapRoot` documents the admin path segment a section key doubles as, and the new tests name admin paths as their fixtures. The unit already owned this vocabulary — it is the admin verb table's crate — and 34 of the 493 are in rate.rs."
+
+[[gate.ceiling_raises]]
+key = "cell.busbar-unit-verbs.legacy.count"
+file = "qa/kind-isolation.toml"
+by = 2
+because = "two more references to the retiring engine by name in rate.rs's own documentation, and they are the deletion being recorded: the module doc now states which table busbar-core DERIVED and which this crate listed as literals, which is the drift this seam closes. A doc line naming the crate that is dying is the retirement's ledger, not new coupling."
+
+
 # The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
 # owner decisions, not ratchets that drift upward with the tree — the gate reads them
 # from here (rather than a literal in the rule table) purely so --selftest can also produce

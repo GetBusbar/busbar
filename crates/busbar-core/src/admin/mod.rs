@@ -575,7 +575,6 @@ pub mod audit;
 // unavoidable dead-code warnings.
 #[allow(dead_code)]
 pub mod planeverbs;
-pub(crate) mod rate;
 pub mod restart;
 pub(crate) mod transport;
 pub mod v1;

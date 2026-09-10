@@ -12718,7 +12718,7 @@ fn documented_operations() -> Vec<(String, crate::admin::v1::contract::taxonomy:
 
 /// `docs/admin-api.md`'s mutation rate-limit table names the CONFIG-class (10/min) endpoint set by
 /// hand. Until this test existed, nothing tied that prose list to
-/// `admin::rate::classify_mutation` — the classifier that actually decides which budget a request
+/// `busbar_unit_verbs::rate::MutationClass::for_path` — the classifier that actually decides which budget a request
 /// spends from. This walks every mutation operation in the committed `openapi.json`
 /// (`documented_operations`, itself a projection nothing can silently drift from), classifies each
 /// one, and requires the resulting CONFIG set to equal the doc's `config` row EXACTLY — under- and
@@ -12758,14 +12758,18 @@ fn rate_limit_doc_table_matches_classifier() {
 
     // `documented_operations` yields `/overlay/{section}` verbatim (the templated openapi path),
     // matching the doc's literal spelling — no normalization needed on either side.
+    // The classifier is the verbs unit's, read through the SAME derived table the enforcement
+    // chokepoint reads — so this doc cross-check is judged against what a live node actually does,
+    // named-map sections included, rather than against a second copy of the table.
+    let rules = crate::config::named_map::NamedMapSection::admin_mutation_class_rules();
     let code_config: std::collections::BTreeSet<(String, MethodTag)> = documented_operations()
         .into_iter()
         .filter(|(rel, method)| {
             matches!(
                 method,
                 MethodTag::Post | MethodTag::Put | MethodTag::Patch | MethodTag::Delete
-            ) && crate::admin::rate::classify_mutation(rel)
-                == crate::admin::rate::MutationClass::Config
+            ) && busbar_unit_verbs::rate::MutationClass::for_path(rel, &rules)
+                == busbar_unit_verbs::rate::MutationClass::Config
         })
         .collect();
 
@@ -12773,7 +12777,7 @@ fn rate_limit_doc_table_matches_classifier() {
     let missing_from_code: Vec<_> = doc_config.difference(&code_config).collect();
     assert!(
         missing_from_doc.is_empty() && missing_from_code.is_empty(),
-        "docs/admin-api.md's config-class row has drifted from admin::rate::classify_mutation.\n\
+        "docs/admin-api.md's config-class row has drifted from the verbs unit's classifier.\n\
          In classifier's CONFIG class but not in the doc: {missing_from_doc:?}\n\
          In the doc but not classified CONFIG: {missing_from_code:?}"
     );

@@ -1862,9 +1862,9 @@ impl AdminService {
     ///      manifest itself) — is depth- AND size-bounded via [`schema_json_within_bounds`] BEFORE
     ///      it is ever handed to `serde_json::from_str`, a distinct attack from a pathological
     ///      tarball;
-    ///   4. its own dedicated rate bucket (`admin::rate::MutationClass::PluginInspect`), not the
+    ///   4. its own dedicated rate bucket (`busbar_unit_verbs::rate::MutationClass::PluginInspect`), not the
     ///      shared 60/min CRUD bucket and not the unmetered-read bucket — wired in `auth::mod.rs`/
-    ///      `admin::rate::classify_mutation` via `contract::PATH_PLUGINS_INSPECT`, exactly like
+    ///      `busbar_unit_verbs::rate::MutationClass::for_path` via `contract::PATH_PLUGINS_INSPECT`, exactly like
     ///      `/config/validate`'s existing carve-out.
     pub(crate) fn inspect_plugin(&self, tarball: &[u8]) -> Result<serde_json::Value, AdminError> {
         use busbar_plugin_sign::{evaluate, validate_structure, Verdict, HOST_IDENTITY};

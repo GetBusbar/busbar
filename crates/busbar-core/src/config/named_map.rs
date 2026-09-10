@@ -78,6 +78,25 @@ impl NamedMapSection {
         out
     }
 
+    /// EVERY declared section key, as the admin mutation rate limiter's CONFIG-class table.
+    ///
+    /// The blast-radius class is not a list of paths somebody maintains: a mutation under a named
+    /// definition map's root re-runs the boot pipeline and swaps a whole new `App`, which is the
+    /// same blast radius as `/config/reload`, so membership follows [`NamedMapSection::sections`]
+    /// and follows it at the moment a section joins. This is the ONE place that derivation happens,
+    /// and both readings of the table — the path-keyed one at the auth chokepoint and the verb-keyed
+    /// one inside the verbs unit — read what it returns.
+    ///
+    /// It spells no section noun: [`NamedMapSection::key`] answers, `busbar-unit-verbs` carries the
+    /// six frozen rows, and this function only joins them.
+    pub fn admin_mutation_class_rules() -> Vec<busbar_unit_verbs::rate::ConfigClassRule> {
+        let keys: Vec<&'static str> = NamedMapSection::sections()
+            .into_iter()
+            .map(NamedMapSection::key)
+            .collect();
+        busbar_unit_verbs::rate::config_class_rules(&keys)
+    }
+
     /// The config key AND the admin path segment — they are deliberately the same string, so the API
     /// mirrors the config grammar exactly (`export:` ⇄ `/export`).
     pub fn key(self) -> &'static str {

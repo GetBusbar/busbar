@@ -1334,7 +1334,7 @@ count = "18"
 [[cell]]
 crate = "busbar"
 kind = "control"
-count = "1062"
+count = "1063"
 
 [[cell]]
 crate = "busbar"
@@ -1384,7 +1384,7 @@ count = "939"
 [[cell]]
 crate = "busbar"
 kind = "unit"
-count = "1177"
+count = "1203"
 
 [[cell]]
 crate = "busbar-a2a"
@@ -1634,7 +1634,7 @@ count = "4"
 [[cell]]
 crate = "busbar-core"
 kind = "control"
-count = "5199"
+count = "5179"
 
 [[cell]]
 crate = "busbar-core"
@@ -1674,12 +1674,12 @@ count = "9"
 [[cell]]
 crate = "busbar-core"
 kind = "transport"
-count = "2117"
+count = "2118"
 
 [[cell]]
 crate = "busbar-core"
 kind = "unit"
-count = "37"
+count = "93"
 
 [[cell]]
 crate = "busbar-export-example-plugin"
@@ -2874,12 +2874,12 @@ count = "16"
 [[cell]]
 crate = "busbar-unit-verbs"
 kind = "control"
-count = "486"
+count = "493"
 
 [[cell]]
 crate = "busbar-unit-verbs"
 kind = "legacy"
-count = "25"
+count = "27"
 
 [[cell]]
 crate = "busbar-unit-verbs"
@@ -3739,6 +3739,16 @@ verdict = "not-allowed"
 cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
 why     = "busbar-core names busbar-unit-admission: declared normal in the shipped graph, 1 declaration(s) at this commit. THE CHAIN WALK, read rather than restated. The legacy engine carried its own resolved group topology AND its own walk over it; the topology is the cost unit's GroupTable and the walk is this crate's ChainWalk, yielding a BucketChain. Two walks over one money topology that must agree exactly is how a deployment comes to be admitted against one set of ledger cells and billed against another. The engine now walks each group's chain ONCE, at boot, through this crate, and a request READS the result through a cursor that borrows (busbar-core cost::BucketView) — so the edge costs the admission path no allocation at all; cost_tests::chain_read_is_a_borrow_not_a_build pins that by address rather than by equality. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "the edge dies with busbar-core: the readers of `cost::Chain`/`cost::BucketView` (governance/state.rs admit/charge/refund/accrue/headroom, admin/v1/service.rs, plane_host) move onto busbar_unit_admission's own decision, and cost.rs goes with them. `cargo xtask gate kind-isolation` prints the declaration that states it."
+
+[[dep]]
+from    = "busbar-core"
+to      = "busbar-unit-verbs"
+half    = "shipped"
+count   = "1"
+verdict = "not-allowed"
+cite    = "ARCHITECTURE.md 1.2 \"Core -> plugin. Never plugin -> core.\" / ARCHITECTURE.md 1.1 the three axes are blind to each other. The retiring 1.5.x crates fuse plane+core+transport in one name; this edge is the drain named by `[[transitional]] busbar-core -> busbar-unit-*`."
+why     = "busbar-core names busbar-unit-verbs: declared normal in the shipped graph, 1 declaration(s) at this commit. THE ADMIN MUTATION LIMITER, read rather than restated. The engine carried its own per-principal mutation limiter and its own CONFIG-class blast-radius table, and the unit crate carried the verbatim move of both; two copies of one rate table is how a mutation comes to be blast-radius class on the path the kernel loop takes and roomy CRUD class on the path the layered surface takes, and the copies had already drifted (the engine derived the named-definition map roots from the section registry, the unit listed two of them as literals). The engine's copy is DELETED — busbar-core/src/admin/rate.rs, 200 lines — and the one chokepoint every admin request crosses (auth::auth_middleware) now spends from the unit's `MutationLimiter` and classifies with the unit's `MutationClass::for_path`. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
+drain   = "the edge dies with busbar-core: the enforcement moves onto the Route step's own admit once the admin surface stops being served twice (the double-run), at which point auth/mod.rs's mutation gate and its `App::mutation_limiter`/`mutation_class_rules` fields go with the middleware. `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar-core"

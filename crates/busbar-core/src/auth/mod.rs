@@ -1266,7 +1266,7 @@ fn rate_limited_response() -> Response {
     Response::builder()
         .header(
             axum::http::header::RETRY_AFTER,
-            crate::admin::rate::MUTATION_RATE_WINDOW_SECS.to_string(),
+            busbar_unit_verbs::rate::MUTATION_RATE_WINDOW_SECS.to_string(),
         )
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
@@ -1477,11 +1477,11 @@ pub(crate) async fn auth_middleware(
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if let crate::admin::rate::RateCheck::Denied {
+            if let busbar_unit_verbs::rate::RateCheck::Denied {
                 first_in_window: true,
             } = app.mutation_limiter.check(
                 actor,
-                crate::admin::rate::MutationClass::Forbidden,
+                busbar_unit_verbs::rate::MutationClass::Forbidden,
                 busbar_substrate::store::now(),
             ) {
                 crate::admin::audit::AUDIT.record_by(
@@ -1509,19 +1509,24 @@ pub(crate) async fn auth_middleware(
             // The CONFIG class (10/min) is the blast-radius set: whole-config mutations AND the
             // admin auth chain itself. Everything else that mutates (hooks, keys, cache flush) is
             // the CRUD class (60/min). Matched RELATIVE to the one contract prefix so this gate
-            // can never drift from the mount grammar. Classification itself lives in
-            // `admin::rate::classify_mutation`, driven by a const table rather than an inline
-            // predicate, so it can be enumerated and cross-checked against
-            // `docs/admin-api.md`'s rate-limit table (see that table's doc comment).
+            // can never drift from the mount grammar. Classification itself lives in the VERBS
+            // UNIT — `busbar_unit_verbs::rate::MutationClass::for_path`, the path-keyed reading of
+            // the same table its verb-keyed `for_verb` reads — driven by a table rather than an
+            // inline predicate, so it can be enumerated and cross-checked against
+            // `docs/admin-api.md`'s rate-limit table (see that table's doc comment). This engine
+            // used to carry its own copy of both the classifier and the counters; two copies of one
+            // rate table is how a mutation comes to be blast-radius class on the path the kernel
+            // loop takes and roomy CRUD class on the path this one takes.
             let rel = path
                 .strip_prefix(crate::admin::v1::contract::ADMIN_PREFIX)
                 .unwrap_or(&path);
-            let class = crate::admin::rate::classify_mutation(rel);
+            let class =
+                busbar_unit_verbs::rate::MutationClass::for_path(rel, &app.mutation_class_rules);
             let actor = principal
                 .as_ref()
                 .map(|p| p.id.as_str())
                 .unwrap_or("anonymous");
-            if let crate::admin::rate::RateCheck::Denied { first_in_window } = app
+            if let busbar_unit_verbs::rate::RateCheck::Denied { first_in_window } = app
                 .mutation_limiter
                 .check(actor, class, busbar_substrate::store::now())
             {

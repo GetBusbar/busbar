@@ -1874,7 +1874,9 @@ impl TestApp {
             identity_providers: self.identity_providers,
             export_defs: self.export_defs,
             versions: std::sync::Arc::new(crate::admin::versions::VersionLog::new()),
-            mutation_limiter: std::sync::Arc::new(crate::admin::rate::MutationLimiter::new()),
+            mutation_limiter: std::sync::Arc::new(busbar_unit_verbs::rate::MutationLimiter::new()),
+            mutation_class_rules:
+                crate::config::named_map::NamedMapSection::admin_mutation_class_rules().into(),
             idempotency_cache: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

@@ -352,9 +352,22 @@ pub struct App {
     // `carried_a2a_gates` carries both `Arc`s across a config apply off the prior generation's plane —
     // so the coalescing epochs and the boot-set transports survive an apply without a shared-`App`
     // field, and are dropped whole when the `agents:` block is removed (no plane, no delegation).
-    /// Per-principal ADMIN MUTATION rate limiter. Arc-shared across apply snapshots so the
-    /// windows survive every swap.
-    pub(crate) mutation_limiter: Arc<crate::admin::rate::MutationLimiter>,
+    /// Per-principal ADMIN MUTATION rate limiter — the VERBS UNIT'S, not a copy of it. Arc-shared
+    /// across apply snapshots so the windows survive every swap: an operator does not get a fresh
+    /// budget because they applied a config.
+    ///
+    /// Shared with the composition root through [`App::mutation_limiter`], because the root's Route
+    /// step spends from the same budget this middleware does and two limiters would be two answers
+    /// to how much of it is left.
+    pub(crate) mutation_limiter: Arc<busbar_unit_verbs::rate::MutationLimiter>,
+    /// What that limiter classifies against: the CONFIG-class blast-radius table, folded once per
+    /// build from the named-definition map sections this deployment DECLARES
+    /// ([`crate::config::named_map::NamedMapSection::admin_mutation_class_rules`]).
+    ///
+    /// Rebuilt on every apply rather than carried, because a section can join or leave with a
+    /// config change and the class table has to follow it; the COUNTERS are carried, because the
+    /// budget already spent is not a property of the configuration.
+    pub(crate) mutation_class_rules: Arc<[busbar_unit_verbs::rate::ConfigClassRule]>,
     /// Idempotency-Key replay cache for key minting (bounded, ~10min TTL): a retried POST with the
     /// same key returns the FIRST response verbatim instead of double-creating. Arc-shared across
     /// swaps. Maps (principal id, Idempotency-Key) → (created_at, cached 201 body). The key is
@@ -580,6 +593,26 @@ impl App {
 }
 
 impl App {
+    /// THE NODE'S ONE SET OF ADMIN MUTATION COUNTERS, for the composition root to compose with.
+    ///
+    /// The root's Route step spends from this budget and so does the auth chokepoint below it. Two
+    /// limiters would be two answers to how much of a principal's minute is left, and the tighter of
+    /// the two limits would not be the one that fires — so the root takes THIS handle rather than
+    /// opening its own. Carried across every config apply (see the field), so the handle a boot took
+    /// at startup stays the live one for the life of the process.
+    #[must_use]
+    pub fn mutation_limiter(&self) -> Arc<busbar_unit_verbs::rate::MutationLimiter> {
+        Arc::clone(&self.mutation_limiter)
+    }
+
+    /// The CONFIG-class blast-radius table this snapshot classifies against, for the same root to
+    /// hand to the same verbs unit — so the loop and this middleware put a mutation in the same
+    /// class, which is the property two hand-written copies of the table did not have.
+    #[must_use]
+    pub fn mutation_class_rules(&self) -> Arc<[busbar_unit_verbs::rate::ConfigClassRule]> {
+        Arc::clone(&self.mutation_class_rules)
+    }
+
     /// The ALL-POOLS UPSTREAM-credential DEFAULT — whether the egress path signs with busbar's
     /// configured lane key (`Own`) or forwards the caller's credential (`Passthrough`). Resolved once
     /// at construction from the reserved `pools.upstream_credentials:` key (1.5.3 — it used to be

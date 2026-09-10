@@ -3002,3 +3002,72 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
         "the keys engine arm must NOT cache vkey verdicts (revocation window unchanged)"
     );
 }
+
+/// THE 429 IS BYTE-FOR-BYTE WHAT 1.5.5 SENT, and the budget that produces it is the verbs unit's.
+///
+/// This engine's own limiter and its own classifier are deleted; the counters, the classes, the
+/// limits and the window are now `busbar-unit-verbs`'. The whole of what a client can observe about
+/// that move is this response, so this test pins it as bytes rather than as a shape: the status, the
+/// `Retry-After` (derived from the unit's window constant, so the advertised back-off can never
+/// disagree with the real one), the content type, and the frozen v1 envelope
+/// `{"error":{"code":"rate_limited","message":"admin mutation rate limit exceeded; retry next
+/// minute"}}` — the same `code` seam every other admin error branches on.
+///
+/// The budget is driven on a NAMED-MAP path (`/export/{name}`), which is the path that could not be
+/// classified before: 1.5.5 derived the named-definition map roots from its section registry at
+/// runtime while the unit listed two of them as literals, so the section that joined the registry
+/// was blast-radius class on one reading and roomy CRUD on the other. Here it takes ten — the CONFIG
+/// budget, not the sixty a CRUD path would get — and the eleventh is the refusal below.
+#[tokio::test]
+async fn the_rate_limit_refusal_is_the_1_5_5_body_verbatim_on_a_named_map_path() {
+    let rules = crate::config::named_map::NamedMapSection::admin_mutation_class_rules();
+    let rel = "/export/otlp";
+    assert_eq!(
+        busbar_unit_verbs::rate::MutationClass::for_path(rel, &rules),
+        busbar_unit_verbs::rate::MutationClass::Config,
+        "a named-definition map write is the blast-radius class; the section declaration says so"
+    );
+
+    // The node's one limiter, driven exactly as the middleware drives it: one attempt per request,
+    // failed attempts included, in one fixed window.
+    let limiter = busbar_unit_verbs::rate::MutationLimiter::new();
+    let class = busbar_unit_verbs::rate::MutationClass::for_path(rel, &rules);
+    for i in 0..class.limit() {
+        assert!(
+            limiter.check("alice", class, 1_700_000_000).admitted(),
+            "attempt {i} is inside the CONFIG budget"
+        );
+    }
+    assert_eq!(
+        limiter.check("alice", class, 1_700_000_000),
+        busbar_unit_verbs::rate::RateCheck::Denied {
+            first_in_window: true
+        },
+        "the eleventh CONFIG-class mutation in a window is denied, and it is the first denial in it"
+    );
+
+    // And what the caller is sent for that denial, byte for byte.
+    let resp = rate_limited_response();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+        Some("60"),
+        "the advertised back-off is the unit's own window length, not a literal beside it"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json")
+    );
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("the static refusal body reads");
+    assert_eq!(
+        body.as_ref(),
+        br#"{"error":{"code":"rate_limited","message":"admin mutation rate limit exceeded; retry next minute"}}"#,
+        "the 1.5.5 rate-limit envelope is frozen; the admin.ops oracle pins these bytes"
+    );
+}

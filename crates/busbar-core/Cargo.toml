@@ -40,6 +40,15 @@ busbar-unit-cost = { path = "../busbar-unit-cost" }
 # and a request READS the result — so the edge costs the admission path no allocation at all. It is
 # the drain named by `[[transitional]] busbar-core -> busbar-unit-*` and dies with busbar-core.
 busbar-unit-admission = { path = "../busbar-unit-admission" }
+# THE ADMIN MUTATION LIMITER, read rather than restated. The engine carried its own copy of the
+# per-principal mutation rate limiter and its own copy of the CONFIG-class blast-radius table, and
+# the unit crate carried the verbatim move of both; two copies of one rate table is how a mutation
+# comes to be blast-radius class on the path the kernel loop takes and roomy CRUD class on the path
+# the layered surface takes. The engine's copy is DELETED and this crate now names the unit's
+# `MutationLimiter`, `MutationClass::for_path` and `ConfigClassRule` at the one enforcement
+# chokepoint (`auth::auth_middleware`). It is the drain named by
+# `[[transitional]] busbar-core -> busbar-unit-*` and dies with busbar-core.
+busbar-unit-verbs = { path = "../busbar-unit-verbs" }
 # Inline-capacity vectors for the per-request lane-selection working set (`proxy::select`): a
 # typical pool has a handful of members, so the candidate view, the SWRR scratch and the tried-set
 # live on the stack instead of costing three heap allocations per pick. Workspace-pinned.

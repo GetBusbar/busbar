@@ -1485,12 +1485,23 @@ async fn run(data_workers: usize) {
         // body before that router's own limit can.
         req_body_max,
         |dispatch| {
+            // THE NODE'S ONE ADMIN MUTATION BUDGET, and the one table it is classified against.
+            // The Route step below spends from the same budget the layered surface underneath it
+            // spends from, so both take the handle the app snapshot already holds rather than
+            // opening a second one: two limiters would be two answers to how much of a principal's
+            // minute is left, and the tighter of the two limits would not be the one that fires.
+            // The table is the snapshot's too, folded once from the named-definition map sections
+            // this deployment declares — so a mutation is blast-radius class on both paths or on
+            // neither, which is the property two hand-written copies of it did not have.
+            let snapshot = app_handle.load();
             let units = root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
                 std::sync::Arc::clone(&book.durability),
                 std::sync::Arc::clone(&book.rows)
                     as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
-            );
+            )
+            .with_mutation_limiter(snapshot.mutation_limiter())
+            .with_config_class_rules(snapshot.mutation_class_rules());
             // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
             // the assembly's open posture shipped: the step admitted every caller anonymously and
             // the only thing deciding was the surface mounted underneath — so a credential this node

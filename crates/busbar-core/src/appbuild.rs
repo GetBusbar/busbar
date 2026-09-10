@@ -1763,9 +1763,14 @@ pub fn build_app_from_config(
             |p| p.versions.clone(),
         ),
         mutation_limiter: prior.map_or_else(
-            || Arc::new(admin::rate::MutationLimiter::new()),
+            || Arc::new(busbar_unit_verbs::rate::MutationLimiter::new()),
             |p| p.mutation_limiter.clone(),
         ),
+        // NOT carried across the apply: a section joins or leaves with a config change and the class
+        // table has to follow it. The counters above ARE carried, because the budget an operator has
+        // already spent this minute is not a property of the configuration they just applied.
+        mutation_class_rules:
+            crate::config::named_map::NamedMapSection::admin_mutation_class_rules().into(),
         idempotency_cache: prior.map_or_else(
             || Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             |p| p.idempotency_cache.clone(),
