@@ -307,29 +307,6 @@ fn a_non_success_status_posts_no_fee() {
 }
 
 #[test]
-fn a_plane_whose_finish_contradicts_the_status_posts_the_lower_and_disputes_it() {
-    let lying = StatusLeg {
-        status: Some(StatusClass::Success),
-        finish: Some(FinishClass::Error),
-        ..delivered()
-    };
-    assert_eq!(
-        fee(&billable(), Some(&lying)),
-        (0, PostingFlags::METER_DISPUTED)
-    );
-
-    let other_way = StatusLeg {
-        status: Some(StatusClass::ServerError),
-        finish: Some(FinishClass::Complete),
-        ..delivered()
-    };
-    assert_eq!(
-        fee(&billable(), Some(&other_way)),
-        (0, PostingFlags::METER_DISPUTED)
-    );
-}
-
-#[test]
 fn with_no_transport_status_the_planes_finish_decides_alone() {
     let head = StatusLeg {
         status: None,
@@ -428,7 +405,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             None,
             Some(StatusClass::Success),
             Some(FinishClass::Error),
-            0,
+            1,
             true,
         ),
         (None, Some(StatusClass::ClientError), None, 0, false),
@@ -579,7 +556,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             Some(StatusAt::FirstFrame),
             Some(StatusClass::Success),
             Some(FinishClass::Error),
-            0,
+            1,
             true,
         ),
         (
@@ -748,7 +725,7 @@ fn the_fee_table_is_exhaustive_over_status_placement_status_class_and_finish() {
             Some(StatusAt::Terminal),
             Some(StatusClass::Success),
             Some(FinishClass::Error),
-            0,
+            1,
             true,
         ),
         (
@@ -1011,14 +988,14 @@ fn a_provider_push_and_a_unit_with_no_upstream_draw_no_slot() {
 fn a_contradicted_fee_is_decided_at_the_frame_the_client_saw() {
     for at in [StatusAt::FirstFrame, StatusAt::Terminal] {
         // The client saw an answered request; the plane says it ended badly. Billed, and disputed.
-        let died_after_a_good_frame = FeeEvidence {
-            status_at: Some(at),
+        let died_after_a_good_frame = StatusLeg {
+            at: Some(at),
             status: Some(StatusClass::Success),
             finish: Some(FinishClass::Error),
-            ..billable()
+            ..delivered()
         };
         assert_eq!(
-            fee_count(&died_after_a_good_frame),
+            fee_count(&billable(), Some(&died_after_a_good_frame)),
             (1, PostingFlags::METER_DISPUTED),
             "a stream that dies halfway through a good response was still a good response at the \
              moment it started, on every transport that reports a status at all"
@@ -1031,14 +1008,14 @@ fn a_contradicted_fee_is_decided_at_the_frame_the_client_saw() {
             FinishClass::Partial,
         ] {
             for failed in [StatusClass::ClientError, StatusClass::ServerError] {
-                let claiming_over_a_failure = FeeEvidence {
-                    status_at: Some(at),
+                let claiming_over_a_failure = StatusLeg {
+                    at: Some(at),
                     status: Some(failed),
                     finish: Some(claimed),
-                    ..billable()
+                    ..delivered()
                 };
                 assert_eq!(
-                    fee_count(&claiming_over_a_failure),
+                    fee_count(&billable(), Some(&claiming_over_a_failure)),
                     (0, PostingFlags::METER_DISPUTED),
                     "a plane cannot bill over the top of a failure the client was handed"
                 );
@@ -1060,15 +1037,15 @@ fn a_plane_that_declares_no_status_leg_is_decided_by_its_finish_alone() {
         FinishClass::Partial,
         FinishClass::Error,
     ] {
-        let no_leg = FeeEvidence {
-            status_at: None,
+        let no_leg = StatusLeg {
+            at: None,
             status: None,
             finish: Some(finish),
-            ..billable()
+            ..delivered()
         };
         let expected = u32::from(finish != FinishClass::Error);
         assert_eq!(
-            fee_count(&no_leg),
+            fee_count(&billable(), Some(&no_leg)),
             (expected, PostingFlags::NONE),
             "no second reading exists, so there is nothing to contradict and nothing to dispute"
         );
