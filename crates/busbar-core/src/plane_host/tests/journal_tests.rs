@@ -348,6 +348,21 @@ impl busbar_api::Store for GenericPlaneStore {
         parents.dedup();
         Ok(parents)
     }
+    /// RETENTION, in the shipped backend's own predicate (see `busbar_store_memory`): a row goes
+    /// when it is of this kind and its `ts` is older than the cutoff — except for kind `task`,
+    /// where only a TERMINAL row may go. A durable backend reads the typed sidecar and never
+    /// decodes the body, which is exactly why the envelope's `ts` is the only age these rows have.
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> busbar_api::StoreResult<u64> {
+        let mut rows = self.rows();
+        let was = rows.len();
+        rows.retain(|r| {
+            if r.kind != kind || r.ts >= before {
+                return true;
+            }
+            kind == "task" && r.disposition != busbar_api::PlaneDisposition::Terminal
+        });
+        Ok((was - rows.len()) as u64)
+    }
 }
 
 fn durable_app() -> Arc<crate::state::App> {
@@ -1007,4 +1022,86 @@ fn out_of_range_register_framing_is_refused_not_matched() {
             "an unnamed framing is refused, not registered"
         );
     });
+}
+
+// ── THE RETENTION AXIS — the durable envelope's `ts` is the node's clock, not a placeholder ──────
+
+/// A DURABLE JOURNAL APPEND STAMPS THE NODE'S CLOCK ON THE RETENTION AXIS, AND THE SWEEP SPARES IT.
+///
+/// The store keys, orders and retention-sweeps on the typed sidecar columns and never decodes the
+/// opaque body, so `PlaneRecord::ts` is the ONLY age a neutral journal row has — whatever timestamp
+/// the plane wrote inside its own `content` is invisible to `purge_plane_records_before`. A row
+/// stamped with a placeholder reads as infinitely old, and for every kind but `task` the sweep drops
+/// every row older than its cutoff. So an unstamped evidence chain is an evidence chain the first
+/// retention pass deletes, silently, counting the deletion as success.
+///
+/// The proof brackets the append between two readings of the same wall clock the seam stamps from,
+/// which is the strongest statement available without a settable clock: the stamp cannot be a
+/// constant, because a constant cannot lie inside a window that moves. Then it sweeps at a cutoff
+/// taken BEFORE the write and requires the row to survive — the failure this exists to stop, stated
+/// as the behaviour rather than as the field.
+#[test]
+fn a_durable_journal_row_carries_the_clock_and_survives_a_sweep_older_than_its_write() {
+    let store = Arc::new(GenericPlaneStore::new());
+    let app = durable_app_over(store.clone());
+    let kind_id = fresh_kind_id();
+    let scope = b"principal-1";
+
+    let before_write = busbar_substrate::store::now();
+    with_dispatch_scope(&app, |host, vt| {
+        register(host, vt, kind_id, AbiFraming::PipeSeparated);
+        let content = b"|the evidence this chain exists to keep";
+        assert_eq!(
+            (vt.journal_append_scoped.unwrap())(
+                host,
+                kind_id,
+                scope.as_ptr(),
+                scope.len(),
+                content.as_ptr(),
+                content.len(),
+            ),
+            Seq(1),
+            "the genesis record appends"
+        );
+    });
+    let after_write = busbar_substrate::store::now();
+
+    let stamped = {
+        let rows = store.rows();
+        let row = rows
+            .iter()
+            .find(|r| r.parent.as_deref() == Some("principal-1"))
+            .expect("the append persisted a durable envelope");
+        row.ts
+    };
+    assert!(
+        stamped >= before_write && stamped <= after_write,
+        "the durable envelope's retention stamp must be a reading of the node's clock taken during \
+         the append: got {stamped}, and the append happened within [{before_write}, {after_write}]"
+    );
+
+    // THE CONSEQUENCE, not the field: a sweep whose cutoff predates the write must not reach this
+    // row. `before_write` is the oldest cutoff any retention window could compute at this instant.
+    let removed = with_dispatch_scope(&app, |host, _vt| {
+        crate::plane_host::journal::compact_via_seam(host, kind_id, before_write)
+            .expect("the compact seam answers")
+    });
+    assert_eq!(
+        removed, 0,
+        "retention swept away a record written after its own cutoff — the row read as infinitely \
+         old because its envelope carried no clock reading"
+    );
+    assert_eq!(
+        store.rows().len(),
+        1,
+        "the durable evidence row is still there after the sweep"
+    );
+
+    // And the axis still BITES: a cutoff past the write drops it, so the stamp is a real age and not
+    // a number chosen to make the sweep miss.
+    let removed = with_dispatch_scope(&app, |host, _vt| {
+        crate::plane_host::journal::compact_via_seam(host, kind_id, after_write.saturating_add(1))
+            .expect("the compact seam answers")
+    });
+    assert_eq!(removed, 1, "a cutoff past the write does drop the row");
 }
