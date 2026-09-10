@@ -113,11 +113,26 @@ rlog "test packages:   ${SCOPE_TESTS:-<the whole workspace>}"
 
 remote_push_tree "$HOST" "$REPO" "$REF" "$TIP"
 
+# ── THE TREE THIS PROOF GETS IS ITS OWN ─────────────────────────────────────────────────────────
+# Rail 14 is the record of what the shared `~/busbar-prove` costs: two slots proving two branches
+# on one box, the second `git checkout -f` moving the tree under the first one's `cargo test`, and
+# a verdict about neither branch. The slug is the BRANCH the operator named — or, when they named
+# none, this worktree's tip — so two slots proving two branches get two directories by
+# construction, and two slots proving the SAME branch share one, which is not a race but a queue.
+SLUG="$(remote_branch_slug "${BRANCH:-$(git -C "$REPO" rev-parse --short "$TIP")}")" \
+  || rdie "cannot make a checkout name out of '${BRANCH:-$TIP}'"
+rlog "checkout on the box: ~/$(remote_work_dir "$SLUG")  (seed: $PROVE_SEED)"
+WORK_DIR="$(rsh_script "$HOST" "$SLUG" "$PROVE_SEED" < <(remote_workdir_script) 2>/dev/null | tail -1)"
+case "$WORK_DIR" in
+  */busbar-prove-*) ;;
+  *) rdie "the box did not make a per-branch checkout for '$SLUG' (got: ${WORK_DIR:-<nothing>}) — refusing to fall back to the shared tree" ;;
+esac
+
 START=$(date +%s)
 set +e
-rsh_script "$HOST" "$REF" "$SCOPE_FAM" "$SCOPE_TESTS" <<'PROVE'
+rsh_script "$HOST" "$REF" "$SCOPE_FAM" "$SCOPE_TESTS" "$WORK_DIR" <<'PROVE'
 set -uo pipefail
-REF="$1"; FAMILIES="$2"; TESTS="$3"
+REF="$1"; FAMILIES="$2"; TESTS="$3"; WORK_DIR="$4"
 export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_TERM_COLOR=always CARGO_INCREMENTAL=0
 export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=60G
@@ -125,13 +140,26 @@ export RUSTC_WRAPPER=sccache SCCACHE_DIR=/var/cache/sccache SCCACHE_CACHE_SIZE=6
 # 4226 for every process on the box; the four runner agents each hold one of their own, and
 # joining theirs would mean a neighbour's `sccache --stop-server` killing this proof
 # mid-compile — seen once, as `Connection reset by peer` inside rustc.
-export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4300}"
+# …and derived from the CHECKOUT, not fixed at 4300, now that two branches can prove here at once:
+# 4300 for both of them is the same neighbour problem one directory up.
+if [ -z "${SCCACHE_SERVER_PORT:-}" ]; then
+  _h=$(printf '%s' "$WORK_DIR" | cksum | cut -d' ' -f1)
+  SCCACHE_SERVER_PORT=$(( 4300 + (_h % 60) ))
+fi
+export SCCACHE_SERVER_PORT
 export RUSTFLAGS="-D warnings"
 # EIGHT, not nproc. A box runs up to four proofs at once (it also carries four runner agents); a
 # cargo that takes all 32 cores makes every neighbour slower and itself no faster.
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
-W="$HOME/busbar-prove"
+W="$WORK_DIR"
 cd "$W" || { echo "no $W — run: ./scripts/prove-remote.sh --setup $(hostname)"; exit 2; }
+# THE PROOF ANNOUNCES ITSELF TO THE ALLOCATOR. `<checkout>/.proof.pid` is what ci-remote-lib.sh's
+# probe counts per box, and the ceiling it enforces is only real if the file goes away when the
+# proof does — including when it is killed. A pid whose process is gone is not counted, so a
+# crashed proof degrades to "not running" rather than to a box nobody may use again.
+echo $$ > "$W/.proof.pid"
+trap 'rm -f "$W/.proof.pid"' EXIT INT TERM
+echo "   proof pid $$ in $W (sccache port $SCCACHE_SERVER_PORT)"
 
 step() { printf '\n\033[1m══ %s\033[0m  (%s)\n' "$1" "$(date -u +%H:%M:%S)"; }
 T0=$(date +%s); mark() { printf '   [%s] %ss\n' "$1" "$(( $(date +%s) - T0 ))"; T0=$(date +%s); }

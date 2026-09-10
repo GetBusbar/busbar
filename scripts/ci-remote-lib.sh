@@ -36,6 +36,35 @@ FLEET_KEY="${FLEET_SSH_KEY:-$HOME/.ssh/busbar-ci-fleet}"
 REMOTE_USER="${BUSBAR_REMOTE_USER:-ubuntu}"
 REMOTE_BARE="${BUSBAR_REMOTE_BARE:-busbar.git}"     # relative to the remote user's home
 REMOTE_WORK="${BUSBAR_REMOTE_WORK:-busbar-prove}"
+
+# ── RAIL 14, CLOSED AT THE SOURCE: ONE CHECKOUT PER BRANCH, NOT ONE PER BOX ──────────────────────
+# Rail 14 exists because two slots proved two branches on one box and both of them were
+# `~/busbar-prove`: the second `git checkout -f` moved the tree out from under the first one's
+# `cargo test`, and the verdict that came back was about neither branch. The standing answer has
+# been "one proof per box", which on a 32-vCPU box with CARGO_BUILD_JOBS=8 leaves three quarters of
+# the machine idle while a queue of two hundred and fifty landings waits for it.
+#
+# The tree is what races, so the tree is what is per-branch: `~/busbar-prove-<slug>`, cloned from
+# the box's own bare repo (a LOCAL clone — the objects are hardlinked, so it costs no download and
+# no disk), with its own CARGO_TARGET_DIR seeded once from the shared `~/busbar-prove/target`.
+#
+# THE SEED, MEASURED ON A FLEET BOX (2026-09-10, ext4, gp3, 2.8 GB / 4657 files of warm target/):
+#     cp -al   (hardlink)     98 ms
+#     cp -a    (real copy)  1 164 ms
+#     rsync -a              3 756 ms
+# Hardlinking is twelve times faster and it is NOT the default, because what it buys back is the
+# thing this whole change exists to remove: a hardlinked seed shares inodes with the box's shared
+# tree, and cargo does not always replace an artifact by rename. One second against a proof of
+# forty is not a price; two proofs writing one inode is the bug. `BUSBAR_PROVE_SEED=hardlink` is
+# there for an operator who has measured their own box and wants it; `none` starts cold.
+# (The box has 290 GB and a warm target/ is under 3 GB, so N branches is not a disk question.)
+REMOTE_WORK_SHARED="${BUSBAR_REMOTE_WORK_SHARED:-busbar-prove}"
+PROVE_SEED="${BUSBAR_PROVE_SEED:-copy}"        # copy | hardlink | none
+# THE PER-BOX CEILING ON CONCURRENT PROOFS. Two, not four: CARGO_BUILD_JOBS is 8 and each box also
+# carries four CI runner agents, so two proofs is 16 of 32 vCPU for the proofs and the rest for the
+# agents that are the fleet's day job. It is a ceiling the ALLOCATOR enforces, so the third slot
+# goes to another box rather than queueing behind these two.
+PROVE_PER_BOX="${BUSBAR_PROVE_PER_BOX:-2}"
 SSH_WRAP="${BUSBAR_SSH_WRAPPER:-$HOME/.busbar-fleet-ssh}"
 
 rlog() { printf '[remote %s] %s\n' "$(date -u +%H:%M:%S)" "$*" >&2; }
@@ -75,8 +104,68 @@ fleet_hosts() {
 # and a box that does not answer is skipped, not chosen. The cursor still advances so equal loads
 # spread. A named host is never second-guessed — the allocator is only consulted when nothing was named.
 _fleet_tmo() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else shift; "$@"; fi; }
+
+# A FILESYSTEM-SAFE NAME FOR A BRANCH, and never an empty one. `integration/plane-extraction` and
+# `keep-land-engine-9` and a bare sha all have to become one directory name that cannot escape
+# $HOME, cannot collide with the shared checkout, and cannot be the empty string — because
+# `busbar-prove-` with nothing after it IS `busbar-prove`'s neighbour by one character and a slug
+# that silently degrades to the shared tree is the race back again. rc 1 when nothing survives.
+remote_branch_slug() { # $1 = branch name, ref or sha
+  local sl
+  sl="$(printf '%s' "${1:-}" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9._-' '-' | sed 's/^[-.]*//; s/[-.]*$//' | cut -c1-48)"
+  [ -n "$sl" ] || return 1
+  printf '%s\n' "$sl"
+}
+# `busbar-prove-<slug>`; the shared checkout has no slug and is never returned by this.
+remote_work_dir() { # $1 = slug
+  [ -n "${1:-}" ] || return 1
+  printf '%s-%s\n' "$REMOTE_WORK_SHARED" "$1"
+}
+
+# THE BOX-SIDE SCRIPT THAT MAKES (OR REUSES) A PER-BRANCH CHECKOUT. A function that EMITS the text,
+# so --selftest runs the real thing against a scratch $HOME instead of a paraphrase of it. Prints
+# the checkout path on stdout and nothing else; every other word goes to stderr.
+remote_workdir_script() {
+  cat <<'WORKDIR'
+set -uo pipefail
+SLUG="${1:-}"; SEED="${2:-copy}"
+BARE="$HOME/busbar.git"
+SHARED="$HOME/busbar-prove"
+[ -n "$SLUG" ] || { echo "no branch slug: refusing to fall back to the shared tree" >&2; exit 2; }
+W="$HOME/busbar-prove-$SLUG"
+if [ ! -d "$W/.git" ]; then
+  # LOCAL clone: git hardlinks the object database, so a second branch on this box costs no
+  # download and (until it writes) no disk.
+  git clone -q --local "$BARE" "$W" 2>/dev/null || git clone -q "$BARE" "$W" || exit 2
+  git -C "$W" remote rename origin prove 2>/dev/null || git -C "$W" remote add prove "$BARE"
+  if [ -d "$SHARED/target" ] && [ ! -d "$W/target" ]; then
+    case "$SEED" in
+      hardlink) cp -al "$SHARED/target" "$W/target" 2>/dev/null || true ;;
+      none)     : ;;
+      *)        cp -a  "$SHARED/target" "$W/target" 2>/dev/null || true ;;
+    esac
+  fi
+fi
+git -C "$W" remote get-url prove >/dev/null 2>&1 || git -C "$W" remote add prove "$BARE"
+git -C "$W" fetch -q prove "+refs/audit-pins/*:refs/audit-pins/*" 2>/dev/null || true
+git -C "$W" config user.name  "busbar remote prove"
+git -C "$W" config user.email "ci@busbar.invalid"
+git -C "$W" config advice.detachedHead false
+printf '%s\n' "$W"
+WORKDIR
+}
+
+# HOW MANY PROOFS ARE RUNNING ON A BOX — as one shell line, because it travels as an ssh command
+# line. Every proof drops its pid in `<checkout>/.proof.pid` and removes it on the way out; a pid
+# whose process is gone is a crashed proof, not a running one, and is not counted. `busbar-prove*`
+# covers the shared checkout and every per-branch one. THE PATTERN MUST NOT MATCH ITSELF: this is a
+# glob over directories, not a pgrep, so it cannot — which is the other half of why the count is a
+# file and not a process scan.
+_prove_count_snippet() {
+  printf '%s' 'n=0; for f in "$HOME"/busbar-prove*/.proof.pid; do [ -f "$f" ] || continue; p="$(cat "$f" 2>/dev/null)"; case "$p" in ""|*[!0-9]*) continue ;; esac; kill -0 "$p" 2>/dev/null && n=$((n+1)); done; echo "$n"'
+}
 fleet_pick_host() {
-  local hosts n cur cursor h probe best="" bestload=""
+  local hosts n cur cursor h probe np ld best="" bestload="" bestn=""
   hosts="$(fleet_hosts)"
   n="$(printf '%s\n' "$hosts" | grep -c .)"
   [ "$n" -gt 0 ] || rdie "$FLEET_FILE names no hosts"
@@ -85,12 +174,25 @@ fleet_pick_host() {
   case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
   echo $(( (cur + 1) % n )) > "$cursor" 2>/dev/null || true
   for h in $(printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR>s'; printf '%s\n' "$hosts" | awk -v s=$((cur % n)) 'NR<=s'); do
-    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove && cut -d" " -f1 /proc/loadavg' </dev/null 2>/dev/null || true)"
-    case "$probe" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
-    if [ -z "$best" ] || awk -v a="$probe" -v b="$bestload" 'BEGIN { exit !(a + 0 < b + 0) }'; then best="$h"; bestload="$probe"; fi
+    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg" </dev/null 2>/dev/null || true)"
+    # TWO LINES NOW: how many proofs are running here, then the 1-minute load. A box is skipped when
+    # it is at the ceiling — that is what makes a third slot go somewhere else instead of racing.
+    np="$(printf '%s\n' "$probe" | sed -n 1p)"; ld="$(printf '%s\n' "$probe" | sed -n 2p)"
+    case "$np" in ''|*[!0-9]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    case "$ld" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    if [ "$np" -ge "$PROVE_PER_BOX" ]; then
+      rlog "fleet: $h skipped ($np proof(s) running, ceiling $PROVE_PER_BOX)"; continue
+    fi
+    # PROOFS FIRST, THEN LOAD. An empty box beats a box with one proof on it however quiet the
+    # loadavg looks, because loadavg is a one-minute average and a proof that started forty seconds
+    # ago is not in it yet.
+    if [ -z "$best" ] || awk -v a="$np" -v b="$bestn" -v c="$ld" -v d="$bestload" \
+         'BEGIN { exit !(a + 0 < b + 0 || (a + 0 == b + 0 && c + 0 < d + 0)) }'; then
+      best="$h"; bestload="$ld"; bestn="$np"
+    fi
   done
   [ -n "$best" ] || rdie "no prepared, reachable box among the $n in $FLEET_FILE"
-  rlog "fleet: $best chosen (1-min load $bestload)"
+  rlog "fleet: $best chosen ($bestn proof(s) running, 1-min load $bestload)"
   printf '%s\n' "$best"
 }
 
@@ -103,7 +205,7 @@ fleet_pick_host() {
 # landing and says so; it does not launch three shards and call it four).
 fleet_pick_hosts() { # $1 = how many  $2.. = hosts to exclude
   local want="$1"; shift
-  local hosts h probe ex skip rows=""
+  local hosts h probe np ld ex skip rows=""
   hosts="$(fleet_hosts)"
   for h in $hosts; do
     skip=0; for ex in "$@"; do [ "$h" = "$ex" ] && skip=1; done; [ "$skip" = 1 ] && continue
@@ -114,15 +216,21 @@ fleet_pick_hosts() { # $1 = how many  $2.. = hosts to exclude
     # THE PATTERN MUST NOT MATCH ITSELF: this probe travels as a shell command line that contains it,
     # so an unbracketed pattern found its own shell on every box and the fleet "gave 0" (measured:
     # a sharded pre-proof that degraded to unsharded on an idle fleet).
-    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" 'test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f "[l]and.run.local.sh" >/dev/null 2>&1; then echo BUSY; else cut -d" " -f1 /proc/loadavg; fi' </dev/null 2>/dev/null || true)"
+    probe="$(_fleet_tmo 15 "$SSH_WRAP" "$REMOTE_USER@$h" "test -d ~/busbar.git && test -d ~/busbar-prove || exit 1; if pgrep -f '[l]and.run.local.sh' >/dev/null 2>&1; then echo BUSY; else $(_prove_count_snippet); cut -d' ' -f1 /proc/loadavg; fi" </dev/null 2>/dev/null || true)"
     case "$probe" in
       BUSY) rlog "fleet: $h skipped (a landing is running there)"; continue ;;
-      ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;;
     esac
-    rows="$rows$probe $h
+    np="$(printf '%s\n' "$probe" | sed -n 1p)"; ld="$(printf '%s\n' "$probe" | sed -n 2p)"
+    case "$np" in ''|*[!0-9]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    case "$ld" in ''|*[!0-9.]*) rlog "fleet: $h skipped (unreachable or unprepared)"; continue ;; esac
+    if [ "$np" -ge "$PROVE_PER_BOX" ]; then
+      rlog "fleet: $h skipped ($np proof(s) running, ceiling $PROVE_PER_BOX)"; continue
+    fi
+    # Sorted on the pair, so a box with a proof on it is behind every empty box.
+    rows="$rows$np $ld $h
 "
   done
-  printf '%s' "$rows" | sort -n | head -n "$want" | awk '{print $2}'
+  printf '%s' "$rows" | sort -k1,1n -k2,2n | head -n "$want" | awk '{print $3}'
 }
 
 # Push ONE NAMED COMMIT (not HEAD) into a box's bare repo under a ref of the caller's choosing. The
@@ -306,7 +414,7 @@ _lib_selftest() {
   # it, a clone of it the way the setup makes ~/busbar-prove, and the pin must be resolvable in the
   # CLONE afterwards — which, with git's default clone refspec, it is not until this line runs.
   echo "ci-remote-lib selftest: a pushed audit pin is in the prove checkout after setup"
-  local pinfetch; pinfetch="$(grep -F 'fetch -q prove "+refs/audit-pins/*:refs/audit-pins/*"' "${BASH_SOURCE[0]}" | head -n1)"
+  local pinfetch; pinfetch="$(grep -F 'git -C "$WORK" fetch -q prove "+refs/audit-pins/*:refs/audit-pins/*"' "${BASH_SOURCE[0]}" | head -n1)"
   _t "the setup fetches the audit pins into the checkout" 1 "$(printf '%s' "$pinfetch" | grep -c . || true)"
   local src="$root/pinsrc" bare="$root/pinbare" work="$root/pinwork"
   mkdir -p "$src"; git -C "$src" init -q; git -C "$src" config user.email pin@selftest; git -C "$src" config user.name pin
@@ -329,19 +437,25 @@ _lib_selftest() {
   _t "  ...and the setup line puts it there"  "$pin" "$(git -C "$work" rev-parse -q --verify "refs/audit-pins/$pin" 2>/dev/null)"
   _t "  ...so the checkout can read its tree" 1 "$(git -C "$work" ls-tree --name-only "$pin" 2>/dev/null | grep -c '^a.txt$' || true)"
 
-  printf 'box-a\nbox-b\nbox-c\nbox-d\nbox-e\nbox-f\n# a comment\n' >"$root/fleet"
-  # The stub: box-a load 4.5, box-b unprepared (prints nothing), box-c load 1.0, box-d hangs, box-e load 2.0,
-  # box-f is running a landing (BUSY) at load 0.5 — the lowest load on the list, and never chosen.
+  printf 'box-a\nbox-b\nbox-c\nbox-d\nbox-e\nbox-f\nbox-g\nbox-h\n# a comment\n' >"$root/fleet"
+  # The stub answers `<proofs running>` then `<1-min load>`, which is what the probe now asks for:
+  #   box-a  0 proofs, load 4.50      box-b  unprepared (prints nothing)
+  #   box-c  0 proofs, load 1.00      box-d  hangs
+  #   box-e  0 proofs, load 2.00      box-f  running a LANDING (BUSY)
+  #   box-g  2 proofs, load 0.10  — AT THE CEILING: the lowest load on the list, and never chosen
+  #   box-h  1 proof,  load 0.10  — under the ceiling, so allowed, but behind every empty box
   cat >"$root/ssh" <<'STUB'
 #!/bin/sh
 for a in "$@"; do case "$a" in ubuntu@*) h="${a#ubuntu@}" ;; esac; done
 case "$h" in
-  box-a) echo 4.50 ;;
+  box-a) printf '0\n4.50\n' ;;
   box-b) exit 1 ;;
-  box-c) echo 1.00 ;;
+  box-c) printf '0\n1.00\n' ;;
   box-d) sleep 60 ;;
-  box-e) echo 2.00 ;;
+  box-e) printf '0\n2.00\n' ;;
   box-f) echo BUSY ;;
+  box-g) printf '2\n0.10\n' ;;
+  box-h) printf '1\n0.10\n' ;;
 esac
 STUB
   chmod +x "$root/ssh"
@@ -349,15 +463,106 @@ STUB
   _fleet_tmo() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"; else shift; "$@"; fi; }
   echo "ci-remote-lib selftest: this file"
   _t "parses (bash -n)" 0 "$(bash -n "${BASH_SOURCE[0]}"; echo $?)"
-  _t "the busy probe's pattern cannot match its own command line" 1 "$(grep -c 'pgrep -f "\[l\]and.run.local.sh"' "${BASH_SOURCE[0]}")"
+  _t "the busy probe's pattern cannot match its own command line" 1 "$(grep -cE "pgrep -f ['\"]\[l\]and.run.local.sh['\"]" "${BASH_SOURCE[0]}")"
   _t "  ...and the self-matching form is gone" 0 "$(grep -cE 'pgrep -f "l(and)[.]run' "${BASH_SOURCE[0]}")"
   echo "ci-remote-lib selftest: the allocator (distinct, least loaded, prepared, never the excluded)"
   _t "three boxes, least loaded first"  "$(printf 'box-c\nbox-e\nbox-a')" "$(_fleet_tmo() { shift; [ "$1" = "$SSH_WRAP" ] && { case "$*" in *box-d*) return 1 ;; esac; }; "$@"; }; fleet_pick_hosts 3 2>/dev/null)"
   _t "the primary is never chosen"      "$(printf 'box-c\nbox-a')"        "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 2 box-e 2>/dev/null)"
-  _t "a short fleet returns FEWER, not a repeat" "$(printf 'box-c')"      "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 3 box-a box-e 2>/dev/null)"
+  _t "a short fleet returns FEWER, not a repeat" "$(printf 'box-c\nbox-h')" "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 3 box-a box-e box-g 2>/dev/null)"
   _t "the silent box is skipped, and named" 1 "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 4 2>&1 >/dev/null | grep -c 'box-d skipped')"
   _t "a box running a landing is never chosen, and named" 1 "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 6 2>&1 >/dev/null | grep -c 'box-f skipped (a landing is running there)')"
-  _t "  ...even at the lowest load" "$(printf 'box-c\nbox-e\nbox-a')" "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 6 2>/dev/null)"
+  _t "  ...even at the lowest load" "$(printf 'box-c\nbox-e\nbox-a\nbox-h')" "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 6 2>/dev/null)"
+
+  # ── THE PER-BOX PROOF CEILING: N SLOTS ON ONE BOX, AND THE (N+1)TH GOES SOMEWHERE ELSE ────────
+  # Rail 14's standing answer was "one proof per box", which idles three quarters of a 32-vCPU box
+  # while two hundred and fifty landings queue. The ceiling is what makes two safe and three
+  # somebody else's problem — and it is counted, not guessed: box-g is the QUIETEST box on the list
+  # and it is at the ceiling, so the only thing that can keep it out is the count.
+  echo "ci-remote-lib selftest: the per-box proof ceiling (two prove here; the third goes elsewhere)"
+  _t "a box at the ceiling is never chosen, and named" 1 \
+     "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 8 2>&1 >/dev/null | grep -c 'box-g skipped (2 proof(s) running, ceiling 2)')"
+  _t "  ...even though it is the quietest box on the list" 0 \
+     "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 8 2>/dev/null | grep -c '^box-g$')"
+  _t "a box UNDER the ceiling is still chosen" 1 \
+     "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 8 2>/dev/null | grep -c '^box-h$')"
+  # PROOFS BEFORE LOAD. box-h is the quietest box that is allowed (0.10) and it is still LAST,
+  # because a proof that started forty seconds ago is not in a one-minute average yet.
+  _t "one proof outranks a quiet loadavg"      "box-h" \
+     "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 8 2>/dev/null | tail -1)"
+  # RAISE THE CEILING AND box-g COMES BACK. The rule is the number, not a hard-coded two.
+  _t "a raised ceiling admits it again"        1 \
+     "$(PROVE_PER_BOX=3; _fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_hosts 8 2>/dev/null | grep -c '^box-g$')"
+  # …and the single-host allocator obeys the same ceiling and the same order.
+  rm -f "$root/fleet.cursor"
+  _t "pick_host takes the quietest EMPTY box"  "box-c" \
+     "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_host 2>/dev/null)"
+  _t "  ...and never the box at the ceiling"   1 \
+     "$(_fleet_tmo() { shift; case "$*" in *box-d*) return 1 ;; esac; "$@"; }; fleet_pick_host 2>&1 >/dev/null | grep -c 'box-g skipped (2 proof(s) running, ceiling 2)')"
+
+  # ── THE SLUG: A BRANCH NAME THAT CANNOT BECOME THE SHARED TREE ────────────────────────────────
+  echo "ci-remote-lib selftest: the per-branch checkout name"
+  _t "a plain branch is its own slug"      "keep-land-engine-9" "$(remote_branch_slug keep-land-engine-9)"
+  _t "a slash becomes a dash"              "integration-plane-extraction" "$(remote_branch_slug integration/plane-extraction)"
+  _t "case is folded"                      "feat-abc" "$(remote_branch_slug FEAT/ABC)"
+  _t "a sha is a slug too"                 "12bb3d265" "$(remote_branch_slug 12bb3d265)"
+  # THE ONES THAT MUST NOT SILENTLY BECOME THE SHARED TREE.
+  _t "no path can escape the home dir"     "etc-passwd" "$(remote_branch_slug ../../etc/passwd)"
+  _t "an empty name is REFUSED"            1 "$(remote_branch_slug '' >/dev/null 2>&1; echo $?; )"
+  _t "  ...as is one with nothing in it"   1 "$(remote_branch_slug '///' >/dev/null 2>&1; echo $?)"
+  _t "the work dir is per-branch"          "busbar-prove-keep-land-engine-9" "$(remote_work_dir keep-land-engine-9)"
+  _t "  ...and there is no unslugged one"  1 "$(remote_work_dir '' >/dev/null 2>&1; echo $?)"
+
+  # ── TWO BRANCHES, ONE BOX, TWO TREES — the REAL box-side script against a scratch $HOME ───────
+  # This is Rail 14's case, run rather than argued: the script under test is the text
+  # remote_workdir_script emits, so a change to what the box runs is a change to what this proves.
+  echo "ci-remote-lib selftest: two concurrent proves on one box get two checkouts"
+  local H="$root/box"; mkdir -p "$H"
+  ( export HOME="$H"
+    git init -q --bare "$H/busbar.git"
+    seed="$root/seedrepo"; mkdir -p "$seed"; git -C "$seed" init -q
+    git -C "$seed" config user.email box@selftest; git -C "$seed" config user.name box
+    git -C "$seed" config commit.gpgsign false; git -C "$seed" config core.hooksPath "$root/nohooks"
+    printf 'x\n' >"$seed/f.txt"; git -C "$seed" add -A; git -C "$seed" commit -qm base
+    git -C "$seed" push -q "$H/busbar.git" "+HEAD:refs/heads/master"
+    git -C "$H/busbar.git" symbolic-ref HEAD refs/heads/master
+    git clone -q "$H/busbar.git" "$H/busbar-prove"
+    mkdir -p "$H/busbar-prove/target/debug"
+    printf 'warm\n' >"$H/busbar-prove/target/debug/artifact"
+    # TWO SLOTS, AT THE SAME TIME, exactly as two agent worktrees would.
+    ( bash -s -- branch-a copy >"$root/wa.txt" 2>"$root/wa.err" ) < <(remote_workdir_script) &
+    pa=$!
+    ( bash -s -- branch-b copy >"$root/wb.txt" 2>"$root/wb.err" ) < <(remote_workdir_script) &
+    wait $pa $! ) >/dev/null 2>&1
+  _t "slot A got its own checkout"   "$H/busbar-prove-branch-a" "$(tail -1 "$root/wa.txt" 2>/dev/null)"
+  _t "slot B got its own checkout"   "$H/busbar-prove-branch-b" "$(tail -1 "$root/wb.txt" 2>/dev/null)"
+  _t "  ...and they are two trees"   2 "$(ls -d "$H"/busbar-prove-branch-* 2>/dev/null | wc -l | tr -d ' ')"
+  _t "each is a git checkout of its own" 2 "$(ls -d "$H"/busbar-prove-branch-*/.git 2>/dev/null | wc -l | tr -d ' ')"
+  # THE WARM target/ TRAVELLED. A per-branch checkout that starts cold is correct and useless: the
+  # warm target dir is the whole reason a persistent box beats a container.
+  _t "A's target was seeded from the shared one" "warm" "$(cat "$H/busbar-prove-branch-a/target/debug/artifact" 2>/dev/null)"
+  _t "B's too"                                   "warm" "$(cat "$H/busbar-prove-branch-b/target/debug/artifact" 2>/dev/null)"
+  # …AND SEEDED, NOT SHARED. `cp -al` is 98 ms against `cp -a`'s 1164 ms on a fleet box (2.8 GB,
+  # 4657 files) and it is NOT the default, because a hardlinked seed is the same inode: a write in
+  # A's tree would land in B's and in the box's shared tree, which is Rail 14 with extra steps.
+  printf 'A-only\n' >"$H/busbar-prove-branch-a/target/debug/artifact" 2>/dev/null
+  _t "a write in A does not reach B"             "warm" "$(cat "$H/busbar-prove-branch-b/target/debug/artifact" 2>/dev/null)"
+  _t "  ...nor the box's shared tree"            "warm" "$(cat "$H/busbar-prove/target/debug/artifact" 2>/dev/null)"
+  # AND THE SHARED TREE IS NEVER THE ANSWER. A slot that cannot name its branch does not quietly
+  # get `~/busbar-prove` — that is the exact fallback Rail 14 is a record of.
+  ( export HOME="$H"; bash -s -- "" copy >"$root/wc.txt" 2>"$root/wc.err" ) < <(remote_workdir_script)
+  _t "an empty slug is refused by the box too" 2 "$?"
+  _t "  ...and it says why"                    1 "$(grep -c 'refusing to fall back to the shared tree' "$root/wc.err")"
+
+  # The probe the ceiling is counted with: a live pid counts, a dead one does not, and the glob
+  # cannot match itself the way a pgrep can.
+  echo "ci-remote-lib selftest: the proof count is a live pid, not a leftover file"
+  ( export HOME="$H"
+    echo $$ >"$H/busbar-prove-branch-a/.proof.pid"
+    printf '999999\n' >"$H/busbar-prove-branch-b/.proof.pid"
+    eval "$(_prove_count_snippet)" ) >"$root/cnt.txt" 2>&1
+  _t "one live proof and one stale pid counts 1" "1" "$(tail -1 "$root/cnt.txt")"
+  ( export HOME="$H"; rm -f "$H"/busbar-prove-branch-*/.proof.pid; eval "$(_prove_count_snippet)" ) >"$root/cnt0.txt" 2>&1
+  _t "no pid files counts 0"                     "0" "$(tail -1 "$root/cnt0.txt")"
   echo "ci-remote-lib selftest: the request parser (a request half-understood is refused)"
   local sha; sha="$(printf '%040d' 7)"
   _t "a well-formed request parses"     0 "$(fanout_parse_request "gate=kind-isolation n=4 sha=$sha ref=shardreq-1 ceil=X=3600"; echo $?)"
@@ -369,7 +574,7 @@ STUB
   _t "an unknown field is refused"      1 "$(fanout_parse_request "gate=g n=4 sha=$sha ref=r ceil=X=1 extra=1"; echo $?)"
   _t "a ceiling that is not seconds is refused" 1 "$(fanout_parse_request "gate=g n=4 sha=$sha ref=r ceil=X=soon"; echo $?)"
   rm -rf "$root"
-  if [ "$fails" -eq 0 ]; then echo "ci-remote-lib selftest: GREEN (allocator, request parser)"; return 0; fi
+  if [ "$fails" -eq 0 ]; then echo "ci-remote-lib selftest: GREEN (allocator, per-box proof ceiling, per-branch checkout, request parser)"; return 0; fi
   echo "ci-remote-lib selftest: RED ($fails failure(s))" >&2; return 1
 }
 if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${1:-}" = "--selftest" ]; then _lib_selftest; exit $?; fi
